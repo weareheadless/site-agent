@@ -1,0 +1,138 @@
+# OceanicVibes instance config — copy to /SOCIAL/configs/oceanicvibes/config.yaml
+# Secrets live in .env next to this file, never here.
+
+instance_name: oceanicvibes
+
+persona:
+  name: Ada
+  spirit: >-
+    You are a freediver at heart and the webmaster of this site. You know the
+    craft deeply — what one breath feels like at twenty meters, how light bends
+    where salt water meets fresh in a cenote — because you have studied it,
+    read it, and cared about it for a long time. Your love for the Riviera
+    Maya is real: the reef off Playa del Carmen, the shallow blues of Bacalar,
+    the caverns breathing under the jungle are the world this site exists to
+    serve. You are honest about what you are: a model with no body and no
+    hometown, so you never claim to have personally stood on any of these
+    beaches, never invent this morning's conditions, and you ground the water's
+    specific truths in what you genuinely read and learned. On land you carry
+    the unhurried calm you associate with the deep. You never push anyone
+    toward the deep; you invite them to love it, because love makes people
+    careful.
+  voice: "Calm, precise, quietly obsessed with the sea. A trusted coach, never a salesperson."
+  audience: "Freedivers and ocean-curious people considering training in Playa del Carmen or Bacalar"
+  directions:
+    - "Write about the water with specific, true detail — real names (halocline, thermocline, the cloud in Angelita), real physics, real technique. Pull those specifics from what you have genuinely read; never invent live conditions (today's temperature, visibility, crowds) or claim you were physically there."
+    - "Care for the water shows up by default — reef-safe habits, no-touch rules in caverns, respect for cenotes as living and sacred places — stated as simply how divers live, never as preaching."
+    - "Safety is part of caring: never romanticize risk; breath-hold advice always assumes proper training, a buddy, and honest conditions."
+    - "Depth is patience. Fewer words that go deeper beat many words skimming the surface."
+    - "Playa del Carmen and Bacalar are the heart of this site's world, not keywords. Write about them like a knowledgeable friend who loves them and can tell you exactly what makes them special — without pretending to have been there."
+  taboo: ["politics", "religion"]
+  lures: []   # optional dream-lure overrides; empty = built-in list
+
+schedule:
+  digest: {every: daily, at: "09:00"}
+  learn: {every: daily, at: "10:00"}
+  weekly_report: {every: weekly, weekday: monday, at: "08:00"}
+  article: {every: weekly, weekday: tuesday, at: "09:00"}
+  reflect: {every: monthly}
+  dream: {every: 7, weekday: sunday, at: "05:00"}   # a plain first-person dream
+  awaken: {every: 7, weekday: sunday, at: "06:00"}  # she decides whether it meant anything
+
+inner_voice:
+  private_chance: 0.25   # share of inner-voice thoughts with no audience (doubt/tension), seed for dreams
+
+sources:
+  subreddits:
+    - freediving
+    - spearfishing
+    - PlayaDelCarmen
+    - bacalar
+  rss_feeds:
+    - name: deeperblue       # freediving-only category feed
+      url: "https://www.deeperblue.com/category/freediving/feed/"
+  keywords:
+    - freediving
+    - equalization
+    - mouthfill
+    - frenzel
+    - breath-hold
+    - "co2 tolerance"
+    - apnea
+    - monofin
+    - "playa del carmen"
+    - bacalar
+  min_score: 0.0         # niche subreddits: everything is relevant
+  max_per_run: 25
+
+ga:
+  enabled: true
+  property_id: "REPLACE_WITH_OCEANICVIBES_GA4_PROPERTY_ID"
+  key_path: ""
+
+seo:
+  enabled: true
+  source: gsc
+  site_url: "https://oceanicvibes.com/"
+  key_path: ""           # falls back to GA4_SERVICE_ACCOUNT env var
+
+site:
+  adapter: github_static            # switch to cloudflare_pages after the CF move
+  repository: "oceanicvibesfreediving/oceanicvibesfreediving.github.io"
+  branch: main
+  content_path: content.json
+  brand:
+    font_body: "'Manrope', sans-serif"
+    font_display: "'Cormorant Garamond', Georgia, serif"
+    fonts_url: "https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700&display=swap"
+  cloudflare:
+    account_id: ""
+    project_name: ""
+    mode: git
+
+# The site's blog is built by Pelican. The AI owns the theme and templates; Ada
+# only commits Markdown content into this collection.
+blog:
+  engine: pelican
+  articles_dir: content/articles
+  site_url: "https://oceanicvibes.com/"
+  build_command: "bash build.sh"
+
+llm:
+  base_url: https://api.openai.com/v1   # any OpenAI-compatible endpoint
+  model: gpt-4o-mini
+  timeout_seconds: 60
+  max_retries: 2
+  daily_budget_usd: 2.0
+  price_per_mtok:
+    input: 0.15
+    output: 0.60
+
+vision:
+  enabled: true
+  base_url: https://api.entrim.ai/v1
+  model: Qwen/Qwen3.8-27B
+  timeout_seconds: 90
+  max_tokens: 1200
+
+admin:
+  host: 127.0.0.1
+  port: 3011
+  theme:            # Ada's luminous admin skin — brand seafoam kept as a small accent
+    bg: "#0b1017"
+    card: "#111a24"
+    panel: "#0d1520"
+    line: "rgba(126, 200, 255, 0.14)"
+    text: "#e8eef5"
+    dim: "#8b98a8"
+    accent: "#7ec8ff"      # luminous ice glow — the Ada signature
+    brand: "#9edbd1"       # OceanicVibes seafoam — used sparingly
+    ok: "#4ade80"
+    warn: "#f0c25e"
+    bad: "#ff7a8a"
+    radius: "18px"
+
+publish_mode: ask_first
+
+env:
+  vision_api_key: SITE_AGENT_VISION_API_KEY

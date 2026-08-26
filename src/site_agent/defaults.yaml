@@ -1,0 +1,130 @@
+instance_name: default
+
+data_dir: data
+poll_seconds: 300
+
+persona:
+  name: Ada
+  spirit: ""     # who she is in this site's world — embodied, first person
+  voice: ""
+  audience: ""
+  directions: [] # extra basic directions this site adds to her core ones
+  taboo: []
+  lures: []
+
+schedule:
+  digest: {every: daily, at: "09:00"}
+  learn: {every: daily, at: "10:00"}
+  weekly_report: {every: weekly, weekday: monday, at: "08:00"}
+  article: {every: weekly, weekday: tuesday, at: "09:00"}
+  reflect: {every: monthly}
+  inner_voice: {every: 2, at: "14:00"}
+  dream: {every: 7, weekday: sunday, at: "05:00"}
+  compact: {every: 7, weekday: sunday, at: "04:00"}
+  health_check: {every: daily, at: "12:00"}
+  seo_snapshot: {every: daily, at: "11:30"}
+  strategist: {every: 7, weekday: sunday, at: "18:00"}
+  backup: {every: 7, weekday: sunday, at: "03:00"}
+
+maintenance:
+  observation_retention_days: 45
+  compact_min_batch: 20
+
+sources:
+  subreddits: []
+  rss_feeds: []
+  keywords: []
+  min_score: 0.0
+  max_per_run: 25
+
+ga:
+  enabled: false
+  property_id: ""
+  key_path: ""
+
+seo:
+  enabled: false
+  source: gsc
+  site_url: ""
+  key_path: ""
+
+site:
+  adapter: github_static
+  repository: ""
+  branch: main
+  content_path: content.json
+  preview_url: ""   # shown in the admin Design tab
+  preview_branch: ""   # e.g. "preview": proposals render here before approval (Cloudflare Pages)
+  clone_path: ""     # local git clone for the builder agent (optional)
+  writable_patterns: ["*.css", "*.md", "articles/*", "content/articles/*"]   # fnmatch patterns Ada may write/edit/delete
+  readonly_note: "admin.html, secrets and CI files are always denied"
+  brand:
+    font_body: ""       # optional: admin UI body font stack (e.g. "'Manrope', sans-serif")
+    font_display: ""    # optional: admin UI display/heading font stack
+    fonts_url: ""       # optional: Google Fonts URL to load for the brand fonts
+    logo: ""            # optional: logo image URL shown in the admin header
+  media:                # optional Cloudflare R2 for the admin image uploader
+    account_id: ""      # Cloudflare account ID
+    bucket: ""          # R2 bucket name
+    public_url: ""      # public base URL for the bucket (e.g. https://media.example.com)
+    # access key id + secret resolved via env mapping below
+  cloudflare:
+    account_id: ""
+    project_name: ""
+    mode: git
+
+blog:
+  # New instances use Pelican. Existing instances should pin legacy explicitly
+  # until their repository has a Pelican config and theme.
+  engine: pelican
+  articles_dir: content/articles
+  site_url: ""
+  build_command: "pelican content -o output -s pelicanconf.py"
+  journal_enabled: false
+
+llm:
+  base_url: https://api.openai.com/v1
+  model: gpt-4o-mini
+  timeout_seconds: 120
+  max_tokens: 16384      # generous output budget for creative work
+  tool_calling: true   # native function-calling loop for the admin chat
+  max_work_steps: 24  # tool/continuation rounds before asking the owner to continue
+  max_retries: 2
+  daily_budget_usd: 2.0
+  price_per_mtok:
+    input: 0.15
+    output: 0.60
+
+vision:
+  enabled: false
+  base_url: ""          # OpenAI-compatible /v1 endpoint
+  model: ""
+  timeout_seconds: 90
+  max_tokens: 700
+
+admin:
+  host: 127.0.0.1
+  port: 3011
+  theme: {}   # optional admin UI brand overrides: bg, card, line, text, dim, accent,
+              # ok, warn, bad, radius, font_body, font_display, fonts_url, logo
+
+publish_mode: ask_first
+
+env:
+  llm_api_key: SITE_AGENT_LLM_API_KEY
+  vision_api_key: SITE_AGENT_VISION_API_KEY
+  github_token: GITHUB_TOKEN
+  admin_password: SITE_AGENT_ADMIN_PASSWORD
+  cloudflare_api_token: CLOUDFLARE_API_TOKEN
+  r2_access_key_id: R2_ACCESS_KEY_ID
+  r2_secret_access_key: R2_SECRET_ACCESS_KEY
+
+builder:
+  enabled: false
+  model: ""            # native OpenCode Build model; defaults to llm.model
+  timeout_seconds: 1800
+  provider_timeout_seconds: 2100
+  provider_chunk_timeout_seconds: 180
+  output_tokens: 8192
+  reasoning_effort: low
+  validation_repair_attempts: 2

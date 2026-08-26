@@ -1,0 +1,924 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ada Admin</title>
+<style>
+:root{--bg:#0b1017;--card:#111a24;--panel:#0d1520;--line:#22303f;--text:#e8eef5;--dim:#8b98a8;--accent:#7ec8ff;--brand:#9edbd1;--ok:#4ade80;--warn:#f0c25e;--bad:#ff7a8a;--radius:14px;--font-body:-apple-system,Segoe UI,Roboto,sans-serif;--font-display:var(--font-body)}
+*{box-sizing:border-box;margin:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--text);font:15px/1.55 var(--font-body);display:flex;flex-direction:column}
+button{background:var(--line);border:1px solid transparent;color:var(--text);border-radius:10px;padding:8px 14px;cursor:pointer;font-size:13.5px;transition:border-color .15s,background .15s}
+button:hover{border-color:var(--accent)}
+button.primary{background:var(--accent);color:var(--bg);font-weight:600}
+button.approve{border-color:var(--ok);color:var(--ok);background:transparent}
+button.decline{border-color:var(--bad);color:var(--bad);background:transparent}
+button.tabbtn{border:none;background:none;color:var(--dim);padding:9px 4px;margin-right:22px;font-size:15px;border-bottom:2px solid transparent;border-radius:0}
+button.tabbtn.on{color:var(--text);border-bottom-color:var(--accent)}
+button.quiet{background:transparent;border-color:var(--line)}
+button:disabled{opacity:.55;cursor:wait}
+button.okdone{background:var(--ok);color:var(--bg);border-color:var(--ok)}
+.spinny{display:inline-block;width:11px;height:11px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;vertical-align:-1px;margin-right:6px;animation:sp 1s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+#login{max-width:380px;margin:12vh auto;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:30px}
+#login h1{font:400 26px var(--font-display);margin-bottom:6px;color:var(--accent);text-shadow:0 0 24px rgba(126,200,255,.35)}
+#login p{color:var(--dim);font-size:13px;margin-bottom:20px}
+#login input{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:9px;color:var(--text);padding:10px 12px;font-size:14px}
+#login input:focus{outline:none;border-color:var(--accent)}
+
+#app{flex:1;display:flex;flex-direction:column;min-height:0;display:none}
+
+header{display:flex;align-items:center;gap:12px;padding:14px 24px;border-bottom:1px solid var(--line)}
+header .brand{font:500 18px var(--font-display);margin-right:auto;display:flex;align-items:center;gap:10px}
+header img.logo{height:30px;border-radius:6px;display:none;box-shadow:0 0 18px rgba(158,219,209,.35)}
+header .spend{margin-right:auto;color:var(--dim);font-size:12.5px}
+.muted{color:var(--dim)}
+.small{font-size:12.5px}
+
+#body{flex:1;display:flex;min-height:0}
+
+#main{flex:1;overflow-y:auto;padding:22px 26px;min-width:0}
+#chat{width:400px;flex-shrink:0;border-left:1px solid var(--line);border-left-color:rgba(126,200,255,.2);display:flex;flex-direction:column;min-height:0;overflow:hidden;background:linear-gradient(180deg,rgba(126,200,255,.06),transparent 240px),var(--card);box-shadow:inset 1px 0 0 rgba(126,200,255,.12)}
+#chat .chead{padding:12px 16px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:center;background:linear-gradient(120deg,rgba(158,219,209,.16),transparent 60%)}
+#chat .chead strong{font:500 14px var(--font-display);color:var(--brand);text-shadow:0 0 14px rgba(158,219,209,.3)}
+#chat select{flex:1;background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--text);padding:6px 8px;font-size:12.5px}
+#chatlog{flex:1;overflow-y:auto;padding:14px 16px;display:flex;flex-direction:column;gap:10px;min-height:0}
+.msg{padding:9px 13px;border-radius:12px;max-width:92%;font-size:13.5px;line-height:1.5}
+.msg.owner{align-self:flex-end;white-space:pre-wrap;background:color-mix(in srgb, var(--accent) 16%, transparent);border:1px solid color-mix(in srgb, var(--accent) 45%, transparent)}
+.msg.ada{align-self:flex-start;white-space:normal;background:color-mix(in srgb, var(--panel) 88%, rgba(126,200,255,.06));border:1px solid color-mix(in srgb, var(--accent) 22%, transparent)}
+.msg.ada p{margin:0 0 8px}.msg.ada p:last-child{margin-bottom:0}
+.msg.ada h1,.msg.ada h2,.msg.ada h3,.msg.ada h4{font:600 14px/1.4 var(--font-body);margin:10px 0 6px}
+.msg.ada ul,.msg.ada ol{margin:0 0 8px;padding-left:20px}
+.msg.ada li{margin:2px 0}
+.msg.ada code{background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:1px 5px;font-size:12px;font-family:ui-monospace,monospace}
+.msg.ada pre{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:10px 12px;overflow-x:auto;margin:0 0 8px;font-size:12px;line-height:1.5}
+.msg.ada pre code{background:none;border:none;padding:0;display:block}
+.msg.ada a{color:var(--accent)}
+.msg.sys{align-self:center;color:var(--dim);font-size:11.5px}
+#thinking{display:none;align-self:flex-start;padding:6px 12px;max-width:92%;flex-direction:column;gap:4px;max-height:170px;overflow-y:auto}
+#thinking .dots span{display:inline-block;width:6px;height:6px;margin-right:4px;background:var(--accent);border-radius:50%;animation:blink 1.2s infinite;box-shadow:0 0 6px var(--accent)}
+#thinking .dots span:nth-child(2){animation-delay:.2s}#thinking .dots span:nth-child(3){animation-delay:.4s}
+#thinking .step{color:var(--dim);font-size:11.5px;font-family:ui-monospace,monospace}
+#chatrow{padding:12px 16px;border-top:1px solid var(--line);display:flex;gap:8px;align-items:center}
+#chatrow input{flex:1;background:var(--bg);border:1px solid var(--line);border-radius:10px;color:var(--text);padding:9px 12px;font-size:13.5px}
+#chatrow input:focus{outline:none;border-color:var(--accent)}
+
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:18px;margin-bottom:16px}
+.card h2{font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--dim);margin-bottom:12px}
+.grid{display:grid;gap:16px}
+.grid.cols-2{grid-template-columns:1fr 1fr}
+.grid.cols-3{grid-template-columns:repeat(3,1fr)}
+
+/* overview sub-tabs */
+.overview-head{display:flex;align-items:center;gap:14px;margin-bottom:16px;flex-wrap:wrap}
+.overview-head .big{font:400 30px var(--font-display);line-height:1}
+.overview-head .big small{font-size:13px;color:var(--dim);display:block;margin-top:4px;font-family:var(--font-body);font-weight:400}
+.subtabs{display:flex;gap:6px;background:var(--panel);border:1px solid var(--line);padding:4px;border-radius:12px}
+.subtab{border:none;background:transparent;color:var(--dim);padding:7px 14px;border-radius:8px;font-size:13px}
+.subtab.on{background:var(--accent);color:var(--bg);font-weight:600}
+.subpanel{display:none}
+.subpanel.on{display:block}
+
+.kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:16px}
+.kpi{background:linear-gradient(160deg,color-mix(in srgb,var(--accent) 12%,var(--card)),var(--card) 55%);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px}
+.kpi .num{font:400 30px var(--font-display);color:var(--text);margin-top:2px}
+.kpi .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--accent)}
+.kpi .delta{font-size:12px;margin-top:6px}
+.delta.up{color:var(--ok)}.delta.down{color:var(--bad)}.delta.flat{color:var(--dim)}
+
+.bars{margin-top:8px}
+.bar{margin-bottom:10px}
+.bar .rowl{display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:4px}
+.bar .rowl span:first-child{color:var(--dim)}
+.bar .track{background:var(--panel);border-radius:6px;height:10px;overflow:hidden}
+.bar .fill{background:linear-gradient(90deg,var(--accent),color-mix(in srgb,var(--accent) 55%,var(--ok)));height:100%;border-radius:6px}
+
+/* recommendation cards */
+.recs{display:grid;gap:12px}
+.rec{border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:12px;padding:14px 16px;background:var(--panel)}
+.rec .rt{display:flex;align-items:center;gap:8px;font-weight:600;font-size:14px}
+.rec .rt .dot{width:8px;height:8px;border-radius:50%;background:var(--accent);flex-shrink:0;box-shadow:0 0 8px var(--accent)}
+.rec .ra{color:var(--text);font-size:13px;margin:8px 0 6px;line-height:1.5}
+.rec .rw{color:var(--dim);font-size:12px}
+.cards-list .item{border-top:1px solid var(--line);padding:10px 0;display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
+.cards-list .item:first-child{border-top:none}
+.muted-lg{font-size:13px}.tight{display:flex;gap:8px;align-items:center;flex-shrink:0}
+
+.task{display:flex;gap:12px;padding:11px 0;border-top:1px solid var(--line);align-items:center}
+.task:first-of-type{border-top:none}
+.task .title{flex:1;min-width:0}
+.task .title .tt{font-weight:600;font-size:13.5px}
+.task .title .ts{font-size:12px;color:var(--dim)}
+.task .btns{display:flex;gap:8px;flex-shrink:0}
+.tag{font-size:10px;text-transform:uppercase;letter-spacing:.08em;padding:2px 8px;border-radius:6px;background:color-mix(in srgb,var(--accent) 14%,var(--panel));color:var(--accent);margin-right:8px}
+
+.chip{display:inline-block;background:var(--panel);border:1px solid var(--line);border-radius:999px;padding:4px 12px;font-size:12px;color:var(--dim);margin:0 6px 6px 0}
+.collapse{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);margin-top:16px}
+.collapse summary{cursor:pointer;padding:12px 18px;font-size:12px;color:var(--dim);list-style:none}
+.collapse summary::before{content:"▸ ";color:var(--dim)}
+.collapse[open] summary::before{content:"▾ "}
+.collapse .inner{padding:0 18px 14px}
+
+#mediaDrop{border:2px dashed var(--line);border-radius:var(--radius);padding:44px 20px;text-align:center;color:var(--dim);cursor:pointer;transition:border-color .15s;margin-bottom:16px}
+#mediaDrop.drag{border-color:var(--accent);color:var(--accent)}
+#mediaImages{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px}
+.thumb{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--panel)}
+.thumb img{width:100%;height:84px;object-fit:cover;display:block}
+.thumb .cap{padding:6px 8px;font-size:11px;color:var(--dim)}
+.thumb .cap button{font-size:10.5px;padding:3px 7px;background:transparent;border:1px solid var(--line)}
+
+#preview{width:100%;height:calc(100vh - 210px);min-height:420px;border:1px solid var(--line);border-radius:var(--radius);background:#fff}
+.reverted{color:var(--dim);font-size:12px;font-style:italic}
+.ok{color:var(--ok)}.bad{color:var(--bad)}
+.repo-notice{display:none;background:color-mix(in srgb,var(--warn) 11%,var(--card));border:1px solid color-mix(in srgb,var(--warn) 55%,var(--line));border-left:4px solid var(--warn);border-radius:12px;padding:13px 15px;margin-bottom:16px;color:var(--text)}
+.repo-notice strong{color:var(--warn)}
+.repo-notice .repo-meta{color:var(--dim);font-size:12px;margin-top:3px}
+.repo-notice .repo-files{display:flex;flex-wrap:wrap;gap:5px;margin:9px 0 10px}
+.repo-notice code{background:var(--panel);border:1px solid var(--line);border-radius:5px;padding:2px 6px;font:11px ui-monospace,monospace;color:var(--text)}
+.repo-notice button{margin-top:2px}
+.build-status{border-left:3px solid var(--accent);background:linear-gradient(120deg,color-mix(in srgb,var(--accent) 10%,var(--card)),var(--card) 60%)}
+.build-status h2{margin-bottom:8px}
+.build-status .build-step{font:12px ui-monospace,monospace;color:var(--dim);padding:2px 0}
+
+/* content editor */
+.cfgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:18px}
+.cfield{display:flex;flex-direction:column;gap:6px}
+.cfield label{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim)}
+.cfield input,.cfield textarea{background:var(--bg);border:1px solid var(--line);border-radius:9px;color:var(--text);padding:9px 11px;font-size:14px;resize:vertical}
+.cfield input:focus,.cfield textarea:focus{outline:none;border-color:var(--accent)}
+.carr{border:1px dashed var(--line);border-radius:10px;padding:10px;margin-bottom:6px}
+.citem{border-bottom:1px solid var(--line);padding-bottom:8px;margin-bottom:8px}
+.citem:last-child{border-bottom:none;padding-bottom:0;margin-bottom:0}
+.cfield textarea{min-height:88px}
+@media(max-width:1100px){#chat{display:none}#body{flex-direction:column}.grid.cols-2,.grid.cols-3{grid-template-columns:1fr}.kpis{grid-template-columns:1fr 1fr}}
+@media(max-width:640px){.kpis{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div id="login">
+  <h1>Ada</h1>
+  <p>Your site's AI webmaster. Sign in to review its work, talk to it, and run the site.</p>
+  <input id="pw" type="password" placeholder="password">
+  <div style="height:12px"></div>
+  <button class="primary" style="width:100%" onclick="login()">Enter</button>
+  <p id="loginerr" class="muted" style="color:var(--bad);margin-top:10px"></p>
+</div>
+
+<div id="app">
+  <header>
+    <div class="brand"><img class="logo" id="logo" src="" alt=""><span id="instance">Dashboard</span></div>
+    <button class="tabbtn on" data-tab="overview" onclick="switchTab('overview')">Overview</button>
+    <button class="tabbtn" data-tab="content" onclick="switchTab('content')">Content</button>
+    <button class="tabbtn" data-tab="design" onclick="switchTab('design')">Design</button>
+    <button class="tabbtn" data-tab="media" onclick="switchTab('media')">Media</button>
+    <span class="spend" id="spend"></span>
+    <button class="quiet" onclick="logout()">Sign out</button>
+  </header>
+
+  <div id="body">
+    <div id="main">
+      <div id="tab-overview">
+        <div class="overview-head">
+          <div class="big" id="headline">Loading…<small>your site, at a glance</small></div>
+          <div class="subtabs">
+            <button class="subtab on" data-sub="report" onclick="switchSub('report')">Report</button>
+            <button class="subtab" data-sub="traffic" onclick="switchSub('traffic')">Traffic</button>
+            <button class="subtab" data-sub="todo" onclick="switchSub('todo')">To-do</button>
+            <button class="subtab" data-sub="ideas" onclick="switchSub('ideas')">Ideas</button>
+          </div>
+        </div>
+        <div class="kpis" id="kpis"></div>
+
+        <div class="subpanel on" id="sub-report">
+          <div class="card"><div id="report" class="md muted">No report yet.</div></div>
+        </div>
+
+        <div class="subpanel" id="sub-traffic">
+          <div class="grid cols-2">
+            <div class="card"><h2>Top pages</h2><div id="toppages" class="bars"><span class="muted small">No data yet.</span></div></div>
+            <div class="card"><h2>Traffic sources</h2><div id="sources" class="bars"><span class="muted small">No data yet.</span></div></div>
+          </div>
+        </div>
+
+        <div class="subpanel" id="sub-todo">
+          <div class="card"><h2>Needs your approval</h2><div id="tasks"><span class="muted small">Nothing pending.</span></div></div>
+        </div>
+
+        <div class="subpanel" id="sub-ideas">
+          <div class="card"><h2>Ada's recommendations</h2><div id="cards" class="recs"><span class="muted small">Nothing yet.</span></div></div>
+        </div>
+
+        <details class="collapse">
+          <summary>System details — schedule, health, publishes, recent activity</summary>
+          <div class="inner">
+            <div class="grid cols-2">
+              <div class="card"><h2>Schedule</h2><div id="jobs"></div></div>
+               <div class="card"><h2>Publish activity</h2><div id="publishes"></div></div>
+              <div class="card"><h2>Health</h2><div id="health" class="muted">—</div></div>
+              <div class="card"><h2>Recent activity</h2><div id="activity" class="muted small"></div></div>
+            </div>
+          </div>
+        </details>
+      </div>
+
+      <div id="tab-content" style="display:none">
+        <div class="overview-head">
+          <div class="big" style="font-size:22px">Website content<small>Edit the copy the site shows — save publishes straight to GitHub.</small></div>
+          <button class="primary" id="contentSave" onclick="saveContent()">Save & publish</button>
+        </div>
+        <div id="contentEditor" class="card"><span class="muted small">Loading content…</span></div>
+        <div id="contentStatus" class="muted small" style="margin-top:8px"></div>
+      </div>
+
+      <div id="tab-design" style="display:none">
+        <div id="designBuildStatus" class="card build-status" style="display:none">
+          <h2>Ada is building</h2>
+          <div id="designBuildSteps"></div>
+        </div>
+        <div style="display:flex;gap:10px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
+          <label class="muted small" for="pageSel">Page</label>
+          <select id="pageSel" onchange="reloadPreview()" style="background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--text);padding:6px 10px;font-size:13px;max-width:220px"></select>
+          <span id="designNote" class="muted small"></span>
+          <button class="quiet" onclick="reloadPreview()">Refresh preview</button>
+          <button id="btnApprove" class="approve" style="display:none" onclick="reviewDecide('approve')">✓ Approve &amp; publish</button>
+         <button id="btnReject" class="decline" style="display:none" onclick="reviewDecide('reject')">✕ Reject</button>
+           <a id="openlive" href="#" target="_blank" class="muted small" style="margin-left:auto">open live ↗</a>
+         </div>
+         <div id="journalSetup" class="card" style="margin-bottom:12px;display:none">
+           <h2 id="journalSetupTitle">Ada's journal</h2>
+           <p id="journalSetupText" class="muted small"></p>
+           <button id="journalReviewBtn" class="quiet" onclick="reviewJournal()" style="display:none;margin-right:8px">Review in Design</button>
+           <button id="journalEnableBtn" class="primary" onclick="enableJournal()">Design the journal pages</button>
+           <span id="journalSetupNote" class="muted small" style="margin-left:8px"></span>
+          </div>
+         <iframe id="preview" title="Staged site preview" sandbox=""></iframe>
+        <div id="historyWrap" class="card" style="margin-top:16px">
+          <h2>Version history</h2>
+          <div id="historyList"><span class="muted small">Loading…</span></div>
+        </div>
+      </div>
+
+      <div id="tab-media" style="display:none">
+        <div class="card">
+          <h2>Upload an image to Cloudflare R2</h2>
+          <p class="muted small" style="margin-bottom:14px">Drop an image here (or click to browse). It lands in your R2 bucket and you get a copy-ready URL to use anywhere on the site. Tell Ada in chat to use it on a page.</p>
+          <div id="mediaDrop">Drop an image here, or click to choose…</div>
+          <input id="mediaFile" type="file" accept="image/*" style="display:none">
+          <div id="mediaStatus" class="muted small"></div>
+        </div>
+        <div class="card">
+          <h2>Existing site images</h2>
+          <p class="muted small" style="margin-bottom:12px">Images already in the site repo — click to copy the path so Ada or you can reuse them.</p>
+          <div id="mediaImages"><span class="muted small">Loading…</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="chat">
+      <div class="chead">
+        <strong>Talk to Ada</strong>
+        <select id="convsel" onchange="pickConversation()"></select>
+         <button class="quiet" id="newconvbtn" onclick="newConversation()" title="New conversation">＋</button>
+      </div>
+      <div id="chatlog"></div>
+      <div id="thinking"><div class="dots"><span></span><span></span><span></span></div><div class="steplist"></div></div>
+      <div id="chatrow">
+        <input id="chatinput" placeholder='Try: "add space under the footer", "what should we post next?"' onkeydown="if(event.key==='Enter')send()">
+        <button class="primary" id="sendbtn" onclick="send()">Send</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const BASE = location.pathname.replace(/\/+$/, '');
+const api = (path, opts={}) => {
+  const controller = new AbortController();
+  const timeout = setTimeout(()=>controller.abort(), 90000);
+  return fetch(BASE + '/api' + path, {headers:{'Content-Type':'application/json'}, ...opts, signal:controller.signal}).then(async r=>{
+  if(r.status===401){showLogin();throw new Error('auth')}
+  const body = await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(body.detail||r.statusText);
+  return body;
+  }).catch(e=>{
+    if(e.name==='AbortError') throw new Error('Request timed out after 90 seconds. The server may still be processing it; refresh before retrying.');
+    throw e;
+  }).finally(()=>clearTimeout(timeout));
+};
+const esc = s => String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmtTime = v => {
+  if(v===null||v===undefined||v==='') return '—';
+  let d;
+  if(typeof v==='number') d = new Date(v*1000);
+  else { let s=String(v).trim(); if(s.includes(' ')&&!s.includes('T')) s=s.replace(' ','T'); if(!/(Z|[+-]\d{2}:?\d{2})$/.test(s)) s+='Z'; d=new Date(s); }
+  return isNaN(d.getTime())?String(v):d.toLocaleString();
+};
+function md(text){
+  let t=esc(text);
+  t=t.replace(/```(\w*)\n?([\s\S]*?)```/g,(m,_l,c)=>`<pre><code>${c.replace(/\n$/,'')}</code></pre>`);
+  t=t.replace(/^### (.*)$/gm,'<h4>$1</h4>').replace(/^## (.*)$/gm,'<h3>$1</h3>').replace(/^# (.*)$/gm,'<h2>$1</h2>');
+  t=t.replace(/`([^`]+)`/g,'<code>$1</code>');
+  t=t.replace(/\*\*([^*]+)\*\*/g,'<strong>$1</strong>');
+  t=t.replace(/(^|[^*\w])\*([^*\n]+)\*(?!\*)/g,'$1<em>$2</em>');
+  t=t.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,'<a href="$2" target="_blank" rel="noopener">$1</a>');
+  t=t.replace(/((?:^[-*] .*(\n|$))+)/gm,m=>'<ul>'+m.split('\n').filter(l=>l.trim()).map(l=>`<li>${l.replace(/^[-*] /,'')}</li>`).join('')+'</ul>');
+  return t.split(/\n{2,}/).map(b=>{const s=b.trim();if(!s)return '';return /^<(h\d|u|o|l|p|b|pre)/.test(s)?s:`<p>${s.replace(/\n/g,'<br>')}</p>`}).join('');
+}
+function bars(items,key){
+  const max=Math.max(1,...items.map(i=>Number(i[key]||0)));
+  return items.slice(0,8).map(i=>`<div class="bar"><div class="rowl"><span>${esc(i.label)}</span><span class="muted">${i[key]??''}</span></div><div class="track"><div class="fill" style="width:${(Number(i[key]||0)/max*100).toFixed(1)}%"></div></div></div>`).join('');
+}
+function deltaCls(v){return v==null?'flat':(v>0?'up':(v<0?'down':'flat'))}
+function sign(v){return v==null?'—':(v>0?'+'+v:v)}
+
+/* ---- button feedback: spinner while working, green "done" flash after ---- */
+let doneTimer=null;
+function spin(btn,label){
+  if(!btn)return;
+  btn.dataset.orig=btn.innerHTML;
+  btn.disabled=true;
+  btn.innerHTML=`<span class="spinny"></span>${label}`;
+}
+function unspin(btn){
+  if(!btn)return;
+  btn.disabled=false;
+  if(btn.dataset.orig)btn.innerHTML=btn.dataset.orig;
+}
+function flashDone(btn){
+  if(!btn)return;
+  clearTimeout(doneTimer);
+  const orig=btn.dataset.orig;
+  btn.classList.add('okdone');
+  btn.innerHTML='✓ '+orig.replace(/<[^>]*>/g,'');
+  doneTimer=setTimeout(()=>{btn.classList.remove('okdone');if(orig)btn.innerHTML=orig},1600);
+}
+
+let convId=null, busy=false, review=null;
+let journalSetupJobId=null, journalSetupDraftId=null, journalLastStatus='';
+let backgroundJobs=new Set(), buildStatusTimer=null;
+
+function switchTab(name){
+  document.querySelectorAll('.tabbtn').forEach(b=>b.classList.toggle('on',b.dataset.tab===name));
+  document.getElementById('tab-overview').style.display=name==='overview'?'':'none';
+  document.getElementById('tab-content').style.display=name==='content'?'':'none';
+  document.getElementById('tab-design').style.display=name==='design'?'':'none';
+  document.getElementById('tab-media').style.display=name==='media'?'':'none';
+  if(name!=='design'){clearInterval(buildStatusTimer);buildStatusTimer=null}
+   if(name==='design'){setDesignButtons();autoReview();loadPages();loadHistory();loadJournal();startBuildStatus()}
+  if(name==='media') loadMedia();
+  if(name==='content') loadContent();
+}
+async function autoReview(){
+  /* Opening Design shows the latest staged draft with approve/reject and the
+     staged build — no To-do detour. */
+  let d;
+  try{d=await api('/drafts')}catch(e){loadPages();reloadPreview();return}
+   const staged=d.drafts.find(x=>x.kind==='edit'||x.kind==='merge'||x.kind==='rollback');
+   if(staged&&(!review||review.draftId!==staged.id)){
+     review={draftId:staged.id};  // pending work is always the latest staged draft
+   }
+   await loadPages();
+   setDesignButtons();reloadPreview();
+}
+function switchSub(name){
+  document.querySelectorAll('.subtab').forEach(b=>b.classList.toggle('on',b.dataset.sub===name));
+  document.querySelectorAll('.subpanel').forEach(p=>p.classList.toggle('on',p.id==='sub-'+name));
+}
+function startBuildStatus(){
+  clearInterval(buildStatusTimer);
+  loadBuildStatus();
+  buildStatusTimer=setInterval(loadBuildStatus,1800);
+}
+async function loadBuildStatus(){
+  const card=document.getElementById('designBuildStatus');
+  const list=document.getElementById('designBuildSteps');
+  if(!card||!list)return;
+  try{
+    const r=await api('/chat/jobs');
+    const job=(r.jobs||[])[0];
+    if(!job){card.style.display='none';list.innerHTML='';return}
+    const steps=(job.steps||[]).slice(-8);
+    card.style.display='block';
+    list.innerHTML=steps.length
+      ? steps.map(s=>`<div class="build-step">· ${esc(s.text||'working')}</div>`).join('')
+      : '<div class="build-step">· starting…</div>';
+  }catch(e){/* chat progress remains available elsewhere */}
+}
+async function boot(){
+  try{const s=await api('/session');if(!s.authenticated)return showLogin()}catch(e){return}
+  document.getElementById('login').style.display='none';
+  document.getElementById('app').style.display='flex';
+  try{await applyTheme()}catch(e){}
+  refresh();
+  try{
+    await loadConversations();
+    const active=await api('/chat/jobs');
+    const job=active.jobs[0];
+    if(job){
+      convId=job.conversation_id;
+      document.getElementById('convsel').value=String(convId);
+      await loadConversation(convId);
+    }
+  }catch(e){}
+}
+async function applyTheme(){
+  const t=await api('/theme');
+  const vars={bg:'--bg',card:'--card',panel:'--panel',line:'--line',text:'--text',dim:'--dim',accent:'--accent',brand:'--brand',ok:'--ok',warn:'--warn',bad:'--bad',radius:'--radius',font_body:'--font-body',font_display:'--font-display'};
+  for(const [k,css] of Object.entries(vars)) if(t[k]) document.documentElement.style.setProperty(css,t[k]);
+  if(t.fonts_url){const l=document.createElement('link');l.rel='stylesheet';l.href=t.fonts_url;document.head.appendChild(l)}
+  if(t.logo){const l=document.getElementById('logo');l.src=t.logo;l.style.display='inline-block'}
+}
+function showLogin(){document.getElementById('login').style.display='';document.getElementById('app').style.display='none'}
+async function login(){
+  const btn=document.querySelector('#login button.primary');
+  spin(btn,'Signing in…');
+  try{await api('/login',{method:'POST',body:JSON.stringify({password:document.getElementById('pw').value})});flashDone(btn);boot()}
+  catch(e){unspin(btn);document.getElementById('loginerr').textContent=e.message}
+}
+async function logout(){await api('/logout',{method:'POST'});location.reload()}
+
+async function refresh(){
+  const [an, report, drafts, status] = await Promise.all([api('/analytics'), api('/report/latest'), api('/drafts'), api('/status')]);
+  window._status = status;
+  document.getElementById('instance').textContent = status.instance;
+  document.getElementById('spend').textContent = `LLM spend 7d: $${status.spend_7d}`;
+  document.getElementById('report').innerHTML = report.report ? md(report.report.body) : 'No report yet.';
+  renderKpis(an.traffic);
+  const pages=(an.traffic.top_pages||[]).map(p=>({label:p.path,views:p.views}));
+  document.getElementById('toppages').innerHTML = pages.length?bars(pages,'views'):'<span class="muted small">No data yet.</span>';
+  const srcs=(an.traffic.sources||[]).map(s=>({label:s.source,sessions:s.sessions}));
+  document.getElementById('sources').innerHTML = srcs.length?bars(srcs,'sessions'):'<span class="muted small">No data yet.</span>';
+  document.getElementById('cards').innerHTML = an.cards.length ? an.cards.map(c=>`
+    <div class="rec">
+      <div class="rt"><span class="dot"></span>${esc(c.title||c.action||'')}</div>
+      ${c.action?`<div class="ra">${esc(c.action)}</div>`:''}
+      ${c.why?`<div class="rw">Why: ${esc(c.why)}</div>`:''}
+    </div>`).join('')
+    : '<span class="muted small">Ada hasn\'t proposed anything yet.</span>';
+  document.getElementById('health').innerHTML = status.health&&status.health.findings&&status.health.findings.length
+    ? '<ul class="findings">'+status.health.findings.map(f=>`<li>${esc(f)}</li>`).join('')+'</ul>'
+    : 'All clear.';
+  document.getElementById('activity').innerHTML = status.recent_actions.map(a=>`<div>● ${esc(a.kind)} — ${esc(a.detail).slice(0,60)} <span class="muted">${fmtTime(a.ts)}</span></div>`).join('')||'Quiet so far.';
+  document.getElementById('jobs').innerHTML = status.upcoming.map(j=>`<div class="job" style="display:flex;justify-content:space-between;padding:3px 0;font-size:13px"><span>${esc(j.job)}</span><span class="muted small">${fmtTime(j.next_run)}</span></div>`).join('');
+  renderDrafts(drafts.drafts);
+  const pubs=await api('/publishes');
+   document.getElementById('publishes').innerHTML = pubs.publishes.length ? pubs.publishes.map(p=>
+     `<div class="job" style="padding:6px 0;border-top:1px solid var(--line);font-size:13px"><span class="tag">${esc(p.version_type||p.path?.split('/').pop()||'site')}</span>${esc(p.summary).slice(0,80)} <span class="muted">${fmtTime(p.ts)}</span></div>`).join('')
+    : '<span class="muted small">Nothing published yet.</span>';
+}
+function renderKpis(t){
+  const cur=t.current_week||{};
+  const d=(t.delta_pct)||{};
+  const kv=(lbl,val,delta)=>{const c=deltaCls(delta);return `<div class="kpi"><div class="lbl">${lbl}</div><div class="num">${Number(val??0).toLocaleString()}</div><div class="delta ${c}">${sign(delta)} vs last week</div></div>`};
+  document.getElementById('kpis').innerHTML =
+    kv('Visitors', cur.sessions??cur.activeUsers??0, d.sessions) +
+    kv('Page views', cur.screenPageViews??0, d.screenPageViews) +
+    kv('Users', cur.totalUsers??cur.activeUsers??0, d.totalUsers);
+  const total=cur.sessions??cur.activeUsers??0;
+  const first=d.sessions!=null?`${sign(d.sessions)} visitors this week`:'traffic is low and steady';
+  document.getElementById('headline').innerHTML=`${Number(total||0).toLocaleString()}<small>${first} — what Ada suggests is in Ideas, what needs your yes is in To-do.</small>`;
+}
+/* ---- content editor ---- */
+let contentData=null;
+function labl(s){return s.replace(/([A-Z])/g,' $1').replace(/^./,c=>c.toUpperCase()).trim()}
+function objField(arr,idx,k,v){
+  return `<div class="cfield" style="margin-top:6px"><label>${esc(labl(k))}</label><input data-arr="${esc(arr)}" data-i="${idx}" data-k="${esc(k)}" value="${esc(v==null?'':(typeof v==='object'?JSON.stringify(v):v))}"></div>`;
+}
+function contentField(key,val){
+  if(Array.isArray(val)){
+    return `<div class="cfield"><label>${esc(labl(key))}</label>${val.map((item,i)=>item&&typeof item==='object'&&!Array.isArray(item)
+      ? `<div class="carr"><div class="citem" data-arr="${esc(key)}" data-i="${i}">${Object.entries(item).map(([k,v])=>objField(key,i,k,v)).join('')}</div></div>`
+      : `<div class="carr"><div class="citem"><input data-arr="${esc(key)}" data-i="${i}" value="${esc(item)}"></div></div>`).join('')}</div>`;
+  }
+  const big=typeof val==='string'&&val.length>70;
+  return `<div class="cfield"><label>${esc(labl(key))}</label>${big?`<textarea data-key="${esc(key)}" rows="4">${esc(val)}</textarea>`:`<input data-key="${esc(key)}" value="${esc(val)}">`}</div>`;
+}
+function renderContent(){
+  const el=document.getElementById('contentEditor');
+  el.innerHTML=`<div class="cfgrid">${Object.entries(contentData||{}).map(([k,v])=>contentField(k,v)).join('')}</div>`;
+  el.querySelectorAll('input[data-key],textarea[data-key]').forEach(e=>e.addEventListener('input',ev=>{contentData[ev.target.dataset.key]=ev.target.value}));
+  el.querySelectorAll('input[data-arr][data-i]').forEach(e=>e.addEventListener('input',ev=>{
+    const arr=contentData[ev.target.dataset.arr],i=+ev.target.dataset.i;
+    if(!Array.isArray(arr))return;
+    const k=ev.target.dataset.k;
+    if(k){if(arr[i]===undefined||arr[i]===null||typeof arr[i]!=='object')arr[i]={};arr[i][k]=ev.target.value}
+    else arr[i]=ev.target.value;
+  }));
+}
+async function loadContent(){
+  try{const r=await api('/content');contentData=r.content;renderContent();document.getElementById('contentStatus').textContent=''}catch(e){document.getElementById('contentStatus').innerHTML=`<span class="bad">${esc(e.message)}</span>`}
+}
+async function saveContent(){
+  const btn=document.getElementById('contentSave');
+  spin(btn,'Publishing…');
+  try{await api('/content',{method:'POST',body:JSON.stringify({content:contentData})});flashDone(btn);document.getElementById('contentStatus').innerHTML='<span class="ok">✓ Saved & published to GitHub.</span>'}
+  catch(e){unspin(btn);document.getElementById('contentStatus').innerHTML=`<span class="bad">${esc(e.message)}</span>`}
+}
+
+function renderDrafts(list){
+  const el=document.getElementById('tasks');
+  if(!list.length){el.innerHTML='<span class="muted small">Nothing pending — you\'re all caught up.</span>';return}
+  el.innerHTML=list.map(d=>`
+    <div class="task">
+      <div class="title"><span class="tag">${esc(d.kind)}</span><span class="tt">${esc(d.title)}</span><div class="ts">${fmtTime(d.created_ts)}</div></div>
+      <div class="btns">
+        ${d.kind==='edit'||d.kind==='merge'||d.kind==='rollback'?`<button class="quiet" onclick="enterReview(${d.id})">Review</button>`:`<button class="quiet" onclick="view(${d.id})">Read</button>`}
+        <button class="approve" onclick="decide(${d.id},'approve')">Approve</button>
+        <button class="decline" onclick="decline(${d.id})">Decline+note</button>
+      </div>
+    </div>`).join('');
+}
+async function decide(id,what){
+  const btn=event&&event.target.closest('button')||null;
+  spin(btn,what==='approve'?'Publishing…':'Working…');
+  try{await api(`/drafts/${id}/${what}`,{method:'POST'});flashDone(btn);refresh()}
+  catch(e){unspin(btn);alert(e.message)}
+}
+async function decline(id){
+  const fb=prompt('Why are you declining this? Ada will read this and learn from it.','');
+  if(fb===null)return;
+  const body=fb.trim()?{feedback:fb.trim()}:{};
+  const btn=event&&event.target.closest('button')||null;
+  spin(btn,'Declining…');
+  try{await api(`/drafts/${id}/decline`,{method:'POST',body:JSON.stringify(body)});flashDone(btn);addMsg('sys',fb.trim()?'✕ declined — Ada has your feedback':'✕ declined');refresh()}
+  catch(e){unspin(btn);alert(e.message)}
+}
+async function view(id){const d=await api(`/drafts/${id}`);const w=window.open('','_blank','width=760,height=820');w.document.write(`<title>${esc(d.title)}</title><body style="font-family:Georgia,serif;max-width:660px;margin:40px auto;line-height:1.6">${md(d.body)}</body>`)}
+/* ---- design preview / review ---- */
+function setDesignButtons(){
+  const a=document.getElementById('btnApprove'),r=document.getElementById('btnReject');
+  const note=document.getElementById('designNote');
+  if(!review){a.style.display='none';r.style.display='none';note.textContent='Review a staged change from To-do, or ask Ada in chat to design something.';return}
+  if(review.decided){
+    a.style.display='none';r.style.display='none';
+    note.textContent=review.decided==='approve'
+      ?'✓ Approved — the site is rebuilding (~1 min). This preview shows the merged result; tap “open live ↗” to check production.'
+      :'✕ Rejected — Ada has your note. The preview branch is rolled back, so this shows the live site again.';
+    return}
+  a.style.display='';r.style.display='';
+  note.textContent='Staged build — exactly what Ada changed on the preview branch. Approve to publish, or Reject with a note for Ada.';
+}
+function enterReview(draftId){
+   review={draftId};
+   setDesignButtons();switchTab('design');loadPages();loadHistory();reloadPreview();
+}
+function exitReview(){review=null;setDesignButtons()}
+function reviewJournal(){
+  if(journalSetupDraftId){enterReview(journalSetupDraftId);return}
+  switchTab('design');
+}
+async function reviewDecide(kind){
+  if(!review)return;
+  let body={};
+  if(kind==='reject'){const fb=prompt('Why reject this work? Ada will read this and learn.','');if(fb===null)return;body.feedback=fb.trim()}
+  const btn=kind==='approve'?document.getElementById('btnApprove'):document.getElementById('btnReject');
+  spin(btn,kind==='approve'?'Publishing…':'Rejecting…');
+  try{
+    const res=await api(`/drafts/${review.draftId}/${kind==='reject'?'decline':'approve'}`,{method:'POST',body:body.feedback!==undefined?JSON.stringify({feedback:body.feedback}):undefined});
+    flashDone(btn);
+    review.decided=kind==='approve'?'approve':'reject';
+    addMsg('sys',kind==='approve'?'✓ approved — the site is rebuilding, preview stays on the merged result':'✕ rejected — Ada has your note');
+    if(kind==='reject'&&res.reset&&res.reset.reset){
+      addMsg('sys','↩ preview branch rolled back to the live site');
+    }
+    setDesignButtons();loadPages();loadHistory();refresh();reloadPreview();
+  }catch(e){unspin(btn);addMsg('ada','⚠ '+e.message)}
+}
+async function loadJournal(){
+  const card=document.getElementById('journalSetup'),note=document.getElementById('journalSetupNote'),text=document.getElementById('journalSetupText'),reviewBtn=document.getElementById('journalReviewBtn');
+  if(!card)return;
+  try{
+    const j=await api('/journal');
+     if(!j.pelican){card.style.display='none';return}
+     card.style.display='';
+     journalSetupJobId=j.setup_job_id;
+     journalSetupDraftId=j.setup_draft_id;
+     const statusChanged=j.setup_status!==journalLastStatus;
+     journalLastStatus=j.setup_status;
+     const designVisible=document.getElementById('tab-design').style.display!=='none';
+     if((j.setup_status==='queued'||j.setup_status==='running')&&j.setup_job_id)watchBackgroundJob(j.setup_job_id);
+     if(j.setup_status==='done'&&j.setup_draft_id&&j.setup_draft_status==='pending'&&designVisible&&(!review||review.draftId!==j.setup_draft_id)){
+       enterReview(j.setup_draft_id);
+     }
+     if(j.setup_status==='done'&&statusChanged){
+       try{await refresh()}catch(e){/* the Design tab still has the review state */}
+     }
+     const btn=document.getElementById('journalEnableBtn');
+    if(j.enabled){
+      if(text)text.textContent=j.setup_status==='running'||j.setup_status==='queued'
+        ?'Weekly journaling is active. Ada is preparing the journal design preview; nothing is published until you approve it.'+(j.setup_step?' Last update: '+j.setup_step+'.':'')
+        :j.setup_status==='failed'
+          ?(j.setup_error||'Ada could not create the journal design preview.')
+          :j.setup_status==='done'
+            ?'Ada has prepared the journal design preview. Review it in Design before publishing.'
+            :'Weekly journaling is active, but the journal design has not been prepared yet.';
+       if(reviewBtn){
+         reviewBtn.style.display=j.setup_status==='done'&&j.setup_draft_id&&j.setup_draft_status==='pending'?'inline-block':'none';
+       }
+      if(btn)btn.style.display=(j.setup_status==='queued'||j.setup_status==='running'||j.setup_status==='done')?'none':'';
+      if(note)note.textContent=j.setup_status==='failed'?'Retry the journal design setup.':j.setup_status==='done'?'Preview ready in Design.':j.setup_status==='queued'||j.setup_status==='running'?'Setup in progress.':'Design the journal before Ada publishes weekly articles.';
+    }else{
+      if(text)text.textContent='Enable Ada’s weekly journal and she will prepare the article listing and article pages to match this website.';
+       if(reviewBtn)reviewBtn.style.display='none';
+      if(btn)btn.style.display='';
+      if(note)note.textContent='';
+    }
+  }catch(e){card.style.display='none'}
+}
+async function enableJournal(){
+  const btn=event&&event.target.closest('button')||null;
+  spin(btn,'Preparing…');
+  try{
+    const r=await api('/journal/enable',{method:'POST'});
+    flashDone(btn);
+     addMsg('sys','Ada is setting up the journal. Review the design preview when it is ready.');
+     if(r.conversation_id)convId=r.conversation_id;
+     journalSetupJobId=r.job_id;
+     watchBackgroundJob(r.job_id);
+     loadJournal();
+  }catch(e){unspin(btn);alert(e.message)}
+}
+setInterval(()=>{if(document.getElementById('journalSetup'))loadJournal()},5000);
+function currentPage(){
+  const sel=document.getElementById('pageSel');
+  return sel&&sel.value?sel.value:'index.html';
+}
+function reloadPreview(){
+  const f=document.getElementById('preview');
+  const page=currentPage();
+  let url;
+   const encodedPage=String(page).split('/').map(encodeURIComponent).join('/');
+   if(review) url=BASE+`/api/review/${review.draftId}/${encodedPage}`;
+   else url=BASE+'/api/preview/'+encodedPage;
+  f.src=url+'?t='+Date.now();
+  const live=window._status&&(window._status.preview_url||'')||'#';
+  document.getElementById('openlive').href=live;
+  document.getElementById('openlive').textContent=live!=='#'?'open live ↗':'';
+}
+async function loadPages(){
+  const sel=document.getElementById('pageSel');
+  if(!sel)return;
+  const previous=sel.value||'index.html';
+  try{
+    const q=review?`?draft_id=${review.draftId}`:'';
+    const r=await api('/pages'+q);
+    const pages=r.pages||[];
+    if(!pages.length){sel.innerHTML='<option value="">(no pages)</option>';return}
+    sel.innerHTML=pages.map(p=>{
+      const isNew=(r.new_pages||[]).includes(p);
+      return `<option value="${esc(p)}">${esc(p.replace(/\.[^.]+$/,'')||'index')}${isNew?' · new':''}</option>`;
+    }).join('');
+    // keep the previous selection if still available, else prefer a new page / index
+     const pick=(review&&r.new_pages&&r.new_pages[0])|| (pages.includes(previous)?previous:'index.html');
+    sel.value=pick;
+  }catch(e){/* keep whatever was there */}
+}
+const _HIST_BADGE={approved:['✓','ok'],declined:['✕','bad'],discarded:['·','muted'],pending:['…','warn']};
+async function loadHistory(){
+  const el=document.getElementById('historyList');
+  if(!el)return;
+  try{
+    let h;
+    try{h=await api('/versions')}
+    catch(e){
+      /* Older workers can still serve the publish ledger while restarting. */
+      if(!/Not Found|404/i.test(e.message))throw e;
+      const legacy=await api('/publishes');
+      h={versions:(legacy.publishes||[]).filter(v=>v.commit_sha).map((v,i)=>({
+        id:v.id, summary:v.summary, published_ts:v.ts, actor:v.actor||'ada',
+        version_type:v.version_type||'edit', current:i===0, can_restore:false,
+      }))};
+    }
+    const rows=h.versions||[];
+    if(!rows.length){el.innerHTML='<span class="muted small">No published versions yet.</span>';return}
+    el.innerHTML=rows.map(v=>`<div class="job" style="display:flex;justify-content:space-between;gap:10px;padding:9px 0;border-top:1px solid var(--line);font-size:13px;align-items:center">
+      <div><strong>${esc(v.current?'Live now':v.summary)}</strong><div class="muted small">${v.current?'Current production · ':''}${fmtTime(v.published_ts)} · ${esc(v.actor==='owner'?'You':v.actor)}</div></div>
+      ${v.current?'':v.can_restore===false?'':'<button class="quiet" onclick="restoreVersion('+v.id+')">Restore this version</button>'}</div>`).join('');
+  }catch(e){el.innerHTML=`<span class="bad">could not load history: ${esc(e.message)}</span>`}
+}
+async function restoreVersion(id){
+  if(!confirm('Prepare a preview restoring this version? Your live website will not change until you approve it.'))return;
+  try{
+    const r=await api(`/versions/${id}/restore`,{method:'POST'});
+    addMsg('sys','A restore preview is ready in Design. Review it before publishing.');
+    enterReview(r.draft_id);
+  }catch(e){alert(e.message)}
+}
+
+/* ---- media ---- */
+const drop=document.getElementById('mediaDrop'),file=document.getElementById('mediaFile'),mstat=document.getElementById('mediaStatus');
+drop.addEventListener('click',()=>file.click());
+drop.addEventListener('dragover',e=>{e.preventDefault();drop.classList.add('drag')});
+drop.addEventListener('dragleave',()=>drop.classList.remove('drag'));
+drop.addEventListener('drop',e=>{e.preventDefault();drop.classList.remove('drag');if(e.dataTransfer.files[0])uploadFile(e.dataTransfer.files[0])});
+file.addEventListener('change',e=>{if(e.target.files[0])uploadFile(e.target.files[0])});
+async function uploadFile(f){
+  if(!/image\//.test(f.type)){mstat.innerHTML='<span class="bad">Please choose an image file.</span>';return}
+  mstat.textContent='Uploading '+f.name+'…';
+  const b64=await new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(String(r.result).split(',')[1]);r.onerror=rej;r.readAsDataURL(f)});
+  try{
+    const r=await api('/media/upload',{method:'POST',body:JSON.stringify({name:f.name,data:b64})});
+    mstat.innerHTML=`<span class="ok">✓ uploaded</span> — <code style="font-size:11px">${esc(r.url)}</code> <button class="quiet" onclick="copyText('${esc(r.url)}')">copy</button><div class="muted small" style="margin-top:4px">Tell Ada in chat: "${esc('use this image: '+r.url)}"</div>`;
+  }catch(e){mstat.innerHTML='<span class="bad">'+esc(e.message)+'</span>'}
+}
+function copyText(t){navigator.clipboard.writeText(t).then(()=>addMsg('sys','copied to clipboard'))}
+async function loadMedia(){
+  try{
+    const r=await api('/media');
+    const el=document.getElementById('mediaImages');
+    el.innerHTML=r.images.length
+      ? r.images.map(p=>`<div class="chip" style="cursor:pointer" title="click to copy path" onclick="copyText('${esc(p)}')">${esc(p)}</div>`).join('')
+      : '<span class="muted small">No images found in the site repo.</span>';
+  }catch(e){document.getElementById('mediaImages').innerHTML='<span class="muted small">Could not list images.</span>'}
+}
+
+/* ---- conversations + chat ---- */
+async function loadConversations(){
+  const cs=await api('/conversations');
+  const sel=document.getElementById('convsel');
+  sel.innerHTML='<option value="">— new —</option>'+cs.conversations.map(c=>`<option value="${c.id}">${esc((c.title||'').slice(0,42))}</option>`).join('');
+  if(convId)sel.value=String(convId);
+  return cs.conversations;
+}
+async function pickConversation(){
+  if(busy)return;
+  const sel=document.getElementById('convsel');
+  convId=sel.value?parseInt(sel.value):null;
+  chatViewToken++;
+  document.getElementById('chatlog').innerHTML='';
+  if(convId){
+    await loadConversation(convId,chatViewToken);
+  }
+}
+async function loadConversation(cid,token=chatViewToken){
+  const c=await api(`/conversations/${cid}`);
+  if(token!==chatViewToken||convId!==cid)return;
+  document.getElementById('chatlog').innerHTML='';
+  c.messages.forEach(m=>addMsg(m.role==='user'?'owner':'ada',m.text));
+  const latest=c.jobs&&c.jobs[0];
+  if(latest&&latest.status==='error')addJobError(latest);
+  await resumeActiveJob(cid,token);
+}
+function newConversation(){
+  if(busy)return;
+  chatViewToken++;
+  convId=null;currentJob=null;document.getElementById('convsel').value='';
+  document.getElementById('chatlog').innerHTML='';document.getElementById('chatinput').focus()
+}
+/* Re-attach to a job that kept running while the browser was closed. The work
+   is persisted in the DB, so the admin process can continue it independently. */
+async function resumeActiveJob(cid,token=chatViewToken){
+  if(busy||currentJob)return;
+  let list;
+  try{list=await api(`/chat/jobs?conversation_id=${cid}`)}catch(e){return}
+  if(token!==chatViewToken||convId!==cid)return;
+  const act=list.jobs[0];
+  if(!act)return;
+  addMsg('sys',act.status==='queued'?'↻ This task is queued — resuming live progress.':'↻ This task is still running in the background — resuming live progress.');
+  busy=true;setBusy(true);currentJob=act.id;
+  try{await pollJob(act.id,true,token)}
+  catch(e){addMsg('ada','⚠ '+e.message)}
+  finally{if(token===chatViewToken){busy=false;setBusy(false);currentJob=null}}
+}
+function addMsg(who,text){
+  const log=document.getElementById('chatlog');
+  const div=document.createElement('div');
+  div.className='msg '+who;
+  if(who==='ada'){div.innerHTML=md(text)}
+  else{div.textContent=text}
+  log.appendChild(div);scrollChat()
+}
+function addJobError(job){
+  addMsg('ada','⚠ '+(job.error||'This task was interrupted.'));
+  const log=document.getElementById('chatlog');
+  const wrap=document.createElement('div');wrap.className='msg sys';
+  const btn=document.createElement('button');btn.className='quiet';btn.textContent='Retry task';
+  btn.onclick=()=>retryJob(job.id);wrap.appendChild(btn);log.appendChild(wrap);scrollChat()
+}
+function addBackgroundJob(jobId){
+  addMsg('sys','Ada is still working in the background. The chat is available.');
+  watchBackgroundJob(jobId);
+}
+function watchBackgroundJob(jobId){
+  const key=String(jobId);
+  if(backgroundJobs.has(key))return;
+  backgroundJobs.add(key);
+  (async()=>{
+    let fails=0;
+    try{
+      while(true){
+        let j;
+        try{j=await api(`/chat/jobs/${jobId}`);fails=0}
+        catch(e){
+          if(++fails>=6){
+            if(!busy)addMsg('sys','Background progress is temporarily unavailable; reload to resume it.');
+            return;
+          }
+          await new Promise(r=>setTimeout(r,1500));continue;
+         }
+         if(j.status==='done'){
+           const r=j.result||{};
+           const sameConversation=String(j.conversation_id)===String(convId);
+           const isJournalJob=String(jobId)===String(journalSetupJobId);
+           const reviewId=r.merge_draft_id||r.proposal_id;
+           if(isJournalJob){
+             journalLastStatus='done';
+             journalSetupDraftId=r.merge_draft_id||null;
+           }
+           if(sameConversation){
+             addMsg('ada',r.reply||'Ada finished working.');
+           }
+           if(reviewId&&(sameConversation||(isJournalJob&&document.getElementById('tab-design').style.display!=='none'))){
+             journalSetupDraftId=isJournalJob?reviewId:journalSetupDraftId;
+             enterReview(reviewId);
+           }
+           try{await refresh()}catch(e){}
+           return;
+        }
+        if(j.status==='error'){
+          if(String(j.conversation_id)===String(convId))addJobError(j);
+          return;
+        }
+        await new Promise(r=>setTimeout(r,1500));
+      }
+    }finally{backgroundJobs.delete(key)}
+  })();
+}
+async function retryJob(jobId){
+  if(busy)return;
+  try{await api(`/chat/jobs/${jobId}/retry`,{method:'POST'});await loadConversation(convId)}
+  catch(e){addMsg('ada','⚠ '+e.message)}
+}
+function scrollChat(){const log=document.getElementById('chatlog');log.scrollTop=log.scrollHeight}
+function setBusy(b){
+  const s=document.getElementById('sendbtn');
+  s.disabled=b;
+  document.getElementById('convsel').disabled=b;
+  document.getElementById('newconvbtn').disabled=b;
+  document.getElementById('chatinput').disabled=b;
+  if(b){s.dataset.orig=s.innerHTML;s.innerHTML='<span class="spinny"></span>Thinking…'}
+  else if(s.dataset.orig)s.innerHTML=s.dataset.orig;
+}
+async function send(){
+  const input=document.getElementById('chatinput');
+  const text=input.value.trim();if(!text||busy)return;
+  input.value='';busy=true;setBusy(true);addMsg('owner',text);
+  try{
+    if(!convId){const c=await api('/conversations',{method:'POST',body:JSON.stringify({title:text.slice(0,60)})});convId=c.id;loadConversations()}
+    const start=await api('/chat',{method:'POST',body:JSON.stringify({message:text,conversation_id:convId})});
+    currentJob=start.job_id;
+    await pollJob(start.job_id);
+  }catch(e){addMsg('ada','⚠ '+e.message)}
+  finally{busy=false;setBusy(false);currentJob=null}
+}
+let seenSteps=0, currentJob=null, chatViewToken=0;
+const MAX_INTERACTIVE_WAIT_MS=120000;
+async function pollJob(jobId, resume=false, token=chatViewToken){
+  const t=document.getElementById('thinking'),list=t.querySelector('.steplist');
+  if(token!==chatViewToken)return;
+  if(resume){t.style.display='none';list.innerHTML='';seenSteps=0}
+  else{seenSteps=0}
+  let fails=0,startedAt=Date.now();
+  while(true){
+    if(token!==chatViewToken)return;
+    let j;
+    try{
+      j=await api(`/chat/jobs/${jobId}`);
+      fails=0;
+    }catch(e){
+      // Transient network/proxy blip on a 1.2s poll must not kill a running
+      // build. Retry for a few seconds; only give up on sustained failure.
+      if(++fails>=6) throw e;
+      await new Promise(r=>setTimeout(r,1500));
+      continue;
+    }
+    if(token!==chatViewToken)return;
+    const steps=Array.isArray(j.steps)?j.steps:[];
+    steps.slice(seenSteps).forEach(st=>{t.style.display='flex';const line=document.createElement('div');line.className='step';line.textContent='· '+st.text;list.appendChild(line);while(list.children.length>7)list.removeChild(list.firstChild);scrollChat()});
+    seenSteps=steps.length;
+    if(j.status==='done'){
+      t.style.display='none';list.innerHTML='';
+      const r=j.result;
+      addMsg('ada',r.reply);
+      const reviewId = r.merge_draft_id || r.proposal_id;
+      if(reviewId)enterReview(reviewId);
+      refresh();
+      return;
+    }
+    if(j.status==='error'){
+      t.style.display='none';list.innerHTML='';
+      addJobError(j);return;
+    }
+    if(Date.now()-startedAt>=MAX_INTERACTIVE_WAIT_MS){
+      t.style.display='none';list.innerHTML='';addBackgroundJob(jobId);return;
+    }
+    await new Promise(r=>setTimeout(r,1200));
+  }
+}
+
+(async()=>{try{const s=await api('/session');s.authenticated?boot():showLogin()}catch(e){showLogin()}})();
+</script>
+</body>
+</html>

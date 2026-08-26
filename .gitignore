@@ -1,0 +1,16 @@
+.env
+data/
+__pycache__/
+*.egg-info/
+.venv/
+.pytest_cache/
+build/
+dist/
+.coverage
+coverage.xml
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.openchamber/
+.agent-home/
+.opencode/
