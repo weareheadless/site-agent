@@ -388,26 +388,23 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
         name = file_path.lstrip("/")
         if not name:
             name = "index.html"
-        proc = subprocess.run(
-            ["git", "-C", str(clone), "show", f"origin/main:{name}"],
+        published_ref = "origin/main"
+        ref_check = subprocess.run(
+            ["git", "-C", str(clone), "rev-parse", "--verify", published_ref],
             capture_output=True, timeout=30,
         )
-        if proc.returncode != 0:
-            proc = subprocess.run(
-                ["git", "-C", str(clone), "show", f"main:{name}"],
-                capture_output=True, timeout=30,
-            )
+        if ref_check.returncode != 0:
+            published_ref = "main"
+        proc = subprocess.run(
+            ["git", "-C", str(clone), "show", f"{published_ref}:{name}"],
+            capture_output=True, timeout=30,
+        )
         if proc.returncode != 0 and "." not in Path(name).name:
             proc = subprocess.run(
-                ["git", "-C", str(clone), "show", "origin/main:index.html"],
+                ["git", "-C", str(clone), "show", f"{published_ref}:index.html"],
                 capture_output=True, timeout=30,
             )
             name = "index.html"
-            if proc.returncode != 0:
-                proc = subprocess.run(
-                    ["git", "-C", str(clone), "show", "main:index.html"],
-                    capture_output=True, timeout=30,
-                )
         if proc.returncode != 0:
             raise HTTPException(status_code=404, detail=f"{name} not on main")
         mt = mimetypes.guess_type(name)[0] or "application/octet-stream"

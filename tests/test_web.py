@@ -297,7 +297,7 @@ def test_design_ui_uses_internal_review_state(runtime):
     assert "journal_preview_url" not in html
     assert "renderPreviewLink" not in html
     assert "id=\"previewlink\"" not in html
-    assert 'id="preview" title="Staged site preview" sandbox=""' in html
+    assert 'id="preview" title="Staged site preview" sandbox="allow-same-origin"' in html
     assert "enterReview(j.setup_draft_id)" in html
     assert "watchBackgroundJob(r.job_id)" in html
 
@@ -355,6 +355,50 @@ def test_review_endpoint_serves_preview_branch(tmp_path, monkeypatch):
     assert r.status_code == 200
     body = r.text
     assert "new staged" in body and "old" not in body
+    mem.close()
+
+
+def test_published_preview_does_not_fall_back_to_stale_local_main(tmp_path):
+    """A present origin/main ref must win over an older local main branch."""
+    import subprocess
+
+    clone = tmp_path / "siterepo"
+    clone.mkdir()
+    run = lambda *args: subprocess.run(["git", "-C", str(clone), *args], check=True, capture_output=True)
+    run("init", "-q", "-b", "main")
+    run("config", "user.email", "t@t")
+    run("config", "user.name", "t")
+    (clone / "index.html").write_text("<html>published</html>")
+    (clone / "articles.html").write_text("<html>stale local page</html>")
+    run("add", "-A")
+    run("commit", "-qm", "local main")
+    run("switch", "-q", "-c", "remote-main")
+    (clone / "articles.html").unlink()
+    run("add", "-A")
+    run("commit", "-qm", "published ref")
+    published_sha = subprocess.check_output(
+        ["git", "-C", str(clone), "rev-parse", "HEAD"], text=True
+    ).strip()
+    run("switch", "-q", "main")
+    run("update-ref", "refs/remotes/origin/main", published_sha)
+
+    mem = Memory(tmp_path / "memory.db")
+    config = {
+        "env": {"admin_password": "SITE_AGENT_ADMIN_PASSWORD", "github_token": "GITHUB_TOKEN"},
+        "site": {
+            "adapter": "github_static",
+            "repository": "acme/site",
+            "content_path": "content.json",
+            "clone_path": str(clone),
+        },
+        "admin": {},
+    }
+    env = {"SITE_AGENT_ADMIN_PASSWORD": "sekret"}
+    app = create_app({"config": config, "memory": mem, "llm": None, "scheduler": None}, env=env)
+    with TestClient(app, base_url="https://testserver") as client:
+        _login(client)
+        response = client.get("/api/preview/articles.html")
+        assert response.status_code == 404
     mem.close()
 
 

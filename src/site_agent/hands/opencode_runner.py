@@ -143,8 +143,9 @@ def _origin_url(repo: str) -> str:
 
 def worktree_status(config: dict[str, Any]) -> dict[str, Any]:
     """Return the operator-visible state of the persistent site clone."""
-    clone = Path(str((config.get("site") or {}).get("clone_path", "")).strip())
-    if not clone.exists() or not (clone / ".git").exists():
+    clone_value = str((config.get("site") or {}).get("clone_path", "")).strip()
+    clone = Path(clone_value)
+    if not clone_value or not clone.exists() or not (clone / ".git").exists():
         return {"available": False, "dirty": False, "path": str(clone), "files": [],
                 "error": "site clone is not configured or does not exist"}
     try:
