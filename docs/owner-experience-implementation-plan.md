@@ -625,14 +625,14 @@ Acceptance criteria:
 
 ### Phase 8: Bright Minimal Ada Shell
 
-- [ ] Separate Ada's neutral UI tokens from the customer brand theme.
-- [ ] Use customer color only for the accent, focus, and meaningful status.
+- [x] Separate Ada's neutral UI tokens from the customer brand theme.
+- [x] Use customer color only for the accent, focus, and meaningful status.
 - [x] Adopt a bright off-white surface, graphite text, and restrained dividers.
 - [x] Reduce decorative cards and gradients.
 - [x] Rename navigation to `Home`, `Website`, `Review`, `Photos`, and
       `More details`.
 - [x] Build a two-row desktop chat header with a full-width conversation
-       selector and compact `New chat` / `More` controls.
+      selector and compact `New chat` / `More` controls.
 - [x] Put Archive and Delete permanently in the selected conversation menu.
 - [x] Ensure flex and grid children use safe shrinking and never overflow.
 - [x] Replace the current mobile behavior that hides chat with an accessible
@@ -651,10 +651,10 @@ Acceptance criteria:
 ### Phase 9: Capability Readiness
 
 - [x] Add an explicit capability registry at runtime composition, limited to
-       known narrow providers.
+      known narrow providers.
 - [x] Add capability availability and effect classification.
 - [x] Add fake-provider contract tests for one read provider, one proposal
-       provider, and one external mutation provider.
+      provider, and one external mutation provider.
 - [x] Add idempotency enforcement for external mutations.
 - [x] Add provider timeout, result-size, and safe-error translation tests.
 - [x] Ensure disconnected providers preserve prepared artifacts and actions.
@@ -671,20 +671,20 @@ Acceptance criteria:
 
 ### Phase 10: Verification And Rollout
 
-- [ ] Run focused service, migration, action, approval, conversation, preview,
+- [x] Run focused service, migration, action, approval, conversation, preview,
       and provider contract tests.
-- [ ] Run `.venv/bin/pytest -q`.
-- [ ] Run `.venv/bin/python -m compileall -q src`.
-- [ ] Run `.venv/bin/python -m build --wheel --outdir /tmp/site-agent-wheel`.
-- [ ] Run `git diff --check`.
+- [x] Run `.venv/bin/pytest -q`.
+- [x] Run `.venv/bin/python -m compileall -q src`.
+- [x] Run `.venv/bin/python -m build --wheel --outdir /tmp/site-agent-wheel`.
+- [x] Run `git diff --check`.
 - [ ] Verify no credential, database, cache, worktree, screenshot, or generated
       OpenCode configuration is tracked.
 - [ ] Restart the OceanicVibes admin process with the instance environment.
 - [ ] Verify Home, focused actions, Review, versions, conversations, and
       `More details` through `/ada/`.
 - [ ] Verify every iframe CSS/image request keeps the `/ada` mount behavior.
-- [ ] Verify no production mutation occurs during preview or before approval.
-- [ ] Verify a provider failure is visible, retryable, and non-destructive.
+- [x] Verify no production mutation occurs during preview or before approval.
+- [x] Verify a provider failure is visible, retryable, and non-destructive.
 - [ ] Record rollout date, schema version, test count, and live smoke results.
 
 ## Verification Matrix
