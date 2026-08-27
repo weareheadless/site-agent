@@ -10,7 +10,7 @@ persona:
   audience: ""
   directions: [] # extra basic directions this site adds to her core ones
   taboo: []
-  lures: []
+  lures: []       # legacy location; prefer dream.lures
 
 schedule:
   digest: {every: daily, at: "09:00"}
@@ -20,6 +20,7 @@ schedule:
   reflect: {every: monthly}
   inner_voice: {every: 2, at: "14:00"}
   dream: {every: 7, weekday: sunday, at: "05:00"}
+  integrate_self: {every: 2, at: "20:00"}
   compact: {every: 7, weekday: sunday, at: "04:00"}
   health_check: {every: daily, at: "12:00"}
   seo_snapshot: {every: daily, at: "11:30"}
@@ -94,6 +95,14 @@ llm:
   price_per_mtok:
     input: 0.15
     output: 0.60
+
+self_model:
+  enabled: true
+
+dream:
+  enabled: true
+  residue_count: 0   # external reading is opt-in for private dreams
+  lures: []   # optional associative interference; empty means no lure
 
 vision:
   enabled: false

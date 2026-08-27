@@ -159,6 +159,23 @@ header .spend{margin-right:auto;color:var(--dim);font-size:12.5px}
 .home-state strong{display:block;font-size:14px;font-weight:600;margin-top:3px}
 .home-state p{font-size:12px;line-height:1.45;margin-top:3px}
 .home-section{padding:20px 21px;background:var(--card);border:1px solid var(--line);border-radius:15px;margin-bottom:16px}
+.inner-life-bar{display:grid;grid-template-columns:minmax(150px,.55fr) minmax(0,1.45fr) auto;align-items:center;gap:15px;padding:13px 14px;margin-bottom:16px;background:var(--card);border:1px solid var(--line);border-left:3px solid var(--brand);border-radius:7px;color:var(--text);box-shadow:0 8px 20px rgba(19,42,40,.05)}
+.inner-life-bar-status{display:flex;align-items:center;gap:9px;min-width:0}
+.inner-life-bar-status .pulse{width:7px;height:7px;flex:0 0 auto;border-radius:50%;background:var(--brand);box-shadow:0 0 0 4px color-mix(in srgb,var(--brand) 15%,transparent),0 0 10px var(--brand)}
+.inner-life-bar-label{display:block;color:var(--brand);font:500 8px/1.2 var(--font-mono,ui-monospace,monospace);letter-spacing:.11em;text-transform:uppercase;white-space:nowrap}
+.inner-life-bar-status strong{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:600;margin-top:3px}
+.home-mood{border:1px solid var(--line);border-radius:999px;color:var(--dim);font:500 9px var(--font-mono,ui-monospace,monospace);letter-spacing:.03em;padding:5px 8px;white-space:nowrap}
+.inner-life-feed{display:grid;grid-template-columns:1fr;gap:0;min-width:0}
+.inner-life-signal{display:grid;grid-template-columns:58px minmax(0,1fr);gap:8px;align-items:baseline;min-width:0;min-height:29px;padding:5px 0;border-top:1px solid var(--line)}
+.inner-life-signal:first-child{border-top:none}
+.inner-life-kicker{color:var(--dim);font:500 8px/1.2 var(--font-mono,ui-monospace,monospace);letter-spacing:.1em;text-transform:uppercase;white-space:nowrap}
+.inner-life-signal:first-child .inner-life-kicker{color:var(--brand)}
+.inner-life-signal-copy{display:block;min-width:0;overflow:hidden}
+.inner-life-copy{display:block;overflow:hidden;color:var(--text);font-size:11.5px;line-height:1.3;max-height:3.9em;white-space:normal;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3}
+.inner-life-copy.is-empty{color:var(--dim)}
+.inner-life-meta{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim);font:400 8px/1.3 var(--font-mono,ui-monospace,monospace);margin-top:2px}
+.inner-life-copy.rolling{animation:signalIn .45s ease}
+@keyframes signalIn{from{opacity:.15;transform:translateY(3px)}to{opacity:1;transform:translateY(0)}}
 .home-section.required{border-color:color-mix(in srgb,var(--warn) 38%,var(--line))}
 .home-section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:12px}
 .home-section-head h2{font:500 21px/1.2 var(--font-display);letter-spacing:-.01em;margin-top:4px}
@@ -222,6 +239,7 @@ header .spend{margin-right:auto;color:var(--dim);font-size:12.5px}
 button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-visible,summary:focus-visible{outline:3px solid color-mix(in srgb,var(--accent) 45%,transparent);outline-offset:3px}
 #login input:focus-visible,.cfield input:focus-visible,.cfield textarea:focus-visible{outline:3px solid color-mix(in srgb,var(--accent) 45%,transparent);outline-offset:3px}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
+@media(max-width:640px){.inner-life-bar{grid-template-columns:minmax(0,1fr) auto;gap:9px;padding:10px}.inner-life-feed{grid-column:1/-1;grid-template-columns:1fr;gap:0}.inner-life-signal,.inner-life-signal:first-child{grid-template-columns:58px minmax(0,1fr);border-left:none;padding-left:0}.inner-life-signal-copy{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:7px;align-items:baseline}.inner-life-meta{margin-top:0;max-width:95px}}
 </style>
 </head>
 <body>
@@ -259,6 +277,21 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible,te
               <span class="pulse"></span>
               <div><span class="home-eyebrow">Right now</span><strong id="homeStateTitle">Getting oriented</strong><p id="homeStateSummary">Ada is checking the latest site activity.</p></div>
             </div>
+          </section>
+
+          <section class="inner-life-bar" aria-labelledby="homeInnerLifeTitle">
+            <h2 id="homeInnerLifeTitle" class="sr-only">Ada's inner status</h2>
+            <div class="inner-life-bar-status">
+              <span class="pulse" aria-hidden="true"></span>
+              <div><span class="inner-life-bar-label">Ada / inner tide</span><strong id="homeInnerStatus" aria-live="polite">Quietly watching</strong></div>
+            </div>
+            <div id="homeInnerLife" class="inner-life-feed">
+               <div class="inner-life-signal"><span class="inner-life-kicker">Thought</span><span class="inner-life-signal-copy"><span id="homeThought" class="inner-life-copy is-empty">Nothing surfaced</span><span id="homeThoughtMeta" class="inner-life-meta">No visible thought</span></span></div>
+               <div class="inner-life-signal"><span class="inner-life-kicker">Dream</span><span class="inner-life-signal-copy"><span id="homeDream" class="inner-life-copy is-empty">No dream stored</span><span id="homeDreamMeta" class="inner-life-meta">No dream in current memory</span></span></div>
+               <div class="inner-life-signal"><span class="inner-life-kicker">Self</span><span class="inner-life-signal-copy"><span id="homeSelf" class="inner-life-copy is-empty">No self-understanding stored</span><span id="homeSelfMeta" class="inner-life-meta">No change recorded</span></span></div>
+               <div class="inner-life-signal"><span class="inner-life-kicker">Action</span><span class="inner-life-signal-copy"><span id="homeAction" class="inner-life-copy is-empty">No recent action</span><span id="homeActionMeta" class="inner-life-meta">No action recorded</span></span></div>
+            </div>
+            <span class="home-mood" id="homeMood">No mood logged</span>
           </section>
 
           <section class="home-section required" aria-labelledby="homeNeedsTitle">
@@ -481,6 +514,62 @@ function bars(items,key){
 function deltaCls(v){return v==null?'flat':(v>0?'up':(v<0?'down':'flat'))}
 function sign(v){return v==null?'—':(v>0?'+'+v:v)}
 
+const innerLifeRollers={};
+function splitInnerLifeText(text,maxChars){
+  const words=String(text||'').replace(/\s+/g,' ').trim().split(' ').filter(Boolean),chunks=[];
+  let chunk='';
+  words.forEach(word=>{
+    if(chunk&&chunk.length+word.length+1>maxChars){chunks.push(chunk);chunk=''}
+    chunk+=(chunk?' ':'')+word;
+  });
+  if(chunk)chunks.push(chunk);
+  return chunks.length?chunks:[''];
+}
+function setRollingInnerLife(id,text,empty){
+  const el=document.getElementById(id);
+  if(!el)return;
+  if(innerLifeRollers[id]){clearInterval(innerLifeRollers[id]);delete innerLifeRollers[id]}
+  const value=String(text||'').trim();
+  el.classList.remove('rolling');
+  el.title=value;
+  if(value)el.setAttribute('aria-label',value);else el.removeAttribute('aria-label');
+  if(!value){el.textContent=empty;return}
+  const maxChars=Math.max(110,Math.floor((el.clientWidth||300)/6.4*3));
+  const chunks=splitInnerLifeText(value,maxChars);
+  let index=1;
+  const show=()=>{
+    el.classList.remove('rolling');
+    void el.offsetWidth;
+    el.textContent=chunks[index];
+    el.classList.add('rolling');
+    index=(index+1)%chunks.length;
+  };
+  el.textContent=chunks[0];
+  if(chunks.length>1&&!(window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches))innerLifeRollers[id]=setInterval(show,6500);
+}
+function renderInnerLife(inner){
+  const state=inner&&typeof inner==='object'?inner:{};
+  const mood=String(state.mood||'').trim();
+  const self=state.self_understanding&&typeof state.self_understanding==='object'?state.self_understanding:{};
+  document.getElementById('homeInnerStatus').textContent=mood||(self.open_questions&&self.open_questions.length?'Holding a question':state.activity?'Recently active':state.thought?'Thinking quietly':state.dream?'Dreaming between tasks':'Quietly watching');
+  document.getElementById('homeMood').textContent=mood||'No mood logged';
+  const renderEntry=(id,metaId,entry,empty,kind)=>{
+    const el=document.getElementById(id),meta=document.getElementById(metaId);
+    const text=entry&&String(entry.text||'').trim();
+    setRollingInnerLife(id,text,empty);
+    el.classList.toggle('is-empty',!text);
+    if(meta){
+      const detail=text&&entry.ts?` · ${fmtTime(entry.ts)}`:'';
+      const entryMood=text&&entry.mood?` · ${entry.mood}`:'';
+      meta.textContent=text?kind+detail+entryMood:'Waiting for '+kind.toLowerCase();
+    }
+  };
+  renderEntry('homeThought','homeThoughtMeta',state.thought,'Nothing has surfaced yet.','Inner voice');
+  renderEntry('homeDream','homeDreamMeta',state.dream,'No dream currently stored.','Dream');
+  renderEntry('homeSelf','homeSelfMeta',self.description?{text:self.description,ts:self.updated_ts}:null,'No self-understanding stored.','Self');
+  renderEntry('homeAction','homeActionMeta',state.activity,'No recent action','Action');
+}
+
 /* ---- button feedback: spinner while working, green "done" flash after ---- */
 let doneTimer=null;
 function spin(btn,label){
@@ -571,6 +660,7 @@ async function logout(){await api('/logout',{method:'POST'});location.reload()}
 function renderHome(home){
   const needs=Array.isArray(home&&home.needs_you)?home.needs_you:[];
   const suggestions=Array.isArray(home&&home.ada_suggests)?home.ada_suggests:[];
+  renderInnerLife(home&&home.inner_life);
   homeActionItems=[];
   const renderAction=(action,kind)=>{
     const index=homeActionItems.push(action)-1;
@@ -607,6 +697,7 @@ function renderHome(home){
 
 function renderHomeError(message){
   homeActionItems=[];
+  renderInnerLife(null);
   document.getElementById('homeTitle').textContent='Home needs a refresh.';
   document.getElementById('homeLead').textContent='Ada could not load your attention list. Nothing has been changed.';
   document.getElementById('homeStateTitle').textContent='Home is unavailable';

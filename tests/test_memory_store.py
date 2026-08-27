@@ -66,6 +66,24 @@ def test_recall_by_meaning_ranks_relevant_memories(tmp_path):
         memory.close()
 
 
+def test_recall_by_meaning_can_stay_with_inner_kinds(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    try:
+        _observe(memory, "learning", "The customer keeps asking about unfinished work.")
+        _observe(memory, "inner_voice", "I keep returning to unfinished questions.")
+
+        results = memory_store.recall_by_meaning(
+            memory,
+            "unfinished questions",
+            k=5,
+            kinds=("inner_voice", "awaken", "dream", "identity_shift"),
+        )
+
+        assert results and all(result["kind"] == "inner_voice" for result in results)
+    finally:
+        memory.close()
+
+
 def test_recall_kind_boost_prefers_identity_over_noise(tmp_path):
     memory = Memory(tmp_path / "memory.db")
     try:

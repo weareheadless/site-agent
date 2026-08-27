@@ -8,8 +8,9 @@ Registered today:
   weekly_report weekly  — HERO: plain-language report draft for the owner
   reflect       monthly — self-review of her own voice (owner approves)
   inner_voice   every 2 days — a mood + self-note (sometimes private)
-  dream         weekly  — a plain first-person dream from her own material
+  dream         weekly  — a private dream from her retained inner material
   awaken        weekly  — on waking, decides if the dream meant anything
+  integrate_self every 2 days — decides whether her self-understanding changed
   health_check  daily   — deterministic ledger and operational health scan
 
 Later phases register here: brain.article (weekly), editor status checks.
@@ -25,6 +26,7 @@ from ..brain import digest as brain_digest
 from ..brain import dream as brain_dream
 from ..brain import inner_voice as brain_inner_voice
 from ..brain import report as brain_report
+from ..brain import self_model as brain_self_model
 from ..senses import collect
 from . import maintenance
 from .memory import Memory
@@ -44,6 +46,7 @@ _JOB_DEFAULTS: dict[str, str | int | dict[str, Any]] = {
     "inner_voice": {"every": 2, "at": "14:00"},
     "dream": {"every": 7, "weekday": "sunday", "at": "05:00"},
     "awaken": {"every": 7, "weekday": "sunday", "at": "06:00"},
+    "integrate_self": {"every": 2, "at": "20:00"},
     "compact": {"every": 7, "weekday": "sunday", "at": "04:00"},
     "health_check": {"every": "daily", "at": "12:00"},
     "seo_snapshot": {"every": "daily", "at": "11:30"},
@@ -64,6 +67,15 @@ def _heartbeat(context: dict[str, Any]) -> None:
 
 def _with_persona(context: dict[str, Any], fn: Any) -> Any:
     context["persona_prompt"] = effective_persona(context["config"], context["memory"])
+    return fn(context)
+
+
+def _with_inner_identity(context: dict[str, Any], fn: Any) -> Any:
+    from ..brain.prompts import inner_identity_prompt
+
+    identity = inner_identity_prompt(context["config"], context["memory"])
+    context["inner_identity_prompt"] = identity
+    context["persona_prompt"] = identity
     return fn(context)
 
 
@@ -163,9 +175,13 @@ def register_builtin(scheduler: Scheduler, config: dict[str, Any], context: dict
         scheduler.job("article", _spec(config, "article"), lambda: _article(context))
         scheduler.job("reflect", _spec(config, "reflect"), lambda: _with_persona(context, reflect_job))
         scheduler.job("strategist", _spec(config, "strategist"), lambda: _strategist(context))
-        scheduler.job("inner_voice", _spec(config, "inner_voice"), lambda: _with_persona(context, brain_inner_voice.think))
-        scheduler.job("dream", _spec(config, "dream"), lambda: _with_persona(context, brain_dream.dream))
-        scheduler.job("awaken", _spec(config, "awaken"), lambda: _with_persona(context, brain_dream.awaken))
+        scheduler.job("inner_voice", _spec(config, "inner_voice"), lambda: _with_inner_identity(context, brain_inner_voice.think))
+        dream_enabled = (config.get("dream") or {}).get("enabled", True)
+        if dream_enabled:
+            scheduler.job("dream", _spec(config, "dream"), lambda: _with_inner_identity(context, brain_dream.dream))
+            scheduler.job("awaken", _spec(config, "awaken"), lambda: _with_inner_identity(context, brain_dream.awaken))
+        if (config.get("self_model") or {}).get("enabled", True):
+            scheduler.job("integrate_self", _spec(config, "integrate_self"), lambda: _with_inner_identity(context, brain_self_model.integrate))
         scheduler.job("compact", _spec(config, "compact"), lambda: maintenance.compact_memory(context))
     scheduler.job("ga_snapshot", _spec(config, "ga_snapshot"), lambda: _ga_snapshot(context))
     scheduler.job("seo_snapshot", _spec(config, "seo_snapshot"), lambda: _seo_snapshot(context))

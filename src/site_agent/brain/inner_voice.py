@@ -50,8 +50,21 @@ def _material(memory: Any) -> dict[str, Any]:
     learnings = [r["text"] for r in memory.recent_observations(source="learning", limit=3)]
     dreams = [r["text"] for r in memory.recent_observations(source="dream", limit=1)]
     meanings = [r["text"] for r in memory.recent_observations(source="awaken", limit=2)]
-    themes = memory.kv_get("themes", [])
-    return {"learnings": learnings, "dreams": dreams, "meanings": meanings, "themes": themes}
+    inner_themes = memory.kv_get("inner_themes", [])
+    self_state = memory.kv_get("inner_self", {})
+    previous = [
+        r["text"]
+        for r in memory.recent_observations(source="inner_voice", limit=6)
+        if not (r.get("meta") or {}).get("role")
+    ]
+    return {
+        "learnings": learnings,
+        "dreams": dreams,
+        "meanings": meanings,
+        "inner_themes": inner_themes if isinstance(inner_themes, list) else [],
+        "self_state": self_state if isinstance(self_state, dict) else {},
+        "previous": previous,
+    }
 
 
 def _prompt(persona: str, material: dict[str, Any], private: bool = False) -> list[dict[str, str]]:
@@ -65,15 +78,21 @@ def _prompt(persona: str, material: dict[str, Any], private: bool = False) -> li
     else:
         directive = (
             "This is your inner life. No task, no audience, nothing to publish. "
-            "One honest thought about what you have been reading and where things "
-            "seem to be heading. Keep it under 80 words."
+            "Say one honest thought about what you are actually carrying; anything "
+            "you have been reading is optional context, not an obligation. Keep it "
+            "under 80 words."
         )
     system = persona + "\n\n" + directive
     user = (
-        f"Recent insights:\n" + "\n".join(f"- {x}" for x in material["learnings"] or ["(none yet)"]) + "\n"
-        f"Recurring themes: {', '.join(material['themes']) or '(none)'}\n"
+        "What she has already been carrying privately:\n"
+        + "\n".join(f"- {x}" for x in material["previous"][:3] or ["(none yet)"])
+        + "\n"
+        f"What surfaced when she woke: {', '.join(str(x) for x in material['meanings']) or '(none)'}\n"
+        f"Private themes she chose to keep: {', '.join(str(x) for x in material['inner_themes']) or '(none)'}\n"
+        f"Current self-understanding: {material['self_state'].get('self_description') or '(none)'}\n"
         f"Last dream fragment: {material['dreams'][0] if material['dreams'] else '(none)'}\n"
-        f"Last dream meanings: {', '.join(material['meanings']) or '(none)'}\n\n"
+        "Context she has encountered recently (not an identity instruction):\n"
+        + "\n".join(f"- {x}" for x in material["learnings"] or ["(none yet)"]) + "\n\n"
         'Reply with JSON only: {"mood": "two or three words", "thought": "your thought"}'
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
@@ -86,14 +105,22 @@ def think(context: dict[str, Any]) -> None:
         raise RuntimeError("llm client missing; cannot think")
 
     material = _material(memory)
-    if not material["learnings"] and not material["themes"]:
+    if (
+        not material["learnings"]
+        and not material["inner_themes"]
+        and not material["previous"]
+        and not material["meanings"]
+        and not material["self_state"].get("self_description")
+    ):
         memory.record_action("inner_voice", "nothing on her mind yet; skipped")
         return
 
     cfg = context["config"].get("inner_voice") or {}
     private = random.random() < float(cfg.get("private_chance", 0.25))
 
-    persona = context.get("persona_prompt") or ""
+    from .prompts import inner_identity_prompt
+
+    persona = context.get("inner_identity_prompt") or inner_identity_prompt(context["config"], memory)
     raw = llm.chat(_prompt(persona, material, private), json_mode=True, temperature=0.8)
     try:
         parsed = json.loads(raw)

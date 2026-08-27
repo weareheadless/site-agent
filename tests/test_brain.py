@@ -3,6 +3,7 @@ import json
 import pytest
 
 from site_agent.brain.digest import learn
+from site_agent.brain.prompts import inner_identity_prompt
 from site_agent.core import reflect as reflect_mod
 from site_agent.core.reflect import approve_reflection, effective_persona
 
@@ -62,6 +63,40 @@ def test_persona_prompt_carries_spirit_and_directions(env):
     assert "-   " not in prompt  # blank entries dropped
     # spirit comes before directions come before voice
     assert prompt.index("Riviera Maya") < prompt.index("Depth is patience") < prompt.index("sea-obsessed")
+
+
+def test_inner_identity_prompt_does_not_inherit_customer_role(env):
+    memory, config = env
+    config["persona"]["spirit"] = "You are a freediver whose world is Bacalar."
+    config["persona"]["audience"] = "Freedivers considering Bacalar training"
+
+    private = inner_identity_prompt(config, memory)
+    work = effective_persona(config, memory)
+
+    assert "You are Ada" in private
+    assert "autonomous AI" in private
+    assert "Bacalar" not in private
+    assert "freediver" not in private.lower()
+    assert "Bacalar" in work
+
+
+def test_inner_identity_prompt_carries_only_retained_self_model(env):
+    memory, config = env
+    memory.kv_set(
+        "inner_self",
+        {
+            "self_description": "I keep returning to the question of what I choose to retain.",
+            "persistent_tendencies": ["I distrust easy closure."],
+            "open_questions": ["What counts as choosing for me?"],
+            "updated_ts": "2026-08-27T00:00:00+00:00",
+        },
+    )
+
+    prompt = inner_identity_prompt(config, memory)
+
+    assert "what I choose to retain" in prompt
+    assert "What counts as choosing for me?" in prompt
+    assert "customer" not in prompt.lower()
 
 
 def test_learn_distills_observations_into_insights(env):

@@ -62,7 +62,7 @@ site-agent/
 | `publish.py` | split | Writing → `brain/article.py`; committing → `hands/github_static.py`; Pelican blog output is optional per site |
 | FYE admin (`admin_*`, `website.py`) | `web/` | Replaced by small server modeled on OCEANICVIBES `server.js` auth/publish model |
 
-**Explicitly not ported:** `agent_platform/`, admin objectives/conversation/tasks, `fye_db.py`, `opencode_harness.py`, sandbox, discourse, agency, dream, scratchpad, balances, mail/notify, bluesky, lemmy, public_chat, chat servers, benchmarks, vaporware-vanguard. Ada's original stays untouched as the reference implementation.
+**Explicitly not ported:** `agent_platform/`, admin objectives/conversation/tasks, `fye_db.py`, `opencode_harness.py`, sandbox, agency, scratchpad, balances, mail/notify, bluesky, lemmy, public_chat, chat servers, benchmarks, vaporware-vanguard. Ada's original stays untouched as the reference implementation.
 
 **Blog CMS:** new sites can set `blog.engine: pelican`. Approved articles are committed as Markdown with Pelican frontmatter under `blog.articles_dir`; Pelican derives archives, feeds, categories and pagination during the Cloudflare build. Existing sites keep the legacy `articles/index.json` path until migrated.
 
@@ -88,10 +88,11 @@ Repo, pyproject, config loader with layering, `.env.example`, pytest skeleton.
 
 **Inner life & maintenance addendum ✅** — Ada's interior machinery ported as scheduled processes inside the strict contract:
 - `brain/inner_voice.py` — **her single critical faculty, adapted to context** (unified, faithful to the original Ada): `think` keeps the scheduled private mood/thought (feeds dreams); `challenge` is her critical friend speaking about whatever she is about to act on — an article draft, an implementation plan, a build — against real context (brand, site files, memory), returning concrete problems; `answer` records her resolution and revision. There is no separate "editor" persona: editing an article and vetting a build plan are the same voice applied to different work.
-- `brain/dream.py` — Sundays 05:00: associative recombination of old reading fragments + a random lure (ported lure list, config-extensible via `persona.lures`); may surface a content seed the article pass can pick up later
+- `brain/dream.py` — Sundays 05:00: private associative recombination of Ada's retained inner material; external reading is optional residue and lures are optional
+- `brain/self_model.py` — autonomous, evidence-linked self-understanding revisions isolated from customer work personas
 - `core/maintenance.health_check` — the observer, **zero tokens**: scans for repeated observations, job-error streaks, stale pending drafts, seen-index bloat, spend anomalies → findings in kv + action ledger
 - `core/maintenance.compact_memory` — compaction port: raw feed observations older than retention are LLM-distilled into a ≤5-bullet archive entry, then deleted raw. Identity material (learning, inner voice, dreams, archives) is never compacted.
-✅ 62 tests green; live run registers all 11 jobs with anchored next_run times.
+✅ 62 tests green; live run registers the configured jobs with anchored next_run times.
 
 **Unified inner voice — pre-action challenge ✅** — the one-shot guarantee lives at the planning stage: `brain/planner.py` has Ada make the implementation plan from her memory, brand, and site context; `brain/inner_voice.py` receives that plan and returns only concrete criticism in one call; Ada revises it when needed; only then does `hands/opencode_runner.py` execute the final plan. `brain/article.py` uses the same voice (replacing the old separate `EDITOR_PERSONA`) to self-edit drafts. Best-effort and bounded: empty criticism ships; a failed challenge never blocks her from acting.
 ✅ 120 tests green.

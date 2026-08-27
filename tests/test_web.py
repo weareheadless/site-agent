@@ -168,6 +168,7 @@ def test_status_shape(runtime):
     assert status["instance"] == "testsite"
     assert isinstance(status["upcoming"], list)
     assert "spend_7d" in status
+    assert status["inner_self"]["version"] == 1
     assert status["worktree"]["available"] is False
 
 
@@ -187,6 +188,10 @@ def test_home_endpoint_returns_owner_action_sections(runtime):
         )
     )
     memory.kv_set("strategist_cards", {"cards": [{"title": "Write an article", "action": "Ask Ada to draft it"}]})
+    memory.record_observation("inner_voice", "The visible thought belongs in the owner's console.", meta={"mood": "clear"})
+    memory.record_observation("inner_voice", "The private thought stays in memory.", meta={"private": True, "mood": "secret"})
+    memory.record_observation("dream", "A red buoy moved through the dark water.")
+    memory.record_action("digest", "1 new reading note")
     _login(client)
     response = client.get("/api/home")
     assert response.status_code == 200
@@ -194,6 +199,11 @@ def test_home_endpoint_returns_owner_action_sections(runtime):
     assert payload["needs_you"][0]["title"] == "Confirm the course dates"
     assert payload["ada_suggests"][0]["title"] == "Write an article"
     assert payload["ada_is_handling"]["active"] is False
+    assert payload["inner_life"]["thought"]["text"] == "The visible thought belongs in the owner's console."
+    assert "private thought" not in json.dumps(payload["inner_life"])
+    assert payload["inner_life"]["dream"]["text"] == "A red buoy moved through the dark water."
+    assert payload["inner_life"]["mood"] == ""
+    assert payload["inner_life"]["activity"]["text"] == "digest - 1 new reading note"
 
 
 def test_conversation_lifecycle_routes_preserve_tombstones(runtime):

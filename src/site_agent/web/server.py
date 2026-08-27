@@ -24,6 +24,7 @@ from ..application.approvals import ApprovalService, ApprovalServiceError, Stale
 from ..application.conversations import ConversationBusy, ConversationNotFound, ConversationService, ConversationServiceError
 from ..application.home import HomeService
 from ..brain import editor as brain_editor
+from ..brain.self_model import current_self
 from ..config import resolve_secret
 from ..core.contracts import ApprovalStatus
 from ..core.reflect import approve_reflection, effective_persona
@@ -251,6 +252,7 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
             "health": health,
             "spend_7d": round(memory.llm_spend(since_hours=24 * 7)["cost_usd"], 2),
             "themes": memory.kv_get("themes", []),
+            "inner_self": current_self(memory),
             "preview_url": str(config.get("site", {}).get("preview_url", "") or ""),
             "last_preview_url": memory.kv_get("last_preview_url"),
             "preview_branch": str(config.get("site", {}).get("preview_branch", "") or ""),

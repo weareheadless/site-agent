@@ -69,6 +69,54 @@ def test_home_hides_future_snoozed_and_terminal_actions(tmp_path):
     memory.close()
 
 
+def test_home_includes_visible_inner_life_and_keeps_private_thoughts_out(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    memory.record_observation("inner_voice", "A visible thought about the tide of the site.", meta={"mood": "quietly alert"})
+    memory.record_observation("inner_voice", "A private thought that must not leave memory.", meta={"mood": "hollow", "private": True})
+    memory.record_observation("dream", "I followed a red buoy into a field of light.", meta={"lure": "the ocean"})
+    memory.record_observation("awaken", "The thread worth carrying is patience before motion.")
+    memory.kv_set("mood", {"current": "hollow"})
+    memory.kv_set("themes", ["patience", "depth"])
+    memory.record_action("digest", "2 new reading notes")
+    memory.record_action("job_error", "dream: transient provider failure")
+
+    inner_life = HomeService(memory).snapshot().to_dict()["inner_life"]
+
+    assert inner_life["thought"]["text"] == "A visible thought about the tide of the site."
+    assert "private thought" not in inner_life["thought"]["text"]
+    assert inner_life["dream"]["text"].startswith("I followed a red buoy")
+    assert inner_life["awakening"]["text"].startswith("The thread worth carrying")
+    assert inner_life["mood"] == ""  # the current mood came from the private row
+    assert inner_life["themes"] == ["patience", "depth"]
+    assert inner_life["activity"]["text"] == "digest - 2 new reading notes"
+    memory.close()
+
+
+def test_home_exposes_a_bounded_self_understanding_summary(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    memory.kv_set(
+        "inner_self",
+        {
+            "self_description": "I keep returning to unfinished questions.",
+            "persistent_tendencies": ["I distrust easy closure."],
+            "open_questions": ["What deserves to remain unresolved?"],
+            "updated_ts": "2026-08-27T20:00:00+00:00",
+        },
+    )
+    memory.record_observation(
+        "identity_shift",
+        "Ada revised how she understands herself: I keep returning to unfinished questions.",
+        meta={"evidence_ids": [1]},
+    )
+
+    self_view = HomeService(memory).snapshot().to_dict()["inner_life"]["self_understanding"]
+
+    assert self_view["description"] == "I keep returning to unfinished questions."
+    assert self_view["open_questions"] == ["What deserves to remain unresolved?"]
+    assert "unfinished questions" in self_view["last_shift"]
+    memory.close()
+
+
 def test_owner_action_service_snoozes_for_seven_days(tmp_path):
     memory = Memory(tmp_path / "memory.db")
     service = OwnerActionService(memory)

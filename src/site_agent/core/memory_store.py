@@ -42,12 +42,13 @@ RECENCY_WEIGHT = 0.15
 HALFLIFE_DAYS = 7.0
 
 # Per-kind multiplier on the cosine score, so high-value memory kinds
-# (learnings, inner voice, self-notes) aren't drowned out by noisy bulk.
+# (learnings, inner voice, self-notes, identity shifts) aren't drowned out by noisy bulk.
 KIND_WEIGHT: dict[str, float] = {
     "inner_voice": 1.1,
     "awaken": 1.1,
     "learning": 1.1,
     "dream": 1.05,
+    "identity_shift": 1.1,
     "self": 1.0,
     "archive": 1.0,
     "observations": 1.0,
@@ -60,6 +61,7 @@ DEFAULT_LIMITS: dict[str, int] = {
     "self": 100,
     "inner_voice": 300,
     "dream": 100,
+    "identity_shift": 100,
     "awaken": 100,
     "archive": 200,
 }
@@ -105,7 +107,7 @@ def _to_epoch(ts_text: Any) -> float:
 
 
 def _source_to_kind(source: str) -> str:
-    if source in ("learning", "inner_voice", "dream", "awaken", "self", "archive"):
+    if source in ("learning", "inner_voice", "dream", "awaken", "identity_shift", "self", "archive"):
         return source
     return "observations"
 
@@ -191,6 +193,7 @@ def recall_by_meaning(
     k: int = 8,
     recency_weight: float | None = None,
     halflife_days: float | None = None,
+    kinds: list[str] | tuple[str, ...] | None = None,
 ) -> list[dict[str, Any]]:
     """Semantic recall: rank memories by meaning blended with recency.
 
@@ -211,7 +214,12 @@ def recall_by_meaning(
 
     qvec = _local_embedding(query)
     dim = len(qvec)
-    rows = memory.conn.execute("SELECT kind, text, ts, embedding FROM memories").fetchall()
+    sql = "SELECT kind, text, ts, embedding FROM memories"
+    params: list[str] = []
+    if kinds:
+        sql += " WHERE kind IN (" + ",".join("?" for _ in kinds) + ")"
+        params.extend(kinds)
+    rows = memory.conn.execute(sql, params).fetchall()
     now = time.time()
     scored: list[dict[str, Any]] = []
     for kind, text, ts, emb_json in rows:

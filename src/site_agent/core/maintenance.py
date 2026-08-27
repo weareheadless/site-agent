@@ -7,8 +7,8 @@ Ports of Ada's compaction.py and observer.py:
                    stale pending drafts, spend) and files findings.
   compact_memory — prevents context rot: old raw feed observations are
                    distilled into one archive entry via an LLM subagent, then
-                   deleted raw. Identity material (learning, inner voice,
-                   dreams, archives) is NEVER compacted.
+                    deleted raw. Identity material (learning, inner voice,
+                    dreams, identity shifts, archives) is NEVER compacted.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from typing import Any
 
 from .memory import Memory
 
-_EXCLUDE_FROM_REPEAT_SCAN = ("self", "inner_voice", "dream", "awaken", "archive", "learning")
+_EXCLUDE_FROM_REPEAT_SCAN = ("self", "inner_voice", "dream", "awaken", "identity_shift", "archive", "learning")
 
 
 def _normalize(text: str) -> str:

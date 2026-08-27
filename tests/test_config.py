@@ -11,6 +11,8 @@ def test_defaults_load_without_instance_file():
     assert config["instance_name"] == "default"
     assert config["site"]["adapter"] == "github_static"
     assert config["blog"]["engine"] == "pelican"
+    assert config["dream"]["residue_count"] == 0
+    assert config["self_model"]["enabled"] is True
     assert sources[0] is not None
 
 

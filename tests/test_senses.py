@@ -107,6 +107,19 @@ def test_builtin_registry_includes_health_check(tmp_path):
     memory.close()
 
 
+def test_builtin_registry_includes_private_inner_life_jobs(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    scheduler = Scheduler(memory, lock_path=tmp_path / "lock", clock=FakeClock())
+    config = _config(subreddits=[])
+    context = {"config": config, "memory": memory, "llm": object()}
+
+    register_builtin(scheduler, config, context)
+
+    names = [name for name, _, _ in scheduler.jobs]
+    assert {"inner_voice", "dream", "awaken", "integrate_self"} <= set(names)
+    memory.close()
+
+
 def test_digest_records_new_items_then_dedupes(tmp_path):
     memory, _, scheduler = _runtime(tmp_path, _config())
     batch = [

@@ -71,9 +71,9 @@ def reflect(context: dict[str, Any]) -> int:
 
 def effective_persona(config: dict[str, Any], memory: Any) -> str:
     """Persona prompt plus owner-approved reflection notes."""
-    from ..brain.prompts import persona_prompt
+    from ..brain.prompts import work_persona_prompt
 
-    base = persona_prompt(config)
+    base = work_persona_prompt(config, memory)
     notes = approved_notes(memory)
     extras = [str(n) for n in (notes.get("voice_notes") or []) if n]
     avoid = [str(n) for n in (notes.get("avoid") or []) if n]

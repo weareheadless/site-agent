@@ -326,6 +326,29 @@ class Memory:
         return rows
 
     @_locked
+    def observations_since(
+        self,
+        after_id: int = 0,
+        sources: list[str] | tuple[str, ...] | None = None,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        """Return observations after an id in durable insertion order."""
+        query = "SELECT * FROM observations WHERE id > ?"
+        params: list[Any] = [after_id]
+        if sources:
+            query += " AND source IN (" + ",".join("?" for _ in sources) + ")"
+            params.extend(sources)
+        query += " ORDER BY id ASC LIMIT ?"
+        params.append(max(1, min(int(limit), 5000)))
+        rows = [dict(row) for row in self.conn.execute(query, params)]
+        for row in rows:
+            try:
+                row["meta"] = json.loads(row.get("meta") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                row["meta"] = {}
+        return rows
+
+    @_locked
     def record_action(self, kind: str, detail: str = "") -> int:
         with self.conn:
             cur = self.conn.execute(

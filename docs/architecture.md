@@ -95,6 +95,25 @@ or perform a provider operation. Generic configuration helpers live in
 - `senses/` contains feed and metrics integrations.
 - `brain.editor` owns the current repository tool loop and draft policy.
 
+## Inner Life Boundary
+
+Ada's private identity and a customer's work persona are separate prompt inputs.
+`brain.prompts.inner_identity_prompt()` contains stable factual self-knowledge and
+the persisted `inner_self` account; it never imports a site's subject, audience, or
+work directions. `work_persona_prompt()` adds those customer-specific instructions
+for website work.
+
+`brain.self_model` periodically asks Ada whether recorded inner-life evidence changed
+her self-understanding. The evidence is limited to her own inner-voice notes and
+awakening decisions, with the existing self-model providing continuity; a raw dream
+counts only after she decides it mattered. A no-change result is valid, and a
+change is persisted with evidence IDs. This path is autonomous, customer-isolated,
+and cannot create a draft or bypass an approval boundary.
+
+Dream prompts do not prescribe human or machine imagery. They preserve Ada's factual
+knowledge that she is an AI while leaving dream content to emerge from her retained
+experience. External site reading is optional residue, not private identity.
+
 These seams are intentionally small and partly legacy. When extending them,
 add a narrow capability or protocol first, preserve compatibility wrappers,
 and add a conformance test. Do not create a universal plugin abstraction.

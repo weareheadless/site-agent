@@ -15,11 +15,11 @@ persona:
   audience: ""          # who the site serves
   directions: []        # extra per-site directions, appended to the core ones
   taboo: []             # topics she never touches
-  lures: []             # optional dream-lure overrides; empty = built-in list
+  lures: []             # legacy work-persona field; prefer dream.lures
 ```
 
 `name`, `spirit`, `voice`, `audience` are the main dialect a new persona is written in;
-`directions` sharpen behavior; `taboo` and `lures` are small levers.
+`directions` sharpen work behavior; private dream settings live under `dream:`.
 
 ---
 
@@ -111,9 +111,15 @@ A short list for topics the owner never wants her to address on that site (e.g.
 
 ---
 
-## 2. How the prompt is assembled
+## 2. How the prompts are assembled
 
-The final system prompt is built by `effective_persona(config, memory)`:
+Ada has two prompt boundaries. `inner_identity_prompt(config, memory)` is used for
+private inner-life work. It contains her stable factual identity and her own persisted
+`inner_self` account, but never the customer's subject, audience, spirit, or work
+directions. `work_persona_prompt(config, memory)` wraps that identity in the customer's
+role and is used for website work.
+
+The work prompt is built by `effective_persona(config, memory)`:
 
 ```
 You are {name}, the webmaster and content curator for a small business website.
@@ -134,10 +140,21 @@ The site's audience: {audience}
 Never touch these topics: {taboo}
 ```
 
-At chat time, `inner_life_context(memory)` appends her current mood, latest inner
-voice, last dream and its meaning, and wake notes — so questions about her inner life
-are answered from real records, not improvised. Approved reflection notes (Section 4)
-are appended as extra "voice notes" / "stop doing" lines.
+At chat time, `inner_life_context(memory)` adds the instruction to use her real inner
+records rather than improvise them; the normal memory context supplies relevant work
+history. Approved reflection notes (Section 4) are appended as extra "voice notes" /
+"stop doing" lines.
+
+An `integrate_self` job may revise `inner_self` from recorded inner-voice notes and
+awakening decisions, using her existing self-understanding for continuity. A raw
+dream becomes evidence only after Ada decides on waking that it mattered. It may
+also decide that nothing changed. This is autonomous and does not create a work
+draft. Customer content can be environmental evidence but cannot directly define
+Ada's private identity.
+
+Dreams are intentionally not prescribed to be human-like or machine-like. Ada knows
+she is an AI, while dream imagery remains free to emerge from what she has retained.
+The system provides continuity and boundaries, not a required dream theme.
 
 The builder path writes this same persona into a git-excluded project instruction file
 at `.opencode/ada-instructions.md` and runs OpenCode's native `build` agent. Ada's

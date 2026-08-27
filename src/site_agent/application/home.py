@@ -14,6 +14,7 @@ from ..core.contracts import (
     ApprovalStatus,
     OwnerAction,
 )
+from ..brain.self_model import current_self
 
 
 @dataclass(frozen=True)
@@ -30,10 +31,67 @@ class HandlingSummary:
 
 
 @dataclass(frozen=True)
+class InnerLifeEntry:
+    source: str
+    text: str
+    ts: str
+    mood: str = ""
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "source": self.source,
+            "text": self.text,
+            "ts": self.ts,
+            "mood": self.mood,
+        }
+
+
+@dataclass(frozen=True)
+class InnerSelfSummary:
+    description: str
+    tendencies: tuple[str, ...]
+    open_questions: tuple[str, ...]
+    updated_ts: str
+    last_shift: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "description": self.description,
+            "tendencies": list(self.tendencies),
+            "open_questions": list(self.open_questions),
+            "updated_ts": self.updated_ts,
+            "last_shift": self.last_shift,
+        }
+
+
+@dataclass(frozen=True)
+class InnerLifeSummary:
+    mood: str
+    themes: tuple[str, ...]
+    thought: InnerLifeEntry | None
+    dream: InnerLifeEntry | None
+    awakening: InnerLifeEntry | None
+    activity: InnerLifeEntry | None
+    self_understanding: InnerSelfSummary
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "mood": self.mood,
+            "themes": list(self.themes),
+            "thought": self.thought.to_dict() if self.thought else None,
+            "dream": self.dream.to_dict() if self.dream else None,
+            "awakening": self.awakening.to_dict() if self.awakening else None,
+            "activity": self.activity.to_dict() if self.activity else None,
+            "self_understanding": self.self_understanding.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
 class HomeResult:
     needs_you: tuple[OwnerAction, ...]
     suggestions: tuple[OwnerAction, ...]
     handling: HandlingSummary
+    inner_life: InnerLifeSummary
     generated_ts: str
 
     def to_dict(self) -> dict[str, Any]:
@@ -41,6 +99,7 @@ class HomeResult:
             "needs_you": [action.to_owner_dict() for action in self.needs_you],
             "ada_suggests": [action.to_owner_dict() for action in self.suggestions],
             "ada_is_handling": self.handling.to_dict(),
+            "inner_life": self.inner_life.to_dict(),
             "everything_is_handled": not self.needs_you,
             "generated_ts": self.generated_ts,
         }
@@ -89,11 +148,101 @@ class HomeService:
             summary = f"Ada is working on {active_count} thing{'s' if active_count != 1 else ''} in the background."
         else:
             summary = "Ada is keeping an eye on your website."
+        generated_ts = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
         return HomeResult(
             needs_you=tuple(needs),
             suggestions=tuple(suggestions),
             handling=HandlingSummary(active_count=active_count, summary=summary),
-            generated_ts=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+            inner_life=self._inner_life(),
+            generated_ts=generated_ts,
+        )
+
+    def _inner_life(self) -> InnerLifeSummary:
+        """Return the owner-requested inner-life view without private notes."""
+        inner_rows = self.memory.recent_observations(source="inner_voice", limit=50)
+        scheduled_rows = [row for row in inner_rows if not (row.get("meta") or {}).get("role")]
+        latest_scheduled = scheduled_rows[0] if scheduled_rows else None
+        thought_row = next(
+            (
+                row
+                for row in scheduled_rows
+                if not (row.get("meta") or {}).get("private")
+            ),
+            None,
+        )
+        thought = self._inner_life_entry(thought_row, "inner_voice")
+
+        saved_mood = self.memory.kv_get("mood")
+        mood = str(saved_mood.get("current") or "").strip() if isinstance(saved_mood, dict) else ""
+        # A private scheduled thought can update the shared mood KV; do not let
+        # that state leak when the private thought is the latest one.
+        if latest_scheduled and (latest_scheduled.get("meta") or {}).get("private"):
+            mood = ""
+
+        saved_themes = self.memory.kv_get("themes", [])
+        themes = tuple(
+            str(theme).strip()[:48]
+            for theme in saved_themes[:6]
+            if str(theme).strip()
+        ) if isinstance(saved_themes, list) else ()
+
+        dream_rows = self.memory.recent_observations(source="dream", limit=1)
+        awakening_rows = self.memory.recent_observations(source="awaken", limit=1)
+        dream = self._inner_life_entry(dream_rows[0] if dream_rows else None, "dream")
+        awakening = self._inner_life_entry(awakening_rows[0] if awakening_rows else None, "awaken")
+        if awakening is None:
+            meaning = self.memory.kv_get("last_dream_meaning")
+            if isinstance(meaning, str) and meaning.strip():
+                awakening = InnerLifeEntry(source="memory", text=meaning.strip(), ts="")
+
+        state = current_self(self.memory)
+        shifts = self.memory.recent_observations(source="identity_shift", limit=1)
+        last_shift = str(shifts[0].get("text") or "").strip() if shifts else ""
+        self_understanding = InnerSelfSummary(
+            description=state["self_description"],
+            tendencies=tuple(state["persistent_tendencies"]),
+            open_questions=tuple(state["open_questions"]),
+            updated_ts=state["updated_ts"],
+            last_shift=last_shift,
+        )
+
+        activity = None
+        for row in self.memory.recent_actions(limit=30):
+            if row.get("kind") in {"job", "job_error", "health", "inner_voice", "dream", "awaken"}:
+                continue
+            detail = str(row.get("detail") or "").strip()
+            if detail:
+                kind = str(row.get("kind") or "activity").strip()
+                activity = InnerLifeEntry(
+                    source="action",
+                    text=f"{kind} - {detail}",
+                    ts=str(row.get("ts") or ""),
+                )
+                break
+
+        return InnerLifeSummary(
+            mood=mood,
+            themes=themes,
+            thought=thought,
+            dream=dream,
+            awakening=awakening,
+            activity=activity,
+            self_understanding=self_understanding,
+        )
+
+    @staticmethod
+    def _inner_life_entry(row: dict[str, Any] | None, source: str) -> InnerLifeEntry | None:
+        if not isinstance(row, dict):
+            return None
+        text = str(row.get("text") or "").strip()
+        if not text:
+            return None
+        meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
+        return InnerLifeEntry(
+            source=source,
+            text=text,
+            ts=str(row.get("ts") or ""),
+            mood=str(meta.get("mood") or "").strip(),
         )
 
     @classmethod

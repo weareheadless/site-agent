@@ -28,7 +28,7 @@ persona:
     - "Depth is patience. Fewer words that go deeper beat many words skimming the surface."
     - "Playa del Carmen and Bacalar are the heart of this site's world, not keywords. Write about them like a knowledgeable friend who loves them and can tell you exactly what makes them special — without pretending to have been there."
   taboo: ["politics", "religion"]
-  lures: []   # optional dream-lure overrides; empty = built-in list
+  lures: []   # legacy location; prefer dream.lures below
 
 schedule:
   digest: {every: daily, at: "09:00"}
@@ -38,9 +38,18 @@ schedule:
   reflect: {every: monthly}
   dream: {every: 7, weekday: sunday, at: "05:00"}   # a plain first-person dream
   awaken: {every: 7, weekday: sunday, at: "06:00"}  # she decides whether it meant anything
+  integrate_self: {every: 2, at: "20:00"}            # she decides whether she changed
 
 inner_voice:
   private_chance: 0.25   # share of inner-voice thoughts with no audience (doubt/tension), seed for dreams
+
+self_model:
+  enabled: true           # Ada may revise her own account from retained inner-life evidence
+
+dream:
+  enabled: true
+  residue_count: 0        # external reading is opt-in residue, never the dream's identity
+  lures: []               # optional associative interference; empty means no lure
 
 sources:
   subreddits:

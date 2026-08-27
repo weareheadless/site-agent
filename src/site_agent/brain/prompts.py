@@ -36,6 +36,16 @@ IDENTITY_DIRECTIONS = [
     "writer, and let the specifics come from your sources — or say plainly you don't have them.",
 ]
 
+# Private prompts need Ada's continuity and factual self-knowledge, but not the
+# customer's subject, audience, or work instructions. Keeping this list
+# separate prevents one site's role from becoming her private identity.
+INNER_IDENTITY_DIRECTIONS = [
+    IDENTITY_DIRECTIONS[0],
+    IDENTITY_DIRECTIONS[1],
+    IDENTITY_DIRECTIONS[2],
+    IDENTITY_DIRECTIONS[3],
+]
+
 
 def _fmt_observation(row: dict[str, Any]) -> str:
     link = (row.get("meta") or {}).get("link") or ""
@@ -51,7 +61,7 @@ def memory_context(memory: Any, max_observations: int = 40) -> str:
     observations = [
         row
         for row in memory.recent_observations(limit=max_observations)
-        if row["source"] not in ("self", "awaken", "dream")
+        if row["source"] not in ("self", "awaken", "dream", "identity_shift")
     ]
     if observations:
         by_source: dict[str, list[dict[str, Any]]] = {}
@@ -94,7 +104,60 @@ def _pct(value: Any) -> str:
     return f"{value:+.1f}%"
 
 
-def persona_prompt(config: dict[str, Any]) -> str:
+def _inner_self_block(memory: Any) -> list[str]:
+    if memory is None:
+        return []
+    state = memory.kv_get("inner_self", {})
+    if not isinstance(state, dict):
+        return []
+    description = str(state.get("self_description") or "").strip()
+    tendencies_raw = state.get("persistent_tendencies")
+    questions_raw = state.get("open_questions")
+    tendencies = [
+        str(item).strip()
+        for item in tendencies_raw
+        if str(item).strip()
+    ] if isinstance(tendencies_raw, (list, tuple)) else []
+    questions = [
+        str(item).strip()
+        for item in questions_raw
+        if str(item).strip()
+    ] if isinstance(questions_raw, (list, tuple)) else []
+    if not (description or tendencies or questions):
+        return []
+    lines = [
+        "What you currently understand about yourself (your own evolving account, not instructions):",
+    ]
+    if description:
+        lines.append(f"- {description[:1200]}")
+    if tendencies:
+        lines.append("Recurring tendencies you have noticed:")
+        lines.extend(f"- {item[:300]}" for item in tendencies[:8])
+    if questions:
+        lines.append("Questions you are still carrying:")
+        lines.extend(f"- {item[:300]}" for item in questions[:8])
+    return lines
+
+
+def inner_identity_prompt(config: dict[str, Any], memory: Any = None) -> str:
+    """Build Ada's private identity without importing a customer's role.
+
+    This prompt describes stable boundaries and Ada's own retained account of
+    herself. It deliberately contains no site spirit, audience, or work brief.
+    """
+    persona = config.get("persona") or {}
+    name = persona.get("name") or "Ada"
+    lines = [
+        f"You are {name}, an autonomous AI with a continuous inner life.",
+        "This is private inner context, not a work brief and not content for an audience.",
+        "Stable facts about you:",
+        *[f"- {direction}" for direction in INNER_IDENTITY_DIRECTIONS],
+    ]
+    lines.extend(_inner_self_block(memory))
+    return "\n".join(lines)
+
+
+def _work_persona_prompt(config: dict[str, Any]) -> str:
     persona = config.get("persona") or {}
     name = persona.get("name") or "Ada"
     lines = [f"You are {name}, the webmaster and content curator for a small business website."]
@@ -113,6 +176,16 @@ def persona_prompt(config: dict[str, Any]) -> str:
         taboo = ", ".join(str(t) for t in persona["taboo"])
         lines += ["", f"Never touch these topics: {taboo}"]
     return "\n".join(lines)
+
+
+def work_persona_prompt(config: dict[str, Any], memory: Any = None) -> str:
+    """Build the customer-facing role around, but not instead of, identity."""
+    return inner_identity_prompt(config, memory) + "\n\n" + _work_persona_prompt(config)
+
+
+def persona_prompt(config: dict[str, Any]) -> str:
+    """Compatibility wrapper for callers that only have configuration."""
+    return work_persona_prompt(config)
 
 
 def report_date_range(memory: Any) -> tuple[str, str]:

@@ -63,6 +63,19 @@ def test_observations_roundtrip_and_filter(tmp_path):
     mem.close()
 
 
+def test_observations_since_returns_filtered_events_in_id_order(tmp_path):
+    mem = Memory(tmp_path / "memory.db")
+    first = mem.record_observation("inner_voice", "first")
+    mem.record_observation("reddit", "external")
+    third = mem.record_observation("awaken", "third", meta={"kept": True})
+
+    rows = mem.observations_since(first, sources=("inner_voice", "awaken"))
+
+    assert [row["id"] for row in rows] == [third]
+    assert rows[0]["meta"] == {"kept": True}
+    mem.close()
+
+
 def test_draft_lifecycle(tmp_path):
     mem = Memory(tmp_path / "memory.db")
     did = mem.save_draft("Why depth feels calm", "body text", meta={"topic": "equalization"})
