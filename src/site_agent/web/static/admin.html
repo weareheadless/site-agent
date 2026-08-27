@@ -5,13 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ada Admin</title>
 <style>
-:root{--bg:#0b1017;--card:#111a24;--panel:#0d1520;--line:#22303f;--text:#e8eef5;--dim:#8b98a8;--accent:#7ec8ff;--brand:#9edbd1;--ok:#4ade80;--warn:#f0c25e;--bad:#ff7a8a;--radius:14px;--font-body:-apple-system,Segoe UI,Roboto,sans-serif;--font-display:var(--font-body)}
+:root{--bg:#f4f6f2;--card:#fffdfa;--panel:#eaf0eb;--line:#d0d9d2;--text:#1d2924;--dim:#66756d;--accent:#176b5f;--brand:#a85b3b;--ok:#2f7d50;--warn:#a7651d;--bad:#b84f4d;--radius:12px;--font-body:Avenir Next,Inter,ui-sans-serif,sans-serif;--font-display:Iowan Old Style,Palatino Linotype,Georgia,serif}
 *{box-sizing:border-box;margin:0}
 html,body{height:100%}
 body{background:var(--bg);color:var(--text);font:15px/1.55 var(--font-body);display:flex;flex-direction:column}
-button{background:var(--line);border:1px solid transparent;color:var(--text);border-radius:10px;padding:8px 14px;cursor:pointer;font-size:13.5px;transition:border-color .15s,background .15s}
+button{background:var(--panel);border:1px solid var(--line);color:var(--text);border-radius:10px;padding:8px 14px;cursor:pointer;font-size:13.5px;transition:border-color .15s,background .15s}
 button:hover{border-color:var(--accent)}
-button.primary{background:var(--accent);color:var(--bg);font-weight:600}
+button.primary{background:var(--accent);color:#fff;font-weight:600}
 button.approve{border-color:var(--ok);color:var(--ok);background:transparent}
 button.decline{border-color:var(--bad);color:var(--bad);background:transparent}
 button.tabbtn{border:none;background:none;color:var(--dim);padding:9px 4px;margin-right:22px;font-size:15px;border-bottom:2px solid transparent;border-radius:0}
@@ -40,9 +40,9 @@ header .spend{margin-right:auto;color:var(--dim);font-size:12.5px}
 #body{flex:1;display:flex;min-height:0}
 
 #main{flex:1;overflow-y:auto;padding:22px 26px;min-width:0}
-#chat{width:400px;flex-shrink:0;border-left:1px solid var(--line);border-left-color:rgba(126,200,255,.2);display:flex;flex-direction:column;min-height:0;overflow:hidden;background:linear-gradient(180deg,rgba(126,200,255,.06),transparent 240px),var(--card);box-shadow:inset 1px 0 0 rgba(126,200,255,.12)}
-#chat .chead{padding:12px 16px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:center;background:linear-gradient(120deg,rgba(158,219,209,.16),transparent 60%)}
-#chat .chead strong{font:500 14px var(--font-display);color:var(--brand);text-shadow:0 0 14px rgba(158,219,209,.3)}
+#chat{width:400px;flex-shrink:0;border-left:1px solid var(--line);display:flex;flex-direction:column;min-height:0;overflow:hidden;background:var(--card);box-shadow:inset 1px 0 0 color-mix(in srgb,var(--accent) 12%,transparent)}
+#chat .chead{padding:12px 16px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:center;background:var(--panel)}
+#chat .chead strong{font:500 14px var(--font-display);color:var(--brand)}
 #chat select{flex:1;background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--text);padding:6px 8px;font-size:12.5px}
 #chatlog{flex:1;overflow-y:auto;padding:14px 16px;display:flex;flex-direction:column;gap:10px;min-height:0}
 .msg{padding:9px 13px;border-radius:12px;max-width:92%;font-size:13.5px;line-height:1.5}
@@ -82,7 +82,7 @@ header .spend{margin-right:auto;color:var(--dim);font-size:12.5px}
 .subpanel.on{display:block}
 
 .kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-bottom:16px}
-.kpi{background:linear-gradient(160deg,color-mix(in srgb,var(--accent) 12%,var(--card)),var(--card) 55%);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px}
 .kpi .num{font:400 30px var(--font-display);color:var(--text);margin-top:2px}
 .kpi .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--accent)}
 .kpi .delta{font-size:12px;margin-top:6px}
@@ -146,8 +146,8 @@ header .spend{margin-right:auto;color:var(--dim);font-size:12.5px}
 .repo-notice button{margin-top:2px}
 /* owner home */
 .home-shell{max-width:980px;margin:0 auto}
-.home-intro{display:grid;grid-template-columns:minmax(0,1fr) minmax(230px,300px);gap:24px;align-items:stretch;padding:26px 28px;margin-bottom:18px;background:radial-gradient(circle at 12% 0%,color-mix(in srgb,var(--brand) 18%,transparent),transparent 44%),linear-gradient(135deg,color-mix(in srgb,var(--accent) 9%,var(--card)),var(--card) 62%);border:1px solid color-mix(in srgb,var(--brand) 30%,var(--line));border-radius:18px;overflow:hidden;position:relative}
-.home-intro:after{content:"";position:absolute;width:230px;height:230px;right:-96px;top:-116px;border:1px solid color-mix(in srgb,var(--brand) 28%,transparent);border-radius:50%;box-shadow:0 0 0 18px color-mix(in srgb,var(--brand) 5%,transparent),0 0 0 37px color-mix(in srgb,var(--brand) 3%,transparent);pointer-events:none}
+.home-intro{display:grid;grid-template-columns:minmax(0,1fr) minmax(230px,300px);gap:24px;align-items:stretch;padding:26px 28px;margin-bottom:18px;background:var(--card);border:1px solid var(--line);border-left:4px solid var(--brand);border-radius:var(--radius);overflow:hidden;position:relative}
+.home-intro:after{display:none}
 .home-eyebrow{display:block;color:var(--brand);font-size:10px;font-weight:600;letter-spacing:.14em;text-transform:uppercase}
 .home-intro h1{font:400 clamp(28px,4vw,44px)/1.05 var(--font-display);letter-spacing:-.025em;margin:8px 0 9px;max-width:600px}
 .home-intro p{color:var(--dim);font-size:14px;max-width:570px;margin:0}
@@ -179,13 +179,13 @@ header .spend{margin-right:auto;color:var(--dim);font-size:12.5px}
 .home-empty strong{display:block;color:var(--text);font-weight:500;margin-bottom:3px}
 .home-columns{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr);gap:16px}
 .home-columns .home-section{height:100%;margin-bottom:0}
-.home-handling{background:linear-gradient(145deg,color-mix(in srgb,var(--brand) 8%,var(--card)),var(--card) 65%)}
+.home-handling{background:var(--card)}
 .home-handling .handling-line{display:flex;gap:12px;align-items:flex-start;padding-top:3px}
 .home-handling .handling-line .pulse{width:8px;height:8px;margin-top:6px;border-radius:50%;background:var(--accent);box-shadow:0 0 9px var(--accent);flex-shrink:0}
 .home-handling .handling-copy{font-size:13px;line-height:1.5}
 .home-handling .handling-copy strong{display:block;font-weight:600;margin-bottom:3px}
-.home-dialog{width:min(620px,calc(100% - 32px));padding:0;background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:16px;box-shadow:0 25px 80px rgba(0,0,0,.55)}
-.home-dialog::backdrop{background:rgba(3,8,14,.72);backdrop-filter:blur(3px)}
+.home-dialog{width:min(620px,calc(100% - 32px));padding:0;background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:16px;box-shadow:0 25px 80px rgba(29,41,36,.2)}
+.home-dialog::backdrop{background:rgba(29,41,36,.28);backdrop-filter:blur(3px)}
 .home-dialog .dialog-inner{padding:22px}
 .home-dialog h2{font:500 22px/1.2 var(--font-display);margin-bottom:5px}
 .home-dialog .dialog-summary{color:var(--dim);font-size:13px;margin-bottom:14px}
@@ -196,7 +196,7 @@ header .spend{margin-right:auto;color:var(--dim);font-size:12.5px}
 .conversation-row .conversation-meta{color:var(--dim);font-size:12px;margin-top:2px}
 .conversation-row .conversation-actions{display:flex;gap:7px;flex-wrap:wrap;justify-content:flex-end}
 .home-dialog .dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
-.more-details{max-width:980px;margin:20px auto 0;background:var(--card);border:1px solid var(--line);border-radius:15px}
+.more-details{max-width:980px;margin:20px auto 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius)}
 .more-details>summary{cursor:pointer;padding:15px 19px;color:var(--text);font-size:13px;font-weight:600;list-style:none}
 .more-details>summary::-webkit-details-marker{display:none}
 .more-details>summary:before{content:"+";display:inline-block;width:20px;color:var(--brand);font-size:17px;font-weight:400;vertical-align:-1px}
@@ -212,9 +212,11 @@ header .spend{margin-right:auto;color:var(--dim);font-size:12.5px}
 .citem{border-bottom:1px solid var(--line);padding-bottom:8px;margin-bottom:8px}
 .citem:last-child{border-bottom:none;padding-bottom:0;margin-bottom:0}
 .cfield textarea{min-height:88px}
-@media(max-width:1100px){#chat{display:none}#body{flex-direction:column}.grid.cols-2,.grid.cols-3{grid-template-columns:1fr}.kpis{grid-template-columns:1fr 1fr}}
-@media(max-width:760px){.home-intro{grid-template-columns:1fr;padding:21px}.home-intro:after{right:-115px}.home-columns{grid-template-columns:1fr}.home-action{grid-template-columns:1fr;gap:11px}.home-action .action-buttons{justify-content:flex-start}.home-section{padding:17px 15px}}
-@media(max-width:640px){.kpis{grid-template-columns:1fr}.home-intro h1{font-size:32px}.home-section-head h2{font-size:19px}.more-details-inner{padding-left:13px;padding-right:13px}}
+@media(max-width:1100px){#body{flex-direction:column;overflow-y:auto}#main{flex:0 0 auto;overflow:visible}#chat{width:100%;height:390px;border-left:none;border-top:1px solid var(--line);box-shadow:none}.grid.cols-2,.grid.cols-3{grid-template-columns:1fr}.kpis{grid-template-columns:1fr 1fr}}
+@media(max-width:760px){header{padding:12px 14px;gap:8px;flex-wrap:wrap}header .brand{width:100%;margin-right:0}header .spend{display:none}button.tabbtn{margin-right:12px}.home-intro{grid-template-columns:1fr;padding:21px}.home-intro:after{right:-115px}.home-columns{grid-template-columns:1fr}.home-action{grid-template-columns:1fr;gap:11px}.home-action .action-buttons{justify-content:flex-start}.home-section{padding:17px 15px}.conversation-row{grid-template-columns:1fr}.conversation-row .conversation-actions{justify-content:flex-start}}
+@media(max-width:640px){.kpis{grid-template-columns:1fr}.home-intro h1{font-size:32px}.home-section-head h2{font-size:19px}.more-details-inner{padding-left:13px;padding-right:13px}#chat{height:430px}#chat .chead{flex-wrap:wrap}#chat .chead strong{width:100%}#chat .chead select{min-width:0}}
+button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-visible,summary:focus-visible{outline:3px solid color-mix(in srgb,var(--accent) 45%,transparent);outline-offset:3px}
+#login input:focus-visible,.cfield input:focus-visible,.cfield textarea:focus-visible{outline:3px solid color-mix(in srgb,var(--accent) 45%,transparent);outline-offset:3px}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
 </style>
 </head>
@@ -232,9 +234,9 @@ header .spend{margin-right:auto;color:var(--dim);font-size:12.5px}
   <header>
     <div class="brand"><img class="logo" id="logo" src="" alt=""><span id="instance">Dashboard</span></div>
     <button class="tabbtn on" data-tab="overview" onclick="switchTab('overview')">Home</button>
-    <button class="tabbtn" data-tab="content" onclick="switchTab('content')">Content</button>
+    <button class="tabbtn" data-tab="content" onclick="switchTab('content')">Website</button>
     <button class="tabbtn" data-tab="design" onclick="switchTab('design')">Review</button>
-    <button class="tabbtn" data-tab="media" onclick="switchTab('media')">Media</button>
+    <button class="tabbtn" data-tab="media" onclick="switchTab('media')">Photos</button>
     <span class="spend" id="spend"></span>
     <button class="quiet" onclick="logout()">Sign out</button>
   </header>
@@ -362,8 +364,8 @@ header .spend{margin-right:auto;color:var(--dim);font-size:12.5px}
 
       <div id="tab-content" style="display:none">
         <div class="overview-head">
-          <div class="big" style="font-size:22px">Website content<small>Edit the copy the site shows — save publishes straight to GitHub.</small></div>
-          <button class="primary" id="contentSave" onclick="saveContent()">Save & publish</button>
+          <div class="big" style="font-size:22px">Website content<small>Edit the words your visitors see.</small></div>
+          <button class="primary" id="contentSave" onclick="saveContent()">Save changes</button>
         </div>
         <div id="contentEditor" class="card"><span class="muted small">Loading content…</span></div>
         <div id="contentStatus" class="muted small" style="margin-top:8px"></div>
@@ -398,8 +400,8 @@ header .spend{margin-right:auto;color:var(--dim);font-size:12.5px}
 
       <div id="tab-media" style="display:none">
         <div class="card">
-          <h2>Upload an image to Cloudflare R2</h2>
-          <p class="muted small" style="margin-bottom:14px">Drop an image here (or click to browse). It lands in your R2 bucket and you get a copy-ready URL to use anywhere on the site. Tell Ada in chat to use it on a page.</p>
+          <h2>Add a photo</h2>
+          <p class="muted small" style="margin-bottom:14px">Drop a photo here, or click to browse. Ada can place it on the site when you ask.</p>
           <div id="mediaDrop">Drop an image here, or click to choose…</div>
           <input id="mediaFile" type="file" accept="image/*" style="display:none">
           <div id="mediaStatus" class="muted small"></div>
@@ -825,7 +827,7 @@ async function loadContent(){
 async function saveContent(){
   const btn=document.getElementById('contentSave');
   spin(btn,'Publishing…');
-  try{await api('/content',{method:'POST',body:JSON.stringify({content:contentData})});flashDone(btn);document.getElementById('contentStatus').innerHTML='<span class="ok">✓ Saved & published to GitHub.</span>'}
+  try{await api('/content',{method:'POST',body:JSON.stringify({content:contentData})});flashDone(btn);document.getElementById('contentStatus').innerHTML='<span class="ok">✓ Changes saved.</span>'}
   catch(e){unspin(btn);document.getElementById('contentStatus').innerHTML=`<span class="bad">${esc(e.message)}</span>`}
 }
 

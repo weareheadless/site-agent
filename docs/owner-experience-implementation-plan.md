@@ -627,18 +627,18 @@ Acceptance criteria:
 
 - [ ] Separate Ada's neutral UI tokens from the customer brand theme.
 - [ ] Use customer color only for the accent, focus, and meaningful status.
-- [ ] Adopt a bright off-white surface, graphite text, and restrained dividers.
-- [ ] Reduce decorative cards and gradients.
-- [ ] Rename navigation to `Home`, `Website`, `Review`, `Photos`, and
+- [x] Adopt a bright off-white surface, graphite text, and restrained dividers.
+- [x] Reduce decorative cards and gradients.
+- [x] Rename navigation to `Home`, `Website`, `Review`, `Photos`, and
       `More details`.
 - [ ] Build a two-row desktop chat header with a full-width conversation
       selector and compact `New chat` / `More` controls.
 - [ ] Put Archive and Delete permanently in the selected conversation menu.
 - [ ] Ensure flex and grid children use safe shrinking and never overflow.
-- [ ] Replace the current mobile behavior that hides chat with an accessible
+- [x] Replace the current mobile behavior that hides chat with an accessible
       chat drawer or panel.
-- [ ] Make Review controls wrap cleanly at tablet widths.
-- [ ] Add visible keyboard focus and `prefers-reduced-motion` handling.
+- [x] Make Review controls wrap cleanly at tablet widths.
+- [x] Add visible keyboard focus and `prefers-reduced-motion` handling.
 - [ ] Check desktop, tablet, and mobile screenshots in the live browser panel.
 
 Acceptance criteria:

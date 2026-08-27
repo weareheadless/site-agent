@@ -390,15 +390,15 @@ def test_theme_endpoint_defaults_and_overrides(runtime):
     memory, config, _, _, client = runtime
     _login(client)
     theme = client.get("/api/theme").json()
-    assert theme["bg"] == "#0b1017"
-    assert theme["accent"] == "#7ec8ff"
+    assert theme["bg"] == "#f4f6f2"
+    assert theme["accent"] == "#176b5f"
     assert "font_body" in theme and "fonts_url" in theme
 
     config["admin"]["theme"] = {"bg": "#061116", "accent": "#9edbd1"}
     theme2 = client.get("/api/theme").json()
     assert theme2["bg"] == "#061116"
     assert theme2["accent"] == "#9edbd1"
-    assert theme2["card"] == "#111a24"  # untouched fields keep defaults
+    assert theme2["card"] == "#fffdfa"  # untouched fields keep defaults
 
 
 def test_restore_version_creates_pending_rollback(runtime):
@@ -474,7 +474,9 @@ def test_design_ui_uses_internal_review_state(runtime):
     assert "loadBuildStatus" not in html
     assert "function watchBackgroundJob(jobId)" in html
     assert 'data-tab="overview" onclick="switchTab(\'overview\')">Home</button>' in html
+    assert 'data-tab="content" onclick="switchTab(\'content\')">Website</button>' in html
     assert 'data-tab="design" onclick="switchTab(\'design\')">Review</button>' in html
+    assert 'data-tab="media" onclick="switchTab(\'media\')">Photos</button>' in html
     assert "Website versions" in html
     assert "Preview this version" in html
     assert "Bring this version back" in html
@@ -495,6 +497,9 @@ def test_design_ui_uses_internal_review_state(runtime):
     assert "prompt(" not in html
     assert "Conversations" in html
     assert "conversationDialog" in html
+    assert "#chat{width:100%;height:390px" in html
+    assert "#chat{display:none}" not in html
+    assert "focus-visible" in html
     assert "openConversationManager" in html
     assert "archiveConversation" in html
     assert "deleteConversation" in html
