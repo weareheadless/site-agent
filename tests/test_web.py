@@ -495,7 +495,10 @@ def test_design_ui_uses_internal_review_state(runtime):
     assert "Keep current" in html
     assert "feedbackDialog" in html
     assert "prompt(" not in html
-    assert "Conversations" in html
+    assert "Manage conversations" in html
+    assert "chat-titlebar" in html
+    assert "New chat" in html
+    assert ">More</button>" in html
     assert "conversationDialog" in html
     assert "#chat{width:100%;height:390px" in html
     assert "#chat{display:none}" not in html

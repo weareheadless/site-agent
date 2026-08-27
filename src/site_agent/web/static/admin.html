@@ -41,9 +41,12 @@ header .spend{margin-right:auto;color:var(--dim);font-size:12.5px}
 
 #main{flex:1;overflow-y:auto;padding:22px 26px;min-width:0}
 #chat{width:400px;flex-shrink:0;border-left:1px solid var(--line);display:flex;flex-direction:column;min-height:0;overflow:hidden;background:var(--card);box-shadow:inset 1px 0 0 color-mix(in srgb,var(--accent) 12%,transparent)}
-#chat .chead{padding:12px 16px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:center;background:var(--panel)}
-#chat .chead strong{font:500 14px var(--font-display);color:var(--brand)}
-#chat select{flex:1;background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--text);padding:6px 8px;font-size:12.5px}
+#chat .chead{padding:12px 16px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:9px;align-items:stretch;background:var(--panel);min-width:0}
+#chat .chat-titlebar{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}
+#chat .chat-titlebar strong{font:500 14px var(--font-display);color:var(--brand);min-width:0}
+#chat .chat-actions{display:flex;gap:6px;flex-shrink:0}
+#chat .chat-actions button{padding:5px 9px;font-size:12px}
+#chat select{width:100%;min-width:0;background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--text);padding:7px 8px;font-size:12.5px}
 #chatlog{flex:1;overflow-y:auto;padding:14px 16px;display:flex;flex-direction:column;gap:10px;min-height:0}
 .msg{padding:9px 13px;border-radius:12px;max-width:92%;font-size:13.5px;line-height:1.5}
 .msg.owner{align-self:flex-end;white-space:pre-wrap;background:color-mix(in srgb, var(--accent) 16%, transparent);border:1px solid color-mix(in srgb, var(--accent) 45%, transparent)}
@@ -196,6 +199,7 @@ header .spend{margin-right:auto;color:var(--dim);font-size:12.5px}
 .conversation-row .conversation-meta{color:var(--dim);font-size:12px;margin-top:2px}
 .conversation-row .conversation-actions{display:flex;gap:7px;flex-wrap:wrap;justify-content:flex-end}
 .home-dialog .dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 .more-details{max-width:980px;margin:20px auto 0;background:var(--card);border:1px solid var(--line);border-radius:var(--radius)}
 .more-details>summary{cursor:pointer;padding:15px 19px;color:var(--text);font-size:13px;font-weight:600;list-style:none}
 .more-details>summary::-webkit-details-marker{display:none}
@@ -214,7 +218,7 @@ header .spend{margin-right:auto;color:var(--dim);font-size:12.5px}
 .cfield textarea{min-height:88px}
 @media(max-width:1100px){#body{flex-direction:column;overflow-y:auto}#main{flex:0 0 auto;overflow:visible}#chat{width:100%;height:390px;border-left:none;border-top:1px solid var(--line);box-shadow:none}.grid.cols-2,.grid.cols-3{grid-template-columns:1fr}.kpis{grid-template-columns:1fr 1fr}}
 @media(max-width:760px){header{padding:12px 14px;gap:8px;flex-wrap:wrap}header .brand{width:100%;margin-right:0}header .spend{display:none}button.tabbtn{margin-right:12px}.home-intro{grid-template-columns:1fr;padding:21px}.home-intro:after{right:-115px}.home-columns{grid-template-columns:1fr}.home-action{grid-template-columns:1fr;gap:11px}.home-action .action-buttons{justify-content:flex-start}.home-section{padding:17px 15px}.conversation-row{grid-template-columns:1fr}.conversation-row .conversation-actions{justify-content:flex-start}}
-@media(max-width:640px){.kpis{grid-template-columns:1fr}.home-intro h1{font-size:32px}.home-section-head h2{font-size:19px}.more-details-inner{padding-left:13px;padding-right:13px}#chat{height:430px}#chat .chead{flex-wrap:wrap}#chat .chead strong{width:100%}#chat .chead select{min-width:0}}
+@media(max-width:640px){.kpis{grid-template-columns:1fr}.home-intro h1{font-size:32px}.home-section-head h2{font-size:19px}.more-details-inner{padding-left:13px;padding-right:13px}#chat{height:430px}#chat .chead{flex-wrap:nowrap}#chat .chat-titlebar{align-items:flex-start}#chat .chat-titlebar strong{width:auto}#chat .chat-actions button{padding-left:7px;padding-right:7px}}
 button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible,textarea:focus-visible,summary:focus-visible{outline:3px solid color-mix(in srgb,var(--accent) 45%,transparent);outline-offset:3px}
 #login input:focus-visible,.cfield input:focus-visible,.cfield textarea:focus-visible{outline:3px solid color-mix(in srgb,var(--accent) 45%,transparent);outline-offset:3px}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
@@ -416,10 +420,15 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible,te
 
     <div id="chat">
       <div class="chead">
-         <strong>Talk to Ada</strong>
-         <select id="convsel" onchange="pickConversation()"></select>
-          <button class="quiet" id="manageconvbtn" onclick="openConversationManager()" title="Manage conversations">Conversations</button>
-         <button class="quiet" id="newconvbtn" onclick="newConversation()" title="New conversation">＋</button>
+        <div class="chat-titlebar">
+          <strong>Talk to Ada</strong>
+          <div class="chat-actions">
+            <button class="quiet" id="manageconvbtn" onclick="openConversationManager()" title="Manage conversations">More</button>
+            <button class="quiet" id="newconvbtn" onclick="newConversation()" title="Start a new conversation">New chat</button>
+          </div>
+        </div>
+        <label class="sr-only" for="convsel">Conversation</label>
+        <select id="convsel" onchange="pickConversation()"></select>
       </div>
       <div id="chatlog"></div>
       <div id="thinking"><div class="dots"><span></span><span></span><span></span></div><div class="steplist"></div></div>

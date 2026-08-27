@@ -631,10 +631,10 @@ Acceptance criteria:
 - [x] Reduce decorative cards and gradients.
 - [x] Rename navigation to `Home`, `Website`, `Review`, `Photos`, and
       `More details`.
-- [ ] Build a two-row desktop chat header with a full-width conversation
-      selector and compact `New chat` / `More` controls.
-- [ ] Put Archive and Delete permanently in the selected conversation menu.
-- [ ] Ensure flex and grid children use safe shrinking and never overflow.
+- [x] Build a two-row desktop chat header with a full-width conversation
+       selector and compact `New chat` / `More` controls.
+- [x] Put Archive and Delete permanently in the selected conversation menu.
+- [x] Ensure flex and grid children use safe shrinking and never overflow.
 - [x] Replace the current mobile behavior that hides chat with an accessible
       chat drawer or panel.
 - [x] Make Review controls wrap cleanly at tablet widths.
