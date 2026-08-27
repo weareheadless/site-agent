@@ -475,6 +475,10 @@ def test_design_ui_uses_internal_review_state(runtime):
     assert "function watchBackgroundJob(jobId)" in html
     assert 'data-tab="overview" onclick="switchTab(\'overview\')">Home</button>' in html
     assert 'data-tab="design" onclick="switchTab(\'design\')">Review</button>' in html
+    assert "Website versions" in html
+    assert "Preview this version" in html
+    assert "Bring this version back" in html
+    assert "Recent work" in html
     assert 'id="homeNeeds"' in html
     assert 'id="homeSuggests"' in html
     assert 'id="homeHandlingSummary"' in html
@@ -489,8 +493,12 @@ def test_design_ui_uses_internal_review_state(runtime):
     assert "Keep current" in html
     assert "feedbackDialog" in html
     assert "prompt(" not in html
-    assert "Clear past" in html
-    assert "clearConversations()" in html
+    assert "Conversations" in html
+    assert "conversationDialog" in html
+    assert "openConversationManager" in html
+    assert "archiveConversation" in html
+    assert "deleteConversation" in html
+    assert "clearConversations()" not in html
 
 
 def test_content_get_and_save(runtime):

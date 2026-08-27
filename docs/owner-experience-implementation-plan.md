@@ -583,12 +583,12 @@ Acceptance criteria:
 
 ### Phase 6: History And Restore Experience
 
-- [ ] Separate generic `Recent work` from reversible `Website versions`.
+- [x] Separate generic `Recent work` from reversible `Website versions`.
 - [ ] Produce owner-facing publish summaries at write time where possible.
-- [ ] Render website versions as a readable timeline.
-- [ ] Emphasize the current version without exposing commit IDs.
-- [ ] Use `Preview this version` before any restoration approval.
-- [ ] Keep `Bring this version back` approval-gated.
+- [x] Render website versions as a readable timeline.
+- [x] Emphasize the current version without exposing commit IDs.
+- [x] Use `Preview this version` before any restoration approval.
+- [x] Keep `Bring this version back` approval-gated.
 - [ ] Put revision IDs, paths, provider receipts, and raw metadata under
       `More details`.
 - [ ] Add tests that external actions never receive website restore controls.
@@ -600,18 +600,21 @@ Acceptance criteria:
 
 ### Phase 7: Conversation Lifecycle
 
-- [ ] Replace the bulk clear route and control with per-conversation actions.
-- [ ] Add archive-one endpoint and service operation.
-- [ ] Add archived-conversation listing and restore endpoint.
-- [ ] Add permanent-delete endpoint and service operation.
-- [ ] Add `deleted_ts` through migration 10+.
-- [ ] Block archive and delete when a conversation has queued or running work.
-- [ ] On permanent deletion, remove chat messages.
-- [ ] Scrub duplicated job message, result, steps, and error content.
-- [ ] Preserve minimal job ID, status, and timestamp tombstones.
-- [ ] Keep deleted conversations inspectable by ID as explicit tombstones.
-- [ ] Add separate confirmation language for archive and permanent deletion.
-- [ ] Add conversation action diagnostics with conversation and job IDs.
+- [x] Replace the bulk clear route and control with per-conversation actions.
+- [x] Add archive-one endpoint and service operation.
+- [x] Add archived-conversation listing and restore endpoint.
+- [x] Add permanent-delete endpoint and service operation.
+- [x] Add `deleted_ts` through migration 10+.
+- [x] Block archive and delete when a conversation has queued or running work.
+- [x] On permanent deletion, remove chat messages.
+- [x] Scrub duplicated job message, result, steps, and error content.
+- [x] Preserve minimal job ID, status, and timestamp tombstones.
+- [x] Keep deleted conversations inspectable by ID as explicit tombstones.
+- [x] Add separate confirmation language for archive and permanent deletion.
+- [x] Add conversation action diagnostics with conversation and job IDs.
+
+The legacy bulk-clear endpoint remains available as a compatibility route; the
+owner UI now uses the per-conversation manager.
 
 Acceptance criteria:
 
