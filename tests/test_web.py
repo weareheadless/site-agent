@@ -184,7 +184,7 @@ def test_dirty_worktree_is_not_exposed_in_customer_ui(runtime, tmp_path):
     assert {f["path"] for f in state["files"]} == {"app.js", "scratch.txt"}
     page = client.get("/").text
     assert "repoNotice" not in page and "/site/worktree/discard" not in page
-    assert "designBuildStatus" in page and "Check again" not in page
+    assert "designBuildStatus" not in page and "Check again" not in page
 
     discarded = client.post("/api/site/worktree/discard")
     assert discarded.status_code == 200
@@ -298,8 +298,13 @@ def test_design_ui_uses_internal_review_state(runtime):
     assert "renderPreviewLink" not in html
     assert "id=\"previewlink\"" not in html
     assert 'id="preview" title="Staged site preview" sandbox="allow-same-origin"' in html
-    assert "enterReview(j.setup_draft_id)" in html
-    assert "watchBackgroundJob(r.job_id)" in html
+    assert "id=\"designBuildStatus\"" not in html
+    assert "id=\"journalSetup\"" not in html
+    assert "id=\"designNote\"" not in html
+    assert "loadBuildStatus" not in html
+    assert "function watchBackgroundJob(jobId)" in html
+    assert "Clear past" in html
+    assert "clearConversations()" in html
 
 
 def test_content_get_and_save(runtime):
@@ -826,6 +831,34 @@ def test_conversations_persist_across_chat(runtime):
     assert len(memory.list_conversations()) == 2
 
 
+def test_clear_conversations_hides_past_but_keeps_jobs(runtime):
+    memory, _, _, _, client = runtime
+    past = memory.create_conversation("past")
+    active = memory.create_conversation("active")
+    current = memory.create_conversation("current")
+    job_id = memory.enqueue_chat_job(active, "keep this job")
+    assert memory.claim_chat_job("test-worker")["id"] == job_id
+
+    _login(client)
+    response = client.post(
+        "/api/conversations/clear",
+        json={"keep_conversation_id": current},
+    )
+    assert response.status_code == 200
+    assert response.json()["archived"] == 1
+    assert {c["id"] for c in memory.list_conversations()} == {active, current}
+
+    memory.interrupt_running_chat_jobs()
+    response = client.post(
+        "/api/conversations/clear",
+        json={"keep_conversation_id": current},
+    )
+    assert response.json()["archived"] == 1
+    assert {c["id"] for c in memory.list_conversations()} == {current}
+    assert client.get(f"/api/conversations/{active}").status_code == 200
+    assert {c["id"] for c in memory.list_conversations(include_archived=True)} == {past, active, current}
+
+
 def test_chat_job_persisted_and_relistable(runtime):
     """A chat request persists as a DB job so it survives browser close and
     can be re-attached by conversation."""
@@ -1310,6 +1343,28 @@ def test_pages_endpoint_lists_published_pages(tmp_path):
     mem.close()
 
 
+def test_pages_endpoint_lists_published_pelican_listing(tmp_path):
+    import subprocess
+
+    clone = _git_clone_with_pages(tmp_path, main_pages=["index.html"])
+    (clone / "pelicanconf.py").write_text("SITEURL = 'https://example.test'\n")
+    subprocess.run(["git", "-C", str(clone), "add", "pelicanconf.py"], check=True)
+    subprocess.run(["git", "-C", str(clone), "commit", "-qm", "enable pelican"], check=True)
+    published_sha = subprocess.check_output(
+        ["git", "-C", str(clone), "rev-parse", "HEAD"], text=True
+    ).strip()
+    subprocess.run(
+        ["git", "-C", str(clone), "update-ref", "refs/remotes/origin/main", published_sha],
+        check=True,
+    )
+
+    mem, client = _pages_app(tmp_path, clone)
+    response = client.get("/api/pages")
+    assert response.status_code == 200
+    assert "articles.html" in response.json()["pages"]
+    mem.close()
+
+
 def test_pages_endpoint_merge_draft_shows_preview_pages(tmp_path):
     clone = _git_clone_with_pages(tmp_path, main_pages=["index.html"],
                                   preview_pages=["index.html", "newpage.html"])
@@ -1321,6 +1376,56 @@ def test_pages_endpoint_merge_draft_shows_preview_pages(tmp_path):
     body = r.json()
     assert "newpage.html" in body["pages"]
     assert "newpage.html" in body["new_pages"]
+    mem.close()
+
+
+def test_published_preview_serves_generated_pelican_listing(tmp_path):
+    import subprocess
+
+    clone = tmp_path / "pelicanrepo"
+    clone.mkdir()
+    run = lambda *args: subprocess.run(["git", "-C", str(clone), *args], check=True, capture_output=True)
+    run("init", "-q", "-b", "main")
+    run("config", "user.email", "t@t")
+    run("config", "user.name", "t")
+    (clone / "build.sh").write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "mkdir -p output/theme/css\n"
+        "printf '<link rel=\"stylesheet\" href=\"https://example.test/theme/site.css\">' > output/articles.html\n"
+        "printf 'body { color: red; }' > output/theme/css/site.css\n"
+    )
+    (clone / "pelicanconf.py").write_text("SITEURL = 'https://example.test'\n")
+    (clone / "index.html").write_text("<html>published</html>\n")
+    run("add", "-A")
+    run("commit", "-qm", "published pelican site")
+    published_sha = subprocess.check_output(
+        ["git", "-C", str(clone), "rev-parse", "HEAD"], text=True
+    ).strip()
+    run("update-ref", "refs/remotes/origin/main", published_sha)
+
+    mem = Memory(tmp_path / "memory.db")
+    config = {
+        "env": {"admin_password": "SITE_AGENT_ADMIN_PASSWORD", "github_token": "GITHUB_TOKEN"},
+        "site": {
+            "adapter": "github_static",
+            "repository": "acme/site",
+            "content_path": "content.json",
+            "clone_path": str(clone),
+        },
+        "blog": {"site_url": "https://example.test"},
+        "admin": {},
+    }
+    env = {"SITE_AGENT_ADMIN_PASSWORD": "sekret"}
+    app = create_app({"config": config, "memory": mem, "llm": None, "scheduler": None}, env=env)
+    with TestClient(app, base_url="https://testserver") as client:
+        _login(client)
+        page = client.get("/api/preview/articles.html")
+        css = client.get("/api/preview/theme/css/site.css")
+        assert page.status_code == 200
+        assert 'href="./theme/site.css"' in page.text
+        assert css.status_code == 200
+        assert css.text == "body { color: red; }"
     mem.close()
 
 

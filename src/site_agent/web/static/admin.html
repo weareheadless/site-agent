@@ -138,10 +138,6 @@ header .spend{margin-right:auto;color:var(--dim);font-size:12.5px}
 .repo-notice .repo-files{display:flex;flex-wrap:wrap;gap:5px;margin:9px 0 10px}
 .repo-notice code{background:var(--panel);border:1px solid var(--line);border-radius:5px;padding:2px 6px;font:11px ui-monospace,monospace;color:var(--text)}
 .repo-notice button{margin-top:2px}
-.build-status{border-left:3px solid var(--accent);background:linear-gradient(120deg,color-mix(in srgb,var(--accent) 10%,var(--card)),var(--card) 60%)}
-.build-status h2{margin-bottom:8px}
-.build-status .build-step{font:12px ui-monospace,monospace;color:var(--dim);padding:2px 0}
-
 /* content editor */
 .cfgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:18px}
 .cfield{display:flex;flex-direction:column;gap:6px}
@@ -233,27 +229,15 @@ header .spend{margin-right:auto;color:var(--dim);font-size:12.5px}
       </div>
 
       <div id="tab-design" style="display:none">
-        <div id="designBuildStatus" class="card build-status" style="display:none">
-          <h2>Ada is building</h2>
-          <div id="designBuildSteps"></div>
-        </div>
         <div style="display:flex;gap:10px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
           <label class="muted small" for="pageSel">Page</label>
           <select id="pageSel" onchange="reloadPreview()" style="background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--text);padding:6px 10px;font-size:13px;max-width:220px"></select>
-          <span id="designNote" class="muted small"></span>
           <button class="quiet" onclick="reloadPreview()">Refresh preview</button>
           <button id="btnApprove" class="approve" style="display:none" onclick="reviewDecide('approve')">✓ Approve &amp; publish</button>
-         <button id="btnReject" class="decline" style="display:none" onclick="reviewDecide('reject')">✕ Reject</button>
-           <a id="openlive" href="#" target="_blank" class="muted small" style="margin-left:auto">open live ↗</a>
-         </div>
-         <div id="journalSetup" class="card" style="margin-bottom:12px;display:none">
-           <h2 id="journalSetupTitle">Ada's journal</h2>
-           <p id="journalSetupText" class="muted small"></p>
-           <button id="journalReviewBtn" class="quiet" onclick="reviewJournal()" style="display:none;margin-right:8px">Review in Design</button>
-           <button id="journalEnableBtn" class="primary" onclick="enableJournal()">Design the journal pages</button>
-           <span id="journalSetupNote" class="muted small" style="margin-left:8px"></span>
+          <button id="btnReject" class="decline" style="display:none" onclick="reviewDecide('reject')">✕ Reject</button>
+            <a id="openlive" href="#" target="_blank" class="muted small" style="margin-left:auto">open live ↗</a>
           </div>
-         <iframe id="preview" title="Staged site preview" sandbox="allow-same-origin"></iframe>
+          <iframe id="preview" title="Staged site preview" sandbox="allow-same-origin"></iframe>
         <div id="historyWrap" class="card" style="margin-top:16px">
           <h2>Version history</h2>
           <div id="historyList"><span class="muted small">Loading…</span></div>
@@ -278,8 +262,9 @@ header .spend{margin-right:auto;color:var(--dim);font-size:12.5px}
 
     <div id="chat">
       <div class="chead">
-        <strong>Talk to Ada</strong>
-        <select id="convsel" onchange="pickConversation()"></select>
+         <strong>Talk to Ada</strong>
+         <select id="convsel" onchange="pickConversation()"></select>
+         <button class="quiet" id="clearconvbtn" onclick="clearConversations()" title="Hide past conversations">Clear past</button>
          <button class="quiet" id="newconvbtn" onclick="newConversation()" title="New conversation">＋</button>
       </div>
       <div id="chatlog"></div>
@@ -357,7 +342,7 @@ function flashDone(btn){
 
 let convId=null, busy=false, review=null;
 let journalSetupJobId=null, journalSetupDraftId=null, journalLastStatus='';
-let backgroundJobs=new Set(), buildStatusTimer=null;
+let backgroundJobs=new Set();
 
 function switchTab(name){
   document.querySelectorAll('.tabbtn').forEach(b=>b.classList.toggle('on',b.dataset.tab===name));
@@ -365,8 +350,7 @@ function switchTab(name){
   document.getElementById('tab-content').style.display=name==='content'?'':'none';
   document.getElementById('tab-design').style.display=name==='design'?'':'none';
   document.getElementById('tab-media').style.display=name==='media'?'':'none';
-  if(name!=='design'){clearInterval(buildStatusTimer);buildStatusTimer=null}
-   if(name==='design'){setDesignButtons();autoReview();loadHistory();loadJournal();startBuildStatus()}
+   if(name==='design'){setDesignButtons();autoReview();loadHistory();loadJournal()}
   if(name==='media') loadMedia();
   if(name==='content') loadContent();
 }
@@ -385,26 +369,6 @@ async function autoReview(){
 function switchSub(name){
   document.querySelectorAll('.subtab').forEach(b=>b.classList.toggle('on',b.dataset.sub===name));
   document.querySelectorAll('.subpanel').forEach(p=>p.classList.toggle('on',p.id==='sub-'+name));
-}
-function startBuildStatus(){
-  clearInterval(buildStatusTimer);
-  loadBuildStatus();
-  buildStatusTimer=setInterval(loadBuildStatus,1800);
-}
-async function loadBuildStatus(){
-  const card=document.getElementById('designBuildStatus');
-  const list=document.getElementById('designBuildSteps');
-  if(!card||!list)return;
-  try{
-    const r=await api('/chat/jobs');
-    const job=(r.jobs||[])[0];
-    if(!job){card.style.display='none';list.innerHTML='';return}
-    const steps=(job.steps||[]).slice(-8);
-    card.style.display='block';
-    list.innerHTML=steps.length
-      ? steps.map(s=>`<div class="build-step">· ${esc(s.text||'working')}</div>`).join('')
-      : '<div class="build-step">· starting…</div>';
-  }catch(e){/* chat progress remains available elsewhere */}
 }
 async function boot(){
   try{const s=await api('/session');if(!s.authenticated)return showLogin()}catch(e){return}
@@ -548,17 +512,12 @@ async function decline(id){
 async function view(id){const d=await api(`/drafts/${id}`);const w=window.open('','_blank','width=760,height=820');w.document.write(`<title>${esc(d.title)}</title><body style="font-family:Georgia,serif;max-width:660px;margin:40px auto;line-height:1.6">${md(d.body)}</body>`)}
 /* ---- design preview / review ---- */
 function setDesignButtons(){
-  const a=document.getElementById('btnApprove'),r=document.getElementById('btnReject');
-  const note=document.getElementById('designNote');
-  if(!review){a.style.display='none';r.style.display='none';note.textContent='Review a staged change from To-do, or ask Ada in chat to design something.';return}
-  if(review.decided){
-    a.style.display='none';r.style.display='none';
-    note.textContent=review.decided==='approve'
-      ?'✓ Approved — the site is rebuilding (~1 min). This preview shows the merged result; tap “open live ↗” to check production.'
-      :'✕ Rejected — Ada has your note. The preview branch is rolled back, so this shows the live site again.';
-    return}
-  a.style.display='';r.style.display='';
-  note.textContent='Staged build — exactly what Ada changed on the preview branch. Approve to publish, or Reject with a note for Ada.';
+   const a=document.getElementById('btnApprove'),r=document.getElementById('btnReject');
+   if(!review){a.style.display='none';r.style.display='none';return}
+   if(review.decided){
+     a.style.display='none';r.style.display='none';
+     return}
+   a.style.display='';r.style.display='';
 }
 function enterReview(draftId){
    review={draftId};
@@ -595,8 +554,9 @@ async function loadJournal(){
      card.style.display='';
      journalSetupJobId=j.setup_job_id;
      journalSetupDraftId=j.setup_draft_id;
-     const statusChanged=j.setup_status!==journalLastStatus;
-     journalLastStatus=j.setup_status;
+     const statusKey=j.setup_status+':'+(j.setup_draft_status||'');
+     const statusChanged=statusKey!==journalLastStatus;
+     journalLastStatus=statusKey;
      const designVisible=document.getElementById('tab-design').style.display!=='none';
      if((j.setup_status==='queued'||j.setup_status==='running')&&j.setup_job_id)watchBackgroundJob(j.setup_job_id);
      if(j.setup_status==='done'&&j.setup_draft_id&&j.setup_draft_status==='pending'&&designVisible&&(!review||review.draftId!==j.setup_draft_id)){
@@ -611,9 +571,9 @@ async function loadJournal(){
         ?'Weekly journaling is active. Ada is preparing the journal design preview; nothing is published until you approve it.'+(j.setup_step?' Last update: '+j.setup_step+'.':'')
         :j.setup_status==='failed'
           ?(j.setup_error||'Ada could not create the journal design preview.')
-          :j.setup_status==='done'
-            ?'Ada has prepared the journal design preview. Review it in Design before publishing.'
-            :'Weekly journaling is active, but the journal design has not been prepared yet.';
+           :j.setup_status==='done'
+             ?'Ada has prepared the journal design preview. Review it in Design before publishing.'
+             :'Weekly journaling is active, but the journal design has not been prepared yet.';
        if(reviewBtn){
          reviewBtn.style.display=j.setup_status==='done'&&j.setup_draft_id&&j.setup_draft_status==='pending'?'inline-block':'none';
        }
@@ -741,6 +701,18 @@ async function loadConversations(){
   sel.innerHTML='<option value="">— new —</option>'+cs.conversations.map(c=>`<option value="${c.id}">${esc((c.title||'').slice(0,42))}</option>`).join('');
   if(convId)sel.value=String(convId);
   return cs.conversations;
+}
+async function clearConversations(){
+  if(busy)return;
+  if(!confirm('Hide past conversations? The current conversation and active tasks will be kept.'))return;
+  const btn=document.getElementById('clearconvbtn');
+  spin(btn,'Clearing…');
+  try{
+    const result=await api('/conversations/clear',{method:'POST',body:JSON.stringify({keep_conversation_id:convId})});
+    flashDone(btn);
+    await loadConversations();
+    addMsg('sys',`Cleared ${result.archived} past conversation${result.archived===1?'':'s'}.`);
+  }catch(e){unspin(btn);addMsg('ada','⚠ '+e.message)}
 }
 async function pickConversation(){
   if(busy)return;

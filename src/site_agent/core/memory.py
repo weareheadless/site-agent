@@ -15,7 +15,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 MIGRATIONS: dict[int, list[str]] = {
     1: [
@@ -123,6 +123,9 @@ MIGRATIONS: dict[int, list[str]] = {
         "ALTER TABLE publishes ADD COLUMN parent_sha TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE publishes ADD COLUMN actor TEXT NOT NULL DEFAULT 'ada'",
         "ALTER TABLE publishes ADD COLUMN version_type TEXT NOT NULL DEFAULT 'edit'",
+    ],
+    9: [
+        "ALTER TABLE conversations ADD COLUMN archived_ts TEXT",
     ],
 }
 
@@ -393,13 +396,39 @@ class Memory:
         return cur.lastrowid
 
     @_locked
-    def list_conversations(self, limit: int = 50) -> list[dict[str, Any]]:
-        return [
-            dict(r)
-            for r in self.conn.execute(
-                "SELECT * FROM conversations ORDER BY id DESC LIMIT ?", (limit,)
-            )
+    def list_conversations(self, limit: int = 50, include_archived: bool = False) -> list[dict[str, Any]]:
+        query = "SELECT * FROM conversations"
+        params: list[Any] = []
+        if not include_archived:
+            query += " WHERE archived_ts IS NULL"
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        return [dict(r) for r in self.conn.execute(query, params)]
+
+    @_locked
+    def get_conversation(self, conversation_id: int) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM conversations WHERE id = ?", (conversation_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    @_locked
+    def archive_conversations(self, keep_id: int | None = None) -> int:
+        """Hide old conversations without deleting their durable chat jobs."""
+        clauses = [
+            "archived_ts IS NULL",
+            "id NOT IN (SELECT conversation_id FROM chat_jobs WHERE status IN ('queued', 'running'))",
         ]
+        where_params: list[Any] = []
+        if keep_id is not None:
+            clauses.append("id != ?")
+            where_params.append(keep_id)
+        with self.conn:
+            cur = self.conn.execute(
+                f"UPDATE conversations SET archived_ts = ? WHERE {' AND '.join(clauses)}",
+                [_now(), *where_params],
+            )
+        return cur.rowcount
 
     @_locked
     def add_message(self, conversation_id: int, role: str, text: str) -> int:

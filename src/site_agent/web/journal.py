@@ -12,7 +12,7 @@ def setup_job(memory: Any) -> dict[str, Any] | None:
         job = memory.get_chat_job(int(job_id))
         if job:
             return job
-    for conversation in memory.list_conversations(limit=100):
+    for conversation in memory.list_conversations(limit=100, include_archived=True):
         if conversation.get("title") != "Set up Ada's journal":
             continue
         jobs = memory.list_chat_jobs(conversation["id"], limit=20)

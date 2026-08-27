@@ -7,6 +7,7 @@ Portable AI website content manager. One installable package, one instance direc
 - Deploy + onboarding: [docs/deploy.md](docs/deploy.md) — worked example for OceanicVibes
 - Defining a new site's persona: [docs/persona.md](docs/persona.md) — the Ada personality contract for onboarding LLMs
 - Architecture: [docs/architecture.md](docs/architecture.md) — runtime boundaries and approval flow
+- Owner experience implementation: [docs/owner-experience-implementation-plan.md](docs/owner-experience-implementation-plan.md) — active product, UI, approval, and capability roadmap
 - Debugging: [docs/debugging.md](docs/debugging.md) — job, draft, and Design preview runbook
 - Extensions: [docs/extensions.md](docs/extensions.md) — adapter, builder, provider, and MCP rules
 - Ready-made instance config: [examples/oceanicvibes.config.yaml](examples/oceanicvibes.config.yaml)

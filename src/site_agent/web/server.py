@@ -65,6 +65,32 @@ def _password_ok(config: dict[str, Any], supplied: str, env: dict[str, str]) -> 
     return hmac.compare_digest(supplied.encode(), expected.encode())
 
 
+def _git_ref_exists(clone: Path, ref: str) -> bool:
+    import subprocess
+
+    proc = subprocess.run(
+        ["git", "-C", str(clone), "rev-parse", "--verify", ref],
+        capture_output=True,
+        timeout=30,
+    )
+    return proc.returncode == 0
+
+
+def _git_ref_file_exists(clone: Path, ref: str, name: str) -> bool:
+    import subprocess
+
+    proc = subprocess.run(
+        ["git", "-C", str(clone), "cat-file", "-e", f"{ref}:{name}"],
+        capture_output=True,
+        timeout=30,
+    )
+    return proc.returncode == 0
+
+
+def _published_ref(clone: Path) -> str:
+    return "origin/main" if _git_ref_exists(clone, "origin/main") else "main"
+
+
 def _normalize_ops(meta: dict[str, Any]) -> list[dict[str, Any]]:
     """New-style ops list; tolerates the older single-file / dotted-field shapes."""
     if isinstance(meta.get("ops"), list):
@@ -253,6 +279,24 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
         memory.record_action("conversation", f"#{conv_id}: {title[:60]}")
         return {"id": conv_id, "title": title}
 
+    @app.post("/api/conversations/clear")
+    async def clear_conversations(request: Request):
+        """Hide past conversations while retaining durable job records."""
+        require_auth(request)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        keep_id = (body or {}).get("keep_conversation_id")
+        if keep_id is not None:
+            try:
+                keep_id = int(keep_id)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="keep_conversation_id must be an integer")
+        archived = memory.archive_conversations(keep_id=keep_id)
+        memory.record_action("conversation", f"archived {archived} past conversation(s)")
+        return {"ok": True, "archived": archived, "kept_conversation_id": keep_id}
+
     @app.get("/api/theme")
     def theme(request: Request):
         """Brand theme for the admin UI — per-site colors/fonts overridable from config."""
@@ -363,11 +407,11 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
     @app.get("/api/conversations/{conv_id}")
     def get_conversation(conv_id: int, request: Request):
         require_auth(request)
-        convs = {c["id"]: c for c in memory.list_conversations(limit=200)}
-        if conv_id not in convs:
+        conversation = memory.get_conversation(conv_id)
+        if conversation is None:
             raise HTTPException(status_code=404, detail="no such conversation")
         return {
-            **convs[conv_id],
+            **conversation,
             "messages": memory.get_messages(conv_id),
             "jobs": memory.list_chat_jobs(conv_id),
         }
@@ -388,13 +432,20 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
         name = file_path.lstrip("/")
         if not name:
             name = "index.html"
-        published_ref = "origin/main"
-        ref_check = subprocess.run(
-            ["git", "-C", str(clone), "rev-parse", "--verify", published_ref],
-            capture_output=True, timeout=30,
-        )
-        if ref_check.returncode != 0:
-            published_ref = "main"
+        published_ref = _published_ref(clone)
+        if _git_ref_file_exists(clone, published_ref, "pelicanconf.py"):
+            built = preview_cache.read_file(clone, published_ref, name)
+            if built:
+                if name.lower().endswith((".html", ".htm")):
+                    built = rewrite_preview_html(
+                        built,
+                        0,
+                        name,
+                        str((config.get("blog") or {}).get("site_url") or ""),
+                    )
+                mt = mimetypes.guess_type(name)[0] or "application/octet-stream"
+                return Response(content=built, media_type=mt,
+                                headers={"Cache-Control": "no-store"})
         proc = subprocess.run(
             ["git", "-C", str(clone), "show", f"{published_ref}:{name}"],
             capture_output=True, timeout=30,
@@ -554,15 +605,6 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
         )
         return sorted(pages, key=lambda p: (p != "index.html", p))
 
-    def _show_ref_file(clone: Path, ref: str, name: str) -> bool:
-        import subprocess
-
-        proc = subprocess.run(
-            ["git", "-C", str(clone), "cat-file", "-e", f"{ref}:{name}"],
-            capture_output=True, timeout=30,
-        )
-        return proc.returncode == 0
-
     @app.get("/api/pages")
     def pages(request: Request, draft_id: int | None = None):
         """Pages available to the Design-tab visualizer, plus any pages the
@@ -573,21 +615,23 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
         if not clone.exists():
             raise HTTPException(status_code=404, detail="no clone configured")
 
-        ref = "origin/main"
-        main_pages = _list_html_at(clone, "origin/main") or _list_html_at(clone, "main")
+        published_ref = _published_ref(clone)
+        ref = published_ref
+        main_pages = _list_html_at(clone, published_ref)
         draft_new: list[str] = []
         if draft_id is not None:
             draft = next((d for d in memory.list_drafts(limit=100) if d["id"] == draft_id), None)
             if draft is None:
                 raise HTTPException(status_code=404, detail="no such draft")
             if draft["status"] != "pending":
-                ref = "origin/main"
+                ref = published_ref
             elif draft["kind"] in ("merge", "rollback"):
                 # Pages the staged build adds beyond what's already published.
-                preview_pages = _list_html_at(clone, "origin/preview") or _list_html_at(clone, "preview")
-                if _show_ref_file(clone, "origin/preview", "pelicanconf.py"):
+                preview_ref = "origin/preview" if _git_ref_exists(clone, "origin/preview") else "preview"
+                preview_pages = _list_html_at(clone, preview_ref)
+                if _git_ref_file_exists(clone, preview_ref, "pelicanconf.py"):
                     preview_pages.append("articles.html")
-                ref = "origin/preview"
+                ref = preview_ref
                 draft_new = [p for p in preview_pages if p not in main_pages]
             else:  # edit draft: base pages + any write-ops (new pages) + edit-ops targets
                 ops = _normalize_ops(draft["meta"])
@@ -601,6 +645,8 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
         pages_list = _list_html_at(clone, ref)
         if not pages_list:
             pages_list = main_pages
+        if _git_ref_file_exists(clone, ref, "pelicanconf.py"):
+            pages_list.append("articles.html")
         pages_list = list(dict.fromkeys(pages_list + draft_new))
         return {"pages": pages_list, "new_pages": draft_new}
 
