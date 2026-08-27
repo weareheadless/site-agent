@@ -6,7 +6,9 @@ import time
 
 import pytest
 
+from site_agent.application.actions import OwnerActionService
 from site_agent.core.memory import Memory
+from site_agent.core.contracts import ActionPriority, ActionRequirement, OwnerAction
 from site_agent.hands import opencode_runner as runner
 from site_agent.hands import site_digest
 
@@ -376,6 +378,22 @@ def test_chat_job_records_builder_error_as_failed(tmp_path, monkeypatch):
     worker = "worker"
     job = memory.claim_chat_job(worker)
     assert job is not None
+    action = memory.create_owner_action(
+        OwnerAction(
+            capability_id="content.suggestion",
+            provider_id="site-agent",
+            title="Animate the homepage",
+            summary="Ada is preparing the change.",
+            action_label="Ask Ada to help",
+            priority=ActionPriority.OPTIONAL,
+            requirement=ActionRequirement.SUGGESTION,
+            source_ref="test:builder-failure",
+            dedupe_key="test:builder-failure",
+            state="started",
+            conversation_id=conversation_id,
+        )
+    )
+    memory.link_owner_action(action.id, job_id=job_id)
 
     from site_agent.brain import editor
 
@@ -390,7 +408,7 @@ def test_chat_job_records_builder_error_as_failed(tmp_path, monkeypatch):
     )
 
     result = run_job(
-        {"config": {"site": {}}, "memory": memory, "llm": object()},
+        {"config": {"site": {}}, "memory": memory, "llm": object(), "owner_action_service": OwnerActionService(memory)},
         job,
         worker,
         adapter_factory=lambda: object(),
@@ -400,6 +418,7 @@ def test_chat_job_records_builder_error_as_failed(tmp_path, monkeypatch):
     assert stored["status"] == "error"
     assert "Builder failed" in stored["error"]
     assert "Builder failed" in result["error"]
+    assert memory.get_owner_action(action.id).state.value == "waiting"
     memory.close()
 
 

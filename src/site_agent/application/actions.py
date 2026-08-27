@@ -117,21 +117,31 @@ class OwnerActionService:
         draft_id: int | None = None,
         artifact_id: int | None = None,
         approval_id: int | None = None,
+        job_id: int | None = None,
+        succeeded: bool = True,
     ) -> list[OwnerAction]:
-        """Complete active actions whose prepared work has finished."""
-        if draft_id is None and artifact_id is None and approval_id is None:
+        """Reconcile active actions after related work succeeds or fails."""
+        if draft_id is None and artifact_id is None and approval_id is None and job_id is None:
             return []
         matched: list[OwnerAction] = []
-        for action in self.memory.list_owner_actions(limit=500):
+        for action in self.memory.list_owner_actions(limit=500, job_id=job_id):
             if draft_id is not None and action.draft_id != draft_id:
                 continue
             if artifact_id is not None and action.artifact_id != artifact_id:
                 continue
             if approval_id is not None and action.approval_id != approval_id:
                 continue
-            if action.state in {ActionState.OPEN, ActionState.STARTED, ActionState.WAITING, ActionState.SNOOZED}:
-                matched.append(self.complete(action.id))
+            if succeeded:
+                if action.state in {ActionState.OPEN, ActionState.STARTED, ActionState.WAITING, ActionState.SNOOZED}:
+                    matched.append(self.complete(action.id))
+            elif action.state in {ActionState.OPEN, ActionState.STARTED}:
+                matched.append(self.wait(action.id))
         return matched
+
+    def link_job(self, action_id: int, job_id: int) -> OwnerAction:
+        if isinstance(job_id, bool) or not isinstance(job_id, int) or job_id <= 0:
+            raise ActionServiceError("job id must be a positive integer")
+        return self.memory.link_owner_action(action_id, job_id=job_id)
 
     @staticmethod
     def ensure_capability(capability: Capability, action: OwnerAction | None = None) -> None:

@@ -45,7 +45,7 @@ At plan creation on 2026-08-26:
 ## Current Progress
 
 - Checkpoint commit: `3989741 Checkpoint owner experience foundation`.
-- Phase 1 now has provider-neutral contracts, schema 10/11 persistence, guarded
+- Phase 1 now has provider-neutral contracts, schema 10/11/12 persistence, guarded
   transitions, payload/error redaction, and migration/round-trip tests.
 - `HomeService` and `GET /api/home` provide the first typed owner-action read
   model while legacy drafts and strategist cards remain compatibility inputs.
@@ -55,12 +55,14 @@ At plan creation on 2026-08-26:
 - Strategist cards now dual-write validated durable suggestion actions while
   preserving the legacy KV/report shape; repeated scheduled runs reuse the same
   recommendation, including after dismissal.
+- Started actions can now link to a durable chat job; successful jobs complete
+  the action and failed jobs return it to waiting for owner-visible recovery.
 - Owner action routes now expose `Start`, seven-day `Not now` by default, and
   permanent `Dismiss` without putting lifecycle logic in the server.
 - The Overview tab is now an owner Home with `Needs you`, `Ada suggests`, and
   `Ada is handling` in that order; reports, metrics, and system detail remain
   available under `More details`.
-- Current verification after this slice: 260 tests passing, `compileall`, wheel
+- Current verification after this slice: 261 tests passing, `compileall`, wheel
   build, and `git diff --check`.
 - Per-thread archive, restore, and delete routes are available; the bulk `Clear
   past` endpoint remains as a compatibility action until the final conversation
@@ -523,7 +525,7 @@ Acceptance criteria:
       do not hardcode OceanicVibes course fields in generic code.
 - [x] Add action reconciliation when a related draft, artifact, or approval
       completes.
-- [ ] Add direct chat-job linkage and reconciliation when a related job
+- [x] Add direct chat-job linkage and reconciliation when a related job
       completes.
 
 Acceptance criteria:

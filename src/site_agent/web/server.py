@@ -152,6 +152,10 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
     owner_action_service = context.get("owner_action_service") or OwnerActionService(memory)
     approval_service = context.get("approval_service") or ApprovalService(memory, actions=owner_action_service)
     conversation_service = context.get("conversation_service") or ConversationService(memory)
+    context.setdefault("home_service", home_service)
+    context.setdefault("owner_action_service", owner_action_service)
+    context.setdefault("approval_service", approval_service)
+    context.setdefault("conversation_service", conversation_service)
     sessions = Sessions()
     preview_cache = PreviewBuildCache()
     def current_token(request: Request) -> str | None:
@@ -811,12 +815,32 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
         if llm is None or (hasattr(llm, "api_key") and not llm.api_key):
             raise HTTPException(status_code=503, detail="LLM not configured")
 
+        action_id = (body or {}).get("action_id")
+        if action_id is not None:
+            try:
+                action_id = int(action_id)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="action_id must be an integer")
+            action = owner_action_service.get(action_id)
+            if action is None:
+                raise HTTPException(status_code=404, detail="no such owner action")
+
         conv_id = (body or {}).get("conversation_id")
         convs = {c["id"] for c in memory.list_conversations(limit=200)}
         if not conv_id or conv_id not in convs:
             conv_id = memory.create_conversation(title=message[:80])
+        if action_id is not None:
+            if action.conversation_id is not None and action.conversation_id != conv_id:
+                raise HTTPException(status_code=409, detail="owner action belongs to another conversation")
+            if action.state.value != "started":
+                try:
+                    action = owner_action_service.start(action_id, conversation_id=conv_id)
+                except (ActionServiceError, KeyError, ValueError) as exc:
+                    raise _action_error(exc)
 
         job_id = _enqueue_chat(message, conv_id)
+        if action_id is not None:
+            owner_action_service.link_job(action_id, job_id)
         return {"job_id": job_id, "conversation_id": conv_id}
 
     @app.get("/api/chat/jobs/{job_id}")

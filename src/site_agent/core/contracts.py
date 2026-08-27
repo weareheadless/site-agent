@@ -193,6 +193,7 @@ class OwnerAction:
     updated_ts: str = field(default_factory=utc_now)
     snoozed_until: str | None = None
     conversation_id: int | None = None
+    job_id: int | None = None
     artifact_id: int | None = None
     approval_id: int | None = None
     draft_id: int | None = None
@@ -208,7 +209,7 @@ class OwnerAction:
         object.__setattr__(self, "requirement", _enum_value(ActionRequirement, self.requirement, "requirement"))
         object.__setattr__(self, "state", _enum_value(ActionState, self.state, "state"))
         object.__setattr__(self, "id", _optional_id(self.id, "id"))
-        for name in ("conversation_id", "artifact_id", "approval_id", "draft_id"):
+        for name in ("conversation_id", "job_id", "artifact_id", "approval_id", "draft_id"):
             object.__setattr__(self, name, _optional_id(getattr(self, name), name))
         if not isinstance(self.payload_version, int) or self.payload_version < 1:
             raise ContractError("payload_version must be a positive integer")
@@ -231,6 +232,7 @@ class OwnerAction:
             "updated_ts": self.updated_ts,
             "snoozed_until": self.snoozed_until,
             "conversation_id": self.conversation_id,
+            "job_id": self.job_id,
             "artifact_id": self.artifact_id,
             "approval_id": self.approval_id,
             "draft_id": self.draft_id,
@@ -248,6 +250,7 @@ class OwnerAction:
             "priority": self.priority.value,
             "state": self.state.value,
             "conversation_id": self.conversation_id,
+            "job_id": self.job_id,
             "artifact_id": self.artifact_id,
             "approval_id": self.approval_id,
             "draft_id": self.draft_id,
@@ -291,6 +294,7 @@ class OwnerAction:
             updated_ts=record["updated_ts"],
             snoozed_until=record.get("snoozed_until"),
             conversation_id=record.get("conversation_id"),
+            job_id=record.get("job_id"),
             artifact_id=record.get("artifact_id"),
             approval_id=record.get("approval_id"),
             draft_id=record.get("draft_id"),

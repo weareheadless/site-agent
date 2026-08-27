@@ -290,6 +290,45 @@ def test_action_lifecycle_routes_use_owner_action_service(runtime):
     assert client.post(f"/api/actions/{started.id}/dismiss").status_code == 409
 
 
+def test_chat_links_started_owner_action_to_its_job(runtime):
+    memory, _, _, context, client = runtime
+    action = memory.create_owner_action(
+        OwnerAction(
+            capability_id="content.suggestion",
+            provider_id="site-agent",
+            title="Prepare a welcome page",
+            summary="Ada can prepare the first draft.",
+            action_label="Ask Ada to help",
+            priority=ActionPriority.OPTIONAL,
+            requirement=ActionRequirement.SUGGESTION,
+            source_ref="test:chat-action",
+            dedupe_key="test:chat-action",
+        )
+    )
+    conversation_id = memory.create_conversation("Welcome page")
+    context["llm"] = FakeLLM([json.dumps({"reply": "Working on it.", "action": None})])
+    _login(client)
+
+    response = client.post(
+        "/api/chat",
+        json={"message": "prepare the welcome page", "conversation_id": conversation_id, "action_id": action.id},
+    )
+    assert response.status_code == 200
+    job_id = response.json()["job_id"]
+    linked = memory.get_owner_action(action.id)
+    assert linked.job_id == job_id
+    assert linked.state.value == "started"
+
+    import time
+    for _ in range(60):
+        job = memory.get_chat_job(job_id)
+        if job["status"] in {"done", "error"}:
+            break
+        time.sleep(0.1)
+    assert memory.get_chat_job(job_id)["status"] == "done"
+    assert memory.get_owner_action(action.id).state.value == "completed"
+
+
 def test_dirty_worktree_is_not_exposed_in_customer_ui(runtime, tmp_path):
     import subprocess
 

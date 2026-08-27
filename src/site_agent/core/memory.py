@@ -28,7 +28,7 @@ from .contracts import (
     validate_approval_transition,
 )
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 MIGRATIONS: dict[int, list[str]] = {
     1: [
@@ -218,6 +218,10 @@ MIGRATIONS: dict[int, list[str]] = {
         "ALTER TABLE conversations ADD COLUMN deleted_ts TEXT",
         "CREATE INDEX IF NOT EXISTS idx_conversations_visibility ON conversations (deleted_ts, archived_ts, id)",
     ],
+    12: [
+        "ALTER TABLE owner_actions ADD COLUMN job_id INTEGER",
+        "CREATE INDEX IF NOT EXISTS idx_owner_actions_job ON owner_actions (job_id, state, id)",
+    ],
 }
 
 
@@ -331,13 +335,13 @@ class Memory:
                 "INSERT INTO owner_actions "
                 "(capability_id, provider_id, title, summary, action_label, priority, requirement, state, "
                 "source_ref, dedupe_key, created_ts, updated_ts, snoozed_until, conversation_id, artifact_id, "
-                "approval_id, draft_id, payload_version, payload) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "job_id, approval_id, draft_id, payload_version, payload) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     record["capability_id"], record["provider_id"], record["title"], record["summary"],
                     record["action_label"], record["priority"], record["requirement"], record["state"],
                     record["source_ref"], record["dedupe_key"], record["created_ts"], record["updated_ts"],
-                    record["snoozed_until"], record["conversation_id"], record["artifact_id"],
+                    record["snoozed_until"], record["conversation_id"], record["job_id"], record["artifact_id"],
                     record["approval_id"], record["draft_id"], record["payload_version"], record["payload"],
                 ),
             )
@@ -358,13 +362,25 @@ class Memory:
         return OwnerAction.from_record(dict(row)) if row else None
 
     @_locked
-    def list_owner_actions(self, states: list[str] | tuple[str, ...] | None = None, limit: int = 100) -> list[OwnerAction]:
+    def list_owner_actions(
+        self,
+        states: list[str] | tuple[str, ...] | None = None,
+        limit: int = 100,
+        *,
+        job_id: int | None = None,
+    ) -> list[OwnerAction]:
         query = "SELECT * FROM owner_actions"
         params: list[Any] = []
+        clauses: list[str] = []
         if states:
             values = [ActionState(state).value for state in states]
-            query += " WHERE state IN (" + ",".join("?" for _ in values) + ")"
+            clauses.append("state IN (" + ",".join("?" for _ in values) + ")")
             params.extend(values)
+        if job_id is not None:
+            clauses.append("job_id = ?")
+            params.append(job_id)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
         query += " ORDER BY id DESC LIMIT ?"
         params.append(limit)
         return [OwnerAction.from_record(dict(row)) for row in self.conn.execute(query, params)]
@@ -403,6 +419,7 @@ class Memory:
         action_id: int | None,
         *,
         conversation_id: int | None = None,
+        job_id: int | None = None,
         artifact_id: int | None = None,
         approval_id: int | None = None,
         draft_id: int | None = None,
@@ -416,6 +433,7 @@ class Memory:
         values: list[Any] = []
         for name, value in (
             ("conversation_id", conversation_id),
+            ("job_id", job_id),
             ("artifact_id", artifact_id),
             ("approval_id", approval_id),
             ("draft_id", draft_id),
@@ -435,6 +453,7 @@ class Memory:
         return replace(
             action,
             conversation_id=conversation_id if conversation_id is not None else action.conversation_id,
+            job_id=job_id if job_id is not None else action.job_id,
             artifact_id=artifact_id if artifact_id is not None else action.artifact_id,
             approval_id=approval_id if approval_id is not None else action.approval_id,
             draft_id=draft_id if draft_id is not None else action.draft_id,
