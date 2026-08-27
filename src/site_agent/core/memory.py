@@ -28,7 +28,7 @@ from .contracts import (
     validate_approval_transition,
 )
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 MIGRATIONS: dict[int, list[str]] = {
     1: [
@@ -221,6 +221,24 @@ MIGRATIONS: dict[int, list[str]] = {
     12: [
         "ALTER TABLE owner_actions ADD COLUMN job_id INTEGER",
         "CREATE INDEX IF NOT EXISTS idx_owner_actions_job ON owner_actions (job_id, state, id)",
+    ],
+    13: [
+        """UPDATE approval_requests
+           SET provider_receipt_id = (
+               SELECT MAX(newer.id)
+               FROM provider_receipts AS newer
+               WHERE newer.idempotency_key = (
+                   SELECT older.idempotency_key
+                   FROM provider_receipts AS older
+                   WHERE older.id = approval_requests.provider_receipt_id
+               )
+           )
+           WHERE provider_receipt_id IS NOT NULL
+             AND provider_receipt_id NOT IN (
+                 SELECT MAX(id) FROM provider_receipts GROUP BY idempotency_key
+             )""",
+        "DELETE FROM provider_receipts WHERE id NOT IN (SELECT MAX(id) FROM provider_receipts GROUP BY idempotency_key)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_receipts_idempotency ON provider_receipts (idempotency_key)",
     ],
 }
 

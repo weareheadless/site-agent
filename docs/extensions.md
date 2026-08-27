@@ -41,7 +41,16 @@ Builder implementations must:
 
 ## Tools And MCP
 
-Internal and remote tools should eventually be registered with:
+Internal and remote tools are registered at runtime composition through the
+explicit `CapabilityRegistry`. Registration is a finite list of known
+capabilities; it never imports modules or discovers arbitrary remote tools.
+
+The built-in runtime currently composes the site-agent suggestion, article
+preparation, and website-review capabilities. Social publishing is declared as
+an external mutation but remains unavailable until an explicit provider is
+configured.
+
+Each capability should declare:
 
 - a stable namespaced name;
 - a JSON parameter schema;
@@ -49,6 +58,16 @@ Internal and remote tools should eventually be registered with:
 - required capabilities;
 - timeout and result-size limits;
 - a handler that calls an application service.
+
+The registry validates provider identity and effect class before an approval is
+created. Availability is checked again before dispatch, so a disconnected
+provider leaves the prepared artifact and owner action intact. Provider calls
+are bounded by the capability timeout and result-size limits; timeouts and
+oversized results become uncertain, safe receipts rather than raw errors.
+
+External dispatches use a database-enforced idempotency key. A repeated request
+returns the existing receipt, including when two callers race to dispatch the
+same approved artifact.
 
 MCP tool annotations are advisory only. A tool that can mutate a site must go
 through the same draft and approval boundary as an internal tool. The first

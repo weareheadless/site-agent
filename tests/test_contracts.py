@@ -19,6 +19,7 @@ from site_agent.core.contracts import (
     validate_action_transition,
     validate_approval_transition,
 )
+from site_agent.application.capabilities import CapabilityRegistry, CapabilityRegistryError, default_capabilities
 
 
 def _action(**overrides):
@@ -85,6 +86,33 @@ def test_contracts_validate_fields_and_capability_limits():
             effect_class=EffectClass.EXTERNAL_MUTATION,
             availability=CapabilityAvailability.AVAILABLE,
         )
+
+
+def test_capability_registry_is_explicit_and_validates_provider_and_effect():
+    capability = Capability(
+        capability_id="search.insights.read",
+        provider_id="search.example",
+        effect_class=EffectClass.READ,
+        availability=CapabilityAvailability.AVAILABLE,
+    )
+    registry = CapabilityRegistry([capability])
+    assert registry.validate("search.insights.read", provider_id="search.example").capability_id == capability.capability_id
+    with pytest.raises(CapabilityRegistryError, match="another provider"):
+        registry.validate("search.insights.read", provider_id="other.example")
+    with pytest.raises(CapabilityRegistryError, match="already registered"):
+        registry.register(capability)
+
+
+def test_default_capabilities_are_finite_and_keep_social_unavailable():
+    registry = CapabilityRegistry(default_capabilities())
+    assert {item.capability_id for item in registry.values()} == {
+        "content.suggestion",
+        "content.article.prepare",
+        "review.site_change",
+        "social.post.publish",
+    }
+    assert registry.available("content.suggestion") is True
+    assert registry.available("social.post.publish") is False
 
 
 def test_action_and_approval_transitions_are_guarded():

@@ -650,17 +650,17 @@ Acceptance criteria:
 
 ### Phase 9: Capability Readiness
 
-- [ ] Add an explicit capability registry at runtime composition, limited to
-      known narrow providers.
-- [ ] Add capability availability and effect classification.
-- [ ] Add fake-provider contract tests for one read provider, one proposal
-      provider, and one external mutation provider.
-- [ ] Add idempotency enforcement for external mutations.
-- [ ] Add provider timeout, result-size, and safe-error translation tests.
-- [ ] Ensure disconnected providers preserve prepared artifacts and actions.
-- [ ] Ensure provider credentials never enter action payloads or API responses.
-- [ ] Update `docs/extensions.md` with the proven contracts.
-- [ ] Do not enable arbitrary remote MCP tool discovery.
+- [x] Add an explicit capability registry at runtime composition, limited to
+       known narrow providers.
+- [x] Add capability availability and effect classification.
+- [x] Add fake-provider contract tests for one read provider, one proposal
+       provider, and one external mutation provider.
+- [x] Add idempotency enforcement for external mutations.
+- [x] Add provider timeout, result-size, and safe-error translation tests.
+- [x] Ensure disconnected providers preserve prepared artifacts and actions.
+- [x] Ensure provider credentials never enter action payloads or API responses.
+- [x] Update `docs/extensions.md` with the proven contracts.
+- [x] Do not enable arbitrary remote MCP tool discovery.
 
 Acceptance criteria:
 

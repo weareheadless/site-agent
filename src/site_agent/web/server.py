@@ -151,7 +151,11 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
     memory: Any = context["memory"]
     home_service = context.get("home_service") or HomeService(memory)
     owner_action_service = context.get("owner_action_service") or OwnerActionService(memory)
-    approval_service = context.get("approval_service") or ApprovalService(memory, actions=owner_action_service)
+    approval_service = context.get("approval_service") or ApprovalService(
+        memory,
+        actions=owner_action_service,
+        capabilities=context.get("capability_registry"),
+    )
     conversation_service = context.get("conversation_service") or ConversationService(memory)
     context.setdefault("home_service", home_service)
     context.setdefault("owner_action_service", owner_action_service)

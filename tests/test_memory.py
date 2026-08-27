@@ -20,6 +20,9 @@ def test_fresh_db_creates_current_schema(tmp_path):
     mem = Memory(tmp_path / "memory.db")
     version = mem.conn.execute("PRAGMA user_version").fetchone()[0]
     assert version == SCHEMA_VERSION
+    assert mem.conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'idx_provider_receipts_idempotency'"
+    ).fetchone() is not None
     tables = {
         r["name"]
         for r in mem.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
