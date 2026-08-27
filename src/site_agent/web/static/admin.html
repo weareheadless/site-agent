@@ -276,7 +276,7 @@ header .spend{margin-right:auto;color:var(--dim);font-size:12.5px}
             <p id="homeApprovalSummary" class="dialog-summary"></p>
             <p id="homeApprovalEffect" class="dialog-effect"></p>
             <div id="homeApprovalPreview" class="dialog-preview"></div>
-            <div class="dialog-actions"><button class="quiet" onclick="declineHomeApproval()">Keep current</button><button class="primary" id="homeApprovalApprove" onclick="approveHomeApproval()">Approve</button></div>
+            <div class="dialog-actions"><button class="quiet" onclick="declineHomeApproval()">Keep current</button><button class="primary" id="homeApprovalApprove" onclick="approveHomeApproval()">Publish this change</button></div>
           </div>
         </dialog>
 
@@ -352,7 +352,7 @@ header .spend{margin-right:auto;color:var(--dim);font-size:12.5px}
         <div class="review-intro">
           <span class="home-eyebrow">Review</span>
           <h1>Look over Ada's prepared work.</h1>
-          <p>Check the result in context. Nothing changes on your live site until you approve it.</p>
+           <p>Check the result in context. Nothing changes on your live site until you publish it.</p>
         </div>
         <div id="approvalQueue" class="card approval-queue">
           <h2>Other prepared work</h2>
@@ -363,8 +363,8 @@ header .spend{margin-right:auto;color:var(--dim);font-size:12.5px}
           <label class="muted small" for="pageSel">Page</label>
           <select id="pageSel" onchange="reloadPreview()" style="background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--text);padding:6px 10px;font-size:13px;max-width:220px"></select>
           <button class="quiet" onclick="reloadPreview()">Refresh preview</button>
-          <button id="btnApprove" class="approve" style="display:none" onclick="reviewDecide('approve')">✓ Approve &amp; publish</button>
-          <button id="btnReject" class="decline" style="display:none" onclick="reviewDecide('reject')">✕ Reject</button>
+          <button id="btnApprove" class="approve" style="display:none" onclick="reviewDecide('approve')">✓ Publish this change</button>
+          <button id="btnReject" class="decline" style="display:none" onclick="reviewDecide('reject')">✕ Keep current</button>
             <a id="openlive" href="#" target="_blank" class="muted small" style="margin-left:auto">open live ↗</a>
           </div>
           <iframe id="preview" title="Staged site preview" sandbox="allow-same-origin"></iframe>
@@ -622,14 +622,17 @@ async function homeDismiss(index){
 }
 
 function approvalEffectLabel(effect){
-  return effect==='external_mutation'?'This will make a change outside your website.':effect==='site_mutation'?'This will change your website after you approve it.':effect==='proposal'?'This keeps the work as a draft for your review.':'Ada will only read information.';
+  return effect==='external_mutation'?'This will make a change outside your website.':effect==='site_mutation'?'This will change your website after you publish it.':effect==='proposal'?'This keeps the work as a draft for your review.':'Ada will only read information.';
 }
-function approvalPreviewText(artifact){
-  const data=artifact&&artifact.preview_data||{};
+function approvalPreviewText(result){
+  const rendered=result&&result.rendered_preview;
+  const sections=rendered&&Array.isArray(rendered.sections)?rendered.sections.filter(s=>s&&typeof s.body==='string'&&s.body.trim()):[];
+  if(sections.length)return sections.map(s=>`${typeof s.label==='string'&&s.label.trim()?s.label+'\n':''}${s.body}`).join('\n\n');
+  const artifact=result&&result.artifact||{},data=artifact.preview_data||{};
   if(typeof data.body==='string')return data.body;
   if(typeof data.text==='string')return data.text;
   if(typeof data.summary==='string')return data.summary;
-  return Object.keys(data).length?JSON.stringify(data,null,2):'Preview details are not available for this item yet.';
+  return 'Preview details are not available for this item yet.';
 }
 async function openHomeApproval(id){
   homeApprovalId=id;
@@ -644,7 +647,7 @@ async function openHomeApproval(id){
   effect.textContent='';
   preview.textContent='';
   approve.disabled=false;
-  approve.textContent='Approve';
+  approve.textContent='Publish this change';
   if(!dialog.open)dialog.showModal();
   try{
     const result=await api(`/approvals/${id}`);
@@ -653,7 +656,7 @@ async function openHomeApproval(id){
     title.textContent=artifact.title||'Prepared work';
     summary.textContent=artifact.summary||'Ada prepared this for your review.';
     effect.textContent=result.stale?'This prepared work is no longer current. Ask Ada to prepare it again.':approvalEffectLabel(result.approval&&result.approval.details&&result.approval.details.effect_class);
-    preview.textContent=approvalPreviewText(artifact);
+    preview.textContent=approvalPreviewText(result);
     if(result.stale){approve.disabled=true;approve.textContent='Needs a fresh preview'}
   }catch(e){
     if(homeApprovalId===id){summary.textContent='This review is not available right now.';preview.textContent=e.message;approve.disabled=true}
@@ -717,7 +720,7 @@ async function approveHomeApproval(){
   const id=homeApprovalId;
   if(!id)return;
   const button=document.getElementById('homeApprovalApprove');
-  spin(button,'Approving...');
+   spin(button,'Publishing…');
   try{await api(`/approvals/${id}/approve`,{method:'POST'});closeHomeApproval();await refresh();loadApprovals()}
   catch(e){unspin(button);document.getElementById('homeApprovalSummary').textContent=e.message}
 }
@@ -810,8 +813,8 @@ function renderDrafts(list){
       <div class="title"><span class="tag">${esc(d.kind)}</span><span class="tt">${esc(d.title)}</span><div class="ts">${fmtTime(d.created_ts)}</div></div>
       <div class="btns">
         ${d.kind==='edit'||d.kind==='merge'||d.kind==='rollback'?`<button class="quiet" onclick="enterReview(${d.id})">Review</button>`:`<button class="quiet" onclick="view(${d.id})">Read</button>`}
-        <button class="approve" onclick="decide(${d.id},'approve')">Approve</button>
-        <button class="decline" onclick="decline(${d.id})">Decline+note</button>
+        <button class="approve" onclick="decide(${d.id},'approve')">Publish this change</button>
+        <button class="decline" onclick="decline(${d.id})">Keep current</button>
       </div>
     </div>`).join('');
 }
@@ -823,11 +826,11 @@ async function decide(id,what){
 }
 async function decline(id){
   const btn=event&&event.target.closest('button')||null;
-  const fb=await askForFeedback('Keep the current version','Ada will leave this prepared work untouched. A note is optional.','Decline');
+   const fb=await askForFeedback('Keep the current version','Ada will leave this prepared work untouched. A note is optional.','Keep current');
   if(fb===null)return;
   const body=fb.trim()?{feedback:fb.trim()}:{};
   spin(btn,'Declining…');
-  try{await api(`/drafts/${id}/decline`,{method:'POST',body:JSON.stringify(body)});flashDone(btn);addMsg('sys',fb.trim()?'✕ declined — Ada has your feedback':'✕ declined');refresh()}
+   try{await api(`/drafts/${id}/decline`,{method:'POST',body:JSON.stringify(body)});flashDone(btn);addMsg('sys',fb.trim()?'↩ kept current — Ada has your feedback':'↩ kept current');refresh()}
   catch(e){unspin(btn);alert(e.message)}
 }
 async function view(id){const d=await api(`/drafts/${id}`);const w=window.open('','_blank','width=760,height=820');w.document.write(`<title>${esc(d.title)}</title><body style="font-family:Georgia,serif;max-width:660px;margin:40px auto;line-height:1.6">${md(d.body)}</body>`)}
@@ -853,13 +856,13 @@ async function reviewDecide(kind){
   if(!review)return;
   let body={};
   const btn=kind==='approve'?document.getElementById('btnApprove'):document.getElementById('btnReject');
-  if(kind==='reject'){const fb=await askForFeedback('Keep the current version','Ada will leave this preview untouched. A note is optional.','Reject');if(fb===null)return;body.feedback=fb.trim()}
-  spin(btn,kind==='approve'?'Publishing…':'Rejecting…');
+   if(kind==='reject'){const fb=await askForFeedback('Keep the current version','Ada will leave this preview untouched. A note is optional.','Keep current');if(fb===null)return;body.feedback=fb.trim()}
+   spin(btn,kind==='approve'?'Publishing…':'Keeping current…');
   try{
     const res=await api(`/drafts/${review.draftId}/${kind==='reject'?'decline':'approve'}`,{method:'POST',body:body.feedback!==undefined?JSON.stringify({feedback:body.feedback}):undefined});
     flashDone(btn);
     review.decided=kind==='approve'?'approve':'reject';
-    addMsg('sys',kind==='approve'?'✓ approved — the site is rebuilding, preview stays on the merged result':'✕ rejected — Ada has your note');
+    addMsg('sys',kind==='approve'?'✓ published — the site is rebuilding, preview stays on the merged result':'↩ kept current — Ada has your note');
     if(kind==='reject'&&res.reset&&res.reset.reset){
       addMsg('sys','↩ preview branch rolled back to the live site');
     }
@@ -889,7 +892,7 @@ async function loadJournal(){
      const btn=document.getElementById('journalEnableBtn');
     if(j.enabled){
       if(text)text.textContent=j.setup_status==='running'||j.setup_status==='queued'
-        ?'Weekly journaling is active. Ada is preparing the journal design preview; nothing is published until you approve it.'+(j.setup_step?' Last update: '+j.setup_step+'.':'')
+        ?'Weekly journaling is active. Ada is preparing the journal design preview; nothing is published until you publish it.'+(j.setup_step?' Last update: '+j.setup_step+'.':'')
         :j.setup_status==='failed'
           ?(j.setup_error||'Ada could not create the journal design preview.')
            :j.setup_status==='done'
@@ -980,7 +983,7 @@ async function loadHistory(){
   }catch(e){el.innerHTML=`<span class="bad">could not load history: ${esc(e.message)}</span>`}
 }
 async function restoreVersion(id){
-  if(!confirm('Prepare a preview restoring this version? Your live website will not change until you approve it.'))return;
+   if(!confirm('Prepare a preview restoring this version? Your live website will not change until you publish it.'))return;
   try{
     const r=await api(`/versions/${id}/restore`,{method:'POST'});
     addMsg('sys','A restore preview is ready in Design. Review it before publishing.');

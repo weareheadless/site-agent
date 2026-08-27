@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping
 from typing import Any, Protocol
 
 from .actions import OwnerActionService
+from .renderers import render_artifact
 from ..core.contracts import (
     ApprovalRequest,
     ApprovalStatus,
@@ -90,6 +91,7 @@ class ApprovalService:
         return {
             "approval": approval.to_owner_dict(),
             "artifact": artifact.to_preview_dict(),
+            "rendered_preview": render_artifact(artifact).to_dict(),
             "stale": artifact.content_hash != approval.artifact_hash,
         }
 
@@ -101,6 +103,7 @@ class ApprovalService:
             result.append({
                 "approval": approval.to_owner_dict(),
                 "artifact": artifact.to_preview_dict() if artifact is not None else None,
+                "rendered_preview": render_artifact(artifact).to_dict() if artifact is not None else None,
                 "stale": artifact is None or artifact.content_hash != approval.artifact_hash,
             })
         return result

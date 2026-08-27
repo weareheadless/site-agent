@@ -566,11 +566,11 @@ Acceptance criteria:
 - [x] Rename the owner-facing Design area to `Review`.
 - [x] Preserve the internal Design iframe flow for site artifacts.
 - [x] Add a pending-approval queue.
-- [ ] Add artifact renderer boundaries.
-- [ ] Implement website-change, article, and business-information renderers.
-- [ ] Reserve the typed renderer path for future social-post previews.
+- [x] Add artifact renderer boundaries.
+- [x] Implement website-change, article, and business-information renderers.
+- [x] Reserve the typed renderer path for future social-post previews.
 - [x] Add a focused decision tray containing title, short summary, and effect.
-- [ ] Use `Publish this change` and `Keep current` owner language.
+- [x] Use `Publish this change` and `Keep current` owner language.
 - [x] Replace browser `prompt()` with an accessible optional-feedback dialog.
 - [x] Hide raw operations, paths, provider IDs, and build logs by default.
 - [x] Verify stale artifact hashes cannot be approved.

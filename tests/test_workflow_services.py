@@ -60,6 +60,7 @@ def test_approval_service_binds_hash_and_dispatches_idempotently(tmp_path):
     assert preview["artifact"]["renderer"] == "article"
     assert "provider_id" not in preview["artifact"]
     assert preview["artifact"]["details"]["provider_id"] == "site-agent"
+    assert preview["rendered_preview"]["sections"][0]["label"] == "Article"
 
     approved = service.decide(approval.approval_id, True)
     assert approved.status is ApprovalStatus.APPROVED

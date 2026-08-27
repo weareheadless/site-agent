@@ -484,6 +484,9 @@ def test_design_ui_uses_internal_review_state(runtime):
     assert 'aria-label="Dismiss ${actionTitle}"' in html
     assert "homeSnooze" in html
     assert "approvalQueue" in html
+    assert "rendered_preview" in html
+    assert "Publish this change" in html
+    assert "Keep current" in html
     assert "feedbackDialog" in html
     assert "prompt(" not in html
     assert "Clear past" in html
