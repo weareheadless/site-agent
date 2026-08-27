@@ -57,7 +57,10 @@ At plan creation on 2026-08-26:
   recommendation, including after dismissal.
 - Owner action routes now expose `Start`, seven-day `Not now` by default, and
   permanent `Dismiss` without putting lifecycle logic in the server.
-- Current verification after this slice: 259 tests passing, `compileall`, wheel
+- The Overview tab is now an owner Home with `Needs you`, `Ada suggests`, and
+  `Ada is handling` in that order; reports, metrics, and system detail remain
+  available under `More details`.
+- Current verification after this slice: 260 tests passing, `compileall`, wheel
   build, and `git diff --check`.
 - Per-thread archive, restore, and delete routes are available; the bulk `Clear
   past` endpoint remains as a compatibility action until the final conversation
@@ -532,14 +535,14 @@ Acceptance criteria:
 ### Phase 4: Owner Home API And UI
 
 - [x] Add a documented `/api/home` response backed by `HomeService`.
-- [ ] Replace the report-first Overview with Home.
-- [ ] Render `Needs you`, `Ada suggests`, and `Ada is handling` in that order.
-- [ ] Limit default action counts and add clear empty states.
-- [ ] Add `Why this matters` progressive disclosure.
-- [ ] Move full reports, detailed visitors, schedule, health, spend, and activity
+- [x] Replace the report-first Overview with Home.
+- [x] Render `Needs you`, `Ada suggests`, and `Ada is handling` in that order.
+- [x] Limit default action counts and add clear empty states.
+- [x] Add `Why this matters` progressive disclosure.
+- [x] Move full reports, detailed visitors, schedule, health, spend, and activity
       into `More details`.
-- [ ] Use plain owner-facing labels throughout.
-- [ ] Remove technical type tags from default task cards.
+- [x] Use plain owner-facing labels throughout.
+- [x] Remove technical type tags from default task cards.
 - [ ] Add loading, error, and provider-unavailable states that explain the next
       owner action.
 - [ ] Add keyboard and screen-reader tests for action controls.

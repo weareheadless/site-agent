@@ -150,7 +150,7 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
     memory: Any = context["memory"]
     home_service = context.get("home_service") or HomeService(memory)
     owner_action_service = context.get("owner_action_service") or OwnerActionService(memory)
-    approval_service = context.get("approval_service") or ApprovalService(memory)
+    approval_service = context.get("approval_service") or ApprovalService(memory, actions=owner_action_service)
     conversation_service = context.get("conversation_service") or ConversationService(memory)
     sessions = Sessions()
     preview_cache = PreviewBuildCache()

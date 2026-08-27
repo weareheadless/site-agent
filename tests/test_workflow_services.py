@@ -5,12 +5,16 @@ from site_agent.application.approvals import (
     SiteDraftApprovalAdapter,
     StaleApproval,
 )
+from site_agent.application.actions import OwnerActionService
 from site_agent.application.conversations import ConversationBusy, ConversationService
 from site_agent.core.contracts import (
+    ActionPriority,
+    ActionRequirement,
     ApprovalStatus,
     Artifact,
     ArtifactKind,
     EffectClass,
+    OwnerAction,
     ProviderReceipt,
     ReceiptStatus,
 )
@@ -91,6 +95,50 @@ def test_approval_service_expires_stale_work_and_safely_records_provider_failure
     assert receipt.status is ReceiptStatus.FAILURE
     assert "provider-secret" not in receipt.safe_message
     assert memory.get_approval_request(failed.approval_id).status is ApprovalStatus.FAILED
+    memory.close()
+
+
+def test_approval_reconciles_linked_owner_action(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    action = memory.create_owner_action(
+        OwnerAction(
+            capability_id="content.article.publish",
+            provider_id="site-agent",
+            title="Publish the article",
+            summary="The prepared article is ready.",
+            action_label="Publish this change",
+            priority=ActionPriority.NORMAL,
+            requirement=ActionRequirement.OWNER_DECISION,
+            source_ref="test:approval-action",
+            dedupe_key="test:approval-action",
+        )
+    )
+
+    def provider(artifact, approval, idempotency_key):
+        return ProviderReceipt(
+            provider_id=approval.provider_id,
+            capability_id=artifact.capability_id,
+            idempotency_key=idempotency_key,
+            status=ReceiptStatus.SUCCESS,
+            approval_id=approval.approval_id,
+            action_id=approval.action_id,
+        )
+
+    service = ApprovalService(
+        memory,
+        providers={"site-agent": provider},
+        actions=OwnerActionService(memory),
+    )
+    approval = service.create(
+        _artifact(),
+        owner_action_label="Publish this change",
+        effect_class=EffectClass.EXTERNAL_MUTATION,
+        action_id=action.id,
+    )
+    service.decide(approval.approval_id, True)
+    assert memory.get_owner_action(action.id).state.value == "waiting"
+    service.dispatch(approval.approval_id)
+    assert memory.get_owner_action(action.id).state.value == "completed"
     memory.close()
 
 

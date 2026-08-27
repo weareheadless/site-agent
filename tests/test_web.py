@@ -431,6 +431,13 @@ def test_design_ui_uses_internal_review_state(runtime):
     assert "id=\"designNote\"" not in html
     assert "loadBuildStatus" not in html
     assert "function watchBackgroundJob(jobId)" in html
+    assert 'data-tab="overview" onclick="switchTab(\'overview\')">Home</button>' in html
+    assert 'id="homeNeeds"' in html
+    assert 'id="homeSuggests"' in html
+    assert 'id="homeHandlingSummary"' in html
+    assert 'summary>More details</summary>' in html
+    assert "api('/home')" in html
+    assert "homeSnooze" in html
     assert "Clear past" in html
     assert "clearConversations()" in html
 

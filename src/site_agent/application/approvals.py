@@ -6,6 +6,7 @@ import hashlib
 from collections.abc import Callable, Mapping
 from typing import Any, Protocol
 
+from .actions import OwnerActionService
 from ..core.contracts import (
     ApprovalRequest,
     ApprovalStatus,
@@ -50,10 +51,12 @@ class ApprovalService:
         memory,
         providers: Mapping[str, EffectProvider] | None = None,
         site_drafts: SiteDraftApprovalAdapter | None = None,
+        actions: OwnerActionService | None = None,
     ) -> None:
         self.memory = memory
         self.providers = dict(providers or {})
         self.site_drafts = site_drafts
+        self.actions = actions
 
     def create(
         self,
@@ -96,7 +99,13 @@ class ApprovalService:
             raise ApprovalServiceError(f"approval already {approval.status.value}")
         self._ensure_current(approval)
         status = ApprovalStatus.APPROVED if approved else ApprovalStatus.DECLINED
-        return self.memory.transition_approval_request(approval_id, status, owner_feedback=feedback)
+        decided = self.memory.transition_approval_request(approval_id, status, owner_feedback=feedback)
+        if decided is not None and self.actions is not None and decided.action_id is not None:
+            if approved:
+                self.actions.wait(decided.action_id)
+            else:
+                self.actions.dismiss(decided.action_id)
+        return decided
 
     def dispatch(self, approval_id: int) -> ProviderReceipt:
         approval = self._require(approval_id)
@@ -130,6 +139,8 @@ class ApprovalService:
         self.memory.link_approval_request(approval_id, provider_receipt_id=saved.receipt_id)
         if saved.status in {ReceiptStatus.FAILURE, ReceiptStatus.UNCERTAIN}:
             self.memory.transition_approval_request(approval_id, ApprovalStatus.FAILED)
+        elif self.actions is not None:
+            self.actions.reconcile(approval_id=approval_id)
         return saved
 
     def approve_site_draft(self, draft_id: int) -> Any:
@@ -155,6 +166,8 @@ class ApprovalService:
         if artifact.content_hash != approval.artifact_hash:
             if approval.status == ApprovalStatus.PENDING:
                 self.memory.transition_approval_request(approval.approval_id, ApprovalStatus.EXPIRED)
+                if self.actions is not None and approval.action_id is not None:
+                    self.actions.mark_stale(approval.action_id)
             raise StaleApproval(f"approval {approval.approval_id} is stale")
         return artifact
 

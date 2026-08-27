@@ -138,6 +138,59 @@ header .spend{margin-right:auto;color:var(--dim);font-size:12.5px}
 .repo-notice .repo-files{display:flex;flex-wrap:wrap;gap:5px;margin:9px 0 10px}
 .repo-notice code{background:var(--panel);border:1px solid var(--line);border-radius:5px;padding:2px 6px;font:11px ui-monospace,monospace;color:var(--text)}
 .repo-notice button{margin-top:2px}
+/* owner home */
+.home-shell{max-width:980px;margin:0 auto}
+.home-intro{display:grid;grid-template-columns:minmax(0,1fr) minmax(230px,300px);gap:24px;align-items:stretch;padding:26px 28px;margin-bottom:18px;background:radial-gradient(circle at 12% 0%,color-mix(in srgb,var(--brand) 18%,transparent),transparent 44%),linear-gradient(135deg,color-mix(in srgb,var(--accent) 9%,var(--card)),var(--card) 62%);border:1px solid color-mix(in srgb,var(--brand) 30%,var(--line));border-radius:18px;overflow:hidden;position:relative}
+.home-intro:after{content:"";position:absolute;width:230px;height:230px;right:-96px;top:-116px;border:1px solid color-mix(in srgb,var(--brand) 28%,transparent);border-radius:50%;box-shadow:0 0 0 18px color-mix(in srgb,var(--brand) 5%,transparent),0 0 0 37px color-mix(in srgb,var(--brand) 3%,transparent);pointer-events:none}
+.home-eyebrow{display:block;color:var(--brand);font-size:10px;font-weight:600;letter-spacing:.14em;text-transform:uppercase}
+.home-intro h1{font:400 clamp(28px,4vw,44px)/1.05 var(--font-display);letter-spacing:-.025em;margin:8px 0 9px;max-width:600px}
+.home-intro p{color:var(--dim);font-size:14px;max-width:570px;margin:0}
+.home-state{display:flex;gap:12px;align-items:flex-start;align-self:stretch;padding:14px 16px;background:color-mix(in srgb,var(--panel) 72%,transparent);border:1px solid var(--line);border-radius:13px;position:relative;z-index:1}
+.home-state .pulse{width:9px;height:9px;margin-top:6px;flex-shrink:0;border-radius:50%;background:var(--brand);box-shadow:0 0 0 5px color-mix(in srgb,var(--brand) 13%,transparent),0 0 14px var(--brand)}
+.home-state strong{display:block;font-size:14px;font-weight:600;margin-top:3px}
+.home-state p{font-size:12px;line-height:1.45;margin-top:3px}
+.home-section{padding:20px 21px;background:var(--card);border:1px solid var(--line);border-radius:15px;margin-bottom:16px}
+.home-section.required{border-color:color-mix(in srgb,var(--warn) 38%,var(--line))}
+.home-section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:12px}
+.home-section-head h2{font:500 21px/1.2 var(--font-display);letter-spacing:-.01em;margin-top:4px}
+.home-section-head p{color:var(--dim);font-size:12px;margin-top:4px}
+.home-count{color:var(--dim);font-size:11px;padding:5px 9px;border:1px solid var(--line);border-radius:999px;white-space:nowrap}
+.home-actions{display:grid;gap:10px}
+.home-action{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:16px;align-items:center;padding:14px 15px;background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--brand);border-radius:11px}
+.home-action.required{border-left-color:var(--warn)}
+.home-action h3{font-size:14px;font-weight:600;line-height:1.35}
+.home-action .summary{color:var(--text);font-size:13px;line-height:1.45;margin-top:4px}
+.home-action .why{margin-top:7px;color:var(--dim);font-size:11.5px}
+.home-action .why summary{cursor:pointer;display:inline-block;color:var(--dim)}
+.home-action .why p{margin-top:4px;max-width:570px}
+.home-action .action-meta{display:flex;gap:8px;align-items:center;margin-bottom:6px}
+.home-action .action-kind{color:var(--warn);font-size:10px;font-weight:600;letter-spacing:.1em;text-transform:uppercase}
+.home-action.suggestion .action-kind{color:var(--brand)}
+.home-action .action-buttons{display:flex;gap:7px;align-items:center;justify-content:flex-end;flex-wrap:wrap}
+.home-action .action-buttons button{font-size:12px;padding:7px 10px}
+.home-action .action-buttons .text-button{background:transparent;color:var(--dim);border-color:transparent;padding-left:4px;padding-right:4px}
+.home-empty{padding:19px 14px;text-align:center;color:var(--dim);font-size:13px;border:1px dashed var(--line);border-radius:11px}
+.home-empty strong{display:block;color:var(--text);font-weight:500;margin-bottom:3px}
+.home-columns{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr);gap:16px}
+.home-columns .home-section{height:100%;margin-bottom:0}
+.home-handling{background:linear-gradient(145deg,color-mix(in srgb,var(--brand) 8%,var(--card)),var(--card) 65%)}
+.home-handling .handling-line{display:flex;gap:12px;align-items:flex-start;padding-top:3px}
+.home-handling .handling-line .pulse{width:8px;height:8px;margin-top:6px;border-radius:50%;background:var(--accent);box-shadow:0 0 9px var(--accent);flex-shrink:0}
+.home-handling .handling-copy{font-size:13px;line-height:1.5}
+.home-handling .handling-copy strong{display:block;font-weight:600;margin-bottom:3px}
+.home-dialog{width:min(620px,calc(100% - 32px));padding:0;background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:16px;box-shadow:0 25px 80px rgba(0,0,0,.55)}
+.home-dialog::backdrop{background:rgba(3,8,14,.72);backdrop-filter:blur(3px)}
+.home-dialog .dialog-inner{padding:22px}
+.home-dialog h2{font:500 22px/1.2 var(--font-display);margin-bottom:5px}
+.home-dialog .dialog-summary{color:var(--dim);font-size:13px;margin-bottom:14px}
+.home-dialog .dialog-preview{max-height:260px;overflow:auto;padding:13px;background:var(--panel);border:1px solid var(--line);border-radius:10px;white-space:pre-wrap;font-size:13px;line-height:1.55}
+.home-dialog .dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
+.more-details{max-width:980px;margin:20px auto 0;background:var(--card);border:1px solid var(--line);border-radius:15px}
+.more-details>summary{cursor:pointer;padding:15px 19px;color:var(--text);font-size:13px;font-weight:600;list-style:none}
+.more-details>summary::-webkit-details-marker{display:none}
+.more-details>summary:before{content:"+";display:inline-block;width:20px;color:var(--brand);font-size:17px;font-weight:400;vertical-align:-1px}
+.more-details[open]>summary:before{content:"-"}
+.more-details-inner{padding:0 19px 19px}
 /* content editor */
 .cfgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:18px}
 .cfield{display:flex;flex-direction:column;gap:6px}
@@ -149,7 +202,9 @@ header .spend{margin-right:auto;color:var(--dim);font-size:12.5px}
 .citem:last-child{border-bottom:none;padding-bottom:0;margin-bottom:0}
 .cfield textarea{min-height:88px}
 @media(max-width:1100px){#chat{display:none}#body{flex-direction:column}.grid.cols-2,.grid.cols-3{grid-template-columns:1fr}.kpis{grid-template-columns:1fr 1fr}}
-@media(max-width:640px){.kpis{grid-template-columns:1fr}}
+@media(max-width:760px){.home-intro{grid-template-columns:1fr;padding:21px}.home-intro:after{right:-115px}.home-columns{grid-template-columns:1fr}.home-action{grid-template-columns:1fr;gap:11px}.home-action .action-buttons{justify-content:flex-start}.home-section{padding:17px 15px}}
+@media(max-width:640px){.kpis{grid-template-columns:1fr}.home-intro h1{font-size:32px}.home-section-head h2{font-size:19px}.more-details-inner{padding-left:13px;padding-right:13px}}
+@media(prefers-reduced-motion:reduce){*,*:before,*:after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
 </style>
 </head>
 <body>
@@ -165,7 +220,7 @@ header .spend{margin-right:auto;color:var(--dim);font-size:12.5px}
 <div id="app">
   <header>
     <div class="brand"><img class="logo" id="logo" src="" alt=""><span id="instance">Dashboard</span></div>
-    <button class="tabbtn on" data-tab="overview" onclick="switchTab('overview')">Overview</button>
+    <button class="tabbtn on" data-tab="overview" onclick="switchTab('overview')">Home</button>
     <button class="tabbtn" data-tab="content" onclick="switchTab('content')">Content</button>
     <button class="tabbtn" data-tab="design" onclick="switchTab('design')">Design</button>
     <button class="tabbtn" data-tab="media" onclick="switchTab('media')">Media</button>
@@ -176,45 +231,98 @@ header .spend{margin-right:auto;color:var(--dim);font-size:12.5px}
   <div id="body">
     <div id="main">
       <div id="tab-overview">
-        <div class="overview-head">
-          <div class="big" id="headline">Loading…<small>your site, at a glance</small></div>
-          <div class="subtabs">
-            <button class="subtab on" data-sub="report" onclick="switchSub('report')">Report</button>
-            <button class="subtab" data-sub="traffic" onclick="switchSub('traffic')">Traffic</button>
-            <button class="subtab" data-sub="todo" onclick="switchSub('todo')">To-do</button>
-            <button class="subtab" data-sub="ideas" onclick="switchSub('ideas')">Ideas</button>
-          </div>
-        </div>
-        <div class="kpis" id="kpis"></div>
-
-        <div class="subpanel on" id="sub-report">
-          <div class="card"><div id="report" class="md muted">No report yet.</div></div>
-        </div>
-
-        <div class="subpanel" id="sub-traffic">
-          <div class="grid cols-2">
-            <div class="card"><h2>Top pages</h2><div id="toppages" class="bars"><span class="muted small">No data yet.</span></div></div>
-            <div class="card"><h2>Traffic sources</h2><div id="sources" class="bars"><span class="muted small">No data yet.</span></div></div>
-          </div>
-        </div>
-
-        <div class="subpanel" id="sub-todo">
-          <div class="card"><h2>Needs your approval</h2><div id="tasks"><span class="muted small">Nothing pending.</span></div></div>
-        </div>
-
-        <div class="subpanel" id="sub-ideas">
-          <div class="card"><h2>Ada's recommendations</h2><div id="cards" class="recs"><span class="muted small">Nothing yet.</span></div></div>
-        </div>
-
-        <details class="collapse">
-          <summary>System details — schedule, health, publishes, recent activity</summary>
-          <div class="inner">
-            <div class="grid cols-2">
-              <div class="card"><h2>Schedule</h2><div id="jobs"></div></div>
-               <div class="card"><h2>Publish activity</h2><div id="publishes"></div></div>
-              <div class="card"><h2>Health</h2><div id="health" class="muted">—</div></div>
-              <div class="card"><h2>Recent activity</h2><div id="activity" class="muted small"></div></div>
+        <div class="home-shell">
+          <section class="home-intro" aria-labelledby="homeTitle">
+            <div>
+              <span class="home-eyebrow">Owner home</span>
+              <h1 id="homeTitle">Checking the water.</h1>
+              <p id="homeLead">Ada is gathering the few things worth your attention.</p>
             </div>
+            <div class="home-state" id="homeState" aria-live="polite">
+              <span class="pulse"></span>
+              <div><span class="home-eyebrow">Right now</span><strong id="homeStateTitle">Getting oriented</strong><p id="homeStateSummary">Ada is checking the latest site activity.</p></div>
+            </div>
+          </section>
+
+          <section class="home-section required" aria-labelledby="homeNeedsTitle">
+            <div class="home-section-head">
+              <div><span class="home-eyebrow">Attention</span><h2 id="homeNeedsTitle">Needs you</h2><p>Only decisions or information Ada cannot supply herself.</p></div>
+              <span class="home-count" id="homeNeedsCount">Checking</span>
+            </div>
+            <div id="homeNeeds" class="home-actions"><div class="home-empty">Loading your next decisions...</div></div>
+          </section>
+
+          <div class="home-columns">
+            <section class="home-section" aria-labelledby="homeSuggestsTitle">
+              <div class="home-section-head">
+                <div><span class="home-eyebrow">On the horizon</span><h2 id="homeSuggestsTitle">Ada suggests</h2><p>Useful next moves, never a second to-do list.</p></div>
+                <span class="home-count" id="homeSuggestsCount">-</span>
+              </div>
+              <div id="homeSuggests" class="home-actions"><div class="home-empty">Ada is thinking ahead.</div></div>
+            </section>
+            <section class="home-section home-handling" aria-labelledby="homeHandlingTitle">
+              <div class="home-section-head">
+                <div><span class="home-eyebrow">In motion</span><h2 id="homeHandlingTitle">Ada is handling</h2><p>Work that is moving without another decision from you.</p></div>
+              </div>
+              <div class="handling-line"><span class="pulse"></span><div class="handling-copy"><strong id="homeHandlingTitleText">Checking background work</strong><span id="homeHandlingSummary" class="muted">Ada is checking the latest jobs.</span></div></div>
+            </section>
+          </div>
+        </div>
+
+        <dialog id="homeApprovalDialog" class="home-dialog" aria-labelledby="homeApprovalTitle">
+          <div class="dialog-inner">
+            <span class="home-eyebrow">Review prepared work</span>
+            <h2 id="homeApprovalTitle">Ready for your decision</h2>
+            <p id="homeApprovalSummary" class="dialog-summary"></p>
+            <div id="homeApprovalPreview" class="dialog-preview"></div>
+            <div class="dialog-actions"><button class="quiet" onclick="declineHomeApproval()">Keep current</button><button class="primary" id="homeApprovalApprove" onclick="approveHomeApproval()">Approve</button></div>
+          </div>
+        </dialog>
+
+        <details class="more-details">
+          <summary>More details</summary>
+          <div class="more-details-inner">
+            <div class="overview-head">
+              <div class="big" id="headline">Loading…<small>your site, at a glance</small></div>
+              <div class="subtabs">
+                <button class="subtab on" data-sub="report" onclick="switchSub('report')">Report</button>
+                <button class="subtab" data-sub="traffic" onclick="switchSub('traffic')">Traffic</button>
+                <button class="subtab" data-sub="todo" onclick="switchSub('todo')">To-do</button>
+                <button class="subtab" data-sub="ideas" onclick="switchSub('ideas')">Ideas</button>
+              </div>
+            </div>
+            <div class="kpis" id="kpis"></div>
+
+            <div class="subpanel on" id="sub-report">
+              <div class="card"><div id="report" class="md muted">No report yet.</div></div>
+            </div>
+
+            <div class="subpanel" id="sub-traffic">
+              <div class="grid cols-2">
+                <div class="card"><h2>Top pages</h2><div id="toppages" class="bars"><span class="muted small">No data yet.</span></div></div>
+                <div class="card"><h2>Traffic sources</h2><div id="sources" class="bars"><span class="muted small">No data yet.</span></div></div>
+              </div>
+            </div>
+
+            <div class="subpanel" id="sub-todo">
+              <div class="card"><h2>Needs your approval</h2><div id="tasks"><span class="muted small">Nothing pending.</span></div></div>
+            </div>
+
+            <div class="subpanel" id="sub-ideas">
+              <div class="card"><h2>Ada's recommendations</h2><div id="cards" class="recs"><span class="muted small">Nothing yet.</span></div></div>
+            </div>
+
+            <details class="collapse">
+              <summary>System details — schedule, health, publishes, recent activity</summary>
+              <div class="inner">
+                <div class="grid cols-2">
+                  <div class="card"><h2>Schedule</h2><div id="jobs"></div></div>
+                  <div class="card"><h2>Publish activity</h2><div id="publishes"></div></div>
+                  <div class="card"><h2>Health</h2><div id="health" class="muted">-</div></div>
+                  <div class="card"><h2>Recent activity</h2><div id="activity" class="muted small"></div></div>
+                </div>
+              </div>
+            </details>
           </div>
         </details>
       </div>
@@ -343,6 +451,7 @@ function flashDone(btn){
 let convId=null, busy=false, review=null;
 let journalSetupJobId=null, journalSetupDraftId=null, journalLastStatus='';
 let backgroundJobs=new Set();
+let homeActionItems=[], homeApprovalId=null;
 
 function switchTab(name){
   document.querySelectorAll('.tabbtn').forEach(b=>b.classList.toggle('on',b.dataset.tab===name));
@@ -403,11 +512,129 @@ async function login(){
 }
 async function logout(){await api('/logout',{method:'POST'});location.reload()}
 
+function renderHome(home){
+  const needs=Array.isArray(home&&home.needs_you)?home.needs_you:[];
+  const suggestions=Array.isArray(home&&home.ada_suggests)?home.ada_suggests:[];
+  homeActionItems=[];
+  const renderAction=(action,kind)=>{
+    const index=homeActionItems.push(action)-1;
+    const required=kind==='required';
+    const why=action.details&&action.details.payload&&action.details.payload.why;
+    const primary=action.draft_id?'Review change':action.approval_id?'Review prepared work':(action.action_label||'Ask Ada to help');
+    const lifecycle=action.id?`<button class="text-button" onclick="homeSnooze(${index})">Not now</button><button class="text-button" onclick="homeDismiss(${index})">Dismiss</button>`:'';
+    return `<article class="home-action ${required?'required':'suggestion'}">
+      <div>
+        <div class="action-meta"><span class="action-kind">${required?'Required':'Suggestion'}</span></div>
+        <h3>${esc(action.title||'A possible next step')}</h3>
+        <div class="summary">${esc(action.summary||'')}</div>
+        ${why?`<details class="why"><summary>Why this matters</summary><p>${esc(why)}</p></details>`:''}
+      </div>
+      <div class="action-buttons"><button class="primary" onclick="homePrimary(${index})">${esc(primary)}</button>${lifecycle}</div>
+    </article>`;
+  };
+  const needsEl=document.getElementById('homeNeeds');
+  const suggestsEl=document.getElementById('homeSuggests');
+  document.getElementById('homeNeedsCount').textContent=needs.length?`${needs.length} decision${needs.length===1?'':'s'}`:'Clear';
+  document.getElementById('homeSuggestsCount').textContent=suggestions.length?`${suggestions.length} idea${suggestions.length===1?'':'s'}`:'None yet';
+  needsEl.innerHTML=needs.length?needs.map(a=>renderAction(a,'required')).join(''):'<div class="home-empty"><strong>Everything is handled.</strong>No decisions are waiting for you.</div>';
+  suggestsEl.innerHTML=suggestions.length?suggestions.map(a=>renderAction(a,'suggestion')).join(''):'<div class="home-empty"><strong>No new current to follow.</strong>Ada will bring a useful idea when one appears.</div>';
+  const handling=home&&home.ada_is_handling||{};
+  const count=Number(handling.active_count||0);
+  document.getElementById('homeStateTitle').textContent=count?`${count} thing${count===1?'':'s'} in motion`:'No background work';
+  document.getElementById('homeStateSummary').textContent=handling.summary||'Ada is keeping an eye on your website.';
+  document.getElementById('homeHandlingTitleText').textContent=count?'Work is moving quietly':'Nothing is running right now';
+  document.getElementById('homeHandlingSummary').textContent=handling.summary||'Ada is keeping an eye on your website.';
+  document.getElementById('homeTitle').textContent=needs.length?'A few things need your eye.':'Nothing urgent today.';
+  document.getElementById('homeLead').textContent=needs.length?'Ada has kept the list short. Start with the decisions above, and leave the rest to her.':'The site is in a good holding pattern. Browse a suggestion when you feel like moving something forward.';
+}
+
+async function homePrimary(index){
+  const action=homeActionItems[index];
+  if(!action)return;
+  if(action.draft_id){enterReview(action.draft_id);return}
+  if(action.approval_id){openHomeApproval(action.approval_id);return}
+  if(action.id){
+    try{
+      const result=await api(`/actions/${action.id}/start`,{method:'POST',body:JSON.stringify({conversation_id:action.conversation_id||null})});
+      convId=result.action.conversation_id;
+      await loadConversations();
+      document.getElementById('convsel').value=String(convId);
+      await loadConversation(convId);
+      document.getElementById('chatinput').focus();
+    }catch(e){addMsg('ada','⚠ '+e.message)}
+    return;
+  }
+  const input=document.getElementById('chatinput');
+  input.value=action.summary||action.title||'';
+  input.focus();
+}
+
+async function homeSnooze(index){
+  const action=homeActionItems[index];
+  if(!action||!action.id)return;
+  try{await api(`/actions/${action.id}/snooze`,{method:'POST',body:JSON.stringify({days:7})});await refresh()}
+  catch(e){addMsg('ada','⚠ '+e.message)}
+}
+
+async function homeDismiss(index){
+  const action=homeActionItems[index];
+  if(!action||!action.id)return;
+  try{await api(`/actions/${action.id}/dismiss`,{method:'POST'});await refresh()}
+  catch(e){addMsg('ada','⚠ '+e.message)}
+}
+
+async function openHomeApproval(id){
+  homeApprovalId=id;
+  const dialog=document.getElementById('homeApprovalDialog');
+  const title=document.getElementById('homeApprovalTitle');
+  const summary=document.getElementById('homeApprovalSummary');
+  const preview=document.getElementById('homeApprovalPreview');
+  const approve=document.getElementById('homeApprovalApprove');
+  title.textContent='Ready for your decision';
+  summary.textContent='Loading the prepared work...';
+  preview.textContent='';
+  approve.disabled=false;
+  approve.textContent='Approve';
+  if(!dialog.open)dialog.showModal();
+  try{
+    const result=await api(`/approvals/${id}`);
+    if(homeApprovalId!==id)return;
+    const artifact=result.artifact||{};
+    title.textContent=artifact.title||'Prepared work';
+    summary.textContent=artifact.summary||'Ada prepared this for your review.';
+    const data=artifact.preview_data||{};
+    preview.textContent=typeof data.body==='string'?data.body:JSON.stringify(data,null,2);
+    if(result.stale){approve.disabled=true;approve.textContent='Needs a fresh preview'}
+  }catch(e){
+    if(homeApprovalId===id){summary.textContent='This review is not available right now.';preview.textContent=e.message;approve.disabled=true}
+  }
+}
+function closeHomeApproval(){
+  homeApprovalId=null;
+  const dialog=document.getElementById('homeApprovalDialog');
+  if(dialog.open)dialog.close();
+}
+async function declineHomeApproval(){
+  const id=homeApprovalId;
+  if(!id)return;
+  try{await api(`/approvals/${id}/decline`,{method:'POST',body:JSON.stringify({})});closeHomeApproval();await refresh()}
+  catch(e){document.getElementById('homeApprovalSummary').textContent=e.message}
+}
+async function approveHomeApproval(){
+  const id=homeApprovalId;
+  if(!id)return;
+  const button=document.getElementById('homeApprovalApprove');
+  spin(button,'Approving...');
+  try{await api(`/approvals/${id}/approve`,{method:'POST'});closeHomeApproval();await refresh()}
+  catch(e){unspin(button);document.getElementById('homeApprovalSummary').textContent=e.message}
+}
+
 async function refresh(){
-  const [an, report, drafts, status] = await Promise.all([api('/analytics'), api('/report/latest'), api('/drafts'), api('/status')]);
+  const [home, an, report, drafts, status] = await Promise.all([api('/home'), api('/analytics'), api('/report/latest'), api('/drafts'), api('/status')]);
   window._status = status;
   document.getElementById('instance').textContent = status.instance;
   document.getElementById('spend').textContent = `LLM spend 7d: $${status.spend_7d}`;
+  renderHome(home);
   document.getElementById('report').innerHTML = report.report ? md(report.report.body) : 'No report yet.';
   renderKpis(an.traffic);
   const pages=(an.traffic.top_pages||[]).map(p=>({label:p.path,views:p.views}));

@@ -36,7 +36,11 @@ class Runtime:
         if self.owner_action_service is None:
             object.__setattr__(self, "owner_action_service", OwnerActionService(self.memory))
         if self.approval_service is None:
-            object.__setattr__(self, "approval_service", ApprovalService(self.memory))
+            object.__setattr__(
+                self,
+                "approval_service",
+                ApprovalService(self.memory, actions=self.owner_action_service),
+            )
         if self.conversation_service is None:
             object.__setattr__(self, "conversation_service", ConversationService(self.memory))
 
