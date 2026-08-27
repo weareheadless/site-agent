@@ -248,6 +248,48 @@ def test_artifact_approval_routes_use_approval_service(runtime):
     assert decided.json()["approval"]["status"] == "approved"
 
 
+def test_action_lifecycle_routes_use_owner_action_service(runtime):
+    memory, _, _, _, client = runtime
+    from site_agent.core.contracts import ActionPriority, ActionRequirement, OwnerAction
+
+    snoozed = memory.create_owner_action(
+        OwnerAction(
+            capability_id="content.suggestion",
+            provider_id="site-agent",
+            title="A future suggestion",
+            summary="Not urgent.",
+            action_label="Ask Ada to help",
+            priority=ActionPriority.OPTIONAL,
+            requirement=ActionRequirement.SUGGESTION,
+            source_ref="test:snoozed-action",
+            dedupe_key="test:snoozed-action",
+        )
+    )
+    started = memory.create_owner_action(
+        OwnerAction(
+            capability_id="content.suggestion",
+            provider_id="site-agent",
+            title="A focused suggestion",
+            summary="Ada can help.",
+            action_label="Ask Ada to help",
+            priority=ActionPriority.OPTIONAL,
+            requirement=ActionRequirement.SUGGESTION,
+            source_ref="test:started-action",
+            dedupe_key="test:started-action",
+        )
+    )
+    _login(client)
+    response = client.post(f"/api/actions/{snoozed.id}/snooze", json={})
+    assert response.status_code == 200
+    assert response.json()["action"]["state"] == "snoozed"
+    assert snoozed.id not in {action["id"] for action in client.get("/api/home").json()["ada_suggests"]}
+
+    response = client.post(f"/api/actions/{started.id}/start", json={})
+    assert response.status_code == 200
+    assert response.json()["action"]["conversation_id"] is not None
+    assert client.post(f"/api/actions/{started.id}/dismiss").status_code == 409
+
+
 def test_dirty_worktree_is_not_exposed_in_customer_ui(runtime, tmp_path):
     import subprocess
 

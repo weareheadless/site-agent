@@ -52,7 +52,12 @@ At plan creation on 2026-08-26:
 - `OwnerActionService`, `ApprovalService`, and `ConversationService` now own
   action lifecycle, artifact-hash-bound approval, provider receipts, and durable
   conversation lifecycle rules behind the existing runtime boundary.
-- Current verification after this slice: 254 tests passing, `compileall`, wheel
+- Strategist cards now dual-write validated durable suggestion actions while
+  preserving the legacy KV/report shape; repeated scheduled runs reuse the same
+  recommendation, including after dismissal.
+- Owner action routes now expose `Start`, seven-day `Not now` by default, and
+  permanent `Dismiss` without putting lifecycle logic in the server.
+- Current verification after this slice: 259 tests passing, `compileall`, wheel
   build, and `git diff --check`.
 - Per-thread archive, restore, and delete routes are available; the bulk `Clear
   past` endpoint remains as a compatibility action until the final conversation
@@ -499,21 +504,24 @@ Acceptance criteria:
 
 ### Phase 3: Persistent Proactive Actions
 
-- [ ] Update strategist output from free-form cards to validated action
+- [x] Update strategist output from free-form cards to validated action
       candidates.
-- [ ] Keep the weekly report as a downstream summary, not the source of Home
+- [x] Keep the weekly report as a downstream summary, not the source of Home
       actions.
-- [ ] Deduplicate recommendations across scheduled runs.
-- [ ] Add open, started, waiting, completed, snoozed, dismissed, and stale
+- [x] Deduplicate recommendations across scheduled runs.
+- [x] Add open, started, waiting, completed, snoozed, dismissed, and stale
       lifecycle behavior.
-- [ ] Add seven-day `Not now` behavior.
-- [ ] Add permanent `Dismiss` behavior unless a materially new source signal
+- [x] Add seven-day `Not now` behavior.
+- [x] Add permanent `Dismiss` behavior unless a materially new source signal
       creates a distinct action.
-- [ ] Add focused-conversation context when an action starts.
+- [x] Add focused-conversation context when an action starts.
 - [ ] Ensure Ada asks no more than one required follow-up before preparation.
 - [ ] Add configured site-specific freshness checks for business information;
       do not hardcode OceanicVibes course fields in generic code.
-- [ ] Add action reconciliation when a related draft or job completes.
+- [x] Add action reconciliation when a related draft, artifact, or approval
+      completes.
+- [ ] Add direct chat-job linkage and reconciliation when a related job
+      completes.
 
 Acceptance criteria:
 

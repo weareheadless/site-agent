@@ -39,6 +39,7 @@ def test_home_composes_owner_actions_and_compatibility_views(tmp_path):
     urgent = memory.create_owner_action(_action("test:urgent", priority=ActionPriority.URGENT))
     memory.create_owner_action(_action("test:suggestion", requirement=ActionRequirement.SUGGESTION, priority=ActionPriority.OPTIONAL))
     draft_id = memory.save_draft("Journal page", "prepared", kind="merge")
+    report_id = memory.save_draft("Weekly report", "internal summary", kind="report")
     memory.kv_set(
         "strategist_cards",
         {"cards": [{"title": "Write about calm breathing", "action": "Ask Ada to draft it", "why": "People are asking."}]},
@@ -49,6 +50,7 @@ def test_home_composes_owner_actions_and_compatibility_views(tmp_path):
     result = HomeService(memory).snapshot()
     assert result.needs_you[0].id == urgent.id
     assert any(action.draft_id == draft_id for action in result.needs_you)
+    assert all(action.draft_id != report_id for action in result.needs_you)
     assert {action.requirement.value for action in result.suggestions} == {"suggestion"}
     assert result.handling.active_count == 1
     assert result.to_dict()["everything_is_handled"] is False
@@ -64,4 +66,16 @@ def test_home_hides_future_snoozed_and_terminal_actions(tmp_path):
     memory.transition_owner_action(completed.id, "completed")
     result = HomeService(memory).snapshot()
     assert all(action.source_ref not in {"test:snoozed", "test:completed"} for action in result.needs_you)
+    memory.close()
+
+
+def test_owner_action_service_snoozes_for_seven_days(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    service = OwnerActionService(memory)
+    action = service.create(_action("test:snooze"))
+    before = datetime.datetime.now(datetime.timezone.utc)
+    snoozed = service.snooze_for(action.id)
+    deadline = datetime.datetime.fromisoformat(snoozed.snoozed_until)
+    assert datetime.timedelta(days=6, hours=23) < deadline - before < datetime.timedelta(days=7, minutes=1)
+    assert HomeService(memory).snapshot().needs_you == ()
     memory.close()

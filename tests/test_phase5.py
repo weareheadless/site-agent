@@ -4,6 +4,7 @@ from unittest import mock
 import pytest
 
 from site_agent.brain import strategist as strategist_mod
+from site_agent.application.actions import OwnerActionService
 from site_agent.core import maintenance
 from site_agent.core.llm import Client, LLMError
 from site_agent.core.memory import Memory
@@ -87,9 +88,61 @@ def test_strategist_builds_cards_from_signals(env):
     assert count == 1
     stored = memory.kv_get("strategist_cards")["cards"]
     assert stored[0]["title"] == "Frenzel guide"
+    actions = memory.list_owner_actions()
+    assert len(actions) == 1
+    assert actions[0].title == "Frenzel guide"
 
     block = strategist_mod.cards_block(memory)
     assert "Frenzel guide" in block
+
+
+def test_strategist_deduplicates_and_preserves_dismissed_recommendations(env):
+    memory, config = env
+    llm = FakeLLM([
+        json.dumps({"cards": [{"title": "Tide tables", "action": "write a tide table page", "why": "queries rising"}]}),
+        json.dumps({"cards": [{"title": "Tide tables", "action": "write a tide table page", "why": "still relevant"}]}),
+        json.dumps({"cards": [{"title": "Tide tables", "action": "write a tide table page", "why": "again"}]}),
+    ])
+    context = {"config": config, "memory": memory, "llm": llm, "persona_prompt": "You are Ada."}
+
+    assert strategist_mod.run(context) == 1
+    assert strategist_mod.run(context) == 1
+    actions = memory.list_owner_actions()
+    assert len(actions) == 1
+
+    OwnerActionService(memory).dismiss(actions[0].id)
+    strategist_mod.run(context)
+    assert memory.find_owner_action(actions[0].dedupe_key, include_terminal=True).id == actions[0].id
+    memory.close()
+
+
+def test_strategist_filters_malformed_cards_but_requires_one_valid_card(env):
+    memory, config = env
+    llm = FakeLLM([json.dumps({"cards": [
+        {"title": "", "action": "missing title"},
+        {"title": "Useful idea", "action": "take one concrete step", "why": "it helps"},
+    ]})])
+    context = {"config": config, "memory": memory, "llm": llm, "persona_prompt": "You are Ada."}
+
+    assert strategist_mod.run(context) == 1
+    assert memory.kv_get("strategist_cards")["cards"] == [{
+        "title": "Useful idea",
+        "action": "take one concrete step",
+        "why": "it helps",
+        "from": "",
+    }]
+    memory.close()
+
+
+def test_strategist_rejects_when_all_cards_are_invalid(env):
+    memory, config = env
+    llm = FakeLLM([json.dumps({"cards": [{"title": "missing action"}]})])
+    context = {"config": config, "memory": memory, "llm": llm, "persona_prompt": "You are Ada."}
+
+    with pytest.raises(RuntimeError, match="no valid cards"):
+        strategist_mod.run(context)
+    assert memory.kv_get("strategist_cards") is None
+    memory.close()
 
 
 def test_weekly_report_weaves_in_cards(env):

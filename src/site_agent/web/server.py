@@ -19,6 +19,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 
+from ..application.actions import ActionServiceError, OwnerActionService
 from ..application.approvals import ApprovalService, ApprovalServiceError, StaleApproval
 from ..application.conversations import ConversationBusy, ConversationNotFound, ConversationService, ConversationServiceError
 from ..application.home import HomeService
@@ -148,6 +149,7 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
     config = context["config"]
     memory: Any = context["memory"]
     home_service = context.get("home_service") or HomeService(memory)
+    owner_action_service = context.get("owner_action_service") or OwnerActionService(memory)
     approval_service = context.get("approval_service") or ApprovalService(memory)
     conversation_service = context.get("conversation_service") or ConversationService(memory)
     sessions = Sessions()
@@ -402,6 +404,56 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
         """Owner-facing action inbox; composition lives in HomeService."""
         require_auth(request)
         return home_service.snapshot(needs_limit=needs_limit, suggestion_limit=suggestion_limit).to_dict()
+
+    def _action_error(exc: Exception) -> HTTPException:
+        status_code = 404 if isinstance(exc, KeyError) else 409 if isinstance(exc, (ActionServiceError, ValueError)) else 400
+        return HTTPException(status_code=status_code, detail=str(exc))
+
+    @app.post("/api/actions/{action_id}/start")
+    async def start_action(action_id: int, request: Request):
+        require_auth(request)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        conversation_id = (body or {}).get("conversation_id")
+        if conversation_id is not None:
+            try:
+                conversation_id = int(conversation_id)
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="conversation_id must be an integer")
+        try:
+            action = owner_action_service.start(action_id, conversation_id=conversation_id)
+            return {"ok": True, "action": action.to_owner_dict()}
+        except (ActionServiceError, KeyError, ValueError) as exc:
+            raise _action_error(exc)
+
+    @app.post("/api/actions/{action_id}/snooze")
+    async def snooze_action(action_id: int, request: Request):
+        require_auth(request)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        days = (body or {}).get("days", 7)
+        try:
+            days = int(days)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="days must be an integer")
+        try:
+            action = owner_action_service.snooze_for(action_id, days)
+            return {"ok": True, "action": action.to_owner_dict()}
+        except (ActionServiceError, KeyError, ValueError) as exc:
+            raise _action_error(exc)
+
+    @app.post("/api/actions/{action_id}/dismiss")
+    def dismiss_action(action_id: int, request: Request):
+        require_auth(request)
+        try:
+            action = owner_action_service.dismiss(action_id)
+            return {"ok": True, "action": action.to_owner_dict()}
+        except (ActionServiceError, KeyError, ValueError) as exc:
+            raise _action_error(exc)
 
     @app.get("/api/content")
     def get_content(request: Request):

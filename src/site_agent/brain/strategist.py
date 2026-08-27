@@ -7,9 +7,12 @@ they are not a separate dashboard.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
 
+from ..application.actions import OwnerActionService
+from ..core.contracts import ActionPriority, ActionRequirement, OwnerAction
 from .prompts import memory_context
 
 
@@ -93,6 +96,65 @@ def _prompt(persona: str, material: dict[str, Any]) -> list[dict[str, str]]:
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
+def _card_text(card: dict[str, Any], key: str, *, required: bool, max_chars: int) -> str | None:
+    value = card.get(key)
+    if value is None and not required:
+        return ""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if required and not value:
+        return None
+    return value[:max_chars] if value else ""
+
+
+def _normalize_cards(raw: str) -> list[dict[str, str]]:
+    try:
+        decoded = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"strategist returned invalid JSON: {raw[:200]}") from exc
+    if not isinstance(decoded, dict) or not isinstance(decoded.get("cards"), list):
+        raise RuntimeError(f"strategist returned invalid cards: {raw[:200]}")
+
+    cards: list[dict[str, str]] = []
+    for candidate in decoded["cards"]:
+        if not isinstance(candidate, dict):
+            continue
+        title = _card_text(candidate, "title", required=True, max_chars=200)
+        action = _card_text(candidate, "action", required=True, max_chars=500)
+        why = _card_text(candidate, "why", required=False, max_chars=500)
+        origin = _card_text(candidate, "from", required=False, max_chars=120)
+        if title is None or action is None or why is None or origin is None:
+            continue
+        cards.append({"title": title, "action": action, "why": why, "from": origin})
+        if len(cards) == 3:
+            break
+    if not cards:
+        raise RuntimeError(f"strategist returned no valid cards: {raw[:200]}")
+    return cards
+
+
+def _card_action(card: dict[str, str], action_service: OwnerActionService) -> OwnerAction:
+    title = card["title"]
+    action = card["action"]
+    source_ref = "strategist:" + hashlib.sha256(f"{title}\0{action}".encode()).hexdigest()[:16]
+    return action_service.create(
+        OwnerAction(
+            capability_id="content.suggestion",
+            provider_id="site-agent",
+            title=title,
+            summary=action,
+            action_label="Ask Ada to help",
+            priority=ActionPriority.OPTIONAL,
+            requirement=ActionRequirement.SUGGESTION,
+            source_ref=source_ref,
+            dedupe_key=source_ref,
+            payload={"why": card["why"], "from": card["from"], "source": "strategist_cards"},
+        ),
+        reuse_terminal=True,
+    )
+
+
 def run(context: dict[str, Any]) -> int:
     memory: Any = context["memory"]
     llm = context.get("llm")
@@ -101,11 +163,11 @@ def run(context: dict[str, Any]) -> int:
     material = gather(memory)
     persona = context.get("persona_prompt") or ""
     raw = llm.chat(_prompt(persona, material), json_mode=True, temperature=0.5)
-    try:
-        cards = [c for c in json.loads(raw).get("cards", []) if isinstance(c, dict)][:3]
-        assert cards
-    except (json.JSONDecodeError, AssertionError):
-        raise RuntimeError(f"strategist returned invalid JSON: {raw[:200]}")
+    cards = _normalize_cards(raw)
+
+    action_service = context.get("owner_action_service") or OwnerActionService(memory)
+    for card in cards:
+        _card_action(card, action_service)
 
     memory.kv_set(
         "strategist_cards",

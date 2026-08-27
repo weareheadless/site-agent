@@ -6,6 +6,7 @@ adapters do not need to know how owner actions are stored.
 
 from __future__ import annotations
 
+import datetime
 import sqlite3
 
 from ..core.contracts import (
@@ -25,17 +26,30 @@ class OwnerActionService:
     def __init__(self, memory):
         self.memory = memory
 
-    def create(self, action: OwnerAction, capability: Capability | None = None) -> OwnerAction:
+    def create(
+        self,
+        action: OwnerAction,
+        capability: Capability | None = None,
+        *,
+        reuse_terminal: bool = False,
+    ) -> OwnerAction:
+        """Create an action, optionally preserving a terminal dedupe record.
+
+        Proactive recommendations use ``reuse_terminal`` so a dismissed or
+        completed recommendation is not resurrected by the next scheduled run.
+        Interactive workflows retain the default behavior and may create a new
+        action after an older one reaches a terminal state.
+        """
         if capability is not None:
             self.ensure_capability(capability, action)
-        existing = self.memory.find_owner_action(action.dedupe_key)
+        existing = self.memory.find_owner_action(action.dedupe_key, include_terminal=reuse_terminal)
         if existing is not None:
             return existing
         try:
             return self.memory.create_owner_action(action)
         except sqlite3.IntegrityError:
             # Another request may have won the dedupe race.
-            existing = self.memory.find_owner_action(action.dedupe_key)
+            existing = self.memory.find_owner_action(action.dedupe_key, include_terminal=reuse_terminal)
             if existing is not None:
                 return existing
             raise
@@ -76,6 +90,17 @@ class OwnerActionService:
 
     def snooze(self, action_id: int, until: str) -> OwnerAction:
         return self.transition(action_id, ActionState.SNOOZED, snoozed_until=until)
+
+    def snooze_for(self, action_id: int, days: int = 7) -> OwnerAction:
+        if isinstance(days, bool) or not isinstance(days, int) or days <= 0:
+            raise ActionServiceError("snooze duration must be a positive number of days")
+        until = (
+            datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=days)
+        ).isoformat(timespec="seconds")
+        return self.snooze(action_id, until)
+
+    def wait(self, action_id: int) -> OwnerAction:
+        return self.transition(action_id, ActionState.WAITING)
 
     def dismiss(self, action_id: int) -> OwnerAction:
         return self.transition(action_id, ActionState.DISMISSED)
