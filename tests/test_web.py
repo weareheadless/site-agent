@@ -437,6 +437,8 @@ def test_design_ui_uses_internal_review_state(runtime):
     assert 'id="homeHandlingSummary"' in html
     assert 'summary>More details</summary>' in html
     assert "api('/home')" in html
+    assert "function renderHomeError(message)" in html
+    assert 'aria-label="Dismiss ${actionTitle}"' in html
     assert "homeSnooze" in html
     assert "Clear past" in html
     assert "clearConversations()" in html

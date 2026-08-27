@@ -543,8 +543,9 @@ Acceptance criteria:
       into `More details`.
 - [x] Use plain owner-facing labels throughout.
 - [x] Remove technical type tags from default task cards.
-- [ ] Add loading, error, and provider-unavailable states that explain the next
-      owner action.
+- [x] Add loading and connection-error states that explain the next owner
+      action.
+- [ ] Add provider-unavailable states that explain the next owner action.
 - [ ] Add keyboard and screen-reader tests for action controls.
 
 Acceptance criteria:

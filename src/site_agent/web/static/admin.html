@@ -521,7 +521,8 @@ function renderHome(home){
     const required=kind==='required';
     const why=action.details&&action.details.payload&&action.details.payload.why;
     const primary=action.draft_id?'Review change':action.approval_id?'Review prepared work':(action.action_label||'Ask Ada to help');
-    const lifecycle=action.id?`<button class="text-button" onclick="homeSnooze(${index})">Not now</button><button class="text-button" onclick="homeDismiss(${index})">Dismiss</button>`:'';
+    const actionTitle=esc(action.title||'this action');
+    const lifecycle=action.id?`<button class="text-button" aria-label="Put ${actionTitle} aside for seven days" onclick="homeSnooze(${index})">Not now</button><button class="text-button" aria-label="Dismiss ${actionTitle}" onclick="homeDismiss(${index})">Dismiss</button>`:'';
     return `<article class="home-action ${required?'required':'suggestion'}">
       <div>
         <div class="action-meta"><span class="action-kind">${required?'Required':'Suggestion'}</span></div>
@@ -546,6 +547,20 @@ function renderHome(home){
   document.getElementById('homeHandlingSummary').textContent=handling.summary||'Ada is keeping an eye on your website.';
   document.getElementById('homeTitle').textContent=needs.length?'A few things need your eye.':'Nothing urgent today.';
   document.getElementById('homeLead').textContent=needs.length?'Ada has kept the list short. Start with the decisions above, and leave the rest to her.':'The site is in a good holding pattern. Browse a suggestion when you feel like moving something forward.';
+}
+
+function renderHomeError(message){
+  homeActionItems=[];
+  document.getElementById('homeTitle').textContent='Home needs a refresh.';
+  document.getElementById('homeLead').textContent='Ada could not load your attention list. Nothing has been changed.';
+  document.getElementById('homeStateTitle').textContent='Home is unavailable';
+  document.getElementById('homeStateSummary').textContent='Try again when the connection is back.';
+  document.getElementById('homeNeedsCount').textContent='Unavailable';
+  document.getElementById('homeSuggestsCount').textContent='Unavailable';
+  document.getElementById('homeNeeds').innerHTML=`<div class="home-empty"><strong>Could not load Home.</strong>${esc(message||'The server did not return the owner view.')} <button class="quiet" onclick="refresh()">Try again</button></div>`;
+  document.getElementById('homeSuggests').innerHTML='<div class="home-empty">Suggestions will return with Home.</div>';
+  document.getElementById('homeHandlingTitleText').textContent='Background status unavailable';
+  document.getElementById('homeHandlingSummary').textContent='Try refreshing Home to reconnect.';
 }
 
 async function homePrimary(index){
@@ -630,11 +645,12 @@ async function approveHomeApproval(){
 }
 
 async function refresh(){
-  const [home, an, report, drafts, status] = await Promise.all([api('/home'), api('/analytics'), api('/report/latest'), api('/drafts'), api('/status')]);
+  let home;
+  try{home=await api('/home');renderHome(home)}catch(e){renderHomeError(e.message)}
+  const [an, report, drafts, status] = await Promise.all([api('/analytics'), api('/report/latest'), api('/drafts'), api('/status')]);
   window._status = status;
   document.getElementById('instance').textContent = status.instance;
   document.getElementById('spend').textContent = `LLM spend 7d: $${status.spend_7d}`;
-  renderHome(home);
   document.getElementById('report').innerHTML = report.report ? md(report.report.body) : 'No report yet.';
   renderKpis(an.traffic);
   const pages=(an.traffic.top_pages||[]).map(p=>({label:p.path,views:p.views}));
