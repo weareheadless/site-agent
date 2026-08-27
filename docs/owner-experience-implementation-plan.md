@@ -62,6 +62,9 @@ At plan creation on 2026-08-26:
 - The Overview tab is now an owner Home with `Needs you`, `Ada suggests`, and
   `Ada is handling` in that order; reports, metrics, and system detail remain
   available under `More details`.
+- The owner-facing Design area is now labeled `Review`; it keeps the internal
+  staged iframe flow, adds a pending approval queue, and uses an accessible
+  optional-feedback dialog for decline decisions.
 - Current verification after this slice: 261 tests passing, `compileall`, wheel
   build, and `git diff --check`.
 - Per-thread archive, restore, and delete routes are available; the bulk `Clear
@@ -560,17 +563,17 @@ Acceptance criteria:
 
 ### Phase 5: Universal Review And Approval UI
 
-- [ ] Rename the owner-facing Design area to `Review`.
-- [ ] Preserve the internal Design iframe flow for site artifacts.
-- [ ] Add a pending-approval queue.
+- [x] Rename the owner-facing Design area to `Review`.
+- [x] Preserve the internal Design iframe flow for site artifacts.
+- [x] Add a pending-approval queue.
 - [ ] Add artifact renderer boundaries.
 - [ ] Implement website-change, article, and business-information renderers.
 - [ ] Reserve the typed renderer path for future social-post previews.
-- [ ] Add a focused decision tray containing title, short summary, and effect.
+- [x] Add a focused decision tray containing title, short summary, and effect.
 - [ ] Use `Publish this change` and `Keep current` owner language.
-- [ ] Replace browser `prompt()` with an accessible optional-feedback dialog.
-- [ ] Hide raw operations, paths, provider IDs, and build logs by default.
-- [ ] Verify stale artifact hashes cannot be approved.
+- [x] Replace browser `prompt()` with an accessible optional-feedback dialog.
+- [x] Hide raw operations, paths, provider IDs, and build logs by default.
+- [x] Verify stale artifact hashes cannot be approved.
 
 Acceptance criteria:
 

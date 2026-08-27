@@ -222,7 +222,7 @@ header .spend{margin-right:auto;color:var(--dim);font-size:12.5px}
     <div class="brand"><img class="logo" id="logo" src="" alt=""><span id="instance">Dashboard</span></div>
     <button class="tabbtn on" data-tab="overview" onclick="switchTab('overview')">Home</button>
     <button class="tabbtn" data-tab="content" onclick="switchTab('content')">Content</button>
-    <button class="tabbtn" data-tab="design" onclick="switchTab('design')">Design</button>
+    <button class="tabbtn" data-tab="design" onclick="switchTab('design')">Review</button>
     <button class="tabbtn" data-tab="media" onclick="switchTab('media')">Media</button>
     <span class="spend" id="spend"></span>
     <button class="quiet" onclick="logout()">Sign out</button>
@@ -274,8 +274,20 @@ header .spend{margin-right:auto;color:var(--dim);font-size:12.5px}
             <span class="home-eyebrow">Review prepared work</span>
             <h2 id="homeApprovalTitle">Ready for your decision</h2>
             <p id="homeApprovalSummary" class="dialog-summary"></p>
+            <p id="homeApprovalEffect" class="dialog-effect"></p>
             <div id="homeApprovalPreview" class="dialog-preview"></div>
             <div class="dialog-actions"><button class="quiet" onclick="declineHomeApproval()">Keep current</button><button class="primary" id="homeApprovalApprove" onclick="approveHomeApproval()">Approve</button></div>
+          </div>
+        </dialog>
+
+        <dialog id="feedbackDialog" class="home-dialog" aria-labelledby="feedbackTitle">
+          <div class="dialog-inner">
+            <span class="home-eyebrow">Optional note</span>
+            <h2 id="feedbackTitle">Keep the current version</h2>
+            <p id="feedbackDescription" class="dialog-summary">Ada can use a short note to make the next pass more useful.</p>
+            <label for="feedbackInput">What should Ada know?</label>
+            <textarea id="feedbackInput" maxlength="1000" placeholder="A note is optional."></textarea>
+            <div class="dialog-actions"><button class="quiet" onclick="cancelFeedback()">Cancel</button><button class="primary" id="feedbackSubmit" onclick="submitFeedback()">Continue</button></div>
           </div>
         </dialog>
 
@@ -337,6 +349,16 @@ header .spend{margin-right:auto;color:var(--dim);font-size:12.5px}
       </div>
 
       <div id="tab-design" style="display:none">
+        <div class="review-intro">
+          <span class="home-eyebrow">Review</span>
+          <h1>Look over Ada's prepared work.</h1>
+          <p>Check the result in context. Nothing changes on your live site until you approve it.</p>
+        </div>
+        <div id="approvalQueue" class="card approval-queue">
+          <h2>Other prepared work</h2>
+          <div class="queue-note">These items are waiting for a decision.</div>
+          <div id="approvalQueueList"></div>
+        </div>
         <div style="display:flex;gap:10px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
           <label class="muted small" for="pageSel">Page</label>
           <select id="pageSel" onchange="reloadPreview()" style="background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--text);padding:6px 10px;font-size:13px;max-width:220px"></select>
@@ -451,7 +473,7 @@ function flashDone(btn){
 let convId=null, busy=false, review=null;
 let journalSetupJobId=null, journalSetupDraftId=null, journalLastStatus='';
 let backgroundJobs=new Set();
-let homeActionItems=[], homeApprovalId=null, activeActionId=null;
+let homeActionItems=[], homeApprovalId=null, activeActionId=null, feedbackResolve=null;
 
 function switchTab(name){
   document.querySelectorAll('.tabbtn').forEach(b=>b.classList.toggle('on',b.dataset.tab===name));
@@ -459,12 +481,12 @@ function switchTab(name){
   document.getElementById('tab-content').style.display=name==='content'?'':'none';
   document.getElementById('tab-design').style.display=name==='design'?'':'none';
   document.getElementById('tab-media').style.display=name==='media'?'':'none';
-   if(name==='design'){setDesignButtons();autoReview();loadHistory();loadJournal()}
+   if(name==='design'){setDesignButtons();autoReview();loadApprovals();loadHistory();loadJournal()}
   if(name==='media') loadMedia();
   if(name==='content') loadContent();
 }
 async function autoReview(){
-  /* Opening Design shows the latest staged draft with approve/reject and the
+  /* Opening Review shows the latest staged draft with approve/reject and the
      staged build — no To-do detour. */
   let d;
   try{d=await api('/drafts')}catch(e){loadPages();reloadPreview();return}
@@ -599,15 +621,27 @@ async function homeDismiss(index){
   catch(e){addMsg('ada','⚠ '+e.message)}
 }
 
+function approvalEffectLabel(effect){
+  return effect==='external_mutation'?'This will make a change outside your website.':effect==='site_mutation'?'This will change your website after you approve it.':effect==='proposal'?'This keeps the work as a draft for your review.':'Ada will only read information.';
+}
+function approvalPreviewText(artifact){
+  const data=artifact&&artifact.preview_data||{};
+  if(typeof data.body==='string')return data.body;
+  if(typeof data.text==='string')return data.text;
+  if(typeof data.summary==='string')return data.summary;
+  return Object.keys(data).length?JSON.stringify(data,null,2):'Preview details are not available for this item yet.';
+}
 async function openHomeApproval(id){
   homeApprovalId=id;
   const dialog=document.getElementById('homeApprovalDialog');
   const title=document.getElementById('homeApprovalTitle');
   const summary=document.getElementById('homeApprovalSummary');
+  const effect=document.getElementById('homeApprovalEffect');
   const preview=document.getElementById('homeApprovalPreview');
   const approve=document.getElementById('homeApprovalApprove');
   title.textContent='Ready for your decision';
   summary.textContent='Loading the prepared work...';
+  effect.textContent='';
   preview.textContent='';
   approve.disabled=false;
   approve.textContent='Approve';
@@ -618,11 +652,29 @@ async function openHomeApproval(id){
     const artifact=result.artifact||{};
     title.textContent=artifact.title||'Prepared work';
     summary.textContent=artifact.summary||'Ada prepared this for your review.';
-    const data=artifact.preview_data||{};
-    preview.textContent=typeof data.body==='string'?data.body:JSON.stringify(data,null,2);
+    effect.textContent=result.stale?'This prepared work is no longer current. Ask Ada to prepare it again.':approvalEffectLabel(result.approval&&result.approval.details&&result.approval.details.effect_class);
+    preview.textContent=approvalPreviewText(artifact);
     if(result.stale){approve.disabled=true;approve.textContent='Needs a fresh preview'}
   }catch(e){
     if(homeApprovalId===id){summary.textContent='This review is not available right now.';preview.textContent=e.message;approve.disabled=true}
+  }
+}
+async function loadApprovals(){
+  const card=document.getElementById('approvalQueue');
+  const list=document.getElementById('approvalQueueList');
+  if(!card||!list)return;
+  try{
+    const result=await api('/approvals?status=pending');
+    const rows=Array.isArray(result.approvals)?result.approvals:[];
+    if(!rows.length){card.style.display='none';list.innerHTML='';return}
+    card.style.display='';
+    list.innerHTML=rows.map(row=>{
+      const approval=row.approval||{},artifact=row.artifact||{};
+      return `<div class="task"><div class="title"><span class="tag">Review</span><span class="tt">${esc(artifact.title||'Prepared work')}</span><div class="ts">${esc(artifact.summary||'Waiting for your decision.')}</div></div><div class="btns"><button class="quiet" onclick="openHomeApproval(${approval.id})">Review</button></div></div>`;
+    }).join('');
+  }catch(e){
+    card.style.display='';
+    list.innerHTML=`<span class="bad">Could not load prepared work: ${esc(e.message)}</span>`;
   }
 }
 function closeHomeApproval(){
@@ -630,10 +682,35 @@ function closeHomeApproval(){
   const dialog=document.getElementById('homeApprovalDialog');
   if(dialog.open)dialog.close();
 }
+function askForFeedback(title,description,submitLabel){
+  return new Promise(resolve=>{
+    feedbackResolve=resolve;
+    document.getElementById('feedbackTitle').textContent=title;
+    document.getElementById('feedbackDescription').textContent=description;
+    document.getElementById('feedbackInput').value='';
+    document.getElementById('feedbackSubmit').textContent=submitLabel||'Continue';
+    const dialog=document.getElementById('feedbackDialog');
+    if(!dialog.open)dialog.showModal();
+    setTimeout(()=>document.getElementById('feedbackInput').focus(),0);
+  });
+}
+function finishFeedback(value){
+  const resolve=feedbackResolve;
+  feedbackResolve=null;
+  const dialog=document.getElementById('feedbackDialog');
+  if(dialog.open)dialog.close();
+  if(resolve)resolve(value);
+}
+function cancelFeedback(){finishFeedback(null)}
+function submitFeedback(){finishFeedback(document.getElementById('feedbackInput').value.trim())}
+document.getElementById('feedbackDialog').addEventListener('cancel',event=>{event.preventDefault();cancelFeedback()});
+document.getElementById('homeApprovalDialog').addEventListener('cancel',event=>{event.preventDefault();closeHomeApproval()});
 async function declineHomeApproval(){
   const id=homeApprovalId;
   if(!id)return;
-  try{await api(`/approvals/${id}/decline`,{method:'POST',body:JSON.stringify({})});closeHomeApproval();await refresh()}
+  const fb=await askForFeedback('Keep the current version','Ada will leave this prepared work untouched. A note is optional.','Keep current');
+  if(fb===null)return;
+  try{await api(`/approvals/${id}/decline`,{method:'POST',body:JSON.stringify(fb?{feedback:fb}:{})});closeHomeApproval();await refresh();loadApprovals()}
   catch(e){document.getElementById('homeApprovalSummary').textContent=e.message}
 }
 async function approveHomeApproval(){
@@ -641,7 +718,7 @@ async function approveHomeApproval(){
   if(!id)return;
   const button=document.getElementById('homeApprovalApprove');
   spin(button,'Approving...');
-  try{await api(`/approvals/${id}/approve`,{method:'POST'});closeHomeApproval();await refresh()}
+  try{await api(`/approvals/${id}/approve`,{method:'POST'});closeHomeApproval();await refresh();loadApprovals()}
   catch(e){unspin(button);document.getElementById('homeApprovalSummary').textContent=e.message}
 }
 
@@ -745,10 +822,10 @@ async function decide(id,what){
   catch(e){unspin(btn);alert(e.message)}
 }
 async function decline(id){
-  const fb=prompt('Why are you declining this? Ada will read this and learn from it.','');
+  const btn=event&&event.target.closest('button')||null;
+  const fb=await askForFeedback('Keep the current version','Ada will leave this prepared work untouched. A note is optional.','Decline');
   if(fb===null)return;
   const body=fb.trim()?{feedback:fb.trim()}:{};
-  const btn=event&&event.target.closest('button')||null;
   spin(btn,'Declining…');
   try{await api(`/drafts/${id}/decline`,{method:'POST',body:JSON.stringify(body)});flashDone(btn);addMsg('sys',fb.trim()?'✕ declined — Ada has your feedback':'✕ declined');refresh()}
   catch(e){unspin(btn);alert(e.message)}
@@ -775,8 +852,8 @@ function reviewJournal(){
 async function reviewDecide(kind){
   if(!review)return;
   let body={};
-  if(kind==='reject'){const fb=prompt('Why reject this work? Ada will read this and learn.','');if(fb===null)return;body.feedback=fb.trim()}
   const btn=kind==='approve'?document.getElementById('btnApprove'):document.getElementById('btnReject');
+  if(kind==='reject'){const fb=await askForFeedback('Keep the current version','Ada will leave this preview untouched. A note is optional.','Reject');if(fb===null)return;body.feedback=fb.trim()}
   spin(btn,kind==='approve'?'Publishing…':'Rejecting…');
   try{
     const res=await api(`/drafts/${review.draftId}/${kind==='reject'?'decline':'approve'}`,{method:'POST',body:body.feedback!==undefined?JSON.stringify({feedback:body.feedback}):undefined});
@@ -816,13 +893,13 @@ async function loadJournal(){
         :j.setup_status==='failed'
           ?(j.setup_error||'Ada could not create the journal design preview.')
            :j.setup_status==='done'
-             ?'Ada has prepared the journal design preview. Review it in Design before publishing.'
+              ?'Ada has prepared the journal design preview. Review it in the Review tab before publishing.'
              :'Weekly journaling is active, but the journal design has not been prepared yet.';
        if(reviewBtn){
          reviewBtn.style.display=j.setup_status==='done'&&j.setup_draft_id&&j.setup_draft_status==='pending'?'inline-block':'none';
        }
       if(btn)btn.style.display=(j.setup_status==='queued'||j.setup_status==='running'||j.setup_status==='done')?'none':'';
-      if(note)note.textContent=j.setup_status==='failed'?'Retry the journal design setup.':j.setup_status==='done'?'Preview ready in Design.':j.setup_status==='queued'||j.setup_status==='running'?'Setup in progress.':'Design the journal before Ada publishes weekly articles.';
+       if(note)note.textContent=j.setup_status==='failed'?'Retry the journal design setup.':j.setup_status==='done'?'Preview ready in Review.':j.setup_status==='queued'||j.setup_status==='running'?'Setup in progress.':'Design the journal before Ada publishes weekly articles.';
     }else{
       if(text)text.textContent='Enable Ada’s weekly journal and she will prepare the article listing and article pages to match this website.';
        if(reviewBtn)reviewBtn.style.display='none';

@@ -93,6 +93,18 @@ class ApprovalService:
             "stale": artifact.content_hash != approval.artifact_hash,
         }
 
+    def list(self, status: ApprovalStatus | str = ApprovalStatus.PENDING, limit: int = 50) -> list[dict[str, Any]]:
+        approvals = self.memory.list_approval_requests(status=status, limit=limit)
+        result: list[dict[str, Any]] = []
+        for approval in approvals:
+            artifact = self.memory.get_artifact(approval.artifact_id)
+            result.append({
+                "approval": approval.to_owner_dict(),
+                "artifact": artifact.to_preview_dict() if artifact is not None else None,
+                "stale": artifact is None or artifact.content_hash != approval.artifact_hash,
+            })
+        return result
+
     def decide(self, approval_id: int, approved: bool, feedback: str = "") -> ApprovalRequest:
         approval = self._require(approval_id)
         if approval.status != ApprovalStatus.PENDING:

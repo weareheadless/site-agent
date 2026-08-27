@@ -240,6 +240,9 @@ def test_artifact_approval_routes_use_approval_service(runtime):
         )
     )
     _login(client)
+    queue = client.get("/api/approvals?status=pending")
+    assert queue.status_code == 200
+    assert queue.json()["approvals"][0]["artifact"]["title"] == "Prepared article"
     preview = client.get(f"/api/approvals/{approval.approval_id}")
     assert preview.status_code == 200
     assert preview.json()["artifact"]["title"] == "Prepared article"
@@ -471,6 +474,7 @@ def test_design_ui_uses_internal_review_state(runtime):
     assert "loadBuildStatus" not in html
     assert "function watchBackgroundJob(jobId)" in html
     assert 'data-tab="overview" onclick="switchTab(\'overview\')">Home</button>' in html
+    assert 'data-tab="design" onclick="switchTab(\'design\')">Review</button>' in html
     assert 'id="homeNeeds"' in html
     assert 'id="homeSuggests"' in html
     assert 'id="homeHandlingSummary"' in html
@@ -479,6 +483,9 @@ def test_design_ui_uses_internal_review_state(runtime):
     assert "function renderHomeError(message)" in html
     assert 'aria-label="Dismiss ${actionTitle}"' in html
     assert "homeSnooze" in html
+    assert "approvalQueue" in html
+    assert "feedbackDialog" in html
+    assert "prompt(" not in html
     assert "Clear past" in html
     assert "clearConversations()" in html
 

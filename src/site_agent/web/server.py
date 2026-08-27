@@ -25,6 +25,7 @@ from ..application.conversations import ConversationBusy, ConversationNotFound, 
 from ..application.home import HomeService
 from ..brain import editor as brain_editor
 from ..config import resolve_secret
+from ..core.contracts import ApprovalStatus
 from ..core.reflect import approve_reflection, effective_persona
 from ..hands import file_cache, pelican_blog
 from ..hands.base import AdapterError, MergeAdapter, PreviewAdapter, SiteAdapter, get_adapter
@@ -412,6 +413,15 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
     def _action_error(exc: Exception) -> HTTPException:
         status_code = 404 if isinstance(exc, KeyError) else 409 if isinstance(exc, (ActionServiceError, ValueError)) else 400
         return HTTPException(status_code=status_code, detail=str(exc))
+
+    @app.get("/api/approvals")
+    def approvals(request: Request, status: str = "pending", limit: int = 50):
+        require_auth(request)
+        try:
+            approval_status = ApprovalStatus(status)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="invalid approval status")
+        return {"approvals": approval_service.list(status=approval_status, limit=max(1, min(limit, 100)))}
 
     @app.post("/api/actions/{action_id}/start")
     async def start_action(action_id: int, request: Request):
