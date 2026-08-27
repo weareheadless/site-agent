@@ -5,6 +5,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from site_agent.brain.editor import EditError, set_dotted, slugify
+from site_agent.core.contracts import (
+    ActionPriority,
+    ActionRequirement,
+    ApprovalRequest,
+    Artifact,
+    ArtifactKind,
+    EffectClass,
+    OwnerAction,
+)
 from site_agent.core.memory import Memory
 from site_agent.hands.base import SiteAdapter
 from site_agent.web.server import create_app
@@ -160,6 +169,83 @@ def test_status_shape(runtime):
     assert isinstance(status["upcoming"], list)
     assert "spend_7d" in status
     assert status["worktree"]["available"] is False
+
+
+def test_home_endpoint_returns_owner_action_sections(runtime):
+    memory, _, _, _, client = runtime
+    memory.create_owner_action(
+        OwnerAction(
+            capability_id="site.change.propose",
+            provider_id="site-agent",
+            title="Confirm the course dates",
+            summary="Ada needs the new dates before updating your website.",
+            action_label="Tell Ada the dates",
+            priority=ActionPriority.URGENT,
+            requirement=ActionRequirement.OWNER_INFORMATION,
+            source_ref="test:course-dates",
+            dedupe_key="test:course-dates",
+        )
+    )
+    memory.kv_set("strategist_cards", {"cards": [{"title": "Write an article", "action": "Ask Ada to draft it"}]})
+    _login(client)
+    response = client.get("/api/home")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["needs_you"][0]["title"] == "Confirm the course dates"
+    assert payload["ada_suggests"][0]["title"] == "Write an article"
+    assert payload["ada_is_handling"]["active"] is False
+
+
+def test_conversation_lifecycle_routes_preserve_tombstones(runtime):
+    memory, _, _, _, client = runtime
+    conversation_id = memory.create_conversation("Owner thread")
+    memory.add_message(conversation_id, "user", "private text")
+    _login(client)
+
+    response = client.post(f"/api/conversations/{conversation_id}/archive")
+    assert response.status_code == 200
+    assert conversation_id not in {row["id"] for row in client.get("/api/conversations").json()["conversations"]}
+    assert conversation_id in {
+        row["id"] for row in client.get("/api/conversations?include_archived=true").json()["conversations"]
+    }
+    assert client.post(f"/api/conversations/{conversation_id}/restore").status_code == 200
+    assert client.delete(f"/api/conversations/{conversation_id}").status_code == 200
+    tombstone = client.get(f"/api/conversations/{conversation_id}")
+    assert tombstone.status_code == 200
+    assert tombstone.json()["deleted"] is True
+    assert tombstone.json()["messages"] == []
+
+
+def test_artifact_approval_routes_use_approval_service(runtime):
+    memory, _, _, _, client = runtime
+    artifact = memory.create_artifact(
+        Artifact(
+            kind=ArtifactKind.ARTICLE,
+            title="Prepared article",
+            summary="Ready for review.",
+            renderer="article",
+            capability_id="content.article.prepare",
+            provider_id="site-agent",
+            content_hash="sha256:route",
+            preview_data={"body": "hello"},
+        )
+    )
+    approval = memory.create_approval_request(
+        ApprovalRequest(
+            artifact_id=artifact.artifact_id,
+            artifact_hash=artifact.content_hash,
+            effect_class=EffectClass.PROPOSAL,
+            owner_action_label="Keep this draft",
+            provider_id="site-agent",
+        )
+    )
+    _login(client)
+    preview = client.get(f"/api/approvals/{approval.approval_id}")
+    assert preview.status_code == 200
+    assert preview.json()["artifact"]["title"] == "Prepared article"
+    decided = client.post(f"/api/approvals/{approval.approval_id}/approve")
+    assert decided.status_code == 200
+    assert decided.json()["approval"]["status"] == "approved"
 
 
 def test_dirty_worktree_is_not_exposed_in_customer_ui(runtime, tmp_path):

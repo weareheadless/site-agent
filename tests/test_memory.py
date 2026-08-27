@@ -1,6 +1,19 @@
+import sqlite3
+
 import pytest
 
-from site_agent.core.memory import Memory, SCHEMA_VERSION
+from site_agent.core.contracts import (
+    ActionPriority,
+    ActionRequirement,
+    ApprovalRequest,
+    Artifact,
+    ArtifactKind,
+    EffectClass,
+    OwnerAction,
+    ProviderReceipt,
+    ReceiptStatus,
+)
+from site_agent.core.memory import MIGRATIONS, Memory, SCHEMA_VERSION
 
 
 def test_fresh_db_creates_current_schema(tmp_path):
@@ -11,7 +24,10 @@ def test_fresh_db_creates_current_schema(tmp_path):
         r["name"]
         for r in mem.conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
     }
-    assert {"kv", "observations", "actions", "drafts", "metrics_snapshots", "llm_costs"} <= tables
+    assert {
+        "kv", "observations", "actions", "drafts", "metrics_snapshots", "llm_costs",
+        "owner_actions", "artifacts", "approval_requests", "provider_receipts",
+    } <= tables
     mem.close()
 
 
@@ -85,3 +101,107 @@ def test_metrics_snapshots_latest_wins(tmp_path):
     assert latest["data"]["users"] == 120
     assert mem.latest_snapshot("gsc") is None
     mem.close()
+
+
+def test_migration_from_deployed_schema9_creates_owner_workflow_tables(tmp_path):
+    path = tmp_path / "schema9.db"
+    conn = sqlite3.connect(path)
+    for version in range(1, 10):
+        with conn:
+            for statement in MIGRATIONS[version]:
+                conn.execute(statement)
+            conn.execute(f"PRAGMA user_version = {version}")
+    conn.execute("INSERT INTO conversations (created_ts, title) VALUES ('2026-01-01T00:00:00+00:00', 'kept')")
+    conn.commit()
+    conn.close()
+
+    memory = Memory(path)
+    assert memory.conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    assert memory.get_conversation(1)["title"] == "kept"
+    assert memory.conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='owner_actions'").fetchone()
+    memory.close()
+
+
+def test_migration_from_schema8_preserves_existing_records(tmp_path):
+    path = tmp_path / "schema8.db"
+    conn = sqlite3.connect(path)
+    for version in range(1, 9):
+        with conn:
+            for statement in MIGRATIONS[version]:
+                conn.execute(statement)
+            conn.execute(f"PRAGMA user_version = {version}")
+    conn.execute("INSERT INTO kv (key, value) VALUES ('owner_note', 'keep this')")
+    conn.commit()
+    conn.close()
+
+    memory = Memory(path)
+    assert memory.kv_get("owner_note") == "keep this"
+    columns = {row["name"] for row in memory.conn.execute("PRAGMA table_info(conversations)")}
+    assert {"archived_ts", "deleted_ts"} <= columns
+    assert memory.conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='artifacts'").fetchone()
+    memory.close()
+
+
+def test_owner_workflow_records_round_trip_and_guard_transitions(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    action = memory.create_owner_action(
+        OwnerAction(
+            capability_id="content.article.prepare",
+            provider_id="site-agent",
+            title="Prepare an article",
+            summary="Ada can prepare an article.",
+            action_label="Ask Ada to prepare it",
+            priority=ActionPriority.OPTIONAL,
+            requirement=ActionRequirement.SUGGESTION,
+            source_ref="test:article",
+            dedupe_key="test:article",
+            payload={"access_token": "do-not-store", "topic": "calm"},
+        )
+    )
+    assert memory.get_owner_action(action.id).payload["access_token"] == "[REDACTED]"
+
+    artifact = memory.create_artifact(
+        Artifact(
+            kind=ArtifactKind.ARTICLE,
+            title="Prepared article",
+            summary="An immutable prepared article.",
+            renderer="article",
+            capability_id="content.article.prepare",
+            provider_id="site-agent",
+            content_hash="sha256:abc",
+            source_action_id=action.id,
+            preview_data={"body": "hello", "secret": "hidden"},
+        )
+    )
+    approval = memory.create_approval_request(
+        ApprovalRequest(
+            artifact_id=artifact.artifact_id,
+            artifact_hash=artifact.content_hash,
+            effect_class=EffectClass.PROPOSAL,
+            owner_action_label="Keep this draft",
+            provider_id="site-agent",
+            action_id=action.id,
+        )
+    )
+    receipt = memory.create_provider_receipt(
+        ProviderReceipt(
+            provider_id="site-agent",
+            capability_id="content.article.prepare",
+            idempotency_key="test-1",
+            status=ReceiptStatus.SUCCESS,
+            action_id=action.id,
+            approval_id=approval.approval_id,
+            safe_message="prepared",
+        )
+    )
+    assert memory.get_artifact(artifact.artifact_id).preview_data["secret"] == "[REDACTED]"
+    assert memory.get_approval_request(approval.approval_id).artifact_hash == "sha256:abc"
+    assert memory.get_provider_receipt(receipt.receipt_id).status is ReceiptStatus.SUCCESS
+
+    memory.transition_owner_action(action.id, "completed")
+    with pytest.raises(ValueError, match="cannot transition"):
+        memory.transition_owner_action(action.id, "open")
+    memory.transition_approval_request(approval.approval_id, "approved")
+    with pytest.raises(ValueError, match="cannot transition"):
+        memory.transition_approval_request(approval.approval_id, "pending")
+    memory.close()

@@ -19,6 +19,9 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 
+from ..application.approvals import ApprovalService, ApprovalServiceError, StaleApproval
+from ..application.conversations import ConversationBusy, ConversationNotFound, ConversationService, ConversationServiceError
+from ..application.home import HomeService
 from ..brain import editor as brain_editor
 from ..config import resolve_secret
 from ..core.reflect import approve_reflection, effective_persona
@@ -144,6 +147,9 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
     env = os.environ if env is None else env
     config = context["config"]
     memory: Any = context["memory"]
+    home_service = context.get("home_service") or HomeService(memory)
+    approval_service = context.get("approval_service") or ApprovalService(memory)
+    conversation_service = context.get("conversation_service") or ConversationService(memory)
     sessions = Sessions()
     preview_cache = PreviewBuildCache()
     def current_token(request: Request) -> str | None:
@@ -263,9 +269,9 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
         return {"ok": True, "worktree": state}
 
     @app.get("/api/conversations")
-    def conversations(request: Request):
+    def conversations(request: Request, include_archived: bool = False):
         require_auth(request)
-        return {"conversations": memory.list_conversations()}
+        return {"conversations": conversation_service.list(include_archived=include_archived)}
 
     @app.post("/api/conversations")
     async def new_conversation(request: Request):
@@ -275,7 +281,7 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
         except Exception:  # noqa: BLE001
             body = {}
         title = str((body or {}).get("title") or "New conversation")
-        conv_id = memory.create_conversation(title)
+        conv_id = conversation_service.create(title)
         memory.record_action("conversation", f"#{conv_id}: {title[:60]}")
         return {"id": conv_id, "title": title}
 
@@ -293,14 +299,80 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
                 keep_id = int(keep_id)
             except (TypeError, ValueError):
                 raise HTTPException(status_code=400, detail="keep_conversation_id must be an integer")
-        archived = memory.archive_conversations(keep_id=keep_id)
-        memory.record_action("conversation", f"archived {archived} past conversation(s)")
-        return {"ok": True, "archived": archived, "kept_conversation_id": keep_id}
+        result = conversation_service.archive_all(keep_id=keep_id)
+        memory.record_action("conversation", f"archived {result['archived']} past conversation(s)")
+        return {"ok": True, **result}
+
+    def _conversation_error(exc: ConversationServiceError) -> HTTPException:
+        status_code = 409 if isinstance(exc, ConversationBusy) else 404 if isinstance(exc, ConversationNotFound) else 400
+        detail = str(exc)
+        if exc.job_ids:
+            detail += f" (job ids: {', '.join(map(str, exc.job_ids))})"
+        return HTTPException(status_code=status_code, detail=detail)
+
+    @app.post("/api/conversations/{conv_id}/archive")
+    def archive_conversation(conv_id: int, request: Request):
+        require_auth(request)
+        try:
+            return conversation_service.archive(conv_id)
+        except ConversationServiceError as exc:
+            raise _conversation_error(exc)
+
+    @app.post("/api/conversations/{conv_id}/restore")
+    def restore_conversation(conv_id: int, request: Request):
+        require_auth(request)
+        try:
+            return conversation_service.restore(conv_id)
+        except ConversationServiceError as exc:
+            raise _conversation_error(exc)
+
+    @app.delete("/api/conversations/{conv_id}")
+    def delete_conversation(conv_id: int, request: Request):
+        require_auth(request)
+        try:
+            return conversation_service.delete(conv_id)
+        except ConversationServiceError as exc:
+            raise _conversation_error(exc)
 
     @app.get("/api/theme")
     def theme(request: Request):
         """Brand theme for the admin UI — per-site colors/fonts overridable from config."""
         return _admin_theme(config)
+
+    @app.get("/api/approvals/{approval_id}")
+    def approval_preview(approval_id: int, request: Request):
+        require_auth(request)
+        try:
+            return approval_service.preview(approval_id)
+        except ApprovalServiceError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+
+    @app.post("/api/approvals/{approval_id}/approve")
+    def approve_artifact(approval_id: int, request: Request):
+        require_auth(request)
+        try:
+            approval = approval_service.decide(approval_id, True)
+            return {"ok": True, "approval": approval.to_owner_dict()}
+        except StaleApproval as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        except ApprovalServiceError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+
+    @app.post("/api/approvals/{approval_id}/decline")
+    async def decline_artifact(approval_id: int, request: Request):
+        require_auth(request)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        feedback = str((body or {}).get("feedback", "")).strip()
+        try:
+            approval = approval_service.decide(approval_id, False, feedback)
+            return {"ok": True, "approval": approval.to_owner_dict()}
+        except StaleApproval as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        except ApprovalServiceError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
 
     @app.get("/api/analytics")
     def analytics(request: Request):
@@ -324,6 +396,12 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
             "themes": memory.kv_get("themes", []),
             "health": memory.kv_get("last_health", {}),
         }
+
+    @app.get("/api/home")
+    def home(request: Request, needs_limit: int = 4, suggestion_limit: int = 3):
+        """Owner-facing action inbox; composition lives in HomeService."""
+        require_auth(request)
+        return home_service.snapshot(needs_limit=needs_limit, suggestion_limit=suggestion_limit).to_dict()
 
     @app.get("/api/content")
     def get_content(request: Request):
@@ -407,14 +485,10 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
     @app.get("/api/conversations/{conv_id}")
     def get_conversation(conv_id: int, request: Request):
         require_auth(request)
-        conversation = memory.get_conversation(conv_id)
-        if conversation is None:
-            raise HTTPException(status_code=404, detail="no such conversation")
-        return {
-            **conversation,
-            "messages": memory.get_messages(conv_id),
-            "jobs": memory.list_chat_jobs(conv_id),
-        }
+        try:
+            return conversation_service.get(conv_id)
+        except ConversationServiceError as exc:
+            raise _conversation_error(exc)
 
     @app.get("/api/preview/{file_path:path}")
     async def preview_file(file_path: str, request: Request):

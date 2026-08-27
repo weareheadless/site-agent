@@ -10,6 +10,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from .application.actions import OwnerActionService
+from .application.approvals import ApprovalService
+from .application.conversations import ConversationService
+from .application.home import HomeService
 from .core.memory import Memory
 from .core.scheduler import Scheduler
 
@@ -21,6 +25,20 @@ class Runtime:
     scheduler: Scheduler
     llm: Any
     persona_prompt: str
+    home_service: HomeService | None = None
+    owner_action_service: OwnerActionService | None = None
+    approval_service: ApprovalService | None = None
+    conversation_service: ConversationService | None = None
+
+    def __post_init__(self) -> None:
+        if self.home_service is None:
+            object.__setattr__(self, "home_service", HomeService(self.memory))
+        if self.owner_action_service is None:
+            object.__setattr__(self, "owner_action_service", OwnerActionService(self.memory))
+        if self.approval_service is None:
+            object.__setattr__(self, "approval_service", ApprovalService(self.memory))
+        if self.conversation_service is None:
+            object.__setattr__(self, "conversation_service", ConversationService(self.memory))
 
     def context(self) -> dict[str, Any]:
         """Compatibility context for modules not yet migrated to ``Runtime``."""
@@ -30,4 +48,8 @@ class Runtime:
             "scheduler": self.scheduler,
             "llm": self.llm,
             "persona_prompt": self.persona_prompt,
+            "home_service": self.home_service,
+            "owner_action_service": self.owner_action_service,
+            "approval_service": self.approval_service,
+            "conversation_service": self.conversation_service,
         }

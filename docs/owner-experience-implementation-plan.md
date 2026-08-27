@@ -1,6 +1,6 @@
 # Owner Experience And Capability Foundation
 
-**Status:** Approved direction, implementation not started
+**Status:** Implementation in progress; Phases 1-2 and the initial Home read slice are complete
 
 **Purpose:** Track the product and architecture work required to make Ada a
 calm, proactive assistant for non-technical small-business owners while
@@ -41,6 +41,22 @@ At plan creation on 2026-08-26:
   passing, and a wheel building successfully.
 - The manually managed OceanicVibes admin process was restarted against the
   current working tree. Future rollout work must account for that live state.
+
+## Current Progress
+
+- Checkpoint commit: `3989741 Checkpoint owner experience foundation`.
+- Phase 1 now has provider-neutral contracts, schema 10/11 persistence, guarded
+  transitions, payload/error redaction, and migration/round-trip tests.
+- `HomeService` and `GET /api/home` provide the first typed owner-action read
+  model while legacy drafts and strategist cards remain compatibility inputs.
+- `OwnerActionService`, `ApprovalService`, and `ConversationService` now own
+  action lifecycle, artifact-hash-bound approval, provider receipts, and durable
+  conversation lifecycle rules behind the existing runtime boundary.
+- Current verification after this slice: 254 tests passing, `compileall`, wheel
+  build, and `git diff --check`.
+- Per-thread archive, restore, and delete routes are available; the bulk `Clear
+  past` endpoint remains as a compatibility action until the final conversation
+  UI in Phase 7 replaces it.
 
 ## Product Thesis
 
@@ -446,16 +462,16 @@ Acceptance criteria:
 
 ### Phase 1: Typed Contracts And Persistence
 
-- [ ] Add typed `OwnerAction`, `Artifact`, `ApprovalRequest`, `Capability`, and
+- [x] Add typed `OwnerAction`, `Artifact`, `ApprovalRequest`, `Capability`, and
       `ProviderReceipt` contracts.
-- [ ] Document effect classes and state transitions.
-- [ ] Add schema migration 10+ for the minimum required persistence.
-- [ ] Add Memory methods for the new records; application services must not use
+- [x] Document effect classes and state transitions.
+- [x] Add schema migration 10+ for the minimum required persistence.
+- [x] Add Memory methods for the new records; application services must not use
       `Memory.conn` directly.
-- [ ] Add transition guards for completed, dismissed, stale, and approved state.
-- [ ] Add redaction rules for payloads and provider errors.
-- [ ] Add migration tests from schema 8 and the deployed schema 9.
-- [ ] Add round-trip and invalid-transition tests.
+- [x] Add transition guards for completed, dismissed, stale, and approved state.
+- [x] Add redaction rules for payloads and provider errors.
+- [x] Add migration tests from schema 8 and the deployed schema 9.
+- [x] Add round-trip and invalid-transition tests.
 
 Acceptance criteria:
 
@@ -466,14 +482,14 @@ Acceptance criteria:
 
 ### Phase 2: Application Workflow Layer
 
-- [ ] Add `HomeService`.
-- [ ] Add `OwnerActionService`.
-- [ ] Add `ApprovalService` with a website-draft compatibility adapter.
-- [ ] Add `ConversationService`.
-- [ ] Compose services through the existing `Runtime` boundary.
-- [ ] Move new business workflows out of route handlers.
-- [ ] Add service-level tests before adding new HTTP routes.
-- [ ] Update `docs/architecture.md` with the application workflow layer.
+- [x] Add `HomeService`.
+- [x] Add `OwnerActionService`.
+- [x] Add `ApprovalService` with a website-draft compatibility adapter.
+- [x] Add `ConversationService`.
+- [x] Compose services through the existing `Runtime` boundary.
+- [x] Move new business workflows out of route handlers.
+- [x] Add service-level tests before adding new HTTP routes.
+- [x] Update `docs/architecture.md` with the application workflow layer.
 
 Acceptance criteria:
 
@@ -507,7 +523,7 @@ Acceptance criteria:
 
 ### Phase 4: Owner Home API And UI
 
-- [ ] Add a documented `/api/home` response backed by `HomeService`.
+- [x] Add a documented `/api/home` response backed by `HomeService`.
 - [ ] Replace the report-first Overview with Home.
 - [ ] Render `Needs you`, `Ada suggests`, and `Ada is handling` in that order.
 - [ ] Limit default action counts and add clear empty states.

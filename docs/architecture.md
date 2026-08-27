@@ -32,6 +32,33 @@ Jobs and drafts are different records and IDs. A completed job must be traced
 through its result to the draft ID. The active-job endpoint is not a history
 endpoint.
 
+## Owner Workflow Contracts
+
+Owner-facing work is represented by provider-neutral contracts in
+`core/contracts.py`. `OwnerAction` records required owner input or a suggestion;
+`Artifact` records immutable prepared work; `ApprovalRequest` binds explicit
+permission to an artifact hash; and `ProviderReceipt` records a safe external
+result. `Capability` describes one explicit operation and its effect class.
+
+Owner actions move through `open -> started|waiting|snoozed|completed|dismissed|stale`;
+started and waiting work may complete or become stale, and terminal states cannot
+be reopened. Approval requests move from `pending` to `approved`, `declined`,
+`expired`, or `failed`; an approved request may only become failed. State changes
+are guarded in `Memory` and exposed to callers through application services.
+
+## Application Workflow Layer
+
+`application/` owns workflows that may be called by HTTP, scheduled jobs, or
+future MCP adapters. `HomeService` composes the owner-facing read model,
+`OwnerActionService` owns action deduplication and lifecycle transitions,
+`ApprovalService` owns artifact-hash-bound decisions and provider receipts, and
+`ConversationService` owns archive, restore, and deletion rules. These services
+call `Memory` methods only; the server remains a session and transport adapter.
+
+The existing website-draft approval endpoints remain a compatibility path behind
+the narrow `SiteDraftApprovalAdapter`. New artifact approval flows should use
+`ApprovalService` directly and must not route through FastAPI handlers.
+
 ## Preview Boundary
 
 `web/preview.py` owns two concerns:
