@@ -106,8 +106,9 @@ class NativeOpenCodeBuilder:
                 if operation_kind != "initial_build":
                     return stage_design_build(self.context, request, target, progress)
 
-                def plan_builder(image_files):
-                    return SpecialistDesignCoordinator(self.context).create_plan(
+                def plan_builder(image_files, phase_context=None):
+                    coordinator_context = self.context if phase_context is None else phase_context
+                    return SpecialistDesignCoordinator(coordinator_context).create_plan(
                         request,
                         target,
                         progress,

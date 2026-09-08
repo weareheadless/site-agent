@@ -186,6 +186,36 @@ def test_native_builder_opt_in_routes_locked_plan_to_implementation(monkeypatch)
     ]
 
 
+def test_native_builder_uses_runtime_execution_context_for_plan_phases(monkeypatch):
+    plan = object()
+    coordinator_contexts = []
+
+    class FakeCoordinator:
+        def __init__(self, context):
+            coordinator_contexts.append(context)
+
+        def create_plan(self, request, target, progress=None, **kwargs):
+            return SimpleNamespace(plan=plan)
+
+    def fake_stage(context, request, target, progress=None, design_plan=None, plan_builder=None):
+        assert plan_builder is not None
+        design_plan = plan_builder((), {**context, "api_key": "runtime-key"})
+        return design_plan
+
+    monkeypatch.setattr(
+        "site_agent.application.design_orchestration.SpecialistDesignCoordinator",
+        FakeCoordinator,
+    )
+    monkeypatch.setattr("site_agent.hands.opencode_runner.stage_design_build", fake_stage)
+
+    builder = NativeOpenCodeBuilder({"config": {"design_engine": {"orchestration": "specialist"}}})
+    assert builder.build_design("request", "target") is plan
+    assert coordinator_contexts == [{
+        "config": {"design_engine": {"orchestration": "specialist"}},
+        "api_key": "runtime-key",
+    }]
+
+
 def test_native_builder_routes_specialist_repair_to_repair_agent(monkeypatch):
     calls = []
 

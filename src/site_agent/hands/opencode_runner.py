@@ -1266,7 +1266,7 @@ def stage_design_build(
     progress=None,
     design_plan=None,
     repair_brief: Mapping[str, Any] | None = None,
-    plan_builder: Callable[[tuple[str, ...]], Any] | None = None,
+    plan_builder: Callable[[tuple[str, ...], dict[str, Any]], Any] | None = None,
 ):
     """Run a typed design request without creating a legacy merge draft."""
     from ..core.design_contracts import BuildTarget, PageBuildRequest, canonical_json
@@ -1414,7 +1414,7 @@ def stage_design_build(
             if progress:
                 progress("attaching visual evidence for the design builder")
         if design_plan is None and plan_builder is not None and repair_brief is None:
-            design_plan = plan_builder(tuple(evidence_paths))
+            design_plan = plan_builder(tuple(evidence_paths), execution_context)
         if design_plan is not None or repair_brief is not None:
             from .opencode_provider import write_specialist_agents
 
