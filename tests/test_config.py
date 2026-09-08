@@ -23,6 +23,7 @@ def test_defaults_load_without_instance_file():
     assert config["llm"]["base_url"] == "https://openrouter.ai/api/v1"
     assert config["llm"]["model"] == "deepseek/deepseek-v4-flash-0731"
     assert config["builder"]["model"] == "openrouter/deepseek/deepseek-v4-flash-vision-exp"
+    assert config["design_engine"]["orchestration"] == "legacy"
     assert config["dream"]["residue_count"] == 0
     assert config["self_model"]["enabled"] is True
     assert sources[0] is not None
@@ -137,3 +138,27 @@ def test_design_quality_required_content_accepts_bounded_text():
             "quality": {"required_content": ["A verified offer", "A verified service"]},
         }
     })
+
+
+def test_design_specialist_orchestration_is_explicit_and_bounded():
+    validate_design_config({
+        "design_engine": {
+            "orchestration": "specialist",
+            "specialist_timeout_seconds": 300,
+            "required_viewports": [{"name": "desktop", "width": 1440, "height": 1000}],
+        }
+    })
+    with pytest.raises(ConfigError, match="orchestration must be legacy or specialist"):
+        validate_design_config({
+            "design_engine": {
+                "orchestration": "unbounded",
+                "required_viewports": [{"name": "desktop", "width": 1440, "height": 1000}],
+            }
+        })
+    with pytest.raises(ConfigError, match="specialist_timeout_seconds"):
+        validate_design_config({
+            "design_engine": {
+                "specialist_timeout_seconds": 3,
+                "required_viewports": [{"name": "desktop", "width": 1440, "height": 1000}],
+            }
+        })

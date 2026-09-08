@@ -354,6 +354,7 @@ def _design_prompt(
     target,
     materialized_media_paths: tuple[str, ...] = (),
     materialized_font_paths: tuple[str, ...] = (),
+    design_plan: Any | None = None,
 ) -> str:
     from ..core.design_contracts import canonical_json
     from ..brain.design_guidance import INCUBATED_CONTEXT_APPLICATION_RULES
@@ -514,6 +515,16 @@ def _design_prompt(
         "host-provisioned above, and reference them locally; never use a CDN, Google Fonts, or another network font. If no "
         "approved local font is available, use a local/system CSS fallback stack.\n\n"
     )
+    locked_plan_block = ""
+    if design_plan is not None:
+        plan_data = design_plan.to_dict() if hasattr(design_plan, "to_dict") else dict(design_plan)
+        locked_plan_block = (
+            "LOCKED CREATIVE PLAN (host-selected; implement this direction rather than inventing a new one):\n"
+            + canonical_json(plan_data)[:80_000]
+            + "\nUse the selected direction, copy decisions, composition, asset treatment, and motion intent in this plan. "
+            "If a plan field conflicts with a verified intake fact or host policy, preserve the fact/policy and record "
+            "the conflict instead of silently inventing a replacement.\n\n"
+        )
     allowed_paths = set(getattr(target, "allowed_paths", ()) or ())
     native_framework_block = ""
     if {"package.json", "astro.config.mjs", "src/**"}.issubset(allowed_paths):
@@ -549,10 +560,11 @@ def _design_prompt(
           + "\n\n"
           + conversion_safety
            + required_content_block
-           + media_block
-           + font_block
-             + font_safety
-             + native_framework_block
+            + media_block
+            + font_block
+              + font_safety
+              + locked_plan_block
+              + native_framework_block
              + "CREATIVE DESIGN PROCESS (required, not a host-provided visual scaffold):\n"
          + "1. " + inspection + "\n"
           + "2. Keep planning concise and choose one subject-specific direction silently. Do not narrate alternatives, spend multiple turns rereading the repository, or delegate unless a specific blocker requires bounded read-only exploration. Delegated agents may inspect and report findings only; they must not edit this worktree or install packages.\n"
@@ -1237,7 +1249,7 @@ def finalize_design_target(
     })
 
 
-def stage_design_build(context: dict[str, Any], request, target, progress=None):
+def stage_design_build(context: dict[str, Any], request, target, progress=None, design_plan=None):
     """Run a typed design request without creating a legacy merge draft."""
     from ..core.design_contracts import BuildTarget, PageBuildRequest
 
@@ -1359,7 +1371,11 @@ def stage_design_build(context: dict[str, Any], request, target, progress=None):
                provider_base_url=str((execution_config.get("llm") or {}).get("base_url") or "").strip(),
                provider_env_name=provider_env_name,
                skill_set=execution_context.get("design_skill_set"),
-           )
+            )
+        if design_plan is not None:
+            from .opencode_provider import write_specialist_agents
+
+            write_specialist_agents(worktree, ("site-implementer",))
         turn_kwargs = {"progress": progress}
         if execution_context.get("memory") is not None:
             turn_kwargs["memory"] = execution_context.get("memory")
@@ -1396,8 +1412,10 @@ def stage_design_build(context: dict[str, Any], request, target, progress=None):
                     target,
                     tuple(materialized_media_paths),
                     tuple(materialized_font_paths),
+                    design_plan,
                 ),
                 execution_config,
+                agent_name="site-implementer" if design_plan is not None else "build",
                 **turn_kwargs,
             )
             turn_error = ""

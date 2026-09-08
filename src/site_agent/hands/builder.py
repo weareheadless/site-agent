@@ -78,6 +78,22 @@ class NativeOpenCodeBuilder:
         try:
             from .opencode_runner import stage_design_build
 
+            engine = self.context.get("config", {}).get("design_engine") or {}
+            if str(engine.get("orchestration") or "legacy").strip().lower() == "specialist":
+                from ..application.design_orchestration import SpecialistDesignCoordinator
+
+                plan_result = SpecialistDesignCoordinator(self.context).create_plan(
+                    request,
+                    target,
+                    progress,
+                )
+                return stage_design_build(
+                    self.context,
+                    request,
+                    target,
+                    progress,
+                    design_plan=plan_result.plan,
+                )
             return stage_design_build(self.context, request, target, progress)
         except Exception as exc:  # noqa: BLE001 - preserve the facade's error type
             raise BuilderError(str(exc), result=getattr(exc, "result", None)) from exc

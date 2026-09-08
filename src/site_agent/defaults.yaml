@@ -11,6 +11,8 @@ design_engine:
   model: ""
   base_url: ""
   api_key_env: ""
+  orchestration: legacy
+  specialist_timeout_seconds: 600
   repair_attempts: 0
   max_tokens: 8192
   required_viewports:

@@ -10,7 +10,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from tempfile import TemporaryDirectory
-from typing import Any, Callable, Mapping, Protocol, Type
+from typing import Any, Callable, Mapping, Protocol, Sequence, Type
 
 from ..core.contracts import ContractError
 from ..core.design_contracts import (
@@ -110,6 +110,7 @@ class SpecialistDesignCoordinator:
         input_hashes: tuple[str, ...],
         progress=None,
         session_id: str | None = None,
+        image_files: Sequence[str] = (),
     ) -> tuple[DesignPhaseArtifact, str]:
         claimed = self.memory.claim_design_phase(
             request.run_id,
@@ -148,6 +149,9 @@ class SpecialistDesignCoordinator:
                     session_id=session_id,
                     timeout_seconds=int((self.config.get("design_engine") or {}).get("specialist_timeout_seconds", 300)),
                     api_key_env=str((self.config.get("design_engine") or {}).get("api_key_env") or "") or None,
+                    api_key=self.context.get("api_key"),
+                    env=self.context.get("env"),
+                    image_files=tuple(str(item) for item in image_files),
                     memory=self.memory,
                 )
                 result = self.invoker.invoke(invocation, progress=progress)
@@ -179,7 +183,14 @@ class SpecialistDesignCoordinator:
                 raise
             raise DesignOrchestrationError(str(exc)) from exc
 
-    def create_plan(self, request: PageBuildRequest, target: BuildTarget, progress=None) -> DesignPlanResult:
+    def create_plan(
+        self,
+        request: PageBuildRequest,
+        target: BuildTarget,
+        progress=None,
+        *,
+        image_files: Sequence[str] = (),
+    ) -> DesignPlanResult:
         """Create exactly one copy deck, three concepts, and one selection."""
         if not request.run_id:
             raise DesignOrchestrationError("design request has no stable run identity")
@@ -201,6 +212,7 @@ class SpecialistDesignCoordinator:
                     instruction=copy_instruction,
                     input_hashes=input_hashes,
                     progress=progress,
+                    image_files=image_files,
                 )
             }
             for variant in self.CONCEPT_VARIANTS:
@@ -218,6 +230,7 @@ class SpecialistDesignCoordinator:
                     ),
                     input_hashes=input_hashes,
                     progress=progress,
+                    image_files=image_files,
                 )
             results: dict[str, tuple[DesignPhaseArtifact, str]] = {}
             for future in as_completed(futures.values()):
@@ -243,6 +256,7 @@ class SpecialistDesignCoordinator:
             instruction=selection_prompt,
             input_hashes=selection_inputs,
             progress=progress,
+            image_files=image_files,
         )
         return DesignPlanResult(
             copy_deck=copy_deck,  # type: ignore[arg-type]

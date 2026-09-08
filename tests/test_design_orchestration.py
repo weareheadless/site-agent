@@ -1,8 +1,10 @@
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 from site_agent.core.design_contracts import BuildTarget, PageBuildRequest
 from site_agent.core.memory import Memory
 from site_agent.application.design_orchestration import SpecialistDesignCoordinator
+from site_agent.hands.builder import NativeOpenCodeBuilder
 
 
 def _request(run_id="design-orchestration-1"):
@@ -119,3 +121,40 @@ def test_coordinator_reuses_completed_phases_after_restart(tmp_path):
 
     assert len(fake.calls) == first_call_count
     memory.close()
+
+
+def test_native_builder_opt_in_routes_locked_plan_to_implementation(monkeypatch):
+    plan = object()
+
+    class FakeCoordinator:
+        def __init__(self, context):
+            self.context = context
+
+        def create_plan(self, request, target, progress=None):
+            assert request == "request"
+            assert target == "target"
+            return SimpleNamespace(plan=plan)
+
+    calls = []
+
+    def fake_stage(context, request, target, progress=None, design_plan=None):
+        calls.append((context, request, target, progress, design_plan))
+        return "receipt"
+
+    monkeypatch.setattr(
+        "site_agent.application.design_orchestration.SpecialistDesignCoordinator",
+        FakeCoordinator,
+    )
+    monkeypatch.setattr("site_agent.hands.opencode_runner.stage_design_build", fake_stage)
+
+    builder = NativeOpenCodeBuilder({"config": {"design_engine": {"orchestration": "specialist"}}})
+    assert builder.build_design("request", "target", "progress") == "receipt"
+    assert calls == [
+        (
+            builder.context,
+            "request",
+            "target",
+            "progress",
+            plan,
+        )
+    ]

@@ -277,6 +277,16 @@ def validate_design_config(config: dict[str, Any]) -> None:
     manifest = str(engine.get("manifest_path") or "").strip().replace("\\", "/")
     if manifest and (Path(manifest).is_absolute() or ".." in Path(manifest).parts or "" in Path(manifest).parts):
         raise ConfigError("design_engine.manifest_path must be a safe relative path")
+    orchestration = str(engine.get("orchestration", "legacy") or "legacy").strip().lower()
+    if orchestration not in {"legacy", "specialist"}:
+        raise ConfigError("design_engine.orchestration must be legacy or specialist")
+    specialist_timeout = engine.get("specialist_timeout_seconds", 600)
+    if (
+        isinstance(specialist_timeout, bool)
+        or not isinstance(specialist_timeout, int)
+        or not 30 <= specialist_timeout <= 3_600
+    ):
+        raise ConfigError("design_engine.specialist_timeout_seconds must be between 30 and 3600")
     attempts = engine.get("repair_attempts", 0)
     if isinstance(attempts, bool) or not isinstance(attempts, int) or not 0 <= attempts <= 10:
         raise ConfigError("design_engine.repair_attempts must be between 0 and 10")
