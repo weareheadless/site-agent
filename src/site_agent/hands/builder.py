@@ -82,6 +82,29 @@ class NativeOpenCodeBuilder:
             if str(engine.get("orchestration") or "legacy").strip().lower() == "specialist":
                 from ..application.design_orchestration import SpecialistDesignCoordinator
 
+                operation_kind = str(getattr(target, "operation_kind", "initial_build") or "initial_build")
+                request_content = getattr(request, "content", {}) or {}
+                repair_brief = (
+                    request_content.get("specialist_repair_brief")
+                    if isinstance(request_content, dict)
+                    else None
+                )
+                locked_plan = (
+                    request_content.get("specialist_locked_plan")
+                    if isinstance(request_content, dict)
+                    else None
+                )
+                if operation_kind == "visual_refinement" and isinstance(repair_brief, dict):
+                    return stage_design_build(
+                        self.context,
+                        request,
+                        target,
+                        progress,
+                        design_plan=locked_plan,
+                        repair_brief=repair_brief,
+                    )
+                if operation_kind != "initial_build":
+                    return stage_design_build(self.context, request, target, progress)
                 plan_result = SpecialistDesignCoordinator(self.context).create_plan(
                     request,
                     target,

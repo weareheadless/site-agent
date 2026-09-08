@@ -1,7 +1,11 @@
 from dataclasses import dataclass
 from types import SimpleNamespace
 
-from site_agent.core.design_contracts import BuildTarget, PageBuildRequest
+from site_agent.core.design_contracts import (
+    BuildTarget,
+    CreativeRealizationReview,
+    PageBuildRequest,
+)
 from site_agent.core.memory import Memory
 from site_agent.application.design_orchestration import SpecialistDesignCoordinator
 from site_agent.hands.builder import NativeOpenCodeBuilder
@@ -71,6 +75,8 @@ class _FakeInvoker:
             if request.role == "motion-designer"
             else "creative_realization_review"
             if request.role == "creative-director" and "continuing the selection session" in request.prompt
+            else "creative_final_signoff"
+            if request.role == "creative-director" and "final sign-off" in request.prompt
             else "experience_review"
             if request.role == "experience-critic"
             else "technical_review"
@@ -178,6 +184,32 @@ def test_native_builder_opt_in_routes_locked_plan_to_implementation(monkeypatch)
     ]
 
 
+def test_native_builder_routes_specialist_repair_to_repair_agent(monkeypatch):
+    calls = []
+
+    def fake_stage(context, request, target, progress=None, design_plan=None, repair_brief=None):
+        calls.append((design_plan, repair_brief))
+        return "receipt"
+
+    monkeypatch.setattr("site_agent.hands.opencode_runner.stage_design_build", fake_stage)
+    request = SimpleNamespace(
+        content={
+            "specialist_repair_brief": {"scope": "repair the hero"},
+            "specialist_locked_plan": {"phase": "creative_selection"},
+        }
+    )
+    target = SimpleNamespace(operation_kind="visual_refinement")
+    builder = NativeOpenCodeBuilder({"config": {"design_engine": {"orchestration": "specialist"}}})
+
+    assert builder.build_design(request, target) == "receipt"
+    assert calls == [
+        (
+            {"phase": "creative_selection"},
+            {"scope": "repair the hero"},
+        )
+    ]
+
+
 def test_coordinator_records_implementation_then_runs_motion_in_same_workspace(tmp_path):
     memory = Memory(tmp_path / "memory.db")
     _run(memory, "design-orchestration-1")
@@ -239,4 +271,64 @@ def test_coordinator_runs_one_creative_review_and_two_independent_critics(tmp_pa
     assert fake.calls.count("experience-critic") == 1
     assert fake.calls.count("technical-critic") == 1
     assert len(memory.list_design_phase_artifacts("design-orchestration-1", status="completed")) == 8
+    memory.close()
+
+
+def test_coordinator_freezes_repair_brief_and_final_signoff_is_same_director_session(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    _run(memory, "design-orchestration-1")
+    fake = _FakeInvoker()
+    coordinator = SpecialistDesignCoordinator(
+        {"memory": memory, "config": {"design_engine": {"model": "test"}}},
+        invoker=fake,
+    )
+    request = _request()
+    target = _target()
+    plan_result = coordinator.create_plan(request, target)
+    review = coordinator.review_candidate(request, target, plan=plan_result.plan, candidate_sha="c" * 40)
+
+    repair_review = CreativeRealizationReview.from_dict({
+        **review.creative_review.to_dict(),
+        "payload": {"needs_repair": True, "state": "repair", "findings": [{"message": "repair"}]},
+        "phase": "creative_realization_review",
+        "run_id": request.run_id,
+        "base_sha": target.base_sha,
+        "context_snapshot_hash": "",
+        "input_hashes": [],
+        "producer": "creative-director",
+        "variant_key": "primary",
+        "attempt": 1,
+        "status": "completed",
+    })
+    from site_agent.application.design_orchestration import DesignReviewResult
+
+    repair_review_result = DesignReviewResult(
+        creative_review=repair_review,
+        experience_review=review.experience_review,
+        technical_review=review.technical_review,
+    )
+    brief = coordinator.create_repair_brief(
+        request,
+        target,
+        plan=plan_result.plan,
+        review=repair_review_result,
+    )
+    assert brief is not None
+    repair = coordinator.record_repair_phase(
+        request,
+        target,
+        repair_brief=brief.payload,
+        provider_result={"session_id": "repair-session", "reply": "repaired"},
+    )
+    assert repair.phase == "repair"
+
+    signoff = coordinator.final_signoff(
+        request,
+        target,
+        plan=plan_result.plan,
+        review=review,
+        creative_director_session_id=plan_result.creative_director_session_id,
+    )
+    assert signoff.phase == "creative_final_signoff"
+    assert len(memory.list_design_phase_artifacts("design-orchestration-1", status="completed")) == 11
     memory.close()

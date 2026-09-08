@@ -27,6 +27,8 @@ from ..core.design_contracts import (
     ImplementationReport,
     MotionReport,
     PageBuildRequest,
+    RepairBrief,
+    RepairReport,
     canonical_hash,
     canonical_json,
 )
@@ -297,6 +299,7 @@ class SpecialistDesignCoordinator:
         *,
         plan: DesignPlanBundle,
         candidate_sha: str = "",
+        creative_director_session_id: str | None = None,
         screenshots: Sequence[Mapping[str, Any]] = (),
         quality_evidence: Mapping[str, Any] | None = None,
         progress=None,
@@ -334,7 +337,7 @@ class SpecialistDesignCoordinator:
             instruction=creative_instruction,
             input_hashes=review_inputs,
             progress=progress,
-            session_id=self._creative_director_session(request.run_id),
+            session_id=creative_director_session_id or self._creative_director_session(request.run_id),
             image_files=image_files,
         )
 
@@ -384,6 +387,162 @@ class SpecialistDesignCoordinator:
             experience_review=critic_results["experience"],
             technical_review=critic_results["technical"],
         )
+
+    def create_repair_brief(
+        self,
+        request: PageBuildRequest,
+        target: BuildTarget,
+        *,
+        plan: DesignPlanBundle,
+        review: DesignReviewResult,
+    ) -> RepairBrief | None:
+        """Freeze one bounded repair scope from the review panel."""
+        if not review.needs_repair:
+            return None
+        payload = {
+            "needs_repair": True,
+            "locked_plan_hash": plan.content_hash,
+            "scope": "Apply only the highest-impact concrete findings; do not change the chosen direction.",
+            "findings": [
+                {"review": "creative_director", **self._bounded_review_payload(review.creative_review.payload)},
+                {"review": "experience", **self._bounded_review_payload(review.experience_review.payload)},
+                {"review": "technical", **self._bounded_review_payload(review.technical_review.payload)},
+            ],
+            "max_repair_turns": 1,
+        }
+        input_hashes = self._input_hashes(request, plan) + (
+            canonical_hash(payload),
+        )
+        claimed = self.memory.claim_design_phase(
+            request.run_id,
+            DesignPhase.REPAIR_BRIEF.value,
+            variant_key="primary",
+            base_sha=target.base_sha,
+            context_snapshot_hash=request.context_snapshot_hash,
+            input_hashes=input_hashes,
+            provider_id="host",
+            model="",
+        )
+        if claimed["status"] == "completed":
+            return RepairBrief.from_dict(claimed["payload"])
+        if claimed["status"] == "running" and not claimed.get("claimed"):
+            raise DesignOrchestrationError("design phase is already running: repair_brief/primary")
+        artifact = RepairBrief.from_dict({
+            "schema_version": 1,
+            "run_id": request.run_id,
+            "phase": DesignPhase.REPAIR_BRIEF.value,
+            "variant_key": "primary",
+            "attempt": int(claimed["attempt"]),
+            "status": "completed",
+            "base_sha": target.base_sha,
+            "context_snapshot_hash": request.context_snapshot_hash,
+            "input_hashes": list(input_hashes),
+            "producer": "host",
+            "payload": payload,
+        })
+        completed = self.memory.complete_design_phase(
+            claimed["id"],
+            artifact.to_dict(),
+            output_hash=artifact.content_hash,
+        )
+        return RepairBrief.from_dict(completed["payload"])
+
+    def final_signoff(
+        self,
+        request: PageBuildRequest,
+        target: BuildTarget,
+        *,
+        plan: DesignPlanBundle,
+        review: DesignReviewResult,
+        creative_director_session_id: str | None = None,
+        progress=None,
+    ) -> CreativeRealizationReview:
+        """Use the selecting creative director session for one final sign-off."""
+        instruction = (
+            "Act as the creative director for the final sign-off. Confirm that the retained candidate implements the "
+            "locked direction and that the review panel found no unresolved material repair. Do not introduce a new "
+            "direction. Return a final sign-off with state passed only when the evidence is sufficient.\nLOCKED PLAN:\n"
+            + canonical_json(plan.to_dict())
+            + "\nREVIEW PANEL:\n"
+            + canonical_json({
+                "creative": review.creative_review.payload,
+                "experience": review.experience_review.payload,
+                "technical": review.technical_review.payload,
+            })[:80_000]
+        )
+        artifact, _ = self._invoke_phase(
+            request=request,
+            target=target,
+            role="creative-director",
+            phase=DesignPhase.CREATIVE_FINAL_SIGNOFF.value,
+            variant_key="primary",
+            contract=CreativeRealizationReview,
+            instruction=instruction,
+            input_hashes=self._input_hashes(request, plan),
+            progress=progress,
+            session_id=creative_director_session_id or self._creative_director_session(request.run_id),
+        )
+        return artifact  # type: ignore[return-value]
+
+    @staticmethod
+    def _bounded_review_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+        result = dict(payload)
+        for key in ("findings", "repair_plan", "strengths"):
+            value = result.get(key)
+            if isinstance(value, list):
+                result[key] = value[:24]
+        return result
+
+    def record_repair_phase(
+        self,
+        request: PageBuildRequest,
+        target: BuildTarget,
+        *,
+        repair_brief: Mapping[str, Any],
+        provider_result: Mapping[str, Any],
+    ) -> RepairReport:
+        """Persist the one repair implementer turn on a refinement candidate."""
+        input_hashes = (
+            canonical_hash(request.to_dict()),
+            canonical_hash(dict(repair_brief)),
+        )
+        claimed = self.memory.claim_design_phase(
+            request.run_id,
+            DesignPhase.REPAIR.value,
+            variant_key="primary",
+            base_sha=target.base_sha,
+            context_snapshot_hash=request.context_snapshot_hash,
+            input_hashes=input_hashes,
+            provider_id="host",
+            model="",
+        )
+        if claimed["status"] == "completed":
+            return RepairReport.from_dict(claimed["payload"])
+        if claimed["status"] == "running" and not claimed.get("claimed"):
+            raise DesignOrchestrationError("design phase is already running: repair/primary")
+        artifact = RepairReport.from_dict({
+            "schema_version": 1,
+            "run_id": request.run_id,
+            "phase": DesignPhase.REPAIR.value,
+            "variant_key": "primary",
+            "attempt": int(claimed["attempt"]),
+            "status": "completed",
+            "base_sha": target.base_sha,
+            "context_snapshot_hash": request.context_snapshot_hash,
+            "input_hashes": list(input_hashes),
+            "producer": "host",
+            "payload": {
+                "repair_brief_hash": canonical_hash(dict(repair_brief)),
+                **dict(provider_result),
+            },
+        })
+        completed = self.memory.complete_design_phase(
+            claimed["id"],
+            artifact.to_dict(),
+            output_hash=artifact.content_hash,
+            session_id=str(provider_result.get("session_id") or ""),
+        )
+        return RepairReport.from_dict(completed["payload"])
 
     def _creative_director_session(self, run_id: str) -> str:
         records = self.memory.list_design_phase_artifacts(

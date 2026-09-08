@@ -1799,6 +1799,9 @@ class DesignService:
         critique: VisualCritiqueReport,
         *,
         run_id: str | None = None,
+        repair_brief: Mapping[str, Any] | None = None,
+        locked_plan: Mapping[str, Any] | None = None,
+        creative_director_session_id: str = "",
     ) -> dict[str, Any]:
         """Create the one active refinement operation from an immutable v1.
 
@@ -1883,6 +1886,12 @@ class DesignService:
             "parent_candidate_sha": parent_sha,
             "critique": critique.to_dict(),
         }
+        if repair_brief is not None:
+            content["specialist_repair_brief"] = dict(repair_brief)
+        if locked_plan is not None:
+            content["specialist_locked_plan"] = dict(locked_plan)
+        if creative_director_session_id:
+            content["specialist_creative_director_session_id"] = str(creative_director_session_id)
         request_data["content"] = content
         snapshot = None
         if request_data.get("context_snapshot"):

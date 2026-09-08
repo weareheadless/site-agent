@@ -355,6 +355,7 @@ def _design_prompt(
     materialized_media_paths: tuple[str, ...] = (),
     materialized_font_paths: tuple[str, ...] = (),
     design_plan: Any | None = None,
+    repair_brief: Mapping[str, Any] | None = None,
 ) -> str:
     from ..core.design_contracts import canonical_json
     from ..brain.design_guidance import INCUBATED_CONTEXT_APPLICATION_RULES
@@ -525,6 +526,14 @@ def _design_prompt(
             "If a plan field conflicts with a verified intake fact or host policy, preserve the fact/policy and record "
             "the conflict instead of silently inventing a replacement.\n\n"
         )
+    repair_brief_block = ""
+    if repair_brief is not None:
+        repair_brief_block = (
+            "FROZEN REPAIR BRIEF (one bounded repair only):\n"
+            + canonical_json(dict(repair_brief))[:60_000]
+            + "\nApply only these concrete findings to the retained candidate. Do not redesign, add a new direction, "
+            "or continue after one implementation and one local verification pass.\n\n"
+        )
     allowed_paths = set(getattr(target, "allowed_paths", ()) or ())
     native_framework_block = ""
     if {"package.json", "astro.config.mjs", "src/**"}.issubset(allowed_paths):
@@ -564,6 +573,7 @@ def _design_prompt(
             + font_block
               + font_safety
               + locked_plan_block
+              + repair_brief_block
               + native_framework_block
              + "CREATIVE DESIGN PROCESS (required, not a host-provided visual scaffold):\n"
          + "1. " + inspection + "\n"
@@ -1249,7 +1259,14 @@ def finalize_design_target(
     })
 
 
-def stage_design_build(context: dict[str, Any], request, target, progress=None, design_plan=None):
+def stage_design_build(
+    context: dict[str, Any],
+    request,
+    target,
+    progress=None,
+    design_plan=None,
+    repair_brief: Mapping[str, Any] | None = None,
+):
     """Run a typed design request without creating a legacy merge draft."""
     from ..core.design_contracts import BuildTarget, PageBuildRequest, canonical_json
 
@@ -1373,10 +1390,13 @@ def stage_design_build(context: dict[str, Any], request, target, progress=None, 
                provider_env_name=provider_env_name,
                skill_set=execution_context.get("design_skill_set"),
             )
-        if design_plan is not None:
+        if design_plan is not None or repair_brief is not None:
             from .opencode_provider import write_specialist_agents
 
-            write_specialist_agents(worktree, ("site-implementer",))
+            write_specialist_agents(
+                worktree,
+                ("repair-implementer" if repair_brief is not None else "site-implementer",),
+            )
         turn_kwargs = {"progress": progress}
         if execution_context.get("memory") is not None:
             turn_kwargs["memory"] = execution_context.get("memory")
@@ -1414,9 +1434,16 @@ def stage_design_build(context: dict[str, Any], request, target, progress=None, 
                     tuple(materialized_media_paths),
                     tuple(materialized_font_paths),
                     design_plan,
+                    repair_brief,
                 ),
                 execution_config,
-                agent_name="site-implementer" if design_plan is not None else "build",
+                agent_name=(
+                    "repair-implementer"
+                    if repair_brief is not None
+                    else "site-implementer"
+                    if design_plan is not None
+                    else "build"
+                ),
                 **turn_kwargs,
             )
             turn_error = ""
@@ -1434,7 +1461,21 @@ def stage_design_build(context: dict[str, Any], request, target, progress=None, 
         )
         _verify_materialized_media(execution_context, worktree, materialized_media_paths)
         _verify_materialized_fonts(execution_config, worktree, materialized_font_paths)
-        if design_plan is not None and not turn_error:
+        if repair_brief is not None and not turn_error:
+            from ..application.design_orchestration import SpecialistDesignCoordinator
+
+            SpecialistDesignCoordinator(execution_context).record_repair_phase(
+                request,
+                target,
+                repair_brief=repair_brief,
+                provider_result={
+                    "session_id": str(initial.get("session_id") or ""),
+                    "reply": str(initial.get("reply") or "")[-6_000:],
+                    "tool_calls": list(initial.get("tool_calls") or ())[-32:],
+                    "usage": dict(initial.get("usage") or {}),
+                },
+            )
+        if design_plan is not None and repair_brief is None and not turn_error:
             from ..application.design_orchestration import SpecialistDesignCoordinator
 
             coordinator = SpecialistDesignCoordinator(execution_context)

@@ -102,7 +102,7 @@ _DESIGN_RUN_TRANSITIONS: dict[DesignRunStatus, frozenset[DesignRunStatus]] = {
     # Deterministic validation may complete before the explicit read-only
     # visual gate is requested. That gate can reopen validation without
     # making any production mutation.
-    DesignRunStatus.READY_FOR_REVIEW: frozenset({DesignRunStatus.VALIDATING}),
+    DesignRunStatus.READY_FOR_REVIEW: frozenset({DesignRunStatus.VALIDATING, DesignRunStatus.NEEDS_REPAIR}),
     DesignRunStatus.NEEDS_REPAIR: frozenset({DesignRunStatus.CANCELLED}),
     DesignRunStatus.INCOMPLETE: frozenset({DesignRunStatus.VALIDATING, DesignRunStatus.CANCELLED}),
     DesignRunStatus.INTERRUPTED: frozenset(),

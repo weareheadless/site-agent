@@ -104,7 +104,12 @@ class DesignJobExecutor:
         quality = run.get("quality_report_json") or {}
         if quality.get("state") != "passed" or not run.get("candidate_sha"):
             return
-        from ..core.design_contracts import BuildTarget, DesignPlanBundle, PageBuildRequest
+        from ..core.design_contracts import (
+            BuildTarget,
+            DesignPlanBundle,
+            PageBuildRequest,
+            VisualCritiqueReport,
+        )
         from .design_orchestration import SpecialistDesignCoordinator
 
         planning = run.get("planning_json") or {}
@@ -115,9 +120,17 @@ class DesignJobExecutor:
             phase="creative_selection",
             status="completed",
         )
-        if not plan_records:
-            raise RuntimeError("specialist review requires a completed creative selection")
-        plan = DesignPlanBundle.from_dict(plan_records[-1]["payload"])
+        director_session_id = ""
+        if plan_records:
+            plan = DesignPlanBundle.from_dict(plan_records[-1]["payload"])
+            director_session_id = str(plan_records[-1].get("session_id") or "")
+        else:
+            content = request.content if isinstance(request.content, Mapping) else {}
+            locked_plan = content.get("specialist_locked_plan") if isinstance(content, Mapping) else None
+            if not isinstance(locked_plan, Mapping):
+                raise RuntimeError("specialist review requires a completed creative selection")
+            plan = DesignPlanBundle.from_dict(locked_plan)
+            director_session_id = str(content.get("specialist_creative_director_session_id") or "")
         screenshots = self.service._screenshot_evidence(quality)
         coordinator = SpecialistDesignCoordinator(self.context)
         review = coordinator.review_candidate(
@@ -125,6 +138,7 @@ class DesignJobExecutor:
             target,
             plan=plan,
             candidate_sha=str(run.get("candidate_sha") or ""),
+            creative_director_session_id=director_session_id,
             screenshots=screenshots,
             quality_evidence={
                 "state": quality.get("state"),
@@ -132,6 +146,78 @@ class DesignJobExecutor:
                 "findings": list(quality.get("findings") or ())[:100],
             },
         )
+        if review.needs_repair:
+            repair_brief = coordinator.create_repair_brief(
+                request,
+                target,
+                plan=plan,
+                review=review,
+            )
+            if repair_brief is None:
+                raise RuntimeError("specialist review requested repair without a repair brief")
+            findings = []
+            repair_plan = []
+            for label, report in (
+                ("creative_director", review.creative_review),
+                ("experience", review.experience_review),
+                ("technical", review.technical_review),
+            ):
+                payload = report.payload
+                raw_findings = payload.get("findings") if isinstance(payload.get("findings"), list) else []
+                findings.extend({"review": label, **dict(item)} for item in raw_findings[:24] if isinstance(item, Mapping))
+                raw_plan = payload.get("repair_plan") if isinstance(payload.get("repair_plan"), list) else []
+                repair_plan.extend({"review": label, **dict(item)} for item in raw_plan[:24] if isinstance(item, Mapping))
+            critique = VisualCritiqueReport.from_dict({
+                "run_id": run_id,
+                "candidate_sha": str(run.get("candidate_sha") or ""),
+                "model_id": "specialist-review-panel",
+                "state": "repair",
+                "findings": findings,
+                "repair_plan": repair_plan or [{"change": repair_brief.payload.get("scope", "Apply the frozen repair brief.")}],
+                "screenshot_evidence": screenshots,
+            })
+            if str(run.get("operation_kind") or "initial_build") == "initial_build":
+                self.memory.transition_design_run(
+                    run_id,
+                    DesignRunStatus.NEEDS_REPAIR.value,
+                    error="specialist review requires one bounded repair",
+                )
+                child = self.service.create_visual_refinement_run(
+                    run_id,
+                    critique,
+                    repair_brief=repair_brief.payload,
+                    locked_plan=plan.to_dict(),
+                    creative_director_session_id=director_session_id,
+                )
+                child_run = child.get("run") or {}
+                if child_run.get("run_id"):
+                    self.enqueue(str(child_run["run_id"]))
+                self.memory.add_design_run_event(
+                    run_id,
+                    "specialist_repair_queued",
+                    "Queued the single bounded specialist repair child from the review panel.",
+                    {"child_run_id": child_run.get("run_id"), "candidate_sha": run.get("candidate_sha")},
+                )
+            else:
+                self.memory.transition_design_run(
+                    run_id,
+                    DesignRunStatus.NEEDS_REPAIR.value,
+                    error="specialist review requires another explicit repair decision",
+                )
+                self.memory.add_design_run_event(
+                    run_id,
+                    "specialist_repair_limit",
+                    "A refinement candidate still needs repair; no nested repair run was created.",
+                    {"candidate_sha": run.get("candidate_sha")},
+                )
+        else:
+            coordinator.final_signoff(
+                request,
+                target,
+                plan=plan,
+                review=review,
+                creative_director_session_id=director_session_id,
+            )
         self.memory.add_design_run_event(
             run_id,
             "specialist_reviews_completed",
