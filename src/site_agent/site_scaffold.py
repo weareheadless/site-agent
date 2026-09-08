@@ -1,7 +1,14 @@
-"""Deterministic Pelican starting point for a new customer website."""
+"""Site bootstrap helpers.
+
+The long-standing ``initialize_site`` API creates the legacy Pelican site used
+by existing customer repositories and the ``init-site`` command.  New
+from-scratch design experiments must use ``initialize_toolchain_workspace``;
+that initializer deliberately contains no visual implementation.
+"""
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 
@@ -12,7 +19,7 @@ def _write(root: Path, relative: str, content: str) -> None:
 
 
 def initialize_site(directory: str | Path, name: str = "New Website", url: str = "") -> Path:
-    """Create the standard Pelican files in an empty customer repository."""
+    """Create the legacy Pelican files for an existing/legacy site workflow."""
     root = Path(directory).expanduser().resolve()
     if root.exists() and any(root.iterdir()):
         raise FileExistsError(f"site directory is not empty: {root}")
@@ -50,6 +57,16 @@ for forbidden in content themes pelicanconf.py build.sh requirements.txt; do
   if [ -e "output/$forbidden" ]; then
     printf 'public output guard: removed forbidden path: output/%s\\n' "$forbidden" >&2
     rm -rf "output/$forbidden"
+  fi
+done
+for relative in index.html styles.css app.js vendor images; do
+  if [ -e "$relative" ]; then
+    rm -rf "output/$relative"
+    if [ -d "$relative" ]; then
+      cp -R "$relative" "output/$relative"
+    else
+      cp "$relative" "output/$relative"
+    fi
   fi
 done
 for pattern in '*.jinja' '*.jinja2' '*.j2' '*.yaml' '*.yml'; do
@@ -115,3 +132,96 @@ This page is a placeholder for the primary customer action.
 """)
     _write(root, "themes/ada/static/css/site.css", """body{margin:0;color:#17313b;background:#f5f8f8;font:16px/1.6 system-ui,sans-serif}main{max-width:760px;margin:48px auto;padding:0 24px}article{background:white;border:1px solid #dce8e8;border-radius:12px;padding:28px;margin:18px 0}a{color:#087f99}.ada-mark{display:block;padding:24px;color:#087f99;font-size:12px;letter-spacing:.12em;text-transform:uppercase}.byline{color:#58727b;font-size:13px}""")
     return root
+
+
+_ASTRO_VERSION = "5.18.2"
+_ASTRO_REACT_VERSION = "4.4.2"
+_GSAP_REACT_VERSION = "2.1.2"
+_REACT_VERSION = "19.2.8"
+_REACT_DOM_VERSION = "19.2.8"
+_GSAP_VERSION = "3.12.5"
+_CHECK_VERSION = "0.9.10"
+_TYPES_NODE_VERSION = "22.20.1"
+_TYPES_REACT_VERSION = "19.2.18"
+_TYPES_REACT_DOM_VERSION = "19.2.5"
+_TYPESCRIPT_VERSION = "5.9.3"
+
+
+def _package_manifest(name: str) -> dict[str, object]:
+    """Return exact direct toolchain dependencies, with no visual defaults."""
+    return {
+        "name": f"ada-{name.lower().replace(' ', '-')}-site" if name else "ada-site",
+        "private": True,
+        "type": "module",
+        "scripts": {
+            "check": "astro check",
+            "build": "astro build",
+            "preview": "astro preview",
+        },
+        "dependencies": {
+            "@astrojs/react": _ASTRO_REACT_VERSION,
+            "@gsap/react": _GSAP_REACT_VERSION,
+            "astro": _ASTRO_VERSION,
+            "gsap": _GSAP_VERSION,
+            "react": _REACT_VERSION,
+            "react-dom": _REACT_DOM_VERSION,
+        },
+        "devDependencies": {
+            "@astrojs/check": _CHECK_VERSION,
+            "@types/node": _TYPES_NODE_VERSION,
+            "@types/react": _TYPES_REACT_VERSION,
+            "@types/react-dom": _TYPES_REACT_DOM_VERSION,
+            "typescript": _TYPESCRIPT_VERSION,
+        },
+    }
+
+
+def initialize_toolchain_workspace(directory: str | Path, name: str = "") -> Path:
+    """Create a blank Astro/React workspace for a new design experiment.
+
+    This is intentionally not a site template: it creates only package/config
+    metadata and empty source directories.  The first page, styles, copy,
+    imagery, fonts, components, and motion are authored by the isolated model.
+    """
+    root = Path(directory).expanduser().resolve()
+    if root.exists() and any(root.iterdir()):
+        raise FileExistsError(f"site directory is not empty: {root}")
+    root.mkdir(parents=True, exist_ok=True)
+
+    _write(root, "package.json", json.dumps(_package_manifest(str(name or "")), indent=2) + "\n")
+    _write(root, "astro.config.mjs", """import { defineConfig } from 'astro/config';
+import react from '@astrojs/react';
+
+export default defineConfig({
+  integrations: [react()],
+});
+""")
+    _write(root, "tsconfig.json", """{
+  "extends": "astro/tsconfigs/strict",
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "jsx": "react-jsx",
+    "jsxImportSource": "react"
+  }
+}
+""")
+    _write(root, ".gitignore", """node_modules/
+dist/
+.astro/
+.opencode/
+.agent-home/
+""")
+    for relative in (
+        "src/pages/.gitkeep",
+        "src/components/.gitkeep",
+        "src/styles/.gitkeep",
+        "public/.gitkeep",
+        "design/.gitkeep",
+    ):
+        _write(root, relative, "")
+    _write(root, "src/env.d.ts", "/// <reference types=\"astro/client\" />\n")
+    return root
+
+
+__all__ = ["initialize_site", "initialize_toolchain_workspace"]

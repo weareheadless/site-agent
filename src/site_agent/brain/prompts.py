@@ -8,6 +8,7 @@ directions rather than rigid rules. Per-site identity comes from config
 from __future__ import annotations
 
 import datetime
+import json
 from typing import Any
 
 BASE_DIRECTIONS = [
@@ -181,6 +182,17 @@ def _work_persona_prompt(config: dict[str, Any]) -> str:
 def work_persona_prompt(config: dict[str, Any], memory: Any = None) -> str:
     """Build the customer-facing role around, but not instead of, identity."""
     return inner_identity_prompt(config, memory) + "\n\n" + _work_persona_prompt(config)
+
+
+def customer_context_prompt(view: dict[str, Any]) -> str:
+    """Render canonical customer state as bounded structured prompt context."""
+    encoded = json.dumps(view or {}, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return (
+        "Canonical customer context is the source of truth for this site's business, audience, "
+        "brand, conversion, owner relationship, and constraints. Use only the supplied facts; "
+        "keep explicit unknowns and contradictions unresolved rather than inventing them.\n"
+        "Customer context:\n" + encoded
+    )
 
 
 def persona_prompt(config: dict[str, Any]) -> str:

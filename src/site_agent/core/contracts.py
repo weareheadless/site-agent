@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import datetime
 import json
+import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, TypeVar
+from typing import Any, Protocol, TypeVar
 
 
 class ContractError(ValueError):
@@ -45,8 +46,12 @@ class ActionState(str, Enum):
 class ArtifactKind(str, Enum):
     SITE_CHANGE = "site_change"
     ARTICLE = "article"
+    SEO_REPORT = "seo_report"
     BUSINESS_INFORMATION = "business_information"
     SOCIAL_POST = "social_post"
+    DESIGN_TRANSCRIPT = "design_transcript"
+    DESIGN_BUILD = "design_build"
+    DESIGN_SCREENSHOTS = "design_screenshots"
 
 
 class EffectClass(str, Enum):
@@ -94,19 +99,43 @@ _SENSITIVE_KEY_PARTS = (
     "token",
 )
 
+_SECRET_TEXT_PATTERNS = (
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.I | re.S),
+    re.compile(r"(?i)\bBearer\s+[^\s,;]+"),
+    re.compile(
+        r"(?i)(?P<key>\b(?:[A-Z][A-Z0-9_]*_)?(?:API[_-]?KEY|ACCESS[_-]?TOKEN|REFRESH[_-]?TOKEN|AUTHORIZATION|PASSWORD|SECRET|CREDENTIAL)\b)"
+        r"\s*[:=]\s*(['\"]?)[^\s,'\"}]+"
+    ),
+    re.compile(r"\b(?:sk|gh[ps]_[A-Za-z0-9_]+)-[A-Za-z0-9_-]{8,}"),
+)
+
+
+def _redact_sensitive_text(value: str) -> str:
+    result = value
+    result = _SECRET_TEXT_PATTERNS[0].sub("[REDACTED PRIVATE KEY]", result)
+    result = _SECRET_TEXT_PATTERNS[1].sub("Bearer [REDACTED]", result)
+    result = _SECRET_TEXT_PATTERNS[2].sub(lambda match: f"{match.group('key')}=[REDACTED]", result)
+    result = _SECRET_TEXT_PATTERNS[3].sub("[REDACTED TOKEN]", result)
+    return result
+
 
 def _sensitive_key(key: str) -> bool:
     normalized = re.sub(r"[^a-z0-9]+", "_", key.lower()).strip("_")
     return any(part in normalized for part in _SENSITIVE_KEY_PARTS)
 
 
-def _safe_value(value: Any, key: str = "") -> Any:
-    if _sensitive_key(key):
+def _safe_value(value: Any, key: str = "", preserve_keys: set[str] | None = None) -> Any:
+    if _sensitive_key(key) and key not in (preserve_keys or set()):
         return "[REDACTED]"
     if isinstance(value, Mapping):
-        return {str(child_key): _safe_value(child_value, str(child_key)) for child_key, child_value in value.items()}
+        return {
+            str(child_key): _safe_value(child_value, str(child_key), preserve_keys)
+            for child_key, child_value in value.items()
+        }
     if isinstance(value, (list, tuple)):
-        return [_safe_value(item) for item in value]
+        return [_safe_value(item, preserve_keys=preserve_keys) for item in value]
+    if isinstance(value, str):
+        return _redact_sensitive_text(value)
     if value is None or isinstance(value, (str, int, float, bool)):
         return value
     if isinstance(value, Enum):
@@ -114,13 +143,18 @@ def _safe_value(value: Any, key: str = "") -> Any:
     return str(value)
 
 
-def safe_payload(payload: Mapping[str, Any] | None, *, max_bytes: int = 100_000) -> dict[str, Any]:
+def safe_payload(
+    payload: Mapping[str, Any] | None,
+    *,
+    max_bytes: int = 100_000,
+    preserve_keys: set[str] | None = None,
+) -> dict[str, Any]:
     """Return JSON-safe payload data with credential-shaped values removed."""
     if payload is None:
         return {}
     if not isinstance(payload, Mapping):
         raise ContractError("payload must be a JSON object")
-    cleaned = _safe_value(payload)
+    cleaned = _safe_value(payload, preserve_keys=preserve_keys)
     encoded = json.dumps(cleaned, ensure_ascii=False, separators=(",", ":"))
     if len(encoded.encode("utf-8")) > max_bytes:
         raise ContractError(f"payload exceeds {max_bytes} bytes")
@@ -137,6 +171,324 @@ def safe_provider_message(message: str | None, *, max_chars: int = 500) -> str:
         text,
     )
     return text[:max_chars]
+
+
+def _crawlseo_mapping(value: Any, field_name: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise ContractError(f"CrawlSEO {field_name} must be an object")
+    return value
+
+
+def _crawlseo_text(value: Any, field_name: str, *, allow_empty: bool = False) -> str:
+    if not isinstance(value, str) or (not allow_empty and not value.strip()):
+        raise ContractError(f"CrawlSEO {field_name} must be text")
+    return value
+
+
+def _crawlseo_number(value: Any, field_name: str) -> int | float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+        raise ContractError(f"CrawlSEO {field_name} must be a finite number")
+    return value
+
+
+def _crawlseo_count(value: Any, field_name: str) -> int:
+    number = _crawlseo_number(value, field_name)
+    if float(number) < 0 or float(number) != int(number):
+        raise ContractError(f"CrawlSEO {field_name} must be a non-negative integer")
+    return int(number)
+
+
+@dataclass(frozen=True)
+class CrawlSEOProject:
+    """The fixed project identity returned by ``seo_get_project``."""
+
+    project_id: str
+    domain: str
+    url: str
+    connections: dict[str, dict[str, str]]
+
+    @classmethod
+    def from_mapping(cls, payload: Mapping[str, Any]) -> "CrawlSEOProject":
+        data = _crawlseo_mapping(payload, "project response")
+        site = _crawlseo_mapping(data.get("site"), "project.site")
+        raw_connections = _crawlseo_mapping(data.get("connections"), "project.connections")
+        connections: dict[str, dict[str, str]] = {}
+        for name in ("gsc", "ga4"):
+            connection = _crawlseo_mapping(raw_connections.get(name) or {}, f"project.connections.{name}")
+            connections[name] = {
+                "status": _crawlseo_text(connection.get("status", ""), f"project.connections.{name}.status", allow_empty=True),
+                "property": _crawlseo_text(
+                    connection.get("property", ""), f"project.connections.{name}.property", allow_empty=True
+                ),
+            }
+        return cls(
+            project_id=_crawlseo_text(data.get("project_id"), "project_id"),
+            domain=_crawlseo_text(site.get("domain"), "project.site.domain"),
+            url=_crawlseo_text(site.get("url"), "project.site.url"),
+            connections=connections,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "project_id": self.project_id,
+            "site": {"domain": self.domain, "url": self.url},
+            "connections": {name: dict(connection) for name, connection in self.connections.items()},
+        }
+
+
+@dataclass(frozen=True)
+class CrawlSEOQuery:
+    """One normalized GSC query row."""
+
+    query: str
+    clicks: int | float
+    impressions: int | float
+    ctr: int | float
+    position: int | float
+
+    @classmethod
+    def from_mapping(cls, payload: Mapping[str, Any]) -> "CrawlSEOQuery":
+        data = _crawlseo_mapping(payload, "search query")
+        return cls(
+            query=_crawlseo_text(data.get("query", ""), "query", allow_empty=True),
+            clicks=round(_crawlseo_number(data.get("clicks"), "query.clicks"), 2),
+            impressions=_crawlseo_number(data.get("impressions"), "query.impressions"),
+            ctr=round(_crawlseo_number(data.get("ctr"), "query.ctr"), 4),
+            position=round(_crawlseo_number(data.get("position"), "query.position"), 1),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "query": self.query,
+            "clicks": self.clicks,
+            "impressions": self.impressions,
+            "ctr": self.ctr,
+            "position": self.position,
+        }
+
+
+@dataclass(frozen=True)
+class CrawlSEOSearchSummary:
+    """The compatibility shape returned by the CrawlSEO search tool."""
+
+    period_days: int
+    top_queries: tuple[CrawlSEOQuery, ...]
+
+    @classmethod
+    def from_mapping(
+        cls,
+        payload: Mapping[str, Any],
+        *,
+        default_period_days: int | None = None,
+    ) -> "CrawlSEOSearchSummary":
+        data = _crawlseo_mapping(payload, "search summary")
+        raw_days = data.get("period_days", default_period_days)
+        if not isinstance(raw_days, int) or isinstance(raw_days, bool) or raw_days < 1:
+            raise ContractError("CrawlSEO search summary period_days must be a positive integer")
+        rows = data.get("top_queries", [])
+        if not isinstance(rows, (list, tuple)):
+            raise ContractError("CrawlSEO search summary top_queries must be an array")
+        return cls(raw_days, tuple(CrawlSEOQuery.from_mapping(row) for row in rows))
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"period_days": self.period_days, "top_queries": [row.to_dict() for row in self.top_queries]}
+
+
+def _crawlseo_metric_map(value: Any, field_name: str) -> dict[str, int | float | None]:
+    data = _crawlseo_mapping(value, field_name)
+    result: dict[str, int | float | None] = {}
+    for key, item in data.items():
+        if not isinstance(key, str):
+            raise ContractError(f"CrawlSEO {field_name} keys must be text")
+        if item is not None:
+            item = _crawlseo_number(item, f"{field_name}.{key}")
+        result[key] = item
+    return result
+
+
+def _crawlseo_rows(value: Any, field_name: str) -> list[Mapping[str, Any]]:
+    if not isinstance(value, (list, tuple)):
+        raise ContractError(f"CrawlSEO {field_name} must be an array")
+    return [_crawlseo_mapping(row, field_name) for row in value]
+
+
+@dataclass(frozen=True)
+class CrawlSEOAnalyticsSummary:
+    """The compatibility shape returned by ``seo_get_analytics_summary``."""
+
+    current_week: dict[str, int | float | None]
+    previous_week: dict[str, int | float | None]
+    delta_pct: dict[str, int | float | None]
+    top_pages: tuple[dict[str, Any], ...]
+    sources: tuple[dict[str, Any], ...]
+    organic_queries: tuple[dict[str, Any], ...]
+
+    @classmethod
+    def from_mapping(cls, payload: Mapping[str, Any]) -> "CrawlSEOAnalyticsSummary":
+        data = _crawlseo_mapping(payload, "analytics summary")
+        top_pages: list[dict[str, Any]] = []
+        for row in _crawlseo_rows(data.get("top_pages", []), "analytics.top_pages"):
+            top_pages.append({
+                "path": _crawlseo_text(row.get("path", ""), "analytics.top_pages.path", allow_empty=True),
+                "views": _crawlseo_count(row.get("views"), "analytics.top_pages.views"),
+            })
+        sources: list[dict[str, Any]] = []
+        for row in _crawlseo_rows(data.get("sources", []), "analytics.sources"):
+            sources.append({
+                "source": _crawlseo_text(row.get("source", ""), "analytics.sources.source", allow_empty=True),
+                "sessions": _crawlseo_count(row.get("sessions"), "analytics.sources.sessions"),
+                "users": _crawlseo_count(row.get("users"), "analytics.sources.users"),
+            })
+        organic_queries: list[dict[str, Any]] = []
+        for row in _crawlseo_rows(data.get("organic_queries", []), "analytics.organic_queries"):
+            organic_queries.append({
+                "query": _crawlseo_text(row.get("query", ""), "analytics.organic_queries.query", allow_empty=True),
+                "sessions": _crawlseo_count(row.get("sessions"), "analytics.organic_queries.sessions"),
+                "users": _crawlseo_count(row.get("users"), "analytics.organic_queries.users"),
+                "views": _crawlseo_count(row.get("views"), "analytics.organic_queries.views"),
+            })
+        return cls(
+            current_week=_crawlseo_metric_map(data.get("current_week", {}), "analytics.current_week"),
+            previous_week=_crawlseo_metric_map(data.get("previous_week", {}), "analytics.previous_week"),
+            delta_pct=_crawlseo_metric_map(data.get("delta_pct", {}), "analytics.delta_pct"),
+            top_pages=tuple(top_pages),
+            sources=tuple(sources),
+            organic_queries=tuple(organic_queries),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "current_week": dict(self.current_week),
+            "previous_week": dict(self.previous_week),
+            "delta_pct": dict(self.delta_pct),
+            "top_pages": [dict(row) for row in self.top_pages],
+            "sources": [dict(row) for row in self.sources],
+            "organic_queries": [dict(row) for row in self.organic_queries],
+        }
+
+
+@dataclass(frozen=True)
+class CrawlSEOCrawlSummary:
+    """Small normalized crawl status response."""
+
+    status: str
+    health_score: int | float | None
+    page_count: int | None
+    issue_count: int | None
+    finished_at: str | None
+
+    @classmethod
+    def from_mapping(cls, payload: Mapping[str, Any]) -> "CrawlSEOCrawlSummary":
+        data = _crawlseo_mapping(payload, "crawl summary")
+        health = data.get("health_score")
+        if health is not None:
+            health = _crawlseo_number(health, "crawl.health_score")
+        page_count = data.get("page_count")
+        if page_count is not None:
+            page_count = _crawlseo_count(page_count, "crawl.page_count")
+        issue_count = data.get("issue_count")
+        if issue_count is not None:
+            issue_count = _crawlseo_count(issue_count, "crawl.issue_count")
+        finished_at = data.get("finished_at")
+        if finished_at is not None:
+            finished_at = _crawlseo_text(finished_at, "crawl.finished_at", allow_empty=True)
+        return cls(
+            status=_crawlseo_text(data.get("status", ""), "crawl.status", allow_empty=True),
+            health_score=health,
+            page_count=page_count,
+            issue_count=issue_count,
+            finished_at=finished_at,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "health_score": self.health_score,
+            "page_count": self.page_count,
+            "issue_count": self.issue_count,
+            "finished_at": self.finished_at,
+        }
+
+
+class CrawlSEOReadProvider(Protocol):
+    """The finite read surface used by the application service."""
+
+    def project(self) -> Mapping[str, Any] | CrawlSEOProject:
+        ...
+
+    def search_summary(self, days: int = 28, query_limit: int = 10) -> Mapping[str, Any] | CrawlSEOSearchSummary:
+        ...
+
+    def analytics_summary(self) -> Mapping[str, Any] | CrawlSEOAnalyticsSummary:
+        ...
+
+    def crawl_summary(self) -> Mapping[str, Any] | CrawlSEOCrawlSummary:
+        ...
+
+    def crawl_issues(self, severity: str | None = None, limit: int = 50) -> list[Mapping[str, Any]]:
+        ...
+
+    def request_research_report(self, brief: Mapping[str, Any], idempotency_key: str) -> Mapping[str, Any]:
+        ...
+
+    def research_report_status(self, report_id: str) -> Mapping[str, Any]:
+        ...
+
+    def research_report(self, report_id: str) -> Mapping[str, Any]:
+        ...
+
+    def latest_research_report(self) -> Mapping[str, Any]:
+        ...
+
+    def list_research_reports(self, limit: int = 12) -> Mapping[str, Any]:
+        ...
+
+    def prepare_monthly_site_evidence(
+        self,
+        period: str,
+        idempotency_key: str,
+        max_crawl_pages: int = 200,
+    ) -> Mapping[str, Any]:
+        ...
+
+    def monthly_site_evidence(self, period: str) -> Mapping[str, Any]:
+        ...
+
+    def request_article_keyword_research(
+        self,
+        *,
+        idea_key: str,
+        idea_summary: str,
+        queries: list[str],
+        language: str,
+        country: str,
+        idempotency_key: str,
+    ) -> Mapping[str, Any]:
+        ...
+
+    def article_keyword_research_status(self, run_id: str) -> Mapping[str, Any]:
+        ...
+
+    def article_keyword_research(self, run_id: str) -> Mapping[str, Any]:
+        ...
+
+    def request_article_serp_research(
+        self,
+        *,
+        parent_run_id: str,
+        keyword: str,
+        idempotency_key: str,
+    ) -> Mapping[str, Any]:
+        ...
+
+    def article_serp_research_status(self, run_id: str) -> Mapping[str, Any]:
+        ...
+
+    def article_serp_research(self, run_id: str) -> Mapping[str, Any]:
+        ...
+
+    def list_article_keyword_research(self, period: str | None = None, limit: int = 20) -> Mapping[str, Any]:
+        ...
 
 
 _EnumType = TypeVar("_EnumType", bound=Enum)
@@ -632,6 +984,12 @@ __all__ = [
     "Capability",
     "CapabilityAvailability",
     "ContractError",
+    "CrawlSEOAnalyticsSummary",
+    "CrawlSEOCrawlSummary",
+    "CrawlSEOProject",
+    "CrawlSEOQuery",
+    "CrawlSEOReadProvider",
+    "CrawlSEOSearchSummary",
     "EffectClass",
     "OwnerAction",
     "ProviderReceipt",

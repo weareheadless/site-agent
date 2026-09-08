@@ -61,9 +61,13 @@ class CapabilityRegistry:
         return tuple(self._capabilities[key] for key in sorted(self._capabilities))
 
 
-def default_capabilities() -> tuple[Capability, ...]:
+def default_capabilities(
+    cicero_available: bool = False,
+    crawlseo_available: bool = False,
+    knowledge_available: bool = False,
+) -> tuple[Capability, ...]:
     """Capabilities known by the built-in runtime composition."""
-    return (
+    capabilities = (
         Capability(
             capability_id="content.suggestion",
             provider_id="site-agent",
@@ -84,10 +88,67 @@ def default_capabilities() -> tuple[Capability, ...]:
             approval_required=True,
         ),
         Capability(
+            capability_id="social.post.prepare",
+            provider_id="cicero",
+            effect_class=EffectClass.PROPOSAL,
+            availability=(
+                CapabilityAvailability.AVAILABLE
+                if cicero_available else CapabilityAvailability.UNAVAILABLE
+            ),
+        ),
+        Capability(
             capability_id="social.post.publish",
-            provider_id="social",
+            provider_id="cicero",
             effect_class=EffectClass.EXTERNAL_MUTATION,
             availability=CapabilityAvailability.UNAVAILABLE,
+            approval_required=True,
+        ),
+    )
+    if knowledge_available:
+        capabilities += (Capability(
+            capability_id="knowledge.import", provider_id="site-agent",
+            effect_class=EffectClass.PROPOSAL, availability=CapabilityAvailability.AVAILABLE,
+            approval_required=True,
+        ),)
+    if not crawlseo_available:
+        return capabilities
+    return capabilities + (
+        Capability(
+            capability_id="crawlseo.project.read",
+            provider_id="crawlseo",
+            effect_class=EffectClass.READ,
+            availability=CapabilityAvailability.AVAILABLE,
+            result_contract={"type": "object"},
+        ),
+        Capability(
+            capability_id="crawlseo.search.read",
+            provider_id="crawlseo",
+            effect_class=EffectClass.READ,
+            availability=CapabilityAvailability.AVAILABLE,
+            input_contract={"days": {"type": "integer"}, "query_limit": {"type": "integer"}},
+            result_contract={"type": "object"},
+        ),
+        Capability(
+            capability_id="crawlseo.analytics.read",
+            provider_id="crawlseo",
+            effect_class=EffectClass.READ,
+            availability=CapabilityAvailability.AVAILABLE,
+            result_contract={"type": "object"},
+        ),
+        Capability(
+            capability_id="crawlseo.crawl.read",
+            provider_id="crawlseo",
+            effect_class=EffectClass.READ,
+            availability=CapabilityAvailability.AVAILABLE,
+            result_contract={"type": "object"},
+        ),
+        Capability(
+            capability_id="crawlseo.crawl.request",
+            provider_id="crawlseo",
+            effect_class=EffectClass.EXTERNAL_MUTATION,
+            availability=CapabilityAvailability.AVAILABLE,
+            input_contract={"idempotency_key": {"type": "string"}},
+            result_contract={"type": "object"},
             approval_required=True,
         ),
     )

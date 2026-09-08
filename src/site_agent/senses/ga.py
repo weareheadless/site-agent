@@ -53,6 +53,16 @@ def _run(config: dict[str, Any], body: dict[str, Any], timeout: int = 25) -> dic
         return json.load(resp)
 
 
+def _source(config: dict[str, Any]) -> str:
+    return str((config.get("ga") or {}).get("source", "ga4")).lower()
+
+
+def _crawlseo_summary(config: dict[str, Any], crawlseo_service: Any | None = None) -> dict[str, Any]:
+    from . import crawlseo as crawlseo_sense
+
+    return crawlseo_sense.analytics_summary(config, service=crawlseo_service)
+
+
 def _totals(config: dict[str, Any], start: str, end: str) -> dict[str, int]:
     result = _run(
         config,
@@ -67,12 +77,19 @@ def _totals(config: dict[str, Any], start: str, end: str) -> dict[str, int]:
     return {name: int(metrics[i]["value"]) for i, name in enumerate(names)} if names else {}
 
 
-def traffic_sources(config: dict[str, Any], days: int = 7, limit: int = 8) -> list[dict[str, Any]]:
-    today = datetime.date.today()
+def traffic_sources(
+    config: dict[str, Any],
+    days: int = 7,
+    limit: int = 8,
+    crawlseo_service: Any | None = None,
+) -> list[dict[str, Any]]:
+    if _source(config) == "crawlseo":
+        return _crawlseo_summary(config, crawlseo_service)["sources"][:limit]
+    end = datetime.date.today() - datetime.timedelta(days=1)
     result = _run(
         config,
         {
-            "dateRanges": [{"startDate": (today - datetime.timedelta(days=days - 1)).isoformat(), "endDate": today.isoformat()}],
+            "dateRanges": [{"startDate": (end - datetime.timedelta(days=days - 1)).isoformat(), "endDate": end.isoformat()}],
             "dimensions": [{"name": "sessionDefaultChannelGroup"}],
             "metrics": [{"name": "sessions"}, {"name": "totalUsers"}],
             "orderBys": [{"metric": {"metricName": "sessions"}, "desc": True}],
@@ -89,12 +106,19 @@ def traffic_sources(config: dict[str, Any], days: int = 7, limit: int = 8) -> li
     ]
 
 
-def top_pages(config: dict[str, Any], days: int = 28, limit: int = 10) -> list[dict[str, Any]]:
+def top_pages(
+    config: dict[str, Any],
+    days: int = 28,
+    limit: int = 10,
+    crawlseo_service: Any | None = None,
+) -> list[dict[str, Any]]:
+    if _source(config) == "crawlseo":
+        return _crawlseo_summary(config, crawlseo_service)["top_pages"][:limit]
     result = _run(
         config,
         {
             "dateRanges": [
-                {"startDate": f"{days - 1}daysAgo", "endDate": "today"},
+                {"startDate": f"{days}daysAgo", "endDate": "yesterday"},
             ],
             "dimensions": [{"name": "pagePath"}],
             "metrics": [{"name": "screenPageViews"}],
@@ -108,14 +132,21 @@ def top_pages(config: dict[str, Any], days: int = 28, limit: int = 10) -> list[d
     ]
 
 
-def organic_queries(config: dict[str, Any], days: int = 28, limit: int = 10) -> list[dict[str, Any]]:
+def organic_queries(
+    config: dict[str, Any],
+    days: int = 28,
+    limit: int = 10,
+    crawlseo_service: Any | None = None,
+) -> list[dict[str, Any]]:
     """Search queries that brought visitors — requires the GA4<->Search
     Console product link (Admin > Product links), then ~24-48h of data."""
-    today = datetime.date.today()
+    if _source(config) == "crawlseo":
+        return _crawlseo_summary(config, crawlseo_service)["organic_queries"][:limit]
+    end = datetime.date.today() - datetime.timedelta(days=1)
     result = _run(
         config,
         {
-            "dateRanges": [{"startDate": (today - datetime.timedelta(days=days - 1)).isoformat(), "endDate": today.isoformat()}],
+            "dateRanges": [{"startDate": (end - datetime.timedelta(days=days - 1)).isoformat(), "endDate": end.isoformat()}],
             "dimensions": [{"name": "googleOrganicSearchQuery"}],
             "metrics": [{"name": "sessions"}, {"name": "totalUsers"}, {"name": "screenPageViews"}],
             "orderBys": [{"metric": {"metricName": "sessions"}, "desc": True}],
@@ -133,12 +164,15 @@ def organic_queries(config: dict[str, Any], days: int = 28, limit: int = 10) -> 
     ]
 
 
-def weekly_summary(config: dict[str, Any]) -> dict[str, Any]:
-    today = datetime.date.today()
-    this_start = (today - datetime.timedelta(days=6)).isoformat()
-    prev_end = (today - datetime.timedelta(days=7)).isoformat()
-    prev_start = (today - datetime.timedelta(days=13)).isoformat()
-    current = _totals(config, this_start, today.isoformat())
+def weekly_summary(config: dict[str, Any], crawlseo_service: Any | None = None) -> dict[str, Any]:
+    if _source(config) == "crawlseo":
+        return _crawlseo_summary(config, crawlseo_service)
+
+    end = datetime.date.today() - datetime.timedelta(days=1)
+    this_start = (end - datetime.timedelta(days=6)).isoformat()
+    prev_end = (end - datetime.timedelta(days=7)).isoformat()
+    prev_start = (end - datetime.timedelta(days=13)).isoformat()
+    current = _totals(config, this_start, end.isoformat())
     previous = _totals(config, prev_start, prev_end)
     delta = {}
     for key, value in current.items():
@@ -146,14 +180,14 @@ def weekly_summary(config: dict[str, Any]) -> dict[str, Any]:
         delta[key] = round((value - old) / old * 100, 1) if old else None
 
     try:
-        queries = organic_queries(config)
+        queries = organic_queries(config, days=7)
     except Exception:  # noqa: BLE001 — no GSC link yet must not break traffic reporting
         queries = []
     return {
         "current_week": current,
         "previous_week": previous,
         "delta_pct": delta,
-        "top_pages": top_pages(config),
-        "sources": traffic_sources(config),
+        "top_pages": top_pages(config, days=7),
+        "sources": traffic_sources(config, days=7),
         "organic_queries": queries,
     }

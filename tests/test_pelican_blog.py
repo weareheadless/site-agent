@@ -19,6 +19,20 @@ def test_pelican_document_has_frontmatter_and_article_metadata():
     assert article_path(config, "choosing-a-course") == "content/articles/choosing-a-course.md"
 
 
+def test_pelican_document_normalizes_title_and_removes_duplicate_leading_heading():
+    config = {"blog": {"engine": "pelican"}}
+
+    payload = document(
+        config,
+        "'Choosing: A Course'",
+        "## Choosing: A Course\n\nRead this first.",
+    ).decode()
+
+    assert "Title: Choosing: A Course\n" in payload
+    assert "## Choosing: A Course" not in payload
+    assert "Read this first." in payload
+
+
 def test_pelican_engine_is_default_in_merged_config_and_legacy_can_be_explicit():
     assert enabled({}) is False
     assert enabled({"blog": {"engine": "legacy"}}) is False

@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "business": {
+    "name": "OceanicVibes",
+    "offer_summary": "Freediving instruction, equalization coaching, and depth training in the Riviera Maya.",
+    "primary_services": [
+      "AIDA 3 training in Bacalar",
+      "Depth training in Bacalar",
+      "Advanced depth training in Playa del Carmen"
+    ],
+    "location": ["Playa del Carmen", "Bacalar", "Riviera Maya, Mexico"],
+    "service_area": "Playa del Carmen and Bacalar",
+    "verified_trust_evidence": []
+  },
+  "audience": {
+    "primary": "Freedivers and ocean-curious people considering training in Playa del Carmen or Bacalar",
+    "secondary": ["Athletes building depth skills", "People beginning structured freediving training"]
+  },
+  "conversion": {
+    "primary_action": "Start a conversation about the right training session",
+    "not_available": true
+  },
+  "brand": {
+    "voice": "Calm, precise, quietly obsessed with the sea. A trusted coach, never a salesperson.",
+    "visual_preferences": ["Depth, patience, clear water, measured progression, and quiet focus"],
+    "visual_dislikes": ["Generic blue travel templates", "Fear-based sales language", "Unnecessary visual noise"],
+    "existing_fonts": {
+      "body": "Manrope",
+      "display": "Cormorant Garamond",
+      "mono": "DM Mono",
+      "status": "Current-brand evidence only; not a mandatory future choice"
+    },
+    "existing_palette": {
+      "deep": "#061116",
+      "ink": "#071c22",
+      "sea": "#9edbd1",
+      "foam": "#e6f1eb",
+      "muted": "#90a7a6",
+      "line": "rgba(222,242,234,.18)"
+    },
+    "prohibited_claims": [
+      "Do not claim personal physical experience of the beaches or cenotes.",
+      "Do not invent current water conditions, credentials, certifications, prices, or testimonials."
+    ]
+  },
+  "site": {
+    "required_pages": ["index.html", "articles.html"],
+    "stable_urls": ["/", "/articles.html"],
+    "navigation_intent": ["Philosophy", "Training dates", "Contact", "Journal"]
+  },
+  "constraints": {
+    "safety": "Breath-hold advice assumes proper training, a buddy, and honest conditions.",
+    "environment": "Treat reef and cenote care as ordinary diver practice, not a marketing claim.",
+    "prohibited_claims": [
+      "No invented certifications, outcomes, availability, pricing, or social proof."
+    ]
+  },
+  "assets": [
+    {"id": "images/hero.jpg", "role": "Current homepage hero reference", "source": "published repository at baseline SHA"},
+    {"id": "images/about.jpg", "role": "Current methodology image reference", "source": "published repository at baseline SHA"},
+    {"id": "images/course.jpg", "role": "Current training image reference", "source": "published repository at baseline SHA"},
+    {"id": "images/logo.jpg", "role": "Current brand mark reference", "source": "published repository at baseline SHA"}
+  ],
+  "provenance": {
+    "config": "examples/oceanicvibes.config.yaml",
+    "published_repository": "oceanicvibesfreediving/oceanicvibesfreediving.github.io",
+    "baseline_sha": "56aa25740389f74e4499d35d528d4b2376c82369",
+    "scope": "Facts and existing-site references only; no persona imagery is treated as customer evidence."
+  },
+  "unknowns": [
+    "No canonical booking or enquiry destination was supplied as structured intake data.",
+    "Certification details are not verified in the intake.",
+    "Pricing and confirmed future schedules are not supplied.",
+    "Testimonials and quantified outcomes are not supplied or verified."
+  ]
+}

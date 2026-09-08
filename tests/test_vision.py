@@ -1,4 +1,9 @@
+import pytest
+
 from site_agent.core import vision
+from site_agent.core.llm import LLMError
+from site_agent.core.media_worker import MediaWorker
+from site_agent.core.memory import Memory
 
 
 def test_vision_client_uses_openai_compatible_multimodal_payload(monkeypatch):
@@ -31,6 +36,74 @@ def test_vision_client_uses_openai_compatible_multimodal_payload(monkeypatch):
         "image_url": {"url": "https://example.com/hero.jpg"},
     }
     assert timeout == 90.0
+
+
+def test_structured_qwen_aliases_business_information_fields(monkeypatch):
+    calls = []
+    def fake_post(*args):
+        calls.append(args[2])
+        return {
+        "choices": [{"message": {"content": '{"schema_version":1,"description":"menu","business_information":"No","markdown":""}'}}]
+        }
+    monkeypatch.setattr(vision, "_http_post", fake_post)
+    client = vision.VisionClient({
+        "vision": {"base_url": "https://example.test/v1", "model": "qwen"},
+        "env": {"vision_api_key": "KEY"},
+    }, env={"KEY": "secret"})
+    instruction = MediaWorker._instruction()
+    result = client.analyze_images(["https://example.test/image.webp"], instruction)
+    assert result.knowledge_relevant is False
+    assert result.description == "menu"
+    assert calls[0]["max_tokens"] == 4096
+    assert calls[0]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert '"knowledge_relevant":false' in instruction
+    assert "literal JSON boolean true or false" in instruction
+    assert calls[0]["messages"][0]["content"][1]["image_url"]["detail"] == "low"
+
+
+def test_vision_client_logs_provider_cost_and_requests_usage_receipt(monkeypatch, tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    calls = []
+
+    def fake_post(*args):
+        calls.append(args[2])
+        return {
+            "model": "qwen-vision",
+            "usage": {"prompt_tokens": 100, "completion_tokens": 50, "cost": 0.0042},
+            "choices": [{"message": {"content": '{"schema_version":1,"description":"hero","tags":[],"alt_text":"hero","orientation":"landscape","dominant_colors":[],"suggested_uses":["hero"],"quality_notes":[],"ocr_text":"","knowledge_relevant":false,"proposed_knowledge_markdown":""}'}}],
+        }
+
+    monkeypatch.setattr(vision, "_http_post", fake_post)
+    client = vision.VisionClient({
+        "vision": {
+            "base_url": "https://openrouter.ai/api/v1",
+            "model": "qwen-vision",
+        },
+        "env": {"vision_api_key": "KEY"},
+    }, env={"KEY": "secret"}, memory=memory)
+
+    result = client.analyze_images(["https://example.test/image.webp"], MediaWorker._instruction())
+
+    assert result.description == "hero"
+    assert calls[0]["usage"] == {"include": True}
+    assert memory.llm_spend()["cost_usd"] == 0.0042
+    memory.close()
+
+
+def test_structured_analysis_schema_failures_are_not_retryable(monkeypatch):
+    def fake_post(*args):
+        return {"choices": [{"message": {"content": '{"knowledge_relevant":"maybe"}'}}]}
+
+    monkeypatch.setattr(vision, "_http_post", fake_post)
+    client = vision.VisionClient({
+        "vision": {"base_url": "https://example.test/v1", "model": "qwen"},
+        "env": {"vision_api_key": "KEY"},
+    }, env={"KEY": "secret"})
+
+    with pytest.raises(LLMError) as caught:
+        client.analyze_images(["https://example.test/image.webp"], "return JSON")
+    assert caught.value.code == "invalid_structured_analysis"
+    assert caught.value.retryable is False
 
 
 def test_site_image_context_analyzes_public_img_sources(monkeypatch, tmp_path):

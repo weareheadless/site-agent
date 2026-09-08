@@ -3,7 +3,16 @@ import os
 import pytest
 import yaml
 
-from site_agent.config import ConfigError, deep_merge, instance_path, load, mask_secrets, resolve_env
+from site_agent.config import (
+    ConfigError,
+    deep_merge,
+    instance_path,
+    load,
+    load_env_file,
+    mask_secrets,
+    resolve_env,
+    validate_design_config,
+)
 
 
 def test_defaults_load_without_instance_file():
@@ -11,6 +20,9 @@ def test_defaults_load_without_instance_file():
     assert config["instance_name"] == "default"
     assert config["site"]["adapter"] == "github_static"
     assert config["blog"]["engine"] == "pelican"
+    assert config["llm"]["base_url"] == "https://openrouter.ai/api/v1"
+    assert config["llm"]["model"] == "deepseek/deepseek-v4-flash-0731"
+    assert config["builder"]["model"] == "openrouter/deepseek/deepseek-v4-flash-vision-exp"
     assert config["dream"]["residue_count"] == 0
     assert config["self_model"]["enabled"] is True
     assert sources[0] is not None
@@ -58,3 +70,70 @@ def test_mask_secrets_masks_sensitive_keys_and_drops_env_map():
     assert masked["admin"]["password"] == "***"
     assert masked["llm"]["model"] == "m"
     assert "env" not in masked
+
+
+def test_enabled_private_media_requires_r2_credentials(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump({
+        "site": {"media": {"enabled": True, "account_id": "a" * 32, "bucket": "hello-media", "private": True}},
+    }))
+    with pytest.raises(ConfigError, match="R2 media is enabled"):
+        load(config_path=path, env={})
+
+
+def test_enabled_media_accepts_bounded_private_r2_config(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump({
+        "site": {"media": {"enabled": True, "account_id": "a" * 32, "bucket": "hello-media", "private": True}},
+    }))
+    config, _ = load(config_path=path, env={
+        "R2_ACCESS_KEY_ID": "access",
+        "R2_SECRET_ACCESS_KEY": "secret",
+    })
+    assert config["site"]["media"]["private"] is True
+
+
+def test_isolated_load_can_skip_optional_integration_credentials(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump({
+        "site": {"media": {"enabled": True, "account_id": "a" * 32, "bucket": "hello-media", "private": True}},
+    }))
+    config, _ = load(config_path=path, env={}, validate_integrations=False)
+    assert config["site"]["media"]["enabled"] is True
+
+
+def test_enabled_media_rejects_public_bucket_config(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump({
+        "site": {"media": {"enabled": True, "account_id": "a" * 32, "bucket": "hello-media", "private": False}},
+    }))
+    with pytest.raises(ConfigError, match="private must be true"):
+        load(config_path=path, env={
+            "R2_ACCESS_KEY_ID": "access",
+            "R2_SECRET_ACCESS_KEY": "secret",
+        })
+
+
+def test_load_env_file_supports_comments_quotes_and_process_precedence(tmp_path):
+    path = tmp_path / ".env"
+    path.write_text("# comment\nexport CLOUDFLARE_API_TOKEN=from-file\nOTHER='quoted value'\n")
+    values = load_env_file(path, {"CLOUDFLARE_API_TOKEN": "from-process"})
+    assert values["CLOUDFLARE_API_TOKEN"] == "from-process"
+    assert values["OTHER"] == "quoted value"
+
+
+def test_design_quality_required_content_is_a_non_empty_text_list():
+    base = {"required_viewports": [{"name": "desktop", "width": 1440, "height": 1000}]}
+    with pytest.raises(ConfigError, match="required_content must be a list"):
+        validate_design_config({"design_engine": {**base, "quality": {"required_content": "one fact"}}})
+    with pytest.raises(ConfigError, match=r"required_content\[0\] must be non-empty text"):
+        validate_design_config({"design_engine": {**base, "quality": {"required_content": [""]}}})
+
+
+def test_design_quality_required_content_accepts_bounded_text():
+    validate_design_config({
+        "design_engine": {
+            "required_viewports": [{"name": "desktop", "width": 1440, "height": 1000}],
+            "quality": {"required_content": ["A verified offer", "A verified service"]},
+        }
+    })

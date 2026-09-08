@@ -8,10 +8,9 @@ feeds and pagination are derived by the site's Pelican build.
 from __future__ import annotations
 
 import datetime as _datetime
+import re
 from pathlib import PurePosixPath
 from typing import Any
-
-import yaml
 
 
 def settings(config: dict[str, Any]) -> dict[str, Any]:
@@ -35,12 +34,38 @@ def article_path(config: dict[str, Any], slug: str) -> str:
     return str(PurePosixPath(article_directory(config)) / f"{safe_slug}.md")
 
 
+def _clean_title(value: Any) -> str:
+    """Remove quote characters an LLM may wrap around an article title."""
+    title = str(value or "").strip()
+    pairs = (("'", "'"), ('"', '"'), ("‘", "’"), ("“", "”"))
+    while len(title) >= 2 and any(
+        title.startswith(left) and title.endswith(right) for left, right in pairs
+    ):
+        title = title[1:-1].strip()
+    return title
+
+
+def _without_leading_title_heading(content: str, title: str) -> str:
+    """The article template renders the title; keep it out of article content."""
+    lines = content.splitlines()
+    if not lines:
+        return ""
+    first = lines[0].strip()
+    if not first.startswith("#"):
+        return content
+    heading = re.sub(r"^#{1,6}[ \t]+", "", first)
+    heading = re.sub(r"[ \t]+#+[ \t]*$", "", heading)
+    if _clean_title(heading).casefold() != _clean_title(title).casefold():
+        return content
+    return "\n".join(lines[1:]).lstrip()
+
+
 def _frontmatter(config: dict[str, Any], title: str, meta: dict[str, Any] | None) -> dict[str, Any]:
     meta = meta or {}
     today = _datetime.date.today().isoformat()
     slug = str(meta.get("slug") or "").strip()
     data: dict[str, Any] = {
-        "Title": title.strip(),
+        "Title": _clean_title(title),
         "Date": str(meta.get("date") or today),
         "Status": str(meta.get("status") or "published"),
     }
@@ -64,15 +89,21 @@ def _frontmatter(config: dict[str, Any], title: str, meta: dict[str, Any] | None
     return data
 
 
+def _metadata_value(value: Any) -> str:
+    if isinstance(value, (list, tuple)):
+        value = ", ".join(str(item) for item in value)
+    return str(value).replace("\r", " ").replace("\n", " ").strip()
+
+
 def document(config: dict[str, Any], title: str, body: str, meta: dict[str, Any] | None = None) -> bytes:
-    """Return a Pelican-compatible Markdown document with deterministic YAML."""
-    frontmatter = yaml.safe_dump(
-        _frontmatter(config, title, meta),
-        allow_unicode=True,
-        default_flow_style=False,
-        sort_keys=False,
-    ).strip()
-    content = (body or "").strip()
+    """Return a Pelican-compatible Markdown document with plain metadata."""
+    metadata = _frontmatter(config, title, meta)
+    frontmatter = "\n".join(
+        f"{key}: {_metadata_value(value)}"
+        for key, value in metadata.items()
+        if value not in (None, "", [])
+    )
+    content = _without_leading_title_heading((body or "").strip(), metadata["Title"])
     return f"---\n{frontmatter}\n---\n\n{content}\n".encode("utf-8")
 
 

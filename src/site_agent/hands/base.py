@@ -58,6 +58,20 @@ class MergeAdapter(Protocol):
         ...
 
 
+@runtime_checkable
+class DesignMergeAdapter(Protocol):
+    """Optional capability for merging one reviewed design commit by SHA."""
+
+    def merge_design_candidate(
+        self,
+        config: dict[str, Any],
+        candidate_sha: str,
+        base_sha: str,
+        message: str,
+    ) -> dict[str, Any]:
+        ...
+
+
 ADAPTERS: dict[str, type[SiteAdapter]] = {}
 
 

@@ -1,9 +1,11 @@
 import json
+import subprocess
 
 import pytest
 
 from site_agent.hands import ADAPTERS, AdapterError, get_adapter
 from site_agent.hands import cloudflare_pages, github_static  # noqa: F401
+from site_agent.hands import neutral_scaffold  # noqa: F401
 
 
 def _config(adapter="github_static", **site):
@@ -22,6 +24,7 @@ def _config(adapter="github_static", **site):
 def test_adapters_are_registered():
     assert "github_static" in ADAPTERS
     assert "cloudflare_pages" in ADAPTERS
+    assert "neutral_scaffold" in ADAPTERS
 
 
 def test_unknown_adapter_raises():
@@ -154,6 +157,98 @@ def test_restore_snapshot_creates_one_atomic_commit_from_target_tree(monkeypatch
     assert {entry["path"] for entry in entries} == {"index.html", "new.css"}
     assert next(entry for entry in entries if entry["path"] == "index.html")["sha"] == "old-index"
     assert next(entry for entry in entries if entry["path"] == "new.css")["sha"] is None
+
+
+def test_merge_design_candidate_refuses_stale_production_head(monkeypatch):
+    calls = []
+
+    def fake_request(method, url, token=None, payload=None, timeout=30):
+        calls.append((method, url, payload))
+        if method == "GET":
+            return 200, {"object": {"sha": "current-sha"}}
+        raise AssertionError("a stale candidate must not call the merge endpoint")
+
+    monkeypatch.setattr(github_static, "_request", fake_request)
+    adapter = get_adapter("github_static", _config())
+    result = adapter.merge_design_candidate("unused", "c" * 40, "b" * 40, "Approve design")
+
+    assert result["merged"] is False
+    assert result["status"] == 409
+    assert result["candidate_sha"] == "c" * 40
+    assert len(calls) == 1
+
+
+def test_merge_design_candidate_uses_reviewed_sha(monkeypatch):
+    calls = []
+
+    def fake_request(method, url, token=None, payload=None, timeout=30):
+        calls.append((method, url, payload))
+        if method == "GET":
+            return 200, {"object": {"sha": "b" * 40}}
+        return 201, {"sha": "m" * 40, "parents": [{"sha": "b" * 40}], "html_url": "https://x/merge"}
+
+    monkeypatch.setattr(github_static, "_request", fake_request)
+    adapter = get_adapter("github_static", _config())
+    result = adapter.merge_design_candidate("unused", "c" * 40, "b" * 40, "Approve design")
+
+    assert result == {
+        "merged": True,
+        "path": f"{'c' * 40}->main",
+        "candidate_sha": "c" * 40,
+        "commit_sha": "m" * 40,
+        "parent_sha": "b" * 40,
+        "html_url": "https://x/merge",
+    }
+    assert calls[-1][2]["head"] == "c" * 40
+
+
+def test_neutral_scaffold_keeps_candidate_local_until_owner_merge(tmp_path):
+    repo = tmp_path / "site"
+    repo.mkdir()
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", str(repo), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    git("init", "-q", "-b", "main")
+    git("config", "user.name", "Test")
+    git("config", "user.email", "test@example.com")
+    (repo / "index.html").write_text("baseline")
+    (repo / "content.json").write_text('{"title":"baseline"}\n')
+    git("add", "-A")
+    git("commit", "-qm", "baseline")
+    base_sha = git("rev-parse", "HEAD").stdout.strip()
+    git("checkout", "-q", "-b", "candidate")
+    (repo / "index.html").write_text("candidate")
+    git("add", "index.html")
+    git("commit", "-qm", "candidate")
+    candidate_sha = git("rev-parse", "HEAD").stdout.strip()
+    git("checkout", "-q", "main")
+
+    adapter = get_adapter("neutral_scaffold", {
+        "site": {
+            "adapter": "neutral_scaffold",
+            "clone_path": str(repo),
+            "branch": "main",
+            "content_path": "content.json",
+        },
+    })
+    adapter.validate()
+    assert adapter.status()["remote"] is False
+    assert git("rev-parse", "main").stdout.strip() == base_sha
+    assert adapter.get_file("index.html")[1] == b"baseline"
+
+    merged = adapter.merge_design_candidate({}, candidate_sha, base_sha, "Approve design")
+
+    assert merged["merged"] is True
+    assert merged["candidate_sha"] == candidate_sha
+    assert merged["parent_sha"] == base_sha
+    assert git("rev-parse", "main").stdout.strip() == merged["commit_sha"]
+    assert adapter.get_file("index.html")[1] == b"candidate"
 
 
 from site_agent.hands.opencode_runner import ProseFilter, _looks_like_prose  # noqa: E402

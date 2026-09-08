@@ -2,9 +2,9 @@ from site_agent.application.renderers import render_artifact
 from site_agent.core.contracts import Artifact, ArtifactKind
 
 
-def _artifact(renderer, preview_data):
+def _artifact(renderer, preview_data, kind=ArtifactKind.SITE_CHANGE):
     return Artifact(
-        kind=ArtifactKind.SITE_CHANGE,
+        kind=kind,
         title="Prepared work",
         summary="A concise owner summary.",
         renderer=renderer,
@@ -55,3 +55,13 @@ def test_social_post_has_a_reserved_typed_renderer():
     preview = render_artifact(_artifact("social_post", {"text": "A calm update."}))
     assert preview.renderer == "social_post"
     assert preview.sections[0].body == "A calm update."
+
+
+def test_seo_report_renderer_keeps_the_report_as_a_read_only_artifact():
+    preview = render_artifact(_artifact(
+        "seo_report",
+        {"body": "# Monthly SEO report\n\nEvidence and recommendations."},
+        ArtifactKind.SEO_REPORT,
+    ))
+    assert preview.renderer == "seo_report"
+    assert preview.sections[0].body.startswith("# Monthly SEO report")

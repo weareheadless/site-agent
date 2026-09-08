@@ -261,6 +261,64 @@ def test_artifact_approval_routes_use_approval_service(runtime):
     assert decided.json()["approval"]["status"] == "approved"
 
 
+def test_seo_report_routes_include_artifact_and_article_research_context(runtime):
+    memory, _, _, _, client = runtime
+    artifact = memory.create_artifact(
+        Artifact(
+            kind=ArtifactKind.SEO_REPORT,
+            title="Website SEO report 2026-07",
+            summary="Monthly website report.",
+            renderer="seo_report",
+            capability_id="seo.report.read",
+            provider_id="site-agent",
+            content_hash="sha256:seo-report",
+            preview_data={"body": "# Website SEO report: 2026-07\n\nTraffic improved."},
+        )
+    )
+    report = memory.create_seo_site_report("2026-07")
+    memory.update_seo_site_report(
+        report["id"],
+        status="completed",
+        summary="Traffic improved.",
+        artifact_id=artifact.artifact_id,
+        evidence_json={"site": {"gsc": {"status": "ready"}}},
+    )
+    idea = memory.create_article_idea(
+        "article:2026-W30",
+        "idea-hash",
+        {"working_title": "A useful guide", "audience_need": "Readers need clarity."},
+    )
+    memory.update_article_idea(idea["id"], status="drafted", draft_id=4)
+    _login(client)
+
+    latest = client.get("/api/seo/site-reports/latest")
+    assert latest.status_code == 200
+    assert latest.json()["report"]["artifact"]["preview_data"]["body"].startswith("# Website SEO")
+    assert client.get("/api/seo/site-reports?limit=12").json()["reports"][0]["period"] == "2026-07"
+    ideas = client.get("/api/seo/article-research?status=drafted").json()["ideas"]
+    assert ideas[0]["idea_json"]["working_title"] == "A useful guide"
+    detail = client.get(f"/api/seo/article-research/{idea['id']}")
+    assert detail.status_code == 200
+    assert detail.json()["idea"]["draft_id"] == 4
+
+
+def test_article_rejections_endpoint_returns_captured_candidates(runtime):
+    memory, _, _, _, client = runtime
+    memory.record_rejected_article_idea(
+        cycle_key="article:2026-W35",
+        raw='{"working_title":"Rejected title"}',
+        parsed={"working_title": "Rejected title"},
+        reason="time-sensitive article ideas require a source URL",
+    )
+    _login(client)
+    response = client.get("/api/seo/article-rejections")
+    assert response.status_code == 200
+    rejections = response.json()["rejections"]
+    assert len(rejections) == 1
+    assert rejections[0]["reason"] == "time-sensitive article ideas require a source URL"
+    assert rejections[0]["parsed_json"]["working_title"] == "Rejected title"
+
+
 def test_action_lifecycle_routes_use_owner_action_service(runtime):
     memory, _, _, _, client = runtime
     from site_agent.core.contracts import ActionPriority, ActionRequirement, OwnerAction
@@ -400,15 +458,15 @@ def test_theme_endpoint_defaults_and_overrides(runtime):
     memory, config, _, _, client = runtime
     _login(client)
     theme = client.get("/api/theme").json()
-    assert theme["bg"] == "#f4f6f2"
-    assert theme["accent"] == "#176b5f"
+    assert theme["bg"] == "#f6f8f4"
+    assert theme["accent"] == "#0b6968"
     assert "font_body" in theme and "fonts_url" in theme
 
     config["admin"]["theme"] = {"bg": "#061116", "accent": "#9edbd1"}
     theme2 = client.get("/api/theme").json()
     assert theme2["bg"] == "#061116"
     assert theme2["accent"] == "#9edbd1"
-    assert theme2["card"] == "#fffdfa"  # untouched fields keep defaults
+    assert theme2["card"] == "#fffefa"  # untouched fields keep defaults
 
 
 def test_restore_version_creates_pending_rollback(runtime):
@@ -477,7 +535,14 @@ def test_design_ui_uses_internal_review_state(runtime):
     assert "journal_preview_url" not in html
     assert "renderPreviewLink" not in html
     assert "id=\"previewlink\"" not in html
-    assert 'id="preview" title="Staged site preview" sandbox="allow-same-origin"' in html
+    assert 'id="preview" title="Staged site preview" sandbox="allow-scripts"' in html
+    assert 'id="designVariantPicker"' in html
+    assert 'value="original"' in html
+    assert 'value="deepseek"' in html
+    assert "function setDesignPreviewVariant(value)" in html
+    assert "REQUESTED_DESIGN_RUN_ID" in html
+    assert "selectDesignRun(REQUESTED_DESIGN_RUN_ID)" in html
+    assert "preview-token" in html
     assert "id=\"designBuildStatus\"" not in html
     assert "id=\"journalSetup\"" not in html
     assert "id=\"designNote\"" not in html
@@ -487,6 +552,18 @@ def test_design_ui_uses_internal_review_state(runtime):
     assert 'data-tab="content" onclick="switchTab(\'content\')">Website</button>' in html
     assert 'data-tab="design" onclick="switchTab(\'design\')">Review</button>' in html
     assert 'data-tab="media" onclick="switchTab(\'media\')">Photos</button>' in html
+    assert "async function autoReview(request)" in html
+    assert "function isVisualDraft(kind)" in html
+    assert "kind==='article'" in html
+    assert "isVisualDraft(d.kind)?`<button class=\"quiet\" onclick=\"enterReview(${d.id})\">Review</button>`" in html
+    assert 'id="draftDetailsDialog"' in html
+    assert "showDraftDetails" in html
+    assert 'onclick="showDraftDetails(${d.id})"' in html
+    assert 'id="btnDetails"' in html
+    assert "Show decision record" in html
+    assert "View proposal details" in html
+    assert "if(request!==designRequest)return;" in html
+    assert "setDesignButtons();await reloadPreview();" in html
     assert "Website versions" in html
     assert "Preview this version" in html
     assert "Bring this version back" in html
@@ -494,6 +571,17 @@ def test_design_ui_uses_internal_review_state(runtime):
     assert 'id="homeNeeds"' in html
     assert 'id="homeSuggests"' in html
     assert 'id="homeHandlingSummary"' in html
+    assert 'id="homeInnerLife"' in html
+    assert 'id="homeThought"' in html
+    assert 'id="homeDream"' in html
+    assert "renderInnerLife" in html
+    assert 'class="inner-life-bar"' in html
+    assert 'class="home-section inner-life"' not in html
+    assert "inner-life-thought" not in html
+    assert "splitInnerLifeText" in html
+    assert "-webkit-line-clamp:3" in html
+    assert "setInterval(show,6500)" in html
+    assert "button.primary{background:var(--brand)" in html
     assert 'summary>More details</summary>' in html
     assert "api('/home')" in html
     assert "function renderHomeError(message)" in html
@@ -505,18 +593,39 @@ def test_design_ui_uses_internal_review_state(runtime):
     assert "Keep current" in html
     assert "feedbackDialog" in html
     assert "prompt(" not in html
-    assert "Manage conversations" in html
     assert "chat-titlebar" in html
     assert "New chat" in html
-    assert ">More</button>" in html
-    assert "conversationDialog" in html
+    assert 'data-chat-tab="chat"' in html
+    assert 'data-chat-tab="history"' in html
+    assert "switchChatTab" in html
+    assert "conversationList" in html
+    assert "conversationDialog" not in html
+    assert "convsel" not in html
     assert "#chat{width:100%;height:390px" in html
     assert "#chat{display:none}" not in html
     assert "focus-visible" in html
-    assert "openConversationManager" in html
+    assert "loadConversationHistory" in html
+    assert "openConversationFromHistory" in html
     assert "archiveConversation" in html
-    assert "deleteConversation" in html
+    assert "removeConversation" in html
+    assert "Permanently delete this conversation" not in html
     assert "clearConversations()" not in html
+    assert "const isFormData = typeof FormData !== 'undefined' && opts.body instanceof FormData;" in html
+    assert "if(isFormData) headers.delete('Content-Type');" in html
+    assert "if(path.endsWith('/index.html'))path=path.slice(0,-'/index.html'.length);" in html
+    assert "xhr.open('POST',BASE+'/api/media/upload',true);" in html
+    assert "xhr.upload.onprogress" in html
+
+
+def test_media_ui_has_visible_upload_queue_and_previews(runtime):
+    _, _, _, _, client = runtime
+    html = client.get("/").text
+    assert 'id="mediaUploadQueue"' in html
+    assert 'id="mediaQueueList"' in html
+    assert "XMLHttpRequest" in html
+    assert "renderMediaQueue" in html
+    assert "thumbnail_url" in html
+    assert "Processing" in html
 
 
 def test_content_get_and_save(runtime):
@@ -668,6 +777,74 @@ def test_review_endpoint_serves_generated_pelican_assets(tmp_path):
     mem.close()
 
 
+def test_review_endpoint_builds_pending_pelican_article_overlay(tmp_path):
+    """A pending article draft is rendered by Pelican before approval."""
+    import subprocess
+
+    clone = tmp_path / "siterepo"
+    clone.mkdir()
+    run = lambda *args: subprocess.run(["git", "-C", str(clone), *args], check=True, capture_output=True)
+    run("init", "-q", "-b", "main")
+    run("config", "user.email", "t@t")
+    run("config", "user.name", "t")
+    (clone / "build.sh").write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        "mkdir -p output/articles output/theme/css\n"
+        "printf '{\"courses\": [{\"title\": \"Preview course\"}]}' > output/content.json\n"
+        "printf 'window.previewAsset = true;' > output/app.js\n"
+        "printf 'body { color: red; }' > output/theme/css/journal.css\n"
+        "if [ -f content/articles/a-test-article.md ]; then\n"
+        "  printf '<html><body><a href=\"https://example.test/articles/a-test-article.html\">A Test Article</a></body></html>' > output/articles.html\n"
+        "  printf '<html><body>article body from overlay</body></html>' > output/articles/a-test-article.html\n"
+        "else\n"
+        "  printf '<html><body>empty journal</body></html>' > output/articles.html\n"
+        "fi\n"
+    )
+    (clone / "pelicanconf.py").write_text("SITEURL = 'https://example.test'\n")
+    (clone / "index.html").write_text("<html><body>homepage</body></html>\n")
+    run("add", "-A")
+    run("commit", "-qm", "published")
+
+    mem = Memory(tmp_path / "memory.db")
+    config = {
+        "env": {"admin_password": "SITE_AGENT_ADMIN_PASSWORD", "github_token": "GITHUB_TOKEN"},
+        "site": {"adapter": "github_static", "repository": "acme/site", "content_path": "content.json",
+                 "clone_path": str(clone)},
+        "blog": {"engine": "pelican", "site_url": "https://example.test", "articles_dir": "content/articles"},
+        "admin": {},
+    }
+    env = {"SITE_AGENT_ADMIN_PASSWORD": "sekret"}
+    app = create_app({"config": config, "memory": mem, "llm": None, "scheduler": None}, env=env)
+    with TestClient(app, base_url="https://testserver") as client:
+        _login(client)
+        draft_id = mem.save_draft("A Test Article", "article body from overlay", kind="article")
+        token = client.get(f"/api/preview-token?draft_id={draft_id}").json()["token"]
+        pages = client.get(f"/api/pages?draft_id={draft_id}")
+        assert pages.status_code == 200
+        assert f"articles/a-test-article.html" in pages.json()["new_pages"]
+
+        query = f"?preview_token={token}"
+        listing = client.get(f"/api/review/{draft_id}/articles.html{query}")
+        article = client.get(f"/api/review/{draft_id}/articles/a-test-article.html{query}")
+        css = client.get(f"/api/review/{draft_id}/theme/css/journal.css{query}")
+        content = client.get(f"/api/review/{draft_id}/content.json{query}")
+        script = client.get(f"/api/review/{draft_id}/app.js{query}")
+        assert listing.status_code == 200
+        assert "A Test Article" in listing.text
+        assert "homepage" not in listing.text
+        assert "data-site-agent-preview" in listing.text
+        assert article.status_code == 200
+        assert "article body from overlay" in article.text
+        assert css.status_code == 200
+        assert css.text == "body { color: red; }"
+        assert content.status_code == 200
+        assert content.json()["courses"][0]["title"] == "Preview course"
+        assert script.status_code == 200
+        assert script.text == "window.previewAsset = true;"
+    mem.close()
+
+
 def test_review_endpoint_applies_edit_ops_to_main(tmp_path):
     """Edit drafts show the base file (origin/main) with their find/replace ops applied."""
     import subprocess
@@ -677,7 +854,8 @@ def test_review_endpoint_applies_edit_ops_to_main(tmp_path):
     subprocess.run(["git", "-C", str(clone), "init", "-q", "-b", "main"], check=True)
     subprocess.run(["git", "-C", str(clone), "config", "user.email", "t@t"], check=True)
     subprocess.run(["git", "-C", str(clone), "config", "user.name", "t"], check=True)
-    (clone / "index.html").write_text("<p>Open water / Line training</p>")
+    (clone / "index.html").write_text('<link rel="stylesheet" href="styles.css"><p>Open water / Line training</p>')
+    (clone / "styles.css").write_text("body { color: red; }\n")
     subprocess.run(["git", "-C", str(clone), "add", "-A"], check=True)
     subprocess.run(["git", "-C", str(clone), "commit", "-qm", "main v1"], check=True)
     subprocess.run(["git", "-C", str(clone), "branch", "-M", "main"], check=True)
@@ -712,13 +890,23 @@ def test_review_endpoint_applies_edit_ops_to_main(tmp_path):
     assert "Cenotes / Line training" in r.text
     assert "Open water / Line training" not in r.text
 
+    token = client.get(f"/api/preview-token?draft_id={did}").json()["token"]
+    client.cookies.clear()
+    sandboxed = client.get(f"/api/review/{did}/index.html?preview_token={token}")
+    sandboxed_css = client.get(f"/api/review/{did}/styles.css?preview_token={token}")
+    assert sandboxed.status_code == 200
+    assert "data-site-agent-preview" in sandboxed.text
+    assert "preview_token=" in sandboxed.text
+    assert sandboxed_css.status_code == 200
+    assert sandboxed_css.text == "body { color: red; }\n"
+
     # binary assets pass through untouched (no utf-8 decode corruption)
     jpg = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01"
     (clone / "images").mkdir(exist_ok=True)
     (clone / "images" / "about.jpg").write_bytes(jpg)
     subprocess.run(["git", "-C", str(clone), "add", "-A"], check=True)
     subprocess.run(["git", "-C", str(clone), "commit", "-qm", "add image"], check=True)
-    rimg = client.get(f"/api/review/{did}/images/about.jpg")
+    rimg = client.get(f"/api/review/{did}/images/about.jpg?preview_token={token}")
     assert rimg.status_code == 200
     assert rimg.content == jpg
     assert rimg.headers["content-type"] == "image/jpeg"
@@ -898,6 +1086,131 @@ def test_approve_pelican_article_commits_frontmatter_without_index(runtime):
     assert "Slug: pelican-article" in body
     assert "Summary: A concise summary." in body
     assert "## Body" in body
+
+
+def test_article_details_expose_research_and_publish_trace(runtime):
+    memory, config, adapter, _, client = runtime
+    config["blog"] = {"engine": "pelican", "articles_dir": "content/articles"}
+    did = memory.save_draft(
+        "A useful guide",
+        "## A useful guide\n\nPublished content.",
+        kind="article",
+        meta={"angle": "Explain the practical answer.", "why": "Readers need clarity."},
+    )
+    idea = memory.create_article_idea(
+        "article:2026-W30",
+        "idea-hash",
+        {
+            "working_title": "A useful guide",
+            "audience_need": "Readers need clarity.",
+            "thesis": "Explain the practical answer.",
+            "why_now": "A recurring community question",
+            "origin": "community_question",
+            "candidate_queries": ["reader question basics"],
+            "language": "en",
+            "market": "US",
+            "source_urls": ["https://example.test/question"],
+        },
+    )
+    memory.update_article_idea(
+        idea["id"],
+        status="drafted",
+        research_run_id="run-1",
+        serp_run_id="run-serp",
+        provider_task_id="task-1",
+        research_result_hash="result-hash",
+        research_result_json=[{"keyword": "reader question basics", "search_volume": 20, "competition": 0.2}],
+        research_note_json={
+            "decision": "keep",
+            "selected_query": "reader question basics",
+            "reasoning": "The audience need is specific.",
+            "serp_evidence": {"query": "reader question basics", "checked_at": "2026-08-29 10:00:00 +00:00", "organic": [{"rank": 1, "domain": "school.example", "title": "Guide", "url": "https://school.example"}]},
+            "serp_receipt": {"run_id": "run-serp", "provider_task_id": "task-serp", "cost_micros": 2000},
+        },
+        research_cost_micros=50000,
+        draft_id=did,
+        researched_ts="2026-07-01T12:00:00+00:00",
+    )
+    _login(client)
+
+    details = client.get(f"/api/drafts/{did}")
+    assert details.status_code == 200
+    decision = details.json()["decision_details"]
+    assert decision["selection"]["audience_need"] == "Readers need clarity."
+    assert decision["selection"]["selected_query"] == "reader question basics"
+    assert decision["keyword_research"]["status"] == "completed"
+    assert decision["keyword_research"]["result_count"] == 1
+    assert decision["keyword_research"]["results"][0]["keyword"] == "reader question basics"
+    assert decision["serp_research"]["status"] == "completed"
+    assert decision["serp_research"]["run_id"] == "run-serp"
+    assert decision["serp_research"]["organic_count"] == 1
+
+    published = client.post(f"/api/drafts/{did}/approve")
+    assert published.status_code == 200
+    message = adapter.commits[0]["message"]
+    assert "Selection rationale:" in message
+    assert "Audience need: Readers need clarity." in message
+    assert "Provider: CrawlSEO / DataForSEO" in message
+    assert "Cost: $0.05" in message
+    assert "Selected query: reader question basics" in message
+    assert "result rows: 1" in message
+    assert "SERP:" in message
+    assert "Research reasoning: The audience need is specific." in message
+    publish_row = memory.list_publishes()[0]
+    assert publish_row["commit_message"] == message
+    version = client.get("/api/versions").json()["versions"][0]
+    assert version["commit_message"] == message
+    assert version["draft_id"] == did
+
+
+def test_article_publish_requires_keyword_evidence_or_explicit_exception(runtime):
+    memory, config, adapter, _, client = runtime
+    config["blog"] = {"engine": "pelican", "articles_dir": "content/articles"}
+    did = memory.save_draft(
+        "A useful guide",
+        "## A useful guide\n\nPublished content.",
+        kind="article",
+        meta={"article_research": {"article_idea_id": 1, "keyword_research_run_id": "run-empty"}},
+    )
+    idea = memory.create_article_idea(
+        "article:2026-W33",
+        "empty-publish-hash",
+        {
+            "working_title": "A useful guide",
+            "audience_need": "Readers need clarity.",
+            "thesis": "Explain the practical answer.",
+            "why_now": "A recurring community question",
+            "origin": "community_question",
+            "candidate_queries": ["reader question basics"],
+            "language": "en",
+            "market": "US",
+            "source_urls": [],
+        },
+    )
+    memory.update_article_idea(
+        idea["id"],
+        status="drafted",
+        research_run_id="run-empty",
+        serp_run_id="run-serp",
+        research_result_hash="empty-result",
+        research_result_json=[],
+        research_note_json={
+            "decision": "keep",
+            "selected_query": "reader question basics",
+            "reasoning": "No clear demand signal.",
+            "serp_evidence": {"query": "reader question basics", "organic": []},
+            "serp_receipt": {"run_id": "run-serp"},
+        },
+        draft_id=did,
+        researched_ts="2026-08-28T12:00:00+00:00",
+    )
+    _login(client)
+
+    response = client.post(f"/api/drafts/{did}/approve")
+
+    assert response.status_code == 409
+    assert "no keyword research rows" in response.json()["detail"]
+    assert adapter.commits == []
 
 
 def test_chat_propose_edit_creates_pending_proposal(runtime):
@@ -1638,6 +1951,19 @@ def test_published_preview_serves_generated_pelican_listing(tmp_path):
         assert 'href="./theme/site.css"' in page.text
         assert css.status_code == 200
         assert css.text == "body { color: red; }"
+
+        token = client.get("/api/preview-token").json()["token"]
+        client.cookies.clear()
+        sandboxed_page = client.get(f"/api/preview/articles.html?preview_token={token}")
+        sandboxed_css = client.get(f"/api/preview/theme/css/site.css?preview_token={token}")
+        assert sandboxed_page.status_code == 200
+        assert "data-site-agent-preview" in sandboxed_page.text
+        assert "preview_token=" in sandboxed_page.text
+        assert sandboxed_page.headers["access-control-allow-origin"] == "*"
+        assert sandboxed_page.headers["content-security-policy"] == "sandbox allow-scripts; frame-ancestors 'self'"
+        assert sandboxed_css.status_code == 200
+        assert sandboxed_css.headers["access-control-allow-origin"] == "*"
+        assert client.get(f"/api/home?preview_token={token}").status_code == 401
     mem.close()
 
 

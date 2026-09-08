@@ -7,7 +7,9 @@ approval-gated preview flow.
 
 from __future__ import annotations
 
-from typing import Any, Protocol, TypedDict
+from typing import Any, Callable, Protocol, TypedDict
+
+from ..core.design_contracts import BuildTarget, DesignCandidateReceipt, PageBuildRequest
 
 
 class BuildOutcome(TypedDict, total=False):
@@ -32,8 +34,22 @@ class Builder(Protocol):
         ...
 
 
+class DesignBuilder(Protocol):
+    """Typed builder capability for immutable design candidates."""
+
+    def build_design(
+        self,
+        request: PageBuildRequest,
+        target: BuildTarget,
+        progress: Callable[[str], None] | None = None,
+    ) -> DesignCandidateReceipt:
+        ...
+
+
 class BuilderError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, result: dict[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.result = result or {}
 
 
 class NativeOpenCodeBuilder:
@@ -51,7 +67,47 @@ class NativeOpenCodeBuilder:
 
             return stage_build(self.context, brief, progress)  # type: ignore[return-value]
         except Exception as exc:  # noqa: BLE001 - preserve the facade's error type
-            raise BuilderError(str(exc)) from exc
+            raise BuilderError(str(exc), result=getattr(exc, "result", None)) from exc
+
+    def build_design(
+        self,
+        request: PageBuildRequest,
+        target: BuildTarget,
+        progress: Callable[[str], None] | None = None,
+    ) -> DesignCandidateReceipt:
+        try:
+            from .opencode_runner import stage_design_build
+
+            return stage_design_build(self.context, request, target, progress)
+        except Exception as exc:  # noqa: BLE001 - preserve the facade's error type
+            raise BuilderError(str(exc), result=getattr(exc, "result", None)) from exc
+
+
+class OperationRoutingBuilder:
+    """Dispatch every supported design operation to native source authoring."""
+
+    def __init__(
+        self,
+        context: dict[str, Any],
+        *,
+        native: NativeOpenCodeBuilder | None = None,
+    ) -> None:
+        self.context = context
+        self.native = native or NativeOpenCodeBuilder(context)
+
+    def available(self) -> bool:
+        return self.native.available()
+
+    def build_design(
+        self,
+        request: PageBuildRequest,
+        target: BuildTarget,
+        progress: Callable[[str], None] | None = None,
+    ) -> DesignCandidateReceipt:
+        operation_kind = str(target.operation_kind or "").strip()
+        if operation_kind in {"initial_build", "visual_refinement", "technical_repair", "derived_page"}:
+            return self.native.build_design(request, target, progress)
+        raise BuilderError(f"unsupported design operation kind: {operation_kind}")
 
 
 def available(config: dict[str, Any]) -> bool:

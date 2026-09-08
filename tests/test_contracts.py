@@ -109,9 +109,11 @@ def test_default_capabilities_are_finite_and_keep_social_unavailable():
         "content.suggestion",
         "content.article.prepare",
         "review.site_change",
+        "social.post.prepare",
         "social.post.publish",
     }
     assert registry.available("content.suggestion") is True
+    assert registry.available("social.post.prepare") is False
     assert registry.available("social.post.publish") is False
 
 

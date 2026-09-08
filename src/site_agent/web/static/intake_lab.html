@@ -1,0 +1,1695 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Intake Lab | Ada</title>
+  <style>
+    :root {
+      --void: #ffffff;
+      --void-soft: #fff8f5;
+      --surface: #ffffff;
+      --surface-raised: #fffdfb;
+      --surface-hot: #fff0eb;
+      --line: #ead9d3;
+      --line-bright: #c98d7e;
+      --ink: #241c1a;
+      --ink-soft: #5f504b;
+      --muted: #927e77;
+      --faint: #c9b9b3;
+      --signal: #e75c48;
+      --cyan: #bd776a;
+      --brand: #e75c48;
+      --bad: #ff8b78;
+      --body: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --mono: "IBM Plex Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    * { box-sizing: border-box; }
+    html { min-width: 320px; min-height: 100%; background: var(--void); }
+    body { min-width: 320px; min-height: 100dvh; margin: 0; overflow-x: hidden; color: var(--ink); background: var(--void); font: 14px/1.55 var(--body); }
+    body, button, textarea, select, input { font-family: var(--body); }
+    button, label { cursor: pointer; }
+    button:disabled { cursor: not-allowed; opacity: .45; }
+    button, textarea, select { color: inherit; }
+    :focus-visible { outline: 2px solid var(--signal); outline-offset: 3px; }
+    [hidden] { display: none !important; }
+    h1, h2, h3, p { margin-top: 0; }
+    .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+    .skip-link { position: fixed; top: 12px; left: 14px; z-index: 30; transform: translateY(-180%); padding: 8px 10px; color: var(--void); background: var(--signal); font: 11px/1 var(--mono); }
+    .skip-link:focus-visible { transform: translateY(0); }
+    @media (prefers-reduced-motion: reduce) {
+      #incubation-canvas { display: none; }
+    }
+    @keyframes cursor-blink { 50% { opacity: 0; } }
+
+    /* The background is a safe operational trace, not private model reasoning. */
+    .ambient-layer { position: fixed; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; background: radial-gradient(circle at 50% 42%, #fff4f0 0, var(--void) 53%, #ffffff 100%); }
+    .ambient-grid { position: absolute; inset: -12%; opacity: .26; background-image: linear-gradient(rgba(231, 92, 72, .1) 1px, transparent 1px), linear-gradient(90deg, rgba(231, 92, 72, .1) 1px, transparent 1px); background-size: 44px 44px; transform: perspective(620px) rotateX(54deg) scale(1.45); transform-origin: center 72%; animation: grid-drift 90s linear infinite; }
+    @keyframes grid-drift { from { background-position: 0 0, 0 0; } to { background-position: 0 44px, 44px 0; } }
+    .ambient-grid::after { position: absolute; inset: 0; background: radial-gradient(ellipse at center, transparent 10%, var(--void) 78%); content: ""; }
+    .ambient-scan { position: absolute; inset: 0; opacity: .06; background: repeating-linear-gradient(0deg, transparent 0, transparent 3px, rgba(231, 92, 72, .05) 4px); mix-blend-mode: multiply; }
+    .ambient-shaft { position: absolute; inset: 0; background: radial-gradient(ellipse at 50% -8%, rgba(231, 92, 72, .09) 0, rgba(231, 92, 72, .03) 42%, transparent 62%); mix-blend-mode: multiply; animation: shaft-breathe 9s ease-in-out infinite; }
+    @keyframes shaft-breathe { 0%, 100% { opacity: .55; transform: translateY(0); } 50% { opacity: 1; transform: translateY(8px); } }
+    .ambient-grain { position: absolute; inset: -50%; pointer-events: none; opacity: .055; background-image: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='2'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='0.6'/%3E%3C/svg%3E"); background-repeat: repeat; mix-blend-mode: multiply; animation: grain-shift 1.4s steps(3) infinite; }
+    @keyframes grain-shift { 0% { transform: translate(0, 0); } 33% { transform: translate(-14px, 8px); } 66% { transform: translate(10px, -12px); } 100% { transform: translate(0, 0); } }
+    .ambient-hud { position: absolute; left: 50%; bottom: 22px; transform: translateX(-50%); display: flex; align-items: center; gap: 10px; padding: 5px 12px; border: 1px solid rgba(231, 92, 72, .22); border-radius: 999px; background: rgba(255, 255, 255, .55); backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px); color: var(--muted); font: 8px var(--mono); letter-spacing: .16em; text-transform: uppercase; }
+    .ambient-hud span:last-child { color: var(--signal); }
+    .ambient-header { position: relative; z-index: 1; display: flex; justify-content: space-between; gap: 10px; padding-bottom: 10px; margin-bottom: 12px; border-bottom: 1px solid rgba(231, 92, 72, .2); color: var(--signal); letter-spacing: .13em; text-transform: uppercase; }
+    .ambient-live { color: var(--brand); }
+    .trace { position: relative; z-index: 1; display: grid; gap: 3px; max-height: 100%; overflow: hidden; padding-left: 10px; }
+    .trace-line { display: block; overflow: hidden; color: rgba(189, 119, 106, .86); text-overflow: ellipsis; white-space: nowrap; }
+    .trace-line::first-letter { color: var(--signal); }
+    .trace-cursor { display: inline-block; width: 6px; height: 11px; margin-left: 3px; vertical-align: -1px; background: var(--signal); animation: cursor-blink 1.1s steps(2, start) infinite; }
+    @keyframes cursor-blink { 50% { opacity: 0; } }
+
+    .topbar { position: relative; z-index: 3; display: flex; align-items: center; justify-content: space-between; min-height: 62px; padding: 15px 24px; border-bottom: 1px solid rgba(231, 92, 72, .14); background: rgba(255, 255, 255, .86); }
+    .brandline { display: flex; align-items: center; gap: 10px; color: var(--ink); font: 11px var(--mono); letter-spacing: .14em; text-transform: uppercase; }
+    .brandmark { display: grid; place-items: center; width: 26px; height: 26px; border: 1px solid var(--signal); color: var(--signal); font-weight: 600; }
+    .brand-context { color: var(--muted); font-size: 9px; letter-spacing: .1em; }
+     .topbar-side { display: flex; align-items: center; gap: 15px; }
+     .top-note { display: none; }
+     #job-status { color: var(--muted); font: 9px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+     .new-session { min-height: 30px; padding: 5px 9px; border: 1px solid var(--line); color: var(--muted); background: rgba(255, 255, 255, .55); font: 9px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+     .new-session:hover:not(:disabled) { border-color: var(--signal); color: var(--signal); background: rgba(231, 92, 72, .06); }
+     .debug-toggle { display: grid; place-items: center; width: 34px; height: 30px; padding: 0; border: 1px solid var(--line); color: var(--muted); background: transparent; font: 11px var(--mono); }
+    .debug-toggle:hover { border-color: var(--signal); color: var(--signal); background: rgba(231, 92, 72, .06); }
+    .debug-glyph { letter-spacing: -.15em; transform: translateX(-1px); }
+
+    main { position: relative; z-index: 1; display: grid; place-items: center; min-height: calc(100dvh - 62px); padding: 23px 16px 25px; }
+    .conversation { width: min(720px, calc(100vw - 32px)); height: min(730px, calc(100dvh - 110px)); min-height: 500px; }
+    .chat-window { display: flex; flex-direction: column; width: 100%; height: 100%; overflow: hidden; border: 1px solid rgba(231, 92, 72, .25); border-top: 2px solid var(--signal); background: rgba(255, 255, 255, .55); backdrop-filter: blur(14px) saturate(1.15); -webkit-backdrop-filter: blur(14px) saturate(1.15); box-shadow: 0 28px 90px rgba(74, 46, 38, .14), 0 0 70px rgba(231, 92, 72, .07); }
+    .chat-window::before { position: absolute; width: 1px; height: 1px; content: ""; }
+    .chat-bar { display: flex; align-items: center; justify-content: space-between; gap: 15px; flex: none; min-height: 46px; padding: 0 19px; border-bottom: 1px solid var(--line); color: var(--muted); background: rgba(255, 255, 255, .66); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); font: 9px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+    .chat-bar-title { color: var(--ink-soft); }
+    .chat-bar-title::before { display: inline-block; width: 6px; height: 6px; margin-right: 8px; border-radius: 50%; background: var(--signal); box-shadow: 0 0 0 3px rgba(231, 92, 72, .1); content: ""; }
+    .chat-bar-state { color: var(--cyan); }
+    .conversation-intro, .conversation-meta, .activity-strip { display: none; }
+    .messages { display: flex; flex: 1; flex-direction: column; align-items: flex-start; justify-content: flex-start; gap: 15px; min-height: 0; overflow-y: auto; padding: 24px 23px 22px; scrollbar-color: var(--line-bright) transparent; }
+    .message { display: flex; flex-direction: column; gap: 5px; max-width: 78%; }
+    .message[data-role="user"] { align-self: flex-end; align-items: flex-end; max-width: 70%; }
+    .message[data-role="system"] { align-self: center; width: min(100%, 520px); max-width: 100%; }
+    .message-label { color: var(--muted); font: 9px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    .message-body { width: fit-content; max-width: 100%; padding: 11px 14px; border: 1px solid var(--line); color: var(--ink-soft); background: rgba(255, 255, 255, .94); font-size: 14px; line-height: 1.58; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .message[data-role="assistant"] .message-body { border-left: 2px solid var(--cyan); color: var(--ink); }
+    .message[data-role="user"] .message-body { border-color: rgba(231, 92, 72, .46); color: var(--ink); background: rgba(231, 92, 72, .11); }
+    .message[data-role="system"] .message-body { width: auto; padding: 9px 11px; border-style: dashed; color: var(--muted); background: rgba(231, 92, 72, .04); font: 10px/1.5 var(--mono); white-space: pre-wrap; }
+    .message[data-welcome="true"] { max-width: 560px; margin-top: auto; margin-bottom: auto; }
+    .message[data-welcome="true"] .message-label { color: var(--signal); }
+    .message[data-welcome="true"] .message-body { border: 0; padding: 0; color: var(--ink); background: transparent; font-size: 19px; line-height: 1.32; }
+    .attachment-note { margin-top: 8px; color: var(--muted); font: 9px var(--mono); }
+    .composer { flex: none; padding: 13px 16px 15px; border-top: 1px solid var(--line); background: rgba(255, 255, 255, .66); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); }
+    .compose-line { display: flex; align-items: flex-end; gap: 9px; }
+    .composer textarea { display: block; width: 100%; min-height: 52px; max-height: 150px; padding: 12px 13px; border: 1px solid var(--line-bright); border-radius: 0; outline: 0; color: var(--ink); background: var(--surface); font: 14px/1.5 var(--body); resize: vertical; }
+    .composer textarea:focus { border-color: var(--signal); box-shadow: 0 0 0 1px rgba(231, 92, 72, .18); }
+    .composer textarea::placeholder { color: var(--muted); }
+    .button.primary { display: grid; place-items: center; width: 72px; min-height: 52px; padding: 0 11px; border: 1px solid var(--signal); color: var(--void); background: var(--signal); font: 10px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    .button.primary:hover:not(:disabled) { background: #f27a68; }
+    .composer-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 24px; margin-top: 8px; }
+    .composer-actions { display: flex; align-items: center; gap: 8px; }
+    .file-button { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); font: 9px var(--mono); letter-spacing: .04em; text-transform: uppercase; }
+    .file-button:hover { color: var(--signal); }
+    .file-button input { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+    .file-plus { display: grid; place-items: center; width: 18px; height: 18px; border: 1px solid var(--line-bright); color: var(--cyan); font-size: 14px; line-height: 1; }
+    .composer-note { min-height: 15px; margin: 7px 0 0; color: var(--muted); font: 9px var(--mono); }
+    .composer-note:empty { display: none; }
+    .composer-note.error { color: var(--bad); }
+    .asset-picks { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+    .asset-chip { display: inline-flex; align-items: center; gap: 7px; max-width: 210px; padding: 3px 9px 3px 4px; border: 1px solid rgba(231, 92, 72, .22); border-radius: 999px; background: var(--surface-hot); font: 9px/1.3 var(--mono); color: var(--ink-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .asset-chip img { width: 26px; height: 26px; flex: none; object-fit: cover; border: 1px solid rgba(231, 92, 72, .3); border-radius: 50%; }
+    .asset-chip .chip-ph { display: grid; place-items: center; width: 26px; height: 26px; flex: none; border: 1px dashed rgba(231, 92, 72, .4); border-radius: 50%; color: var(--signal); font-size: 12px; }
+    .asset-chip em { color: var(--muted); font-style: normal; }
+    .upload-progress { margin-top: 8px; }
+    .upload-progress-track { height: 4px; border-radius: 3px; background: rgba(231, 92, 72, .14); overflow: hidden; }
+    .upload-progress-fill { display: block; height: 100%; width: 0%; background: linear-gradient(90deg, var(--signal), #e6a98f); transition: width .15s linear; }
+    .upload-progress-label { display: block; margin-top: 4px; color: var(--muted); font: 8px/1.4 var(--mono); letter-spacing: .06em; }
+    .asset-chip { display: inline-flex; align-items: center; gap: 5px; padding: 3px 5px; border: 1px solid var(--line); color: var(--muted); background: var(--surface); font: 9px var(--mono); }
+    .asset-chip input { accent-color: var(--signal); }
+
+    .chat-confirm { flex: none; margin: 0; padding: 14px 16px; border-top: 1px solid rgba(231, 92, 72, .28); color: var(--ink); background: rgba(231, 92, 72, .07); }
+    .chat-confirm h2 { margin: 0 0 5px; color: var(--signal); font: 500 16px/1.2 var(--mono); letter-spacing: .01em; }
+    .chat-confirm p { margin-bottom: 9px; color: var(--ink-soft); font-size: 12px; }
+    .chat-confirm .button { width: auto; }
+    .confirm-note { min-height: 15px; margin: 8px 0 0; color: var(--muted); font: 9px var(--mono); }
+    .kicker { margin: 0 0 7px; color: var(--signal); font: 9px var(--mono); letter-spacing: .14em; text-transform: uppercase; }
+
+    .button { min-height: 34px; padding: 7px 11px; border: 1px solid var(--line-bright); color: var(--ink-soft); background: var(--surface); font: 10px var(--mono); }
+    .button:hover:not(:disabled) { border-color: var(--signal); color: var(--signal); }
+    .button.dark { border-color: var(--signal); color: var(--void); background: var(--signal); }
+    .button.dark:hover:not(:disabled) { color: var(--void); background: #f27a68; }
+    .button.small { min-height: 28px; padding: 5px 8px; font-size: 9px; }
+
+    /* The developer drawer keeps durable evidence out of the default conversation. */
+    .rail { position: fixed; top: 74px; right: 16px; bottom: 16px; z-index: 8; width: min(390px, calc(100vw - 32px)); overflow-y: auto; padding: 15px; border: 1px solid var(--line-bright); background: rgba(255, 255, 255, .98); box-shadow: 0 25px 80px rgba(74, 46, 38, .22); }
+    .debug-drawer-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding-bottom: 12px; margin: -1px 0 12px; border-bottom: 1px solid var(--line); }
+    .debug-drawer-head h2 { margin: 0; color: var(--ink); font: 500 17px var(--mono); }
+    .debug-drawer-actions { display: flex; gap: 6px; }
+    .debug-close { min-height: 27px; padding: 4px 7px; border: 1px solid var(--line); color: var(--muted); background: transparent; font: 9px var(--mono); }
+    .debug-close:hover { border-color: var(--signal); color: var(--signal); }
+    .panel { margin-bottom: 10px; padding: 12px; border: 1px solid var(--line); background: rgba(255, 250, 248, .88); }
+    .panel:last-child { margin-bottom: 0; }
+    .section-title { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+    .section-title h2 { margin: 0; color: var(--ink); font: 11px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+    .section-title small { color: var(--muted); font: 9px var(--mono); }
+    .state-line { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .state-badge { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font: 9px var(--mono); letter-spacing: .06em; text-transform: uppercase; }
+    .state-badge::before { width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 10px currentColor; content: ""; }
+    .state-badge[data-state="ready_to_build"], .state-badge[data-state="confirmed"] { color: var(--signal); }
+    .state-badge[data-state="working"], .state-badge[data-state="queued"], .state-badge[data-state="running"] { color: var(--cyan); }
+    .state-badge[data-state="blocked"], .state-badge[data-state="error"] { color: var(--bad); }
+    .progress { height: 3px; margin: 12px 0 9px; background: var(--line); }
+    .progress span { display: block; width: 0; height: 100%; background: var(--signal); transition: width .25s ease; }
+    .state-copy, .empty { margin: 0; color: var(--muted); font-size: 11px; }
+    .facts { display: grid; gap: 7px; margin: 0; }
+    .fact { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 9px; padding-bottom: 7px; border-bottom: 1px solid rgba(231, 92, 72, .1); }
+    .fact:last-child { padding-bottom: 0; border-bottom: 0; }
+    .fact dt { color: var(--muted); font: 9px var(--mono); text-transform: uppercase; }
+    .fact dd { min-width: 0; margin: 0; color: var(--ink-soft); font-size: 11px; overflow-wrap: anywhere; }
+    .origin { display: inline-block; padding: 1px 4px; margin-left: 4px; color: var(--void); background: var(--cyan); font: 8px var(--mono); }
+    .origin[data-origin="confirmed"] { background: var(--signal); }
+    .origin[data-origin="assumed"] { background: var(--brand); }
+    .library, .research-list { display: grid; gap: 7px; }
+    .research-query { display: block; width: 100%; margin-bottom: 8px; padding: 8px 9px; border: 1px solid var(--line-bright); outline: 0; color: var(--ink); background: var(--surface); font: 11px var(--body); }
+    .research-query:focus { border-color: var(--signal); }
+    .research-item { padding: 8px; border-left: 2px solid var(--cyan); background: rgba(255, 255, 255, .72); }
+    .research-item strong, .research-item small { display: block; }
+    .research-item strong { color: var(--ink-soft); font-size: 11px; font-weight: 500; }
+    .research-item small { margin-top: 3px; color: var(--muted); font: 9px/1.4 var(--mono); overflow-wrap: anywhere; }
+    .activity-ledger { max-height: 270px; overflow: auto; }
+    .activity-entry { display: block; width: 100%; padding: 6px; border: 0; border-left: 1px solid var(--line-bright); color: var(--ink-soft); background: transparent; text-align: left; font-size: 10px; line-height: 1.35; }
+    .activity-entry:hover, .activity-entry:focus-visible { border-left-color: var(--signal); background: rgba(231, 92, 72, .06); }
+    .activity-entry-meta { display: block; margin-top: 3px; color: var(--muted); font: 8px/1.35 var(--mono); text-transform: uppercase; }
+    .activity-detail { margin-top: 8px; padding: 8px; border: 1px solid var(--line); color: var(--ink-soft); background: var(--surface); font-size: 10px; }
+    .activity-detail strong, .activity-detail small { display: block; }
+    .activity-detail small { margin-top: 4px; color: var(--muted); font: 8px/1.4 var(--mono); }
+    .activity-more { padding: 5px 0; border: 0; color: var(--cyan); background: transparent; font: 9px var(--mono); }
+    .activity-more:hover { color: var(--signal); }
+    .genesis-copy, pre { max-height: 190px; overflow: auto; margin: 0; padding: 9px; color: var(--ink-soft); background: var(--void-soft); font: 9px/1.45 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .library-item { display: grid; grid-template-columns: 40px minmax(0, 1fr); gap: 9px; align-items: center; padding: 6px; border: 1px solid var(--line); }
+    .library-thumb { width: 40px; height: 40px; object-fit: cover; background: var(--void-soft); }
+    .library-text { min-width: 0; }
+    .library-text strong, .library-text small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .library-text strong { color: var(--ink-soft); font-size: 10px; font-weight: 500; }
+    .library-text small { margin-top: 2px; color: var(--muted); font: 8px var(--mono); }
+    .library-controls { margin-top: 5px; }
+    .library-controls select { max-width: 155px; padding: 3px; border: 1px solid var(--line); color: var(--muted); background: var(--surface); font: 9px var(--mono); }
+
+    /* Build view keeps the same language but gives the candidate its own quiet stage. */
+    body[data-view="build"] .ambient-layer { opacity: .55; }
+    body[data-view="build"] main { grid-template-columns: minmax(250px, 310px) minmax(0, 860px); align-items: stretch; gap: 16px; max-width: 1250px; margin: 0 auto; padding: 20px 22px 24px; }
+    body[data-view="build"] .conversation { width: auto; height: calc(100dvh - 106px); min-height: 0; }
+    body[data-view="build"] .chat-window { border-top-color: var(--brand); }
+    body[data-view="build"] .conversation-intro, body[data-view="build"] .conversation-meta, body[data-view="build"] #activity-strip { display: none; }
+    body[data-view="build"] .network-side { display: none; }
+    body[data-view="build"] .message-body { font-size: 12px; }
+    body[data-view="build"] .message[data-role="assistant"] .message-body { border-left-color: var(--brand); }
+    .build-workspace { display: flex; flex-direction: column; width: 100%; min-width: 0; min-height: calc(100dvh - 106px); gap: 12px; }
+    .build-workspace-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 39px; }
+    .build-workspace-head h2 { margin: 0; color: var(--ink); font: 500 19px/1.2 var(--mono); }
+    .workspace-status { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font: 9px var(--mono); text-transform: uppercase; }
+    .status-pulse, .build-live-mark { width: 6px; height: 6px; border-radius: 50%; background: var(--signal); box-shadow: 0 0 14px var(--signal); animation: status-pulse 1.8s ease-in-out infinite alternate; }
+    .build-stage { display: flex; flex: 1; flex-direction: column; min-height: 0; gap: 12px; }
+    .build-activity { position: relative; display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: center; min-height: 420px; overflow: hidden; border: 1px solid var(--line-bright); background: rgba(255, 255, 255, .92); }
+    .build-activity::before { position: absolute; inset: 0; opacity: .22; background-image: linear-gradient(rgba(231, 92, 72, .1) 1px, transparent 1px), linear-gradient(90deg, rgba(231, 92, 72, .1) 1px, transparent 1px); background-size: 38px 38px; content: ""; mask-image: radial-gradient(ellipse at center, black 15%, transparent 78%); }
+    .build-activity-top { position: absolute; top: 16px; right: 18px; left: 18px; display: flex; align-items: center; gap: 8px; color: var(--muted); font: 9px var(--mono); letter-spacing: .1em; text-transform: uppercase; }
+    .build-activity-top span:last-child { margin-left: auto; color: var(--faint); }
+    .build-visual { position: relative; display: grid; place-items: center; width: 230px; height: 230px; margin-bottom: 17px; }
+    .signal-ring { position: absolute; border: 1px solid rgba(189, 119, 106, .34); border-radius: 50%; }
+    .signal-ring-one { inset: 12%; animation: ring-breathe 5s ease-in-out infinite alternate; }
+    .signal-ring-two { inset: 28%; border-color: rgba(231, 92, 72, .46); transform: rotate(45deg) scaleY(.65); animation: ring-breathe 4s ease-in-out -1s infinite alternate-reverse; }
+    .signal-cross { position: absolute; width: 86%; height: 1px; background: linear-gradient(90deg, transparent, rgba(189, 119, 106, .5), transparent); }
+    .signal-cross::after { position: absolute; top: -42px; left: 50%; width: 1px; height: 84px; background: rgba(189, 119, 106, .35); content: ""; }
+    .signal-core { position: relative; z-index: 1; display: grid; place-items: center; width: 72px; height: 72px; border: 1px solid var(--signal); border-radius: 50%; color: var(--signal); background: var(--void); box-shadow: 0 0 0 8px rgba(231, 92, 72, .05), 0 0 42px rgba(231, 92, 72, .18); font: 11px var(--mono); letter-spacing: .12em; }
+    .signal-dot { position: absolute; width: 5px; height: 5px; border-radius: 50%; background: var(--cyan); box-shadow: 0 0 14px var(--cyan); }
+    .signal-dot-a { top: 17%; left: 24%; }
+    .signal-dot-b { right: 16%; bottom: 24%; background: var(--brand); box-shadow: 0 0 14px var(--brand); }
+    .build-reading { position: relative; z-index: 1; max-width: 390px; padding: 0 18px; text-align: center; }
+    .build-kicker { margin: 0 0 7px; color: var(--brand); font: 9px var(--mono); letter-spacing: .13em; text-transform: uppercase; }
+    .build-reading h2 { margin: 0; color: var(--ink); font: 500 24px/1.18 var(--mono); }
+    .build-reading p:last-child { margin: 10px auto 0; color: var(--muted); font-size: 11px; }
+    .build-progress { width: min(260px, calc(100% - 36px)); height: 2px; margin-top: 23px; background: var(--line); }
+    .build-progress span { display: block; width: 100%; height: 100%; background: var(--signal); box-shadow: 0 0 12px rgba(231, 92, 72, .35); transform: scaleX(.15); transform-origin: left; transition: transform .8s ease; }
+    .build-progress-label { display: flex; justify-content: space-between; gap: 10px; width: min(260px, calc(100% - 36px)); margin-top: 8px; color: var(--faint); font: 8px var(--mono); }
+    .build-progress-label span:first-child { color: var(--muted); }
+    #run-panel { display: flex; flex-direction: column; min-height: 0; margin: 0; }
+    body[data-view="build"] #run-panel { flex: 1; overflow: hidden; border-color: var(--line-bright); background: rgba(255, 255, 255, .94); }
+    body[data-view="build"] #run-panel .section-title { margin-bottom: 9px; }
+    .run-meta { display: flex; flex-wrap: wrap; gap: 8px 13px; margin: 0 0 10px; color: var(--muted); font: 9px var(--mono); }
+    .run-switcher { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
+    .run-switcher button { appearance: none; border: 1px solid var(--line); background: rgba(255, 255, 255, .6); color: var(--ink); font: 9px var(--mono); letter-spacing: .06em; text-transform: uppercase; padding: 5px 9px; cursor: pointer; }
+    .run-switcher button:hover { border-color: var(--brand); }
+    .run-switcher button[aria-current="true"] { border-color: var(--brand); background: var(--brand); color: white; }
+    .run-switcher button .switcher-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 5px; background: var(--faint); }
+    .run-switcher button[aria-current="true"] .switcher-dot { background: white; }
+    .preview { position: relative; flex: 1; min-height: 0; overflow: hidden; border: 1px solid var(--line); background: white; }
+    .preview iframe { display: block; width: 100%; height: 100%; min-height: 300px; border: 0; }
+    .preview-empty { display: grid; place-items: center; min-height: 130px; padding: 18px; color: var(--muted); background: var(--void-soft); font-size: 11px; text-align: center; }
+    .feedback { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
+    .handoff-copy { margin: 0; color: var(--muted); font-size: 11px; }
+    .frame-viewport { width: 100%; overflow: hidden; }
+    .frame-canvas { transform-origin: top left; }
+
+    @keyframes cursor-blink { 50% { opacity: 0; } }
+    @keyframes status-pulse { from { opacity: .45; transform: scale(.8); } to { opacity: 1; transform: scale(1.12); } }
+    @keyframes ring-breathe { from { opacity: .35; transform: rotate(0deg) scale(.9); } to { opacity: .9; transform: rotate(180deg) scale(1.08); } }
+
+    /* Intake starts as one centered conversation. Durable detail stays in the drawer. */
+    body[data-view="intake"] .conversation-intro,
+    body[data-view="intake"] .conversation-meta,
+    body[data-view="intake"] #activity-strip,
+    body[data-view="intake"] .rail,
+    body[data-view="intake"] .build-workspace { display: none !important; }
+    body[data-view="intake"] .ambient-layer { display: block; opacity: .96; }
+    body[data-view="intake"].debug-open .rail { display: block !important; }
+    /* The chat docks in a left glass column; the neural field owns the rest. */
+    body[data-view="intake"] main { min-height: calc(100dvh - 62px); padding: 26px 28px 40px; grid-template-columns: minmax(360px, 440px) minmax(240px, 1fr); gap: 0 24px; }
+     body[data-view="intake"] .conversation { width: 100%; height: min(680px, calc(100dvh - 130px)); min-height: 400px; max-height: none; justify-self: start; }
+     body[data-view="intake"] .network-side { position: relative; display: flex; align-items: flex-start; justify-content: center; height: min(680px, calc(100dvh - 130px)); pointer-events: none; }
+     body[data-view="intake"] .network-side-caption { position: sticky; top: 6px; display: flex; align-items: center; gap: 9px; color: var(--muted); font: 8px var(--mono); letter-spacing: .22em; text-transform: uppercase; }
+     body[data-view="intake"] .network-side-caption i { width: 6px; height: 6px; border-radius: 50%; background: var(--signal); box-shadow: 0 0 10px var(--signal); }
+      body[data-view="intake"] .chat-confirm { display: block; }
+    body[data-view="intake"] .composer-note { display: none; }
+    body[data-view="intake"] .composer-note.error { display: block; }
+    body[data-view="intake"] #refresh { display: none !important; }
+    @media (max-width: 1000px) {
+      body[data-view="intake"] main { display: block; grid-template-columns: none; padding: 22px 16px 28px; }
+      body[data-view="intake"] .conversation { height: 50vh; min-height: 320px; max-height: 560px; margin: 0 auto; justify-self: auto; }
+      body[data-view="intake"] .network-side { display: none; }
+    }
+
+    @media (max-width: 900px) {
+      body[data-view="build"] main { grid-template-columns: minmax(220px, 280px) minmax(0, 1fr); }
+    }
+     @media (max-width: 680px) {
+       .topbar { min-height: 54px; padding: 12px 15px; }
+       .brand-context, #job-status { display: none; }
+       .new-session { min-height: 28px; padding: 4px 7px; font-size: 8px; }
+       main { min-height: calc(100dvh - 54px); padding: 10px; }
+      .conversation { width: 100%; height: calc(100dvh - 20px); height: calc(100svh - 20px); min-height: 0; }
+      body[data-view="intake"] main { min-height: calc(100dvh - 54px); padding: 10px; }
+      body[data-view="intake"] .conversation { height: calc(100dvh - 74px); height: calc(100svh - 74px); }
+      .chat-window { border-top-width: 1px; }
+      .chat-bar { min-height: 40px; padding: 0 13px; }
+      .messages { gap: 13px; padding: 19px 14px 17px; }
+      .message { max-width: 89%; }
+      .message[data-role="user"] { max-width: 84%; }
+      .message-body { padding: 10px 12px; font-size: 13px; }
+      .message[data-welcome="true"] .message-body { font-size: 17px; }
+      .composer { padding: 10px 11px 12px; }
+      .compose-line { gap: 7px; }
+      .button.primary { width: 58px; min-height: 50px; padding: 0 7px; }
+      .composer textarea { min-height: 50px; font-size: 13px; }
+      .ambient-hud { display: none; }
+      body[data-view="build"] main { display: flex; flex-direction: column; min-height: 0; padding: 10px; }
+      body[data-view="build"] .conversation { width: 100%; height: 250px; }
+      body[data-view="build"] .build-workspace { min-height: calc(100dvh - 272px); }
+      .build-activity { min-height: 390px; }
+      .build-visual { width: 190px; height: 190px; }
+      .rail { top: 62px; right: 10px; bottom: 10px; width: calc(100vw - 20px); padding: 12px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; }
+    }
+
+    /* Ada's incubation: a living constellation behind the conversation. */
+    #incubation-canvas { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 1; mix-blend-mode: multiply; pointer-events: auto; cursor: crosshair; }
+    /* Interactive badges live inside the pointer-events:none ambient layer; they
+       must re-enable pointer capture to be clickable. */
+    #ada-mind-toggle, #ada-mind, #ada-ticker, .ambient-hud { pointer-events: auto; }
+    body[data-view="build"] #incubation-canvas { opacity: .5; }
+    .birth-flash { position: fixed; inset: 0; z-index: 40; pointer-events: none; opacity: 0; background: radial-gradient(circle at 50% 44%, rgba(231, 92, 72, .5) 0, rgba(231, 92, 72, .12) 34%, transparent 70%); }
+    /* Inception: the big bang that brings Ada's universe into being. */
+    #bang { position: fixed; inset: 0; z-index: 60; pointer-events: none; }
+    #bang canvas { display: block; width: 100%; height: 100%; }
+    /* Build ignition: the neuron field funnels into the review window. */
+    #morph { position: fixed; inset: 0; z-index: 59; pointer-events: none; }
+    #morph canvas { display: block; width: 100%; height: 100%; }
+    .preview[data-ignite] { animation: preview-ignite 1.3s ease-out; }
+    @keyframes preview-ignite { 0% { box-shadow: 0 0 0 0 rgba(231, 92, 72, .5); } 100% { box-shadow: 0 0 0 30px rgba(231, 92, 72, 0); } }
+    /* Entrance: a precision instrument waking up. Thin HUD brackets draw at the
+       chat window's corners, a hairline frame traces its bounds, the window
+       surfaces out of soft focus (built top-down, line by line), and each part
+       of the interface layers in on its own beat. Calm, minimal, ~4.5s. */
+    #intro-frame { position: fixed; inset: 0; z-index: 58; pointer-events: none; }
+    #intro-frame canvas { display: block; width: 100%; height: 100%; }
+    /* From nothing: the interface is held out of view until the entrance
+       shapes it in. Only the ambient void and the growing core remain. */
+    body.intro-pending .topbar,
+    body.intro-pending main,
+    body.intro-pending #ada-mind,
+    body.intro-pending #ada-mind-toggle,
+    body.intro-pending #ada-ticker { opacity: 0; pointer-events: none; }
+    body.intro-pending main { opacity: 0; }
+    @media (prefers-reduced-motion: reduce) {
+      body.intro-pending .topbar,
+      body.intro-pending main,
+      body.intro-pending #ada-mind,
+      body.intro-pending #ada-mind-toggle,
+      body.intro-pending #ada-ticker { opacity: 1; pointer-events: auto; }
+    }
+    body.genesis-active .chat-window {
+      clip-path: inset(0 0 0 0 round 14px);
+      animation: window-ember 3.4s cubic-bezier(.62, .02, .22, 1) both;
+    }
+    body.genesis-active #ada-mind { animation: mind-ember 1.2s cubic-bezier(.16,1,.3,1) 1.5s both; }
+    body.genesis-active .topbar { animation: fade-rise .8s cubic-bezier(.16,1,.3,1) 1.6s both; }
+    body.genesis-active .messages { animation: fade-rise 1s cubic-bezier(.16,1,.3,1) 2.3s both; }
+    body.genesis-active .composer { animation: fade-rise .8s cubic-bezier(.16,1,.3,1) 3s both; }
+    @keyframes window-ember {
+      0% { clip-path: inset(0 0 100% 0 round 14px); filter: brightness(.5) blur(7px); }
+      45% { clip-path: inset(0 0 38% 0 round 14px); filter: brightness(.86) blur(2px); }
+      100% { clip-path: inset(0 0 0 0 round 14px); filter: brightness(1) blur(0); }
+    }
+    @keyframes mind-ember { from { opacity: 0; transform: translateY(16px) scale(.98); filter: blur(2px); } to { opacity: 1; transform: none; filter: blur(0); } }
+    @keyframes fade-rise { from { opacity: 0; transform: translateY(9px); filter: blur(1px); } to { opacity: 1; transform: none; filter: blur(0); } }
+    @media (prefers-reduced-motion: reduce) {
+      body.genesis-active .chat-window, body.genesis-active #ada-mind,
+      body.genesis-active .topbar, body.genesis-active .messages, body.genesis-active .composer,
+      #intro-frame { clip-path: none; animation: none; opacity: 1; }
+    }
+    .preview-fill { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; overflow: hidden; background: radial-gradient(ellipse at 50% 62%, rgba(231, 92, 72, .07), transparent 72%); }
+    .preview-fill::before { position: absolute; inset: 0; opacity: .25; background-image: linear-gradient(rgba(231, 92, 72, .12) 1px, transparent 1px), linear-gradient(90deg, rgba(231, 92, 72, .12) 1px, transparent 1px); background-size: 26px 26px; content: ""; animation: fill-grid-drift 26s linear infinite; }
+    @keyframes fill-grid-drift { from { background-position: 0 0, 0 0; } to { background-position: 0 26px, 26px 0; } }
+    .preview-fill-beam { position: relative; z-index: 1; width: 46%; height: 2px; background: linear-gradient(90deg, transparent, var(--signal), transparent); box-shadow: 0 0 22px rgba(231, 92, 72, .8); transform: translateY(-130px); animation: beam-sweep 3.4s ease-in-out infinite; }
+    @keyframes beam-sweep { 0% { transform: translateY(-130px) scaleX(.4); opacity: 0; } 22% { opacity: 1; } 78% { opacity: 1; } 100% { transform: translateY(130px) scaleX(.9); opacity: 0; } }
+    .preview-fill-core { position: relative; z-index: 1; display: grid; place-items: center; width: 62px; height: 62px; border: 1px solid rgba(231, 92, 72, .5); border-radius: 50%; color: var(--signal); background: rgba(255, 255, 255, .6); font: 11px var(--mono); letter-spacing: .12em; box-shadow: 0 0 0 9px rgba(231, 92, 72, .05), 0 0 46px rgba(231, 92, 72, .28); animation: core-pulse 2.6s ease-in-out infinite alternate; }
+    @keyframes core-pulse { from { transform: scale(.92); box-shadow: 0 0 0 6px rgba(231, 92, 72, .04), 0 0 26px rgba(231, 92, 72, .18); } to { transform: scale(1.05); box-shadow: 0 0 0 12px rgba(231, 92, 72, .06), 0 0 60px rgba(231, 92, 72, .36); } }
+    .preview-fill-stage { position: relative; z-index: 1; margin: 0; color: var(--muted); font: 9px var(--mono); letter-spacing: .14em; text-transform: uppercase; text-align: center; }
+    .preview-fill-stage strong { display: block; margin-bottom: 4px; color: var(--brand); }
+
+    /* C: Ada's mind — a readable cognition feed on a translucent scrim. */
+    #ada-mind-toggle { position: fixed; z-index: 32; left: 14px; bottom: 14px; display: inline-flex; align-items: center; gap: 7px; padding: 6px 10px; border: 1px solid rgba(120, 100, 95, .22); border-radius: 999px; color: var(--muted); background: rgba(255, 255, 255, .82); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); font: 9px var(--mono); letter-spacing: .12em; text-transform: uppercase; cursor: pointer; }
+    #ada-mind-toggle:hover, #ada-mind-toggle[aria-expanded="true"] { color: var(--signal); border-color: rgba(231, 92, 72, .45); }
+    .mind-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--signal); box-shadow: 0 0 0 0 rgba(231, 92, 72, .5); animation: mind-dot-pulse 2.4s ease-in-out infinite; }
+    @keyframes mind-dot-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(231, 92, 72, .35); } 50% { box-shadow: 0 0 0 5px rgba(231, 92, 72, 0); } }
+    #ada-mind { position: fixed; z-index: 30; left: 14px; bottom: 46px; width: min(400px, calc(100vw - 28px)); max-height: 46vh; overflow-y: auto; display: flex; flex-direction: column; gap: 7px; padding: 12px 14px; border: 1px solid rgba(120, 100, 95, .16); border-radius: 14px; background: rgba(255, 255, 255, .72); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); box-shadow: 0 14px 44px rgba(60, 40, 35, .12); mix-blend-mode: normal; color: var(--ink-soft); font: 11px/1.45 var(--mono); letter-spacing: .01em; }
+    #ada-mind[hidden], #ada-mind-toggle[hidden], #ada-ticker[hidden] { display: none !important; }
+    .mind-channel-head { display: flex; align-items: center; gap: 6px; margin: 4px 0 1px; color: var(--muted); font: 8px/1.3 var(--mono); letter-spacing: .14em; text-transform: uppercase; }
+    .mind-channel-head i { width: 6px; height: 6px; border-radius: 50%; background: var(--signal); flex: none; }
+    .mind-line { display: flex; gap: 8px; align-items: baseline; padding: 3px 6px; border-left: 1px solid transparent; border-radius: 6px; opacity: .55; cursor: default; }
+    button.mind-line { appearance: none; -webkit-appearance: none; width: 100%; border-right: 0; border-top: 0; border-bottom: 0; text-align: left; font: inherit; letter-spacing: inherit; color: inherit; background: transparent; cursor: pointer; }
+    .mind-line:hover, .mind-line.is-active { opacity: 1; background: rgba(231, 92, 72, .06); border-left-color: var(--signal); }
+    .mind-line.is-active .mind-text { color: var(--ink); }
+    .mind-line .mind-atom { flex: none; width: 5px; height: 5px; align-self: center; border-radius: 50%; transform: translateY(-1px); }
+    .mind-text { opacity: 1; }
+    .mind-note { color: var(--muted); font: 8px/1.4 var(--mono); margin-top: 4px; }
+    #ada-mind.empty { font: 10px/1.5 var(--mono); color: var(--muted); }
+    #ada-ticker { position: fixed; z-index: 31; left: 50%; bottom: 15px; transform: translateX(-50%); max-width: min(640px, calc(100vw - 30px)); display: none; align-items: center; gap: 8px; padding: 6px 14px; border: 1px solid rgba(120, 100, 95, .18); border-radius: 999px; background: rgba(255, 255, 255, .78); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); color: var(--muted); font: 9px/1.4 var(--mono); letter-spacing: .04em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #ada-ticker .ada-ticker-label { color: var(--signal); letter-spacing: .12em; text-transform: uppercase; flex: none; }
+    #ada-ticker[data-live="true"] { border-color: rgba(231, 92, 72, .4); }
+    @media (prefers-reduced-motion: reduce) {
+      .mind-dot, .mind-atom { animation: none; }
+      #ada-mind, #ada-ticker, #ada-mind-toggle { transition: none; }
+    }
+    @media (max-width: 680px) {
+      #ada-mind, #ada-mind-toggle { display: none; }
+      #ada-ticker { display: flex; bottom: 12px; }
+    }
+    @media (min-width: 1001px) {
+      /* The overlays dock over the neural field, clear of the left chat column. */
+      #ada-mind-toggle { left: auto; right: 14px; bottom: 14px; }
+      #ada-mind { left: auto; right: 14px; bottom: 96px; width: min(400px, calc(100vw - 500px)); min-width: 300px; }
+      #ada-ticker { left: auto; right: 20px; bottom: 48px; transform: none; }
+      .ambient-hud { left: 50%; }
+    }
+  </style>
+  <script src="./vendor/gsap.min.js" onerror="window.__gsapMissing = true"></script>
+</head>
+<body data-view="intake" class="intro-pending">
+  <div class="ambient-layer" aria-hidden="true">
+    <canvas id="incubation-canvas"></canvas>
+    <div class="ambient-grid"></div>
+    <div class="ambient-scan"></div>
+    <div class="ambient-shaft"></div>
+    <div class="ambient-grain"></div>
+    <div class="ambient-hud"><span>ADA / COGNITION</span><span id="ambient-state">LISTENING</span></div>
+    <div id="background-trace" class="trace" hidden aria-hidden="true"></div>
+    <div id="background-trace-secondary" class="trace" hidden aria-hidden="true"></div>
+  </div>
+  <button id="ada-mind-toggle" class="" type="button" aria-expanded="false" aria-controls="ada-mind" title="Open Ada's mind"><span class="mind-dot" aria-hidden="true"></span><span>Ada's mind</span></button>
+  <section id="ada-mind" aria-label="Ada's current thinking" aria-live="polite" hidden><p class="mind-note">Watching the first signal arrive.</p></section>
+  <div id="ada-ticker" aria-live="polite"><span class="ada-ticker-label">ADA</span><span>Listening for the first detail.</span></div>
+
+  <a class="skip-link" href="#main-content">Skip to main content</a>
+   <header class="topbar">
+     <div class="brandline"><span class="brandmark" aria-hidden="true">A</span><span>ADA</span><span class="brand-context">INTAKE / 01</span></div>
+     <div class="topbar-side">
+       <span id="job-status" aria-live="polite">ADA IS LISTENING</span>
+       <button id="new-session" class="new-session" type="button" title="Start a new intake conversation">New chat</button>
+       <button id="debug-toggle" class="debug-toggle" type="button" aria-controls="debug-drawer" aria-expanded="false" title="Open developer view"><span class="debug-glyph" aria-hidden="true">{ }</span><span class="visually-hidden">Open developer view</span></button>
+     </div>
+   </header>
+
+  <main id="main-content" tabindex="-1">
+    <section class="conversation" aria-labelledby="conversation-heading">
+      <div class="chat-window">
+        <div class="conversation-intro">
+          <p class="kicker">One conversation</p>
+          <h1 id="conversation-heading">Tell Ada what you want to make.</h1>
+          <p>Start anywhere. Ada will help shape the useful next step.</p>
+        </div>
+        <div class="conversation-meta" aria-label="Conversation identity">
+          <span>Site <strong id="site-name">New site</strong></span>
+          <span>Session <strong id="session-id">New</strong></span>
+        </div>
+        <section id="activity-strip" class="activity-strip" aria-label="Ada's live activity">
+          <section class="activity-channel" data-channel="discovering"><strong>Discovering</strong><div id="activity-discovering"></div></section>
+          <section class="activity-channel" data-channel="becoming"><strong>Becoming</strong><div id="activity-becoming"></div></section>
+          <section class="activity-channel" data-channel="designing"><strong>Designing</strong><div id="activity-designing"></div></section>
+          <button id="activity-open" class="activity-more" type="button">See Ada's activity</button>
+        </section>
+
+        <div class="chat-bar"><span class="chat-bar-title">ADA / OPEN CHANNEL</span><span id="turn-state" class="chat-bar-state" hidden></span><span id="chat-state" class="chat-bar-state">READY</span></div>
+        <div id="messages" class="messages" aria-live="polite"></div>
+        <form id="composer" class="composer">
+          <label class="visually-hidden" for="message">Message Ada</label>
+          <div class="compose-line">
+            <textarea id="message" name="message" autocomplete="off" aria-label="Message Ada" maxlength="20000" placeholder="Message Ada" required></textarea>
+            <button id="send" class="button primary" type="submit" aria-label="Send message">Send</button>
+          </div>
+          <div id="upload-progress" class="upload-progress" hidden aria-hidden="false"><span class="upload-progress-track"><span id="upload-progress-fill" class="upload-progress-fill"></span></span><span id="upload-progress-label" class="upload-progress-label"></span></div>
+          <div id="asset-picks" class="asset-picks" aria-label="Images that will attach to your next message"></div>
+          <div class="composer-row">
+            <div class="composer-actions">
+              <label class="file-button" title="Add a reference image"><span class="file-plus" aria-hidden="true">+</span><span>Attach reference</span><input id="upload" name="image" type="file" accept="image/*" aria-label="Add a picture" multiple></label>
+            </div>
+            <span class="composer-row-hint">ENTER TO SEND</span>
+          </div>
+          <p id="composer-note" class="composer-note"></p>
+          <button id="retry-turn" class="button small retry-turn" type="button" hidden>Retry this message</button>
+        </form>
+        <section id="confirm-panel" class="panel confirm chat-confirm" hidden aria-labelledby="confirm-heading">
+          <p class="kicker">Owner decision</p>
+          <h2 id="confirm-heading">Build from this brief?</h2>
+          <p>Confirmation freezes the current revision and starts one isolated candidate.</p>
+          <button id="confirm" class="button dark" type="button" disabled>Confirm and build</button>
+          <p id="confirm-note" class="confirm-note">The core brief is not ready yet.</p>
+        </section>
+      </div>
+    </section>
+
+     <div class="network-side" aria-label="Ada's live thoughts"><span class="network-side-caption"><i></i>Neural field — Ada's live thoughts</span></div>
+
+    <section id="build-workspace" class="build-workspace" hidden aria-labelledby="build-workspace-heading">
+      <header class="build-workspace-head">
+        <div><p class="kicker">Autonomous build</p><h2 id="build-workspace-heading">Candidate surface</h2></div>
+        <span class="workspace-status"><span class="status-pulse" aria-hidden="true"></span><span id="workspace-status-label">WORKING</span></span>
+      </header>
+      <div id="build-stage" class="build-stage">
+        <section id="build-activity" class="build-activity" aria-labelledby="build-phase" aria-live="polite">
+          <div class="build-activity-top" aria-hidden="true"><span class="build-live-mark"></span><span>BUILD SIGNAL</span><span id="build-elapsed">00:00</span></div>
+          <div class="build-visual" aria-hidden="true">
+            <div class="signal-ring signal-ring-one"></div><div class="signal-ring signal-ring-two"></div><div class="signal-cross"></div><div class="signal-core">ADA</div><span class="signal-dot signal-dot-a"></span><span class="signal-dot signal-dot-b"></span>
+          </div>
+          <div class="build-reading"><p class="build-kicker">The quiet part is moving</p><h2 id="build-phase">Opening the build space.</h2><p id="build-support">Ada is shaping the confirmed direction into a website you can step into.</p></div>
+          <div class="build-progress" aria-hidden="true"><span id="build-progress-bar"></span></div>
+          <div class="build-progress-label"><span id="build-progress-label">WORKING</span><span>PREVIEW WHEN READY</span></div>
+        </section>
+        <section id="run-panel" class="panel run" hidden aria-labelledby="run-heading">
+          <div class="section-title"><h2 id="run-heading">Candidate</h2><small>REVIEWABLE ONLY</small></div>
+          <div id="run-switcher" class="run-switcher" role="list" aria-label="Candidate versions"></div>
+          <span id="run-state" class="state-badge" data-state="working">WORKING</span>
+          <div class="run-meta"><span id="run-id">Run pending</span><span id="run-time"></span><button id="new-version" class="button small" type="button" hidden>New version</button></div>
+          <div id="preview" class="preview"><div class="preview-empty">The retained candidate will appear here when the isolated build is ready.</div><iframe hidden title="Sandboxed candidate preview" sandbox="allow-scripts"></iframe></div>
+          <div id="feedback" class="feedback" hidden><button class="button small" type="button" data-feedback="fits">This fits</button><button class="button small" type="button" data-feedback="small_improvements">Small improvements</button><button class="button small" type="button" data-feedback="redesign">Redesign direction</button></div>
+        </section>
+        <section id="handoff-panel" class="panel" hidden aria-labelledby="handoff-heading">
+          <p class="kicker">Owner decision</p><h2 id="handoff-heading">Keep this direction?</h2><p class="handoff-copy">Acceptance records the exact candidate. Provisioning creates a separate customer instance only after that decision.</p>
+          <div class="feedback"><button id="accept" class="button dark" type="button">Accept candidate</button><button id="provision" class="button" type="button" disabled>Provision customer Ada</button><button id="activate" class="button" type="button" disabled>Activate customer Ada</button></div>
+          <p id="handoff-note" class="confirm-note">The candidate must be ready for review first.</p>
+        </section>
+      </div>
+    </section>
+
+    <aside id="debug-drawer" class="rail" aria-label="Intake evidence and build controls" hidden>
+      <div class="debug-drawer-head"><div><p class="kicker">Developer view</p><h2>Durable state</h2></div><div class="debug-drawer-actions"><button id="refresh" class="debug-close" type="button">Refresh</button><button id="debug-close" class="debug-close" type="button">Close</button></div></div>
+      <section class="panel" aria-labelledby="state-heading"><div class="section-title"><h2 id="state-heading">Where we are</h2><small>LIVE INTAKE</small></div><div class="state-line"><span id="intake-state" class="state-badge" data-state="collecting">COLLECTING</span><span id="progress-label" class="kicker">0 / 8 CORE DECISIONS</span></div><div class="progress" aria-hidden="true"><span id="progress-bar"></span></div><p id="state-copy" class="state-copy">Ada is waiting for the first useful detail.</p></section>
+      <section class="panel" aria-labelledby="known-heading"><div class="section-title"><h2 id="known-heading">What we know</h2><small>PROVENANCE</small></div><dl id="known-list" class="facts"><p class="empty">Your decisions will collect here.</p></dl></section>
+      <section class="panel" aria-labelledby="research-heading"><div class="section-title"><h2 id="research-heading">Evidence room</h2><small>OWNER-APPROVED</small></div><input id="research-query" name="research-query" class="research-query" autocomplete="off" maxlength="500" placeholder="What should Ada investigate?" aria-label="Research question"><button id="research" class="button small" type="button">Research this brief</button><div id="research-list" class="research-list"><p class="empty">No research has been requested.</p></div><p id="research-note" class="confirm-note"></p></section>
+      <section class="panel" aria-labelledby="activity-heading"><div class="section-title"><h2 id="activity-heading">Ada's activity</h2><small>DURABLE LEDGER</small></div><div id="activity-ledger" class="activity-ledger"><p class="empty">Observable work will appear here.</p></div><button id="activity-load-older" class="button small" type="button" hidden>Load older activity</button><div id="activity-detail" class="activity-detail" aria-live="polite" hidden></div></section>
+      <section class="panel" aria-labelledby="genesis-heading"><div class="section-title"><h2 id="genesis-heading">Ada's working memory</h2><small>PROVENANCE</small></div><pre id="genesis-copy" class="genesis-copy">Genesis will appear after the first owner decision.</pre></section>
+      <section class="panel" aria-labelledby="images-heading"><div class="section-title"><h2 id="images-heading">Image shelf</h2><small id="image-count">OPTIONAL</small></div><div id="library" class="library"><p class="empty">Add a reference if it helps Ada see the direction.</p></div></section>
+      <section id="revision-panel" hidden aria-hidden="true"><span id="revision-count"></span><span id="revision-list"></span><span id="revision-context"></span></section>
+      <section id="result-panel" hidden aria-hidden="true"><span id="result-summary"></span><span id="result-next"></span><span id="quality-gates"></span></section>
+      <details class="panel"><summary>Diagnostic details</summary><pre id="diagnostics">{}</pre></details>
+    </aside>
+  </main>
+
+  <script>
+    (() => {
+      "use strict";
+      document.body.classList.add("conversation-first-theme");
+      const API = "./api";
+       const state = {
+         lab: null, incubationId: null, incubation: null, summary: null,
+        activity: { activities: [], has_more: false, previous_cursor: null, next_cursor: null },
+        research: null, genesis: null, provisioning: null, session: null, media: [], job: null, run: null,
+        deductions: [], infusionRuns: [], turnStartedAt: 0, uploadProgress: null,
+        mind: { open: false, idleTimer: null },
+        synapse: { atoms: [], edges: [], raf: 0, t0: 0, ready: false, hoverKey: null, signature: "", impulses: [], waves: [], lastWave: 0, birthAt: 0 },
+        sessionKey: "ada_intake_session_id", incubationKey: "ada_incubation_id", confirmKey: null, buildKey: null,
+         poll: null, mediaPoll: null, activityPoll: null, researchPoll: null, runPoll: null, previewPoll: null,
+         previewPending: false, previewAttempts: 0, previewRunId: null,
+        buildMotion: { startedAt: 0, timer: null },
+       };
+       const $ = (selector) => document.querySelector(selector);
+       const initialIncubationId = new URLSearchParams(window.location.search).get("incubation_id");
+       const text = (selector, value) => { const node = $(selector); if (node) node.textContent = value == null || value === "" ? "-" : String(value); };
+      const stateLabel = (value) => String(value || "collecting").replaceAll("_", " ");
+      const short = (value, size = 10) => { const raw = String(value || ""); return raw.length > size * 2 ? `${raw.slice(0, size)}...${raw.slice(-size)}` : raw || "-"; };
+      const hasOfferSummary = (session) => { const offerSummary = session && session.draft && session.draft.fields && session.draft.fields.business && session.draft.fields.business.offer_summary; return typeof offerSummary === "string" && offerSummary.trim().length > 0; };
+      const offerSummaryRequirement = "business.offer_summary is required before building";
+      const operationKey = (prefix) => window.crypto && typeof window.crypto.randomUUID === "function" ? `${prefix}-${window.crypto.randomUUID()}` : `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      const incubationPath = (suffix = "") => `/incubations/${encodeURIComponent(state.incubationId)}${suffix}`;
+      const experienceViewFromUrl = () => { const view = new URLSearchParams(window.location.search).get("view"); return view === "design" || view === "build" ? "build" : "intake"; };
+      const syncExperienceUrl = (view, runId = null) => {
+        const params = new URLSearchParams(window.location.search);
+         if (state.incubationId) params.set("incubation_id", state.incubationId); else params.delete("incubation_id");
+        if (view === "build") params.set("view", "design"); else params.delete("view");
+        if (runId) params.set("run_id", runId); else params.delete("run_id");
+        const query = params.toString();
+        const target = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`;
+        window.history.replaceState({ view: view === "build" ? "design" : "intake", incubation_id: state.incubationId || "", run_id: runId || "" }, "", target);
+      };
+      const api = async (path, options = {}) => {
+        const response = await fetch(`${API}${path}`, { ...options, headers: { Accept: "application/json", ...(options.headers || {}) } });
+        let payload = null;
+        try { payload = await response.json(); } catch (_) { payload = null; }
+        if (!response.ok) {
+          const message = payload && payload.error && payload.error.message ? payload.error.message : `Request failed (${response.status})`;
+          const error = new Error(message); error.status = response.status; throw error;
+        }
+        return payload;
+      };
+      const setNote = (value, error = false) => { const node = $("#composer-note"); node.textContent = value || ""; node.classList.toggle("error", error); };
+      const setState = (value, label = null) => { const node = $("#intake-state"); node.dataset.state = value || "collecting"; node.textContent = label || stateLabel(value).toUpperCase(); };
+      const renderJobStatus = () => {
+        const status = state.job && state.job.status;
+        const label = status === "running" ? "ADA IS THINKING" : status === "queued" ? "ADA TURN QUEUED" : status === "done" ? "ADA TURN COMPLETE" : status === "error" ? "ADA TURN NEEDS ATTENTION" : "ADA IS LISTENING";
+        text("#job-status", label); text("#chat-state", status === "running" ? "PROCESSING" : status === "queued" ? "QUEUED" : status === "error" ? "ATTENTION" : "READY"); text("#ambient-state", status === "running" ? "PROCESSING" : status === "queued" ? "QUEUED" : "LISTENING");
+        const badge = $("#turn-state");
+        if (badge) {
+          if (status === "queued" || status === "running") {
+            badge.hidden = false;
+            const base = status === "queued" ? "QUEUED" : status === "running" && (state.job.steps || []).length ? "THINKING" : "ANSWERING";
+            const elapsed = state.turnStartedAt ? Math.max(0, Math.floor((Date.now() - state.turnStartedAt) / 1000)) : 0;
+            badge.textContent = `${base} · ${String(elapsed).padStart(2, "0")}s`;
+          } else if (status === "done" && !state.turnStartedAt) {
+            badge.hidden = false; badge.textContent = "TURN COMPLETE";
+          } else {
+            badge.hidden = true;
+          }
+        }
+      };
+      const traceSafe = (value) => String(value == null ? "" : value).replace(/https?:\/\/\S+/gi, "[url]").replace(/\b[^\s@]+@[^\s@]+\.[^\s@]+\b/g, "[contact]").replace(/\s+/g, " ").trim().slice(0, 140);
+      const renderTrace = () => {
+        const node = $("#background-trace"); const secondary = $("#background-trace-secondary");
+        renderJobStatus();
+        const lines = []; const add = (value) => { const normalized = traceSafe(value); if (normalized) lines.push(`> ${normalized}`); };
+        const job = state.job;
+        if (job) {
+          add(`job / ${job.status}`);
+          (Array.isArray(job.steps) ? job.steps : []).slice(-9).forEach((step) => add(`progress / ${step && step.text}`));
+          if (job.status === "done" && job.result && job.result.intake_revision) add(`intake / revision ${job.result.intake_revision} saved`);
+          if (job.status === "error" && job.error) add(`intake / ${job.error}`);
+        } else if (state.session) add("intake / conversation context available"); else add("intake / waiting for first detail");
+        const pendingMedia = (state.media || []).filter((item) => ["queued", "processing"].includes(item.status)).length;
+        const readyMedia = (state.media || []).filter((item) => item.status === "ready" && !item.archived).length;
+        if (pendingMedia) add(`visual / waiting for ${pendingMedia} image${pendingMedia === 1 ? "" : "s"}`); else if (readyMedia) add(`visual / ${readyMedia} reference image${readyMedia === 1 ? "" : "s"} ready`);
+        const sources = state.research && Array.isArray(state.research.sources) ? state.research.sources : [];
+        sources.slice(-2).forEach((source) => add(`research / ${source.title || source.source_id} / ${source.trust_state || "candidate"}`));
+        const findings = state.research && Array.isArray(state.research.findings) ? state.research.findings : [];
+        findings.slice(-2).forEach((finding) => add(`evidence / ${finding.summary || "finding recorded"}`));
+        const jobs = state.research && Array.isArray(state.research.jobs) ? state.research.jobs : [];
+        const activeResearchJob = jobs.find((item) => ["queued", "running"].includes(item && item.status));
+        if (activeResearchJob) add(`research / ${activeResearchJob.status}`);
+        if (state.genesis && state.genesis.current) add("memory / working direction updated");
+        if (state.run) add(`design / ${state.run.status || "working"}`);
+        const visible = lines.slice(-11);
+        const fill = (target, values) => { target.replaceChildren(); values.forEach((value) => { const line = document.createElement("span"); line.className = "trace-line"; line.textContent = value; target.append(line); }); const cursor = document.createElement("span"); cursor.className = "trace-cursor"; target.append(cursor); };
+        if (node) fill(node, visible);
+        if (secondary) fill(secondary, visible.slice().reverse().slice(0, 7));
+         syncIncubationChannels();
+         renderCognition();
+         renderTicker();
+        syncSynapseLedger();
+      };
+       // --- C: Ada's mind — a deterministic narrative feed from durable state ---
+       const mindChannelColor = (key) => { const ch = incChannels.find((item) => item.key === key); return ch ? ch.color : "#bd776a"; };
+       const atomKeyphrases = (value) => { const words = String(value || "").toLowerCase().split(/[\s._:/,-]+/).map((w) => w.replace(/[^a-z0-9#]/g, "")).filter((w) => w.length > 2 && !/^(the|and|for|avec|pour|son|les|une|des|dans|nous)$/.test(w)); return [...new Set(words)].slice(0, 16); };
+       const recordTimestamp = (item) => {
+         const value = item && (item.created_at || item.occurred_at || item.updated_at || item.created_ts || item.createdTs);
+         if (!value) return 0;
+         const numeric = Number(value);
+         if (Number.isFinite(numeric)) return numeric;
+         const parsed = Date.parse(String(value));
+         return Number.isNaN(parsed) ? 0 : parsed;
+       };
+       const readableSignal = (value) => {
+         const raw = String(value || "").replace(/^source[-_]?/i, "").replace(/^fact[-_]?/i, "").replace(/[-_]+/g, " ").replace(/\s+/g, " ").trim();
+         return raw && !/^(unknown|source)$/i.test(raw) ? raw.slice(0, 42) : "shared context";
+       };
+       const atomTypeLabel = (type) => ({ fact: "BRIEF", deduction: "DEDUCTION", finding: "FINDING", insight: "INSIGHT", source: "SOURCE", genesis: "DIRECTION", asset: "VISUAL" }[type] || "SIGNAL");
+       const isResearchType = (type) => ["finding", "insight", "deduction", "source"].includes(type);
+       const recentSteps = () => { const job = state.job; if (!job || !Array.isArray(job.steps)) return []; return job.steps.slice(-8); };
+      const buildFeedItems = () => {
+        const items = [];
+        const stamp = { now: Date.now() };
+        const add = ({ channel, label, key, confidence = 0.4, createdTs = stamp.now, refs = [] }) => { if (!label) return; items.push({ channel, label, key: key || `${channel}-${items.length}`, confidence, createdTs, refs }); };
+        const job = state.job || {};
+        if (job.status === "queued" || job.status === "running") {
+          const steps = recentSteps();
+          if (steps.length) add({ channel: "conversation", label: `Seeking the next useful step — ${String(steps[steps.length - 1] && steps[steps.length - 1].text || "").slice(0, 120)}`, key: `conversation-step-${steps[steps.length - 1] && steps[steps.length - 1].ts || String(stamp.now)}`, confidence: 0.5 });
+          else add({ channel: "conversation", label: "Taking the latest message against the working brief.", key: "conversation-working", confidence: 0.5 });
+        }
+        const session = state.session;
+        if (session && session.draft && session.draft.fields) {
+          flatten(session.draft.fields).slice(0, 14).forEach(([path, value]) => add({
+            channel: "understanding", label: `Retains — ${humanPath(path)} : ${valueLabel(value).slice(0, 160)}`, key: `fact-${path}`, confidence: 0.7, refs: atomKeyphrases(`${path} ${String(value)}`).slice(0, 8),
+          }));
+        }
+        (Array.isArray(state.deductions) ? state.deductions : []).slice(0, 8).forEach((item) => {
+          if (!item || !item.summary) return;
+          add({ channel: "research", label: `Infers — ${String(item.summary).slice(0, 220)}`, key: `deduction-${item.deduction_id || item.summary.slice(0, 40)}`, confidence: Number(item.confidence || 0.4), refs: [...atomKeyphrases(item.summary), ...(item.supports_paths || [])].slice(0, 10) });
+        });
+        const research = state.research || {};
+        (research.findings || []).slice(-8).reverse().forEach((item) => add({
+          channel: "research", label: `Reads — ${String(item.summary || "source finding").slice(0, 180)}`, key: `finding-${item.finding_id}`, confidence: Number(item.confidence || 0.35) + 0.1, refs: [...atomKeyphrases(item.summary), (item.source_id || "source")].slice(0, 10),
+        }));
+        (research.insights || []).slice(-6).reverse().forEach((item) => add({
+          channel: "research", label: `Incubates — ${String(item.summary || "insight").slice(0, 180)}`, key: `insight-${item.insight_id || item.summary.slice(0, 40)}`, confidence: Number(item.confidence || 0.4), refs: [...atomKeyphrases(item.summary), ...(item.finding_ids || [])].slice(0, 10),
+        }));
+        const genesis = state.genesis && state.genesis.current;
+        if (genesis) {
+          const principles = genesis.creative_identity && genesis.creative_identity.principles;
+          (Array.isArray(principles) ? principles : []).slice(-3).forEach((principle) => add({ channel: "genesis", label: `Retains — ${String(principle).slice(0, 180)}`, key: `genesis-${String(principle).slice(0, 40)}`, confidence: 0.5, refs: atomKeyphrases(`principle ${principle}`).slice(0, 8) }));
+          const tensions = genesis.business_world && genesis.business_world.tensions;
+          (Array.isArray(tensions) ? tensions : []).slice(-2).forEach((tension) => add({ channel: "genesis", label: `Noted tension — ${String(tension).slice(0, 180)}`, key: `tension-${String(tension).slice(0, 40)}`, confidence: 0.4, refs: atomKeyphrases(`tension ${tension}`).slice(0, 8) }));
+        }
+        (state.media || []).forEach((item) => {
+          const analysis = (item.analysis && typeof item.analysis === "object") ? item.analysis : {};
+          const desc = String(analysis.description || item.description || "").slice(0, 200);
+          const tags = (analysis.tags || item.tags || []).slice(0, 4).join(", ");
+          if (desc) add({ channel: "media", label: `Observes — ${desc}${tags ? ` · ${tags}` : ""}`, key: `media-${item.id}`, confidence: 0.6, refs: [...atomKeyphrases(desc), `asset-${item.id}`].slice(0, 10), createdTs: stamp.now });
+        });
+        (state.infusionRuns || []).slice(0, 3).forEach((run) => {
+          if (!run || run.status !== "completed") return;
+          add({ channel: "genesis", label: `Ran a background knowledge pass (${run.mode || "native"})`, key: `infusion-${run.run_id}`, confidence: 0.5, createdTs: stamp.now, refs: [] });
+        });
+        if (state.run) add({ channel: "design", label: `Draws — ${state.run.status || "working"}`, key: `run-${state.run.run_id}`, confidence: 0.5, createdTs: stamp.now, refs: [] });
+        return items.slice(0, 40);
+      };
+      const renderCognition = () => {
+        const panel = $("#ada-mind");
+        if (!panel) return;
+        const items = buildFeedItems();
+        state.mindItems = items;
+        if (!items.length) { panel.replaceChildren(); const empty = document.createElement("p"); empty.className = "mind-note"; empty.textContent = "Waiting for a first signal."; panel.append(empty); return; }
+        panel.classList.toggle("empty", false);
+        const groups = new Map();
+        items.forEach((item) => { if (!groups.has(item.channel)) groups.set(item.channel, []); groups.get(item.channel).push(item); });
+        const node = document.createElement("div");
+        node.replaceChildren();
+        groups.forEach((group, channel) => {
+          const head = document.createElement("div"); head.className = "mind-channel-head";
+          const dot = document.createElement("i"); dot.style.background = mindChannelColor(channel);
+          const name = document.createElement("span"); name.textContent = channel === "conversation" ? "Reasoning" : channel === "understanding" ? "Observing" : channel === "media" ? "Visualise" : channel === "research" ? "Researching" : channel === "genesis" ? "Incubating" : "Designing";
+          head.append(dot, name); node.append(head);
+          group.slice(0, 5).forEach((item) => {
+            const line = document.createElement("button"); line.type = "button"; line.className = "mind-line"; line.dataset.channel = channel; line.dataset.atom = item.key;
+            const atom = document.createElement("span"); atom.className = "mind-atom"; atom.style.background = mindChannelColor(channel);
+            const textEl = document.createElement("span"); textEl.className = "mind-text"; textEl.textContent = item.label;
+            line.append(atom, textEl);
+            line.addEventListener("mouseenter", () => { state.synapse.hoverKey = item.key; line.classList.add("is-active"); });
+            line.addEventListener("mouseleave", () => { state.synapse.hoverKey = null; line.classList.remove("is-active"); });
+            line.addEventListener("click", () => { showAtomDetail(item); });
+            node.append(line);
+          });
+        });
+         panel.replaceChildren(node);
+       };
+       const showAtomDetail = (item) => {
+        if (!item) return;
+        const drawer = $("#debug-drawer");
+        if (drawer) setDebugOpen(true);
+        const detail = $("#activity-detail");
+        if (detail) {
+          detail.replaceChildren();
+          const strong = document.createElement("strong"); strong.textContent = item.label;
+          const small = document.createElement("small"); small.textContent = `${String(item.channel).toUpperCase()} / confidence ${Math.round(Number(item.confidence || 0) * 100)}%`;
+          detail.append(strong, small);
+          detail.hidden = false;
+        }
+      };
+      const leadThought = () => {
+        const items = (state.mindItems || []).slice();
+        const job = state.job;
+        if (job && ["queued", "running"].includes(job.status)) {
+          const steps = recentSteps();
+          if (steps.length) return String(steps[steps.length - 1].text || "Thinking through the next steps.").slice(0, 120);
+          return "Thinking through the next steps.";
+        }
+        if (items.length) {
+          const sorted = items.slice().sort((a, b) => (Number(b.createdTs) - Number(a.createdTs)));
+          return sorted[0].label.slice(0, 120);
+        }
+        return "Listening for the first detail.";
+      };
+      const renderTicker = () => {
+        const ticker = $("#ada-ticker");
+        if (!ticker) return;
+        const textEl = ticker.querySelector("span:last-child");
+        if (textEl) textEl.textContent = leadThought();
+        ticker.dataset.live = (state.job && ["queued", "running"].includes(state.job.status)) ? "true" : "false";
+        const narrow = window.matchMedia("(max-width: 680px)").matches;
+        ticker.style.display = (narrow || !state.mind.open) ? "flex" : "none";
+      };
+      const startMindIdle = () => {
+        if (state.mind.idleTimer) window.clearTimeout(state.mind.idleTimer);
+        state.mind.idleTimer = window.setTimeout(() => {
+          if (!state.mind.open) return;
+          setMindOpen(false);
+        }, 8000);
+      };
+      const setMindOpen = (open) => {
+        state.mind.open = Boolean(open);
+        const panel = $("#ada-mind"); const toggle = $("#ada-mind-toggle");
+        if (panel) {
+          panel.hidden = !state.mind.open;
+          if (state.mind.open && gsapReady() && !reduceMotion && panel.dataset.mindShown !== "1") {
+            panel.dataset.mindShown = "1";
+            gsap.fromTo(panel, { opacity: 0, y: 14, scale: .99 }, { opacity: 1, y: 0, scale: 1, duration: .6, ease: "power2.out" });
+          }
+          if (!state.mind.open && gsapReady() && !reduceMotion) gsap.killTweensOf(panel);
+        }
+        if (toggle) {
+          toggle.setAttribute("aria-expanded", String(state.mind.open));
+          toggle.title = state.mind.open ? "Close Ada's mind" : "Open Ada's mind";
+        }
+        renderTicker();
+      };
+      // --- C5: the synapse field — Ada's core breathes while she listens, and every
+      // new thought is born at the core and thrown out to its place in the mind ---
+      const synapseChannel = (channel) => mindChannelColor(channel);
+      const buildSynapseAtoms = () => {
+        const atoms = [];
+        const seen = new Set();
+        const add = (atom) => {
+          if (seen.has(atom.key) || atoms.length >= 140) return;
+          seen.add(atom.key);
+          atom.refs = [...new Set((atom.refs || []).map((r) => String(r).toLowerCase()))].slice(0, 12);
+          atoms.push(atom);
+        };
+         const session = state.session;
+         if (session && session.draft && session.draft.fields) {
+           flatten(session.draft.fields).slice(0, 16).forEach(([path, value]) => add({
+             key: `fact-${path}`, type: "fact", channel: "understanding", label: `Retains — ${humanPath(path)}: ${valueLabel(value).slice(0, 230)}`,
+             meta: "owner brief / confirmed context", confidence: 0.7, createdTs: 0, refs: atomKeyphrases(`${path} ${String(value)}`).slice(0, 10),
+           }));
+         }
+        (Array.isArray(state.deductions) ? state.deductions : []).slice(0, 30).forEach((item, index) => {
+           if (!item || !item.summary) return;
+           add({ key: `deduction-${item.deduction_id || item.summary.slice(0, 40)}`, type: "deduction", channel: "research", label: `Infers — ${String(item.summary).slice(0, 260)}`, meta: `Ada's synthesis / confidence ${Math.round(Number(item.confidence || 0.4) * 100)}%`, confidence: Number(item.confidence || 0.4), createdTs: recordTimestamp(item) || index, refs: [...atomKeyphrases(item.summary), ...(item.supports_paths || []), ...(item.source_refs || []).map((ref) => `source-${ref}`)].slice(0, 12) });
+         });
+         const research = state.research || {};
+        (research.findings || []).slice(-30).forEach((item, index) => add({
+           key: `finding-${item.finding_id}`, type: "finding", channel: "research", label: `Reads — ${String(item.summary || "finding").slice(0, 250)}`, meta: `${item.source_id || "public source"} / confidence ${Math.round((Number(item.confidence || 0.35) + 0.1) * 100)}%`, confidence: Number(item.confidence || 0.35) + 0.1, createdTs: recordTimestamp(item) || index,
+          refs: [...atomKeyphrases(item.summary), `finding-${item.finding_id}`, (item.source_id || "source_unknown"), `source-${item.source_id || "unknown"}`].slice(0, 12),
+         }));
+         (research.insights || []).slice(-20).forEach((item, index) => add({
+           key: `insight-${item.insight_id || item.summary.slice(0, 40)}`, type: "insight", channel: "research", label: `Incubates — ${String(item.summary || "insight").slice(0, 250)}`, meta: `${item.kind || "evidence-linked interpretation"} / confidence ${Math.round(Number(item.confidence || 0.4) * 100)}%`, confidence: Number(item.confidence || 0.4), createdTs: recordTimestamp(item) || index,
+           refs: [...atomKeyphrases(item.summary), ...(item.finding_ids || []).map((id) => `finding-${id}`), ...(item.supports_paths || [])].slice(0, 12),
+         }));
+        (research.sources || []).slice(-12).forEach((item, index) => add({
+          key: `source-${item.source_id || item.title || index}`, type: "source", channel: "research", label: `Source — ${String(item.title || item.source_id || "public source").slice(0, 220)}`, meta: `${item.trust_state || "candidate"} / research source`, confidence: item.trust_state === "allowed" ? 0.7 : 0.35, createdTs: recordTimestamp(item) || index,
+          refs: [...atomKeyphrases(item.title), String(item.source_id || "source_unknown"), `source-${item.source_id || "unknown"}`].slice(0, 12),
+        }));
+        const genesis = state.genesis && state.genesis.current;
+        if (genesis) {
+           (Array.isArray(genesis.creative_identity && genesis.creative_identity.principles) ? genesis.creative_identity.principles : []).slice(-6).forEach((principle) => add({
+             key: `genesis-${String(principle).slice(0, 40)}`, type: "genesis", channel: "genesis", label: `Direction — ${String(principle).slice(0, 260)}`, meta: "working direction / genesis", confidence: 0.5, createdTs: recordTimestamp(genesis), refs: atomKeyphrases(`principle ${principle}`).slice(0, 10),
+           }));
+           const purpose = genesis.business_world && genesis.business_world.purpose;
+           if (purpose) add({ key: "genesis-purpose", type: "genesis", channel: "genesis", label: `Purpose — ${String(purpose).slice(0, 260)}`, meta: "working direction / purpose", confidence: 0.6, createdTs: recordTimestamp(genesis), refs: atomKeyphrases(`purpose ${purpose}`).slice(0, 10) });
+         }
+        (state.media || []).forEach((item) => {
+          const analysis = (item.analysis && typeof item.analysis === "object") ? item.analysis : {};
+          const desc = String(analysis.description || item.description || "").slice(0, 200);
+           if (desc) add({ key: `asset-${item.id}`, type: "asset", channel: "media", label: `Observes — ${String(item.name || `Image ${item.id}`).slice(0, 120)}`, meta: "reference image / visual signal", confidence: 0.55, createdTs: recordTimestamp(item), refs: [...atomKeyphrases(desc), `asset-${item.id}`].slice(0, 10) });
+        });
+        return atoms;
+      };
+       const edgeMeaning = (a, b, sharedRefs) => {
+         const sharedSource = sharedRefs.find((ref) => ref.startsWith("source-") && !ref.endsWith("unknown"));
+         if (sharedSource) {
+           const sourceId = sharedSource.slice("source-".length);
+           const source = (state.research && state.research.sources || []).find((item) => String(item && item.source_id || "").toLowerCase() === sourceId);
+           return `same source / ${source && (source.title || source.url) || readableSignal(sharedSource)}`;
+         }
+         if ((a.type === "finding" && b.type === "insight") || (a.type === "insight" && b.type === "finding")) return "evidence chain / finding to insight";
+         if (isResearchType(a.type) !== isResearchType(b.type)) return `research meets brief / ${readableSignal(sharedRefs[0])}`;
+         return `shared context / ${readableSignal(sharedRefs[0])}`;
+       };
+       const matchSynapseEdges = (atoms) => {
+         const edges = [];
+         for (let i = 0; i < atoms.length; i++) {
+           const a = atoms[i];
+           const neighborScores = [];
+          for (let j = i + 1; j < atoms.length; j++) {
+             const b = atoms[j];
+             const intersection = a.refs.filter((ref) => b.refs.includes(ref));
+             if (!intersection.length) continue;
+             const strength = Math.min(1, 0.25 + intersection.length * 0.3 + (a.type === b.type ? 0.1 : 0));
+             neighborScores.push([b, strength, intersection]);
+           }
+           neighborScores.sort((x, y) => y[1] - x[1]);
+           neighborScores.slice(0, 6).forEach(([b, strength, sharedRefs]) => {
+             edges.push({ a: a.key, b: b.key, strength, via: sharedRefs[0], sharedRefs, semantic: edgeMeaning(a, b, sharedRefs), born: Date.now(), glow: 0 });
+           });
+         }
+         return edges.slice(0, 220);
+       };
+       const synapseLedgerSignature = () => {
+         const atoms = buildSynapseAtoms();
+         return atoms.map((a) => `${a.key}:${a.label}:${(a.refs || []).join("|")}`).join(",");
+      };
+      const syncSynapseLedger = () => {
+        const wasEmpty = state.synapse.signature === "";
+        const signature = synapseLedgerSignature();
+        if (signature === state.synapse.signature && state.synapse.ready) { return; }
+        state.synapse.signature = signature;
+        if (state.synapse._bootAt == null) state.synapse._bootAt = performance.now();
+        const bootAt = state.synapse._bootAt;
+        const atoms = buildSynapseAtoms();
+        // The first build is a REPLAY: thoughts never all show at once — each
+        // one is BORN at the core on its own beat (spawned outward), and each
+        // connection forms separately.
+        state.synapse.edges = matchSynapseEdges(atoms);
+        state.synapse.edges.forEach((edge, i) => {
+          if (wasEmpty) edge._formAt = bootAt + 1500 + (i / Math.max(1, state.synapse.edges.length)) * 4200;
+          if (edge._formAt == null) edge._formAt = performance.now();
+        });
+        const newAtoms = [];
+        atoms.forEach((atom, i) => {
+          const existing = state.synapse.atoms.find((a) => a.key === atom.key);
+          if (existing) { Object.assign(existing, atom); newAtoms.push(existing); }
+          else {
+            // Every new thought births at the core: it flies out to its home
+            // while it grows, so the owner literally sees the thought appear.
+            const spawnAt = wasEmpty
+              ? bootAt + 700 + i * 620
+              : performance.now();
+            Object.assign(atom, { x: null, y: null, vx: 0, vy: 0, born: Date.now(), radius: 0, _spawnAt: spawnAt });
+            newAtoms.push(atom);
+          }
+        });
+        state.synapse.atoms = newAtoms;
+         let addedEdges = 0;
+         state.synapse.edges.forEach((edge) => { if (!edge._seen) { edge._seen = true; addedEdges++; } });
+         initSynapseCanvas();
+         if (!reduceMotion && addedEdges > 0 && addedEdges <= 6) state.synapse.edges.slice(-addedEdges).forEach((edge) => impulseSynapse(edge.a, edge.b, edge));
+       };
+        const orbitalFrame = (w, h) => {
+          const wide = w >= 1120;
+          const guideR = wide ? Math.min(270, h * 0.30, w * 0.19) : Math.min(205, h * 0.26, w * 0.36);
+          return {
+            cx: wide ? w * 0.67 : w * 0.5,
+            cy: h * 0.47,
+            innerR: guideR * 0.35,
+            outerR: guideR * 0.70,
+            guideR,
+          };
+        };
+        const orbitalSlotAngles = [0.22, 1.79, 3.36, 4.93, 0.61, 1.39, 2.18, 2.96, 3.75, 4.53, 5.32, 6.10];
+        const placeAtom = (atom, w, h) => {
+          if (atom._placed) return;
+          atom._placed = true;
+          let seed = 0;
+          for (const ch of atom.key || "x") seed = (seed * 31 + (ch.charCodeAt(0) || 0)) >>> 0;
+          atom._slotHint = seed % orbitalSlotAngles.length;
+          atom._seed = (seed % 1000) / 1000 * Math.PI * 2;
+          const { cx, cy } = orbitalFrame(w, h);
+          atom.x = cx;
+          atom.y = cy;
+        };
+        const selectOrbitalAtoms = (atoms) => {
+          const ranked = atoms.filter((atom) => !atom.latent && atom.label).slice().sort((a, b) => Number(b.createdTs || b.born || 0) - Number(a.createdTs || a.born || 0) || String(a.key).localeCompare(String(b.key)));
+          const selected = [];
+          const take = (predicate, limit) => ranked.filter((atom) => predicate(atom) && !selected.includes(atom)).slice(0, limit).forEach((atom) => selected.push(atom));
+          // Research is the interesting part of the field: reserve room for it
+          // before filling the remaining slots with the brief and visual memory.
+          take((atom) => isResearchType(atom.type), 6);
+          take((atom) => ["genesis", "asset"].includes(atom.type), 2);
+          take((atom) => atom.type === "fact", 4);
+          ranked.forEach((atom) => { if (selected.length < 12 && !selected.includes(atom)) selected.push(atom); });
+          return selected.slice(0, 12);
+        };
+        const syncOrbitalSlots = (atoms) => {
+          const visible = selectOrbitalAtoms(atoms);
+          const used = new Set();
+          visible.forEach((atom, index) => {
+            let slot = Number.isInteger(atom._orbitSlot) ? atom._orbitSlot : (atom._slotHint + index) % orbitalSlotAngles.length;
+            while (used.has(slot)) slot = (slot + 1) % orbitalSlotAngles.length;
+            atom._orbitSlot = slot;
+            atom._visible = true;
+            used.add(slot);
+          });
+          atoms.forEach((atom) => { if (!visible.includes(atom)) atom._visible = false; });
+          return visible;
+        };
+      const impulseSynapse = (aKey, bKey, connection = null) => {
+         const atoms = state.synapse.atoms;
+         const a = atoms.find((item) => item.key === aKey); const b = atoms.find((item) => item.key === bKey);
+         const edge = connection || state.synapse.edges.find((item) => (item.a === aKey && item.b === bKey) || (item.a === bKey && item.b === aKey));
+         if (!a || !b || !edge || !edge.semantic || a.x === null || b.x === null || !a._visible || !b._visible) return;
+         state.synapse.impulses.push({ a, b, edge, semantic: edge.semantic, start: performance.now(), color: synapseChannel(a.channel) });
+         if (state.synapse.impulses.length > 4) state.synapse.impulses.splice(0, state.synapse.impulses.length - 4);
+       };
+      const initSynapseCanvas = () => {
+        const el = document.getElementById("incubation-canvas");
+        if (!el) return;
+        if (state.synapse.ready) return;
+        state.synapse.ready = true;
+        if (incState && incState.raf) { window.cancelAnimationFrame(incState.raf); incState.raf = 0; }
+        if (reduceMotion) { drawStaticSynapse(el); return; }
+        const ctx = el.getContext("2d");
+        let w = 0, h = 0;
+        const resize = () => { w = el.clientWidth || 1; h = el.clientHeight || 1; const dpr = Math.min(2, window.devicePixelRatio || 1); el.width = w * dpr; el.height = h * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0); };
+        resize(); window.addEventListener("resize", resize);
+        const hitAtom = (px, py) => {
+          let best = null, bestD = 14;
+          for (const atom of state.synapse.atoms) {
+            if (!atom._visible || atom.x === null || atom.y === null) continue;
+            const distance = Math.hypot(px - atom.x, py - atom.y) - (atom.radius || 2.5);
+            if (distance < bestD) { bestD = distance; best = atom; }
+          }
+          return best ? best.key : null;
+        };
+        const onPointer = (ev) => {
+          const rect = el.getBoundingClientRect();
+          if (!rect.width || !rect.height) return;
+          const px = (ev.clientX - rect.left) / rect.width * w;
+          const py = (ev.clientY - rect.top) / rect.height * h;
+          state.synapse.hoverKey = hitAtom(px, py) || null;
+        };
+        el.addEventListener("pointermove", onPointer);
+        el.addEventListener("pointerleave", () => { state.synapse.hoverKey = null; });
+        const loop = (now) => {
+          state.synapse.raf = window.requestAnimationFrame(loop);
+          if (document.hidden) return;
+          state.synapse.t0 = state.synapse.t0 || now;
+          const t = (now - state.synapse.t0) / 1000;
+          const atoms = state.synapse.atoms;
+          atoms.forEach((atom) => placeAtom(atom, w, h));
+          physicsStep(atoms, w, h, t);
+           // Thought birth is a quiet radial move from the core to a stable slot.
+           const { cx: cgx, cy: cgy } = orbitalFrame(w, h);
+          let birthing = 0;
+          atoms.forEach((atom) => {
+             if (atom._spawnAt == null || !atom._visible) return;
+             const p = Math.min(1, Math.max(0, (now - atom._spawnAt) / 700));
+            if (p >= 1) { atom._spawnAt = null; return; }
+            const e = 1 - Math.pow(1 - p, 3);
+             // Birth flight: from the core to the atom's stable orbital slot.
+            const tx = atom._px != null ? atom._px : cgx;
+            const ty = atom._py != null ? atom._py : cgy;
+            atom.x = cgx + (tx - cgx) * e;
+            atom.y = cgy + (ty - cgy) * e;
+            atom._birthP = p;
+            birthing += 1;
+          });
+          if (!birthing) atoms.forEach((atom) => { atom._birthP = null; });
+          drawSynapse(ctx, atoms, w, h, t, now);
+          maybeAttentionWave(now);
+          maybeIdleFlicker(now, atoms);
+        };
+        state.synapse.raf = window.requestAnimationFrame(loop);
+      };
+       const physicsStep = (atoms, w, h, t) => {
+         const frame = orbitalFrame(w, h);
+         const visible = syncOrbitalSlots(atoms);
+         const orbitTurn = t * Math.PI * 2 / 56;
+         visible.forEach((atom) => {
+           const inner = atom._orbitSlot < 4;
+           const ring = inner ? frame.innerR : frame.outerR;
+           const angle = orbitalSlotAngles[atom._orbitSlot] + (inner ? 0 : orbitTurn);
+           atom._ring = inner ? "inner" : "outer";
+           atom._angle = angle;
+           atom._px = frame.cx + Math.cos(angle) * ring;
+           atom._py = frame.cy + Math.sin(angle) * ring;
+           atom.x = atom._px;
+           atom.y = atom._py;
+           atom.radius = inner ? 4.4 : 3.5;
+           atom._breath = 1 + 0.08 * Math.sin(t * 1.3 + (atom._seed || 0));
+         });
+         atoms.filter((atom) => !atom._visible).forEach((atom) => { atom.x = frame.cx; atom.y = frame.cy; atom.radius = 0; });
+       };
+       const drawOrbitalField = (ctx, w, h, t) => {
+         const { cx, cy, innerR, outerR, guideR } = orbitalFrame(w, h);
+         const glow = ctx.createRadialGradient(cx, cy, 0, cx, cy, guideR * 1.1);
+         glow.addColorStop(0, "rgba(231,92,72,.09)");
+         glow.addColorStop(0.55, "rgba(231,92,72,.025)");
+         glow.addColorStop(1, "rgba(231,92,72,0)");
+         ctx.fillStyle = glow;
+         ctx.beginPath(); ctx.arc(cx, cy, guideR * 1.1, 0, Math.PI * 2); ctx.fill();
+         ctx.lineWidth = 1;
+         ctx.strokeStyle = "rgba(189,119,106,.13)";
+         ctx.beginPath(); ctx.arc(cx, cy, guideR, 0, Math.PI * 2); ctx.stroke();
+         ctx.strokeStyle = "rgba(189,119,106,.10)";
+         ctx.beginPath(); ctx.arc(cx, cy, outerR, 0, Math.PI * 2); ctx.stroke();
+         ctx.strokeStyle = "rgba(189,119,106,.08)";
+         ctx.beginPath(); ctx.arc(cx, cy, innerR, 0, Math.PI * 2); ctx.stroke();
+         ctx.setLineDash([22, 120]);
+         ctx.lineDashOffset = -t * 4;
+         ctx.strokeStyle = "rgba(231,92,72,.34)";
+         ctx.beginPath(); ctx.arc(cx, cy, outerR, 0, Math.PI * 2); ctx.stroke();
+         ctx.setLineDash([]);
+         ctx.lineDashOffset = 0;
+         ctx.fillStyle = "rgba(231,92,72,.28)";
+         const markerAngle = t * Math.PI * 2 / 56;
+         ctx.beginPath(); ctx.arc(cx + Math.cos(markerAngle) * guideR, cy + Math.sin(markerAngle) * guideR, 2, 0, Math.PI * 2); ctx.fill();
+       };
+       const quadPoint = (a, b, progress) => {
+         const mx = (a.x + b.x) / 2 + (b.y - a.y) * 0.12;
+         const my = (a.y + b.y) / 2 - (b.x - a.x) * 0.12;
+         const rest = 1 - progress;
+         return { x: rest * rest * a.x + 2 * rest * progress * mx + progress * progress * b.x, y: rest * rest * a.y + 2 * rest * progress * my + progress * progress * b.y };
+       };
+       const wrapCompleteLines = (ctx, text, maxWidth) => {
+         const words = String(text || "").split(/\s+/).filter(Boolean);
+         const lines = []; let line = "";
+         words.forEach((word) => {
+           if (ctx.measureText(word).width > maxWidth) {
+             if (line) { lines.push(line); line = ""; }
+             let chunk = "";
+             for (const character of word) {
+               const test = chunk + character;
+               if (chunk && ctx.measureText(test).width > maxWidth) { lines.push(chunk); chunk = character; }
+               else chunk = test;
+             }
+             line = chunk;
+             return;
+           }
+           const test = line ? `${line} ${word}` : word;
+           if (line && ctx.measureText(test).width > maxWidth) { lines.push(line); line = word; }
+           else line = test;
+         });
+         if (line) lines.push(line);
+         return lines;
+       };
+       const drawOrbitalSignal = (ctx, edge, progress, color) => {
+         if (!edge || !edge.a || !edge.b || edge.a.x === null || edge.b.x === null) return;
+         const head = quadPoint(edge.a, edge.b, progress);
+         ctx.strokeStyle = "rgba(120,82,74,.24)";
+         ctx.lineWidth = 1;
+         ctx.beginPath(); ctx.moveTo(edge.a.x, edge.a.y); ctx.lineTo(edge.b.x, edge.b.y); ctx.stroke();
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 1.4;
+          ctx.beginPath(); ctx.moveTo(edge.a.x, edge.a.y); ctx.lineTo(head.x, head.y); ctx.stroke();
+          ctx.fillStyle = "rgba(255,214,196,.98)";
+          ctx.beginPath(); ctx.arc(head.x, head.y, 2.8, 0, Math.PI * 2); ctx.fill();
+          const semantic = String(edge.semantic || "").slice(0, 48);
+          if (semantic && progress > 0.38) {
+            ctx.font = "8px monospace";
+            const labelW = Math.min(210, ctx.measureText(semantic).width + 12);
+            const labelPoint = quadPoint(edge.a, edge.b, Math.min(.72, Math.max(.42, progress)));
+            const labelX = labelPoint.x - labelW / 2;
+            const labelY = labelPoint.y - 15;
+            ctx.fillStyle = "rgba(255, 252, 250, .94)";
+            ctx.fillRect(labelX, labelY, labelW, 15);
+            ctx.strokeStyle = "rgba(231,92,72,.28)";
+            ctx.lineWidth = 1;
+            ctx.strokeRect(labelX, labelY, labelW, 15);
+            ctx.fillStyle = "rgba(58,47,43,.82)";
+            ctx.fillText(semantic, labelX + 6, labelY + 10);
+          }
+        };
+        const drawOrbitalConnection = (ctx, edge) => {
+          if (!edge || !edge.a || !edge.b || edge.a.x === null || edge.b.x === null || !edge.semantic) return;
+          ctx.save();
+          ctx.setLineDash([3, 5]);
+          ctx.strokeStyle = "rgba(120,82,74,.20)";
+          ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.moveTo(edge.a.x, edge.a.y); ctx.lineTo(edge.b.x, edge.b.y); ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.fillStyle = "rgba(231,92,72,.52)";
+          [edge.a, edge.b].forEach((atom) => { ctx.beginPath(); ctx.arc(atom.x, atom.y, 1.8, 0, Math.PI * 2); ctx.fill(); });
+          ctx.font = "8px monospace";
+          const semantic = String(edge.semantic).slice(0, 48);
+          const labelW = Math.min(210, ctx.measureText(semantic).width + 12);
+          const labelPoint = quadPoint(edge.a, edge.b, .52);
+          const labelX = labelPoint.x - labelW / 2;
+          const labelY = labelPoint.y + 5;
+          ctx.fillStyle = "rgba(255, 252, 250, .88)";
+          ctx.fillRect(labelX, labelY, labelW, 15);
+          ctx.strokeStyle = "rgba(189,119,106,.22)";
+          ctx.strokeRect(labelX, labelY, labelW, 15);
+          ctx.fillStyle = "rgba(58,47,43,.72)";
+          ctx.fillText(semantic, labelX + 6, labelY + 10);
+          ctx.restore();
+        };
+        const orbitalCalloutSlots = (frame, w) => {
+         const boxW = 218;
+         const rightX = Math.min(frame.cx + frame.guideR + 26, w - boxW - 20);
+         if (w < 1280) return [
+           { x: rightX, y: frame.cy - frame.guideR * 0.72, w: boxW, side: "left" },
+           { x: rightX, y: frame.cy + frame.guideR * 0.20, w: boxW, side: "left" },
+         ];
+         return [
+           { x: frame.cx - frame.guideR - 188, y: frame.cy - frame.guideR * 0.70, w: boxW, side: "right" },
+           { x: rightX, y: frame.cy - frame.guideR * 0.76, w: boxW, side: "left" },
+           { x: rightX, y: frame.cy + frame.guideR * 0.20, w: boxW, side: "left" },
+         ];
+       };
+       const drawOrbitalCallouts = (ctx, atoms, w, h, now, staticMode = false) => {
+         if (w <= 1000) return;
+         const frame = orbitalFrame(w, h);
+         const slots = orbitalCalloutSlots(frame, w);
+         const hover = state.synapse.hoverKey;
+          const calloutScore = (atom) => ({ insight: 6, finding: 5, deduction: 4, source: 4, genesis: 3, asset: 2, fact: 1 }[atom.type] || 0);
+          const candidates = atoms.filter((atom) => atom._visible && atom.label && !atom.latent).sort((a, b) => {
+            if (a.key === hover) return -1;
+            if (b.key === hover) return 1;
+            return calloutScore(b) - calloutScore(a) || Number(b.createdTs || 0) - Number(a.createdTs || 0) || (a._orbitSlot || 0) - (b._orbitSlot || 0);
+          }).slice(0, slots.length);
+          candidates.forEach((atom, index) => {
+            const slot = slots[index];
+            ctx.font = "10px monospace";
+            const lines = wrapCompleteLines(ctx, atom.label, slot.w - 16);
+            if (!lines.length) return;
+            const visibleLines = lines.length > 4 ? [...lines.slice(0, 3), `${lines[3].slice(0, Math.max(1, lines[3].length - 1))}…`] : lines;
+            const boxH = visibleLines.length * 12 + 28;
+            const x = Math.max(8, Math.min(slot.x, w - slot.w - 8));
+            const y = Math.max(78, Math.min(slot.y, h - boxH - 18));
+           if (atom._calloutAt == null) atom._calloutAt = now;
+           const appear = staticMode ? 1 : Math.min(1, Math.max(0, (now - atom._calloutAt) / 220));
+           const active = atom.key === hover;
+           ctx.globalAlpha = appear * (active ? 1 : 0.88);
+           ctx.strokeStyle = active ? "rgba(231,92,72,.58)" : "rgba(231,92,72,.24)";
+           ctx.lineWidth = 1;
+           ctx.beginPath(); ctx.moveTo(atom.x, atom.y); ctx.lineTo(slot.side === "left" ? x : x + slot.w, y + boxH * 0.5); ctx.stroke();
+           ctx.fillStyle = active ? "rgba(255,249,246,.96)" : "rgba(255,255,255,.82)";
+            ctx.fillRect(x, y, slot.w, boxH);
+            ctx.strokeStyle = active ? "rgba(231,92,72,.58)" : "rgba(231,92,72,.22)";
+            ctx.strokeRect(x, y, slot.w, boxH);
+            ctx.font = "8px monospace";
+            ctx.fillStyle = active ? "#e75c48" : "rgba(189,119,106,.95)";
+            ctx.fillText(atomTypeLabel(atom.type), x + 8, y + 11);
+            ctx.font = "10px monospace";
+            ctx.fillStyle = active ? "#3a2f2b" : "rgba(58,47,43,.80)";
+            visibleLines.forEach((line, lineIndex) => ctx.fillText(line, x + 8, y + 24 + lineIndex * 12));
+            ctx.globalAlpha = 1;
+         });
+       };
+        const drawOrbitalCore = (ctx, frame, t, coreAlpha, coreScale, idle, staticMode = false) => {
+          const beat = staticMode ? 0.5 : 0.5 + 0.5 * Math.sin(t * Math.PI * 2 / 4.8);
+          const coreR = (idle ? 34 + 5 * beat : 32 + 4 * beat) * coreScale;
+          const shellR = coreR + 8 * coreScale;
+          const pulseR = coreR + (18 + 8 * beat) * coreScale;
+          const haloR = (idle ? 112 + 14 * beat : 98 + 10 * beat) * coreScale;
+          ctx.save();
+          ctx.globalAlpha = coreAlpha;
+          const halo = ctx.createRadialGradient(frame.cx, frame.cy, coreR * 0.2, frame.cx, frame.cy, haloR);
+          halo.addColorStop(0, "rgba(169,36,31,.30)");
+          halo.addColorStop(0.32, "rgba(204,55,43,.14)");
+          halo.addColorStop(1, "rgba(204,55,43,0)");
+          ctx.fillStyle = halo;
+          ctx.beginPath(); ctx.arc(frame.cx, frame.cy, haloR, 0, Math.PI * 2); ctx.fill();
+          ctx.strokeStyle = `rgba(198,48,40,${0.18 + beat * 0.20})`;
+          ctx.lineWidth = 1.4;
+          ctx.beginPath(); ctx.arc(frame.cx, frame.cy, pulseR, 0, Math.PI * 2); ctx.stroke();
+          ctx.strokeStyle = `rgba(235,91,70,${0.24 + beat * 0.20})`;
+          ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.arc(frame.cx, frame.cy, coreR + 7 * coreScale, 0, Math.PI * 2); ctx.stroke();
+          const shell = ctx.createRadialGradient(frame.cx - shellR * 0.34, frame.cy - shellR * 0.42, shellR * 0.08, frame.cx, frame.cy, shellR);
+          shell.addColorStop(0, "rgba(255,145,115,.98)");
+          shell.addColorStop(0.28, "rgba(232,83,64,.98)");
+          shell.addColorStop(0.72, "rgba(174,39,34,.98)");
+          shell.addColorStop(1, "rgba(91,21,25,.98)");
+          ctx.fillStyle = shell;
+          ctx.beginPath(); ctx.arc(frame.cx, frame.cy, shellR, 0, Math.PI * 2); ctx.fill();
+          ctx.strokeStyle = "rgba(255,183,157,.72)";
+          ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.arc(frame.cx, frame.cy, shellR - 2 * coreScale, 0, Math.PI * 2); ctx.stroke();
+          const hotR = coreR * 0.68;
+          const hot = ctx.createRadialGradient(frame.cx - hotR * 0.28, frame.cy - hotR * 0.32, hotR * 0.05, frame.cx, frame.cy, hotR);
+          hot.addColorStop(0, "rgba(255,184,157,.98)");
+          hot.addColorStop(0.3, "rgba(248,104,79,.98)");
+          hot.addColorStop(1, "rgba(155,31,31,.98)");
+          ctx.fillStyle = hot;
+          ctx.beginPath(); ctx.arc(frame.cx, frame.cy, hotR, 0, Math.PI * 2); ctx.fill();
+          ctx.strokeStyle = "rgba(255,213,195,.70)";
+          ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.arc(frame.cx, frame.cy, hotR * 0.82, 0, Math.PI * 2); ctx.stroke();
+          ctx.fillStyle = "rgba(255,248,244,.98)";
+          ctx.font = "600 12px monospace";
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText("ADA", frame.cx, frame.cy);
+          ctx.restore();
+        };
+        const drawSynapse = (ctx, atoms, w, h, t, now, staticMode = false) => {
+         ctx.clearRect(0, 0, w, h);
+         const frame = orbitalFrame(w, h);
+         const visible = atoms.filter((atom) => atom._visible);
+         const hover = state.synapse.hoverKey;
+         const activeImpulse = staticMode ? null : state.synapse.impulses.filter((impulse) => now - impulse.start < 1200).slice(-1)[0];
+         drawOrbitalField(ctx, w, h, t);
+          const idle = visible.length === 0;
+          const coreScale = staticMode ? 1 : state.synapse.birthAt ? Math.max(0.001, 1 - Math.pow(1 - Math.min(1, ((now - state.synapse.birthAt) / 3000) * 1.5), 3)) : 1;
+          const coreAlpha = staticMode ? 1 : coreScale;
+          drawOrbitalCore(ctx, frame, t, coreAlpha, coreScale, idle, staticMode);
+          const visibleKeys = new Set(visible.map((atom) => atom.key));
+          const featured = state.synapse.edges
+            .map((edge) => ({ edge, a: atoms.find((atom) => atom.key === edge.a), b: atoms.find((atom) => atom.key === edge.b) }))
+            .filter((item) => item.edge.semantic && item.a && item.b && visibleKeys.has(item.a.key) && visibleKeys.has(item.b.key))
+            .sort((left, right) => Number(right.edge.strength || 0) - Number(left.edge.strength || 0))[0];
+          if (featured) drawOrbitalConnection(ctx, { ...featured.edge, a: featured.a, b: featured.b });
+          if (activeImpulse && visibleKeys.has(activeImpulse.a.key) && visibleKeys.has(activeImpulse.b.key)) {
+            drawOrbitalSignal(ctx, { ...activeImpulse.edge, a: activeImpulse.a, b: activeImpulse.b, semantic: activeImpulse.semantic }, Math.min(1, Math.max(0, (now - activeImpulse.start) / 1200)), activeImpulse.color);
+         } else if (!staticMode) {
+           const forming = state.synapse.edges
+             .filter((edge) => edge._formAt != null && now >= edge._formAt && now < edge._formAt + 900)
+             .map((edge) => ({ edge, a: atoms.find((atom) => atom.key === edge.a), b: atoms.find((atom) => atom.key === edge.b) }))
+             .find((item) => item.a && item.b && item.a._visible && item.b._visible);
+            if (forming) drawOrbitalSignal(ctx, { ...forming.edge, a: forming.a, b: forming.b }, Math.min(1, Math.max(0, (now - forming.edge._formAt) / 900)), synapseChannel(forming.a.channel));
+         }
+         const colorStyle = (channel) => { const channelInfo = incChannels.find((item) => item.key === channel); return channelInfo ? channelInfo.color : "#bd776a"; };
+         visible.forEach((atom) => {
+           const active = atom.key === hover || Boolean(activeImpulse && (activeImpulse.a.key === atom.key || activeImpulse.b.key === atom.key));
+           const birthP = atom._birthP != null ? atom._birthP : 1;
+           const newborn = atom.born && now - atom.born < 900 ? 1 - (now - atom.born) / 900 : 0;
+           const radius = (atom.radius || 3.5) * (atom._breath || 1) * (0.35 + 0.65 * birthP);
+           const color = colorStyle(atom.channel);
+           ctx.globalAlpha = active ? 1 : 0.72;
+           ctx.fillStyle = color;
+           ctx.beginPath(); ctx.arc(atom.x, atom.y, active ? radius + 2 : radius, 0, Math.PI * 2); ctx.fill();
+           if (active || newborn > 0 || atom._ring === "inner") {
+             ctx.globalAlpha = active ? 0.65 : newborn > 0 ? newborn * 0.55 : 0.16;
+             ctx.strokeStyle = color; ctx.lineWidth = 1;
+             ctx.beginPath(); ctx.arc(atom.x, atom.y, radius + (active ? 6 : 4), 0, Math.PI * 2); ctx.stroke();
+           }
+           ctx.globalAlpha = 1;
+         });
+         state.synapse.waves.forEach((wave) => { wave.r += 0.7; wave.a *= 0.96; if (wave.a < 0.01) return; ctx.strokeStyle = wave.color; ctx.globalAlpha = Math.max(0, wave.a); ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(wave.x, wave.y, wave.r, 0, Math.PI * 2); ctx.stroke(); ctx.globalAlpha = 1; });
+         state.synapse.waves = state.synapse.waves.filter((wave) => wave.a >= 0.01);
+         state.synapse.impulses = state.synapse.impulses.filter((impulse) => now - impulse.start < 1200);
+         drawOrbitalCallouts(ctx, atoms, w, h, now, staticMode);
+       };
+       const maybeIdleFlicker = (now, atoms) => {
+        // Even at rest the brain never sleeps: a rare spark jumps between
+        // nearby nodes every few seconds. Only when the conversation is quiet.
+        if (now - state.synapse.lastFlicker < 5200) return;
+        if (state.job && ["queued", "running"].includes(state.job.status)) return;
+          const candidates = state.synapse.edges.filter((edge) => {
+            const a = atoms.find((atom) => atom.key === edge.a); const b = atoms.find((atom) => atom.key === edge.b);
+            return edge.semantic && a && b && a._visible && b._visible && !a.latent && !b.latent;
+          });
+          if (!candidates.length) return;
+          const edge = candidates[(Math.random() * candidates.length) | 0];
+          state.synapse.lastFlicker = now;
+          impulseSynapse(edge.a, edge.b, edge);
+      };
+      const maybeAttentionWave = (now) => {
+        if (now - state.synapse.lastWave < 12000) return;
+         const atoms = state.synapse.atoms.filter((atom) => atom._visible);
+         const newest = atoms.slice().sort((a, b) => (Number(a.born) - Number(b.born))).filter((a) => a.confidence >= 0.55).pop();
+        if (!newest || newest.x === null) return;
+        state.synapse.lastWave = now;
+         state.synapse.waves.push({ x: newest.x, y: newest.y, r: 10, a: 0.34, color: synapseChannel(newest.channel) });
+       };
+       const drawStaticSynapse = (el) => {
+         const ctx = el.getContext("2d");
+         const w = el.clientWidth || 1, h = el.clientHeight || 1;
+         el.width = w; el.height = h;
+         const atoms = state.synapse.atoms;
+         atoms.forEach((atom) => placeAtom(atom, w, h));
+         physicsStep(atoms, w, h, 0);
+         atoms.forEach((atom) => { atom._birthP = 1; atom._calloutAt = 0; });
+         drawSynapse(ctx, atoms, w, h, 0, performance.now(), true);
+       };
+      const flatten = (value, prefix = "", result = []) => { if (!value || typeof value !== "object") return result; Object.entries(value).forEach(([key, child]) => { const path = prefix ? `${prefix}.${key}` : key; if (child && typeof child === "object" && !Array.isArray(child)) flatten(child, path, result); else if (child !== null && child !== "" && !(Array.isArray(child) && !child.length)) result.push([path, child]); }); return result; };
+      const humanPath = (path) => String(path || "").split(".").map((item) => item.replaceAll("_", " ")).join(" / ");
+      const valueLabel = (value) => Array.isArray(value) ? value.join(", ") : typeof value === "object" ? JSON.stringify(value) : String(value);
+      const timeLabel = (value) => { if (!value) return ""; const date = new Date(value); return Number.isNaN(date.valueOf()) ? String(value) : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); };
+      const activityCategory = (item) => { const category = String(item && item.category || ""); if (category === "research" || category === "translation") return "discovering"; if (["conversation", "understanding", "genesis", "feedback"].includes(category)) return "becoming"; return "designing"; };
+      const activityMeta = (item) => { const detail = item && item.detail && typeof item.detail === "object" ? item.detail : {}; const languages = Array.isArray(detail.source_languages) ? detail.source_languages : detail.source_language ? [detail.source_language] : []; const parts = [timeLabel(item && item.occurred_at), stateLabel(item && item.state), String(item && item.provenance || "").replaceAll("_", " ")]; if (languages.length) parts.push(`source ${languages.slice(0, 3).join(", ")}`); if (detail.target_language) parts.push(`to ${detail.target_language}`); return parts.filter(Boolean).join(" / "); };
+      const showActivityDetail = (item) => { const node = $("#activity-detail"); if (!node || !item) return; node.replaceChildren(); const summary = document.createElement("strong"); summary.textContent = item.summary || "Ada recorded an activity."; const meta = document.createElement("small"); meta.textContent = activityMeta(item); node.append(summary, meta); const detail = item.detail && typeof item.detail === "object" ? item.detail : {}; const sourceTitle = detail.source_title || detail.candidate_name; if (sourceTitle) { const source = document.createElement("small"); source.textContent = `Related: ${sourceTitle}`; node.append(source); } node.hidden = false; setDebugOpen(true); };
+      const activityButton = (item) => { const button = document.createElement("button"); button.type = "button"; button.className = "activity-entry"; button.textContent = item.summary || "Ada recorded an activity."; const meta = document.createElement("span"); meta.className = "activity-entry-meta"; meta.textContent = activityMeta(item); button.append(meta); button.addEventListener("click", () => showActivityDetail(item)); return button; };
+      const mergeActivity = (incoming) => { const next = incoming && typeof incoming === "object" ? incoming : {}; const previous = state.activity || { activities: [] }; const byId = new Map(); [...(previous.activities || []), ...(Array.isArray(next.activities) ? next.activities : [])].forEach((item) => { const key = String(item && (item.activity_id || item.id) || ""); if (key) byId.set(key, item); }); const activities = [...byId.values()].sort((left, right) => Number(left.id || 0) - Number(right.id || 0)); state.activity = { ...next, activities, next_cursor: next.next_cursor || previous.next_cursor || (activities.length ? activities[activities.length - 1].id : null), previous_cursor: activities[0] && (activities[0].id || activities[0].activity_id) || null, has_more: previous.activities && previous.activities.length && previous.has_more === false ? false : Boolean(next.has_more) }; };
+      const renderActivity = () => { const activities = Array.isArray(state.activity && state.activity.activities) ? state.activity.activities : []; ["discovering", "becoming", "designing"].forEach((channel) => { const node = $(`#activity-${channel}`); if (!node) return; node.replaceChildren(); activities.filter((item) => activityCategory(item) === channel).slice(-2).reverse().forEach((item) => node.append(activityButton(item))); }); renderLedger(); renderTrace(); };
+      const renderLedger = () => { const node = $("#activity-ledger"); if (!node) return; node.replaceChildren(); const activities = Array.isArray(state.activity && state.activity.activities) ? state.activity.activities.slice().reverse() : []; activities.forEach((item) => node.append(activityButton(item))); if (!activities.length) { const empty = document.createElement("p"); empty.className = "empty"; empty.textContent = "Observable work will appear here."; node.append(empty); } const older = $("#activity-load-older"); if (older) older.hidden = !(state.incubationId && state.activity && state.activity.has_more); };
+      const loadOlderActivity = async () => { if (!state.incubationId || !state.activity || !state.activity.has_more) return; const cursor = state.activity.previous_cursor; if (!cursor) return; const button = $("#activity-load-older"); if (button) button.disabled = true; try { const result = await api(`${incubationPath()}/activity?before_id=${encodeURIComponent(cursor)}&limit=100`); const existing = state.activity.activities || []; const incoming = Array.isArray(result.activities) ? result.activities : []; const byId = new Map([...incoming, ...existing].map((item) => [String(item.activity_id || item.id), item])); const activities = [...byId.values()].sort((left, right) => Number(left.id || 0) - Number(right.id || 0)); state.activity = { ...result, activities, next_cursor: result.next_cursor || state.activity.next_cursor || null, previous_cursor: activities[0] && (activities[0].id || activities[0].activity_id) || null }; renderActivity(); } catch (error) { setNote(error.message, true); } finally { if (button) button.disabled = false; } };
+      const renderLab = () => { if (state.lab) text("#site-name", state.lab.site_name || "Intake Lab"); };
+      const renderResearch = () => {
+        const node = $("#research-list"); if (!node) return; node.replaceChildren(); const projection = state.research || {}; const sources = Array.isArray(projection.sources) ? projection.sources : []; const findings = Array.isArray(projection.findings) ? projection.findings : []; const insights = Array.isArray(projection.insights) ? projection.insights : []; const requests = Array.isArray(projection.requests) ? projection.requests : []; const jobs = Array.isArray(projection.jobs) ? projection.jobs : [];
+        sources.forEach((source) => { const row = document.createElement("div"); row.className = "research-item"; const title = document.createElement("strong"); title.textContent = source.title || source.source_id; const status = document.createElement("small"); status.textContent = `${source.trust_state || "candidate"} / ${source.ongoing_subscription || "not_subscribed"}`; row.append(title, status); if (source.trust_state === "candidate") { const approve = document.createElement("button"); approve.className = "button small"; approve.type = "button"; approve.textContent = "Allow this source"; approve.addEventListener("click", () => approveSource(source.source_id)); row.append(approve); } else if (source.trust_state === "allowed") { const read = document.createElement("button"); read.className = "button small"; read.type = "button"; read.textContent = "Read now"; read.addEventListener("click", () => readSource(source.source_id)); row.append(read); } node.append(row); });
+        findings.slice(-8).reverse().forEach((finding) => { const row = document.createElement("div"); row.className = "research-item"; const title = document.createElement("strong"); title.textContent = finding.summary || "Public source finding"; const status = document.createElement("small"); status.textContent = `${finding.source_id || "source"} / confidence ${Math.round(Number(finding.confidence || 0) * 100)}%`; row.append(title, status); node.append(row); });
+        requests.slice(0, 4).forEach((request) => { const row = document.createElement("div"); row.className = "research-item"; const title = document.createElement("strong"); title.textContent = request.intent || (request.subjects && request.subjects.join(", ")) || "Research request"; const job = jobs.find((item) => item && item.request_id === request.request_id); const status = document.createElement("small"); status.textContent = `${request.status || "recorded"}${job ? ` / job ${job.status || "queued"}` : ""}`; row.append(title, status); node.append(row); });
+        insights.slice(-6).reverse().forEach((insight) => { const row = document.createElement("div"); row.className = "research-item"; const title = document.createElement("strong"); title.textContent = insight.summary || "Ada's evidence-linked interpretation"; const status = document.createElement("small"); status.textContent = `${insight.kind || "creative implication"} / inferred / confidence ${Math.round(Number(insight.confidence || 0) * 100)}%`; row.append(title, status); node.append(row); });
+        if (!node.children.length) { const empty = document.createElement("p"); empty.className = "empty"; empty.textContent = "No research has been requested."; node.append(empty); } renderTrace();
+      };
+      const stopActivityPolling = () => { if (state.activityPoll) { clearTimeout(state.activityPoll); state.activityPoll = null; } };
+
+      const gsapReady = () => typeof window.gsap === "function" && !window.__gsapMissing;
+      const reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const incChannels = [
+        { key: "conversation", label: "CONVERSATION", x: .27, y: .3, color: "#e75c48" },
+        { key: "understanding", label: "UNDERSTANDING", x: .66, y: .22, color: "#bd776a" },
+        { key: "media", label: "VISUALISE", x: .8, y: .44, color: "#c98d7e" },
+        { key: "research", label: "RESEARCH", x: .7, y: .74, color: "#bd776a" },
+        { key: "genesis", label: "INCUBATE", x: .3, y: .74, color: "#e6a98f" },
+        { key: "design", label: "DESIGN", x: .5, y: .9, color: "#e75c48" },
+      ];
+const incState = { active: new Set(), glow: {}, bursts: [], canvas: null, raf: 0, t0: 0 };
+      const pulseChannel = (key, label) => {
+        if (!key) return;
+        if (incState.bursts.length > 24) incState.bursts.splice(0, incState.bursts.length - 24);
+        incState.bursts.push({ key, at: Date.now(), label: label || key.toUpperCase() });
+      };
+      const syncIncubationChannels = () => {
+        const next = new Set();
+        if (state.session) next.add("understanding");
+        if (state.job && ["queued", "running"].includes(state.job.status)) next.add("conversation");
+        if ((state.media || []).some((item) => item.status === "ready")) next.add("media");
+        const research = state.research || {};
+        const researchEvidence = (research.findings && research.findings.length) ||
+          (research.sources || []).some((s) => s && s.trust_state === "allowed");
+        if (researchEvidence) next.add("research");
+        if (state.genesis && state.genesis.current) next.add("genesis");
+        if (state.run) next.add("design");
+        next.forEach((key) => { if (!incState.active.has(key)) pulseChannel(key, key.toUpperCase()); });
+        incState.active = next;
+      };
+      const playBirth = () => {
+        const flash = document.createElement("div"); flash.className = "birth-flash";
+        document.body.append(flash);
+        if (gsapReady() && !reduceMotion) {
+          gsap.fromTo(flash, { opacity: 0 }, { opacity: 1, duration: .55, ease: "power2.out", onComplete() { gsap.to(flash, { opacity: 0, duration: .9, delay: .2, onComplete() { flash.remove(); } }); } });
+          gsap.fromTo($("#build-workspace"), { opacity: 0, y: 18, scale: .985 }, { opacity: 1, y: 0, scale: 1, duration: .8, ease: "power3.out", delay: .3 });
+          gsap.fromTo(document.querySelector(".conversation"), { opacity: .35, x: -10 }, { opacity: 1, x: 0, duration: .7, delay: .3, ease: "power2.out" });
+        } else {
+          flash.style.transition = "opacity .5s ease"; flash.style.opacity = "1";
+          setTimeout(() => { flash.style.transition = "opacity .9s ease"; flash.style.opacity = "0"; setTimeout(() => flash.remove(), 950); }, 420);
+        }
+      };
+      const playBuildMorph = () => {
+        // Build ignition: the neuron field gathers and funnels into the first
+        // surface's review window — every thought streams from its home into
+        // the window, the window ignites, and the waiting/working signal takes
+        // over inside it (the same preview-fill the build loop keeps alive).
+        if (reduceMotion || document.getElementById("morph")) return;
+        const preview = document.getElementById("preview");
+        if (!preview || preview.querySelector("iframe")) return;
+        const el = document.createElement("div"); el.id = "morph";
+        const canvas = document.createElement("canvas");
+        el.append(canvas); document.body.append(el);
+        const ctx = canvas.getContext("2d");
+        const dpr = Math.min(2, window.devicePixelRatio || 1);
+        const w = window.innerWidth, h = window.innerHeight;
+        canvas.width = w * dpr; canvas.height = h * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        const conv = document.querySelector(".conversation");
+        let box = null;
+        if (conv) { const r = conv.getBoundingClientRect(); if (r.width > 0 && r.height > 0) box = { x: r.left, y: r.top, w: r.width, h: r.height }; }
+        const positions = [];
+        const liveAtoms = (state.synapse.atoms || []).filter((a) => a.x !== null && a.y !== null);
+        if (liveAtoms.length) {
+          liveAtoms.slice(0, 120).forEach((a) => positions.push({ x: a.x, y: a.y, r: a.radius || 3, color: synapseChannel(a.channel), key: a.key }));
+        } else {
+          for (let i = 0; i < 60; i++) {
+            const angle = Math.random() * Math.PI * 2;
+            const rad = Math.sqrt(Math.random()) * 0.4;
+            positions.push({ x: w / 2 + Math.cos(angle) * rad * w / 2, y: h * 0.44 + Math.sin(angle) * rad * h / 2, r: 2 + Math.random() * 2, color: "#bd776a", key: "m-" + i });
+          }
+        }
+        const tx = box ? box.x + box.w / 2 : w / 2, ty = box ? box.y + box.h / 2 : h * 0.44;
+        let ignited = false;
+        const t0 = performance.now();
+        const DUR = 1000;
+        const ease = (p) => 1 - Math.pow(1 - p, 3);
+        const step = (now) => {
+          const p = Math.min(1, (now - t0) / DUR);
+          const ep = ease(p);
+          const sw = 1 - Math.pow(1 - Math.min(1, p * 1.6), 3);
+          ctx.clearRect(0, 0, w, h);
+          positions.forEach((pt) => {
+            const px = pt.x + (tx - pt.x) * ep + Math.cos(pt.key.length * 1.3 + p * 9) * sw * 42 * (pt.r / 3);
+            const py = pt.y + (ty - pt.y) * ep + Math.sin(pt.key.length * 1.9 + p * 9) * sw * 42 * (pt.r / 3);
+            ctx.globalAlpha = Math.min(1, 0.22 + ep * 1.15);
+            ctx.fillStyle = pt.color;
+            ctx.beginPath(); ctx.arc(px, py, pt.r * (1 + p * 0.45), 0, Math.PI * 2); ctx.fill();
+          });
+          if (p > 0.06) {
+            positions.forEach((pt) => {
+              const px = pt.x + (tx - pt.x) * ep, py = pt.y + (ty - pt.y) * ep;
+              const bx = pt.x + (tx - pt.x) * Math.max(0, ep - 0.09);
+              const by = pt.y + (ty - pt.y) * Math.max(0, ep - 0.09);
+              if (Math.hypot(px - bx, py - by) > 2) {
+                ctx.globalAlpha = 0.45 * (1 - ep);
+                ctx.strokeStyle = pt.color; ctx.lineWidth = 1;
+                ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(bx, by); ctx.stroke();
+              }
+            });
+          }
+          ctx.globalAlpha = 1;
+          if (p > 0.72 && !ignited) {
+            ignited = true;
+            preview.dataset.ignite = "1";
+            if (!preview.querySelector(".preview-fill")) ensurePreviewFill(preview, "working");
+          }
+          if (p < 1) window.requestAnimationFrame(step);
+          else { el.remove(); delete preview.dataset.ignite; }
+        };
+        window.requestAnimationFrame(step);
+      };
+const startIntroScaffold = () => {
+        // From nothing: the interface is held out of view (body.intro-pending),
+        // so the very first paint shows only a faint scaffold grid, a thin
+        // cross-hair at the heart of the field, and the ambient void. This runs
+        // synchronously on load — before any boot work — so there is never a
+        // flash of the finished UI. The morph (playEntrance) replaces it.
+        if (reduceMotion) return;
+        if (document.getElementById("intro-frame")) return;
+        const el = document.createElement("div"); el.id = "intro-frame";
+        const canvas = document.createElement("canvas");
+        el.append(canvas); document.body.append(el);
+        const ctx = canvas.getContext("2d");
+        const dpr = Math.min(2, window.devicePixelRatio || 1);
+        const w = window.innerWidth, h = window.innerHeight;
+        canvas.width = w * dpr; canvas.height = h * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          const { cx, cy } = orbitalFrame(w, h);
+        const t0 = performance.now();
+        const loop = (now) => {
+          if (document.body.classList.contains("genesis-active") || document.body.dataset.introPlayed) return;
+          const t = (now - t0) / 1000;
+          ctx.clearRect(0, 0, w, h);
+          ctx.strokeStyle = "rgba(231,92,72,0.10)"; ctx.lineWidth = 1;
+          const g = 26;
+          ctx.beginPath();
+          for (let x = 0; x <= w; x += g) { ctx.moveTo(x, 0); ctx.lineTo(x, h); }
+          for (let y = 0; y <= h; y += g) { ctx.moveTo(0, y); ctx.lineTo(w, y); }
+          ctx.stroke();
+          const arm = 30 + Math.sin(t * 1.4) * 4;
+          ctx.strokeStyle = "rgba(231,92,72,0.5)"; ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(cx - arm, cy); ctx.lineTo(cx + arm, cy);
+          ctx.moveTo(cx, cy - arm); ctx.lineTo(cx, cy + arm);
+          ctx.stroke();
+          const rp = (t * 0.4) % 1;
+          ctx.strokeStyle = `rgba(231,92,72,${0.28 * (1 - rp)})`; ctx.lineWidth = 1;
+          ctx.beginPath(); ctx.arc(cx, cy, 14 + rp * 44, 0, Math.PI * 2); ctx.stroke();
+          window.requestAnimationFrame(loop);
+        };
+        state.synapse.birthAt = Number.POSITIVE_INFINITY; // the core stays a speck until the morph
+        window.requestAnimationFrame(loop);
+      };
+      const playEntrance = () => {
+        // The morph: the held-out interface is revealed, Ada's real core grows
+        // from a speck into its pulse, and the scaffold fades away — one move
+        // from nothing to the UI shaping into place.
+        if (document.body.dataset.introPlayed) return;
+        document.body.dataset.introPlayed = "1";
+        document.body.classList.remove("intro-pending");
+        document.body.classList.add("genesis-active");
+        if (reduceMotion) return;
+        state.synapse.birthAt = performance.now(); // grow the REAL core
+        const el = document.getElementById("intro-frame");
+        if (el) {
+          const fadeT0 = performance.now();
+          const fadeStep = (now) => {
+            const p = Math.min(1, (now - fadeT0) / 500);
+            el.style.opacity = String(Math.max(0, 1 - p));
+            if (p < 1) window.requestAnimationFrame(fadeStep);
+            else el.remove();
+          };
+          window.requestAnimationFrame(fadeStep);
+        }
+        if (gsapReady()) {
+          gsap.fromTo(".ambient-layer", { opacity: 0 }, { opacity: 1, duration: 1.2, delay: 0.6, ease: "power1.out" });
+        }
+      };
+            const ensurePreviewFill = (preview, status) => {
+        if (terminalRunStatuses.has(status)) return;
+        const container = document.createElement("div"); container.className = "preview-fill";
+        const beam = document.createElement("span"); beam.className = "preview-fill-beam";
+        const core = document.createElement("div"); core.className = "preview-fill-core"; core.textContent = "ADA";
+        const stage = document.createElement("p"); stage.className = "preview-fill-stage";
+        const strong = document.createElement("strong"); strong.textContent = String(state.run && state.run.status || "building").toUpperCase();
+        stage.append(strong, "THE FIRST SURFACE IS TAKING SHAPE");
+        container.append(beam, core, stage);
+        preview.append(container);
+        if (gsapReady() && !reduceMotion) gsap.fromTo(container, { opacity: 0 }, { opacity: 1, duration: .8, ease: "power2.out" });
+      };
+      const revealPreviewFrame = (iframe) => {
+        if (gsapReady() && !reduceMotion) {
+          gsap.fromTo(iframe, { opacity: 0 }, { opacity: 1, duration: .7, ease: "power2.out" });
+          const fill = iframe.parentElement && iframe.parentElement.querySelector(".preview-fill");
+          if (fill) gsap.to(fill, { opacity: 0, duration: .5, onComplete() { fill.remove(); } });
+        } else { iframe.style.transition = "opacity .6s ease"; iframe.style.opacity = "1"; const fill = iframe.parentElement && iframe.parentElement.querySelector(".preview-fill"); if (fill) fill.style.opacity = "0"; }
+      };
+      const pollActivity = () => { stopActivityPolling(); if (!state.incubationId) return; state.activityPoll = setTimeout(async () => { try { const cursor = state.activity && state.activity.next_cursor; const query = cursor ? `?after_id=${encodeURIComponent(cursor)}&limit=100` : "?limit=100"; mergeActivity(await api(`${incubationPath()}/activity${query}`)); renderActivity(); } catch (_) {} finally { pollActivity(); } }, document.hidden ? 5000 : 1500); };
+      const renderGenesis = () => { const current = state.genesis && state.genesis.current; $("#genesis-copy").textContent = current ? JSON.stringify(current, null, 2) : "Genesis will appear after the first owner decision."; renderTrace(); };
+      const terminalRunStatuses = new Set(["ready_for_review", "needs_repair", "failed", "interrupted", "cancelled", "incomplete"]);
+      const buildPhases = [
+        { title: "Reading the confirmed direction.", support: "Ada is turning the conversation into a visual point of view.", label: "MAPPING THE DIRECTION" },
+        { title: "Arranging the first experience.", support: "The private build space is taking shape around what matters most.", label: "SHAPING THE EXPERIENCE" },
+        { title: "Composing a living interface.", support: "The first surface is being assembled with its own rhythm.", label: "COMPOSING THE SURFACE" },
+        { title: "Finding the right visual tension.", support: "Ada is balancing clarity, energy, and the next useful action.", label: "TUNING THE SYSTEM" },
+      ];
+      const validationPhases = [
+        { title: "Testing the first surface.", support: "Ada is checking the candidate across its required pages and screen sizes.", label: "TESTING THE SURFACE" },
+        { title: "Checking the rhythm across screens.", support: "The quality pass is looking for anything that breaks the experience.", label: "CHECKING THE RHYTHM" },
+        { title: "Making the edges hold.", support: "The candidate is being checked before it reaches your review.", label: "HOLDING THE EDGES" },
+      ];
+      const buildMotion = () => state.buildMotion;
+      const stopBuildMotion = () => { if (buildMotion().timer) window.clearTimeout(buildMotion().timer); buildMotion().timer = null; buildMotion().startedAt = 0; };
+      const renderBuildStage = () => { const activity = $("#build-activity"); if (!activity) return; const status = String(state.run && state.run.status || "queued"); const terminal = Boolean(state.run && terminalRunStatuses.has(status)); activity.hidden = Boolean(state.run) || terminal; const phases = status === "validating" ? validationPhases : buildPhases; const elapsed = buildMotion().startedAt ? Math.max(0, Date.now() - buildMotion().startedAt) : 0; const index = Math.floor(elapsed / 4200) % phases.length; const phase = terminal ? status === "ready_for_review" ? { title: "Your first surface is ready.", support: "The candidate is waiting in the preview for your review.", label: "READY FOR YOUR REVIEW" } : { title: "The candidate needs another pass.", support: "Ada kept the candidate isolated so the next decision stays safe.", label: "NEEDS ATTENTION" } : phases[index]; text("#build-phase", phase.title); text("#build-support", phase.support); text("#build-progress-label", phase.label); text("#workspace-status-label", terminal ? (status === "ready_for_review" ? "READY FOR REVIEW" : "NEEDS ATTENTION") : "WORKING"); const progress = terminal ? 1 : .16 + (((index + 1) / phases.length) * .68); $("#build-progress-bar").style.transform = `scaleX(${Math.min(1, progress)})`; const seconds = Math.floor(elapsed / 1000); text("#build-elapsed", `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`); };
+      const startBuildMotion = () => { if (!buildMotion().startedAt) buildMotion().startedAt = Date.now(); if (buildMotion().timer) return; const tick = () => { if (document.body.dataset.view !== "build") return; renderBuildStage(); buildMotion().timer = window.setTimeout(tick, 950); }; tick(); };
+      const setExperienceView = (view, { syncHistory = true } = {}) => { const next = view === "build" ? "build" : "intake"; document.body.dataset.view = next; if (syncHistory) syncExperienceUrl(next, next === "build" && state.run ? state.run.run_id : null); const workspace = $("#build-workspace"); if (workspace) workspace.hidden = next !== "build"; if (next === "build") { $("#confirm-panel").hidden = true; document.body.classList.remove("debug-open"); startBuildMotion(); renderBuildStage(); playBirth(); } else { stopBuildMotion(); renderBuildStage(); } };
+      const renderHandoff = () => { const panel = $("#handoff-panel"); const incubation = state.incubation || {}; const status = incubation.status || "collecting"; const ready = status === "ready_for_feedback" && state.run && state.run.status === "ready_for_review"; const accepted = status === "accepted"; const provisioned = status === "provisioned"; panel.hidden = !(ready || accepted || provisioned); $("#accept").disabled = !ready; $("#provision").disabled = !accepted; $("#activate").disabled = !provisioned; text("#handoff-note", provisioned ? "Customer Ada is provisioned. Activate the separate runtime explicitly when ready." : accepted ? "The candidate is accepted. Provision the separate customer instance when ready." : ready ? "The exact candidate is ready. Acceptance is an owner decision." : "The candidate must be ready for review first."); };
+      const refreshIncubation = async () => { if (!state.incubationId) return; state.summary = await api(incubationPath()); state.incubation = state.summary.incubation; state.session = state.summary.intake || null; const latestJobId = state.session && state.session.latest_advice_job_id; if (latestJobId) { try { state.job = (await api(`${incubationPath()}/chat/jobs/${latestJobId}`)).job; } catch (_) { state.job = null; } } state.research = { sources: state.summary.research_sources || [], findings: state.summary.research_findings || [], requests: state.summary.research_requests || [], jobs: state.summary.research_jobs || [], insights: state.summary.research_insights || [] };
+      state.deductions = state.summary.deductions || [];
+       state.infusionRuns = state.summary.infusion_runs || []; mergeActivity(state.summary.activity || {}); state.genesis = { current: state.summary.genesis }; const requestedRunId = new URLSearchParams(window.location.search).get("run_id"); const baseRunId = state.session && state.session.design_run_id; let runId = requestedRunId || baseRunId; if (runId) { try { const candidateRun = await api(`${incubationPath()}/runs/${encodeURIComponent(runId)}`); if (candidateRun && candidateRun.run_id) { const revisions = Array.isArray(candidateRun.revisions) ? candidateRun.revisions : []; const reviewableNow = (r) => Boolean(r && r.candidate_sha && ["ready_for_review", "needs_repair"].includes(r.status)); const readyRevision = revisions.slice().reverse().find((item) => item && item.reviewable && item.run_id); const preferToShow = requestedRunId || ((!reviewableNow(candidateRun) && readyRevision && readyRevision.run_id) || candidateRun.preferred_run_id || (revisions.length ? revisions[revisions.length - 1].run_id : null)); if (preferToShow && preferToShow !== runId) runId = preferToShow; const fetched = await api(`${incubationPath()}/runs/${encodeURIComponent(runId)}`); state.run = fetched && fetched.run_id ? fetched : candidateRun; if (state.run && state.run.run_id && preferToShow && preferToShow !== requestedRunId) syncExperienceUrl("build", state.run.run_id); } } catch (_) { /* keep the current reference; connectRun re-attaches on the next cycle */ } } else state.run = null; renderBrief(); renderResearch(); renderGenesis(); renderActivity(); renderRun(); renderHandoff(); if (!state.run && state.session && state.session.design_run_id) connectRun(); };
+      const renderMessages = () => { const node = $("#messages"); node.replaceChildren(); const messages = state.session && Array.isArray(state.session.messages) ? state.session.messages : []; document.body.dataset.intakeEmpty = messages.length ? "false" : "true"; if (!messages.length) { const welcome = document.createElement("div"); welcome.className = "message"; welcome.dataset.role = "assistant"; welcome.dataset.welcome = "true"; const label = document.createElement("div"); label.className = "message-label"; label.textContent = "ADA / NOW"; const body = document.createElement("div"); body.className = "message-body"; body.textContent = "Hi, I'm Ada. What are you working on?"; welcome.append(label, body); node.append(welcome); return; } messages.forEach((item) => { const row = document.createElement("div"); row.className = "message"; row.dataset.role = item.role || "assistant"; const label = document.createElement("div"); label.className = "message-label"; label.textContent = `${item.role === "user" ? "YOU" : "ADA"} / ${timeLabel(item.ts)}`; const body = document.createElement("div"); body.className = "message-body"; body.textContent = item.text || ""; row.append(label, body); const attachments = Array.isArray(item.attachments) ? item.attachments : []; if (attachments.length) { const note = document.createElement("div"); note.className = "attachment-note"; note.textContent = `${attachments.length} image${attachments.length === 1 ? "" : "s"} attached`; body.append(note); } node.append(row); }); if (state.job && ["queued", "running"].includes(state.job.status)) { const row = document.createElement("div"); row.className = "message"; row.dataset.role = "system"; const label = document.createElement("div"); label.className = "message-label"; label.textContent = "ADA / WORKING"; const body = document.createElement("div"); body.className = "message-body"; body.textContent = (state.job.steps || []).slice(-1)[0]?.text || "Reading the latest message against the working brief..."; row.append(label, body); node.append(row); } node.scrollTop = node.scrollHeight; };
+      const renderBrief = () => {
+        const session = state.session;
+         if (!session) { const known = $("#known-list"); known.replaceChildren(); const knownEmpty = document.createElement("p"); knownEmpty.className = "empty"; knownEmpty.textContent = "Your decisions will collect here."; known.append(knownEmpty); text("#progress-label", "0 / 8 CORE DECISIONS"); $("#progress-bar").style.width = "0%"; setState((state.incubation && state.incubation.status) || "collecting"); text("#state-copy", "Ada is waiting for the first useful detail."); text("#session-id", "New"); $("#confirm").disabled = true; $("#confirm-panel").hidden = true; renderMessages(); renderAssetPicks(); renderLibrary(); renderHandoff(); return; }
+        const offerReady = hasOfferSummary(session);
+        const readiness = session.readiness || {};
+        if (!offerReady) {
+          readiness.state = "collecting";
+           readiness.unresolved_core_paths = [...new Set([...(readiness.unresolved_core_paths || []), "business.offer_summary"])];
+        }
+         const draft = session.draft || {}; const values = flatten(draft.fields || {}); const provenance = draft.provenance || {}; const known = $("#known-list"); known.replaceChildren(); values.slice(0, 16).forEach(([path, value]) => { const row = document.createElement("div"); row.className = "fact"; const term = document.createElement("dt"); term.textContent = humanPath(path); const detail = document.createElement("dd"); detail.textContent = valueLabel(value); const source = provenance[path]; if (source && source.origin) { const badge = document.createElement("span"); badge.className = "origin"; badge.dataset.origin = source.origin; badge.textContent = source.origin; detail.append(" ", badge); } row.append(term, detail); known.append(row); }); if (!known.children.length) { const empty = document.createElement("p"); empty.className = "empty"; empty.textContent = "Your decisions will collect here."; known.append(empty); }
+         const unresolved = Array.isArray(readiness.unresolved_core_paths) ? readiness.unresolved_core_paths : [];
+         const coreCount = 8 - unresolved.length; text("#progress-label", `${Math.max(0, coreCount)} / 8 CORE DECISIONS`); $("#progress-bar").style.width = `${Math.max(0, Math.min(100, coreCount / 8 * 100))}%`; const incubationStatus = (state.incubation && state.incubation.status) || "collecting"; setState(incubationStatus === "ready_to_build" || session.status === "confirmed" ? "ready_to_build" : incubationStatus === "ready_for_feedback" ? "ready_for_feedback" : incubationStatus); text("#state-copy", readiness.state === "ready_to_build" ? "The working brief is ready for explicit confirmation." : unresolved.length ? "Ada is shaping the brief one decision at a time." : "Ada is shaping the working brief."); const workingName = draft.fields && draft.fields.business && draft.fields.business.name; text("#site-name", workingName || state.lab && state.lab.site_name || "New site"); text("#session-id", short(session.session_id, 8)); const confirm = $("#confirm"); const canConfirm = offerReady && readiness.state === "ready_to_build" && session.status !== "confirmed" && incubationStatus === "collecting"; const buildFailed = state.run && ["failed", "interrupted", "cancelled", "incomplete", "needs_repair"].includes(state.run.status); const canBuild = offerReady && (incubationStatus === "ready_to_build" || session.status === "confirmed") && (!session.design_run_id || buildFailed); $("#confirm-panel").hidden = document.body.dataset.view !== "intake" || !(canConfirm || canBuild); confirm.disabled = !(canConfirm || canBuild); confirm.textContent = buildFailed ? "Retry candidate" : canConfirm || canBuild ? "Confirm and build" : "Candidate reserved"; text("#confirm-note", session.status === "confirmed" ? (buildFailed ? "The last candidate failed. Start a fresh one when ready." : canBuild ? "The brief is frozen. Start the isolated candidate when ready." : "This revision is frozen for the candidate.") : canConfirm ? `Revision ${session.revision} is ready. Confirm when it feels honest.` : "The core brief is not ready yet."); $("#diagnostics").textContent = JSON.stringify({ session_id: session.session_id, status: session.status, revision: session.revision, draft, readiness }, null, 2); renderMessages(); renderAssetPicks(); renderLibrary(); renderHandoff();
+      };
+      const renderAssetPicks = () => { const node = $("#asset-picks"); node.replaceChildren(); const items = (state.media || []).filter((item) => !item.archived); items.forEach((item) => { const chip = document.createElement("div"); chip.className = "asset-chip"; chip.dataset.assetId = String(item.id); if (item.thumbnail_url) { const img = document.createElement("img"); img.alt = item.name || `Image ${item.id}`; img.src = item.thumbnail_url; chip.append(img); } else { const ph = document.createElement("span"); ph.className = "chip-ph"; ph.textContent = item.status === "ready" ? "·" : "⌛"; chip.append(ph); } const name = document.createElement("span"); name.textContent = item.name || `Image ${item.id}`; chip.append(name); if (item.status !== "ready") { const em = document.createElement("em"); em.textContent = "reading…"; chip.append(em); } node.append(chip); }); };
+      const renderLibrary = () => { const node = $("#library"); node.replaceChildren(); const items = state.media || []; text("#image-count", `${items.length} FILE${items.length === 1 ? "" : "S"}`); if (!items.length) { const empty = document.createElement("p"); empty.className = "empty"; empty.textContent = "Add a reference if it helps Ada see the direction."; node.append(empty); return; } const bound = new Map(((state.session && state.session.assets) || []).map((item) => [Number(item.asset_id), item])); items.forEach((item) => { const row = document.createElement("div"); row.className = "library-item"; const image = document.createElement("img"); image.className = "library-thumb"; image.alt = item.name || "Uploaded image"; image.src = item.thumbnail_url || ""; const content = document.createElement("div"); content.className = "library-text"; const name = document.createElement("strong"); name.textContent = item.name || `Image ${item.id}`; const status = document.createElement("small"); status.textContent = item.status === "ready" ? `${item.width || "?"} x ${item.height || "?"} / ready` : `${item.status || "processing"} / Ada is reading it`; content.append(name, status); if (item.status === "ready") { const controls = document.createElement("div"); controls.className = "library-controls"; const select = document.createElement("select"); select.setAttribute("aria-label", `Use ${item.name || "image"}`); [["undecided", "Undecided"], ["website", "Use on website"], ["inspiration_only", "Inspiration only"]].forEach(([value, label]) => { const option = document.createElement("option"); option.value = value; option.textContent = label; select.append(option); }); select.value = bound.get(Number(item.id))?.usage || "undecided"; select.addEventListener("change", () => saveAssets()); controls.append(select); content.append(controls); } row.append(image, content); node.append(row); }); };
+      const saveAssets = async () => { const items = (state.media || []).filter((item) => item.status === "ready" && !item.archived); const bindings = items.map((item, position) => { const select = [...document.querySelectorAll("#library select")][position]; return { asset_id: item.id, position, usage: select ? select.value : "undecided" }; }); try { const path = state.incubationId ? `${incubationPath()}/intake-sessions/${encodeURIComponent(state.session.session_id)}/assets` : `/intake-sessions/${encodeURIComponent(state.session.session_id)}/assets`; const result = await api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ assets: bindings }) }); state.session = result.session; renderBrief(); setNote("Image choices saved to the working brief."); } catch (error) { setNote(error.message, true); } };
+      const stopMediaPolling = () => { if (state.mediaPoll) { clearTimeout(state.mediaPoll); state.mediaPoll = null; } };
+      const loadMedia = async () => { stopMediaPolling(); try { const result = await api(state.incubationId ? `${incubationPath()}/media` : "/intake/media"); state.media = result?.assets || []; renderAssetPicks(); renderLibrary(); } catch (_) { state.media = []; } finally { if ((state.media || []).some((item) => ["queued", "processing"].includes(item.status))) state.mediaPoll = setTimeout(() => { state.mediaPoll = null; loadMedia(); }, document.hidden ? 3000 : 900); } };
+      const refreshSession = async () => { if (state.incubationId) { await refreshIncubation(); return; } if (!state.session) return; const result = await api(`/intake-sessions/${encodeURIComponent(state.session.session_id)}`); state.session = result.session; renderBrief(); };
+      const stopJobPolling = () => { if (state.poll) { clearTimeout(state.poll); state.poll = null; } };
+      const pollJob = () => { stopJobPolling(); if (!state.job || ["done", "error"].includes(state.job.status)) return; state.poll = setTimeout(async () => { try { state.job = (await api(state.incubationId ? `${incubationPath()}/chat/jobs/${state.job.id}` : `/chat/jobs/${state.job.id}`)).job; renderMessages(); renderTrace(); if (state.job.status === "done") { state.turnStartedAt = 0; renderJobStatus(); for (let attempt = 0; attempt < 3; attempt++) { try { await refreshSession(); if (attempt === 0) setNote("Ada updated the working brief."); break; } catch (error) { if (attempt === 2) setNote(`The turn finished; still syncing the brief (${error.message}).`, true); else await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1))); } } const advisedAction = state.job.result && state.job.result.ui_action; if (advisedAction) await executeAdaAction(advisedAction); } else if (state.job.status === "error") { state.turnStartedAt = 0; renderJobStatus(); setNote(state.job.error || "Ada could not finish this turn.", true); } } catch (error) { setNote(error.message, true); } finally { pollJob(); } }, document.hidden ? 2200 : 600); };
+      const enqueueTurn = async (message, attachments) => { const path = state.incubationId ? `${incubationPath()}/messages` : `/intake-sessions/${encodeURIComponent(state.session.session_id)}/messages`; const result = await api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message, attachments }) }); return result; };
+      const sendMessage = async (event) => { if (event && event.preventDefault) event.preventDefault(); const message = $("#message").value.trim(); if (!message || (!state.session && !state.incubationId) || (state.job && ["queued", "running"].includes(state.job.status))) return; const attachments = (state.media || []).filter((item) => item.status === "ready" && !item.archived).map((item) => Number(item.id)); $("#send").disabled = true; setNote(attachments.length ? `Sending with ${attachments.length} image${attachments.length === 1 ? "" : "s"} attached…` : "Saving the owner message and starting Ada's turn..."); try { const result = await enqueueTurn(message, attachments); $("#message").value = ""; state.pendingTurn = null; const card = $("#retry-turn"); if (card) card.hidden = true; state.session = result.session || state.session; state.incubation = result.incubation || state.incubation; state.job = { id: result.job_id, status: "queued", steps: [] }; state.turnStartedAt = Date.now(); renderJobStatus(); await refreshSession(); renderMessages(); pollJob(); } catch (error) { state.pendingTurn = { message, attachments }; const card = $("#retry-turn"); if (card) { card.hidden = false; card.onclick = async () => { card.disabled = true; setNote("Retrying the previous message..."); try { const result = await enqueueTurn(state.pendingTurn.message, state.pendingTurn.attachments); $("#message").value = ""; state.pendingTurn = null; card.hidden = true; state.session = result.session || state.session; state.incubation = result.incubation || state.incubation; state.job = { id: result.job_id, status: "queued", steps: [] }; state.turnStartedAt = Date.now(); renderJobStatus(); await refreshSession(); renderMessages(); pollJob(); setNote("Message queued after retry."); } catch (retryError) { setNote(retryError.message, true); } finally { card.disabled = false; } }; } setNote(error.message, true); } finally { $("#send").disabled = false; } };
+      const renderUploadProgress = () => { const row = $("#upload-progress"); const fill = $("#upload-progress-fill"); const label = $("#upload-progress-label"); if (!row || !fill || !label) return; const shot = state.uploadProgress; if (!shot) { row.hidden = true; return; } row.hidden = false; fill.style.width = `${Math.max(2, Math.min(100, shot.pct || 0))}%`; label.textContent = `Uploading ${shot.name} · ${shot.pct || 0}%`; };
+      const uploadFileXHR = (url, file) => new Promise((resolve, reject) => { const xhr = new XMLHttpRequest(); xhr.open("POST", url); xhr.upload.onprogress = (event) => { if (event.lengthComputable) { const pct = Math.round((event.loaded / event.total) * 100); state.uploadProgress = { name: file.name, pct }; renderUploadProgress(); } }; xhr.onload = () => { let parsed = null; try { parsed = JSON.parse(xhr.responseText || "{}"); } catch (_) { /* fall through */ } if (xhr.status >= 200 && xhr.status < 300) resolve(parsed || {}); else reject(new Error((parsed && parsed.error && parsed.error.message) || `Upload failed (${xhr.status})`)); }; xhr.onerror = () => reject(new Error("Upload failed")); xhr.ontimeout = () => reject(new Error("Upload timed out")); const form = new FormData(); form.append("file", file, file.name); xhr.send(form); });
+      const uploadFiles = async (event) => { const files = [...(event.target.files || [])]; if (!files.length) return; setNote(files.length === 1 ? "Uploading the image…" : `Uploading ${files.length} images…`); try { const mediaPath = state.incubationId ? `${incubationPath()}/media` : "/intake/media"; for (const file of files) { state.uploadProgress = { name: file.name, pct: 0 }; renderUploadProgress(); await uploadFileXHR(`${API}${mediaPath}`, file); } await loadMedia(); setNote(files.length === 1 ? "Upload complete — Ada is reading it and will attach it to your next message." : "Uploads complete — Ada is reading them; they'll attach to your next message."); } catch (error) { setNote(error.message, true); } finally { state.uploadProgress = null; renderUploadProgress(); event.target.value = ""; } };
+      const confirmBuild = async () => { if (!state.incubationId && !state.session) return; const needsConfirmation = !state.session || state.session.status !== "confirmed"; if (needsConfirmation && (!state.session || !state.session.readiness || state.session.readiness.state !== "ready_to_build")) return; $("#confirm").disabled = true; text("#confirm-note", needsConfirmation ? "Freezing this revision..." : "Starting the isolated candidate..."); setExperienceView("build"); playBuildMorph(); try { if (needsConfirmation) { state.confirmKey = state.confirmKey || operationKey("confirm"); const confirmPath = state.incubationId ? `${incubationPath()}/confirm-intake` : `/intake-sessions/${encodeURIComponent(state.session.session_id)}/confirm`; const confirmed = await api(confirmPath, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: state.session.session_id, revision: state.session.revision, draft_hash: state.session.draft_hash, confirmation_text: "Build the first visual website candidate from this confirmed conversation.", idempotency_key: state.confirmKey }) }); state.session = confirmed.session; state.incubation = confirmed.incubation || state.incubation; renderBrief(); } state.buildKey = state.buildKey || operationKey("build"); const revision = state.session.confirmed_revision_id || state.session.confirmed_revision; const buildPath = state.incubationId ? `${incubationPath()}/builds` : `/intake-sessions/${encodeURIComponent(state.session.session_id)}/build`; const built = await api(buildPath, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: state.session.session_id, confirmed_revision: revision, owner_request: "Build the first visual website candidate from this confirmed conversation.", idempotency_key: state.buildKey }) }); state.session = built.session; state.incubation = built.incubation || state.incubation; state.run = built.run; state.previewError = null; const builtRevs = (state.run && Array.isArray(state.run.revisions)) ? state.run.revisions : []; const builtReady = builtRevs.slice().reverse().find((rev) => rev && rev.reviewable && rev.run_id); if (builtReady && builtReady.run_id !== state.run.run_id) { try { const fetched = await api(`${incubationPath()}/runs/${encodeURIComponent(builtReady.run_id)}`); if (fetched && fetched.run_id) state.run = fetched; } catch (_e) {} } syncExperienceUrl("build", state.run && state.run.run_id); renderBrief(); renderRun(); await loadRunPreview(); pollRun(); } catch (error) { if (state.run && state.run.status && !["failed", "interrupted", "cancelled", "incomplete", "needs_repair"].includes(state.run.status)) { setExperienceView("build"); renderRun(); pollRun(); } else { setExperienceView("intake"); text("#confirm-note", error.message); $("#confirm").disabled = false; renderBrief(); } } };
+       const stopRunPolling = () => { if (state.runPoll) { clearTimeout(state.runPoll); state.runPoll = null; } };
+       const stopPreviewPolling = () => { if (state.previewPoll) { clearTimeout(state.previewPoll); state.previewPoll = null; } };
+       const schedulePreviewRetry = () => { if (!state.run || !state.run.candidate_sha || state.previewPoll || state.previewAttempts >= 40) return; state.previewPoll = setTimeout(async () => { state.previewPoll = null; await loadRunPreview(); }, document.hidden ? 5000 : 1200); };
+      const connectRun = async () => {
+        // Re-attach to the session's build even when the run reference was lost
+        // (a page load that raced the run, or a transient fetch failure): the
+        // build lives on the server identified by session.design_run_id.
+        if (state.run) return;
+        const runId = state.session && state.session.design_run_id;
+        if (!runId) return;
+        try {
+          const run = await api(`${incubationPath()}/runs/${encodeURIComponent(runId)}`);
+          if (run && run.run_id) {
+            state.run = run;
+            setExperienceView("build");
+            renderBrief();
+            renderRun();
+            await loadRunPreview();
+            pollRun();
+            syncExperienceUrl("build", run.run_id);
+          }
+        } catch (_) { /* the run endpoint was momentarily unavailable; retried by the next cycle */ }
+      };
+      const renderRun = () => { renderTrace(); const panel = $("#run-panel"); if (!state.run) { panel.hidden = true; renderBuildStage(); return; } const status = state.run.status || "working"; const terminal = terminalRunStatuses.has(status); panel.hidden = false; const visible = state.run.owner_status || (status === "ready_for_review" ? "ready_for_feedback" : ["failed", "interrupted", "cancelled"].includes(status) ? "blocked" : "working"); renderBuildStage(); const badge = $("#run-state"); badge.dataset.state = visible; badge.textContent = visible === "working" ? stateLabel(status).toUpperCase() : visible === "blocked" ? "NEEDS ATTENTION" : "READY FOR REVIEW"; text("#run-id", short(state.run.run_id, 13)); text("#run-time", state.run.duration_label || ""); const preview = $("#preview"); preview.replaceChildren(); const attachPreviewFrame = (iframe) => { iframe.style.opacity = "0"; iframe.addEventListener("load", () => revealPreviewFrame(iframe)); preview.append(iframe); }; if (state.run.preview_url) { const iframe = document.createElement("iframe"); iframe.title = "Isolated candidate preview"; iframe.src = state.run.preview_url; iframe.setAttribute("sandbox", "allow-scripts"); attachPreviewFrame(iframe); } else if (state.run.candidate_sha && state.run.preview_token && state.run.preview_page) { const iframe = document.createElement("iframe"); iframe.title = "Isolated candidate preview"; iframe.src = `${API}${incubationPath()}/runs/${encodeURIComponent(state.run.run_id)}/preview/candidate/${encodeURIComponent(state.run.preview_page)}?preview_token=${encodeURIComponent(state.run.preview_token)}`; iframe.setAttribute("sandbox", "allow-scripts"); attachPreviewFrame(iframe); } else if (!terminal) { const revs = state.run && Array.isArray(state.run.revisions) ? state.run.revisions : []; const newerReady = revs.slice().reverse().find((item) => item && item.reviewable && item.run_id && item.run_id !== state.run.run_id); if (newerReady) { const empty = document.createElement('div'); empty.className = 'preview-empty'; const message = document.createElement('span'); message.textContent = 'A newer version is ready for review.'; empty.append(message); const open = document.createElement('button'); open.className = 'button small'; open.type = 'button'; open.textContent = 'Open version ' + newerReady.number; open.addEventListener('click', () => selectRun(newerReady.run_id)); empty.append(open); preview.append(empty); } else { ensurePreviewFill(preview, status); } } else { const empty = document.createElement('div'); empty.className = 'preview-empty'; empty.textContent = state.previewError || state.run.error || (status === 'ready_for_review' ? 'The candidate is retained. Open the developer view to inspect every page.' : 'The retained candidate will appear here when the isolated build is ready.'); const bad = ['failed','interrupted','cancelled','incomplete','needs_repair']; if (bad.includes(status)) { const retry = document.createElement('button'); retry.className = 'button small'; retry.type = 'button'; retry.textContent = 'Retry candidate'; retry.addEventListener('click', () => confirmBuild()); empty.append(retry); } if (state.previewError) { const retryPreview = document.createElement('button'); retryPreview.className = 'button small'; retryPreview.type = 'button'; retryPreview.textContent = 'Reload preview'; retryPreview.addEventListener('click', async () => { state.previewError = null; await loadRunPreview(); }); empty.append(retryPreview); } preview.append(empty); } $("#feedback").hidden = visible !== "ready_for_feedback"; const run = state.run; const pipeline = run && Array.isArray(run.pipeline) ? run.pipeline : []; const revisions = run && Array.isArray(run.revisions) ? run.revisions : []; const duration = run.duration_label || ""; pipeline.forEach((step) => { const label = step.label || stateLabel(step.key); if (label && duration) $("#revision-context").textContent = `${label} / ${duration}`; }); $("#revision-count").textContent = `${revisions.length} revisions`; const switcher = $("#run-switcher"); if (switcher) { switcher.replaceChildren(); if (revisions.length > 1) { const currentRun = state.run.run_id; revisions.forEach((rev) => { const pill = document.createElement("button"); pill.type = "button"; pill.setAttribute("role", "listitem"); pill.setAttribute("aria-current", String(rev.run_id === currentRun)); if (rev.reviewable) pill.setAttribute("data-reviewable", "true"); const dot = document.createElement("span"); dot.className = "switcher-dot"; dot.setAttribute("aria-hidden", "true"); const labelNode = document.createElement("span"); labelNode.textContent = `${rev.number} · ${rev.label || "Candidate"}${rev.reviewable ? " · ready" : ""}`; pill.append(dot, labelNode); const active = rev.run_id === currentRun; if (!active) pill.addEventListener("click", () => selectRun(rev.run_id)); switcher.append(pill); }); } } const newVersion = $("#new-version"); if (newVersion) { const confirmedReady = state.session && state.session.status === "confirmed" && state.incubation && ["ready_for_feedback", "blocked", "ready_to_build", "building"].includes(state.incubation.status || ""); newVersion.hidden = !confirmedReady; newVersion.title = "Start a fresh candidate from the same frozen brief"; } };
+      const fitFrame = (section) => { const viewport = section.querySelector(".frame-viewport"); const canvas = section.querySelector(".frame-canvas"); if (!viewport || !canvas) return; const width = Number(canvas.dataset.width) || 1; const height = Number(canvas.dataset.height) || 1; const availableWidth = viewport.clientWidth || width; const scale = Math.min(1, availableWidth / width); canvas.style.transform = `scale(${scale})`; viewport.style.height = `${Math.ceil(height * scale)}px`; const iframe = canvas.querySelector("iframe"); if (iframe) iframe.style.width = `${width}px`; };
+      const fitPreviews = () => { document.querySelectorAll(".frame").forEach(fitFrame); };
+      const previewResizeObserver = typeof ResizeObserver === "function" ? new ResizeObserver(fitPreviews) : null;
+      if (previewResizeObserver) previewResizeObserver.observe($("#preview"));
+       const loadRunPreview = async () => { if (!state.run || !state.run.candidate_sha) return; const runId = state.run.run_id; if (state.previewRunId !== runId) { stopPreviewPolling(); state.previewRunId = runId; state.previewPending = false; state.previewAttempts = 0; state.previewError = null; } state.previewAttempts += 1; try { const pages = await api(`${incubationPath()}/runs/${encodeURIComponent(runId)}/pages`); const page = (pages.pages || []).find((item) => item && item.candidate && item.path); if (!page) { state.previewPending = true; state.previewError = "The candidate is retained while its preview is syncing."; renderRun(); schedulePreviewRetry(); return; } const token = await api(`${incubationPath()}/runs/${encodeURIComponent(runId)}/preview-token`); if (!state.run || state.run.run_id !== runId) return; state.run.preview_token = token.token || ""; state.run.preview_page = page.path; state.previewPending = false; state.previewAttempts = 0; state.previewError = null; stopPreviewPolling(); renderRun(); } catch (_) { if (!state.run || state.run.run_id !== runId) return; state.previewPending = true; state.previewError = "The candidate is retained while its preview is syncing."; renderRun(); schedulePreviewRetry(); } };
+      const pollRun = () => { stopRunPolling(); if (!state.run || terminalRunStatuses.has(state.run.status)) return; state.runPoll = setTimeout(async () => { try { state.run = await api(`${incubationPath()}/runs/${encodeURIComponent(state.run.run_id)}`); renderRun(); await loadRunPreview(); if (terminalRunStatuses.has(state.run.status)) await refreshIncubation(); } catch (_) {} finally { pollRun(); } }, document.hidden ? 5000 : 1300); };
+       const selectRun = async (runId) => { if (!runId || runId === (state.run && state.run.run_id)) return; stopRunPolling(); try { const run = await api(`${incubationPath()}/runs/${encodeURIComponent(runId)}`); if (!run || !run.run_id) return; state.run = run; state.previewError = null; syncExperienceUrl("build", runId); renderRun(); await loadRunPreview(); if (!terminalRunStatuses.has(run.status)) pollRun(); } catch (_) {} };
+       const feedback = async (kind) => { if (!state.session || !state.run) return; try { await api(`${incubationPath()}/runs/${encodeURIComponent(state.run.run_id)}/feedback`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ kind }) }); await refreshIncubation(); setNote(kind === "fits" ? "Marked as a fit. The decision is recorded." : "Feedback recorded for the next conversation."); } catch (error) { setNote(error.message, true); } };
+       const startNewConversation = async () => {
+         const button = $("#new-session");
+         if (!button || button.disabled || !window.confirm("Start a new chat? The current chat and design will remain saved.")) return;
+         button.disabled = true;
+         try {
+           const created = await api("/incubations", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+           const incubationId = created && created.incubation && created.incubation.incubation_id;
+           if (!incubationId) throw new Error("The new chat did not return an incubation.");
+           localStorage.setItem(state.incubationKey, incubationId);
+           const target = new URL(window.location.href);
+           target.searchParams.delete("incubation_id");
+           target.searchParams.delete("view");
+           target.searchParams.delete("run_id");
+           window.location.assign(target.toString());
+         } catch (error) {
+           button.disabled = false;
+           setNote(error.message, true);
+         }
+       };
+       const startNewVersion = async () => { if (!state.session || state.session.status !== "confirmed") { setNote("The brief must be confirmed before building a new version.", true); return; } const key = `${operationKey("new-version")}-${Date.now().toString(36)}`; const revision = state.session.confirmed_revision_id || state.session.confirmed_revision; const path = state.incubationId ? `${incubationPath()}/builds` : `/intake-sessions/${encodeURIComponent(state.session.session_id)}/build`; try { setNote("Starting a fresh candidate from the confirmed brief..."); setExperienceView("build"); playBuildMorph(); const built = await api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ session_id: state.session.session_id, confirmed_revision: revision, owner_request: "Start a fresh design candidate from the confirmed brief and explore a new high-end interpretation.", idempotency_key: key, force_new: true }) }); state.session = built.session || state.session; state.incubation = built.incubation || state.incubation; state.run = built.run; state.previewError = null; syncExperienceUrl("build", state.run.run_id); await refreshIncubation(); renderRun(); await loadRunPreview(); pollRun(); setNote("A new candidate is building. It will appear here when ready."); } catch (error) { setNote(error.message, true); } };
+      const executeAdaAction = async (action) => { if (!action || !state.incubationId) return; if (action.action === "open_preview" && action.run_id) { try { if (state.session && (state.session.design_run_id || state.run)) { setExperienceView("build"); await selectRun(action.run_id); setNote("Ada is showing that version."); } } catch (_) {} return; } if (action.action === "start_build") { try { const confirmed = state.session && state.session.status === "confirmed"; if (!confirmed && !state.session) { await refreshIncubation(); } if (state.session && state.session.status === "confirmed") { await startNewVersion(); } else { setNote("The brief is not confirmed yet. Ada can finish the intake first."); } } catch (_) {} } };
+      const approveSource = async (sourceId) => { try { await api(`${incubationPath()}/research/sources/${encodeURIComponent(sourceId)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ trust_state: "allowed" }) }); await refreshIncubation(); text("#research-note", "Source allowed. Read it when you are ready."); } catch (error) { text("#research-note", error.message); } };
+      const readSource = async (sourceId) => { try { const query = $("#research-query").value.trim(); const result = await api(`${incubationPath()}/research`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ source_ids: [sourceId], query, fetch: true }) }); await refreshIncubation(); pollResearch(); text("#research-note", result.status === "queued" ? "Research is queued. Ada will keep the evidence room updated." : "Research was read and linked to this incubation."); } catch (error) { text("#research-note", error.message); } };
+      const stopResearchPolling = () => { if (state.researchPoll) { clearTimeout(state.researchPoll); state.researchPoll = null; } };
+      const pollResearch = () => { stopResearchPolling(); const projection = state.research || {}; const active = [...(projection.requests || []), ...(projection.jobs || [])].some((item) => ["queued", "running"].includes(item && item.status)); if (!active) return; state.researchPoll = setTimeout(async () => { try { await refreshIncubation(); } catch (_) {} finally { pollResearch(); } }, document.hidden ? 5000 : 1300); };
+      const requestResearch = async () => { const query = $("#research-query").value.trim(); if (!query) { text("#research-note", "Enter a question or a public feed URL first."); return; } try { const payload = /^https?:\/\//i.test(query) ? { feed_urls: [query] } : { query }; await api(`${incubationPath()}/research`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }); await refreshIncubation(); pollResearch(); text("#research-note", /^https?:\/\//i.test(query) ? "Candidate source found. Allow it before reading." : "Research request saved. Add a public feed URL to begin fetching."); } catch (error) { text("#research-note", error.message); } };
+      const acceptCandidate = async () => { if (!state.run) return; try { await api(`${incubationPath()}/accept`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ run_id: state.run.run_id, candidate_sha: state.run.candidate_sha }) }); await refreshIncubation(); text("#handoff-note", "Candidate accepted. Provision the separate customer instance when ready."); } catch (error) { text("#handoff-note", error.message); } };
+      const provisionCustomer = async () => { try { const result = await api(`${incubationPath()}/provision`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); state.provisioning = result; await refreshIncubation(); text("#handoff-note", `Provisioned ${short(result.receipt && result.receipt.customer_instance_id, 12)}. Customer runtime remains disabled until activation.`); } catch (error) { text("#handoff-note", error.message); } };
+      const activateCustomer = async () => { try { await api(`${incubationPath()}/activate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); await refreshIncubation(); text("#handoff-note", "Customer Ada activation is enabled. Start the customer runtime through its normal supervisor."); } catch (error) { text("#handoff-note", error.message); } };
+      const boot = async () => { try { startIntroScaffold(); state.lab = await api("/lab"); renderLab(); const requested = new URLSearchParams(window.location.search).get("incubation_id"); state.incubationId = requested || null; if (state.incubationId) { try { await refreshIncubation(); } catch (_) { state.incubationId = null; } } if (!state.incubationId) { let resolved = null; try { resolved = await api("/incubations/default"); } catch (_) { resolved = null; } if (resolved && resolved.incubation && resolved.incubation.incubation_id) { state.incubationId = resolved.incubation.incubation_id; } else { const saved = localStorage.getItem(state.incubationKey); if (saved) { state.incubationId = saved; } else { const created = await api("/incubations", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }); state.incubationId = created.incubation.incubation_id; } } localStorage.setItem(state.incubationKey, state.incubationId); const defaultUrl = new URL(window.location.href); defaultUrl.searchParams.set("incubation_id", state.incubationId); window.history.replaceState({}, "", defaultUrl.pathname + defaultUrl.search); await refreshIncubation(); } await loadMedia(); setMindOpen(false); if (state.job && ["queued", "running"].includes(state.job.status)) state.turnStartedAt = Date.now(); const incubationStatus = state.incubation && state.incubation.status; const shouldShowBuild = Boolean(experienceViewFromUrl() === "build" || state.run || (state.session && (state.session.design_run_id || state.session.status === "confirmed")) || ["building", "ready_for_feedback", "accepted", "provisioning", "provisioned"].includes(incubationStatus)); setExperienceView(shouldShowBuild ? "build" : "intake"); renderBrief(); renderResearch(); renderGenesis(); renderHandoff(); pollActivity(); pollResearch(); if (state.run) { syncExperienceUrl("build", state.run.run_id); renderRun(); await loadRunPreview(); pollRun(); } else if (state.session && state.session.design_run_id) { connectRun(); } window.setTimeout(() => { if (["building", "ready_for_feedback", "accepted"].includes((state.incubation && state.incubation.status) || "") && !state.run) connectRun(); }, 1800); window.setTimeout(playEntrance, 1050); } catch (error) { setNote(error.message, true); } };
+      const setDebugOpen = (open) => { const drawer = $("#debug-drawer"); const toggle = $("#debug-toggle"); drawer.hidden = !open; document.body.classList.toggle("debug-open", open); toggle.setAttribute("aria-expanded", String(open)); if (open) $("#debug-close").focus(); else toggle.focus(); };
+       const submitOnEnter = (event) => { if (event.key !== "Enter" || event.shiftKey || event.isComposing) return; event.preventDefault(); $("#composer").requestSubmit(); };
+       $("#composer").addEventListener("submit", sendMessage);
+       $("#message").addEventListener("keydown", submitOnEnter);
+       $("#upload").addEventListener("change", uploadFiles);
+       $("#new-session").addEventListener("click", startNewConversation);
+       $("#refresh").addEventListener("click", async () => { try { await refreshSession(); await loadMedia(); setNote("Working brief refreshed."); } catch (error) { setNote(error.message, true); } });
+      $("#debug-toggle").addEventListener("click", () => setDebugOpen($("#debug-drawer").hidden));
+      $("#debug-close").addEventListener("click", () => setDebugOpen(false));
+      $("#activity-open").addEventListener("click", () => { setDebugOpen(true); renderLedger(); });
+      $("#activity-load-older").addEventListener("click", loadOlderActivity);
+      $("#ada-mind-toggle").addEventListener("click", () => setMindOpen($("#ada-mind").hidden));
+      document.addEventListener("keydown", (event) => { if (event.key === "Escape" && !$("#debug-drawer").hidden) setDebugOpen(false); });
+       $("#confirm").addEventListener("click", () => { if (state.session && !hasOfferSummary(state.session)) { setNote(offerSummaryRequirement, true); return; } confirmBuild(); });
+      $("#research").addEventListener("click", requestResearch);
+      $("#accept").addEventListener("click", acceptCandidate);
+      $("#provision").addEventListener("click", provisionCustomer);
+      $("#activate").addEventListener("click", activateCustomer);
+      document.querySelectorAll("[data-feedback]").forEach((button) => button.addEventListener("click", () => feedback(button.dataset.feedback)));
+      const newVersionButton = $("#new-version");
+      if (newVersionButton) newVersionButton.addEventListener("click", () => startNewVersion());
+      document.addEventListener("visibilitychange", () => { pollActivity(); pollJob(); pollResearch(); pollRun(); });
+      window.addEventListener("popstate", () => { setExperienceView(experienceViewFromUrl(), { syncHistory: false }); renderBrief(); renderRun(); renderHandoff(); });
+       boot().then(() => {
+         if (initialIncubationId) return;
+         const cleanUrl = new URL(window.location.href);
+         cleanUrl.searchParams.delete("incubation_id");
+         window.history.replaceState({}, "", cleanUrl.pathname + cleanUrl.search + cleanUrl.hash);
+       });
+    })();
+  </script>
+</body>
+</html>

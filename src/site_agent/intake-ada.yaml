@@ -1,0 +1,173 @@
+instance_name: intake-ada
+role: intake
+data_dir: /var/lib/helloada/intake-ada
+poll_seconds: 0
+
+persona:
+  name: Ada
+  mode: intake_creative_director
+
+incubation:
+  root: /var/lib/helloada/incubations
+  abandoned_ttl_days: 30
+  rejected_ttl_hours: 24
+  scaffold: /var/lib/helloada/neutral-scaffold
+
+provisioning:
+  customer_root: /var/lib/helloada/customers
+
+research:
+  enabled: true
+  max_sources_per_pass: 8
+  max_items_per_source: 15
+  # One automatic research pass per intake revision (never more): the owner's
+  # next message advances the revision and unlocks one fresh pass, so research
+  # keeps pace with the conversation without ever bursting. When a pass reads
+  # no public source, it falls back to one bounded pipeworx query so the pass
+  # still yields evidence for the advisor.
+  max_passes_before_owner_turn: 1
+
+infusion:
+  enabled: true
+  # opencode | native | auto (opencode first, native fallback)
+  mode: auto
+  idle_seconds: 90
+  cooldown_seconds: 60
+  max_tokens_per_pass: 1200
+  max_passes_per_day: 120
+  opencode_pass_interval_seconds: 1800
+  include_pipeworx: true
+
+schedule: {}
+sources:
+  subreddits: []
+  rss_feeds: []
+  keywords: []
+  min_score: 0.0
+  max_per_run: 25
+
+site:
+  adapter: neutral_scaffold
+  repository: ""
+  clone_path: ""
+  preview_url: ""
+  preview_branch: ""
+  writable_patterns: ["*.html", "*.css", "*.js", "content/**", "themes/**", "images/**", "output/**", "*.xml", "pelicanconf.py", "build.sh"]
+  cloudflare:
+    account_id: ""
+    project_name: ""
+    mode: none
+  media:
+    enabled: false
+    # The owner's supplied reference images are materialized into the isolated
+    # build clone (never served by URL); the visual builder chooses the strongest
+    # files for the homepage under a safe relative path allowed by
+    # site.writable_patterns ("images/**").
+    site_asset_dir: images/ada-media
+
+ga:
+  enabled: false
+  property_id: ""
+  key_path: ""
+
+seo:
+  enabled: false
+  site_url: ""
+  key_path: ""
+
+providers:
+  cicero:
+    enabled: false
+  crawlseo:
+    enabled: false
+
+llm:
+  base_url: https://openrouter.ai/api/v1
+  model: deepseek/deepseek-v4-flash-0731
+  timeout_seconds: 300
+  max_tokens: 16384
+  tool_calling: false
+  max_work_steps: 24
+  max_retries: 2
+  daily_budget_usd: 2.0
+  # OpenRouter is asked for its authoritative usage receipt. These rates are a
+  # fallback for compatible responses that return tokens but omit usage.cost.
+  include_usage: true
+  price_per_mtok:
+    input: 0.15
+    output: 0.60
+
+design_engine:
+  enabled: true
+  intake_schema_version: 1
+  provider: openrouter
+  # Text-only planning is used only when no image bytes are available. For the
+  # initial homepage, the typed planner receives bounded copies of the supplied
+  # images and switches to the vision planner so it can choose imagery itself.
+  model: deepseek/deepseek-v4-flash-vision-exp
+  planner_model: deepseek/deepseek-v4-flash-0731
+  vision_planner_model: deepseek/deepseek-v4-flash-vision-exp
+  api_key_env: OPENROUTER_API_KEY
+  intake_advisor:
+    # The intake conversation is a strict JSON-extraction loop, so it gets its
+    # own provider/model rather than the reasoning engine's. The media worker
+    # reads and tags reference images once; the advisor consumes stored visual
+    # summaries and never receives raw image URLs.
+    provider: openrouter
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+    model: deepseek/deepseek-v4-flash-0731
+    timeout_seconds: 90
+    max_retries: 1
+    max_tokens: 4096
+    enable_thinking: false
+  repair_attempts: 0
+  max_tokens: 8192
+  required_viewports:
+    - {name: desktop, width: 1440, height: 1000}
+    - {name: tablet, width: 768, height: 1024}
+    - {name: mobile, width: 390, height: 844}
+  libraries:
+     # Approved frontend capabilities for the controlled baseline. `required`
+     # makes the host enforce the capability instead of leaving it to model
+     # preference; the runtime remains pinned and host-provisioned.
+     gsap:
+       enabled: true
+       required: true
+  quality:
+    browser: true
+    accessibility: true
+    visual_critic: true
+    allowed_hard_denied_paths: []
+
+builder:
+  enabled: true
+  model: openrouter/deepseek/deepseek-v4-flash-vision-exp
+  timeout_seconds: 1800
+  provider_timeout_seconds: 2100
+  provider_chunk_timeout_seconds: 180
+  # DeepSeek V4 Flash reasons before acting; the token budget must cover both
+  # the thinking and the implementation writes or a turn ends with 0 edits.
+  output_tokens: 32768
+  reasoning_effort: low
+  validation_repair_attempts: 0
+
+vision:
+  enabled: true
+  provider: openrouter
+  base_url: https://openrouter.ai/api/v1
+  model: deepseek/deepseek-v4-flash-vision-exp
+  timeout_seconds: 45
+  max_tokens: 1200
+  include_usage: true
+  price_per_mtok:
+    input: 0.15
+    output: 0.60
+
+publish_mode: disabled
+
+env:
+  llm_api_key: OPENROUTER_API_KEY
+  vision_api_key: OPENROUTER_API_KEY
+  design_api_key: OPENROUTER_API_KEY
+  visual_review_api_key: OPENROUTER_API_KEY

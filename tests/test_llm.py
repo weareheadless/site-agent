@@ -4,7 +4,7 @@ from unittest import mock
 
 import pytest
 
-from site_agent.core.llm import Client, LLMError, _http_post
+from site_agent.core.llm import Client, LLMError, _http_post, estimate_usage_cost
 from site_agent.core.memory import Memory
 
 
@@ -22,6 +22,10 @@ def _config(base_url="https://api.test/v1"):
 
 
 _FAKE_ENV = {"TEST_KEY": "sk-live-key"}
+
+
+def test_estimate_usage_cost_does_not_turn_a_missing_receipt_into_zero():
+    assert estimate_usage_cost({}, {"input": 0.15, "output": 0.60}) is None
 
 
 def _response(content="ok", prompt=100, completion=50):
@@ -120,6 +124,102 @@ def test_chat_success_logs_cost(tmp_path):
     assert spend["prompt_tokens"] == 100
     expected = round(100 * 1.0 / 1e6 + 50 * 2.0 / 1e6, 6)
     assert abs(spend["cost_usd"] - expected) < 1e-9
+    mem.close()
+
+
+def test_chat_prefers_provider_reported_cost(tmp_path):
+    mem = Memory(tmp_path / "memory.db")
+    response = _response()
+    response["usage"]["cost"] = "0.1234567"
+    with mock.patch("site_agent.core.llm._http_post", return_value=response):
+        client = Client(_config(), mem, _FAKE_ENV)
+        assert client.chat([{"role": "user", "content": "hi"}]) == "ok"
+    assert mem.llm_spend()["cost_usd"] == 0.123457
+    mem.close()
+
+
+def test_openrouter_requests_authoritative_usage_receipt(tmp_path):
+    mem = Memory(tmp_path / "memory.db")
+    response = _response()
+    response["usage"]["cost"] = 0.000321
+    captured = {}
+
+    def fake_post(url, headers, payload, timeout):
+        captured["payload"] = payload
+        return response
+
+    with mock.patch("site_agent.core.llm._http_post", fake_post):
+        client = Client(_config("https://openrouter.ai/api/v1"), mem, _FAKE_ENV)
+        assert client.chat([{"role": "user", "content": "hi"}]) == "ok"
+
+    assert captured["payload"]["usage"] == {"include": True}
+    assert mem.llm_spend()["cost_usd"] == 0.000321
+    mem.close()
+
+
+def test_client_can_disable_provider_thinking_for_structured_output(tmp_path):
+    mem = Memory(tmp_path / "memory.db")
+    config = _config("https://openrouter.ai/api/v1")
+    config["llm"]["enable_thinking"] = False
+    captured = {}
+
+    def fake_post(url, headers, payload, timeout):
+        captured["payload"] = payload
+        return _response()
+
+    with mock.patch("site_agent.core.llm._http_post", fake_post):
+        Client(config, mem, _FAKE_ENV).chat([{"role": "user", "content": "hi"}], json_mode=True)
+
+    assert captured["payload"]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert captured["payload"]["reasoning"] == {"enabled": False}
+    assert captured["payload"]["response_format"] == {"type": "json_object"}
+    mem.close()
+
+
+def test_empty_completion_still_logs_provider_usage(tmp_path):
+    mem = Memory(tmp_path / "memory.db")
+    response = _response(content="")
+    response["usage"]["cost"] = 0.000321
+    with mock.patch("site_agent.core.llm._http_post", return_value=response):
+        with pytest.raises(LLMError, match="empty completion"):
+            Client(_config(), mem, _FAKE_ENV).chat([{"role": "user", "content": "hi"}])
+
+    spend = mem.llm_spend()
+    assert spend["prompt_tokens"] == 100
+    assert spend["completion_tokens"] == 50
+    assert spend["cost_usd"] == 0.000321
+    mem.close()
+
+
+def test_budget_guard_uses_configured_prices_for_tokenized_unpriced_calls(tmp_path):
+    mem = Memory(tmp_path / "memory.db")
+    config = _config()
+    config["llm"]["daily_budget_usd"] = 0.00003
+    mem.log_llm_cost("test-model", prompt_tokens=10, completion_tokens=5, cost_usd=None)
+    client = Client(config, mem, _FAKE_ENV)
+    client._check_budget()
+    mem.close()
+
+
+def test_budget_guard_blocks_unmeasurable_unpriced_calls(tmp_path):
+    mem = Memory(tmp_path / "memory.db")
+    config = _config()
+    config["llm"]["daily_budget_usd"] = 1.0
+    mem.log_llm_cost("test-model", prompt_tokens=0, completion_tokens=0, cost_usd=None)
+    client = Client(config, mem, _FAKE_ENV)
+    with mock.patch("site_agent.core.llm._http_post") as never:
+        with pytest.raises(LLMError, match="budget cannot be enforced"):
+            client.chat([{"role": "user", "content": "hi"}])
+    assert never.call_count == 0
+    mem.close()
+
+
+def test_chat_rejects_empty_completion(tmp_path):
+    mem = Memory(tmp_path / "memory.db")
+    with mock.patch("site_agent.core.llm._http_post", return_value=_response(content="")):
+        client = Client(_config(), mem, _FAKE_ENV)
+        with pytest.raises(LLMError, match="empty completion"):
+            client.chat([{"role": "user", "content": "hi"}])
     mem.close()
 
 
@@ -222,3 +322,30 @@ def test_extract_json_returns_none_for_garbage():
     assert extract_json(123) is None
     assert extract_json("just prose, no json here") is None
     assert extract_json('{"a": trunc') is None
+
+
+def test_chat_body_includes_enable_thinking_when_requested():
+    import site_agent.core.llm as llm_module
+    from site_agent.core.llm import Client
+
+    captured_request = {}
+
+    def fake_post(url, headers, payload, timeout):
+        captured_request["payload"] = payload
+        return {
+            "choices": [{"message": {"content": '{"ok": true}'}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+        }
+
+    original = llm_module._http_post
+    llm_module._http_post = fake_post
+    try:
+        client = Client({"llm": {"base_url": "https://fake", "model": "m"}}, memory=None)
+        client.api_key = "sk-test"
+        out = client.chat([{"role": "user", "content": "hi"}], enable_thinking=False, json_mode=False)
+        assert out == '{"ok": true}'
+        assert captured_request["payload"]["chat_template_kwargs"] == {"enable_thinking": False}
+        client.chat([{"role": "user", "content": "hi"}])
+        assert "chat_template_kwargs" not in captured_request["payload"]
+    finally:
+        llm_module._http_post = original

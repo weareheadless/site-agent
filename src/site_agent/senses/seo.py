@@ -1,9 +1,10 @@
-"""seo.py — Google Search Console sense (read-only), plus an MCP stub.
+"""seo.py — Google Search Console sense (read-only).
 
 GSC queries are the highest-value SEO signal and free: what people actually
 searched when your site appeared. Uses the same service-account pattern as
-ga.py but with the webmasters.readonly scope. An MCP-based source can plug
-in later behind source: "mcp" without touching callers.
+ga.py but with the webmasters.readonly scope. The CrawlSEO source is selected
+explicitly and receives its already-normalized data through the runtime-injected
+application service.
 """
 
 from __future__ import annotations
@@ -48,6 +49,8 @@ def _run(config: dict[str, Any], body: dict[str, Any], timeout: int = 25) -> dic
     source = str((config.get("seo") or {}).get("source", "gsc"))
     if source == "mcp":
         raise SeoError("seo.source=mcp arrives later; use 'gsc' for now")
+    if source == "crawlseo":
+        raise SeoError("seo.source=crawlseo requires the CrawlSEO application service")
     key_path, site_url = _settings(config)
     if not key_path or not site_url:
         raise SeoError("gsc not configured: set seo.site_url and seo.key_path (or reuse ga.key_path)")
@@ -61,7 +64,27 @@ def _run(config: dict[str, Any], body: dict[str, Any], timeout: int = 25) -> dic
         return json.load(resp)
 
 
-def top_queries(config: dict[str, Any], days: int = 28, limit: int = 10) -> list[dict[str, Any]]:
+def top_queries(
+    config: dict[str, Any],
+    days: int = 28,
+    limit: int = 10,
+    crawlseo_service: Any | None = None,
+) -> list[dict[str, Any]]:
+    if str((config.get("seo") or {}).get("source", "gsc")).lower() == "crawlseo":
+        from . import crawlseo as crawlseo_sense
+
+        try:
+            return crawlseo_sense.search_summary(
+                config,
+                days=days,
+                limit=limit,
+                service=crawlseo_service,
+            )["top_queries"]
+        except SeoError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — keep provider errors behind the sense boundary
+            raise SeoError(str(exc)) from exc
+
     today = datetime.date.today()
     body = {
         "startDate": (today - datetime.timedelta(days=days - 1)).isoformat(),
@@ -70,7 +93,6 @@ def top_queries(config: dict[str, Any], days: int = 28, limit: int = 10) -> list
         "rowLimit": limit,
     }
     result = _run(config, body)
-    keys_headers = [d["name"] for d in result.get("dimensionHeaders", [])]
     out = []
     for row in result.get("rows", []):
         entry = {
@@ -79,11 +101,19 @@ def top_queries(config: dict[str, Any], days: int = 28, limit: int = 10) -> list
             "ctr": round(row["ctr"], 4),
             "position": round(row["position"], 1),
         }
-        if keys_headers:
-            entry["query"] = row["keys"][0]
+        entry["query"] = row["keys"][0]
         out.append(entry)
     return out
 
 
-def summary(config: dict[str, Any], days: int = 28) -> dict[str, Any]:
+def summary(config: dict[str, Any], days: int = 28, crawlseo_service: Any | None = None) -> dict[str, Any]:
+    if str((config.get("seo") or {}).get("source", "gsc")).lower() == "crawlseo":
+        from . import crawlseo as crawlseo_sense
+
+        try:
+            return crawlseo_sense.search_summary(config, days=days, limit=10, service=crawlseo_service)
+        except SeoError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — keep provider errors behind the sense boundary
+            raise SeoError(str(exc)) from exc
     return {"period_days": days, "top_queries": top_queries(config, days=days)}

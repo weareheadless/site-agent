@@ -75,7 +75,7 @@ def test_run_brief_lets_opencode_plan_and_execute_in_one_run(tmp_path, monkeypat
     monkeypatch.setattr(runner, "install_agent_files", lambda *args, **kwargs: None)
     captured = {}
 
-    def fake_run_opencode(clone, brief, config, progress=None, session_id=None, timeout_seconds=None):
+    def fake_run_opencode(clone, brief, config, progress=None, session_id=None, timeout_seconds=None, **kwargs):
         captured["brief"] = brief
         return {"session_id": "session-1", "reply": "finished"}
 
@@ -311,6 +311,83 @@ def test_run_opencode_turn_parses_events_and_resumes_session(tmp_path, monkeypat
     assert commands[1][commands[1].index("--session") + 1] == "session-1"
 
 
+def test_run_opencode_turn_records_step_usage_and_provider_cost(tmp_path, monkeypatch):
+    class FakeProcess:
+        pid = 12345
+        returncode = 0
+        stdout = iter([
+            json.dumps({"type": "step_start", "sessionID": "session-cost"}),
+            json.dumps({
+                "type": "step_finish",
+                "part": {
+                    "type": "step-finish",
+                    "cost": 0.0123,
+                    "tokens": {"input": 100, "output": 40, "reasoning": 10},
+                },
+            }),
+            json.dumps({"type": "text", "part": {"text": "finished"}}),
+        ])
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    memory = Memory(tmp_path / "memory.db")
+    monkeypatch.setattr(runner, "_opencode_bin", lambda config: "opencode")
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+
+    result = runner.run_opencode_turn(
+        tmp_path,
+        "build",
+        {"builder": {"timeout_seconds": 3, "model": "deepseek/model"}},
+        memory=memory,
+    )
+
+    assert result["usage"] == {"prompt_tokens": 100, "completion_tokens": 50}
+    assert result["cost"] == 0.0123
+    assert memory.llm_spend()["cost_usd"] == 0.0123
+    memory.close()
+
+
+def test_run_opencode_turn_attaches_image_files_after_message(tmp_path, monkeypatch):
+    class FakeProcess:
+        pid = 12345
+        returncode = 0
+        stdout = iter([json.dumps({"type": "step_start", "sessionID": "session-img"}),
+                       json.dumps({"type": "text", "part": {"text": "seen"}})])
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    commands = []
+    monkeypatch.setattr(runner, "_opencode_bin", lambda config: "opencode")
+
+    def fake_popen(*args, **kwargs):
+        commands.append(args[0])
+        return FakeProcess()
+
+    monkeypatch.setattr(runner.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(runner.os, "killpg", lambda *args: None)
+    image = tmp_path / "evidence" / "render-00.jpg"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b"\xff\xd8\xff")
+
+    first = runner.run_opencode_turn(
+        tmp_path,
+        "refine the render",
+        {"builder": {"timeout_seconds": 3}},
+        image_files=["evidence/render-00.jpg", str(image)],
+    )
+
+    assert first["session_id"] == "session-img"
+    cmd = commands[0]
+    assert cmd[-5] == "refine the render"
+    assert cmd[-4] == "-f"
+    assert cmd[-3] == str((tmp_path / "evidence" / "render-00.jpg").resolve())
+    assert cmd[-2] == "-f"
+    assert cmd[-1] == str(image)
+    assert cmd.count("-f") == 2
+
+
 def test_run_opencode_turn_rejects_plain_dsml(tmp_path, monkeypatch):
     class FakeProcess:
         pid = 12345
@@ -328,45 +405,40 @@ def test_run_opencode_turn_rejects_plain_dsml(tmp_path, monkeypatch):
         runner.run_opencode_turn(tmp_path, "build", {"builder": {"timeout_seconds": 3}})
 
 
-def test_validation_failure_reuses_one_native_build_session(tmp_path, monkeypatch):
+def test_initial_build_reports_validation_failure_without_automatic_repair(tmp_path, monkeypatch):
     clone = _make_clone(tmp_path)
     prepared = runner._change_state(clone)
-    calls = []
+    validation_calls = []
+    turn_calls = []
 
     monkeypatch.setattr(
         runner, "_prepare_builder_context",
         lambda context, progress=None: (clone, clone, "origin/main", prepared),
     )
-    validation_calls = []
 
     def fake_validate(*args, **kwargs):
         validation_calls.append(True)
-        if len(validation_calls) == 1:
-            raise runner.RunnerError("article output missing")
+        raise runner.RunnerError("article output missing")
 
     monkeypatch.setattr(runner, "_validate_preview", fake_validate)
     monkeypatch.setattr(runner, "_remove_builder_worktree", lambda *args: None)
-    monkeypatch.setattr(
-        runner,
-        "_finish_builder",
-        lambda context, clone, base_ref, message, output, progress=None: {
-            "changed": True, "output": output,
-        },
-    )
 
-    def fake_phase(clone, prompt, config, progress=None, session_id=None, timeout_seconds=None):
-        calls.append(session_id)
-        (clone / ("journal-change.html" if session_id is None else "journal-repair.html")).write_text("changed")
-        return {"session_id": "session-1", "reply": "ok"}
+    def fake_phase(*args, **kwargs):
+        turn_calls.append(kwargs.get("session_id"))
+        (clone / "index.html").write_text("changed")
+        return {"session_id": "session-1", "reply": "implemented"}
 
     monkeypatch.setattr(runner, "run_opencode_turn", fake_phase)
-    result = runner.run_brief(
-        {"config": {"builder": {"validation_repair_attempts": 2}}, "memory": None},
-        "set up the journal",
-    )
 
-    assert result["changed"] is True
-    assert calls == [None, "session-1"]
+    with pytest.raises(runner.RunnerError, match="article output missing") as caught:
+        runner.run_brief(
+            {"config": {"builder": {"validation_repair_attempts": 2}}, "memory": None},
+            "build the first homepage",
+        )
+
+    assert len(validation_calls) == 1
+    assert turn_calls == [None]
+    assert caught.value.result["validation_error"] == "article output missing"
 
 
 def test_chat_job_records_builder_error_as_failed(tmp_path, monkeypatch):
@@ -439,6 +511,33 @@ def test_builder_allows_configured_site_files(tmp_path):
     (clone / "styles.css").write_text("body { color: navy; }")
 
     runner._validate_build_paths(config, clone, "origin/preview")
+
+
+def test_journal_scope_allows_only_public_journal_navigation_on_homepage(tmp_path):
+    clone = _make_clone(tmp_path)
+    original = (clone / "index.html").read_text()
+    (clone / "index.html").write_text(
+        original.replace("</body>", '<a href="/articles.html">Journal</a></body>')
+    )
+
+    runner._validate_journal_scope(clone, "origin/main")
+
+
+def test_journal_scope_rejects_homepage_design_files(tmp_path):
+    clone = _make_clone(tmp_path)
+    (clone / "styles.css").write_text("body { color: red; }")
+
+    with pytest.raises(runner.RunnerError, match="outside its isolated scope"):
+        runner._validate_journal_scope(clone, "origin/main")
+
+
+def test_journal_scope_rejects_non_navigation_homepage_markup(tmp_path):
+    clone = _make_clone(tmp_path)
+    original = (clone / "index.html").read_text()
+    (clone / "index.html").write_text(original.replace("<p>live</p>", "<p>rewritten</p>"))
+
+    with pytest.raises(runner.RunnerError, match="outside public journal navigation"):
+        runner._validate_journal_scope(clone, "origin/main")
 
 
 def test_builder_origin_url_never_persists_token():
@@ -877,6 +976,8 @@ def test_template_tokens_injected_into_builder_agent_md(tmp_path):
     assert "SITE REFERENCE" in instructions
     assert "pages: 1" in instructions
     assert "calm coach" in instructions
+    assert "do not create or start GSAP timelines" in instructions
+    assert "visible at first paint" in instructions
     assert opencode_config["instructions"] == [".opencode/ada-instructions.md"]
     assert opencode_config["permission"]["task"]["*"] == "allow"
 
@@ -886,7 +987,8 @@ def test_build_brief_carries_role_and_leaves_design_to_ada():
     assert "Owner: make the homepage feel warmer" in brief
     assert "creative lead" in brief
     assert "distinctive design" in brief
-    assert "not a prescribed direction" in brief
+    assert "design and motion skills define the quality bar" in brief
+    assert "not a prescribed direction" not in brief
     assert "UNCOMMITTED" in brief
     assert "DESIGN SCOPE" not in brief
 
@@ -944,6 +1046,49 @@ def test_install_agent_files_configures_slow_streaming_provider(tmp_path):
     assert '"apiKey": "k"' not in (clone / "opencode.json").read_text()
 
 
+def test_install_agent_files_qualifies_openai_model_without_storing_key(tmp_path):
+    clone = _token_clone(tmp_path)
+    runner.install_agent_files(
+        clone, None, "gpt-5.6-luna", "k",
+        provider_base_url="https://api.openai.com/v1",
+    )
+
+    config = json.loads((clone / "opencode.json").read_text())
+    assert config["model"] == "openai/gpt-5.6-luna"
+    assert config["provider"]["openai"]["options"]["apiKey"] == "{env:OPENAI_API_KEY}"
+    assert config["provider"]["openai"]["options"]["baseURL"] == "https://api.openai.com/v1"
+    assert config["provider"]["openai"]["models"]["gpt-5.6-luna"]["name"] == "Ada's working model"
+    assert '"apiKey": "k"' not in (clone / "opencode.json").read_text()
+
+
+def test_install_agent_files_configures_entrim_openai_compatible_provider(tmp_path):
+    clone = _token_clone(tmp_path)
+    runner.install_agent_files(
+        clone, None, "entrim/deepseek-ai/DeepSeek-V4-Flash", "k",
+        provider_base_url="https://api.entrim.ai/v1",
+    )
+
+    config = json.loads((clone / "opencode.json").read_text())
+    provider = config["provider"]["entrim"]
+    assert config["model"] == "entrim/deepseek-ai/DeepSeek-V4-Flash"
+    assert provider["options"]["apiKey"] == "{env:ENTRIM_API_KEY}"
+    assert provider["options"]["baseURL"] == "https://api.entrim.ai/v1"
+    assert provider["models"]["deepseek-ai/DeepSeek-V4-Flash"]["limit"]["output"] == 8192
+    assert '"apiKey": "k"' not in (clone / "opencode.json").read_text()
+
+
+def test_install_agent_files_uses_configured_provider_credential_name(tmp_path):
+    clone = _token_clone(tmp_path)
+    runner.install_agent_files(
+        clone, None, "entrim/deepseek-ai/DeepSeek-V4-Flash", "k",
+        provider_base_url="https://api.entrim.ai/v1",
+        provider_env_name="SITE_AGENT_LLM_API_KEY",
+    )
+
+    config = json.loads((clone / "opencode.json").read_text())
+    assert config["provider"]["entrim"]["options"]["apiKey"] == "{env:SITE_AGENT_LLM_API_KEY}"
+
+
 def test_builder_environment_does_not_inherit_operator_secrets(tmp_path, monkeypatch):
     clone = _token_clone(tmp_path)
     monkeypatch.setenv("GITHUB_TOKEN", "github-secret")
@@ -958,6 +1103,70 @@ def test_builder_environment_does_not_inherit_operator_secrets(tmp_path, monkeyp
     assert "OPENAI_API_KEY" not in env
     assert "SITE_AGENT_ADMIN_PASSWORD" not in env
     assert env["HOME"] == str(clone / ".agent-home")
+
+
+def test_builder_environment_maps_provider_key_without_other_secrets(tmp_path, monkeypatch):
+    clone = _token_clone(tmp_path)
+    monkeypatch.setenv("GITHUB_TOKEN", "github-secret")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-secret")
+    monkeypatch.setenv("PATH", "/usr/bin")
+
+    env = runner._isolated_env(clone, "openai-secret", provider="openai")
+
+    assert env["OPENAI_API_KEY"] == "openai-secret"
+    assert "GITHUB_TOKEN" not in env
+    assert "OPENROUTER_API_KEY" not in env
+
+
+def test_builder_environment_maps_entrim_provider_key_without_other_secrets(tmp_path, monkeypatch):
+    clone = _token_clone(tmp_path)
+    monkeypatch.setenv("GITHUB_TOKEN", "github-secret")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-secret")
+    monkeypatch.setenv("PATH", "/usr/bin")
+
+    env = runner._isolated_env(clone, "entrim-secret", provider="entrim")
+
+    assert env["ENTRIM_API_KEY"] == "entrim-secret"
+    assert "GITHUB_TOKEN" not in env
+    assert "OPENROUTER_API_KEY" not in env
+
+
+def test_run_opencode_turn_uses_supplied_child_environment(tmp_path, monkeypatch):
+    captured = {}
+
+    class FakeProcess:
+        pid = 12345
+        returncode = 0
+        stdout = iter(())
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    monkeypatch.setattr(runner, "_opencode_bin", lambda config: "opencode")
+
+    def fake_popen(*args, **kwargs):
+        captured.update(kwargs)
+        return FakeProcess()
+
+    monkeypatch.setattr(runner.subprocess, "Popen", fake_popen)
+    child_home = tmp_path / "process-home"
+    runner.run_opencode_turn(
+        tmp_path,
+        "build",
+        {"builder": {"timeout_seconds": 3, "model": "entrim/model"}},
+        api_key="selected-secret",
+        env={
+            "HOME": str(child_home),
+            "PATH": "/usr/bin",
+            "GITHUB_TOKEN": "operator-secret",
+        },
+    )
+
+    child_env = captured["env"]
+    assert child_env["HOME"] == str(child_home.resolve())
+    assert child_env["PATH"] == "/usr/bin"
+    assert child_env["ENTRIM_API_KEY"] == "selected-secret"
+    assert "GITHUB_TOKEN" not in child_env
 
 
 def test_template_tokens_describe_shadow_without_prescribing_flatness(tmp_path):

@@ -8,6 +8,7 @@ into the instance memory DB so margins are always visible.
 from __future__ import annotations
 
 import json
+import math
 import time
 import urllib.error
 import urllib.request
@@ -29,6 +30,49 @@ class LLMError(Exception):
         self.code = code
         self.status = status
         self.retryable = retryable
+
+
+def estimate_usage_cost(usage: dict[str, Any] | None, prices: dict[str, Any] | None = None) -> float | None:
+    """Return the provider receipt or a configured token-price estimate.
+
+    OpenRouter only includes its authoritative charge when usage reporting is
+    requested.  Other OpenAI-compatible providers may omit it entirely, so a
+    configured input/output rate is the only honest fallback.  Returning
+    ``None`` means the call was made but its price was not knowable from either
+    source; it never means the provider call was free.
+    """
+    usage = usage if isinstance(usage, dict) else {}
+    reported = usage.get("cost")
+    if reported is None:
+        details = usage.get("cost_details")
+        if isinstance(details, dict):
+            reported = details.get("total_cost")
+            if reported is None:
+                reported = details.get("upstream_inference_cost")
+    try:
+        reported_value = float(reported) if reported is not None else None
+    except (TypeError, ValueError):
+        reported_value = None
+    if reported_value is not None and math.isfinite(reported_value) and reported_value >= 0:
+        return round(reported_value, 6)
+
+    prices = prices if isinstance(prices, dict) else {}
+    prompt_tokens = float(usage.get("prompt_tokens") or 0)
+    completion_tokens = float(usage.get("completion_tokens") or 0)
+    if prompt_tokens <= 0 and completion_tokens <= 0:
+        # A response with no receipt and no token counts is not evidence of a
+        # free call. Keep it visibly unpriced instead of manufacturing $0.00.
+        return None
+    pin = prices.get("input")
+    pout = prices.get("output")
+    if pin is None and pout is None:
+        return None
+    cost = 0.0
+    if pin is not None:
+        cost += prompt_tokens * float(pin) / 1_000_000
+    if pout is not None:
+        cost += completion_tokens * float(pout) / 1_000_000
+    return round(cost, 6)
 
 
 def _provider_error_detail(error: Any) -> tuple[str, str, int | None]:
@@ -65,12 +109,40 @@ def _provider_error_is_retryable(code: str, message: str, status: int | None) ->
     )
 
 
+def _read_response_body(response: Any, deadline: float) -> bytes:
+    """Read a response within one wall-clock budget, not one budget per chunk."""
+    chunks: list[bytes] = []
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("llm response timed out")
+        raw = getattr(getattr(response, "fp", None), "raw", None)
+        sock = getattr(raw, "_sock", None)
+        if sock is not None:
+            try:
+                sock.settimeout(remaining)
+            except OSError:
+                pass
+        try:
+            # HTTPResponse may buffer a large read until the whole chunked
+            # response arrives. A one-byte read keeps the deadline observable.
+            chunk = response.read(1)
+        except TypeError:
+            # Small test doubles and compatible response adapters may only
+            # implement read() without the optional size argument.
+            return response.read()
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+
+
 def _http_post(url: str, headers: dict[str, str], payload: dict[str, Any], timeout: float) -> dict[str, Any]:
     data = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    deadline = time.monotonic() + max(float(timeout), 0.1)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read()
+        with urllib.request.urlopen(req, timeout=max(deadline - time.monotonic(), 0.1)) as resp:
+            raw = _read_response_body(resp, deadline)
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode(errors="replace")[:300]
         raise LLMError(
@@ -137,12 +209,15 @@ class Client:
         from ..config import resolve_secret
 
         cfg = config.get("llm") or {}
-        self.base_url = str(cfg.get("base_url", "https://api.openai.com/v1")).rstrip("/")
-        self.model = str(cfg.get("model", ""))
+        self.base_url = str(cfg.get("base_url", "https://openrouter.ai/api/v1")).rstrip("/")
+        self.model = str(cfg.get("model", "deepseek/deepseek-v4-flash-0731"))
         self.timeout = float(cfg.get("timeout_seconds", 60))
         self.max_retries = int(cfg.get("max_retries", 2))
         self.max_tokens = int(cfg.get("max_tokens", 0)) or None
         self.prices = cfg.get("price_per_mtok") or {}
+        self.include_usage = bool(cfg.get("include_usage", "openrouter.ai" in self.base_url))
+        configured_thinking = cfg.get("enable_thinking")
+        self.enable_thinking = None if configured_thinking is None else bool(configured_thinking)
         budget = cfg.get("daily_budget_usd")
         self.daily_budget_usd = None if budget is None else float(budget)
         self.api_key = resolve_secret(config, "llm_api_key", os.environ if env is None else env)
@@ -184,7 +259,30 @@ class Client:
     def _check_budget(self) -> None:
         if self.daily_budget_usd is None or self.memory is None:
             return
-        spent = self.memory.llm_spend(since_hours=24)["cost_usd"]
+        spend = self.memory.llm_spend(since_hours=24)
+        unpriced_calls = int(spend.get("unpriced_calls", 0) or 0)
+        unmeasurable_calls = int(spend.get("unpriced_unmeasurable_calls", 0) or 0)
+        unpriced_prompt_tokens = int(spend.get("unpriced_prompt_tokens", 0) or 0)
+        unpriced_completion_tokens = int(spend.get("unpriced_completion_tokens", 0) or 0)
+        fallback_cost = estimate_usage_cost(
+            {
+                "prompt_tokens": unpriced_prompt_tokens,
+                "completion_tokens": unpriced_completion_tokens,
+            },
+            self.prices,
+        )
+        if unpriced_calls and (unmeasurable_calls or fallback_cost is None):
+            raise LLMError(
+                "daily LLM budget cannot be enforced: "
+                f"{unpriced_calls} recent call(s) have no provider receipt or configured cost; "
+                "configure llm.price_per_mtok, use a provider that reports usage cost, "
+                "or provide token counts for every call"
+            )
+        # A provider receipt remains authoritative. For older rows that have
+        # token counts but no receipt, configured rates are the same explicit
+        # fallback used for new calls. Keep the rows visibly unpriced in the
+        # ledger; only use the estimate for enforcing the safety limit.
+        spent = float(spend["cost_usd"]) + float(fallback_cost or 0.0)
         if spent >= self.daily_budget_usd:
             raise LLMError(
                 f"daily LLM budget exhausted: ${spent:.2f} >= ${self.daily_budget_usd:.2f}; "
@@ -215,6 +313,8 @@ class Client:
             payload["temperature"] = temperature
         if max_tokens is not None or self.max_tokens:
             payload["max_tokens"] = max(int(max_tokens or self.max_tokens), 1)
+        if self.include_usage:
+            payload["usage"] = {"include": True}
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         url = f"{self.base_url}/chat/completions"
         request_timeout = self.timeout if timeout_seconds is None else max(float(timeout_seconds), 0.1)
@@ -232,22 +332,11 @@ class Client:
         return {"content": message.get("content"), "tool_calls": message.get("tool_calls")}
 
     def _cost(self, usage: dict[str, Any]) -> float | None:
-        prompt_tokens = float(usage.get("prompt_tokens") or 0)
-        completion_tokens = float(usage.get("completion_tokens") or 0)
-        pin = self.prices.get("input")
-        pout = self.prices.get("output")
-        if pin is None and pout is None:
-            return None
-        cost = 0.0
-        if pin is not None:
-            cost += prompt_tokens * float(pin) / 1_000_000
-        if pout is not None:
-            cost += completion_tokens * float(pout) / 1_000_000
-        return round(cost, 6)
+        return estimate_usage_cost(usage, self.prices)
 
     def chat(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         *,
         model: str | None = None,
         temperature: float | None = None,
@@ -255,6 +344,7 @@ class Client:
         max_tokens: int | None = None,
         timeout_seconds: float | None = None,
         max_retries: int | None = None,
+        enable_thinking: bool | None = None,
     ) -> str:
         if not self.api_key:
             raise LLMError("llm_api_key not configured")
@@ -264,6 +354,18 @@ class Client:
             payload["temperature"] = temperature
         if max_tokens is not None or self.max_tokens:
             payload["max_tokens"] = max(int(max_tokens or self.max_tokens), 1)
+        if self.include_usage:
+            payload["usage"] = {"include": True}
+        if enable_thinking is None:
+            enable_thinking = self.enable_thinking
+        if enable_thinking is not None:
+            payload["chat_template_kwargs"] = {"enable_thinking": bool(enable_thinking)}
+            if not enable_thinking:
+                # OpenRouter's reasoning switch is separate from the
+                # provider-specific chat-template flag. Sending both keeps
+                # structured vision responses from exhausting max_tokens in
+                # a hidden reasoning channel.
+                payload["reasoning"] = {"enabled": False}
         if json_mode:
             messages = list(messages)
             if messages and messages[0]["role"] == "system":
@@ -272,6 +374,7 @@ class Client:
             else:
                 messages.insert(0, {"role": "system", "content": "Respond with a single valid JSON object and nothing else."})
             payload["messages"] = messages
+            payload["response_format"] = {"type": "json_object"}
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -286,8 +389,6 @@ class Client:
             content = response["choices"][0]["message"].get("content")
         except (KeyError, IndexError, TypeError) as exc:
             raise LLMError(f"unexpected llm response shape: {str(response)[:200]}") from exc
-        if not (content or "").strip():
-            raise LLMError("model returned an empty completion")
         usage = response.get("usage") or {}
         if self.memory is not None:
             self.memory.log_llm_cost(
@@ -295,6 +396,15 @@ class Client:
                 prompt_tokens=int(usage.get("prompt_tokens") or 0),
                 completion_tokens=int(usage.get("completion_tokens") or 0),
                 cost_usd=self._cost(usage),
+            )
+        if not (content or "").strip():
+            choice = (response.get("choices") or [{}])[0] or {}
+            message = choice.get("message") or {}
+            finish_reason = choice.get("finish_reason") or "unknown"
+            fields = ",".join(sorted(str(key) for key in message)) or "none"
+            raise LLMError(
+                "model returned an empty completion "
+                f"(finish_reason={finish_reason}, message_fields={fields})"
             )
         return content
 

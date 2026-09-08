@@ -17,6 +17,8 @@ Code lives in `/opt/site-agent`, site instances live in `/SOCIAL/configs/<site>/
 sudo mkdir -p /opt/site-agent && cd /opt/site-agent
 sudo python3 -m venv venv
 sudo venv/bin/pip install git+ssh://git@github.com/<you>/site-agent@v0.1.0
+# For a CrawlSEO-backed instance, install the maintained MCP client extra too:
+# sudo venv/bin/pip install 'site-agent[crawlseo]==0.1.0'
 # upgrade later = reinstall next tag; rollback = reinstall previous tag
 ```
 
@@ -34,10 +36,12 @@ cp /SOCIAL/site-agent/examples/oceanicvibes.config.yaml \
 Create `/SOCIAL/configs/oceanicvibes/.env` (mode 600 — never committed):
 
 ```ini
-SITE_AGENT_LLM_API_KEY=sk-...
+# OpenRouter key for the global DeepSeek model
+SITE_AGENT_LLM_API_KEY=sk-or-v1-...
 GITHUB_TOKEN=github_pat_...
 SITE_AGENT_ADMIN_PASSWORD=pick-a-long-one
 GA4_SERVICE_ACCOUNT=/home/admin/.config/ga4-service-account.json
+CRAWLSEO_SERVICE_TOKEN=            # only when CrawlSEO is enabled
 CLOUDFLARE_API_TOKEN=            # optional, only after the CF Pages move
 chmod 600 /SOCIAL/configs/oceanicvibes/.env
 ```
@@ -48,6 +52,71 @@ Token hygiene:
 - `GA4_SERVICE_ACCOUNT`: create a service account in Google Cloud → enable the **Google Analytics Data API** → download JSON → put it at `/home/admin/.config/ga4-service-account.json` (600) → in GA4 Admin ▸ Property Access Management, add the SA e-mail as **Viewer**. Reuse the same key file for GSC below.
 - GSC: in Search Console ▸ Settings ▸ Users and permissions ▸ Add the same service-account e-mail as **Full** (needed for the read API).
 - `config.yaml` contains zero secrets by construction — safe to back up anywhere.
+
+When the project-scoped CrawlSEO MCP endpoint is live, use the optional extra and
+the following instance settings. Keep the token only in `.env`; the existing
+systemd `EnvironmentFile` loads it without a service-unit change.
+
+```yaml
+providers:
+  crawlseo:
+    enabled: true
+    url: https://crawlseo.example/mcp
+    token_env: CRAWLSEO_SERVICE_TOKEN
+    timeout_seconds: 30
+    max_response_bytes: 2097152
+
+ga:
+  source: crawlseo
+seo:
+  source: crawlseo
+```
+
+## 2a. Provision a private customer media bucket
+
+Each customer instance gets its own R2 bucket and bucket-scoped S3 credential.
+The provisioning command creates both through Cloudflare's API and writes the
+credential only to that instance's `.env` file. It is safe to run again after a
+successful setup: the existing R2 credentials are reused.
+
+Before running it, create a Cloudflare API token for the provisioning operator
+with:
+
+- Account: **Workers R2 Storage Write**
+- Account: **Account API Tokens Edit** (required to create the customer-scoped
+  token through the API)
+
+The provisioning token is a platform bootstrap credential. Put it in the global
+provisioning environment file `/SOCIAL/site-agent/.env` (mode `600`), never in a
+customer instance `.env` file and never pass it to the site-agent worker:
+
+```ini
+# /SOCIAL/site-agent/.env
+CLOUDFLARE_API_TOKEN=bootstrap-token
+```
+
+Run this from the customer instance directory after creating `config.yaml`:
+
+```bash
+/opt/site-agent/venv/bin/site-agent provision-r2 \
+  --config /SOCIAL/configs/oceanicvibes/config.yaml \
+  --instance oceanicvibes \
+  --account-id '<cloudflare-account-id>'
+```
+
+The command reads `.env` from its current directory. Use
+`--bootstrap-env-file /SOCIAL/site-agent/.env` when running it elsewhere.
+Process environment values take precedence over values in the file.
+
+The command creates a bucket named `helloada-oceanicvibes-media` by default,
+sets `site.media.enabled: true`, `site.media.private: true`, and writes
+`R2_ACCESS_KEY_ID` and `R2_SECRET_ACCESS_KEY` to
+`/SOCIAL/configs/oceanicvibes/.env` with mode `600`.
+
+Use `--bucket` when the generated name does not fit the customer's naming
+policy. The bucket remains private; no public URL or R2 custom domain is
+required. The future HelloAda provisioning service should call the same
+provider/application boundary rather than reimplementing these API calls.
 
 ## 3. Sanity-check before going live
 
@@ -70,6 +139,10 @@ sudo systemctl enable --now site-agent@oceanicvibes        # the mind
 sudo cp /opt/site-agent/deploy/site-agent-admin@.service /etc/systemd/system/
 sudo systemctl enable --now site-agent-admin@oceanicvibes  # the face
 ```
+
+The `site-agent@` unit runs scheduled jobs; it does not host the admin API or
+media worker. Restart `site-agent-admin@<instance>` after changing media or
+admin code/configuration. The admin unit is the process listening on port 3011.
 
 `/etc/systemd/system/site-agent-admin@.service`:
 
@@ -129,6 +202,7 @@ Her weekly report lands there every Monday 08:00; journal articles land Tuesdays
 4. Writing the persona? Follow [docs/persona.md](persona.md) — the Ada personality
    contract (honesty rules + the five profiles every persona must fill).
 5. New `.env` (fresh LLM key optional, fresh GITHUB_TOKEN scoped to that repo)
-6. Sanity-check with `once`
-7. `systemctl enable --now site-agent@<newsite>` + admin unit
-8. Ada starts design from the generated CMS pages; no blank repository is presented.
+6. Run `site-agent provision-r2 --config /SOCIAL/configs/<newsite>/config.yaml --instance <newsite> --account-id <account-id>` with the platform bootstrap token
+7. Sanity-check with `once`
+8. `systemctl enable --now site-agent@<newsite>` + admin unit
+9. Ada starts design from the generated CMS pages; no blank repository is presented.

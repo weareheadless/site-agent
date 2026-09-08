@@ -14,6 +14,7 @@ from site_agent.core.contracts import (
     ReceiptStatus,
 )
 from site_agent.core.memory import MIGRATIONS, Memory, SCHEMA_VERSION
+from site_agent.core.media_contracts import MediaAsset, MediaKind, MediaStatus
 
 
 def test_fresh_db_creates_current_schema(tmp_path):
@@ -30,8 +31,29 @@ def test_fresh_db_creates_current_schema(tmp_path):
     assert {
         "kv", "observations", "actions", "drafts", "metrics_snapshots", "llm_costs",
         "owner_actions", "artifacts", "approval_requests", "provider_receipts",
+        "seo_site_reports", "article_ideas",
     } <= tables
     mem.close()
+
+
+def test_media_assets_and_chat_attachments_persist(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    conversation_id = memory.create_conversation()
+    asset = MediaAsset(
+        asset_id=0, status=MediaStatus.QUEUED, media_kind=MediaKind.IMAGE, source_kind="owner_upload",
+        original_name="photo.jpg", content_type="image/jpeg", original_size=3, original_sha256="abc",
+        storage_id="storage", original_key="media/storage/original/photo.jpg", created_ts="now", updated_ts="now",
+    )
+    asset_id = memory.create_media_asset(asset)
+    assert memory.get_media_asset(asset_id).original_name == "photo.jpg"
+    job_id = memory.enqueue_chat_job(
+        conversation_id, "use this", [{"type": "media_asset", "asset_id": asset_id, "position": 0}]
+    )
+    assert job_id
+    assert memory.get_messages(conversation_id)[0]["attachments"][0]["asset_id"] == asset_id
+    claimed = memory.claim_media_asset("worker-1")
+    assert claimed.status is MediaStatus.PROCESSING
+    memory.close()
 
 
 def test_migration_from_older_version_preserves_data(tmp_path):
@@ -50,6 +72,48 @@ def test_migration_from_older_version_preserves_data(tmp_path):
     assert mem.kv_get("grudge") == "slow wifi"
     assert mem.kv_get("missing", "fallback") == "fallback"
     mem.close()
+
+
+def test_migration_34_separates_existing_derivatives_from_analysis_failure(tmp_path):
+    path = tmp_path / "media-schema-33.db"
+    conn = sqlite3.connect(path)
+    for version in range(1, 34):
+        with conn:
+            for statement in MIGRATIONS[version]:
+                conn.execute(statement)
+    now = "2026-09-06T12:00:00+00:00"
+    conn.executemany(
+        "INSERT INTO media_assets (created_ts, updated_ts, status, media_kind, source_kind, original_name, "
+        "content_type, original_size, original_sha256, storage_id, original_key, normalized_key, thumbnail_key, "
+        "analysis_json, last_error) VALUES (?, ?, ?, 'image', 'owner_upload', ?, 'image/jpeg', 3, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            (now, now, "failed", "vision-failed.jpg", "a" * 64, "vision-failed", "media/vision-failed/original.jpg",
+             "media/vision-failed/normalized.webp", "media/vision-failed/thumbnail.webp", "{}", "vision provider failed"),
+            (now, now, "ready", "analyzed.jpg", "b" * 64, "analyzed", "media/analyzed/original.jpg",
+             "media/analyzed/normalized.webp", "media/analyzed/thumbnail.webp", '{"description":"ready"}', ""),
+            (now, now, "failed", "missing.jpg", "c" * 64, "missing", "media/missing/original.jpg", "", "", "{}",
+             "normalization failed"),
+        ],
+    )
+    conn.execute("PRAGMA user_version = 33")
+    conn.commit()
+    conn.close()
+
+    memory = Memory(path)
+
+    failed_analysis = memory.get_media_asset(1)
+    assert failed_analysis.status.value == "ready"
+    assert failed_analysis.analysis_status.value == "failed"
+    assert failed_analysis.analysis_error == "vision provider failed"
+
+    analyzed = memory.get_media_asset(2)
+    assert analyzed.status.value == "ready"
+    assert analyzed.analysis_status.value == "ready"
+
+    missing = memory.get_media_asset(3)
+    assert missing.status.value == "failed"
+    assert missing.analysis_status.value == "pending"
+    memory.close()
 
 
 def test_observations_roundtrip_and_filter(tmp_path):
@@ -221,3 +285,57 @@ def test_owner_workflow_records_round_trip_and_guard_transitions(tmp_path):
     with pytest.raises(ValueError, match="cannot transition"):
         memory.transition_approval_request(approval.approval_id, "pending")
     memory.close()
+
+
+def test_seo_report_and_article_idea_records_round_trip(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    try:
+        report = memory.create_seo_site_report("2026-07")
+        updated = memory.update_seo_site_report(
+            report["id"],
+            status="completed",
+            evidence_hash="evidence-hash",
+            evidence_json={"site": {"status": "ready"}},
+            summary="Traffic was steady.",
+            artifact_id=12,
+        )
+        assert updated["status"] == "completed"
+        assert updated["evidence_json"]["site"]["status"] == "ready"
+        assert memory.list_seo_site_reports()[0]["period"] == "2026-07"
+
+        idea = memory.create_article_idea(
+            "article:2026-W30",
+            "idea-hash",
+            {"working_title": "A useful guide", "thesis": "Help readers."},
+        )
+        idea = memory.update_article_idea(
+            idea["id"],
+            status="researched",
+            research_run_id="run-1",
+            serp_run_id="run-serp",
+            research_note_json={"decision": "keep", "serp_evidence": {"organic": []}},
+            research_result_json=[{"keyword": "useful guide", "search_volume": 20}],
+            research_cost_micros=125000,
+            draft_id=42,
+        )
+        assert idea["status"] == "researched"
+        assert idea["serp_run_id"] == "run-serp"
+        assert idea["research_note_json"] == {"decision": "keep", "serp_evidence": {"organic": []}}
+        assert idea["research_result_json"] == [{"keyword": "useful guide", "search_volume": 20}]
+        assert memory.get_article_idea_by_cycle("article:2026-W30")["research_run_id"] == "run-1"
+
+        rejection_id = memory.record_rejected_article_idea(
+            cycle_key="article:2026-W35",
+            raw='{"working_title":"Rejected title"}',
+            parsed={"working_title": "Rejected title"},
+            reason="time-sensitive article ideas require a source URL",
+        )
+        assert rejection_id > 0
+        rejections = memory.list_rejected_article_ideas()
+        assert len(rejections) == 1
+        assert rejections[0]["parsed_json"]["working_title"] == "Rejected title"
+        assert rejections[0]["reason"] == "time-sensitive article ideas require a source URL"
+        assert rejections[0]["cycle_key"] == "article:2026-W35"
+        assert memory.get_article_idea_for_draft(42)["id"] == idea["id"]
+    finally:
+        memory.close()

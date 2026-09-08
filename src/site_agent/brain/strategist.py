@@ -32,6 +32,11 @@ def gather(memory: Any) -> dict[str, Any]:
     dreams = memory.recent_observations(source="dream", limit=1)
     self_notes = [r["text"] for r in memory.recent_observations(source="awaken", limit=2)]
     themes = memory.kv_get("themes", [])
+    active_initiatives = [
+        initiative
+        for initiative in memory.list_strategy_initiatives(limit=100)
+        if initiative.get("state") not in {"declined", "completed"}
+    ]
     anchor = ""
     if themes and isinstance(themes, list) and themes:
         anchor = str(themes[0])
@@ -57,6 +62,7 @@ def gather(memory: Any) -> dict[str, Any]:
         "inner_voice": [r["text"] for r in memory.recent_observations(source="inner_voice", limit=2)],
         "self_notes": self_notes,
         "recalled": recalled,
+        "active_monthly_initiatives": active_initiatives[:12],
     }
 
 
@@ -67,7 +73,9 @@ def _prompt(persona: str, material: dict[str, Any]) -> list[dict[str, str]]:
         "moves. Be concrete and honest; if the data is thin, say what you'd do "
         "anyway and why. No vanity suggestions. A next move may also be something "
         "you have been carrying — a learnings thread or a dream that kept meaning "
-        "something — if it genuinely serves the site."
+        "something — if it genuinely serves the site. Monthly SEO initiatives below "
+        "are the durable strategy; monitor them and suggest follow-ups rather than "
+        "inventing a competing paid research plan."
     )
     carried: list[str] = []
     if material["dream"]:

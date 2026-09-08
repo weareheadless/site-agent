@@ -1,0 +1,713 @@
+import json
+import hashlib
+import subprocess
+from types import SimpleNamespace
+
+from PIL import Image
+
+from site_agent.core.design_contracts import BuildTarget, DesignContextSnapshot, PageBuildRequest
+from site_agent.core.memory import Memory
+from site_agent.hands import opencode_runner as runner
+from site_agent.hands.builder import BuilderError, OperationRoutingBuilder
+
+
+def test_stage_visual_evidence_writes_downscaled_jpgs_under_opencode(tmp_path):
+    source_dir = tmp_path / "media"
+    source_dir.mkdir()
+    big = source_dir / "logo.png"
+    Image.new("RGB", (2200, 900), "red").save(big)
+    clone = tmp_path / "worktree"
+    clone.mkdir()
+
+    staged = runner._stage_visual_evidence(clone, [str(big)], prefix="media", limit=4)
+    assert len(staged) == 1
+    target = clone / staged[0]
+    assert target.is_file()
+    assert ".opencode" in target.parts and "evidence" in target.parts
+    with Image.open(target) as image:
+        assert max(image.size) <= 1280
+    assert staged[0] == ".opencode/evidence/media-00.jpg"
+
+    staged_dedup = runner._stage_visual_evidence(clone, [str(big), str(big)], prefix="media")
+    assert len(staged_dedup) == 1
+
+    missing = runner._stage_visual_evidence(clone, [str(tmp_path / "nope.png")], prefix="media")
+    assert missing == []
+
+
+def test_configured_fonts_are_materialized_and_byte_locked(tmp_path):
+    source = tmp_path / "owner-font.woff2"
+    data = b"wOF2-owner-font-bytes"
+    source.write_bytes(data)
+    digest = hashlib.sha256(data).hexdigest()
+    clone = tmp_path / "worktree"
+    clone.mkdir()
+    config = {
+        "design_engine": {
+            "fonts": [{
+                "source_path": str(source),
+                "destination": "public/fonts/owner.woff2",
+                "sha256": digest,
+                "family": "Owner Sans",
+            }],
+        },
+    }
+
+    paths = runner._materialize_fonts(config, clone)
+
+    assert paths == ["public/fonts/owner.woff2"]
+    assert (clone / paths[0]).read_bytes() == data
+    runner._verify_materialized_fonts(config, clone, paths)
+    (clone / paths[0]).write_bytes(b"wOF2-replaced")
+    try:
+        runner._verify_materialized_fonts(config, clone, paths)
+    except runner.RunnerError as exc:
+        assert "owner-provided font" in str(exc)
+    else:
+        raise AssertionError("changed host-provisioned font bytes were accepted")
+
+
+def _git(repo, *args):
+    return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True)
+
+
+def _clone(tmp_path):
+    clone = tmp_path / "experiment-clone"
+    clone.mkdir()
+    _git(clone, "init", "-q", "-b", "main")
+    _git(clone, "config", "user.email", "test@example.com")
+    _git(clone, "config", "user.name", "Test")
+    (clone / "index.html").write_text("<html><body><h1>Baseline</h1></body></html>")
+    _git(clone, "add", "-A")
+    _git(clone, "commit", "-qm", "baseline")
+    base_sha = _git(clone, "rev-parse", "HEAD").stdout.strip()
+    return clone, base_sha
+
+
+def test_local_design_build_commits_exact_base_to_local_ref_without_push(tmp_path, monkeypatch):
+    clone, base_sha = _clone(tmp_path)
+    memory = Memory(tmp_path / "data" / "memory.db")
+    config = {
+        "data_dir": str(tmp_path / "data"),
+        "site": {"clone_path": str(clone), "writable_patterns": ["*.html", "design/**"]},
+        "builder": {"enabled": True, "validation_repair_attempts": 0},
+    }
+    request = PageBuildRequest.from_dict({
+        "schema_version": 1,
+        "run_id": "design-run-1",
+        "mode": "initial_homepage",
+        "base_sha": base_sha,
+        "page_path": "index.html",
+        "purpose": "Create the homepage.",
+        "site_intake_hash": "a" * 64,
+        "acceptance_criteria": ["Keep the homepage accessible."],
+    })
+    target = BuildTarget.from_dict({
+        "mode": "local_experiment",
+        "base_sha": base_sha,
+        "candidate_ref": "refs/ada-design-lab/design-run-1",
+        "push_mode": "none",
+        "publishable": False,
+        "clone_path": str(clone),
+        "allowed_paths": ["*.html", "design/**"],
+    })
+    pushes = []
+
+    def fake_turn(worktree, prompt, config, progress=None, session_id=None, timeout_seconds=None, **kwargs):
+        assert base_sha in prompt
+        (worktree / "index.html").write_text("<html><body><h1>Candidate</h1></body></html>")
+        return {
+            "session_id": "design-session",
+            "reply": "implemented",
+            "transcript": '{"type":"text","sessionID":"design-session"}\n',
+        }
+
+    original_git = runner._git
+
+    def tracking_git(repo, *args, **kwargs):
+        if args and args[0] == "push":
+            pushes.append(args)
+        return original_git(repo, *args, **kwargs)
+
+    monkeypatch.setattr(runner, "run_opencode_turn", fake_turn)
+    monkeypatch.setattr(runner, "_git", tracking_git)
+
+    receipt = runner.stage_design_build({"config": config, "memory": memory}, request, target)
+
+    assert receipt.candidate_sha != base_sha
+    assert _git(clone, "rev-parse", target.candidate_ref).stdout.strip() == receipt.candidate_sha
+    assert _git(clone, "rev-parse", f"{receipt.candidate_sha}^").stdout.strip() == base_sha
+    assert pushes == []
+    assert _git(clone, "status", "--porcelain").stdout == ""
+    manifest = json.loads(_git(clone, "show", f"{receipt.candidate_sha}:design/ada-design-manifest.json").stdout)
+    assert manifest["host_generated"] is True
+    assert manifest["source_files"] == {"changed": ["index.html"]}
+    assert receipt.transcript_path == "design-runs/design-run-1/opencode.jsonl"
+    assert (tmp_path / "data" / receipt.transcript_path).read_text() == '{"type":"text","sessionID":"design-session"}\n'
+    memory.close()
+
+
+def test_initial_homepage_preserves_existing_source_for_model_inspection(tmp_path, monkeypatch):
+    clone, _ = _clone(tmp_path)
+    (clone / "styles.css").write_text("body { color: red; }")
+    (clone / "app.js").write_text("document.body.dataset.source = 'old';")
+    _git(clone, "add", "styles.css", "app.js")
+    _git(clone, "commit", "-qm", "homepage entrypoints")
+    base_sha = _git(clone, "rev-parse", "HEAD").stdout.strip()
+    memory = Memory(tmp_path / "data" / "memory.db")
+    config = {
+        "data_dir": str(tmp_path / "data"),
+        "site": {"clone_path": str(clone), "writable_patterns": ["*.html", "*.css", "*.js", "design/**"]},
+        "builder": {"enabled": True},
+    }
+    request = PageBuildRequest.from_dict({
+        "schema_version": 1,
+        "run_id": "blank-homepage-source",
+        "mode": "initial_homepage",
+        "base_sha": base_sha,
+        "page_path": "index.html",
+        "purpose": "Create the homepage.",
+        "site_intake_hash": "a" * 64,
+        "acceptance_criteria": ["Keep the homepage accessible."],
+    })
+    target = BuildTarget.from_dict({
+        "mode": "local_experiment",
+        "base_sha": base_sha,
+        "candidate_ref": "refs/ada-design-lab/blank-homepage-source",
+        "push_mode": "none",
+        "publishable": False,
+        "clone_path": str(clone),
+        "allowed_paths": ["*.html", "*.css", "*.js", "design/**"],
+    })
+    observed = {}
+
+    monkeypatch.setattr(runner, "install_agent_files", lambda *args, **kwargs: None)
+
+    def fake_turn(worktree, prompt, config, **kwargs):
+        observed["old_files_present"] = any((worktree / name).exists() for name in ("index.html", "styles.css", "app.js"))
+        (worktree / "index.html").write_text("<html><body><h1>New</h1></body></html>")
+        (worktree / "styles.css").write_text("body { color: blue; }")
+        (worktree / "app.js").write_text("document.body.dataset.source = 'new';")
+        return {"session_id": "blank-session", "reply": "implemented"}
+
+    monkeypatch.setattr(runner, "run_opencode_turn", fake_turn)
+
+    receipt = runner.stage_design_build({"config": config, "memory": memory}, request, target)
+
+    assert observed["old_files_present"] is True
+    assert receipt.candidate_sha != base_sha
+    assert _git(clone, "status", "--porcelain").stdout == ""
+    memory.close()
+
+
+def test_design_manifest_omits_deleted_implementation_files(tmp_path, monkeypatch):
+    clone, _ = _clone(tmp_path)
+    for name in ("styles.css", "app.js"):
+        (clone / name).write_text("old")
+    _git(clone, "add", "-A")
+    _git(clone, "commit", "-qm", "homepage entrypoints")
+    base_sha = _git(clone, "rev-parse", "HEAD").stdout.strip()
+    memory = Memory(tmp_path / "data" / "memory.db")
+    config = {
+        "data_dir": str(tmp_path / "data"),
+        "site": {"clone_path": str(clone), "writable_patterns": ["*.html", "*.css", "*.js", "design/**"]},
+        "builder": {"enabled": True},
+    }
+    request = PageBuildRequest.from_dict({
+        "schema_version": 1,
+        "run_id": "deleted-entrypoints",
+        "mode": "initial_homepage",
+        "base_sha": base_sha,
+        "page_path": "index.html",
+        "purpose": "Create the homepage.",
+        "site_intake_hash": "a" * 64,
+        "acceptance_criteria": ["Keep the homepage accessible."],
+    })
+    target = BuildTarget.from_dict({
+        "mode": "local_experiment",
+        "base_sha": base_sha,
+        "candidate_ref": "refs/ada-design-lab/deleted-entrypoints",
+        "push_mode": "none",
+        "publishable": False,
+        "clone_path": str(clone),
+        "allowed_paths": ["*.html", "*.css", "*.js", "design/**"],
+    })
+
+    monkeypatch.setattr(runner, "install_agent_files", lambda *args, **kwargs: None)
+
+    def fake_turn(worktree, prompt, config, **kwargs):
+        (worktree / "index.html").write_text("<html><body><h1>New</h1></body></html>")
+        return {"session_id": "deleted-session", "reply": "implemented"}
+
+    monkeypatch.setattr(runner, "run_opencode_turn", fake_turn)
+
+    receipt = runner.stage_design_build({"config": config, "memory": memory}, request, target)
+
+    manifest = json.loads(_git(clone, "show", f"{receipt.candidate_sha}:design/ada-design-manifest.json").stdout)
+    assert manifest["source_files"] == {"changed": ["index.html"]}
+    memory.close()
+
+
+def test_typed_build_uses_the_configured_provider_credential(tmp_path, monkeypatch):
+    clone, base_sha = _clone(tmp_path)
+    memory = Memory(tmp_path / "data" / "memory.db")
+    config = {
+        "data_dir": str(tmp_path / "data"),
+        "site": {"clone_path": str(clone), "writable_patterns": ["*.html", "design/**"]},
+        "design_engine": {
+            "provider": "entrim",
+            "model": "deepseek-ai/DeepSeek-V4-Flash",
+            "base_url": "https://api.entrim.ai/v1",
+            "api_key_env": "VISION_KEY",
+            "quality": {"browser": False, "visual_critic": False},
+        },
+        "env": {"llm_api_key": "IMPLEMENTATION_KEY", "vision_api_key": "VISION_KEY"},
+        "builder": {"enabled": True},
+    }
+    request = PageBuildRequest.from_dict({
+        "schema_version": 1,
+        "run_id": "configured-provider-key",
+        "mode": "initial_homepage",
+        "base_sha": base_sha,
+        "page_path": "index.html",
+        "purpose": "Create the homepage.",
+        "site_intake_hash": "a" * 64,
+        "acceptance_criteria": ["Keep the homepage accessible."],
+    })
+    target = BuildTarget.from_dict({
+        "mode": "local_experiment",
+        "base_sha": base_sha,
+        "candidate_ref": "refs/ada-design-lab/configured-provider-key",
+        "push_mode": "none",
+        "publishable": False,
+        "clone_path": str(clone),
+        "allowed_paths": ["*.html", "design/**"],
+    })
+    installed = {}
+    called = {}
+
+    def fake_install(*args, **kwargs):
+        installed["key"] = args[3]
+        installed["key_env"] = kwargs["provider_env_name"]
+
+    def fake_turn(worktree, prompt, config, **kwargs):
+        called.update(kwargs)
+        (worktree / "index.html").write_text("<html><body><h1>Candidate</h1></body></html>")
+        return {"session_id": "provider-key-session", "reply": "implemented"}
+
+    monkeypatch.setattr(runner, "install_agent_files", fake_install)
+    monkeypatch.setattr(runner, "run_opencode_turn", fake_turn)
+
+    runner.stage_design_build(
+        {"config": config, "memory": memory, "env": {"IMPLEMENTATION_KEY": "implementation-secret", "VISION_KEY": "vision-secret"}},
+        request,
+        target,
+    )
+
+    assert installed == {"key": "vision-secret", "key_env": "VISION_KEY"}
+    assert called["api_key"] == "vision-secret"
+    assert called["api_key_env"] == "VISION_KEY"
+    memory.close()
+
+
+def test_noop_design_turn_fails_without_hidden_continuation(tmp_path, monkeypatch):
+    clone, base_sha = _clone(tmp_path)
+    memory = Memory(tmp_path / "data" / "memory.db")
+    config = {
+        "data_dir": str(tmp_path / "data"),
+        "site": {"clone_path": str(clone), "writable_patterns": ["*.html", "design/**"]},
+        "builder": {"enabled": True, "validation_repair_attempts": 0},
+    }
+    request = PageBuildRequest.from_dict({
+        "schema_version": 1,
+        "run_id": "design-nudge-1",
+        "mode": "initial_homepage",
+        "base_sha": base_sha,
+        "page_path": "index.html",
+        "purpose": "Create the homepage.",
+        "site_intake_hash": "a" * 64,
+        "acceptance_criteria": ["Keep the homepage accessible."],
+    })
+    target = BuildTarget.from_dict({
+        "mode": "local_experiment",
+        "base_sha": base_sha,
+        "candidate_ref": "refs/ada-design-lab/design-nudge-1",
+        "push_mode": "none",
+        "publishable": False,
+        "clone_path": str(clone),
+        "allowed_paths": ["*.html", "design/**"],
+    })
+    turns = []
+
+    def fake_turn(worktree, prompt, config, progress=None, session_id=None, timeout_seconds=None, **kwargs):
+        turns.append((prompt, session_id))
+        return {"session_id": "design-session", "reply": "planned"}
+
+    monkeypatch.setattr(runner, "run_opencode_turn", fake_turn)
+
+    import pytest
+
+    with pytest.raises(runner.RunnerError, match="without implementation changes"):
+        runner.stage_design_build({"config": config, "memory": memory}, request, target)
+
+    assert len(turns) == 1
+    assert (tmp_path / "data" / "design-runs" / "design-nudge-1" / "opencode.jsonl").is_file()
+    memory.close()
+
+
+def test_failed_opencode_turn_can_retain_a_safe_partial_candidate(tmp_path, monkeypatch):
+    clone, base_sha = _clone(tmp_path)
+    memory = Memory(tmp_path / "data" / "memory.db")
+    config = {
+        "data_dir": str(tmp_path / "data"),
+        "site": {"clone_path": str(clone), "writable_patterns": ["*.html", "design/**"]},
+        "builder": {"enabled": True},
+    }
+    request = PageBuildRequest.from_dict({
+        "schema_version": 1,
+        "run_id": "partial-design",
+        "mode": "initial_homepage",
+        "base_sha": base_sha,
+        "page_path": "index.html",
+        "purpose": "Create the homepage.",
+        "site_intake_hash": "a" * 64,
+        "acceptance_criteria": ["Keep the homepage accessible."],
+    })
+    target = BuildTarget.from_dict({
+        "mode": "local_experiment",
+        "base_sha": base_sha,
+        "candidate_ref": "refs/ada-design-lab/partial-design",
+        "push_mode": "none",
+        "publishable": False,
+        "clone_path": str(clone),
+        "allowed_paths": ["*.html", "design/**"],
+    })
+
+    def failed_turn(worktree, prompt, config, **kwargs):
+        (worktree / "index.html").write_text("<html><body><h1>Partial</h1></body></html>")
+        raise runner.RunnerError(
+            "opencode exited 1: provider stopped",
+            result={"session_id": "partial-session", "reply": "partial", "transcript": "partial event\n"},
+        )
+
+    monkeypatch.setattr(runner, "run_opencode_turn", failed_turn)
+
+    receipt = runner.stage_design_build({"config": config, "memory": memory}, request, target)
+
+    assert receipt.build_error == "opencode exited 1: provider stopped"
+    assert receipt.candidate_sha != base_sha
+    assert _git(clone, "rev-parse", target.candidate_ref).stdout.strip() == receipt.candidate_sha
+    assert (tmp_path / "data" / receipt.transcript_path).read_text() == "partial event\n"
+    assert _git(clone, "status", "--porcelain").stdout == ""
+    memory.close()
+
+
+def test_initial_design_setup_excludes_site_context_but_keeps_capability_allowances(tmp_path, monkeypatch):
+    clone, base_sha = _clone(tmp_path)
+    snapshot = DesignContextSnapshot.from_dict({
+        "schema_version": 1,
+        "captured_at": "2026-08-31T12:00:00+00:00",
+        "owner_request": "Create an independent homepage.",
+        "base_sha": base_sha,
+        "effective_persona": "MUST NOT REACH INITIAL BUILDER",
+        "site_digest": "SITE DIGEST MUST NOT REACH INITIAL BUILDER",
+        "measured_design": {"tokens": "MEASURED DESIGN MUST NOT REACH INITIAL BUILDER"},
+        "capabilities": [{"name": "gsap", "version": "3.12.5"}],
+    })
+    memory = object()
+    config = {
+        "data_dir": str(tmp_path / "data"),
+        "site": {"clone_path": str(clone)},
+        "builder": {"model": "deepseek/deepseek-v4-flash-0731"},
+    }
+    request = PageBuildRequest.from_dict({
+        "schema_version": 1,
+        "run_id": "initial-context-boundary",
+        "mode": "initial_homepage",
+        "base_sha": base_sha,
+        "page_path": "index.html",
+        "purpose": "Create the homepage.",
+        "site_intake_hash": "a" * 64,
+        "acceptance_criteria": ["Use the intake as the creative brief."],
+        "content": {"site_intake": {"schema_version": 1}},
+        "context_snapshot": snapshot.to_dict(),
+        "context_snapshot_hash": snapshot.content_hash,
+    })
+    target = BuildTarget.from_dict({
+        "mode": "local_experiment",
+        "base_sha": base_sha,
+        "candidate_ref": "refs/ada-design-lab/initial-context-boundary",
+        "push_mode": "none",
+        "publishable": False,
+        "clone_path": str(clone),
+        "allowed_paths": ["index.html", "design/**"],
+    })
+    installed = {}
+
+    def fake_install(*args, **kwargs):
+        installed.update(kwargs)
+
+    def fake_turn(worktree, prompt, config, **kwargs):
+        (worktree / "index.html").write_text("<html><body><h1>Independent</h1></body></html>")
+        return {"session_id": "design-session", "reply": "implemented"}
+
+    monkeypatch.setattr(runner, "_typed_execution_config", lambda config, request, target: config)
+    monkeypatch.setattr(runner, "install_agent_files", fake_install)
+    monkeypatch.setattr(runner, "run_opencode_turn", fake_turn)
+
+    runner.stage_design_build({"config": config, "memory": memory, "env": {}}, request, target)
+
+    assert installed["context_snapshot"] is None
+    assert installed["context_snapshot_hash"] == ""
+    assert installed["persona"] == ""
+    assert installed["site_digest"] == ""
+    assert installed["template_tokens"] == ""
+    assert installed["memory"] is None
+    assert installed["approved_capabilities"] == snapshot.capabilities
+
+
+def test_visual_refinement_setup_uses_parent_source_and_frozen_persona(tmp_path, monkeypatch):
+    clone, base_sha = _clone(tmp_path)
+    snapshot = DesignContextSnapshot.from_dict({
+        "schema_version": 1,
+        "captured_at": "2026-08-31T12:00:00+00:00",
+        "owner_request": "Refine the retained candidate.",
+        "base_sha": base_sha,
+        "effective_persona": "PARENT_PERSONA",
+        "capabilities": [{"name": "gsap", "version": "3.12.5"}],
+    })
+    memory = object()
+    config = {
+        "data_dir": str(tmp_path / "data"),
+        "site": {"clone_path": str(clone)},
+        "builder": {"model": "deepseek/deepseek-v4-flash-0731"},
+    }
+    request = PageBuildRequest.from_dict({
+        "schema_version": 1,
+        "run_id": "visual-refinement-source",
+        "mode": "visual_refinement",
+        "base_sha": base_sha,
+        "page_path": "index.html",
+        "purpose": "Repair the retained candidate.",
+        "site_intake_hash": "a" * 64,
+        "acceptance_criteria": ["Preserve unaffected content."],
+        "content": {"visual_refinement": {"parent_run_id": "parent", "finding": "Fix wrapping."}},
+        "context_snapshot": snapshot.to_dict(),
+        "context_snapshot_hash": snapshot.content_hash,
+    })
+    target = BuildTarget.from_dict({
+        "mode": "local_experiment",
+        "base_sha": base_sha,
+        "candidate_ref": "refs/ada-design-lab/visual-refinement-source",
+        "push_mode": "none",
+        "publishable": False,
+        "clone_path": str(clone),
+        "allowed_paths": ["index.html", "design/**"],
+        "operation_kind": "visual_refinement",
+    })
+    installed = {}
+
+    def fake_install(*args, **kwargs):
+        installed.update(kwargs)
+
+    def fake_turn(worktree, prompt, config, **kwargs):
+        assert "visual refinement of the parent candidate" in prompt
+        assert "Do not redesign the site from scratch" in prompt
+        (worktree / "index.html").write_text("<html><body><h1>Refined</h1></body></html>")
+        return {"session_id": "design-session", "reply": "implemented"}
+
+    monkeypatch.setattr(runner, "_typed_execution_config", lambda config, request, target: config)
+    monkeypatch.setattr(runner, "_site_digest", lambda *args, **kwargs: "PARENT DIGEST")
+    monkeypatch.setattr(runner, "_template_tokens", lambda *args, **kwargs: "PARENT TOKENS")
+    monkeypatch.setattr(runner, "install_agent_files", fake_install)
+    monkeypatch.setattr(runner, "run_opencode_turn", fake_turn)
+
+    runner.stage_design_build({"config": config, "memory": memory, "env": {}}, request, target)
+
+    assert installed["persona"] == "PARENT_PERSONA"
+    assert installed["site_digest"] == "PARENT DIGEST"
+    assert installed["template_tokens"] == "PARENT TOKENS"
+    assert installed["memory"] is None
+    assert installed["context_snapshot"] is None
+    assert installed["approved_capabilities"] == snapshot.capabilities
+
+
+def test_typed_design_build_commits_before_host_quality(tmp_path, monkeypatch):
+    clone, base_sha = _clone(tmp_path)
+    memory = Memory(tmp_path / "data" / "memory.db")
+    config = {
+        "data_dir": str(tmp_path / "data"),
+        "site": {"clone_path": str(clone)},
+        "design_engine": {
+            "manifest_path": "design/ada-design-manifest.json",
+            "quality": {
+                "build_command": None,
+                "required_pages": ["index.html"],
+            },
+        },
+        "builder": {"enabled": True, "validation_repair_attempts": 1},
+    }
+    request = PageBuildRequest.from_dict({
+        "schema_version": 1,
+        "run_id": "design-quality-repair",
+        "mode": "initial_homepage",
+        "base_sha": base_sha,
+        "page_path": "index.html",
+        "purpose": "Create the homepage.",
+        "site_intake_hash": "a" * 64,
+        "acceptance_criteria": ["Keep the homepage accessible."],
+    })
+    target = BuildTarget.from_dict({
+        "mode": "local_experiment",
+        "base_sha": base_sha,
+        "candidate_ref": "refs/ada-design-lab/design-quality-repair",
+        "push_mode": "none",
+        "publishable": False,
+        "clone_path": str(clone),
+        "allowed_paths": ["index.html", "output/**", "design/**"],
+    })
+    turns = []
+
+    def fake_turn(worktree, prompt, config, progress=None, session_id=None, timeout_seconds=None, **kwargs):
+        turns.append(prompt)
+        (worktree / "index.html").write_text("<html><body><h1>Candidate</h1></body></html>")
+        (worktree / "output").mkdir(exist_ok=True)
+        (worktree / "output" / "index.html").write_text(
+            '<html lang="en"><head><title>Candidate</title></head>'
+            '<body><h1>Candidate</h1></body></html>'
+        )
+        return {"session_id": "design-session", "reply": "implemented"}
+
+    monkeypatch.setattr(runner, "run_opencode_turn", fake_turn)
+
+    receipt = runner.stage_design_build({"config": config, "memory": memory}, request, target)
+
+    assert receipt.candidate_sha != base_sha
+    assert len(turns) == 1
+    assert all("Host quality gates" not in prompt for prompt in turns)
+    assert _git(clone, "rev-parse", target.candidate_ref).stdout.strip() == receipt.candidate_sha
+    assert _git(clone, "rev-parse", f"{receipt.candidate_sha}^").stdout.strip() == base_sha
+    assert _git(clone, "status", "--porcelain").stdout == ""
+    memory.close()
+
+
+def test_model_manifest_is_replaced_by_host_manifest(tmp_path, monkeypatch):
+    clone, base_sha = _clone(tmp_path)
+    memory = Memory(tmp_path / "data" / "memory.db")
+    config = {
+        "data_dir": str(tmp_path / "data"),
+        "site": {"clone_path": str(clone)},
+        "builder": {"enabled": True},
+    }
+    request = PageBuildRequest.from_dict({
+        "schema_version": 1,
+        "run_id": "invalid-manifest",
+        "mode": "initial_homepage",
+        "base_sha": base_sha,
+        "page_path": "index.html",
+        "purpose": "Create the homepage.",
+        "site_intake_hash": "a" * 64,
+        "acceptance_criteria": ["Keep the homepage accessible."],
+    })
+    target = BuildTarget.from_dict({
+        "mode": "local_experiment",
+        "base_sha": base_sha,
+        "candidate_ref": "refs/ada-design-lab/invalid-manifest",
+        "push_mode": "none",
+        "publishable": False,
+        "clone_path": str(clone),
+        "allowed_paths": ["index.html", "design/**"],
+    })
+
+    def fake_turn(worktree, prompt, config, **kwargs):
+        (worktree / "index.html").write_text("<html><body><h1>Candidate</h1></body></html>")
+        (worktree / "design").mkdir()
+        (worktree / "design" / "ada-design-manifest.json").write_text('{"schema_version":1}')
+        return {"session_id": "design-session", "reply": "implemented"}
+
+    monkeypatch.setattr(runner, "run_opencode_turn", fake_turn)
+
+    receipt = runner.stage_design_build({"config": config, "memory": memory}, request, target)
+
+    assert receipt.candidate_sha != base_sha
+    manifest = json.loads(_git(clone, "show", f"{receipt.candidate_sha}:design/ada-design-manifest.json").stdout)
+    assert manifest["host_generated"] is True
+    assert manifest["intake_hash"] == "a" * 64
+    assert _git(clone, "status", "--porcelain").stdout == ""
+    assert _git(clone, "rev-parse", target.candidate_ref).stdout.strip() == receipt.candidate_sha
+    memory.close()
+
+
+def test_host_manifest_maps_astro_homepage_output_to_source_file(tmp_path):
+    worktree = tmp_path / "astro"
+    (worktree / "src" / "pages").mkdir(parents=True)
+    (worktree / "src" / "pages" / "index.astro").write_text("<html></html>")
+    request = PageBuildRequest.from_dict({
+        "schema_version": 1,
+        "run_id": "astro-manifest",
+        "mode": "visual_refinement",
+        "base_sha": "a" * 40,
+        "page_path": "index.html",
+        "purpose": "Refine the homepage.",
+        "site_intake_hash": "b" * 64,
+        "acceptance_criteria": ["Keep the homepage accessible."],
+    })
+    target = BuildTarget.from_dict({
+        "mode": "local_experiment",
+        "base_sha": "a" * 40,
+        "candidate_ref": "refs/ada-design-lab/astro-manifest",
+        "push_mode": "none",
+        "publishable": False,
+        "clone_path": str(worktree),
+        "allowed_paths": ["src/**", "design/**"],
+        "operation_kind": "visual_refinement",
+    })
+
+    _, _, manifest = runner._write_host_design_manifest(
+        {"design_engine": {"manifest_path": "design/ada-design-manifest.json"}},
+        worktree,
+        request,
+        target,
+        "a" * 40,
+        {"src/pages/index.astro"},
+    )
+
+    assert manifest["source_homepage_path"] == "src/pages/index.astro"
+
+
+def test_operation_router_uses_native_builder_for_every_design_operation():
+    calls = []
+
+    class FakeNative:
+        def available(self):
+            return True
+
+        def build_design(self, request, target, progress=None):
+            calls.append(("native", target.operation_kind))
+            return "native"
+
+    router = OperationRoutingBuilder(
+        {},
+        native=FakeNative(),
+    )
+
+    assert router.build_design(
+        SimpleNamespace(),
+        SimpleNamespace(operation_kind="initial_build", mode="production_candidate"),
+    ) == "native"
+    assert router.build_design(SimpleNamespace(), SimpleNamespace(operation_kind="visual_refinement", mode="production_candidate")) == "native"
+    assert router.build_design(SimpleNamespace(), SimpleNamespace(operation_kind="technical_repair", mode="production_candidate")) == "native"
+    assert router.build_design(SimpleNamespace(), SimpleNamespace(operation_kind="derived_page", mode="production_candidate")) == "native"
+    assert calls == [
+        ("native", "initial_build"),
+        ("native", "visual_refinement"),
+        ("native", "technical_repair"),
+        ("native", "derived_page"),
+    ]
+
+    try:
+        router.build_design(SimpleNamespace(), SimpleNamespace(operation_kind="unknown"))
+    except BuilderError as exc:
+        assert "unsupported design operation kind" in str(exc)
+    else:
+        raise AssertionError("unsupported operation kind was accepted")

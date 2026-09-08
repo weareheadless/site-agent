@@ -23,8 +23,9 @@ class ConversationBusy(ConversationServiceError):
 
 
 class ConversationService:
-    def __init__(self, memory):
+    def __init__(self, memory, media_service=None):
         self.memory = memory
+        self.media_service = media_service
 
     def create(self, title: str = "New conversation") -> int:
         return self.memory.create_conversation(title)
@@ -37,10 +38,24 @@ class ConversationService:
         if conversation is None:
             raise ConversationNotFound(conversation_id)
         deleted = bool(conversation.get("deleted_ts"))
+        messages = [] if deleted else self.memory.get_messages(conversation_id)
+        for message in messages:
+            resolved = []
+            for attachment in message.get("attachments") or []:
+                item = {"type": "media_asset", "asset_id": attachment.get("asset_id"),
+                        "position": attachment.get("position", len(resolved)), "thumbnail_url": None}
+                if self.media_service is not None:
+                    try:
+                        asset = self.media_service.get(int(item["asset_id"]))
+                        item["thumbnail_url"] = f"/api/media/{asset.asset_id}/thumbnail" if asset.thumbnail_key else None
+                    except Exception:
+                        pass
+                resolved.append(item)
+            message["attachments"] = resolved
         return {
             **conversation,
             "deleted": deleted,
-            "messages": [] if deleted else self.memory.get_messages(conversation_id),
+            "messages": messages,
             "jobs": self.memory.list_chat_jobs(conversation_id),
         }
 

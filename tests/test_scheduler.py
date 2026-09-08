@@ -31,6 +31,8 @@ def setup(tmp_path):
 def test_normalize_accepts_named_int_and_dict_forms():
     assert normalize_schedule("daily")["interval_seconds"] == 86400
     assert normalize_schedule(14)["days"] == 14
+    assert normalize_schedule("6h")["interval_seconds"] == 6 * 3600
+    assert normalize_schedule("3d")["interval_seconds"] == 3 * 86400
     spec = normalize_schedule({"every": "weekly", "weekday": "Monday", "at": "08:00"})
     assert spec["weekday"] == 0 and spec["at_time"] == datetime.time(8, 0)
     with pytest.raises(ScheduleError):
@@ -120,20 +122,26 @@ def test_overdue_job_is_caught_up_with_marker(setup):
     assert any("caught up" in a["detail"] for a in actions)
 
 
-def test_failed_job_records_error_but_still_reschedules(setup):
+def test_failed_job_records_error_and_retries_before_full_cadence(setup):
     memory, clock, scheduler = setup
+    calls = []
 
     def boom():
-        raise RuntimeError("source exploded")
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("source exploded")
 
     scheduler.job("digest", {"every": 2}, boom)
     scheduler.run_once()
     errors = [a for a in memory.recent_actions() if a["kind"] == "job_error"]
     assert any("source exploded" in e["detail"] for e in errors)
+    first_retry = memory.kv_get("next_run:digest")
+    assert first_retry == pytest.approx(clock.now + 3600)
     clock.now += 60
     assert scheduler.run_once() == []
-    clock.now += 2 * 86400
+    clock.now = first_retry
     assert scheduler.run_once() == ["digest"]
+    assert memory.kv_get("next_run:digest") == pytest.approx(clock.now + 2 * 86400)
 
 
 def test_upcoming_reports_state(setup):

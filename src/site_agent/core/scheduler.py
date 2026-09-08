@@ -11,6 +11,7 @@ A job's schedule comes from config and is a CONTRACT:
 Accepted forms:
   - "hourly" | "daily" | "weekly" | "monthly"      (named cadence)
   - 14 or {every: 14}                              (every N days)
+  - "6h" or "3d"                                   (fixed hour/day interval)
   - {every: ..., at: "HH:MM"}                      (anchored to wall-clock time,
                                                     server-local timezone)
   - {every: weekly|daily, weekday: monday, at: ..} (anchored to a weekday)
@@ -20,12 +21,15 @@ Certainty rules:
     job that ran late still keeps its full spacing.
   - if the process was down past next_run, the job is OVERDUE and fires on
     the very next cycle — missed deliveries are caught up, never skipped.
+  - failed jobs retry with a persisted bounded backoff instead of consuming
+    their full cadence, so transient failures do not defer work for a week.
 """
 
 from __future__ import annotations
 
 import datetime
 import os
+import re
 from pathlib import Path
 from typing import Any, Callable
 
@@ -37,6 +41,9 @@ CADENCE_SECONDS = {
     "weekly": 604800,
     "monthly": 2592000,
 }
+
+FAILURE_RETRY_BASE_SECONDS = 3600
+FAILURE_RETRY_MAX_SECONDS = 86400
 
 WEEKDAYS = {
     "monday": 0,
@@ -84,6 +91,22 @@ def normalize_schedule(spec: str | int | dict[str, Any]) -> dict[str, Any]:
     days: int | None = None
     if isinstance(every, str) and every.lower() in CADENCE_SECONDS:
         interval_seconds = CADENCE_SECONDS[every.lower()]
+    elif isinstance(every, str):
+        match = re.fullmatch(r"(\d+)\s*([hd])", every.strip().lower())
+        if match:
+            amount = int(match.group(1))
+            if amount < 1:
+                raise ScheduleError(f"cadence must be >= 1 interval, got {every}")
+            interval_seconds = amount * (3600 if match.group(2) == "h" else 86400)
+            days = amount if match.group(2) == "d" else None
+        else:
+            try:
+                days = int(every)
+            except (TypeError, ValueError):
+                raise ScheduleError(f"unknown cadence '{every}'")
+            if days < 1:
+                raise ScheduleError(f"cadence must be >= 1 day, got {days}")
+            interval_seconds = days * 86400
     else:
         try:
             days = int(every)
@@ -150,6 +173,21 @@ class Scheduler:
     def _next_run_key(self, name: str) -> str:
         return f"next_run:{name}"
 
+    def _failure_count_key(self, name: str) -> str:
+        return f"job_failures:{name}"
+
+    def _record_failure(self, name: str, spec: dict[str, Any]) -> int:
+        failures = self.memory.kv_get(self._failure_count_key(name), 0)
+        failures = failures if isinstance(failures, int) and failures >= 0 else 0
+        failures += 1
+        retry_seconds = min(
+            spec["interval_seconds"],
+            FAILURE_RETRY_MAX_SECONDS,
+            FAILURE_RETRY_BASE_SECONDS * (2 ** min(failures - 1, 5)),
+        )
+        self.memory.kv_set(self._failure_count_key(name), failures)
+        return retry_seconds
+
     def due(self, name: str) -> bool:
         nxt = self.memory.kv_get(self._next_run_key(name))
         if not isinstance(nxt, (int, float)):
@@ -193,16 +231,24 @@ class Scheduler:
             if not self.due(name):
                 continue
             late_hours = round(self.overdue_by_hours(name), 1)
+            succeeded = False
             try:
                 fn()
+                succeeded = True
                 detail = f"{spec['label']} ok" + (f" (caught up, {late_hours}h late)" if late_hours else "")
                 self.memory.record_action("job", f"{name}: {detail}")
             except Exception as exc:  # noqa: BLE001 — jobs must never kill the loop
-                self.memory.record_action("job_error", f"{name}: {exc}")
+                retry_seconds = self._record_failure(name, spec)
+                self.memory.record_action("job_error", f"{name}: {exc} (retry in {retry_seconds}s)")
             finally:
                 fired_at = self.clock()
                 self.memory.kv_set(f"last_run:{name}", round(fired_at, 3))
-                self.memory.kv_set(self._next_run_key(name), round(compute_next(spec, fired_at), 3))
+                if succeeded:
+                    self.memory.kv_set(self._failure_count_key(name), 0)
+                    next_run = compute_next(spec, fired_at)
+                else:
+                    next_run = fired_at + retry_seconds
+                self.memory.kv_set(self._next_run_key(name), round(next_run, 3))
                 ran.append(name)
         return ran
 

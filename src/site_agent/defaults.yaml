@@ -3,6 +3,35 @@ instance_name: default
 data_dir: data
 poll_seconds: 300
 
+design_engine:
+  enabled: false
+  intake_schema_version: 1
+  manifest_path: design/ada-design-manifest.json
+  provider: openrouter
+  model: ""
+  base_url: ""
+  api_key_env: ""
+  repair_attempts: 0
+  max_tokens: 8192
+  required_viewports:
+    - {name: desktop, width: 1440, height: 1000}
+    - {name: tablet, width: 768, height: 1024}
+    - {name: mobile, width: 390, height: 844}
+  libraries:
+    gsap:
+      enabled: true
+  fonts: []        # optional exact local WOFF2 provisions: source_path, destination, sha256
+  quality:
+    browser: false
+    accessibility: true
+    visual_critic: false
+    native_source_required: false
+    originality_required: false
+    internal_scaffold_fingerprints: []
+    required_font_families: []
+    approved_font_files: []
+    allowed_hard_denied_paths: []
+
 persona:
   name: Ada
   spirit: ""     # who she is in this site's world — embodied, first person
@@ -24,8 +53,19 @@ schedule:
   compact: {every: 7, weekday: sunday, at: "04:00"}
   health_check: {every: daily, at: "12:00"}
   seo_snapshot: {every: daily, at: "11:30"}
+  seo_research_cycle: {every: daily, at: "13:00"}
+  seo_outcomes: {every: daily, at: "14:00"}
+  seo_site_report_cycle: {every: daily, at: "13:00"}
+  article_research_cycle: {every: daily, at: "13:30"}
   strategist: {every: 7, weekday: sunday, at: "18:00"}
   backup: {every: 7, weekday: sunday, at: "03:00"}
+  social_post: {every: weekly, weekday: thursday, at: "09:00"}
+
+social:
+  enabled: false
+  max_pending: 2
+  default_format: single
+  languages: [en]
 
 maintenance:
   observation_retention_days: 45
@@ -40,6 +80,7 @@ sources:
 
 ga:
   enabled: false
+  source: ga4
   property_id: ""
   key_path: ""
 
@@ -48,6 +89,27 @@ seo:
   source: gsc
   site_url: ""
   key_path: ""
+  research:
+    enabled: false
+    timezone: UTC
+    languages:
+      - code: en
+        markets: [US]
+        primary: true
+    existing_locales: [en]
+    competitors: []
+    business_goals: []
+    priority_services: []
+    anchor_topics: []
+  site_report:
+    enabled: false
+    timezone: UTC
+    max_crawl_pages: 200
+  article_research:
+    enabled: false
+    timezone: UTC
+    language: en
+    market: US
 
 site:
   adapter: github_static
@@ -65,14 +127,43 @@ site:
     fonts_url: ""       # optional: Google Fonts URL to load for the brand fonts
     logo: ""            # optional: logo image URL shown in the admin header
   media:                # optional Cloudflare R2 for the admin image uploader
+    enabled: false       # one private, customer-scoped bucket
     account_id: ""      # Cloudflare account ID
     bucket: ""          # R2 bucket name
-    public_url: ""      # public base URL for the bucket (e.g. https://media.example.com)
+    private: true        # public buckets are not supported by the media workflow
+    public_url: ""      # legacy compatibility only; private media does not need this
+    signed_url_ttl_seconds: 900
+    max_image_bytes: 26214400
+    max_pdf_bytes: 52428800
+    max_image_pixels: 80000000
+    max_pdf_pages: 30
+    vision_pages_per_call: 12
+    pdf_render_dpi: 220
+    image_max_edge: 3200
+    webp_quality: 84
+    vision_image_max_edge: 1600
+    vision_image_quality: 70
+    max_chat_attachments: 12
+    site_asset_dir: ""
     # access key id + secret resolved via env mapping below
   cloudflare:
     account_id: ""
     project_name: ""
     mode: git
+
+providers:
+  cicero:
+    enabled: false
+    base_url: http://127.0.0.1:8000
+    token_env: CICERO_SERVICE_TOKEN
+    poll_interval_seconds: 2
+    preparation_timeout_seconds: 600
+  crawlseo:
+    enabled: false
+    url: ""
+    token_env: CRAWLSEO_SERVICE_TOKEN
+    timeout_seconds: 30
+    max_response_bytes: 2097152
 
 blog:
   # New instances use Pelican. Existing instances should pin legacy explicitly
@@ -84,9 +175,9 @@ blog:
   journal_enabled: false
 
 llm:
-  base_url: https://api.openai.com/v1
-  model: gpt-4o-mini
-  timeout_seconds: 120
+  base_url: https://openrouter.ai/api/v1
+  model: deepseek/deepseek-v4-flash-0731
+  timeout_seconds: 300
   max_tokens: 16384      # generous output budget for creative work
   tool_calling: true   # native function-calling loop for the admin chat
   max_work_steps: 24  # tool/continuation rounds before asking the owner to continue
@@ -109,7 +200,7 @@ vision:
   base_url: ""          # OpenAI-compatible /v1 endpoint
   model: ""
   timeout_seconds: 90
-  max_tokens: 700
+  max_tokens: 4096
 
 admin:
   host: 127.0.0.1
@@ -127,10 +218,12 @@ env:
   cloudflare_api_token: CLOUDFLARE_API_TOKEN
   r2_access_key_id: R2_ACCESS_KEY_ID
   r2_secret_access_key: R2_SECRET_ACCESS_KEY
+  cicero_service_token: CICERO_SERVICE_TOKEN
+  crawlseo_service_token: CRAWLSEO_SERVICE_TOKEN
 
 builder:
   enabled: false
-  model: ""            # native OpenCode Build model; defaults to llm.model
+  model: openrouter/deepseek/deepseek-v4-flash-vision-exp
   timeout_seconds: 1800
   provider_timeout_seconds: 2100
   provider_chunk_timeout_seconds: 180

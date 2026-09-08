@@ -36,6 +36,8 @@ schedule:
   weekly_report: {every: weekly, weekday: monday, at: "08:00"}
   article: {every: weekly, weekday: tuesday, at: "09:00"}
   reflect: {every: monthly}
+  seo_site_report_cycle: {every: daily, at: "13:00"}
+  article_research_cycle: {every: daily, at: "13:30"}
   dream: {every: 7, weekday: sunday, at: "05:00"}   # a plain first-person dream
   awaken: {every: 7, weekday: sunday, at: "06:00"}  # she decides whether it meant anything
   integrate_self: {every: 2, at: "20:00"}            # she decides whether she changed
@@ -76,24 +78,69 @@ sources:
 
 ga:
   enabled: true
+  source: crawlseo
   property_id: "REPLACE_WITH_OCEANICVIBES_GA4_PROPERTY_ID"
   key_path: ""
 
 seo:
   enabled: true
-  source: gsc
+  source: crawlseo
   site_url: "https://oceanicvibes.com/"
   key_path: ""           # falls back to GA4_SERVICE_ACCOUNT env var
+  research:
+    # Enable after the CrawlSEO project is provisioned with its platform grant.
+    # Competitor research is optional and may be skipped when no candidate is supported.
+    enabled: false
+    timezone: America/Cancun
+    languages:
+      - code: en
+        markets: [US]
+        primary: true
+    existing_locales: [en]
+    competitors: []
+    business_goals:
+      - Increase qualified freediving training enquiries
+    priority_services:
+      - Freediving courses in Playa del Carmen
+      - Cenote freediving training in Bacalar
+    anchor_topics:
+      - Freediving safety for beginners
+      - Cenote freediving in the Riviera Maya
+  site_report:
+    enabled: true
+    timezone: America/Cancun
+    max_crawl_pages: 200
+  article_research:
+    enabled: true
+    timezone: America/Cancun
+    language: en
+    market: US
+
+providers:
+  crawlseo:
+    enabled: true
+    url: "https://crawlseo.helloada.app/mcp"
+    token_env: CRAWLSEO_SERVICE_TOKEN
+    timeout_seconds: 30
+    max_response_bytes: 2097152
 
 site:
   adapter: github_static            # switch to cloudflare_pages after the CF move
   repository: "oceanicvibesfreediving/oceanicvibesfreediving.github.io"
   branch: main
+  writable_patterns: ["*.html", "*.css", "*.js", "content/articles/*.md", "images/*", "vendor/*", "themes/oceanicvibes/templates/*", "themes/oceanicvibes/static/*"]
   content_path: content.json
   brand:
     font_body: "'Manrope', sans-serif"
     font_display: "'Cormorant Garamond', Georgia, serif"
     fonts_url: "https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700&display=swap"
+  media:
+    enabled: false
+    account_id: ""
+    bucket: ""
+    private: true
+    vision_image_max_edge: 1600
+    vision_image_quality: 70
   cloudflare:
     account_id: ""
     project_name: ""
@@ -107,22 +154,51 @@ blog:
   site_url: "https://oceanicvibes.com/"
   build_command: "bash build.sh"
 
+design_engine:
+  provider: entrim
+  model: deepseek-ai/DeepSeek-V4-Flash
+  base_url: https://api.entrim.ai/v1
+  api_key_env: SITE_AGENT_VISION_API_KEY
+  manifest_path: design/ada-design-manifest.json
+  # Host-owned allowlist entry. Ada can request motion in the typed design,
+  # but only this pinned runtime is ever downloaded into a candidate.
+  libraries:
+    gsap:
+      enabled: true
+  quality:
+    # Pelican emits these utility/archive pages alongside the stable public
+    # routes; they are not part of the customer-facing baseline comparison.
+    ignored_pages: [admin.html, "author/**", "category/**"]
+    # Package manifests remain hard-denied by default; this explicit exception
+    # lets the approved capability gate admit an exact, pinned runtime package.
+    allowed_hard_denied_paths: [package.json]
+  visual_review:
+    provider: entrim
+    base_url: https://api.entrim.ai/v1
+    model: Qwen/Qwen3.8-27B
+    api_key_env: SITE_AGENT_VISION_API_KEY
+    timeout_seconds: 300
+    max_tokens: 1024
+
 llm:
-  base_url: https://api.openai.com/v1   # any OpenAI-compatible endpoint
-  model: gpt-4o-mini
-  timeout_seconds: 60
+  base_url: https://openrouter.ai/api/v1
+  model: deepseek/deepseek-v4-flash-0731
+  timeout_seconds: 300
   max_retries: 2
   daily_budget_usd: 2.0
   price_per_mtok:
     input: 0.15
     output: 0.60
 
+builder:
+  output_tokens: 32768
+
 vision:
   enabled: true
   base_url: https://api.entrim.ai/v1
   model: Qwen/Qwen3.8-27B
   timeout_seconds: 90
-  max_tokens: 1200
+  max_tokens: 4096
 
 admin:
   host: 127.0.0.1
@@ -145,3 +221,4 @@ publish_mode: ask_first
 
 env:
   vision_api_key: SITE_AGENT_VISION_API_KEY
+  crawlseo_service_token: CRAWLSEO_SERVICE_TOKEN

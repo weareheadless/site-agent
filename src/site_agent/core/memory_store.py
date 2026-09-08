@@ -96,6 +96,11 @@ def _local_embedding(text: str, dimensions: int = EMBEDDING_DIMENSIONS) -> list[
     return vector
 
 
+def embed_text(text: str, dimensions: int = EMBEDDING_DIMENSIONS) -> list[float]:
+    """Return the stable local embedding used by both customer and Intake memory."""
+    return _local_embedding(text, dimensions)
+
+
 def _to_epoch(ts_text: Any) -> float:
     try:
         dt = datetime.datetime.fromisoformat(str(ts_text).replace("Z", "+00:00"))
@@ -123,6 +128,11 @@ def _cosine(a: list, b: list) -> float:
     if na == 0 or nb == 0:
         return 0.0
     return dot / (na * nb)
+
+
+def cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Compare two embeddings without exposing a persistence implementation."""
+    return _cosine(a, b)
 
 
 def reindex(memory: Any, batch_size: int = 100) -> int:

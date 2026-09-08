@@ -295,7 +295,7 @@ class HomeService:
     def _pending_draft_actions(self, known_refs: set[str]) -> list[OwnerAction]:
         result: list[OwnerAction] = []
         for draft in self.memory.list_drafts(status="pending", limit=100):
-            if draft["kind"] == "report":
+            if draft["kind"] in {"report", "seo_report"}:
                 continue
             source_ref = f"draft:{draft['id']}"
             if source_ref in known_refs:

@@ -19,7 +19,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-CACHE_KEY = "template_tokens_v1"
+CACHE_KEY = "template_tokens_v2"
 
 _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.S)
 _CSS_RULE_RE = re.compile(r"([^{}]+)\{([^{}]*)\}", re.S)
@@ -241,21 +241,21 @@ def build(clone: Path, ref: str = "origin/main") -> str:
     return "\n".join(lines)[:1600]
 
 
-def cached(clone: Path, memory: Any = None) -> str:
-    """Build the template contract, reusing the cached copy while origin/main
-    hasn't moved."""
-    head = _git(clone, "rev-parse", "origin/main").strip()
+def cached(clone: Path, memory: Any = None, ref: str = "origin/main") -> str:
+    """Build the template contract, caching against the exact source ref."""
+    head = _git(clone, "rev-parse", ref).strip()
     if memory is not None and head:
         try:
             previous = memory.kv_get(CACHE_KEY)
         except Exception:  # noqa: BLE001
             previous = None
-        if isinstance(previous, dict) and previous.get("main_head") == head and previous.get("tokens"):
+        if (isinstance(previous, dict) and previous.get("ref") == ref
+                and previous.get("head") == head and previous.get("tokens")):
             return previous["tokens"]
-    text = build(clone)
+    text = build(clone, ref=ref)
     if memory is not None and head:
         try:
-            memory.kv_set(CACHE_KEY, {"main_head": head, "tokens": text})
+            memory.kv_set(CACHE_KEY, {"ref": ref, "head": head, "tokens": text})
         except Exception:  # noqa: BLE001
             pass
     return text

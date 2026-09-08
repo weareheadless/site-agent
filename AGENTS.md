@@ -53,6 +53,15 @@ returns active jobs only.
 
 - Start with a failing focused test or a reproducible API request.
 - Prefer one behavior-preserving extraction over a rewrite.
+- Prompts carry contracts, typed shapes, and behavioral rules only. Never embed
+  worked conversational examples, sample replies, sample questions, or canned
+  phrasings in model prompts: models imitate them — language, tone, and content —
+  instead of answering from the owner's own context. This is a standing invariant,
+  not a style choice. The model mirrors the owner's language, tone, and business
+  context from the conversation itself; the host never detects, classifies, or
+  injects language. Host-side conversation heuristics (message-kind detection,
+  "nudge" retries, restatement rules) are scaffolding that traps the model and
+  must not replace the model's own conversational judgment.
 - Keep public API paths stable while moving business logic behind them.
 - Use typed result objects or documented dictionaries at new boundaries.
 - Include job, draft, conversation, provider, or adapter IDs in diagnostics.

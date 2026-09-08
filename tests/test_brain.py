@@ -228,6 +228,63 @@ def test_draft_article_refuses_with_no_material(env):
     assert llm.calls == []
 
 
+def test_draft_article_for_idea_uses_selected_query_and_serp_evidence(env):
+    from site_agent.brain.article import draft_article_for_idea
+
+    memory, config = env
+    llm = FakeLLM([
+        "# A useful guide\n\n## The answer\n\nBody.",
+        json.dumps({"problems": []}),
+    ])
+    context = _context(memory, config, llm)
+    idea = {
+        "working_title": "A useful guide",
+        "audience_need": "Readers need clarity.",
+        "thesis": "Explain the practical answer.",
+        "why_now": "A recurring community question",
+        "origin": "community_question",
+        "language": "en",
+        "market": "US",
+        "source_urls": ["https://example.com/question"],
+    }
+    note = {
+        "decision": "keep",
+        "selected_query": "reader question basics",
+        "reframed_title": "A useful guide",
+        "reframed_thesis": "Explain the practical answer.",
+        "serp_evidence": {
+            "query": "reader question basics",
+            "organic": [{"rank": 1, "domain": "school.example", "title": "Guide", "url": "https://school.example"}],
+        },
+        "serp_receipt": {"run_id": "run-serp", "provider_task_id": "task-serp", "cost_micros": 2000},
+    }
+    draft_id = draft_article_for_idea(
+        context,
+        idea,
+        note,
+        [{"keyword": "reader question basics", "search_volume": 20}],
+        serp_evidence=note["serp_evidence"],
+        lineage={
+            "article_idea_id": 7,
+            "keyword_research_run_id": "run-1",
+            "serp_research_run_id": "run-serp",
+            "research_cost_micros": 12000,
+        },
+    )
+
+    drafts = memory.list_drafts(status="pending")
+    article = [d for d in drafts if d["kind"] == "article"][0]
+    assert article["id"] == draft_id
+    assert article["meta"]["article_research"]["keyword_research_run_id"] == "run-1"
+    assert article["meta"]["article_research"]["serp_research_run_id"] == "run-serp"
+    write_call = llm.calls[0]
+    content = write_call["messages"][1]["content"]
+    assert "Primary keyword: reader question basics" in content
+    assert "school.example" in content
+    assert "do not use keyword density targets" in content
+    assert "Why it matters: Readers need clarity." in content
+
+
 def test_inner_voice_challenge_records_dialogue_and_returns_problems(env):
     from site_agent.brain import inner_voice
 

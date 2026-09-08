@@ -17,7 +17,12 @@ from . import inner_voice
 from .prompts import memory_context
 
 
-def _material(memory: Any) -> dict[str, Any]:
+def _material(memory: Any, research_report: dict[str, Any] | None = None) -> dict[str, Any]:
+    article_research = (
+        research_report
+        if isinstance(research_report, dict) and "article_research_note" in research_report
+        else {}
+    )
     themes = memory.kv_get("themes", [])
     learnings = [
         r["text"]
@@ -38,6 +43,18 @@ def _material(memory: Any) -> dict[str, Any]:
         r["text"]
         for r in memory.recent_observations(source="feedback", limit=3)
     ]
+    news = []
+    for row in memory.recent_observations(limit=30):
+        if row.get("source") in {"self", "inner_voice", "dream", "awaken", "identity_shift"}:
+            continue
+        link = str((row.get("meta") or {}).get("link") or "")
+        if link.startswith(("http://", "https://")):
+            news.append({
+                "source": row.get("source", ""),
+                "text": str(row.get("text") or "")[:700],
+                "url": link,
+                "observed_at": row.get("ts", ""),
+            })
     return {
         "themes": themes,
         "learnings": learnings,
@@ -45,6 +62,9 @@ def _material(memory: Any) -> dict[str, Any]:
         "inner_voice": inner_voice,
         "past_articles": past_articles[-8:],
         "feedback": feedback,
+        "news": news[:12],
+        "seo_research": (research_report or {}) if not article_research else {},
+        "article_research": article_research,
         "context": memory_context(memory),
     }
 
@@ -87,15 +107,47 @@ def _write_prompt(persona: str, topic: dict[str, Any], material: dict[str, Any])
         "zero marketing jargon; short sentences; no filler intro paragraphs."
         "\nEnd with a natural next step for the reader (course, contact, related reading)."
     )
-    user = (
+    feedback_block = (
+        "Feedback your owner gave you on past work — steer clear of it:\n"
+        + "\n".join(f"- {item}" for item in material["feedback"])
+        + "\n\n"
+        if material.get("feedback") else ""
+    )
+    news_block = (
+        "Fresh news and source material (use only if it genuinely helps; do not invent details):\n"
+        + "\n".join(f"- {item.get('text', '')} ({item.get('url', '')})" for item in material.get("news", [])[:8])
+        + "\n\n"
+        if material.get("news") else ""
+    )
+    seo_block = (
+        "SEO research evidence:\n" + json.dumps(material.get("seo_research") or {}, default=str)[:8000] + "\n\n"
+        if material.get("seo_research") else ""
+    )
+    article_research = material.get("article_research")
+    research_note_block = (
+        "Editorial research note (support the original idea; do not optimize for density or replace its topic):\n"
+        + json.dumps(article_research, default=str)[:8000]
+        + "\n\n"
+        if article_research else ""
+    )
+    target_language = topic.get("language") or "the site's configured language"
+    target_market = topic.get("market") or "the site's configured market"
+    base = (
         f"Title: {topic['title']}\nAngle: {topic.get('angle', '')}\nWhy it matters: {topic.get('why', '')}\n"
+        f"Target language: {target_language}\n"
+        f"Target market: {target_market}\n"
+        f"Primary keyword: {topic.get('primary_keyword', '')}\n"
         f"{_state_of_mind(material)}\n\n"
         "What you have on your mind from this week (use what's useful, ignore the rest):\n"
         f"{material['context'][:2000]}\n\n"
-        + (f"Feedback your owner gave you on past work — steer clear of it:\n"
-           + "\n".join(f"- {f}" for f in material["feedback"]) + "\n\n"
-           if material.get("feedback") else "")
-        + "Length: 500-800 words. Use ## subheadings."
+    )
+    user = base + feedback_block + news_block + seo_block + research_note_block + (
+        "Write for the stated reader need and thesis. Use research terminology only when natural; "
+        "do not force the seed into the title or headings, and do not use keyword density targets.\n\n"
+        if article_research else ""
+    ) + (
+        "Length: 500-800 words. Use ## subheadings. Do not repeat the article title as a heading; "
+        "the site template renders it."
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
@@ -203,28 +255,56 @@ def _revise_article(raw: str) -> str:
     return _clean_article(raw)
 
 
-def draft_article(context: dict[str, Any]) -> int:
+def draft_article(
+    context: dict[str, Any],
+    article_brief: dict[str, Any] | None = None,
+    research_report: dict[str, Any] | None = None,
+) -> int:
     memory = context["memory"]
     llm = context.get("llm")
     persona = context.get("persona_prompt") or ""
     if llm is None:
         raise RuntimeError("llm client missing; cannot draft article")
 
-    material = _material(memory)
-    if not material["learnings"] and not material["themes"]:
+    material = _material(memory, research_report)
+    if not material["learnings"] and not material["themes"] and not article_brief:
         raise RuntimeError("nothing learned yet; run the digest/learning passes first")
 
-    topic_raw = llm.chat(_topic_prompt(persona, material), json_mode=True, temperature=0.7)
-    try:
-        topic = json.loads(topic_raw)
-        assert isinstance(topic.get("title"), str) and topic["title"].strip()
-    except (json.JSONDecodeError, AssertionError):
-        raise RuntimeError(f"topic selection returned invalid JSON: {topic_raw[:200]}")
+    if article_brief is not None:
+        topic = dict(article_brief)
+        if not isinstance(topic.get("title"), str) or not topic["title"].strip():
+            raise RuntimeError("strategy article brief has no title")
+    else:
+        topic_raw = llm.chat(_topic_prompt(persona, material), json_mode=True, temperature=0.7)
+        try:
+            topic = json.loads(topic_raw)
+            assert isinstance(topic.get("title"), str) and topic["title"].strip()
+        except (json.JSONDecodeError, AssertionError):
+            raise RuntimeError(f"topic selection returned invalid JSON: {topic_raw[:200]}")
 
     body = _clean_article(llm.chat(_write_prompt(persona, topic, material), temperature=0.6))
     body, self_edit_problems = _self_edit(context, topic, body, material)
 
     meta = {"angle": topic.get("angle", ""), "why": topic.get("why", "")}
+    if article_brief is not None:
+        meta["seo_strategy"] = {
+            "research_report_id": topic.get("research_report_id", ""),
+            "strategy_cycle_id": topic.get("strategy_cycle_id"),
+            "primary_keyword": topic.get("primary_keyword", ""),
+            "language": topic.get("language", ""),
+            "market": topic.get("market", ""),
+            "source_urls": topic.get("source_urls", []),
+        }
+    if topic.get("article_idea_id") is not None:
+        meta["article_research"] = {
+            "article_idea_id": topic.get("article_idea_id"),
+            "keyword_research_run_id": topic.get("keyword_research_run_id"),
+            "serp_research_run_id": topic.get("serp_research_run_id"),
+            "research_decision": topic.get("research_decision", "keep"),
+            "research_cost_micros": topic.get("research_cost_micros"),
+            "origin": topic.get("origin", ""),
+            "source_urls": topic.get("source_urls", []),
+        }
     if self_edit_problems:
         meta["self_edit"] = self_edit_problems
     draft_id = memory.save_draft(
@@ -238,3 +318,51 @@ def draft_article(context: dict[str, Any]) -> int:
         f"draft #{draft_id}: {topic['title']}" + (" (self-edited)" if self_edit_problems else ""),
     )
     return draft_id
+
+
+def draft_article_for_strategy(
+    context: dict[str, Any],
+    article_brief: dict[str, Any],
+    research_report: dict[str, Any],
+) -> int:
+    """Prepare one owner-reviewable article from a completed SEO strategy."""
+    return draft_article(context, article_brief=article_brief, research_report=research_report)
+
+
+def draft_article_for_idea(
+    context: dict[str, Any],
+    idea: dict[str, Any],
+    research_note: dict[str, Any],
+    related_keywords: list[Any] | None = None,
+    serp_evidence: dict[str, Any] | None = None,
+    lineage: dict[str, Any] | None = None,
+) -> int:
+    """Draft once from the persisted audience hypothesis and compact research note."""
+    decision = str(research_note.get("decision") or "keep")
+    title = str(research_note.get("reframed_title") or idea.get("working_title") or "").strip()
+    topic = {
+        "title": title,
+        "angle": str(research_note.get("reframed_thesis") or idea.get("thesis") or "").strip(),
+        "why": str(idea.get("audience_need") or idea.get("why_now") or "").strip(),
+        "language": idea.get("language", "en"),
+        "market": idea.get("market", "US"),
+        "source_urls": idea.get("source_urls", []),
+        "article_idea_id": (lineage or {}).get("article_idea_id"),
+        "keyword_research_run_id": (lineage or {}).get("keyword_research_run_id"),
+        "serp_research_run_id": (lineage or {}).get("serp_research_run_id"),
+        "research_decision": decision,
+        "research_cost_micros": (lineage or {}).get("research_cost_micros"),
+        "origin": idea.get("origin", ""),
+        "primary_keyword": research_note.get("selected_query", ""),
+    }
+    if not title:
+        raise RuntimeError("article idea has no working title")
+    return draft_article(
+        context,
+        article_brief=topic,
+        research_report={
+            "article_research_note": research_note,
+            "serp_evidence": serp_evidence or {},
+            "related_keywords": (related_keywords or [])[:20],
+        },
+    )

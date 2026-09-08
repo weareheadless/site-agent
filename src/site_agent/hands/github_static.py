@@ -192,6 +192,50 @@ class GithubStatic(SiteAdapter):
                 "parent_sha": (parents[0] or {}).get("sha") if parents else "",
                 "html_url": body.get("html_url")}
 
+    def merge_design_candidate(
+        self,
+        config: dict[str, Any],
+        candidate_sha: str,
+        base_sha: str,
+        message: str,
+    ) -> dict[str, Any]:
+        """Merge the exact reviewed candidate, refusing an advanced production head."""
+        candidate_sha = str(candidate_sha or "").strip().lower()
+        base_sha = str(base_sha or "").strip().lower()
+        if len(candidate_sha) != 40 or len(base_sha) != 40:
+            raise AdapterError("design candidate and base must be full commit SHAs")
+        _, head = _request(
+            "GET",
+            f"{API}/repos/{self.repo}/git/ref/heads/{urllib.parse.quote(self.branch)}",
+            token=self.token,
+        )
+        current_sha = str((head.get("object") or {}).get("sha") or "").lower()
+        if current_sha != base_sha:
+            return {
+                "merged": False,
+                "status": 409,
+                "reason": "production branch advanced since this candidate was built",
+                "candidate_sha": candidate_sha,
+                "current_sha": current_sha,
+            }
+        status, body = _request(
+            "POST",
+            f"{API}/repos/{self.repo}/merges",
+            token=self.token,
+            payload={"base": self.branch, "head": candidate_sha, "commit_message": message[:200]},
+        )
+        if status not in (200, 201):
+            return {"merged": False, "status": status, "candidate_sha": candidate_sha}
+        parents = body.get("parents") or []
+        return {
+            "merged": True,
+            "path": f"{candidate_sha}->{self.branch}",
+            "candidate_sha": candidate_sha,
+            "commit_sha": body.get("sha"),
+            "parent_sha": (parents[0] or {}).get("sha") if parents else "",
+            "html_url": body.get("html_url"),
+        }
+
     def list_files(self, branch: str | None = None) -> list[str]:
         ref = branch or self.branch
         _, tree = _request(

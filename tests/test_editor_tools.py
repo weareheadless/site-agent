@@ -223,6 +223,60 @@ def test_spawn_build_absent_when_builder_disabled(env):
     assert "spawn_build" not in spec
 
 
+def test_canonical_design_intent_uses_typed_handoff_instead_of_legacy_builder(env):
+    from site_agent.hands.base import SiteAdapter
+
+    class Adapter(SiteAdapter):
+        name = "t"
+        site = {"content_path": "content.json"}
+
+        def get_content(self):
+            return {}
+
+        def get_file(self, path, branch=None):
+            return (None, None)
+
+        def commit_file(self, path, data, message, branch=None):
+            return {}
+
+    memory, config, context = env
+    config["builder"] = {"enabled": True}
+    config["site"]["clone_path"] = "/tmp/design-clone"
+    context["design_service"] = object()
+    intake = {
+        "schema_version": 1,
+        "business": {
+            "name": "OceanicVibes",
+            "offer_summary": "Freediving instruction.",
+            "primary_services": ["Training"],
+        },
+        "audience": {"primary": "Freedivers"},
+        "conversion": {"primary_action": "Start a conversation", "not_available": True},
+        "brand": {"voice": "Calm and precise."},
+        "site": {"required_pages": ["index.html"]},
+    }
+    llm = FakeToolsLLM([{
+        "content": None,
+        "tool_calls": _tc(
+            "design_request",
+            intent="redesign",
+            intake=intake,
+            owner_summary="I will prepare one reviewable redesign.",
+        ),
+    }])
+
+    result = handle_message(
+        {**context, "llm": llm},
+        Adapter(),
+        "redesign the homepage around depth",
+        source_message_id=17,
+    )
+
+    assert result["design_request"]["intent"] == "redesign"
+    assert result["design_request"]["source_message_id"] == 17
+    assert "spawn_build" not in json.dumps(llm.calls[0]["tools"])
+
+
 def test_store_proposal_allows_owner_to_reconsider_declined_work(env):
     from site_agent.brain.editor import store_proposal
 

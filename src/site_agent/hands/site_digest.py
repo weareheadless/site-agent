@@ -16,7 +16,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-CACHE_KEY = "site_digest_v1"
+CACHE_KEY = "site_digest_v2"
 _MAX_PAGES = 8
 _MAX_HEADINGS = 12
 _MAX_VARS = 40
@@ -159,20 +159,21 @@ def build(clone: Path, ref: str = "origin/main") -> str:
     return "\n".join(lines)[:2800]
 
 
-def cached(clone: Path, memory: Any = None) -> str:
-    """Build the digest, reusing the cached copy while origin/main hasn't moved."""
-    head = _git(clone, "rev-parse", "origin/main").strip()
+def cached(clone: Path, memory: Any = None, ref: str = "origin/main") -> str:
+    """Build the digest, caching against the exact source ref and commit."""
+    head = _git(clone, "rev-parse", ref).strip()
     if memory is not None and head:
         try:
             previous = memory.kv_get(CACHE_KEY)
         except Exception:  # noqa: BLE001
             previous = None
-        if isinstance(previous, dict) and previous.get("main_head") == head and previous.get("digest"):
+        if (isinstance(previous, dict) and previous.get("ref") == ref
+                and previous.get("head") == head and previous.get("digest")):
             return previous["digest"]
-    text = build(clone)
+    text = build(clone, ref=ref)
     if memory is not None and head:
         try:
-            memory.kv_set(CACHE_KEY, {"main_head": head, "digest": text})
+            memory.kv_set(CACHE_KEY, {"ref": ref, "head": head, "digest": text})
         except Exception:  # noqa: BLE001
             pass
     return text

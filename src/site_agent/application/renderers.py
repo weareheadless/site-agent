@@ -71,6 +71,17 @@ def _article(artifact: Artifact) -> ArtifactPreview:
     return ArtifactPreview(artifact.title, artifact.summary, "article", tuple(sections))
 
 
+def _seo_report(artifact: Artifact) -> ArtifactPreview:
+    data = artifact.preview_data
+    body = _text(data, "body") or artifact.summary
+    return ArtifactPreview(
+        artifact.title,
+        artifact.summary,
+        "seo_report",
+        (PreviewSection("SEO report", body),),
+    )
+
+
 def _field_lines(data: Mapping[str, Any]) -> list[str]:
     hidden = {
         "build_log",
@@ -124,7 +135,25 @@ def _business_information(artifact: Artifact) -> ArtifactPreview:
 def _social_post(artifact: Artifact) -> ArtifactPreview:
     data = artifact.preview_data
     body = _text(data, "text") or _text(data, "body") or artifact.summary
-    return ArtifactPreview(artifact.title, artifact.summary, "social_post", (PreviewSection("Post", body),))
+    sections = [PreviewSection("Post", body)]
+    fmt = _text(data, "format")
+    if fmt:
+        sections.append(PreviewSection("Format", fmt))
+    assets = data.get("preview_assets")
+    if isinstance(assets, list):
+        names = [item.get("name", "") for item in assets if isinstance(item, Mapping) and item.get("name")]
+        if names:
+            sections.append(PreviewSection("Preview assets", ", ".join(names[:12])))
+    sources = data.get("sources")
+    if isinstance(sources, list):
+        links = [
+            f"{item.get('title')}: {item.get('url')}"
+            for item in sources
+            if isinstance(item, Mapping) and item.get("title") and item.get("url")
+        ]
+        if links:
+            sections.append(PreviewSection("Sources", "\n".join(links[:12])))
+    return ArtifactPreview(artifact.title, artifact.summary, "social_post", tuple(sections))
 
 
 def _generic(artifact: Artifact) -> ArtifactPreview:
@@ -136,6 +165,7 @@ _RENDERERS: dict[str, ArtifactRenderer] = {
     "site_change": _site_change,
     "site-change": _site_change,
     "article": _article,
+    "seo_report": _seo_report,
     "business_information": _business_information,
     "business-information": _business_information,
     "social_post": _social_post,

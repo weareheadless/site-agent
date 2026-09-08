@@ -7,7 +7,8 @@ is a historical development log and is not the operational contract.
 
 `main._build_runtime()` is the composition root. It loads configuration,
 creates `Memory`, the LLM client, and the scheduler, then registers built-in
-jobs. `serve` adds the FastAPI application and one durable chat-job executor.
+jobs. `serve` adds the FastAPI application, a durable chat-job executor, and a
+single-worker typed design-job executor.
 
 The current compatibility boundary still passes a dictionary containing
 `config`, `memory`, `llm`, and `persona_prompt`. New code should keep that
@@ -73,6 +74,26 @@ assume that `/api/` belongs to site-agent.
 The Design iframe is the review surface. A public production URL is never a
 substitute for it because production intentionally remains unchanged while a
 draft is pending.
+
+The iframe runs site JavaScript with `sandbox="allow-scripts"` but never
+`allow-same-origin`, so site code cannot reach the admin document or its
+cookies. The admin issues a short-lived token scoped to the published preview
+or one draft; HTML/CSS asset URLs and the preview runtime use that capability
+to load same-site files and data without restoring admin credentials.
+
+## Typed Design Runs
+
+Typed design runs persist the intake, assessment, planning decision, immutable
+base SHA, candidate SHA, design-manifest identity, and quality-report identity.
+The background design worker rehydrates a validated `PageBuildRequest` and
+`BuildTarget` from the run record, executes the isolated build, then runs host
+quality gates. Only a passing run can create the existing owner-review draft;
+local experiments are explicitly non-publishable and use `push_mode: none`.
+
+The `design-experiment` CLI creates a dedicated public-repository clone and
+database, strips production adapter credentials from the child environment,
+and records whether remote refs changed. It is intended for reproducible local
+experiments, not production deployment.
 
 ## Dependency Direction
 

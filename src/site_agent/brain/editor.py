@@ -13,6 +13,7 @@ from typing import Any
 
 from ..hands.base import AdapterError, SiteAdapter
 from ..hands.repo_changes import HARD_DENY, normalize_path, writable
+from ..core.design_contracts import DesignRequest
 from .prompts import inner_life_context
 
 
@@ -49,7 +50,21 @@ def set_dotted(doc: dict[str, Any], field: str, value: Any) -> Any:
     return old
 
 
-_READ_ACTIONS = {"read_file", "list_files", "get_content", "get_metrics", "list_drafts", "recall"}
+_READ_ACTIONS = {"read_file", "list_files", "get_content", "get_metrics", "list_drafts", "recall",
+                 "search_media", "search_business_knowledge"}
+
+
+def _looks_like_design_request(message: str) -> bool:
+    """Keep broad visual work on the typed design path, not focused edit tools."""
+    text = str(message or "").lower()
+    broad = (
+        "redesign", "new website", "new site", "new homepage", "new landing page",
+        "design the homepage", "design a page", "build a page", "create a page",
+        "look and feel", "visual direction", "restyle the site", "rethink the layout",
+        "make the homepage", "make the site",
+    )
+    focused = ("typo", "spelling", "change the text", "update the link", "fix the link")
+    return any(phrase in text for phrase in broad) and not any(phrase in text for phrase in focused)
 
 
 def _content_summary(content: dict[str, Any]) -> str:
@@ -262,7 +277,7 @@ def _writable_patterns(context: dict[str, Any]) -> list[str]:
     return [str(p) for p in ((context["config"].get("site") or {}).get("writable_patterns") or [])]
 
 
-def _tools_spec(context: dict[str, Any]) -> list[dict[str, Any]]:
+def _tools_spec(context: dict[str, Any], *, design_intent: bool = False) -> list[dict[str, Any]]:
     def fn(name, desc, props, required=None):
         return {
             "type": "function",
@@ -288,7 +303,19 @@ def _tools_spec(context: dict[str, Any]) -> list[dict[str, Any]]:
            "dreamed, observed, or thought about a topic — ranked by relevance. "
            "Use this when you should answer from your own memory instead of "
            "guessing or asking.",
-           {"query": {"type": "string", "description": "what you want to remember"}}, ["query"]),
+            {"query": {"type": "string", "description": "what you want to remember"}}, ["query"]),
+        fn("search_media", "Find ready Library images by description, tags, OCR, name, or suggested use. Returns IDs only, never URLs.",
+           {"query": {"type": "string"}, "limit": {"type": "integer"}}, ["query"]),
+        fn("search_business_knowledge", "Find owner-approved business information from the Library.",
+           {"query": {"type": "string"}, "limit": {"type": "integer"}}, ["query"]),
+        fn("design_request",
+           "Start the canonical asynchronous design workflow for a new site, redesign, or complete page. "
+           "Return a complete validated intake; do not invent facts or destinations.",
+           {
+               "intent": {"type": "string", "enum": ["initial_site", "redesign", "derived_page"]},
+               "intake": {"type": "object"},
+               "owner_summary": {"type": "string"},
+           }, ["intent", "intake", "owner_summary"]),
         fn("propose_changes",
            "Stage one or more file operations as a proposal the owner must approve. "
            "ops entries: {op:'edit',path,find(unique exact snippet),replace} | "
@@ -301,7 +328,9 @@ def _tools_spec(context: dict[str, Any]) -> list[dict[str, Any]]:
     from ..hands import opencode_runner as _runner
 
     cfg = context.get("config") if isinstance(context.get("config"), dict) else context
-    if _runner.builder_available(cfg):
+    if _runner.builder_available(cfg) and not (
+        design_intent and context.get("design_service") is not None
+    ):
         tools.append(fn(
             "spawn_build",
             "Open an autonomous coding session on the repository when the request "
@@ -336,8 +365,11 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
         "get_metrics": lambda: "pulling GA4 numbers",
         "list_drafts": lambda: "checking pending drafts",
         "recall_memory": lambda: "searching my memory",
+        "search_media": lambda: "searching the Library",
+        "search_business_knowledge": lambda: "searching approved business knowledge",
         "propose_changes": lambda: "staging the change",
         "spawn_build": lambda: "briefing the builder agent",
+        "design_request": lambda: "preparing the typed design handoff",
     }.get(name, lambda: name)
     say(phrase())
     if name == "read_file":
@@ -406,6 +438,27 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
             return memory_store.fmt_recall(recalled)
         except Exception as exc:  # noqa: BLE001
             return f"recall failed: {exc}"
+    if name == "search_media":
+        service = context.get("media_service")
+        if service is None:
+            return "The media Library is not enabled."
+        query = str(args.get("query") or "").strip()
+        terms = set(query.lower().split())
+        rows = []
+        for asset in memory.list_media_assets(status="ready", media_kind="image", limit=500):
+            haystack = " ".join([asset.original_name, asset.description, asset.ocr_text, *asset.tags,
+                                  *[str(x) for x in (asset.analysis.get("suggested_uses") or [])]]).lower()
+            score = sum(term in haystack for term in terms)
+            if score:
+                rows.append((score, {"asset_id": asset.asset_id, "name": asset.original_name,
+                                     "description": asset.description[:400], "width": asset.width,
+                                     "height": asset.height, "media_kind": asset.media_kind.value}))
+        return json.dumps([item for _, item in sorted(rows, key=lambda x: -x[0])[:int(args.get("limit", 8))]])
+    if name == "search_business_knowledge":
+        service = context.get("business_knowledge_service")
+        if service is None:
+            return "Approved business knowledge is not available."
+        return json.dumps(service.search(str(args.get("query") or ""), int(args.get("limit", 8))))
     if name == "propose_changes":
         summary = str(args.get("summary", "site changes"))[:200]
         say("checking every operation against the live files")
@@ -436,6 +489,17 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
         context["_last_merge_draft_id"] = outcome.get("merge_draft_id")
         context["_last_action_succeeded"] = True
         return (outcome.get("reply") or "Builder finished.")[:4000]
+    if name == "design_request":
+        payload = dict(args)
+        if context.get("_source_message_id") is not None:
+            payload["source_message_id"] = context["_source_message_id"]
+        try:
+            request = DesignRequest.from_dict(payload)
+        except (TypeError, ValueError) as exc:
+            return f"REFUSED: invalid design request: {exc}"
+        context["_design_request"] = request.to_dict()
+        context["_last_action_succeeded"] = True
+        return "Design request accepted; the host will queue the reviewable build asynchronously."
     return f"Unknown tool {name}"
 
 
@@ -493,7 +557,8 @@ SIDE_EFFECTS = {"propose_changes", "spawn_build"}
 
 
 def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message: str,
-                          history: list[dict[str, str]] | None, progress, persona: str) -> dict[str, Any]:
+                           history: list[dict[str, str]] | None, progress, persona: str,
+                           source_message_id: int | None = None) -> dict[str, Any]:
     history = history or []
     say = progress or (lambda text: None)
     llm = context["llm"]
@@ -520,11 +585,19 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
     context.pop("_last_proposal_id", None)
     context.pop("_last_merge_draft_id", None)
     context.pop("_last_action_succeeded", None)
+    context.pop("_design_request", None)
     context.pop("_read_cache", None)
+    if source_message_id is not None:
+        context["_source_message_id"] = source_message_id
 
     max_steps = _max_work_steps(context)
     for hop in range(max_steps):
-        resp = llm.chat_tools(convo, _tools_spec(context), temperature=0.4)
+        design_intent = _looks_like_design_request(message)
+        resp = llm.chat_tools(
+            convo,
+            _tools_spec(context, design_intent=design_intent),
+            temperature=0.4,
+        )
         calls = resp.get("tool_calls") or []
         assistant_msg = {"role": "assistant", "content": resp.get("content")}
         if calls:
@@ -554,6 +627,13 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
             name = call["function"]["name"]
             result = _execute_tool(context, adapter, name, args, say)
             convo.append({"role": "tool", "tool_call_id": call["id"], "content": result[:4000]})
+            if name == "design_request" and context.get("_design_request"):
+                return {
+                    "reply": result,
+                    "proposal_id": context.get("_last_proposal_id"),
+                    "merge_draft_id": context.get("_last_merge_draft_id"),
+                    "design_request": context["_design_request"],
+                }
             if name in SIDE_EFFECTS and context.get("_last_action_succeeded"):
                 return {"reply": result,
                         "proposal_id": context.get("_last_proposal_id"),
@@ -563,8 +643,20 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
             "merge_draft_id": context.get("_last_merge_draft_id")}
 
 
-def handle_message(context: dict[str, Any], adapter: SiteAdapter, message: str, history: list[dict[str, str]] | None = None, progress=None) -> dict[str, Any]:
+def handle_message(
+    context: dict[str, Any],
+    adapter: SiteAdapter,
+    message: str,
+    history: list[dict[str, str]] | None = None,
+    progress=None,
+    source_message_id: int | None = None,
+) -> dict[str, Any]:
     if not hasattr(context.get("llm"), "chat_tools"):
         raise RuntimeError("Native tool calling is required: configure llm.tool_calling with a tool-capable model.")
     return _handle_message_tools(context, adapter, message, history, progress,
-                                 context.get("persona_prompt") or "")
+                                 context.get("persona_prompt") or "",
+                                 source_message_id=(
+                                     source_message_id
+                                     if source_message_id is not None
+                                     else context.get("_source_message_id")
+                                 ))

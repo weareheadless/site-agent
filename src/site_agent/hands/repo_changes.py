@@ -23,9 +23,10 @@ def normalize_path(path: str) -> str:
     return "/".join(parts)
 
 
-def writable(path: str, patterns: list[str]) -> bool:
+def writable(path: str, patterns: list[str], *, allowed_hard_denied_paths: set[str] | None = None) -> bool:
     """Check the configured allowlist after path normalization."""
     clean = normalize_path(path)
-    if not clean or any(denied in clean for denied in HARD_DENY):
+    exceptions = allowed_hard_denied_paths or set()
+    if not clean or any(denied in clean and clean not in exceptions for denied in HARD_DENY):
         return False
     return any(fnmatch.fnmatch(clean, pattern) for pattern in patterns)
