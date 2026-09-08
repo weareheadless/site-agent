@@ -146,6 +146,7 @@ class DesignJobExecutor:
                 "findings": list(quality.get("findings") or ())[:100],
             },
         )
+        signoff_state = "not_run"
         if review.needs_repair:
             repair_brief = coordinator.create_repair_brief(
                 request,
@@ -211,20 +212,37 @@ class DesignJobExecutor:
                     {"candidate_sha": run.get("candidate_sha")},
                 )
         else:
-            coordinator.final_signoff(
+            signoff = coordinator.final_signoff(
                 request,
                 target,
                 plan=plan,
                 review=review,
                 creative_director_session_id=director_session_id,
             )
+            signoff_state = str((signoff.payload or {}).get("state") or "").strip().lower()
+            if signoff_state != "passed":
+                self.memory.transition_design_run(
+                    run_id,
+                    DesignRunStatus.NEEDS_REPAIR.value,
+                    error="specialist final sign-off did not pass",
+                )
+                self.memory.add_design_run_event(
+                    run_id,
+                    "specialist_signoff_blocked",
+                    "The final creative-director sign-off did not pass; the candidate remains blocked from review approval.",
+                    {
+                        "candidate_sha": run.get("candidate_sha"),
+                        "state": signoff_state or "missing",
+                    },
+                )
         self.memory.add_design_run_event(
             run_id,
             "specialist_reviews_completed",
             "Creative-director realization review and independent critic reviews completed.",
             {
                 "candidate_sha": run.get("candidate_sha"),
-                "needs_repair": review.needs_repair,
+                "needs_repair": review.needs_repair or signoff_state != "passed",
+                "signoff_state": signoff_state,
                 "phases": [
                     "creative_realization_review",
                     "experience_review",

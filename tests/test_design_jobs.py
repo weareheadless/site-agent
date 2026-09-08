@@ -431,3 +431,90 @@ def test_design_worker_records_restart_interruption_activity():
 
     assert activity.events[-1]["kind"] == "design_run_interrupted"
     assert activity.events[-1]["state"] == "needs_attention"
+
+
+def test_specialist_final_signoff_blocks_review_when_it_does_not_pass(monkeypatch):
+    from types import SimpleNamespace
+
+    run = {
+        "run_id": "design-signoff",
+        "mode": "production_candidate",
+        "operation_kind": "initial_build",
+        "status": "ready_for_review",
+        "candidate_sha": "c" * 40,
+        "quality_report_json": {"state": "passed", "gates": {}, "findings": []},
+        "planning_json": {
+            "build_request": _request().to_dict() | {"run_id": "design-signoff"},
+            "build_target": _target().to_dict() | {"candidate_ref": "refs/ada-design/design-signoff"},
+        },
+    }
+
+    plan = {
+        "schema_version": 1,
+        "run_id": "design-signoff",
+        "phase": "creative_selection",
+        "variant_key": "primary",
+        "attempt": 1,
+        "status": "completed",
+        "base_sha": "a" * 40,
+        "context_snapshot_hash": "",
+        "input_hashes": [],
+        "producer": "creative-director",
+        "payload": {"state": "passed"},
+    }
+
+    class Memory:
+        def __init__(self):
+            self.events = []
+
+        def list_design_phase_artifacts(self, run_id, phase, status):
+            return [{"payload": plan, "session_id": "director-session"}]
+
+        def transition_design_run(self, run_id, status, error=None):
+            run["status"] = status
+            run["error"] = error
+            return run
+
+        def add_design_run_event(self, *args):
+            self.events.append(args)
+
+    class Service:
+        def __init__(self, memory):
+            self.memory = memory
+
+        def get_run(self, run_id):
+            return run
+
+        def _screenshot_evidence(self, quality):
+            return []
+
+    class Coordinator:
+        def __init__(self, context):
+            pass
+
+        def review_candidate(self, *args, **kwargs):
+            report = SimpleNamespace(payload={"state": "passed"})
+            return SimpleNamespace(
+                needs_repair=False,
+                creative_review=report,
+                experience_review=report,
+                technical_review=report,
+            )
+
+        def final_signoff(self, *args, **kwargs):
+            return SimpleNamespace(payload={"state": "repair"})
+
+    monkeypatch.setattr("site_agent.application.design_orchestration.SpecialistDesignCoordinator", Coordinator)
+    memory = Memory()
+    executor = DesignJobExecutor(
+        {"memory": memory, "config": {"design_engine": {"orchestration": "specialist"}}},
+        Service(memory),
+    )
+
+    executor._run_specialist_reviews_if_ready("design-signoff")
+
+    assert run["status"] == "needs_repair"
+    assert any(event[1] == "specialist_signoff_blocked" for event in memory.events)
+    completed = [event for event in memory.events if event[1] == "specialist_reviews_completed"]
+    assert completed[-1][3]["needs_repair"] is True
+    assert completed[-1][3]["signoff_state"] == "repair"
