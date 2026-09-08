@@ -1297,7 +1297,9 @@ class Memory:
                 (run_id, phase, variant_key),
             ).fetchone()
             if row is not None:
-                return self._design_phase_record(row)
+                result = self._design_phase_record(row)
+                result["claimed"] = False
+                return result
             attempt_row = self.conn.execute(
                 "SELECT COALESCE(MAX(attempt), 0) AS attempt FROM design_run_phase_artifacts "
                 "WHERE run_id = ? AND phase = ? AND variant_key = ?",
@@ -1321,7 +1323,9 @@ class Memory:
             row = self.conn.execute(
                 "SELECT * FROM design_run_phase_artifacts WHERE id = ?", (cur.lastrowid,)
             ).fetchone()
-        return self._design_phase_record(row)
+        result = self._design_phase_record(row)
+        result["claimed"] = True
+        return result
 
     @_locked
     def complete_design_phase(
