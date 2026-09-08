@@ -2175,7 +2175,8 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
                       env: Mapping[str, str] | None = None,
                       api_key_env: str | None = None,
                       image_files: Sequence[str] | None = None,
-                      memory: Any | None = None) -> dict[str, Any]:
+                      memory: Any | None = None,
+                      agent_name: str = "build") -> dict[str, Any]:
     """Run one structured OpenCode turn, optionally continuing a session.
 
     OpenCode's JSON event stream is the source of truth for tool calls. Plain
@@ -2188,10 +2189,13 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
 
     b = config.get("builder") or {}
     timeout = max(1, int(timeout_seconds or b.get("timeout_seconds", 1800)))
+    agent_name = str(agent_name or "build").strip()
+    if not _re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", agent_name):
+        raise RunnerError("opencode agent name is invalid")
     cmd = [
         _opencode_bin(config), "run", "--auto", "--format", "json",
         "--print-logs", "--log-level", "ERROR",
-        "--agent", "build",
+        "--agent", agent_name,
     ]
     builder_model = str(b.get("model") or (config.get("llm") or {}).get("model") or "").strip()
     if builder_model:
