@@ -22,6 +22,8 @@ from ..core.design_contracts import (
     DesignPhase,
     DesignPhaseArtifact,
     DesignPlanBundle,
+    CreativeRealizationReview,
+    CriticReport,
     ImplementationReport,
     MotionReport,
     PageBuildRequest,
@@ -52,6 +54,22 @@ class DesignPlanResult:
     concepts: tuple[CreativeConcept, ...]
     plan: DesignPlanBundle
     creative_director_session_id: str
+
+
+@dataclass(frozen=True)
+class DesignReviewResult:
+    creative_review: CreativeRealizationReview
+    experience_review: CriticReport
+    technical_review: CriticReport
+
+    @property
+    def needs_repair(self) -> bool:
+        reports = (self.creative_review, self.experience_review, self.technical_review)
+        for report in reports:
+            payload = report.payload
+            if payload.get("needs_repair") is True or payload.get("state") in {"repair", "failed"}:
+                return True
+        return False
 
 
 class SpecialistDesignCoordinator:
@@ -271,6 +289,111 @@ class SpecialistDesignCoordinator:
             image_files=image_files,
         )
         return artifact  # type: ignore[return-value]
+
+    def review_candidate(
+        self,
+        request: PageBuildRequest,
+        target: BuildTarget,
+        *,
+        plan: DesignPlanBundle,
+        candidate_sha: str = "",
+        screenshots: Sequence[Mapping[str, Any]] = (),
+        quality_evidence: Mapping[str, Any] | None = None,
+        progress=None,
+    ) -> DesignReviewResult:
+        """Run one creative-director review and two independent read-only critics."""
+        evidence = {
+            "candidate_sha": str(candidate_sha or ""),
+            "screenshots": [dict(item) for item in screenshots][:24],
+            "quality": dict(quality_evidence or {}),
+        }
+        evidence_hash = canonical_hash(evidence)
+        image_files = tuple(
+            str(item.get("screenshot_path"))
+            for item in screenshots
+            if str(item.get("screenshot_path") or "").strip()
+            and Path(str(item.get("screenshot_path"))).expanduser().is_file()
+        )
+        review_inputs = (*self._input_hashes(request, plan), evidence_hash)
+        creative_instruction = (
+            "Act as the creative director continuing the selection session. Review the rendered candidate evidence "
+            "against the locked plan. Do not invent a new direction. Identify only concrete realization deviations, "
+            "and set needs_repair true only when a focused repair would materially improve the locked direction. "
+            "Return the final creative realization review.\nLOCKED PLAN:\n"
+            + canonical_json(plan.to_dict())
+            + "\nRENDERED EVIDENCE:\n"
+            + canonical_json(evidence)[:80_000]
+        )
+        creative_review, _ = self._invoke_phase(
+            request=request,
+            target=target,
+            role="creative-director",
+            phase=DesignPhase.CREATIVE_REALIZATION_REVIEW.value,
+            variant_key="primary",
+            contract=CreativeRealizationReview,
+            instruction=creative_instruction,
+            input_hashes=review_inputs,
+            progress=progress,
+            session_id=self._creative_director_session(request.run_id),
+            image_files=image_files,
+        )
+
+        critic_instructions = {
+            "experience": (
+                "Act as an independent experience critic. Review only the supplied rendered evidence and locked plan. "
+                "Check comprehension, hierarchy, audience fit, conversion clarity, accessibility, responsive resting "
+                "states, and whether the experience feels specific rather than generic. Do not edit files or propose a "
+                "new direction. Return concrete findings and needs_repair.\n"
+            ),
+            "technical": (
+                "Act as an independent technical critic. Review only the supplied rendered evidence, quality evidence, "
+                "and locked plan. Check implementation-risk signals, motion safety, responsive behavior, accessibility, "
+                "and host-policy drift. Do not edit files or propose a new direction. Return concrete findings and "
+                "needs_repair.\n"
+            ),
+        }
+        critic_results: dict[str, CriticReport] = {}
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="design-critic") as pool:
+            futures = {
+                pool.submit(
+                    self._invoke_phase,
+                    request=request,
+                    target=target,
+                    role=f"{kind}-critic",
+                    phase=(
+                        DesignPhase.EXPERIENCE_REVIEW.value
+                        if kind == "experience"
+                        else DesignPhase.TECHNICAL_REVIEW.value
+                    ),
+                    variant_key=kind,
+                    contract=CriticReport,
+                    instruction=instruction + "LOCKED PLAN:\n" + canonical_json(plan.to_dict())
+                    + "\nRENDERED EVIDENCE:\n" + canonical_json(evidence)[:80_000],
+                    input_hashes=review_inputs,
+                    progress=progress,
+                    image_files=image_files,
+                ): kind
+                for kind, instruction in critic_instructions.items()
+            }
+            for future in as_completed(futures):
+                kind = futures[future]
+                artifact, _ = future.result()
+                critic_results[kind] = artifact  # type: ignore[assignment]
+        return DesignReviewResult(
+            creative_review=creative_review,  # type: ignore[arg-type]
+            experience_review=critic_results["experience"],
+            technical_review=critic_results["technical"],
+        )
+
+    def _creative_director_session(self, run_id: str) -> str:
+        records = self.memory.list_design_phase_artifacts(
+            run_id,
+            phase=DesignPhase.CREATIVE_SELECTION.value,
+            status="completed",
+        )
+        if not records:
+            raise DesignOrchestrationError("creative selection is required before realization review")
+        return str(records[-1].get("session_id") or "")
 
     def create_plan(
         self,

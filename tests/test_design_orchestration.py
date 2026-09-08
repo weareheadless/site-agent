@@ -69,11 +69,21 @@ class _FakeInvoker:
             if request.role == "concept-designer"
             else "motion"
             if request.role == "motion-designer"
+            else "creative_realization_review"
+            if request.role == "creative-director" and "continuing the selection session" in request.prompt
+            else "experience_review"
+            if request.role == "experience-critic"
+            else "technical_review"
+            if request.role == "technical-critic"
             else "creative_selection"
         )
         variant = "primary"
         if request.role == "concept-designer":
             variant = request.prompt.split("variant ", 1)[1].split(".", 1)[0]
+        elif request.role == "experience-critic":
+            variant = "experience"
+        elif request.role == "technical-critic":
+            variant = "technical"
         payload = {
             "schema_version": 1,
             "run_id": "design-orchestration-1",
@@ -85,7 +95,7 @@ class _FakeInvoker:
             "context_snapshot_hash": "",
             "input_hashes": [],
             "producer": request.role,
-            "payload": {"idea": request.role + "-" + variant},
+            "payload": {"idea": request.role + "-" + variant, "needs_repair": False, "state": "passed"},
         }
         return _Result(request.role, request.role + "-session", payload)
 
@@ -197,4 +207,36 @@ def test_coordinator_records_implementation_then_runs_motion_in_same_workspace(t
     assert motion.phase == "motion"
     assert fake.calls[-1] == "motion-designer"
     assert len(memory.list_design_phase_artifacts("design-orchestration-1", status="completed")) == 7
+    memory.close()
+
+
+def test_coordinator_runs_one_creative_review_and_two_independent_critics(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    _run(memory, "design-orchestration-1")
+    fake = _FakeInvoker()
+    coordinator = SpecialistDesignCoordinator(
+        {"memory": memory, "config": {"design_engine": {"model": "test"}}},
+        invoker=fake,
+    )
+    request = _request()
+    target = _target()
+    plan = coordinator.create_plan(request, target).plan
+
+    review = coordinator.review_candidate(
+        request,
+        target,
+        plan=plan,
+        candidate_sha="c" * 40,
+        screenshots=[{"route": "/", "screenshot_path": "/tmp/missing.png"}],
+        quality_evidence={"state": "passed"},
+    )
+
+    assert review.needs_repair is False
+    assert review.creative_review.phase == "creative_realization_review"
+    assert review.experience_review.phase == "experience_review"
+    assert review.technical_review.phase == "technical_review"
+    assert fake.calls.count("creative-director") == 2
+    assert fake.calls.count("experience-critic") == 1
+    assert fake.calls.count("technical-critic") == 1
+    assert len(memory.list_design_phase_artifacts("design-orchestration-1", status="completed")) == 8
     memory.close()

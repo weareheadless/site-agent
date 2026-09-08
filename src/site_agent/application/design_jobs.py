@@ -87,6 +87,66 @@ class DesignJobExecutor:
             except Exception:
                 pass
 
+    def _specialist_orchestration_enabled(self) -> bool:
+        config = self.context.get("config") or {}
+        engine = config.get("design_engine") or {}
+        return str(engine.get("orchestration") or "legacy").strip().lower() == "specialist"
+
+    def _run_specialist_reviews_if_ready(self, run_id: str) -> None:
+        """Persist the single creative review and two independent critic phases.
+
+        Reviews are read-only and never create a second creative direction. A
+        later bounded repair step consumes their durable artifacts.
+        """
+        if not self._specialist_orchestration_enabled():
+            return
+        run = self.service.get_run(run_id)
+        quality = run.get("quality_report_json") or {}
+        if quality.get("state") != "passed" or not run.get("candidate_sha"):
+            return
+        from ..core.design_contracts import BuildTarget, DesignPlanBundle, PageBuildRequest
+        from .design_orchestration import SpecialistDesignCoordinator
+
+        planning = run.get("planning_json") or {}
+        request = PageBuildRequest.from_dict(planning.get("build_request") or {})
+        target = BuildTarget.from_dict(planning.get("build_target") or {})
+        plan_records = self.memory.list_design_phase_artifacts(
+            run_id,
+            phase="creative_selection",
+            status="completed",
+        )
+        if not plan_records:
+            raise RuntimeError("specialist review requires a completed creative selection")
+        plan = DesignPlanBundle.from_dict(plan_records[-1]["payload"])
+        screenshots = self.service._screenshot_evidence(quality)
+        coordinator = SpecialistDesignCoordinator(self.context)
+        review = coordinator.review_candidate(
+            request,
+            target,
+            plan=plan,
+            candidate_sha=str(run.get("candidate_sha") or ""),
+            screenshots=screenshots,
+            quality_evidence={
+                "state": quality.get("state"),
+                "gates": quality.get("gates") or {},
+                "findings": list(quality.get("findings") or ())[:100],
+            },
+        )
+        self.memory.add_design_run_event(
+            run_id,
+            "specialist_reviews_completed",
+            "Creative-director realization review and independent critic reviews completed.",
+            {
+                "candidate_sha": run.get("candidate_sha"),
+                "needs_repair": review.needs_repair,
+                "phases": [
+                    "creative_realization_review",
+                    "experience_review",
+                    "technical_review",
+                ],
+            },
+        )
+
     @property
     def running(self) -> bool:
         """Whether this executor currently has a live worker thread."""
@@ -235,6 +295,11 @@ class DesignJobExecutor:
                 )
                 if self.service.get_run(run_id).get("status") == DesignRunStatus.VALIDATING.value:
                     self._run_visual_review_if_pending(run_id)
+            if self.service.get_run(run_id).get("status") in {
+                DesignRunStatus.READY_FOR_REVIEW.value,
+                DesignRunStatus.VALIDATING.value,
+            }:
+                self._run_specialist_reviews_if_ready(run_id)
             self._link_review_draft_if_ready(run_id)
         except Exception as exc:  # noqa: BLE001 — persist failure and keep worker alive
             try:
