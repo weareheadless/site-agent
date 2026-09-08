@@ -154,14 +154,16 @@ def test_native_builder_opt_in_routes_locked_plan_to_implementation(monkeypatch)
         def __init__(self, context):
             self.context = context
 
-        def create_plan(self, request, target, progress=None):
+        def create_plan(self, request, target, progress=None, **kwargs):
             assert request == "request"
             assert target == "target"
             return SimpleNamespace(plan=plan)
 
     calls = []
 
-    def fake_stage(context, request, target, progress=None, design_plan=None):
+    def fake_stage(context, request, target, progress=None, design_plan=None, plan_builder=None):
+        if plan_builder is not None:
+            design_plan = plan_builder(())
         calls.append((context, request, target, progress, design_plan))
         return "receipt"
 

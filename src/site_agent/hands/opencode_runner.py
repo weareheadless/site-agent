@@ -1266,6 +1266,7 @@ def stage_design_build(
     progress=None,
     design_plan=None,
     repair_brief: Mapping[str, Any] | None = None,
+    plan_builder: Callable[[tuple[str, ...]], Any] | None = None,
 ):
     """Run a typed design request without creating a legacy merge draft."""
     from ..core.design_contracts import BuildTarget, PageBuildRequest, canonical_json
@@ -1390,13 +1391,6 @@ def stage_design_build(
                provider_env_name=provider_env_name,
                skill_set=execution_context.get("design_skill_set"),
             )
-        if design_plan is not None or repair_brief is not None:
-            from .opencode_provider import write_specialist_agents
-
-            write_specialist_agents(
-                worktree,
-                ("repair-implementer" if repair_brief is not None else "site-implementer",),
-            )
         turn_kwargs = {"progress": progress}
         if execution_context.get("memory") is not None:
             turn_kwargs["memory"] = execution_context.get("memory")
@@ -1419,6 +1413,15 @@ def stage_design_build(
             host_provisioned_paths.update(evidence_paths)
             if progress:
                 progress("attaching visual evidence for the design builder")
+        if design_plan is None and plan_builder is not None and repair_brief is None:
+            design_plan = plan_builder(tuple(evidence_paths))
+        if design_plan is not None or repair_brief is not None:
+            from .opencode_provider import write_specialist_agents
+
+            write_specialist_agents(
+                worktree,
+                ("repair-implementer" if repair_brief is not None else "site-implementer",),
+            )
         if "env" in context:
             turn_kwargs["api_key"] = provider_key
             turn_kwargs["env"] = context.get("env")

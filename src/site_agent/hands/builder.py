@@ -105,17 +105,21 @@ class NativeOpenCodeBuilder:
                     )
                 if operation_kind != "initial_build":
                     return stage_design_build(self.context, request, target, progress)
-                plan_result = SpecialistDesignCoordinator(self.context).create_plan(
-                    request,
-                    target,
-                    progress,
-                )
+
+                def plan_builder(image_files):
+                    return SpecialistDesignCoordinator(self.context).create_plan(
+                        request,
+                        target,
+                        progress,
+                        image_files=image_files,
+                    ).plan
+
                 return stage_design_build(
                     self.context,
                     request,
                     target,
                     progress,
-                    design_plan=plan_result.plan,
+                    plan_builder=plan_builder,
                 )
             return stage_design_build(self.context, request, target, progress)
         except Exception as exc:  # noqa: BLE001 - preserve the facade's error type
