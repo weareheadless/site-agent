@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from urllib.parse import urlsplit
-from typing import Any
+from typing import Any, ClassVar
 
 from .contracts import ContractError
 
@@ -54,6 +54,42 @@ class DesignOperationKind(str, Enum):
     TECHNICAL_REPAIR = "technical_repair"
     VISUAL_REFINEMENT = "visual_refinement"
     DERIVED_PAGE = "derived_page"
+
+
+class DesignPhase(str, Enum):
+    """Durable specialist phases owned by the design coordinator."""
+
+    COPY = "copy"
+    CONCEPT = "concept"
+    CREATIVE_SELECTION = "creative_selection"
+    IMPLEMENTATION = "implementation"
+    MOTION = "motion"
+    CREATIVE_REALIZATION_REVIEW = "creative_realization_review"
+    EXPERIENCE_REVIEW = "experience_review"
+    TECHNICAL_REVIEW = "technical_review"
+    REPAIR_BRIEF = "repair_brief"
+    REPAIR = "repair"
+    CREATIVE_FINAL_SIGNOFF = "creative_final_signoff"
+
+
+class DesignPhaseStatus(str, Enum):
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+def validate_design_phase(value: str | DesignPhase) -> str:
+    try:
+        return DesignPhase(value).value
+    except (TypeError, ValueError) as exc:
+        raise ContractError("phase is invalid") from exc
+
+
+def validate_design_phase_status(value: str | DesignPhaseStatus) -> str:
+    try:
+        return DesignPhaseStatus(value).value
+    except (TypeError, ValueError) as exc:
+        raise ContractError("phase status is invalid") from exc
 
 
 _DESIGN_RUN_TRANSITIONS: dict[DesignRunStatus, frozenset[DesignRunStatus]] = {
@@ -1373,6 +1409,138 @@ class PageBuildRequest:
         if self.incubated_creative_context is not None:
             result["incubated_creative_context"] = self.incubated_creative_context.to_dict()
         return result
+
+
+@dataclass(frozen=True)
+class DesignPhaseArtifact:
+    """Hash-bound output from one finite specialist phase.
+
+    The payload is deliberately role-specific JSON rather than freeform text.
+    Concrete phase classes below bind the artifact to an expected phase while
+    retaining one persistence shape for the coordinator and recovery code.
+    """
+
+    schema_version: int
+    run_id: str
+    phase: str
+    variant_key: str
+    attempt: int
+    status: str
+    base_sha: str
+    context_snapshot_hash: str
+    input_hashes: tuple[str, ...]
+    producer: str
+    payload: dict[str, Any]
+
+    EXPECTED_PHASES: ClassVar[tuple[str, ...]] = ()
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> "DesignPhaseArtifact":
+        value = _object(raw, "design_phase_artifact")
+        version = _schema(value)
+        phase = validate_design_phase(value.get("phase"))
+        if cls.EXPECTED_PHASES and phase not in cls.EXPECTED_PHASES:
+            raise ContractError(f"phase must be one of {', '.join(cls.EXPECTED_PHASES)}")
+        status = validate_design_phase_status(value.get("status"))
+        attempt = value.get("attempt")
+        if isinstance(attempt, bool) or not isinstance(attempt, int) or not 1 <= attempt <= 2:
+            raise ContractError("attempt must be between 1 and 2")
+        raw_hashes = _list(value.get("input_hashes"), "input_hashes", required=False, maximum=32)
+        input_hashes: list[str] = []
+        for index, item in enumerate(raw_hashes):
+            text = _text(item, f"input_hashes[{index}]", maximum=128).lower()
+            if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", text):
+                raise ContractError(f"input_hashes[{index}] is not a content hash")
+            input_hashes.append(text)
+        known = {
+            "schema_version", "run_id", "phase", "variant_key", "attempt", "status",
+            "base_sha", "context_snapshot_hash", "input_hashes", "producer", "payload",
+        }
+        unknown = set(value) - known
+        if unknown:
+            raise ContractError(f"design_phase_artifact contains unknown fields: {', '.join(sorted(unknown))}")
+        result = cls(
+            schema_version=version,
+            run_id=_text(value.get("run_id"), "run_id", maximum=120),
+            phase=phase,
+            variant_key=_text(value.get("variant_key"), "variant_key", maximum=120),
+            attempt=attempt,
+            status=status,
+            base_sha=_hash(value.get("base_sha"), "base_sha", _SHA1_RE),
+            context_snapshot_hash=(
+                _hash(value.get("context_snapshot_hash"), "context_snapshot_hash", _SHA256_RE)
+                if value.get("context_snapshot_hash") else ""
+            ),
+            input_hashes=tuple(input_hashes),
+            producer=_text(value.get("producer"), "producer", maximum=120),
+            payload=_object(value.get("payload"), "payload"),
+        )
+        canonical_hash(result.to_dict())
+        return result
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "run_id": self.run_id,
+            "phase": self.phase,
+            "variant_key": self.variant_key,
+            "attempt": self.attempt,
+            "status": self.status,
+            "base_sha": self.base_sha,
+            "context_snapshot_hash": self.context_snapshot_hash,
+            "input_hashes": list(self.input_hashes),
+            "producer": self.producer,
+            "payload": copy.deepcopy(self.payload),
+        }
+
+    @property
+    def content_hash(self) -> str:
+        return canonical_hash(self.to_dict())
+
+
+@dataclass(frozen=True)
+class CopyDeck(DesignPhaseArtifact):
+    EXPECTED_PHASES = (DesignPhase.COPY.value,)
+
+
+@dataclass(frozen=True)
+class CreativeConcept(DesignPhaseArtifact):
+    EXPECTED_PHASES = (DesignPhase.CONCEPT.value,)
+
+
+@dataclass(frozen=True)
+class DesignPlanBundle(DesignPhaseArtifact):
+    EXPECTED_PHASES = (DesignPhase.CREATIVE_SELECTION.value,)
+
+
+@dataclass(frozen=True)
+class ImplementationReport(DesignPhaseArtifact):
+    EXPECTED_PHASES = (DesignPhase.IMPLEMENTATION.value,)
+
+
+@dataclass(frozen=True)
+class MotionReport(DesignPhaseArtifact):
+    EXPECTED_PHASES = (DesignPhase.MOTION.value,)
+
+
+@dataclass(frozen=True)
+class CreativeRealizationReview(DesignPhaseArtifact):
+    EXPECTED_PHASES = (DesignPhase.CREATIVE_REALIZATION_REVIEW.value, DesignPhase.CREATIVE_FINAL_SIGNOFF.value)
+
+
+@dataclass(frozen=True)
+class CriticReport(DesignPhaseArtifact):
+    EXPECTED_PHASES = (DesignPhase.EXPERIENCE_REVIEW.value, DesignPhase.TECHNICAL_REVIEW.value)
+
+
+@dataclass(frozen=True)
+class RepairBrief(DesignPhaseArtifact):
+    EXPECTED_PHASES = (DesignPhase.REPAIR_BRIEF.value,)
+
+
+@dataclass(frozen=True)
+class RepairReport(DesignPhaseArtifact):
+    EXPECTED_PHASES = (DesignPhase.REPAIR.value,)
 
 
 @dataclass(frozen=True)

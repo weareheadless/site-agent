@@ -113,3 +113,57 @@ def test_design_run_persists_operation_relationship_and_artifact_identity(tmp_pa
     assert updated["opencode_session_id"] == "session-2"
     assert updated["visual_critique_hash"] == "d" * 64
     memory.close()
+
+
+def test_design_phase_artifacts_are_durable_and_completed_work_is_not_restarted(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    memory.create_design_run(**_run_kwargs())
+
+    claimed = memory.claim_design_phase(
+        "design-run-1",
+        "copy",
+        variant_key="primary",
+        base_sha="b" * 40,
+        context_snapshot_hash="c" * 64,
+        input_hashes=["d" * 64],
+        provider_id="openrouter",
+        model="copy-model",
+        session_id="copy-session",
+    )
+    assert claimed["status"] == "running"
+    completed = memory.complete_design_phase(
+        claimed["id"],
+        {"headline": "Into the dark"},
+        prompt_tokens=10,
+        completion_tokens=20,
+    )
+    assert completed["status"] == "completed"
+    assert completed["payload"] == {"headline": "Into the dark"}
+
+    reclaimed = memory.claim_design_phase(
+        "design-run-1",
+        "copy",
+        variant_key="primary",
+        base_sha="b" * 40,
+        context_snapshot_hash="c" * 64,
+        input_hashes=["d" * 64],
+    )
+    assert reclaimed["id"] == completed["id"]
+    assert len(memory.list_design_phase_artifacts("design-run-1", phase="copy")) == 1
+
+    memory.close()
+
+
+def test_design_phase_artifact_allows_one_failed_retry_but_then_stops(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    memory.create_design_run(**_run_kwargs())
+
+    first = memory.claim_design_phase("design-run-1", "concept", variant_key="a", base_sha="b" * 40)
+    memory.fail_design_phase(first["id"], error_code="provider_timeout", error_detail="timed out")
+    second = memory.claim_design_phase("design-run-1", "concept", variant_key="a", base_sha="b" * 40)
+    assert second["attempt"] == 2
+    memory.fail_design_phase(second["id"], error_code="provider_timeout")
+
+    with pytest.raises(ContractError, match="exhausted"):
+        memory.claim_design_phase("design-run-1", "concept", variant_key="a", base_sha="b" * 40)
+    memory.close()

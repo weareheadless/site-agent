@@ -52,6 +52,7 @@ class ArtifactKind(str, Enum):
     DESIGN_TRANSCRIPT = "design_transcript"
     DESIGN_BUILD = "design_build"
     DESIGN_SCREENSHOTS = "design_screenshots"
+    DESIGN_PHASE = "design_phase"
 
 
 class EffectClass(str, Enum):

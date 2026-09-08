@@ -40,6 +40,8 @@ from .design_contracts import (
     canonical_hash,
     canonical_json,
     safe_relative_path,
+    validate_design_phase,
+    validate_design_phase_status,
 )
 from .design_intake_contracts import (
     DESIGN_INTAKE_SCHEMA_VERSION,
@@ -67,7 +69,7 @@ from .incubation_contracts import (
     ResearchSource,
 )
 
-SCHEMA_VERSION = 36
+SCHEMA_VERSION = 37
 
 MIGRATIONS: dict[int, list[str]] = {
     1: [
@@ -909,6 +911,36 @@ MIGRATIONS: dict[int, list[str]] = {
         "ALTER TABLE design_runs ADD COLUMN customer_context_revision INTEGER",
         "CREATE INDEX IF NOT EXISTS idx_design_runs_customer_context ON design_runs (customer_context_id, customer_context_revision)",
     ],
+    37: [
+        """CREATE TABLE IF NOT EXISTS design_run_phase_artifacts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL REFERENCES design_runs(run_id) ON DELETE CASCADE,
+            phase TEXT NOT NULL,
+            variant_key TEXT NOT NULL DEFAULT '',
+            attempt INTEGER NOT NULL CHECK (attempt >= 1 AND attempt <= 2),
+            status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
+            base_sha TEXT NOT NULL,
+            context_snapshot_hash TEXT NOT NULL DEFAULT '',
+            input_hashes_json TEXT NOT NULL DEFAULT '[]',
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            output_hash TEXT NOT NULL DEFAULT '',
+            artifact_id INTEGER,
+            provider_id TEXT NOT NULL DEFAULT '',
+            model TEXT NOT NULL DEFAULT '',
+            session_id TEXT NOT NULL DEFAULT '',
+            transcript_artifact_id INTEGER,
+            prompt_tokens INTEGER NOT NULL DEFAULT 0,
+            completion_tokens INTEGER NOT NULL DEFAULT 0,
+            reported_cost_usd REAL,
+            error_code TEXT NOT NULL DEFAULT '',
+            error_detail TEXT NOT NULL DEFAULT '',
+            created_ts TEXT NOT NULL,
+            updated_ts TEXT NOT NULL,
+            UNIQUE(run_id, phase, variant_key, attempt)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_design_phase_artifacts_run ON design_run_phase_artifacts (run_id, phase, variant_key, status)",
+        "CREATE INDEX IF NOT EXISTS idx_design_phase_artifacts_status ON design_run_phase_artifacts (status, updated_ts)",
+    ],
 }
 
 
@@ -1208,6 +1240,199 @@ class Memory:
                 ),
             )
         return replace(artifact, artifact_id=cur.lastrowid)
+
+    @staticmethod
+    def _design_phase_record(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+        result = dict(row)
+        for field_name in ("input_hashes_json", "payload_json"):
+            value = result.get(field_name)
+            try:
+                result[field_name.removesuffix("_json")] = json.loads(value or ("[]" if field_name == "input_hashes_json" else "{}"))
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise ContractError(f"design phase {field_name} is not valid JSON") from exc
+        return result
+
+    @_locked
+    def claim_design_phase(
+        self,
+        run_id: str,
+        phase: str,
+        *,
+        variant_key: str = "",
+        base_sha: str,
+        context_snapshot_hash: str = "",
+        input_hashes: tuple[str, ...] | list[str] = (),
+        max_attempts: int = 2,
+        provider_id: str = "",
+        model: str = "",
+        session_id: str = "",
+    ) -> dict[str, Any]:
+        """Claim one finite specialist phase, or return its existing state.
+
+        A completed artifact is authoritative and is returned without creating
+        another attempt. A running artifact is also returned so a second
+        worker cannot dispatch the same specialist concurrently.
+        """
+        phase = validate_design_phase(phase)
+        run_id = str(run_id).strip()
+        variant_key = str(variant_key).strip()
+        if not run_id:
+            raise ContractError("run_id must not be empty")
+        if not re.fullmatch(r"[0-9a-f]{40}", str(base_sha).lower()):
+            raise ContractError("base_sha is not a valid commit hash")
+        base_sha = str(base_sha).lower()
+        if context_snapshot_hash and not re.fullmatch(r"[0-9a-f]{64}", str(context_snapshot_hash).lower()):
+            raise ContractError("context_snapshot_hash is not a valid content hash")
+        context_snapshot_hash = str(context_snapshot_hash).lower()
+        if isinstance(max_attempts, bool) or not isinstance(max_attempts, int) or not 1 <= max_attempts <= 2:
+            raise ContractError("max_attempts must be between 1 and 2")
+        hashes = [str(item).strip().lower() for item in input_hashes]
+        if len(hashes) > 32 or any(not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", item) for item in hashes):
+            raise ContractError("input_hashes contains an invalid content hash")
+        with self.conn:
+            row = self.conn.execute(
+                "SELECT * FROM design_run_phase_artifacts "
+                "WHERE run_id = ? AND phase = ? AND variant_key = ? "
+                "AND status IN ('running', 'completed') ORDER BY id DESC LIMIT 1",
+                (run_id, phase, variant_key),
+            ).fetchone()
+            if row is not None:
+                return self._design_phase_record(row)
+            attempt_row = self.conn.execute(
+                "SELECT COALESCE(MAX(attempt), 0) AS attempt FROM design_run_phase_artifacts "
+                "WHERE run_id = ? AND phase = ? AND variant_key = ?",
+                (run_id, phase, variant_key),
+            ).fetchone()
+            attempt = int(attempt_row["attempt"] or 0) + 1
+            if attempt > max_attempts:
+                raise ContractError(f"design phase {phase}/{variant_key} exhausted its attempts")
+            now = _now()
+            cur = self.conn.execute(
+                "INSERT INTO design_run_phase_artifacts "
+                "(run_id, phase, variant_key, attempt, status, base_sha, context_snapshot_hash, "
+                "input_hashes_json, provider_id, model, session_id, created_ts, updated_ts) "
+                "VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    run_id, phase, variant_key, attempt, base_sha, context_snapshot_hash,
+                    canonical_json(hashes), str(provider_id).strip()[:200], str(model).strip()[:240],
+                    str(session_id).strip()[:240], now, now,
+                ),
+            )
+            row = self.conn.execute(
+                "SELECT * FROM design_run_phase_artifacts WHERE id = ?", (cur.lastrowid,)
+            ).fetchone()
+        return self._design_phase_record(row)
+
+    @_locked
+    def complete_design_phase(
+        self,
+        phase_artifact_id: int,
+        payload: dict[str, Any],
+        *,
+        output_hash: str = "",
+        artifact_id: int | None = None,
+        transcript_artifact_id: int | None = None,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        reported_cost_usd: float | None = None,
+    ) -> dict[str, Any]:
+        if isinstance(phase_artifact_id, bool) or not isinstance(phase_artifact_id, int) or phase_artifact_id < 1:
+            raise ContractError("phase_artifact_id must be a positive integer")
+        if not isinstance(payload, dict):
+            raise ContractError("phase payload must be an object")
+        encoded = canonical_json(payload)
+        output_hash = str(output_hash or canonical_hash(payload)).strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", output_hash):
+            raise ContractError("output_hash is not a valid content hash")
+        if isinstance(prompt_tokens, bool) or not isinstance(prompt_tokens, int) or prompt_tokens < 0:
+            raise ContractError("prompt_tokens must be a non-negative integer")
+        if isinstance(completion_tokens, bool) or not isinstance(completion_tokens, int) or completion_tokens < 0:
+            raise ContractError("completion_tokens must be a non-negative integer")
+        with self.conn:
+            row = self.conn.execute(
+                "SELECT * FROM design_run_phase_artifacts WHERE id = ?", (phase_artifact_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"no such design phase artifact: {phase_artifact_id}")
+            if row["status"] == "completed":
+                existing = self._design_phase_record(row)
+                if existing.get("output_hash") != output_hash:
+                    raise ContractError("completed design phase cannot be replaced")
+                return existing
+            if row["status"] != "running":
+                raise ContractError("only a running design phase can be completed")
+            now = _now()
+            self.conn.execute(
+                "UPDATE design_run_phase_artifacts SET status = 'completed', payload_json = ?, "
+                "output_hash = ?, artifact_id = ?, transcript_artifact_id = ?, prompt_tokens = ?, "
+                "completion_tokens = ?, reported_cost_usd = ?, error_code = '', error_detail = '', updated_ts = ? "
+                "WHERE id = ?",
+                (
+                    encoded, output_hash, artifact_id, transcript_artifact_id, prompt_tokens,
+                    completion_tokens, reported_cost_usd, now, phase_artifact_id,
+                ),
+            )
+            row = self.conn.execute(
+                "SELECT * FROM design_run_phase_artifacts WHERE id = ?", (phase_artifact_id,)
+            ).fetchone()
+        return self._design_phase_record(row)
+
+    @_locked
+    def fail_design_phase(
+        self,
+        phase_artifact_id: int,
+        *,
+        error_code: str,
+        error_detail: str = "",
+    ) -> dict[str, Any]:
+        if isinstance(phase_artifact_id, bool) or not isinstance(phase_artifact_id, int) or phase_artifact_id < 1:
+            raise ContractError("phase_artifact_id must be a positive integer")
+        with self.conn:
+            row = self.conn.execute(
+                "SELECT * FROM design_run_phase_artifacts WHERE id = ?", (phase_artifact_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"no such design phase artifact: {phase_artifact_id}")
+            if row["status"] == "completed":
+                return self._design_phase_record(row)
+            now = _now()
+            self.conn.execute(
+                "UPDATE design_run_phase_artifacts SET status = 'failed', error_code = ?, error_detail = ?, updated_ts = ? WHERE id = ?",
+                (str(error_code).strip()[:120], str(error_detail).strip()[:2_000], now, phase_artifact_id),
+            )
+            row = self.conn.execute(
+                "SELECT * FROM design_run_phase_artifacts WHERE id = ?", (phase_artifact_id,)
+            ).fetchone()
+        return self._design_phase_record(row)
+
+    @_locked
+    def get_design_phase_artifact(self, phase_artifact_id: int) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM design_run_phase_artifacts WHERE id = ?", (phase_artifact_id,)
+        ).fetchone()
+        return self._design_phase_record(row) if row else None
+
+    @_locked
+    def list_design_phase_artifacts(
+        self,
+        run_id: str,
+        *,
+        phase: str | None = None,
+        status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        clauses = ["run_id = ?"]
+        params: list[Any] = [str(run_id).strip()]
+        if phase is not None:
+            clauses.append("phase = ?")
+            params.append(validate_design_phase(phase))
+        if status is not None:
+            clauses.append("status = ?")
+            params.append(validate_design_phase_status(status))
+        rows = self.conn.execute(
+            "SELECT * FROM design_run_phase_artifacts WHERE "
+            + " AND ".join(clauses) + " ORDER BY id ASC", params
+        ).fetchall()
+        return [self._design_phase_record(row) for row in rows]
 
     @_locked
     def create_social_artifact(self, preparation_id: int, artifact: Artifact) -> Artifact:

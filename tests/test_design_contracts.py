@@ -5,8 +5,12 @@ import pytest
 from site_agent.core.contracts import ContractError
 from site_agent.core.design_contracts import (
     BuildTarget,
+    CopyDeck,
+    CreativeConcept,
     DesignCandidateReceipt,
     DesignManifest,
+    DesignPhase,
+    DesignPhaseArtifact,
     DesignSourceBinding,
     DesignRunStatus,
     PageBuildRequest,
@@ -47,6 +51,39 @@ def test_site_intake_round_trips_and_hashes_canonically():
 def test_site_intake_rejects_unknown_schema_version():
     with pytest.raises(ContractError, match="schema_version"):
         SiteIntake.from_dict(_intake(schema_version=99))
+
+
+def _phase_artifact(**overrides):
+    value = {
+        "schema_version": 1,
+        "run_id": "design-phase-test",
+        "phase": "copy",
+        "variant_key": "primary",
+        "attempt": 1,
+        "status": "completed",
+        "base_sha": "a" * 40,
+        "context_snapshot_hash": "b" * 64,
+        "input_hashes": ["c" * 64],
+        "producer": "copywriter",
+        "payload": {"headline": "Into the dark"},
+    }
+    value.update(overrides)
+    return value
+
+
+def test_specialist_phase_artifacts_are_typed_and_hash_bound():
+    artifact = CopyDeck.from_dict(_phase_artifact())
+
+    assert isinstance(artifact, DesignPhaseArtifact)
+    assert artifact.phase == DesignPhase.COPY.value
+    assert artifact.content_hash == artifact.content_hash
+    assert artifact.to_dict()["payload"]["headline"] == "Into the dark"
+
+    with pytest.raises(ContractError, match="phase must be one"):
+        CreativeConcept.from_dict(_phase_artifact())
+
+    with pytest.raises(ContractError, match="unknown fields"):
+        CopyDeck.from_dict(_phase_artifact(unexpected="nope"))
 
 
 def test_site_intake_rejects_unbounded_text_and_unsupported_contact_url():
