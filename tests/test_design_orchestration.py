@@ -62,7 +62,15 @@ class _FakeInvoker:
 
     def invoke(self, request, progress=None):
         self.calls.append(request.role)
-        phase = "copy" if request.role == "copywriter" else "concept" if request.role == "concept-designer" else "creative_selection"
+        phase = (
+            "copy"
+            if request.role == "copywriter"
+            else "concept"
+            if request.role == "concept-designer"
+            else "motion"
+            if request.role == "motion-designer"
+            else "creative_selection"
+        )
         variant = "primary"
         if request.role == "concept-designer":
             variant = request.prompt.split("variant ", 1)[1].split(".", 1)[0]
@@ -158,3 +166,35 @@ def test_native_builder_opt_in_routes_locked_plan_to_implementation(monkeypatch)
             plan,
         )
     ]
+
+
+def test_coordinator_records_implementation_then_runs_motion_in_same_workspace(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    _run(memory, "design-orchestration-1")
+    fake = _FakeInvoker()
+    coordinator = SpecialistDesignCoordinator(
+        {"memory": memory, "config": {"design_engine": {"model": "test"}}},
+        invoker=fake,
+    )
+    request = _request()
+    target = _target()
+    plan = coordinator.create_plan(request, target).plan
+
+    implementation = coordinator.record_implementation_phase(
+        request,
+        target,
+        plan=plan,
+        provider_result={"session_id": "implementation-session", "reply": "implemented"},
+    )
+    motion = coordinator.run_motion_phase(
+        request,
+        target,
+        plan=plan,
+        workspace=tmp_path,
+    )
+
+    assert implementation.phase == "implementation"
+    assert motion.phase == "motion"
+    assert fake.calls[-1] == "motion-designer"
+    assert len(memory.list_design_phase_artifacts("design-orchestration-1", status="completed")) == 7
+    memory.close()

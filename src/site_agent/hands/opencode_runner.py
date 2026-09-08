@@ -1251,7 +1251,7 @@ def finalize_design_target(
 
 def stage_design_build(context: dict[str, Any], request, target, progress=None, design_plan=None):
     """Run a typed design request without creating a legacy merge draft."""
-    from ..core.design_contracts import BuildTarget, PageBuildRequest
+    from ..core.design_contracts import BuildTarget, PageBuildRequest, canonical_json
 
     if not isinstance(request, PageBuildRequest) or not isinstance(target, BuildTarget):
         raise RunnerError("typed design builds require PageBuildRequest and BuildTarget")
@@ -1344,6 +1344,7 @@ def stage_design_build(context: dict[str, Any], request, target, progress=None, 
             provider_key = str(os.environ.get(provider_env_name) or "")
         if not provider_key:
             provider_key = resolve_secret(execution_config, "llm_api_key", source_env)
+        execution_context["api_key"] = provider_key
         install_agent_files(
             worktree,
             Path(__file__).parent.parent / "skills",
@@ -1433,6 +1434,32 @@ def stage_design_build(context: dict[str, Any], request, target, progress=None, 
         )
         _verify_materialized_media(execution_context, worktree, materialized_media_paths)
         _verify_materialized_fonts(execution_config, worktree, materialized_font_paths)
+        if design_plan is not None and not turn_error:
+            from ..application.design_orchestration import SpecialistDesignCoordinator
+
+            coordinator = SpecialistDesignCoordinator(execution_context)
+            coordinator.record_implementation_phase(
+                request,
+                target,
+                plan=design_plan,
+                provider_result={
+                    "session_id": str(initial.get("session_id") or ""),
+                    "reply": str(initial.get("reply") or "")[-6_000:],
+                    "tool_calls": list(initial.get("tool_calls") or ())[-32:],
+                    "usage": dict(initial.get("usage") or {}),
+                },
+            )
+            if progress:
+                progress("running the bounded motion specialist phase")
+            motion_report = coordinator.run_motion_phase(
+                request,
+                target,
+                plan=design_plan,
+                workspace=worktree,
+                progress=progress,
+                image_files=evidence_paths,
+            )
+            output.append(canonical_json(motion_report.to_dict()))
         try:
             host_provisioned_paths.update(_provision_referenced_frontend_libraries(
                 execution_config,

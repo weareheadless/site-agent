@@ -131,6 +131,7 @@ def test_design_phase_artifacts_are_durable_and_completed_work_is_not_restarted(
         session_id="copy-session",
     )
     assert claimed["status"] == "running"
+    assert claimed["claimed"] is True
     completed = memory.complete_design_phase(
         claimed["id"],
         {"headline": "Into the dark"},
@@ -149,6 +150,7 @@ def test_design_phase_artifacts_are_durable_and_completed_work_is_not_restarted(
         input_hashes=["d" * 64],
     )
     assert reclaimed["id"] == completed["id"]
+    assert reclaimed["claimed"] is False
     assert len(memory.list_design_phase_artifacts("design-run-1", phase="copy")) == 1
 
     memory.close()

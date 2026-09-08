@@ -1339,6 +1339,7 @@ class Memory:
         prompt_tokens: int = 0,
         completion_tokens: int = 0,
         reported_cost_usd: float | None = None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         if isinstance(phase_artifact_id, bool) or not isinstance(phase_artifact_id, int) or phase_artifact_id < 1:
             raise ContractError("phase_artifact_id must be a positive integer")
@@ -1369,11 +1370,12 @@ class Memory:
             self.conn.execute(
                 "UPDATE design_run_phase_artifacts SET status = 'completed', payload_json = ?, "
                 "output_hash = ?, artifact_id = ?, transcript_artifact_id = ?, prompt_tokens = ?, "
-                "completion_tokens = ?, reported_cost_usd = ?, error_code = '', error_detail = '', updated_ts = ? "
+                "completion_tokens = ?, reported_cost_usd = ?, session_id = COALESCE(NULLIF(?, ''), session_id), "
+                "error_code = '', error_detail = '', updated_ts = ? "
                 "WHERE id = ?",
                 (
                     encoded, output_hash, artifact_id, transcript_artifact_id, prompt_tokens,
-                    completion_tokens, reported_cost_usd, now, phase_artifact_id,
+                    completion_tokens, reported_cost_usd, str(session_id or "").strip()[:240], now, phase_artifact_id,
                 ),
             )
             row = self.conn.execute(

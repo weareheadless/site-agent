@@ -8,9 +8,11 @@ new creative round is needed.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import nullcontext
 from dataclasses import dataclass
 from tempfile import TemporaryDirectory
 from typing import Any, Callable, Mapping, Protocol, Sequence, Type
+from pathlib import Path
 
 from ..core.contracts import ContractError
 from ..core.design_contracts import (
@@ -20,6 +22,8 @@ from ..core.design_contracts import (
     DesignPhase,
     DesignPhaseArtifact,
     DesignPlanBundle,
+    ImplementationReport,
+    MotionReport,
     PageBuildRequest,
     canonical_hash,
     canonical_json,
@@ -111,6 +115,7 @@ class SpecialistDesignCoordinator:
         progress=None,
         session_id: str | None = None,
         image_files: Sequence[str] = (),
+        workspace: str | Path | None = None,
     ) -> tuple[DesignPhaseArtifact, str]:
         claimed = self.memory.claim_design_phase(
             request.run_id,
@@ -140,7 +145,12 @@ class SpecialistDesignCoordinator:
             contract.__name__,
         )
         try:
-            with self.scratch_factory() as scratch:
+            workspace_context = (
+                nullcontext(Path(workspace).expanduser().resolve())
+                if workspace is not None
+                else self.scratch_factory()
+            )
+            with workspace_context as scratch:
                 invocation = SpecialistInvocation(
                     role=role,
                     workspace=scratch,
@@ -171,6 +181,7 @@ class SpecialistDesignCoordinator:
                 prompt_tokens=int((getattr(result, "usage", {}) or {}).get("prompt_tokens", 0)),
                 completion_tokens=int((getattr(result, "usage", {}) or {}).get("completion_tokens", 0)),
                 reported_cost_usd=getattr(result, "cost", None),
+                session_id=str(getattr(result, "session_id", "") or ""),
             )
             return contract.from_dict(completed["payload"]), str(getattr(result, "session_id", "") or "")
         except Exception as exc:  # noqa: BLE001 - failure is persisted before surfacing
@@ -182,6 +193,84 @@ class SpecialistDesignCoordinator:
             if isinstance(exc, (DesignOrchestrationError, SpecialistProviderError, ContractError)):
                 raise
             raise DesignOrchestrationError(str(exc)) from exc
+
+    def record_implementation_phase(
+        self,
+        request: PageBuildRequest,
+        target: BuildTarget,
+        *,
+        plan: DesignPlanBundle,
+        provider_result: Mapping[str, Any],
+    ) -> ImplementationReport:
+        """Persist host evidence for the implementation turn before motion begins."""
+        input_hashes = self._input_hashes(request, plan)
+        claimed = self.memory.claim_design_phase(
+            request.run_id,
+            DesignPhase.IMPLEMENTATION.value,
+            variant_key="primary",
+            base_sha=target.base_sha,
+            context_snapshot_hash=request.context_snapshot_hash,
+            input_hashes=input_hashes,
+            provider_id="host",
+            model="",
+        )
+        if claimed["status"] == "completed":
+            return ImplementationReport.from_dict(claimed["payload"])
+        if claimed["status"] == "running" and not claimed.get("claimed"):
+            raise DesignOrchestrationError("design phase is already running: implementation/primary")
+        artifact = ImplementationReport.from_dict({
+            "schema_version": 1,
+            "run_id": request.run_id,
+            "phase": DesignPhase.IMPLEMENTATION.value,
+            "variant_key": "primary",
+            "attempt": int(claimed["attempt"]),
+            "status": "completed",
+            "base_sha": target.base_sha,
+            "context_snapshot_hash": request.context_snapshot_hash,
+            "input_hashes": list(input_hashes),
+            "producer": "host",
+            "payload": dict(provider_result),
+        })
+        completed = self.memory.complete_design_phase(
+            claimed["id"],
+            artifact.to_dict(),
+            output_hash=artifact.content_hash,
+            session_id=str(provider_result.get("session_id") or ""),
+        )
+        return ImplementationReport.from_dict(completed["payload"])
+
+    def run_motion_phase(
+        self,
+        request: PageBuildRequest,
+        target: BuildTarget,
+        *,
+        plan: DesignPlanBundle,
+        workspace: str | Path,
+        progress=None,
+        image_files: Sequence[str] = (),
+    ) -> MotionReport:
+        """Give the motion specialist one write turn in the existing worktree."""
+        instruction = (
+            "Act as the motion designer for the already implemented locked plan. Inspect the current source and apply "
+            "only purposeful motion named or implied by the selected direction. Keep the resting state complete, "
+            "respect prefers-reduced-motion, avoid layout-thrashing effects, and do not redesign the page. "
+            "After editing, run one bounded local check and return the motion report.\nLOCKED PLAN:\n"
+            + canonical_json(plan.to_dict())
+        )
+        artifact, _ = self._invoke_phase(
+            request=request,
+            target=target,
+            role="motion-designer",
+            phase=DesignPhase.MOTION.value,
+            variant_key="primary",
+            contract=MotionReport,
+            instruction=instruction,
+            input_hashes=self._input_hashes(request, plan),
+            progress=progress,
+            workspace=workspace,
+            image_files=image_files,
+        )
+        return artifact  # type: ignore[return-value]
 
     def create_plan(
         self,
