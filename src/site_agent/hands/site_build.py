@@ -91,6 +91,83 @@ ASTRO_REACT_TOOLCHAIN_DEPENDENCIES: tuple[dict[str, str], ...] = (
     {"package": "typescript", "version": "5.9.3"},
 )
 
+
+def prepare_native_workspace(root: str | Path, profile: SiteBuildProfile) -> tuple[str, ...]:
+    """Create only the host-owned technical baseline for a native workspace.
+
+    Intake Lab can start from the legacy neutral scaffold, which intentionally
+    has no framework source.  Native Astro authoring still needs an exact
+    manifest and framework entrypoint before the model can inspect or run the
+    approved toolchain.  These files contain no visual scaffold; the model owns
+    every page, component, style, and interaction written afterward.
+    """
+    workspace = Path(root).expanduser().resolve()
+    if profile.name != ASTRO_REACT_PROFILE.name:
+        return ()
+    created: list[str] = []
+
+    manifest_path = workspace / "package.json"
+    if not manifest_path.exists():
+        runtime = {
+            item["package"]: item["version"]
+            for item in ASTRO_REACT_TOOLCHAIN_DEPENDENCIES
+            if item["package"] in {"@astrojs/react", "@gsap/react", "astro", "gsap", "react", "react-dom"}
+        }
+        development = {
+            item["package"]: item["version"]
+            for item in ASTRO_REACT_TOOLCHAIN_DEPENDENCIES
+            if item["package"] not in runtime
+        }
+        manifest_path.write_text(
+            json.dumps({
+                "name": "ada-native-design",
+                "private": True,
+                "type": "module",
+                "scripts": {
+                    "check": "astro check",
+                    "build": "astro build",
+                    "dev": "astro dev",
+                    "preview": "astro preview",
+                },
+                "dependencies": runtime,
+                "devDependencies": development,
+            }, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        created.append("package.json")
+
+    config_path = workspace / "astro.config.mjs"
+    if not config_path.exists():
+        config_path.write_text(
+            "import { defineConfig } from 'astro/config';\n"
+            "import react from '@astrojs/react';\n\n"
+            "export default defineConfig({ integrations: [react()] });\n",
+            encoding="utf-8",
+        )
+        created.append("astro.config.mjs")
+
+    tsconfig_path = workspace / "tsconfig.json"
+    if not tsconfig_path.exists():
+        tsconfig_path.write_text(
+            json.dumps({
+                "extends": "astro/tsconfigs/strict",
+                "compilerOptions": {
+                    "allowJs": True,
+                    "checkJs": True,
+                    "jsx": "react-jsx",
+                    "jsxImportSource": "react",
+                },
+            }, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        created.append("tsconfig.json")
+
+    gitignore_path = workspace / ".gitignore"
+    if not gitignore_path.exists():
+        gitignore_path.write_text("node_modules/\ndist/\n.astro/\n.opencode/tweak-map.json\n", encoding="utf-8")
+        created.append(".gitignore")
+    return tuple(created)
+
 _EXACT_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
 
 PROFILES = {profile.name: profile for profile in (PELICAN_BASELINE_PROFILE, ASTRO_REACT_PROFILE)}
@@ -306,6 +383,7 @@ __all__ = [
     "build_site",
     "copy_build_output",
     "get_build_profile",
+    "prepare_native_workspace",
     "prepare_site_toolchain",
     "route_inventory",
 ]

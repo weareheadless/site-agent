@@ -138,6 +138,61 @@ def test_visual_review_receives_grounding_and_approved_source_images(monkeypatch
     assert len(calls) == 1
 
 
+def test_visual_review_does_not_pass_with_missing_declared_source_media(monkeypatch):
+    def fake_image_data(path):
+        return "data:image/jpeg;base64,AA==", str(path)
+
+    def fake_post(url, headers, payload, timeout):
+        return {
+            "choices": [{"message": {"content": json.dumps({
+                "state": "passed",
+                "findings": [],
+                "strengths": [],
+                "generic_template_signals": [],
+                "repair_plan": [],
+            })}}]
+        }
+
+    monkeypatch.setattr(design_visual_review, "_image_data", fake_image_data)
+    monkeypatch.setattr(design_visual_review, "_http_post", fake_post)
+    result = design_visual_review.review_design_screenshots(
+        {
+            "env": {"vision_api_key": "VISION_KEY"},
+            "design_engine": {
+                "visual_review": {
+                    "base_url": "https://api.example.test/v1",
+                    "model": "Qwen/Qwen3.8-27B",
+                    "api_key_env": "VISION_KEY",
+                }
+            },
+        },
+        run_id="visual-missing-source",
+        candidate_sha="a" * 40,
+        brief={"purpose": "Review the candidate."},
+        screenshots=[{
+            "route": "index.html",
+            "viewport": {"name": "desktop", "width": 1440, "height": 1000},
+            "screenshot_path": "candidate.png",
+            "screenshot_hash": "candidate",
+        }],
+        review_evidence={
+            "source_media": {
+                "missing_files": [{
+                    "relative_path": "public/images/owner.webp",
+                    "error": "source media unavailable",
+                }]
+            }
+        },
+        env={"VISION_KEY": "secret"},
+    )
+
+    assert result.state == "inconclusive"
+    assert result.extra["grounding"]["source_image_errors"] == [{
+        "path": "public/images/owner.webp",
+        "error": "source media unavailable",
+    }]
+
+
 def test_visual_review_retries_a_flaky_batch_once_before_inconclusive(monkeypatch):
     calls = []
 

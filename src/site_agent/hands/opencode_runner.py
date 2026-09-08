@@ -514,6 +514,26 @@ def _design_prompt(
         "host-provisioned above, and reference them locally; never use a CDN, Google Fonts, or another network font. If no "
         "approved local font is available, use a local/system CSS fallback stack.\n\n"
     )
+    allowed_paths = set(getattr(target, "allowed_paths", ()) or ())
+    native_framework_block = ""
+    if {"package.json", "astro.config.mjs", "src/**"}.issubset(allowed_paths):
+        from .site_build import ASTRO_REACT_TOOLCHAIN_DEPENDENCIES
+
+        approved_dependencies = ", ".join(
+            f"{item['package']}@{item['version']}" for item in ASTRO_REACT_TOOLCHAIN_DEPENDENCIES
+        )
+        native_framework_block = (
+            "NATIVE ASTRO/REACT TOOLCHAIN CONTRACT:\n"
+            "This target is the host-approved astro_react source workspace. The existing checkout may contain a legacy "
+            "Pelican site, but that legacy implementation is not the target for this run. Do not execute build.sh or edit "
+            "pelicanconf.py, requirements.txt, content/, themes/, output/, root index.html, root main.js, root script.js, "
+            "root styles.css, or images/. Do not duplicate the host materialized media outside public/images/ada-media/. "
+            "Author the page in the Astro/React source boundary, with the homepage at src/pages/index.astro, and use only "
+            "the exact host-approved dependencies in package.json. The approved direct dependency set and versions are: "
+            + approved_dependencies
+            + ". Do not use ranges or newer versions. Run the Astro npm check/build commands only after the native "
+            "source exists; build output is host-generated and must not be authored.\n\n"
+        )
     return (
         "Execute this host-validated design build request in the disposable worktree. "
         "The host owns the target policy, immutable base, changed-path validation, and "
@@ -531,8 +551,9 @@ def _design_prompt(
            + required_content_block
            + media_block
            + font_block
-            + font_safety
-            + "CREATIVE DESIGN PROCESS (required, not a host-provided visual scaffold):\n"
+             + font_safety
+             + native_framework_block
+             + "CREATIVE DESIGN PROCESS (required, not a host-provided visual scaffold):\n"
          + "1. " + inspection + "\n"
           + "2. Keep planning concise and choose one subject-specific direction silently. Do not narrate alternatives, spend multiple turns rereading the repository, or delegate unless a specific blocker requires bounded read-only exploration. Delegated agents may inspect and report findings only; they must not edit this worktree or install packages.\n"
            + ("3. For a visual_refinement request, inspect the parent candidate and critique before editing, then make the smallest focused repair. Preserve unaffected content, routes, styles, and behavior; do not rewrite the site or substitute a new visual direction.\n"
@@ -558,6 +579,7 @@ def _validate_design_paths(
     clone: Path,
     base_sha: str,
     host_provisioned_paths: set[str] | None = None,
+    allowed_hard_denied_paths: Sequence[str] | None = None,
 ) -> set[str]:
     from .repo_changes import HARD_DENY, writable
 
@@ -570,7 +592,10 @@ def _validate_design_paths(
     exceptions = {
         normalize for normalize in (
             str(path).strip().replace("\\", "/").lstrip("/")
-            for path in (quality.get("allowed_hard_denied_paths") or ())
+            for path in (
+                *(quality.get("allowed_hard_denied_paths") or ()),
+                *(allowed_hard_denied_paths or ()),
+            )
         ) if normalize
     }
     def allowed(path: str) -> bool:
@@ -589,6 +614,7 @@ def _validate_design_paths(
 def _typed_design_quality_policy(config: dict[str, Any], request, target):
     """Return the configured host gates for typed builds, when enabled."""
     from .design_quality import QualityPolicy
+    from .site_build import ASTRO_REACT_PROFILE
 
     # Keep the low-level builder usable in focused unit tests and by callers
     # that intentionally defer quality validation to DesignService.validate_run.
@@ -617,6 +643,15 @@ def _typed_design_quality_policy(config: dict[str, Any], request, target):
     )
     if target.allowed_paths:
         policy = replace(policy, allowed_patterns=target.allowed_paths)
+    if tuple(target.allowed_paths) == ASTRO_REACT_PROFILE.writable_patterns:
+        # package.json is globally denied because ordinary site edits must not
+        # replace the application's manifest. Native Astro builds are the
+        # explicit exception: the host owns this profile's exact toolchain and
+        # permits the model to retain any required manifest change.
+        policy = replace(
+            policy,
+            allowed_hard_denied_paths=tuple(dict.fromkeys((*policy.allowed_hard_denied_paths, "package.json"))),
+        )
     if request.prohibited_files:
         policy = replace(
             policy,
@@ -1121,14 +1156,30 @@ def finalize_design_target(
     config = context["config"]
     manifest_path = _configured_design_manifest_path(config)
     provisioned = set(host_provisioned_paths or ())
-    changed = _validate_design_paths(config, target, worktree, base_sha, provisioned)
+    quality_policy = _typed_design_quality_policy(config, request, target)
+    policy_exceptions = quality_policy.allowed_hard_denied_paths if quality_policy is not None else ()
+    changed = _validate_design_paths(
+        config,
+        target,
+        worktree,
+        base_sha,
+        provisioned,
+        allowed_hard_denied_paths=policy_exceptions,
+    )
     implementation_changed = changed - {manifest_path} - provisioned
     if not implementation_changed:
         raise RunnerError("design build finished without implementation changes")
     manifest_path, manifest_hash, design_manifest = _write_host_design_manifest(
         config, worktree, request, target, base_sha, implementation_changed, provisioned
     )
-    changed = _validate_design_paths(config, target, worktree, base_sha, provisioned)
+    changed = _validate_design_paths(
+        config,
+        target,
+        worktree,
+        base_sha,
+        provisioned,
+        allowed_hard_denied_paths=policy_exceptions,
+    )
     if progress:
         progress("committing the validated design candidate")
     _git(worktree, "add", "-A")
@@ -1201,7 +1252,6 @@ def stage_design_build(context: dict[str, Any], request, target, progress=None):
     execution_config = _native_asset_config(_typed_execution_config(config, request, target))
     execution_context = {**context, "config": execution_config}
     site_clone, worktree, base_sha = prepare_design_worktree(execution_config, target, progress)
-    prepared = _change_state(worktree)
     session_id: str | None = None
     output: list[str] = []
     transcript_path = ""
@@ -1210,20 +1260,29 @@ def stage_design_build(context: dict[str, Any], request, target, progress=None):
     materialized_font_paths: list[str] = []
     provision_error = ""
     try:
-        from .site_build import ASTRO_REACT_PROFILE, prepare_site_toolchain
+        from .site_build import ASTRO_REACT_PROFILE, prepare_native_workspace, prepare_site_toolchain
+
+        native_astro_target = tuple(target.allowed_paths) == ASTRO_REACT_PROFILE.writable_patterns
+        if native_astro_target:
+            host_provisioned_paths.update(prepare_native_workspace(worktree, ASTRO_REACT_PROFILE))
+        prepared = _change_state(worktree)
 
         raw_data_dir = str(execution_config.get("data_dir") or "").strip()
         npm_cache = (Path(raw_data_dir).expanduser().resolve() / "npm-cache") if raw_data_dir else worktree.parent / ".ada-npm-cache"
         try:
-            prepared_toolchain = prepare_site_toolchain(
-                worktree,
-                ASTRO_REACT_PROFILE,
-                npm_cache=npm_cache,
-                env=design_lab_environment(
-                    execution_context.get("env") or {},
-                    model_env_name=str((execution_config.get("env") or {}).get("llm_api_key") or ""),
-                ),
-                timeout_seconds=int((execution_config.get("builder") or {}).get("provider_timeout_seconds", 900)),
+            prepared_toolchain = (
+                prepare_site_toolchain(
+                    worktree,
+                    ASTRO_REACT_PROFILE,
+                    npm_cache=npm_cache,
+                    env=design_lab_environment(
+                        execution_context.get("env") or {},
+                        model_env_name=str((execution_config.get("env") or {}).get("llm_api_key") or ""),
+                    ),
+                    timeout_seconds=int((execution_config.get("builder") or {}).get("provider_timeout_seconds", 900)),
+                )
+                if native_astro_target
+                else ()
             )
         except Exception as exc:  # noqa: BLE001 - toolchain failure is a build failure
             raise RunnerError(str(exc)[:1_000]) from exc

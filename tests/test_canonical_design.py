@@ -20,6 +20,7 @@ from site_agent.core.design_contracts import (
 from site_agent.core.memory import Memory
 from site_agent.core.chat_jobs import run_job
 from site_agent.hands import opencode_runner as runner
+from site_agent.hands.site_build import ASTRO_REACT_PROFILE
 
 
 def _intake() -> SiteIntake:
@@ -348,6 +349,37 @@ def test_typed_prompt_names_the_frozen_snapshot_and_native_creative_process():
     assert "one bounded programmatic check" in prompt
     assert "inspect the supplied media files" in prompt
     assert "Do not inspect admin surfaces" in prompt
+
+
+def test_astro_target_prompt_keeps_legacy_source_out_of_native_authoring():
+    request = PageBuildRequest.from_dict({
+        "schema_version": 1,
+        "run_id": "astro-native-prompt",
+        "mode": "initial_homepage",
+        "base_sha": "a" * 40,
+        "page_path": "index.html",
+        "purpose": "Create the homepage.",
+        "acceptance_criteria": ["Preserve safety."],
+    })
+    target = BuildTarget.from_dict({
+        "mode": "local_experiment",
+        "base_sha": "a" * 40,
+        "candidate_ref": "refs/ada-design-lab/astro-native-prompt",
+        "push_mode": "none",
+        "publishable": False,
+        "clone_path": "/tmp/design-clone",
+        "allowed_paths": list(ASTRO_REACT_PROFILE.writable_patterns),
+    })
+
+    prompt = runner._design_prompt(request, target)
+
+    assert "NATIVE ASTRO/REACT TOOLCHAIN CONTRACT" in prompt
+    assert "Do not execute build.sh" in prompt
+    assert "root index.html" in prompt
+    assert "public/images/ada-media/" in prompt
+    assert "src/pages/index.astro" in prompt
+    assert "@astrojs/react@4.4.2" in prompt
+    assert "Do not use ranges or newer versions" in prompt
 
 
 def test_technical_repair_manifest_keeps_the_complete_intake_route_inventory():

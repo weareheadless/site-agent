@@ -9,6 +9,7 @@ from site_agent.core.design_contracts import BuildTarget, DesignContextSnapshot,
 from site_agent.core.memory import Memory
 from site_agent.hands import opencode_runner as runner
 from site_agent.hands.builder import BuilderError, OperationRoutingBuilder
+from site_agent.hands.site_build import ASTRO_REACT_PROFILE
 
 
 def test_stage_visual_evidence_writes_downscaled_jpgs_under_opencode(tmp_path):
@@ -82,6 +83,60 @@ def _clone(tmp_path):
     _git(clone, "commit", "-qm", "baseline")
     base_sha = _git(clone, "rev-parse", "HEAD").stdout.strip()
     return clone, base_sha
+
+
+def test_native_astro_finalization_accepts_the_host_approved_package_manifest(tmp_path):
+    clone, _ = _clone(tmp_path)
+    (clone / "package.json").write_text('{"name":"baseline"}\n')
+    _git(clone, "add", "package.json")
+    _git(clone, "commit", "-qm", "toolchain baseline")
+    base_sha = _git(clone, "rev-parse", "HEAD").stdout.strip()
+
+    (clone / "package.json").write_text('{"name":"candidate"}\n')
+    source = clone / "src" / "pages"
+    source.mkdir(parents=True)
+    (source / "index.astro").write_text("<h1>Candidate</h1>\n")
+
+    request = PageBuildRequest.from_dict({
+        "schema_version": 1,
+        "run_id": "design-run-package-json",
+        "mode": "initial_homepage",
+        "base_sha": base_sha,
+        "page_path": "index.html",
+        "purpose": "Create the homepage.",
+        "site_intake_hash": "a" * 64,
+        "acceptance_criteria": ["Keep the homepage accessible."],
+    })
+    target = BuildTarget.from_dict({
+        "mode": "local_experiment",
+        "base_sha": base_sha,
+        "candidate_ref": "refs/ada-design-lab/design-run-package-json",
+        "push_mode": "none",
+        "publishable": False,
+        "clone_path": str(clone),
+        "allowed_paths": list(ASTRO_REACT_PROFILE.writable_patterns),
+    })
+    memory = Memory(tmp_path / "data" / "memory.db")
+    config = {
+        "data_dir": str(tmp_path / "data"),
+        "site": {"clone_path": str(clone)},
+        "design_engine": {"quality": {}},
+    }
+
+    receipt = runner.finalize_design_target(
+        {"config": config, "memory": memory},
+        clone,
+        clone,
+        target,
+        base_sha,
+        request,
+        session_id="design-session",
+        transcript_path="design-runs/design-run-package-json/opencode.jsonl",
+    )
+
+    assert receipt.candidate_sha != base_sha
+    assert _git(clone, "rev-parse", target.candidate_ref).stdout.strip() == receipt.candidate_sha
+    memory.close()
 
 
 def test_local_design_build_commits_exact_base_to_local_ref_without_push(tmp_path, monkeypatch):
