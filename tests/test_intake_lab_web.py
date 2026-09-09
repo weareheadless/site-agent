@@ -81,6 +81,22 @@ class _IntakeService(_Service):
         self.design_intake_service = _Intake()
 
 
+class _IncubationService:
+    def __init__(self):
+        self.calls = []
+
+    def get_record(self, incubation_id):
+        return type("Record", (), {"incubation_id": incubation_id})()
+
+    def technical_repair(self, incubation_id, run_id, *, owner_request=""):
+        self.calls.append((incubation_id, run_id, owner_request))
+        return {"run_id": "design-" + "a" * 32, "publishable": False}
+
+    def retry_visual_review(self, incubation_id, run_id):
+        self.calls.append(("visual", incubation_id, run_id))
+        return {"run_id": run_id, "status": "ready_for_review"}
+
+
 class _PagesService(_Service):
     run_id = "intake-lab-" + "a" * 32
     run = {
@@ -282,6 +298,39 @@ def test_intake_lab_visual_review_retry_is_loopback_only(tmp_path):
     assert cross_origin.status_code == 403
     assert unavailable.status_code == 409
     assert refinement.status_code == 409
+
+
+def test_intake_lab_accepts_an_explicit_scoped_technical_repair(tmp_path):
+    incubation = _IncubationService()
+    app = create_app(_Service(), workspace=tmp_path, preview_cache=None, incubation_service=incubation)
+    incubation_id = "inc_7893a592e0ba456ab270d3e9bffd4c4d"
+    run_id = "design-" + "b" * 32
+
+    with TestClient(app, base_url="http://127.0.0.1:3012") as client:
+        response = client.post(
+            f"/api/incubations/{incubation_id}/runs/{run_id}/technical-repair",
+            headers={"origin": "http://127.0.0.1:3012"},
+            json={"owner_request": "Add a signature GSAP reveal."},
+        )
+
+    assert response.status_code == 202
+    assert incubation.calls == [(incubation_id, run_id, "Add a signature GSAP reveal.")]
+
+
+def test_intake_lab_accepts_a_scoped_visual_review_retry(tmp_path):
+    incubation = _IncubationService()
+    app = create_app(_Service(), workspace=tmp_path, preview_cache=None, incubation_service=incubation)
+    incubation_id = "inc_7893a592e0ba456ab270d3e9bffd4c4d"
+    run_id = "design-" + "b" * 32
+
+    with TestClient(app, base_url="http://127.0.0.1:3012") as client:
+        response = client.post(
+            f"/api/incubations/{incubation_id}/runs/{run_id}/visual-review",
+            headers={"origin": "http://127.0.0.1:3012"},
+        )
+
+    assert response.status_code == 202
+    assert incubation.calls == [("visual", incubation_id, run_id)]
 
 
 def test_intake_lab_lifespan_owns_worker_and_preview_cleanup(tmp_path):

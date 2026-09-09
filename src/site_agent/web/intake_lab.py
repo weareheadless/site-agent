@@ -540,6 +540,39 @@ def create_app(
         except IncubationServiceError:
             return _error("not_found", "Intake Lab run not found", 404)
 
+    @app.post("/api/incubations/{incubation_id}/runs/{run_id}/technical-repair", status_code=202)
+    async def incubation_technical_repair(request: Request, incubation_id: str, run_id: str):
+        try:
+            _require_api_origin(request)
+            _incubation(incubation_id)
+            body = await _json_object(request, allow_empty=True)
+            owner_request = str(body.get("owner_request") or body.get("notes") or body.get("message") or "")
+            run = incubation_service.technical_repair(  # type: ignore[union-attr]
+                incubation_id,
+                _run_id(run_id),
+                owner_request=owner_request,
+            )
+            return {"parent_run_id": _run_id(run_id), "run": run}
+        except HTTPException:
+            raise
+        except IncubationServiceError as exc:
+            return _incubation_error(exc, "technical_repair_unavailable")
+
+    @app.post("/api/incubations/{incubation_id}/runs/{run_id}/visual-review", status_code=202)
+    async def incubation_visual_review(request: Request, incubation_id: str, run_id: str):
+        try:
+            _require_api_origin(request)
+            _incubation(incubation_id)
+            run = incubation_service.retry_visual_review(  # type: ignore[union-attr]
+                incubation_id,
+                _run_id(run_id),
+            )
+            return {"run": run}
+        except HTTPException:
+            raise
+        except IncubationServiceError as exc:
+            return _incubation_error(exc, "visual_review_unavailable")
+
     @app.get("/api/incubations/{incubation_id}/runs/{run_id}/pages")
     async def incubation_run_pages(request: Request, incubation_id: str, run_id: str):
         try:

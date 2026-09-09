@@ -791,6 +791,31 @@ class IncubationApplicationService:
         except Exception as exc:
             raise IncubationServiceError("design run was not found") from exc
 
+    def technical_repair(
+        self,
+        incubation_id: str,
+        run_id: str,
+        *,
+        owner_request: str = "",
+    ) -> dict[str, Any]:
+        try:
+            return self.lab_service_for(incubation_id).create_technical_repair(
+                run_id,
+                owner_request=owner_request,
+            )
+        except IncubationServiceError:
+            raise
+        except Exception as exc:
+            raise IncubationServiceError(str(exc)[:500]) from exc
+
+    def retry_visual_review(self, incubation_id: str, run_id: str) -> dict[str, Any]:
+        try:
+            return self.lab_service_for(incubation_id).retry_visual_review(run_id)
+        except IncubationServiceError:
+            raise
+        except Exception as exc:
+            raise IncubationServiceError(str(exc)[:500]) from exc
+
     def design_pages(self, incubation_id: str, run_id: str) -> list[str]:
         try:
             return self.lab_service_for(incubation_id).pages(run_id)

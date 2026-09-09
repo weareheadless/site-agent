@@ -524,7 +524,13 @@ def _design_prompt(
             + canonical_json(plan_data)[:80_000]
             + "\nUse the selected direction, copy decisions, composition, asset treatment, and motion intent in this plan. "
             "If a plan field conflicts with a verified intake fact or host policy, preserve the fact/policy and record "
-            "the conflict instead of silently inventing a replacement.\n\n"
+            "the conflict instead of silently inventing a replacement. If the plan contains asset_composition_plan, "
+            "mark each rendered approved asset element with data-ada-asset-id and data-ada-asset-sha256 using the exact "
+            "frozen values, add data-ada-composition-role for measurable roles such as logo or navigation, and add "
+            "data-ada-focal-coverage only when the implementation can support an honest measured value. Mark the element "
+            "that realizes signature_behavior with data-ada-signature-behavior using the exact behavior id; do not add "
+            "external asset URLs or claim behavior that the implementation does not actually execute. These attributes "
+            "are host evidence hooks, not a substitute for the locked plan.\n\n"
         )
     repair_brief_block = ""
     if repair_brief is not None:

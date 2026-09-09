@@ -38,6 +38,8 @@ class _Page:
                 "details": [],
                 "active": "button" if self.clicked else "body",
             }
+        if "signature_behaviors" in script:
+            return {"signature_behaviors": []}
         raise AssertionError("unexpected evaluation")
 
     def wait_for_timeout(self, _milliseconds):

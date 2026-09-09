@@ -371,6 +371,73 @@ def test_result_projection_handles_validating_sighted_self_review():
     assert projected["summary"] == "Deterministic checks passed; visual review is still pending."
 
 
+def test_visual_review_retry_passes_the_scoped_media_service():
+    run_id = "intake-lab-" + "a" * 32
+    media_service = object()
+    calls = []
+    service = object.__new__(IntakeLabService)
+    service.media_service = media_service
+    service.review_environment = {}
+    service._raw_local_run = lambda _run_id: {
+        "run_id": run_id,
+        "mode": "local_experiment",
+        "publishable": False,
+    }
+    service.get_run = lambda _run_id: {"run_id": run_id}
+    service.design_service = SimpleNamespace(
+        visual_review_run=lambda _run_id, **kwargs: calls.append(kwargs),
+    )
+
+    assert service.retry_visual_review(run_id) == {"run_id": run_id}
+    assert calls == [{"env": {}, "source_media": media_service}]
+
+
+def test_technical_repair_queues_a_local_child_from_owner_feedback():
+    parent_id = "design-" + "a" * 32
+    child_id = "design-" + "b" * 32
+    request = {
+        "schema_version": 1,
+        "run_id": child_id,
+        "mode": "initial_homepage",
+        "base_sha": "2" * 40,
+        "page_path": "index.html",
+        "purpose": "Repair the retained homepage.",
+        "acceptance_criteria": ["Preserve the existing homepage."],
+    }
+    target = {
+        "mode": "local_experiment",
+        "base_sha": "2" * 40,
+        "candidate_ref": f"refs/ada-design-lab/{child_id}",
+        "push_mode": "none",
+        "publishable": False,
+        "operation_kind": "technical_repair",
+    }
+    calls = []
+    service = object.__new__(IntakeLabService)
+    service.executor = SimpleNamespace(enqueue=lambda run_id: calls.append(("enqueue", run_id)))
+    service._raw_local_run = lambda _run_id: {"run_id": parent_id, "mode": "local_experiment", "publishable": False}
+    service.get_run = lambda _run_id: {"run_id": child_id, "publishable": False}
+    service.design_service = SimpleNamespace(
+        create_technical_repair_run=lambda parent_run_id, **kwargs: (
+            calls.append(("create", parent_run_id, kwargs))
+            or {"run": {"run_id": child_id}, "request": request, "target": target}
+        ),
+        queue_build=lambda run_id, build_request, build_target: calls.append(
+            ("queue", run_id, build_request.run_id, build_target.operation_kind)
+        ),
+    )
+
+    result = service.create_technical_repair(parent_id, owner_request="Add a signature GSAP reveal.")
+
+    assert result == {"run_id": child_id, "publishable": False}
+    assert calls[0][0:2] == ("create", parent_id)
+    assert calls[0][2]["owner_request"] == "Add a signature GSAP reveal."
+    assert calls[-2:] == [
+        ("queue", child_id, child_id, "technical_repair"),
+        ("enqueue", child_id),
+    ]
+
+
 def test_revision_summary_marks_reviewable(tmp_path):
     from site_agent.application.intake_lab import _revision_summary
 

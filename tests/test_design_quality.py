@@ -2,7 +2,8 @@ import hashlib
 import json
 import subprocess
 
-from site_agent.core.design_contracts import DesignManifest
+from tests.test_design_contracts import _experience_plan
+from site_agent.core.design_contracts import DesignManifest, ExperiencePlanBundle
 from site_agent.hands.design_quality import (
     QualityPolicy,
     _font_findings,
@@ -50,6 +51,82 @@ def test_missing_output_page_blocks_quality(tmp_path):
 
     assert report.state == "failed"
     assert any(finding["code"] == "missing_output" for finding in report.to_dict()["findings"])
+
+
+def test_experience_plan_gates_use_browser_composition_and_temporal_evidence(tmp_path):
+    repo, sha = _repo(tmp_path)
+    output = repo / "output"
+    output.mkdir()
+    (output / "index.html").write_text(
+        '<html lang="en"><head><title>Home</title>'
+        '<meta name="description" content="A real page">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1"><style>main{display:block}</style></head>'
+        '<body><main><img data-ada-asset-id="asset-logo" '
+        'data-ada-asset-sha256="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" '
+        'data-ada-composition-role="logo" data-ada-focal-coverage="0.9" src="/logo.svg" alt="Logo">'
+        '<nav data-ada-composition-role="navigation">Navigation</nav>'
+        '<div data-ada-signature-behavior="measured-arrival" data-ada-behavior-observed="true">'
+        '<h1>Home</h1><p>Useful public copy stays visible at rest.</p></div></main></body></html>'
+    )
+    plan = _experience_plan()
+    experience_plan_hash = ExperiencePlanBundle.from_dict(plan).content_hash
+
+    class Browser:
+        def inspect(self, _output, _viewport):
+            temporal = {
+                "schema_version": 1,
+                "candidate_sha": sha,
+                "experience_plan_hash": experience_plan_hash,
+                "route": "/index.html",
+                "viewport": {"name": "desktop", "width": 1440, "height": 1000},
+                "reduced_motion": False,
+                "interaction_script_id": "bounded-controls-v1",
+                "frames": [
+                    {"phase": "before", "path": "candidate/desktop/before.png"},
+                    {"phase": "intermediate", "path": "candidate/desktop/intermediate.png"},
+                    {"phase": "after", "path": "candidate/desktop/after.png"},
+                ],
+                "layout_shifts": [{"value": 0.02}],
+                "console_errors": [],
+                "network_errors": [],
+                "animation_observations": [{"id": "measured-arrival", "state": "observed"}],
+                "keyboard_path_observations": ["logo", "navigation"],
+                "resting_state_observations": {"critical_content_visible": True},
+            }
+            return {
+                "status": "passed",
+                "routes": [{
+                    "route": "index.html",
+                    "composition_elements": [
+                        {
+                            "role": "logo",
+                            "asset_id": "asset-logo",
+                            "asset_sha256": "a" * 64,
+                            "src": "/logo.svg",
+                            "focal_coverage": 0.9,
+                            "box": {"x": 20, "y": 20, "width": 180, "height": 40},
+                        },
+                        {"role": "navigation", "box": {"x": 320, "y": 20, "width": 400, "height": 40}},
+                    ],
+                    "temporal_evidence": [temporal],
+                }],
+                "external_requests": [],
+            }
+
+    report = run_quality_gates(
+        repo,
+        base_sha=sha,
+        candidate_sha=sha,
+        run_id="run-experience-plan",
+        policy=_policy(browser_required=True, viewports=({"name": "desktop", "width": 1440, "height": 1000},)),
+        browser=Browser(),
+        experience_plan=plan,
+    )
+
+    data = report.to_dict()
+    assert report.state == "passed", data
+    assert data["gates"]["composition"] == "passed"
+    assert data["gates"]["temporal"] == "passed"
 
 
 def test_font_gate_requires_local_approved_woff2_and_face_declaration(tmp_path):

@@ -1,1 +1,1 @@
-"""Test package helpers are importable by focused compiler tests."""
+"""Test package for shared contract fixtures."""

@@ -16,11 +16,11 @@ from fnmatch import fnmatch
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
-from typing import Any, Mapping, Protocol
+from typing import Any, Mapping, Protocol, Sequence
 from urllib.parse import urlsplit
 
 from ..core.contracts import safe_provider_message
-from ..core.design_contracts import DesignManifest, QualityReport, safe_relative_path
+from ..core.design_contracts import DesignManifest, QualityReport, TemporalExperienceEvidence, canonical_hash, safe_relative_path
 from .repo_changes import HARD_DENY, normalize_path, writable
 
 
@@ -292,6 +292,222 @@ def _changed_paths(repo: Path, base_sha: str, candidate_sha: str) -> set[str]:
 
 def _finding(gate: str, severity: str, code: str, message: str, **extra: Any) -> dict[str, Any]:
     return {"gate": gate, "severity": severity, "code": code, "message": message, **extra}
+
+
+def _browser_box(value: Any, path: str) -> dict[str, float] | None:
+    if not isinstance(value, Mapping):
+        return None
+    result: dict[str, float] = {}
+    for key in ("x", "y", "width", "height"):
+        item = value.get(key)
+        if isinstance(item, bool) or not isinstance(item, (int, float)):
+            return None
+        number = float(item)
+        if key in {"width", "height"} and number <= 0:
+            return None
+        result[key] = number
+    return result
+
+
+def _boxes_intersect(first: Mapping[str, float], second: Mapping[str, float], padding: float = 0) -> bool:
+    return not (
+        first["x"] + first["width"] + padding <= second["x"]
+        or second["x"] + second["width"] + padding <= first["x"]
+        or first["y"] + first["height"] + padding <= second["y"]
+        or second["y"] + second["height"] + padding <= first["y"]
+    )
+
+
+def evaluate_composition_plan(
+    composition_plan: Sequence[Any],
+    rendered_evidence: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Check only objective relationships declared by the frozen composition plan.
+
+    The browser adapter supplies role-based boxes and asset identities.  This
+    helper deliberately does not inspect CSS class names or infer whether a
+    visual choice is attractive.
+    """
+    from ..core.design_contracts import AssetCompositionPlan
+
+    plans = tuple(
+        item if isinstance(item, AssetCompositionPlan) else AssetCompositionPlan.from_dict(item)
+        for item in composition_plan
+    )
+    findings: list[dict[str, Any]] = []
+    route_reports: list[dict[str, Any]] = []
+    assigned: dict[str, int] = {item.asset_id: 0 for item in plans}
+
+    for raw_route in rendered_evidence:
+        route = dict(raw_route) if isinstance(raw_route, Mapping) else {}
+        route_name = str(route.get("route") or "")
+        viewport = dict(route.get("viewport") or {}) if isinstance(route.get("viewport"), Mapping) else {}
+        raw_elements = route.get("elements") if isinstance(route.get("elements"), list) else []
+        elements = [dict(item) for item in raw_elements if isinstance(item, Mapping)]
+        route_report = {"route": route_name, "viewport": viewport, "asset_assignments": []}
+        for plan in plans:
+            matches = [item for item in elements if str(item.get("asset_id") or "") == plan.asset_id]
+            if not matches:
+                continue
+            assigned[plan.asset_id] += len(matches)
+            for element in matches:
+                assignment = {"asset_id": plan.asset_id, "route": route_name, "status": "passed"}
+                rendered_hash = str(element.get("asset_sha256") or "").lower()
+                if rendered_hash != plan.asset_sha256:
+                    assignment["status"] = "failed"
+                    findings.append(_finding(
+                        "composition", "blocker", "asset_hash_mismatch",
+                        "Rendered asset does not match the frozen composition asset hash.",
+                        asset_id=plan.asset_id, route=route_name, expected=plan.asset_sha256, actual=rendered_hash,
+                    ))
+                source = str(element.get("src") or element.get("href") or element.get("external_url") or "")
+                if source.startswith(("http://", "https://", "//")) or element.get("external_url"):
+                    assignment["status"] = "failed"
+                    findings.append(_finding(
+                        "composition", "blocker", "external_asset_substitution",
+                        "Rendered composition asset uses an external source.", asset_id=plan.asset_id, route=route_name,
+                    ))
+                if plan.focal_region_to_preserve is not None:
+                    coverage = element.get("focal_coverage")
+                    if isinstance(coverage, bool) or not isinstance(coverage, (int, float)) or float(coverage) < 0.8:
+                        assignment["status"] = "failed"
+                        findings.append(_finding(
+                            "composition", "blocker", "focal_region_not_preserved",
+                            "Rendered asset evidence does not preserve the planned focal region.",
+                            asset_id=plan.asset_id, route=route_name, coverage=coverage,
+                        ))
+                route_report["asset_assignments"].append(assignment)
+
+            if plan.logo_rule is not None:
+                logo_elements = [item for item in matches if str(item.get("role") or "") == "logo"] or matches
+                for logo in logo_elements:
+                    logo_box = _browser_box(logo.get("box"), f"{plan.asset_id}.box")
+                    if logo_box is None:
+                        findings.append(_finding(
+                            "composition", "blocker", "logo_geometry_missing",
+                            "Logo composition evidence is missing a measurable browser box.",
+                            asset_id=plan.asset_id, route=route_name,
+                        ))
+                        continue
+                    clear_padding = plan.logo_rule.clear_space * max(logo_box["width"], logo_box["height"])
+                    excluded_roles = set(plan.logo_rule.collision_exclusions)
+                    for other in elements:
+                        if other is logo or str(other.get("role") or "") not in excluded_roles:
+                            continue
+                        other_box = _browser_box(other.get("box"), "composition element box")
+                        if other_box is not None and _boxes_intersect(logo_box, other_box, clear_padding):
+                            findings.append(_finding(
+                                "composition", "blocker", "logo_collision",
+                                "Logo optical clear space intersects a declared excluded role.",
+                                asset_id=plan.asset_id, route=route_name,
+                                excluded_role=str(other.get("role") or ""),
+                                viewport=viewport,
+                            ))
+        route_reports.append(route_report)
+
+    for plan in plans:
+        if assigned[plan.asset_id] == 0:
+            findings.append(_finding(
+                "composition", "blocker", "planned_asset_missing",
+                "A frozen composition asset was not observed in rendered evidence.", asset_id=plan.asset_id,
+            ))
+    report = {
+        "status": "failed" if findings else "passed",
+        "routes": route_reports,
+        "planned_assets": sorted(assigned),
+        "assigned_assets": {key: value for key, value in sorted(assigned.items())},
+    }
+    return report, findings
+
+
+def evaluate_temporal_evidence(
+    evidence: Any,
+    *,
+    signature_behavior_id: str = "",
+    max_layout_shift: float = 0.1,
+    candidate_sha: str = "",
+    experience_plan_hash: str = "",
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Evaluate measurable temporal evidence without judging taste or style."""
+    from ..core.design_contracts import TemporalExperienceEvidence
+
+    if not isinstance(evidence, TemporalExperienceEvidence):
+        evidence = TemporalExperienceEvidence.from_dict(evidence)
+    findings: list[dict[str, Any]] = []
+    if candidate_sha and evidence.candidate_sha != candidate_sha:
+        findings.append(_finding(
+            "temporal", "blocker", "candidate_identity_mismatch",
+            "Temporal evidence belongs to a different candidate than the quality run.",
+            expected=candidate_sha, actual=evidence.candidate_sha,
+        ))
+    if experience_plan_hash and evidence.experience_plan_hash != experience_plan_hash:
+        findings.append(_finding(
+            "temporal", "blocker", "experience_plan_identity_mismatch",
+            "Temporal evidence belongs to a different locked experience plan.",
+            expected=experience_plan_hash, actual=evidence.experience_plan_hash,
+        ))
+    if evidence.console_errors:
+        findings.append(_finding("temporal", "blocker", "console_errors", "Temporal evidence contains browser console errors.", count=len(evidence.console_errors)))
+    if evidence.network_errors:
+        findings.append(_finding("temporal", "blocker", "network_errors", "Temporal evidence contains browser network errors.", count=len(evidence.network_errors)))
+    if evidence.resting_state_observations.get("critical_content_visible") is not True:
+        findings.append(_finding("temporal", "blocker", "resting_state_incomplete", "Critical content is not complete in the observed resting state."))
+    if signature_behavior_id:
+        observed = any(
+            str(item.get("id") or "") == signature_behavior_id
+            and str(item.get("state") or "").lower() in {"observed", "passed", "complete"}
+            for item in evidence.animation_observations
+        )
+        if not observed:
+            findings.append(_finding(
+                "temporal", "blocker", "signature_behavior_unobserved",
+                "The locked signature behavior was not observed in temporal evidence.",
+                signature_behavior_id=signature_behavior_id,
+            ))
+    layout_shift = 0.0
+    for item in evidence.layout_shifts:
+        value = item.get("value", item.get("cumulative_layout_shift", 0))
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            layout_shift += max(0.0, float(value))
+    if layout_shift > max_layout_shift:
+        findings.append(_finding(
+            "temporal", "blocker", "layout_shift_budget",
+            "Temporal evidence exceeds the locked layout-shift budget.",
+            value=layout_shift, maximum=max_layout_shift,
+        ))
+    report = {
+        "status": "failed" if findings else "passed",
+        "route": evidence.route,
+        "viewport": dict(evidence.viewport),
+        "reduced_motion": evidence.reduced_motion,
+        "frame_phases": [str(item.get("phase") or "") for item in evidence.frames],
+        "layout_shift": layout_shift,
+        "signature_behavior_id": signature_behavior_id,
+    }
+    return report, findings
+
+
+def _bind_temporal_evidence(
+    raw: Any,
+    *,
+    candidate_sha: str,
+    experience_plan_hash: str,
+) -> TemporalExperienceEvidence:
+    """Bind browser-produced temporal observations to the immutable run identity."""
+    if isinstance(raw, TemporalExperienceEvidence):
+        return raw
+    value = dict(raw) if isinstance(raw, Mapping) else {}
+    identity_bound = False
+    if not value.get("candidate_sha"):
+        value["candidate_sha"] = candidate_sha
+        identity_bound = True
+    if not value.get("experience_plan_hash"):
+        value["experience_plan_hash"] = experience_plan_hash
+        identity_bound = True
+    if identity_bound or not value.get("evidence_hash"):
+        value.pop("evidence_hash", None)
+        value["evidence_hash"] = canonical_hash(value)
+    return TemporalExperienceEvidence.from_dict(value)
 
 
 def _host_provisioned_paths(repo: Path, policy: QualityPolicy) -> set[str]:
@@ -1274,6 +1490,7 @@ def _browser_findings(output: Path, policy: QualityPolicy, browser: BrowserQuali
     text_wrap_evidence: list[dict[str, Any]] = []
     scroll_evidence: list[dict[str, Any]] = []
     interaction_evidence: list[dict[str, Any]] = []
+    temporal_evidence: list[dict[str, Any]] = []
     external_request_evidence: list[dict[str, Any]] = []
     for viewport in policy.viewports:
         try:
@@ -1281,6 +1498,18 @@ def _browser_findings(output: Path, policy: QualityPolicy, browser: BrowserQuali
         except Exception as exc:  # noqa: BLE001
             return {"status": "unavailable"}, [_finding("browser", "incomplete", "browser_unavailable", safe_provider_message(str(exc)))], True
         evidence["viewports"].append({"viewport": dict(viewport), "result": result})
+        temporal_evidence.extend(
+            dict(item)
+            for item in (result.get("temporal_evidence") or ())
+            if isinstance(item, Mapping)
+        )
+        temporal_evidence.extend(
+            dict(item)
+            for route_item in (result.get("routes") or ())
+            if isinstance(route_item, Mapping)
+            for item in (route_item.get("temporal_evidence") or ())
+            if isinstance(item, Mapping)
+        )
         contrast_failures = result.get("contrast_failures") or []
         font_load_failures = result.get("font_load_failures") or []
         font_checks = result.get("font_checks") or []
@@ -1415,6 +1644,7 @@ def _browser_findings(output: Path, policy: QualityPolicy, browser: BrowserQuali
     evidence["text_wrap_failures"] = text_wrap_evidence
     evidence["scroll_states"] = scroll_evidence
     evidence["interaction_states"] = interaction_evidence
+    evidence["temporal_evidence"] = temporal_evidence
     evidence["external_requests"] = external_request_evidence
     return evidence, findings, False
 
@@ -1431,6 +1661,8 @@ def _run_quality_in_workspace(
     build_evidence: Mapping[str, Any] | None = None,
     build_runner=None,
     build_env: Mapping[str, str] | None = None,
+    experience_plan: Any | None = None,
+    temporal_evidence: Sequence[Any] = (),
 ) -> QualityReport:
     findings = _repository_findings(workspace, base_sha, candidate_sha, policy)
     findings.extend(_dependency_findings(workspace, base_sha, candidate_sha, policy))
@@ -1474,6 +1706,99 @@ def _run_quality_in_workspace(
     findings.extend(manifest_findings)
     browser_evidence, browser_findings, browser_incomplete = _browser_findings(workspace / policy.output_dir, policy, browser)
     findings.extend(browser_findings)
+    composition_evidence: dict[str, Any] = {"status": "skipped", "reason": "experience_plan_not_supplied"}
+    temporal_evidence_report: dict[str, Any] = {"status": "skipped", "reason": "experience_plan_not_supplied"}
+    experience_plan_hash = ""
+    if experience_plan is not None:
+        from ..core.design_contracts import ExperiencePlanBundle
+
+        try:
+            plan = experience_plan if isinstance(experience_plan, ExperiencePlanBundle) else ExperiencePlanBundle.from_dict(experience_plan)
+            experience_plan_hash = plan.content_hash
+        except Exception as exc:  # noqa: BLE001 - report malformed creative input as an incomplete gate
+            composition_evidence = {"status": "incomplete", "reason": "experience_plan_invalid"}
+            temporal_evidence_report = {"status": "incomplete", "reason": "experience_plan_invalid"}
+            findings.append(_finding(
+                "experience_plan", "incomplete", "experience_plan_invalid",
+                "The locked experience plan could not be validated before deterministic review.",
+                error=str(exc)[:300],
+            ))
+        else:
+            rendered_composition: list[dict[str, Any]] = []
+            for viewport_item in browser_evidence.get("viewports") or ():
+                if not isinstance(viewport_item, Mapping):
+                    continue
+                viewport = viewport_item.get("viewport") if isinstance(viewport_item.get("viewport"), Mapping) else {}
+                result = viewport_item.get("result") if isinstance(viewport_item.get("result"), Mapping) else {}
+                for route_item in result.get("routes") or ():
+                    if not isinstance(route_item, Mapping):
+                        continue
+                    elements = route_item.get("composition_elements") or route_item.get("elements")
+                    rendered_composition.append({
+                        "route": route_item.get("route"),
+                        "viewport": dict(viewport),
+                        "elements": list(elements) if isinstance(elements, list) else [],
+                    })
+            if not rendered_composition or not any(item.get("elements") for item in rendered_composition):
+                composition_evidence = {"status": "incomplete", "reason": "browser_composition_roles_missing"}
+                findings.append(_finding(
+                    "composition", "incomplete", "composition_evidence_missing",
+                    "The locked composition has no role-based browser evidence for its asset assignments.",
+                    experience_plan_hash=experience_plan_hash,
+                ))
+            else:
+                composition_evidence, composition_findings = evaluate_composition_plan(
+                    plan.asset_composition_plan,
+                    rendered_composition,
+                )
+                findings.extend(composition_findings)
+            signature = plan.behavior_system.signature_behavior
+            signature_id = str(signature.get("id") or "") if isinstance(signature, Mapping) else ""
+            budget = plan.behavior_system.performance_budget
+            raw_budget = budget.get("max_layout_shift", budget.get("max_cumulative_layout_shift", 0.1)) if isinstance(budget, Mapping) else 0.1
+            try:
+                max_layout_shift = max(0.0, float(raw_budget))
+            except (TypeError, ValueError):
+                max_layout_shift = 0.1
+            temporal_items = list(temporal_evidence or browser_evidence.get("temporal_evidence") or ())
+            if not temporal_items:
+                temporal_evidence_report = {"status": "incomplete", "reason": "temporal_evidence_missing", "experience_plan_hash": experience_plan_hash}
+                findings.append(_finding(
+                    "temporal", "incomplete", "temporal_evidence_missing",
+                    "Static browser screenshots cannot pass the locked signature-behavior gate without temporal evidence.",
+                    experience_plan_hash=experience_plan_hash,
+                ))
+            else:
+                temporal_reports: list[dict[str, Any]] = []
+                temporal_findings: list[dict[str, Any]] = []
+                for item in temporal_items:
+                    try:
+                        bound = _bind_temporal_evidence(
+                            item,
+                            candidate_sha=candidate_sha,
+                            experience_plan_hash=experience_plan_hash,
+                        )
+                        report, item_findings = evaluate_temporal_evidence(
+                            bound,
+                            signature_behavior_id=signature_id,
+                            max_layout_shift=max_layout_shift,
+                            candidate_sha=candidate_sha,
+                            experience_plan_hash=experience_plan_hash,
+                        )
+                        temporal_reports.append(report)
+                        temporal_findings.extend(item_findings)
+                    except Exception as exc:  # noqa: BLE001 - malformed evidence is an incomplete gate
+                        temporal_findings.append(_finding(
+                            "temporal", "incomplete", "temporal_evidence_invalid",
+                            "Temporal browser evidence could not be validated against the locked plan.",
+                            error=str(exc)[:300],
+                        ))
+                findings.extend(temporal_findings)
+                temporal_evidence_report = {
+                    "status": "failed" if any(item.get("severity") in {"blocker", "critical", "serious"} for item in temporal_findings) else "incomplete" if temporal_findings else "passed",
+                    "experience_plan_hash": experience_plan_hash,
+                    "reports": temporal_reports,
+                }
     motion_evidence = {
         "status": "passed" if not native_source_evidence.get("animation_files") else (
             "incomplete"
@@ -1520,6 +1845,8 @@ def _run_quality_in_workspace(
             "manifest": manifest_evidence,
             "motion": motion_evidence,
             "browser": browser_evidence,
+            "composition": composition_evidence,
+            "temporal": temporal_evidence_report,
         },
         "gates": {
             "repository": "failed" if any(item["gate"] == "repository" and item["severity"] in blockers for item in findings) else "passed",
@@ -1533,6 +1860,8 @@ def _run_quality_in_workspace(
             "manifest": manifest_evidence.get("status"),
             "motion": motion_evidence.get("status"),
             "browser": browser_evidence.get("status"),
+            "composition": composition_evidence.get("status"),
+            "temporal": temporal_evidence_report.get("status"),
         },
         "repair_attempts": repair_attempts,
     })
@@ -1550,6 +1879,8 @@ def run_quality_gates(
     build_evidence: Mapping[str, Any] | None = None,
     build_runner=None,
     build_env: Mapping[str, str] | None = None,
+    experience_plan: Any | None = None,
+    temporal_evidence: Sequence[Any] = (),
 ) -> QualityReport:
     """Run all deterministic checks and return evidence without mutating the repo."""
     policy = policy or QualityPolicy()
@@ -1592,6 +1923,8 @@ def run_quality_gates(
             build_evidence=build_evidence,
             build_runner=build_runner,
             build_env=build_env,
+            experience_plan=experience_plan,
+            temporal_evidence=temporal_evidence,
         )
     finally:
         if temporary_workspace is not None:

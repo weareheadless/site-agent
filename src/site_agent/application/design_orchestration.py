@@ -17,11 +17,15 @@ from pathlib import Path
 from ..core.contracts import ContractError
 from ..core.design_contracts import (
     BuildTarget,
+    BrandSourceMap,
     CopyDeck,
     CreativeConcept,
     DesignPhase,
     DesignPhaseArtifact,
     DesignPlanBundle,
+    ExperiencePlanBundle,
+    BrandSourceReport,
+    TransferReview,
     CreativeRealizationReview,
     CriticReport,
     ImplementationReport,
@@ -56,6 +60,12 @@ class DesignPlanResult:
     concepts: tuple[CreativeConcept, ...]
     plan: DesignPlanBundle
     creative_director_session_id: str
+    experience_plan: ExperiencePlanBundle | None = None
+
+    @property
+    def locked_plan(self) -> DesignPlanBundle:
+        """Return the durable phase envelope used by realization and repair."""
+        return self.plan
 
 
 @dataclass(frozen=True)
@@ -98,7 +108,7 @@ class SpecialistDesignCoordinator:
     def _brief(request: PageBuildRequest) -> dict[str, Any]:
         snapshot = request.context_snapshot
         site_facts = snapshot.site_facts if snapshot is not None else {}
-        return {
+        result = {
             "owner_request": str((request.content or {}).get("creative_prompt") or request.purpose),
             "purpose": request.purpose,
             "acceptance_criteria": list(request.acceptance_criteria),
@@ -112,6 +122,78 @@ class SpecialistDesignCoordinator:
             "unknowns": list(snapshot.unknowns if snapshot is not None else ()),
             "capabilities": list(snapshot.capabilities if snapshot is not None else ()),
         }
+        if snapshot is not None:
+            result["asset_inventory"] = [dict(item) for item in snapshot.asset_inventory]
+            result["asset_visual_evidence"] = [item.to_dict() for item in snapshot.asset_visual_evidence]
+            result["asset_visual_evidence_errors"] = list(
+                snapshot.extra.get("asset_visual_evidence_errors") or ()
+                if isinstance(snapshot.extra, Mapping)
+                else ()
+            )
+        return result
+
+    def _experience_plan_required(self, request: PageBuildRequest) -> bool:
+        engine = self.config.get("design_engine") or {}
+        return request.context_snapshot is not None or bool(engine.get("require_experience_plan"))
+
+    @staticmethod
+    def _brand_source_map(report: BrandSourceReport) -> BrandSourceMap:
+        payload = report.payload
+        raw = payload.get("brand_source_map") if isinstance(payload, Mapping) else None
+        if not isinstance(raw, Mapping):
+            raise DesignOrchestrationError("brand-source phase did not return a brand_source_map")
+        try:
+            return BrandSourceMap.from_dict(raw)
+        except ContractError as exc:
+            raise DesignOrchestrationError(str(exc)) from exc
+
+    @staticmethod
+    def _strict_experience_plan(
+        plan: DesignPlanBundle,
+        request: PageBuildRequest,
+        target: BuildTarget,
+        copy_deck: CopyDeck,
+        *,
+        asset_evidence: Sequence[Mapping[str, Any]] = (),
+    ) -> tuple[DesignPlanBundle, ExperiencePlanBundle]:
+        """Validate and normalize the creative director's locked bundle."""
+        raw = dict(plan.payload)
+        # The copy deck remains a separate durable phase artifact. Include its
+        # canonical envelope in the locked plan so realization receives the
+        # final visible-copy decisions without weakening the phase contract.
+        raw.setdefault("copy_deck", copy_deck.to_dict())
+        try:
+            bundle = ExperiencePlanBundle.from_dict(raw)
+        except ContractError as exc:
+            raise DesignOrchestrationError(str(exc)) from exc
+        if bundle.run_id != request.run_id or bundle.base_sha != target.base_sha:
+            raise DesignOrchestrationError("experience plan identity does not match the design run")
+        if bundle.context_snapshot_hash != request.context_snapshot_hash:
+            raise DesignOrchestrationError("experience plan context hash does not match the design run")
+        if bundle.copy_deck_hash != copy_deck.content_hash:
+            raise DesignOrchestrationError("experience plan copy_deck_hash does not match the final copy deck")
+        if copy_deck.content_hash not in bundle.input_artifact_hashes:
+            raise DesignOrchestrationError("experience plan input hashes omit the final copy deck")
+        allowed = {str(item.get("asset_id")): str(item.get("asset_sha256")) for item in asset_evidence if isinstance(item, Mapping)}
+        for item in bundle.asset_evidence:
+            if request.context_snapshot is not None and (item.asset_id not in allowed or allowed[item.asset_id] != item.asset_sha256):
+                raise DesignOrchestrationError(f"experience plan uses asset evidence outside the frozen snapshot: {item.asset_id}")
+        normalized_raw = {**plan.to_dict(), "payload": bundle.to_dict()}
+        try:
+            normalized_plan = DesignPlanBundle.from_dict(normalized_raw)
+        except ContractError as exc:
+            raise DesignOrchestrationError(str(exc)) from exc
+        return normalized_plan, bundle
+
+    @staticmethod
+    def _transfer_passed(review: TransferReview, plan_hash: str) -> None:
+        payload = review.payload
+        state = str(payload.get("state") or "").strip().lower()
+        if state != "passed":
+            raise DesignOrchestrationError("experience plan failed the counterfactual transfer test")
+        reported_hash = str(payload.get("plan_hash") or "").strip().lower()
+        if reported_hash and reported_hash != plan_hash:
+            raise DesignOrchestrationError("transfer review plan hash does not match the locked experience plan")
 
     @staticmethod
     def _input_hashes(request: PageBuildRequest, *artifacts: DesignPhaseArtifact) -> tuple[str, ...]:
@@ -555,6 +637,171 @@ class SpecialistDesignCoordinator:
         return str(records[-1].get("session_id") or "")
 
     def create_plan(
+        self,
+        request: PageBuildRequest,
+        target: BuildTarget,
+        progress=None,
+        *,
+        image_files: Sequence[str] = (),
+    ) -> DesignPlanResult:
+        """Create the finite creative plan, using the strict bundle when frozen context exists."""
+        if not self._experience_plan_required(request):
+            return self._create_legacy_plan(request, target, progress, image_files=image_files)
+        if request.context_snapshot is None:
+            raise DesignOrchestrationError("strict experience planning requires a frozen context snapshot")
+        if not request.run_id:
+            raise DesignOrchestrationError("design request has no stable run identity")
+
+        input_hashes = self._input_hashes(request)
+        copy_instruction = (
+            "Act as the copywriter. Produce the final visible copy hierarchy for the required page. "
+            "Use verified facts only, preserve unresolved contact details, and make the primary action honest."
+        )
+        brand_instruction = (
+            "Act as the brand-source analyst. Read the frozen owner context and approved asset visual evidence. "
+            "Return a payload with exactly one brand_source_map object describing only evidence-backed visual grammar. "
+            "Do not choose a page template, invent brand claims, or implement source. Preserve signals that are not safe "
+            "to infer and reference the supplied evidence IDs."
+        )
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="design-foundation") as pool:
+            futures = {
+                "copy": pool.submit(
+                    self._invoke_phase,
+                    request=request,
+                    target=target,
+                    role="copywriter",
+                    phase=DesignPhase.COPY.value,
+                    variant_key="primary",
+                    contract=CopyDeck,
+                    instruction=copy_instruction,
+                    input_hashes=input_hashes,
+                    progress=progress,
+                    image_files=image_files,
+                ),
+                "brand": pool.submit(
+                    self._invoke_phase,
+                    request=request,
+                    target=target,
+                    role="brand-source-analyst",
+                    phase=DesignPhase.BRAND_SOURCE.value,
+                    variant_key="primary",
+                    contract=BrandSourceReport,
+                    instruction=brand_instruction,
+                    input_hashes=input_hashes,
+                    progress=progress,
+                    image_files=image_files,
+                ),
+            }
+            results: dict[str, tuple[DesignPhaseArtifact, str]] = {}
+            for future in as_completed(futures.values()):
+                key = next(name for name, item in futures.items() if item is future)
+                results[key] = future.result()
+
+        copy_deck = results["copy"][0]
+        brand_report = results["brand"][0]
+        brand_map = self._brand_source_map(brand_report)  # type: ignore[arg-type]
+        concept_inputs = self._input_hashes(request, copy_deck, brand_report)
+        concept_instruction = (
+            "Act as an independent visual concept designer. Develop one distinctive concept for this specific audience "
+            "and supplied media. The concept must include exact asset assignments, logo integration, a behavioral thesis, "
+            "one signature behavior, responsive and reduced-motion translations, feasibility risks, evidence references, "
+            "and a transfer-test prediction. Do not implement source or copy a template.\nBRAND SOURCE MAP:\n"
+            + canonical_json(brand_map.to_dict())
+        )
+        with ThreadPoolExecutor(max_workers=3, thread_name_prefix="design-concept") as pool:
+            futures = {
+                variant: pool.submit(
+                    self._invoke_phase,
+                    request=request,
+                    target=target,
+                    role="concept-designer",
+                    phase=DesignPhase.CONCEPT.value,
+                    variant_key=variant,
+                    contract=CreativeConcept,
+                    instruction=concept_instruction,
+                    input_hashes=concept_inputs,
+                    progress=progress,
+                    image_files=image_files,
+                )
+                for variant in self.CONCEPT_VARIANTS
+            }
+            concept_results: dict[str, tuple[DesignPhaseArtifact, str]] = {}
+            for future in as_completed(futures.values()):
+                variant = next(name for name, item in futures.items() if item is future)
+                concept_results[variant] = future.result()
+        concepts = tuple(concept_results[variant][0] for variant in self.CONCEPT_VARIANTS)
+        selection_inputs = self._input_hashes(request, copy_deck, brand_report, *concepts)
+        asset_evidence = [item.to_dict() for item in request.context_snapshot.asset_visual_evidence]
+        selection_prompt = (
+            "Act as the creative director. Compare the three independent concepts, select the strongest direction or "
+            "synthesize only named strengths, and emit one strict ExperiencePlanBundle as the payload of the phase "
+            "envelope. The bundle must freeze the asset composition plan and brand behavior system before repository "
+            "mutation. Every selected asset must use an ID and hash from the frozen evidence. The behavior must be "
+            "specific to the supplied business, audience, copy, or media, pass the counterfactual transfer test, and "
+            "include complete no-JavaScript, reduced-motion, mobile, keyboard, resting-state, and observable acceptance "
+            "conditions. Do not implement source or invent a template. Use these exact hashes: run_id="
+            + request.run_id
+            + ", base_sha=" + target.base_sha
+            + ", context_snapshot_hash=" + request.context_snapshot_hash
+            + ", copy_deck_hash=" + copy_deck.content_hash
+            + ". The payload must set input_artifact_hashes to include the copy deck hash and transfer_test.state to passed.\n"
+            "COPY DECK:\n" + canonical_json(copy_deck.to_dict())
+            + "\nBRAND SOURCE MAP:\n" + canonical_json(brand_map.to_dict())
+            + "\nFROZEN ASSET EVIDENCE:\n" + canonical_json(asset_evidence)
+            + "\nCONCEPTS:\n" + canonical_json([concept.to_dict() for concept in concepts])
+        )
+        plan, director_session = self._invoke_phase(
+            request=request,
+            target=target,
+            role="creative-director",
+            phase=DesignPhase.CREATIVE_SELECTION.value,
+            variant_key="primary",
+            contract=DesignPlanBundle,
+            instruction=selection_prompt,
+            input_hashes=selection_inputs,
+            progress=progress,
+            image_files=image_files,
+        )
+        normalized_plan, experience_plan = self._strict_experience_plan(
+            plan,
+            request,
+            target,
+            copy_deck,  # type: ignore[arg-type]
+            asset_evidence=asset_evidence,
+        )
+        if experience_plan.brand_source_map.content_hash != brand_map.content_hash:
+            raise DesignOrchestrationError("experience plan brand_source_map does not match the frozen brand-source phase")
+
+        transfer_instruction = (
+            "Act as the adversarial transfer critic. Review only the locked ExperiencePlanBundle and its evidence. "
+            "Run the unrelated-business counterfactual: reject generic or unsupported metaphors, but do not replace the "
+            "selected direction. Return a payload with state passed or rejected, plan_hash, evidence_specific_elements, "
+            "transferable_elements, unsupported_metaphors, and required_corrections.\nLOCKED EXPERIENCE PLAN:\n"
+            + canonical_json(experience_plan.to_dict())
+            + "\nPLAN HASH: " + experience_plan.content_hash
+        )
+        transfer, _ = self._invoke_phase(
+            request=request,
+            target=target,
+            role="transfer-critic",
+            phase=DesignPhase.TRANSFER_REVIEW.value,
+            variant_key="primary",
+            contract=TransferReview,
+            instruction=transfer_instruction,
+            input_hashes=self._input_hashes(request, normalized_plan),
+            progress=progress,
+            image_files=image_files,
+        )
+        self._transfer_passed(transfer, experience_plan.content_hash)  # type: ignore[arg-type]
+        return DesignPlanResult(
+            copy_deck=copy_deck,  # type: ignore[arg-type]
+            concepts=tuple(concepts),  # type: ignore[arg-type]
+            plan=normalized_plan,
+            creative_director_session_id=director_session,
+            experience_plan=experience_plan,
+        )
+
+    def _create_legacy_plan(
         self,
         request: PageBuildRequest,
         target: BuildTarget,

@@ -145,12 +145,47 @@ def _page_metrics(page: Any, viewport: Mapping[str, int]) -> dict[str, Any]:
              loaded: document.fonts ? document.fonts.check(`16px ${family}`) : true,
            }));
            const fontLoadFailures = fontChecks.filter((item) => !item.loaded);
-           const lowResolutionImages = Array.from(document.images).map((image) => {
-             const rect = image.getBoundingClientRect();
-             if (!image.naturalWidth || !rect.width || image.naturalWidth >= rect.width * 1.1) return null;
-             return { src: image.currentSrc || image.src || '', natural_width: image.naturalWidth, rendered_width: Math.round(rect.width) };
-           }).filter(Boolean).slice(0, 30);
-           const textWrapFailures = Array.from(document.querySelectorAll('main p, main li, main blockquote')).map((element) => {
+            const lowResolutionImages = Array.from(document.images).map((image) => {
+              const rect = image.getBoundingClientRect();
+              if (!image.naturalWidth || !rect.width || image.naturalWidth >= rect.width * 1.1) return null;
+              return { src: image.currentSrc || image.src || '', natural_width: image.naturalWidth, rendered_width: Math.round(rect.width) };
+            }).filter(Boolean).slice(0, 30);
+            const compositionElements = Array.from(new Set(Array.from(document.querySelectorAll(
+              '[data-ada-asset-id], [data-asset-id], [data-ada-composition-role]'
+            )))).map((element) => {
+              const rect = element.getBoundingClientRect();
+              const style = getComputedStyle(element);
+              const assetId = element.getAttribute('data-ada-asset-id') || element.getAttribute('data-asset-id') || '';
+              const assetHash = element.getAttribute('data-ada-asset-sha256') || element.getAttribute('data-asset-sha256') || '';
+              const role = element.getAttribute('data-ada-composition-role') || element.getAttribute('data-role') || '';
+              const focalCoverage = Number.parseFloat(element.getAttribute('data-ada-focal-coverage') || '');
+              if (rect.width <= 0 || rect.height <= 0 || style.display === 'none' || style.visibility === 'hidden') return null;
+              return {
+                role,
+                asset_id: assetId,
+                asset_sha256: assetHash,
+                src: element.currentSrc || element.src || element.getAttribute('href') || '',
+                ...(Number.isFinite(focalCoverage) ? { focal_coverage: focalCoverage } : {}),
+                box: {
+                  x: Number(rect.x.toFixed(2)),
+                  y: Number(rect.y.toFixed(2)),
+                  width: Number(rect.width.toFixed(2)),
+                  height: Number(rect.height.toFixed(2)),
+                },
+              };
+            }).filter(Boolean).slice(0, 100);
+            const layoutShifts = (performance.getEntriesByType('layout-shift') || [])
+              .filter((entry) => !entry.hadRecentInput)
+              .map((entry) => ({ value: Number(Number(entry.value || 0).toFixed(4)) }))
+              .filter((entry) => entry.value > 0)
+              .slice(0, 30);
+            const signatureBehaviors = Array.from(document.querySelectorAll('[data-ada-signature-behavior]')).map((element) => ({
+              id: element.getAttribute('data-ada-signature-behavior') || '',
+              state: element.getAttribute('data-ada-behavior-observed') === 'true' ||
+                element.getAnimations().length > 0 || getComputedStyle(element).transform !== 'none' ? 'observed' : 'unobserved',
+              trigger: element.getAttribute('data-ada-behavior-trigger') || 'page-load',
+            })).filter((item) => item.id).slice(0, 20);
+            const textWrapFailures = Array.from(document.querySelectorAll('main p, main li, main blockquote')).map((element) => {
              if (hiddenForQuality(element)) return null;
              const text = element.textContent.trim();
              const words = text.match(/\S+/g) || [];
@@ -241,8 +276,12 @@ def _page_metrics(page: Any, viewport: Mapping[str, int]) -> dict[str, Any]:
            contrast_failures: contrastFailures,
             font_load_failures: fontLoadFailures,
             font_checks: fontChecks,
-           low_resolution_images: lowResolutionImages,
-           text_wrap_failures: textWrapFailures
+            low_resolution_images: lowResolutionImages,
+            composition_elements: compositionElements,
+            layout_shifts: layoutShifts,
+            signature_behaviors: signatureBehaviors,
+            critical_content_visible: Boolean(document.querySelector('main') && document.querySelector('main').innerText.trim()),
+            text_wrap_failures: textWrapFailures
            };
         })()
         """,
@@ -327,6 +366,7 @@ def _interaction_metrics(
     page: Any,
     *,
     before_screenshot: Path | None = None,
+    intermediate_screenshot: Path | None = None,
     after_screenshot: Path | None = None,
 ) -> dict[str, Any]:
     """Exercise bounded local controls and record DOM and visual state deltas."""
@@ -360,6 +400,13 @@ def _interaction_metrics(
             controls.nth(index).click(timeout=2_000)
             page.wait_for_timeout(120)
             attempted += 1
+            if attempted == 1 and intermediate_screenshot is not None:
+                try:
+                    page.screenshot(path=str(intermediate_screenshot), full_page=True)
+                    visual["intermediate_screenshot_path"] = str(intermediate_screenshot)
+                    visual["intermediate_screenshot_hash"] = _hash_file(intermediate_screenshot)
+                except Exception as exc:  # noqa: BLE001 - retain interaction diagnostics
+                    visual["error"] = f"intermediate screenshot: {str(exc)[:240]}"
         except Exception as exc:  # noqa: BLE001 - retain per-control evidence
             errors.append(str(exc)[:240])
     after = dict(page.evaluate(
@@ -389,6 +436,18 @@ def _interaction_metrics(
         "after": after,
         "errors": errors,
         "visual": visual,
+        "animation_observations": dict(page.evaluate(
+            """
+            () => ({
+              signature_behaviors: Array.from(document.querySelectorAll('[data-ada-signature-behavior]')).map((element) => ({
+                id: element.getAttribute('data-ada-signature-behavior') || '',
+                state: element.getAttribute('data-ada-behavior-observed') === 'true' ||
+                  element.getAnimations().length > 0 || getComputedStyle(element).transform !== 'none' ? 'observed' : 'unobserved',
+                trigger: element.getAttribute('data-ada-behavior-trigger') || 'interaction',
+              })).filter((item) => item.id),
+            })
+            """,
+        )).get("signature_behaviors") or [],
     }
 
 
@@ -433,6 +492,15 @@ class PlaywrightQualityAdapter:
         height = max(1, int(viewport.get("height", 1000)))
         screenshot_dir = self.screenshot_root / self.variant / viewport_name
         screenshot_dir.mkdir(parents=True, exist_ok=True)
+
+        def artifact_path(path: Path | None) -> str:
+            if path is None:
+                return ""
+            try:
+                return path.resolve().relative_to(self.screenshot_root).as_posix()
+            except ValueError:
+                return path.name
+
         all_console_errors: list[dict[str, str]] = []
         all_failed_requests: list[dict[str, str]] = []
         external_requests: list[dict[str, str]] = []
@@ -522,15 +590,52 @@ class PlaywrightQualityAdapter:
                             if preference == "no-preference":
                                 stem = route_name.removesuffix(".html").replace("/", "__") or "index"
                                 interaction_before = screenshot_dir / f"{stem}-interaction-before.png"
+                                interaction_intermediate = screenshot_dir / f"{stem}-interaction-intermediate.png"
                                 interaction_after = screenshot_dir / f"{stem}-interaction-after.png"
+                            else:
+                                interaction_intermediate = None
                             interaction_state = _interaction_metrics(
                                 page,
                                 before_screenshot=interaction_before,
+                                intermediate_screenshot=interaction_intermediate,
                                 after_screenshot=interaction_after,
                             )
                             if preference == "no-preference":
                                 result.update(metrics)
                                 result["interaction_state"] = interaction_state
+                                visual = interaction_state.get("visual") or {}
+                                before_path = Path(str(visual.get("before_screenshot_path") or result.get("screenshot_path") or ""))
+                                intermediate_path = Path(str(visual.get("intermediate_screenshot_path") or result.get("screenshot_path") or ""))
+                                after_path = Path(str(visual.get("after_screenshot_path") or result.get("screenshot_path") or ""))
+                                result["temporal_evidence"] = [{
+                                    "schema_version": 1,
+                                    "candidate_sha": "",
+                                    "experience_plan_hash": "",
+                                    "route": f"/{route_name}" if route_name else "/",
+                                    "viewport": {"name": viewport_name, "width": width, "height": height},
+                                    "reduced_motion": False,
+                                    "interaction_script_id": "bounded-controls-v1",
+                                    "frames": [
+                                        {"phase": "before", "path": artifact_path(before_path)},
+                                        {"phase": "intermediate", "path": artifact_path(intermediate_path)},
+                                        {"phase": "after", "path": artifact_path(after_path)},
+                                    ],
+                                    "layout_shifts": list(metrics.get("layout_shifts") or []),
+                                    "console_errors": list(console_errors),
+                                    "network_errors": list(failed_requests),
+                                    "animation_observations": [
+                                        *list(metrics.get("signature_behaviors") or []),
+                                        *list(interaction_state.get("animation_observations") or []),
+                                    ],
+                                    "keyboard_path_observations": [
+                                        str(item.get("role") or "")
+                                        for item in (metrics.get("composition_elements") or ())
+                                        if isinstance(item, Mapping) and str(item.get("role") or "")
+                                    ],
+                                    "resting_state_observations": {
+                                        "critical_content_visible": bool(metrics.get("critical_content_visible")),
+                                    },
+                                }]
                         result["motion_preferences"] = motion_results
                     except PlaywrightTimeoutError:
                         result.update({"console_errors": console_errors, "failed_requests": failed_requests, "error": "page load timed out"})

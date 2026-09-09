@@ -70,6 +70,10 @@ class DesignPhase(str, Enum):
     REPAIR_BRIEF = "repair_brief"
     REPAIR = "repair"
     CREATIVE_FINAL_SIGNOFF = "creative_final_signoff"
+    ASSET_EVIDENCE = "asset_evidence"
+    BRAND_SOURCE = "brand_source"
+    TRANSFER_REVIEW = "transfer_review"
+    TEMPORAL_REVIEW = "temporal_review"
 
 
 class DesignPhaseStatus(str, Enum):
@@ -240,6 +244,900 @@ def _optional_object(value: Any, path: str) -> dict[str, Any]:
 
 def _extra(value: Mapping[str, Any], known: set[str]) -> dict[str, Any]:
     return {key: copy.deepcopy(item) for key, item in value.items() if key not in known}
+
+
+def _bounded_number(
+    value: Any,
+    path: str,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+    required: bool = True,
+) -> float | None:
+    if value is None and not required:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ContractError(f"{path} must be a number")
+    result = float(value)
+    if minimum is not None and result < minimum:
+        raise ContractError(f"{path} must be at least {minimum}")
+    if maximum is not None and result > maximum:
+        raise ContractError(f"{path} must be at most {maximum}")
+    return result
+
+
+def _positive_integer(value: Any, path: str, *, required: bool = True) -> int | None:
+    if value is None and not required:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ContractError(f"{path} must be a positive integer")
+    return value
+
+
+def _normalized_id(value: Any, path: str, *, maximum: int = 160) -> str:
+    result = _text(value, path, maximum=maximum)
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9._:-]{0,159}", result):
+        raise ContractError(f"{path} is invalid")
+    return result
+
+
+def _text_tuple(value: Any, path: str, *, maximum: int = MAX_LIST_ITEMS, item_maximum: int = 1_000) -> tuple[str, ...]:
+    values = _list(value, path, required=False, maximum=maximum)
+    return tuple(_text(item, f"{path}[{index}]", maximum=item_maximum) for index, item in enumerate(values))
+
+
+def _strict_object(value: Any, path: str, known: set[str]) -> dict[str, Any]:
+    result = _object(value, path)
+    unknown = set(result) - known
+    if unknown:
+        raise ContractError(f"{path} contains unknown fields: {', '.join(sorted(unknown))}")
+    return result
+
+
+def _named_records(
+    value: Any,
+    path: str,
+    *,
+    required_fields: tuple[str, ...] = ("id", "meaning"),
+    maximum: int = 40,
+) -> tuple[dict[str, Any], ...]:
+    items = _list(value, path, item_type=object, required=False, maximum=maximum)
+    result: list[dict[str, Any]] = []
+    identifiers: set[str] = set()
+    for index, raw in enumerate(items):
+        item = _object(raw, f"{path}[{index}]")
+        for field_name in required_fields:
+            if field_name not in item:
+                raise ContractError(f"{path}[{index}].{field_name} is required")
+        identifier = _normalized_id(item.get("id"), f"{path}[{index}].id")
+        if identifier in identifiers:
+            raise ContractError(f"{path} contains duplicate id: {identifier}")
+        identifiers.add(identifier)
+        normalized = copy.deepcopy(item)
+        normalized["id"] = identifier
+        for field_name in required_fields:
+            if field_name != "id":
+                _text(normalized.get(field_name), f"{path}[{index}].{field_name}", maximum=4_000)
+        result.append(normalized)
+    return tuple(result)
+
+
+@dataclass(frozen=True)
+class NormalizedPoint:
+    """A bounded point in an asset's normalized coordinate space."""
+
+    x: float
+    y: float
+    confidence: float = 1.0
+    label: str = ""
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any], path: str = "point") -> "NormalizedPoint":
+        value = _strict_object(raw, path, {"x", "y", "confidence", "label"})
+        return cls(
+            x=float(_bounded_number(value.get("x"), f"{path}.x", minimum=0, maximum=1)),
+            y=float(_bounded_number(value.get("y"), f"{path}.y", minimum=0, maximum=1)),
+            confidence=float(_bounded_number(value.get("confidence", 1), f"{path}.confidence", minimum=0, maximum=1)),
+            label=_text(value.get("label"), f"{path}.label", required=False, maximum=160),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        result = {"x": self.x, "y": self.y, "confidence": self.confidence}
+        if self.label:
+            result["label"] = self.label
+        return result
+
+
+@dataclass(frozen=True)
+class NormalizedRegion:
+    """A bounded rectangular region in an asset's normalized coordinate space."""
+
+    x: float
+    y: float
+    width: float
+    height: float
+    confidence: float = 1.0
+    label: str = ""
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any], path: str = "region") -> "NormalizedRegion":
+        value = _strict_object(raw, path, {"x", "y", "width", "height", "confidence", "label"})
+        x = float(_bounded_number(value.get("x"), f"{path}.x", minimum=0, maximum=1))
+        y = float(_bounded_number(value.get("y"), f"{path}.y", minimum=0, maximum=1))
+        width = float(_bounded_number(value.get("width"), f"{path}.width", minimum=0, maximum=1))
+        height = float(_bounded_number(value.get("height"), f"{path}.height", minimum=0, maximum=1))
+        if width <= 0 or height <= 0 or x + width > 1 or y + height > 1:
+            raise ContractError(f"{path} must be a normalized rectangle within 0..1")
+        return cls(
+            x=x,
+            y=y,
+            width=width,
+            height=height,
+            confidence=float(_bounded_number(value.get("confidence", 1), f"{path}.confidence", minimum=0, maximum=1)),
+            label=_text(value.get("label"), f"{path}.label", required=False, maximum=160),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        result = {
+            "x": self.x,
+            "y": self.y,
+            "width": self.width,
+            "height": self.height,
+            "confidence": self.confidence,
+        }
+        if self.label:
+            result["label"] = self.label
+        return result
+
+
+def _region_list(value: Any, path: str, *, maximum: int = 40) -> tuple[NormalizedRegion, ...]:
+    items = _list(value, path, item_type=object, required=False, maximum=maximum)
+    return tuple(NormalizedRegion.from_dict(item, f"{path}[{index}]") for index, item in enumerate(items))
+
+
+def _point_or_none(value: Any, path: str) -> NormalizedPoint | None:
+    if value is None:
+        return None
+    return NormalizedPoint.from_dict(value, path)
+
+
+def _region_or_none(value: Any, path: str) -> NormalizedRegion | None:
+    if value is None:
+        return None
+    return NormalizedRegion.from_dict(value, path)
+
+
+@dataclass(frozen=True)
+class AssetVisualEvidence:
+    """Hash-bound deterministic and semantic evidence for one approved asset."""
+
+    schema_version: int
+    asset_id: str
+    asset_sha256: str
+    relative_path: str
+    media_role: str
+    pixel_width: int | None
+    pixel_height: int | None
+    aspect_ratio: float | None
+    has_alpha: bool
+    optical_bounds: NormalizedRegion | None = None
+    optical_center: NormalizedPoint | None = None
+    visual_mass: tuple[float, ...] = ()
+    safe_backgrounds: tuple[str, ...] = ()
+    minimum_legible_size: float | None = None
+    dominant_colors: tuple[str, ...] = ()
+    contrast_edges: tuple[dict[str, Any], ...] = ()
+    focal_regions: tuple[NormalizedRegion, ...] = ()
+    negative_space_regions: tuple[NormalizedRegion, ...] = ()
+    semantic_description: str = ""
+    subjects: tuple[str, ...] = ()
+    materials_and_textures: tuple[str, ...] = ()
+    emotional_tone: str = ""
+    brand_signals: tuple[str, ...] = ()
+    quality_constraints: tuple[str, ...] = ()
+    evidence_sources: tuple[str, ...] = ()
+    confidence: float = 0.0
+    analyzer_version: str = ""
+    provider_id: str = ""
+    model: str = ""
+
+    _ROLES: ClassVar[frozenset[str]] = frozenset({
+        "logo", "identity_mark", "photograph", "illustration", "texture", "document", "unknown",
+    })
+    _BACKGROUND_TYPES: ClassVar[frozenset[str]] = frozenset({"light", "dark", "mixed", "unknown"})
+    _EVIDENCE_SOURCES: ClassVar[frozenset[str]] = frozenset({"deterministic", "vision", "owner_note", "approved_knowledge"})
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> "AssetVisualEvidence":
+        value = _strict_object(raw, "asset_visual_evidence", {
+            "schema_version", "asset_id", "asset_sha256", "relative_path", "media_role", "pixel_width",
+            "pixel_height", "aspect_ratio", "has_alpha", "optical_bounds", "optical_center", "visual_mass",
+            "safe_backgrounds", "minimum_legible_size", "dominant_colors", "contrast_edges", "focal_regions",
+            "negative_space_regions", "semantic_description", "subjects", "materials_and_textures",
+            "emotional_tone", "brand_signals", "quality_constraints", "evidence_sources", "confidence",
+            "analyzer_version", "provider_id", "model",
+        })
+        version = _schema(value)
+        role = _text(value.get("media_role"), "asset_visual_evidence.media_role", maximum=40).lower()
+        if role not in cls._ROLES:
+            raise ContractError("asset_visual_evidence.media_role is invalid")
+        width = _positive_integer(value.get("pixel_width"), "asset_visual_evidence.pixel_width", required=False)
+        height = _positive_integer(value.get("pixel_height"), "asset_visual_evidence.pixel_height", required=False)
+        if (width is None) != (height is None):
+            raise ContractError("asset_visual_evidence pixel dimensions must be provided together")
+        ratio = _bounded_number(value.get("aspect_ratio"), "asset_visual_evidence.aspect_ratio", minimum=0, required=False)
+        if width is not None and ratio is None:
+            ratio = width / height  # type: ignore[operator]
+        if ratio is not None and ratio <= 0:
+            raise ContractError("asset_visual_evidence.aspect_ratio must be positive")
+        has_alpha = value.get("has_alpha")
+        if not isinstance(has_alpha, bool):
+            raise ContractError("asset_visual_evidence.has_alpha must be boolean")
+        mass = _list(value.get("visual_mass"), "asset_visual_evidence.visual_mass", required=False, maximum=64, item_type=object)
+        visual_mass = tuple(float(_bounded_number(item, f"asset_visual_evidence.visual_mass[{index}]", minimum=0, maximum=1)) for index, item in enumerate(mass))
+        backgrounds = _text_tuple(value.get("safe_backgrounds"), "asset_visual_evidence.safe_backgrounds", maximum=8, item_maximum=40)
+        if any(item.lower() not in cls._BACKGROUND_TYPES for item in backgrounds):
+            raise ContractError("asset_visual_evidence.safe_backgrounds contains an invalid value")
+        sources = tuple(
+            re.sub(r"[\s-]+", "_", item.lower())
+            for item in _text_tuple(value.get("evidence_sources"), "asset_visual_evidence.evidence_sources", maximum=8, item_maximum=40)
+        )
+        if any(item not in cls._EVIDENCE_SOURCES for item in sources):
+            raise ContractError("asset_visual_evidence.evidence_sources contains an invalid value")
+        colors = _text_tuple(value.get("dominant_colors"), "asset_visual_evidence.dominant_colors", maximum=24, item_maximum=80)
+        contrast = _list(value.get("contrast_edges"), "asset_visual_evidence.contrast_edges", item_type=object, required=False, maximum=24)
+        normalized_contrast = tuple(_object(item, f"asset_visual_evidence.contrast_edges[{index}]") for index, item in enumerate(contrast))
+        return cls(
+            schema_version=version,
+            asset_id=_normalized_id(value.get("asset_id"), "asset_visual_evidence.asset_id"),
+            asset_sha256=_hash(value.get("asset_sha256"), "asset_visual_evidence.asset_sha256", _SHA256_RE),
+            relative_path=safe_relative_path(value.get("relative_path"), "asset_visual_evidence.relative_path"),
+            media_role=role,
+            pixel_width=width,
+            pixel_height=height,
+            aspect_ratio=ratio,
+            has_alpha=has_alpha,
+            optical_bounds=_region_or_none(value.get("optical_bounds"), "asset_visual_evidence.optical_bounds"),
+            optical_center=_point_or_none(value.get("optical_center"), "asset_visual_evidence.optical_center"),
+            visual_mass=visual_mass,
+            safe_backgrounds=backgrounds,
+            minimum_legible_size=_bounded_number(value.get("minimum_legible_size"), "asset_visual_evidence.minimum_legible_size", minimum=0, maximum=1, required=False),
+            dominant_colors=colors,
+            contrast_edges=normalized_contrast,
+            focal_regions=_region_list(value.get("focal_regions"), "asset_visual_evidence.focal_regions"),
+            negative_space_regions=_region_list(value.get("negative_space_regions"), "asset_visual_evidence.negative_space_regions"),
+            semantic_description=_text(value.get("semantic_description"), "asset_visual_evidence.semantic_description", required=False, maximum=4_000),
+            subjects=_text_tuple(value.get("subjects"), "asset_visual_evidence.subjects", maximum=40),
+            materials_and_textures=_text_tuple(value.get("materials_and_textures"), "asset_visual_evidence.materials_and_textures", maximum=40),
+            emotional_tone=_text(value.get("emotional_tone"), "asset_visual_evidence.emotional_tone", required=False, maximum=1_000),
+            brand_signals=_text_tuple(value.get("brand_signals"), "asset_visual_evidence.brand_signals", maximum=40),
+            quality_constraints=_text_tuple(value.get("quality_constraints"), "asset_visual_evidence.quality_constraints", maximum=40),
+            evidence_sources=sources,
+            confidence=float(_bounded_number(value.get("confidence", 0), "asset_visual_evidence.confidence", minimum=0, maximum=1)),
+            analyzer_version=_text(value.get("analyzer_version"), "asset_visual_evidence.analyzer_version", required=False, maximum=120),
+            provider_id=_text(value.get("provider_id"), "asset_visual_evidence.provider_id", required=False, maximum=120),
+            model=_text(value.get("model"), "asset_visual_evidence.model", required=False, maximum=240),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "asset_id": self.asset_id,
+            "asset_sha256": self.asset_sha256,
+            "relative_path": self.relative_path,
+            "media_role": self.media_role,
+            "pixel_width": self.pixel_width,
+            "pixel_height": self.pixel_height,
+            "aspect_ratio": self.aspect_ratio,
+            "has_alpha": self.has_alpha,
+            "optical_bounds": self.optical_bounds.to_dict() if self.optical_bounds else None,
+            "optical_center": self.optical_center.to_dict() if self.optical_center else None,
+            "visual_mass": list(self.visual_mass),
+            "safe_backgrounds": list(self.safe_backgrounds),
+            "minimum_legible_size": self.minimum_legible_size,
+            "dominant_colors": list(self.dominant_colors),
+            "contrast_edges": copy.deepcopy(list(self.contrast_edges)),
+            "focal_regions": [item.to_dict() for item in self.focal_regions],
+            "negative_space_regions": [item.to_dict() for item in self.negative_space_regions],
+            "semantic_description": self.semantic_description,
+            "subjects": list(self.subjects),
+            "materials_and_textures": list(self.materials_and_textures),
+            "emotional_tone": self.emotional_tone,
+            "brand_signals": list(self.brand_signals),
+            "quality_constraints": list(self.quality_constraints),
+            "evidence_sources": list(self.evidence_sources),
+            "confidence": self.confidence,
+            "analyzer_version": self.analyzer_version,
+            "provider_id": self.provider_id,
+            "model": self.model,
+        }
+
+    @property
+    def content_hash(self) -> str:
+        return canonical_hash(self.to_dict())
+
+
+@dataclass(frozen=True)
+class BrandSourceMap:
+    """Evidence-backed visual grammar; a hypothesis, never a replacement for owner facts."""
+
+    schema_version: int
+    identity_assets: tuple[str, ...]
+    primary_brand_signals: tuple[str, ...]
+    geometry_vocabulary: tuple[str, ...]
+    spacing_rhythm: tuple[str, ...]
+    line_and_edge_language: tuple[str, ...]
+    color_relationships: tuple[str, ...]
+    type_relationship_hypotheses: tuple[str, ...]
+    material_relationships: tuple[str, ...]
+    image_treatment_hypotheses: tuple[str, ...]
+    signals_to_preserve: tuple[str, ...]
+    signals_not_safe_to_infer: tuple[str, ...]
+    owner_evidence_refs: tuple[str, ...]
+    asset_evidence_refs: tuple[str, ...]
+    confidence_by_signal: dict[str, float]
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> "BrandSourceMap":
+        value = _strict_object(raw, "brand_source_map", {
+            "schema_version", "identity_assets", "primary_brand_signals", "geometry_vocabulary", "spacing_rhythm",
+            "line_and_edge_language", "color_relationships", "type_relationship_hypotheses", "material_relationships",
+            "image_treatment_hypotheses", "signals_to_preserve", "signals_not_safe_to_infer", "owner_evidence_refs",
+            "asset_evidence_refs", "confidence_by_signal",
+        })
+        version = _schema(value)
+        owner_refs = _text_tuple(value.get("owner_evidence_refs"), "brand_source_map.owner_evidence_refs", maximum=40, item_maximum=300)
+        asset_refs = _text_tuple(value.get("asset_evidence_refs"), "brand_source_map.asset_evidence_refs", maximum=40, item_maximum=300)
+        if not owner_refs and not asset_refs:
+            raise ContractError("brand_source_map requires owner or asset evidence references")
+        raw_confidence = _optional_object(value.get("confidence_by_signal"), "brand_source_map.confidence_by_signal")
+        confidence: dict[str, float] = {}
+        for key, item in raw_confidence.items():
+            normalized_key = _normalized_id(key, "brand_source_map.confidence_by_signal key", maximum=120)
+            confidence[normalized_key] = float(_bounded_number(item, f"brand_source_map.confidence_by_signal.{normalized_key}", minimum=0, maximum=1))
+        fields = (
+            "identity_assets", "primary_brand_signals", "geometry_vocabulary", "spacing_rhythm",
+            "line_and_edge_language", "color_relationships", "type_relationship_hypotheses", "material_relationships",
+            "image_treatment_hypotheses", "signals_to_preserve", "signals_not_safe_to_infer",
+        )
+        return cls(
+            schema_version=version,
+            **{name: _text_tuple(value.get(name), f"brand_source_map.{name}", maximum=60, item_maximum=2_000) for name in fields},
+            owner_evidence_refs=owner_refs,
+            asset_evidence_refs=asset_refs,
+            confidence_by_signal=confidence,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "identity_assets": list(self.identity_assets),
+            "primary_brand_signals": list(self.primary_brand_signals),
+            "geometry_vocabulary": list(self.geometry_vocabulary),
+            "spacing_rhythm": list(self.spacing_rhythm),
+            "line_and_edge_language": list(self.line_and_edge_language),
+            "color_relationships": list(self.color_relationships),
+            "type_relationship_hypotheses": list(self.type_relationship_hypotheses),
+            "material_relationships": list(self.material_relationships),
+            "image_treatment_hypotheses": list(self.image_treatment_hypotheses),
+            "signals_to_preserve": list(self.signals_to_preserve),
+            "signals_not_safe_to_infer": list(self.signals_not_safe_to_infer),
+            "owner_evidence_refs": list(self.owner_evidence_refs),
+            "asset_evidence_refs": list(self.asset_evidence_refs),
+            "confidence_by_signal": copy.deepcopy(self.confidence_by_signal),
+        }
+
+    @property
+    def content_hash(self) -> str:
+        return canonical_hash(self.to_dict())
+
+
+@dataclass(frozen=True)
+class LogoCompositionRule:
+    """Optical logo rules kept separate from the general asset assignment."""
+
+    schema_version: int
+    asset_id: str
+    optical_sizing: str
+    clear_space: float
+    allowed_backgrounds: tuple[str, ...]
+    navigation_relationship: str
+    breakpoint_treatments: dict[str, str]
+    minimum_optical_size: float
+    maximum_optical_size: float
+    collision_exclusions: tuple[str, ...]
+    role: str
+    evidence_refs: tuple[str, ...]
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> "LogoCompositionRule":
+        value = _strict_object(raw, "logo_composition_rule", {
+            "schema_version", "asset_id", "optical_sizing", "clear_space", "allowed_backgrounds",
+            "navigation_relationship", "breakpoint_treatments", "minimum_optical_size", "maximum_optical_size",
+            "collision_exclusions", "role", "evidence_refs",
+        })
+        version = _schema(value)
+        minimum = float(_bounded_number(value.get("minimum_optical_size"), "logo_composition_rule.minimum_optical_size", minimum=0, maximum=1))
+        maximum = float(_bounded_number(value.get("maximum_optical_size"), "logo_composition_rule.maximum_optical_size", minimum=0, maximum=1))
+        if minimum > maximum:
+            raise ContractError("logo_composition_rule minimum optical size exceeds maximum")
+        backgrounds = _text_tuple(value.get("allowed_backgrounds"), "logo_composition_rule.allowed_backgrounds", maximum=8, item_maximum=40)
+        treatments = _optional_object(value.get("breakpoint_treatments"), "logo_composition_rule.breakpoint_treatments")
+        if not {"desktop", "tablet", "mobile"}.issubset(treatments):
+            raise ContractError("logo_composition_rule.breakpoint_treatments requires desktop, tablet, and mobile")
+        return cls(
+            schema_version=version,
+            asset_id=_normalized_id(value.get("asset_id"), "logo_composition_rule.asset_id"),
+            optical_sizing=_text(value.get("optical_sizing"), "logo_composition_rule.optical_sizing", maximum=2_000),
+            clear_space=float(_bounded_number(value.get("clear_space"), "logo_composition_rule.clear_space", minimum=0, maximum=1)),
+            allowed_backgrounds=backgrounds,
+            navigation_relationship=_text(value.get("navigation_relationship"), "logo_composition_rule.navigation_relationship", maximum=2_000),
+            breakpoint_treatments={key: _text(item, f"logo_composition_rule.breakpoint_treatments.{key}", maximum=500) for key, item in treatments.items()},
+            minimum_optical_size=minimum,
+            maximum_optical_size=maximum,
+            collision_exclusions=_text_tuple(value.get("collision_exclusions"), "logo_composition_rule.collision_exclusions", maximum=20, item_maximum=160),
+            role=_text(value.get("role"), "logo_composition_rule.role", maximum=40),
+            evidence_refs=_text_tuple(value.get("evidence_refs"), "logo_composition_rule.evidence_refs", maximum=40, item_maximum=300),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "asset_id": self.asset_id,
+            "optical_sizing": self.optical_sizing,
+            "clear_space": self.clear_space,
+            "allowed_backgrounds": list(self.allowed_backgrounds),
+            "navigation_relationship": self.navigation_relationship,
+            "breakpoint_treatments": copy.deepcopy(self.breakpoint_treatments),
+            "minimum_optical_size": self.minimum_optical_size,
+            "maximum_optical_size": self.maximum_optical_size,
+            "collision_exclusions": list(self.collision_exclusions),
+            "role": self.role,
+            "evidence_refs": list(self.evidence_refs),
+        }
+
+
+@dataclass(frozen=True)
+class AssetCompositionPlan:
+    """A frozen, responsive assignment of one approved asset to the page."""
+
+    schema_version: int
+    asset_id: str
+    asset_sha256: str
+    narrative_role: str
+    page_regions: tuple[str, ...]
+    relationship_to_copy: str
+    relationship_to_other_assets: str
+    structural_contribution: tuple[str, ...]
+    crop_policy: str
+    focal_region_to_preserve: NormalizedRegion | None
+    negative_space_usage: str
+    layering_and_overlap_policy: str
+    background_and_contrast_policy: str
+    desktop_treatment: dict[str, Any]
+    tablet_treatment: dict[str, Any]
+    mobile_treatment: dict[str, Any]
+    loading_priority: str
+    accessibility_intent: str
+    prohibited_uses: tuple[str, ...]
+    acceptance_conditions: tuple[str, ...]
+    evidence_refs: tuple[str, ...]
+    logo_rule: LogoCompositionRule | None = None
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> "AssetCompositionPlan":
+        value = _strict_object(raw, "asset_composition_plan", {
+            "schema_version", "asset_id", "asset_sha256", "narrative_role", "page_regions", "relationship_to_copy",
+            "relationship_to_other_assets", "structural_contribution", "crop_policy", "focal_region_to_preserve",
+            "negative_space_usage", "layering_and_overlap_policy", "background_and_contrast_policy",
+            "desktop_treatment", "tablet_treatment", "mobile_treatment", "loading_priority", "accessibility_intent",
+            "prohibited_uses", "acceptance_conditions", "evidence_refs", "logo_rule",
+        })
+        version = _schema(value)
+        asset_id = _normalized_id(value.get("asset_id"), "asset_composition_plan.asset_id")
+        logo_rule = None if value.get("logo_rule") is None else LogoCompositionRule.from_dict(value["logo_rule"])
+        if logo_rule is not None and logo_rule.asset_id != asset_id:
+            raise ContractError("asset_composition_plan.logo_rule asset_id does not match")
+        contribution = _text_tuple(value.get("structural_contribution"), "asset_composition_plan.structural_contribution", maximum=8, item_maximum=80)
+        if not contribution:
+            raise ContractError("asset_composition_plan.structural_contribution must not be empty")
+        evidence_refs = _text_tuple(value.get("evidence_refs"), "asset_composition_plan.evidence_refs", maximum=40, item_maximum=300)
+        if not evidence_refs:
+            raise ContractError("asset_composition_plan.evidence_refs must not be empty")
+        return cls(
+            schema_version=version,
+            asset_id=asset_id,
+            asset_sha256=_hash(value.get("asset_sha256"), "asset_composition_plan.asset_sha256", _SHA256_RE),
+            narrative_role=_text(value.get("narrative_role"), "asset_composition_plan.narrative_role", maximum=1_000),
+            page_regions=_text_tuple(value.get("page_regions"), "asset_composition_plan.page_regions", maximum=20, item_maximum=160),
+            relationship_to_copy=_text(value.get("relationship_to_copy"), "asset_composition_plan.relationship_to_copy", maximum=2_000),
+            relationship_to_other_assets=_text(value.get("relationship_to_other_assets"), "asset_composition_plan.relationship_to_other_assets", maximum=2_000),
+            structural_contribution=contribution,
+            crop_policy=_text(value.get("crop_policy"), "asset_composition_plan.crop_policy", maximum=2_000),
+            focal_region_to_preserve=_region_or_none(value.get("focal_region_to_preserve"), "asset_composition_plan.focal_region_to_preserve"),
+            negative_space_usage=_text(value.get("negative_space_usage"), "asset_composition_plan.negative_space_usage", maximum=2_000),
+            layering_and_overlap_policy=_text(value.get("layering_and_overlap_policy"), "asset_composition_plan.layering_and_overlap_policy", maximum=2_000),
+            background_and_contrast_policy=_text(value.get("background_and_contrast_policy"), "asset_composition_plan.background_and_contrast_policy", maximum=2_000),
+            desktop_treatment=_object(value.get("desktop_treatment"), "asset_composition_plan.desktop_treatment"),
+            tablet_treatment=_object(value.get("tablet_treatment"), "asset_composition_plan.tablet_treatment"),
+            mobile_treatment=_object(value.get("mobile_treatment"), "asset_composition_plan.mobile_treatment"),
+            loading_priority=_text(value.get("loading_priority"), "asset_composition_plan.loading_priority", maximum=40),
+            accessibility_intent=_text(value.get("accessibility_intent"), "asset_composition_plan.accessibility_intent", maximum=2_000),
+            prohibited_uses=_text_tuple(value.get("prohibited_uses"), "asset_composition_plan.prohibited_uses", maximum=30, item_maximum=500),
+            acceptance_conditions=_text_tuple(value.get("acceptance_conditions"), "asset_composition_plan.acceptance_conditions", maximum=30, item_maximum=1_000),
+            evidence_refs=evidence_refs,
+            logo_rule=logo_rule,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        result = {
+            "schema_version": self.schema_version,
+            "asset_id": self.asset_id,
+            "asset_sha256": self.asset_sha256,
+            "narrative_role": self.narrative_role,
+            "page_regions": list(self.page_regions),
+            "relationship_to_copy": self.relationship_to_copy,
+            "relationship_to_other_assets": self.relationship_to_other_assets,
+            "structural_contribution": list(self.structural_contribution),
+            "crop_policy": self.crop_policy,
+            "focal_region_to_preserve": self.focal_region_to_preserve.to_dict() if self.focal_region_to_preserve else None,
+            "negative_space_usage": self.negative_space_usage,
+            "layering_and_overlap_policy": self.layering_and_overlap_policy,
+            "background_and_contrast_policy": self.background_and_contrast_policy,
+            "desktop_treatment": copy.deepcopy(self.desktop_treatment),
+            "tablet_treatment": copy.deepcopy(self.tablet_treatment),
+            "mobile_treatment": copy.deepcopy(self.mobile_treatment),
+            "loading_priority": self.loading_priority,
+            "accessibility_intent": self.accessibility_intent,
+            "prohibited_uses": list(self.prohibited_uses),
+            "acceptance_conditions": list(self.acceptance_conditions),
+            "evidence_refs": list(self.evidence_refs),
+            "logo_rule": self.logo_rule.to_dict() if self.logo_rule else None,
+        }
+        return result
+
+
+@dataclass(frozen=True)
+class BrandBehaviorSystem:
+    """Domain-neutral physical-law contract consumed by one implementation run."""
+
+    schema_version: int
+    thesis: str
+    business_relevance: str
+    audience_effect: str
+    evidence_refs: tuple[str, ...]
+    conceptual_entities: tuple[dict[str, Any], ...]
+    state_variables: tuple[dict[str, Any], ...]
+    input_signals: tuple[dict[str, Any], ...]
+    forces_and_relationships: tuple[dict[str, Any], ...]
+    output_channels: tuple[dict[str, Any], ...]
+    scene_graph: tuple[dict[str, Any], ...]
+    signature_behavior: dict[str, Any]
+    utility_behaviors: tuple[dict[str, Any], ...]
+    narrative_behaviors: tuple[dict[str, Any], ...]
+    resting_state: dict[str, Any]
+    no_javascript_translation: str
+    reduced_motion_translation: str
+    mobile_translation: str
+    keyboard_and_focus_behavior: str
+    performance_budget: dict[str, Any]
+    interruption_and_resize_behavior: str
+    allowed_implementation_capabilities: tuple[str, ...]
+    prohibited_generic_effects: tuple[str, ...]
+    observable_acceptance_conditions: tuple[str, ...]
+    transfer_test: dict[str, Any]
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> "BrandBehaviorSystem":
+        known = {
+            "schema_version", "thesis", "business_relevance", "audience_effect", "evidence_refs", "conceptual_entities",
+            "state_variables", "input_signals", "forces_and_relationships", "output_channels", "scene_graph",
+            "signature_behavior", "utility_behaviors", "narrative_behaviors", "resting_state", "no_javascript_translation",
+            "reduced_motion_translation", "mobile_translation", "keyboard_and_focus_behavior", "performance_budget",
+            "interruption_and_resize_behavior", "allowed_implementation_capabilities", "prohibited_generic_effects",
+            "observable_acceptance_conditions", "transfer_test",
+        }
+        value = _strict_object(raw, "brand_behavior_system", known)
+        version = _schema(value)
+        evidence_refs = _text_tuple(value.get("evidence_refs"), "brand_behavior_system.evidence_refs", maximum=40, item_maximum=300)
+        if not evidence_refs:
+            raise ContractError("brand_behavior_system.evidence_refs must not be empty")
+        signature = _object(value.get("signature_behavior"), "brand_behavior_system.signature_behavior")
+        if not signature.get("id") or not signature.get("meaning"):
+            raise ContractError("brand_behavior_system.signature_behavior requires id and meaning")
+        _normalized_id(signature.get("id"), "brand_behavior_system.signature_behavior.id")
+        acceptance = _text_tuple(signature.get("acceptance_conditions"), "brand_behavior_system.signature_behavior.acceptance_conditions", maximum=20, item_maximum=1_000)
+        if not acceptance:
+            raise ContractError("brand_behavior_system.signature_behavior.acceptance_conditions must not be empty")
+        signature["id"] = _normalized_id(signature["id"], "brand_behavior_system.signature_behavior.id")
+        signature["meaning"] = _text(signature["meaning"], "brand_behavior_system.signature_behavior.meaning", maximum=2_000)
+        signature["acceptance_conditions"] = list(acceptance)
+        transfer_test = _object(value.get("transfer_test"), "brand_behavior_system.transfer_test")
+        transfer_state = _text(transfer_test.get("state"), "brand_behavior_system.transfer_test.state", maximum=20).lower()
+        if transfer_state not in {"pending", "passed", "rejected"}:
+            raise ContractError("brand_behavior_system.transfer_test.state is invalid")
+        fields = (
+            "thesis", "business_relevance", "audience_effect", "no_javascript_translation", "reduced_motion_translation",
+            "mobile_translation", "keyboard_and_focus_behavior", "interruption_and_resize_behavior",
+        )
+        texts = {name: _text(value.get(name), f"brand_behavior_system.{name}", maximum=4_000) for name in fields}
+        return cls(
+            schema_version=version,
+            **texts,
+            evidence_refs=evidence_refs,
+            conceptual_entities=_named_records(value.get("conceptual_entities"), "brand_behavior_system.conceptual_entities"),
+            state_variables=_named_records(value.get("state_variables"), "brand_behavior_system.state_variables"),
+            input_signals=_named_records(value.get("input_signals"), "brand_behavior_system.input_signals"),
+            forces_and_relationships=_named_records(value.get("forces_and_relationships"), "brand_behavior_system.forces_and_relationships"),
+            output_channels=_named_records(value.get("output_channels"), "brand_behavior_system.output_channels", required_fields=("id", "property")),
+            scene_graph=_named_records(value.get("scene_graph"), "brand_behavior_system.scene_graph", required_fields=("id", "exit_condition")),
+            signature_behavior=signature,
+            utility_behaviors=_named_records(value.get("utility_behaviors"), "brand_behavior_system.utility_behaviors"),
+            narrative_behaviors=_named_records(value.get("narrative_behaviors"), "brand_behavior_system.narrative_behaviors"),
+            resting_state=_object(value.get("resting_state"), "brand_behavior_system.resting_state"),
+            performance_budget=_object(value.get("performance_budget"), "brand_behavior_system.performance_budget"),
+            allowed_implementation_capabilities=_text_tuple(value.get("allowed_implementation_capabilities"), "brand_behavior_system.allowed_implementation_capabilities", maximum=30, item_maximum=120),
+            prohibited_generic_effects=_text_tuple(value.get("prohibited_generic_effects"), "brand_behavior_system.prohibited_generic_effects", maximum=30, item_maximum=500),
+            observable_acceptance_conditions=_text_tuple(value.get("observable_acceptance_conditions"), "brand_behavior_system.observable_acceptance_conditions", maximum=40, item_maximum=1_000),
+            transfer_test=transfer_test,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "thesis": self.thesis,
+            "business_relevance": self.business_relevance,
+            "audience_effect": self.audience_effect,
+            "evidence_refs": list(self.evidence_refs),
+            "conceptual_entities": copy.deepcopy(list(self.conceptual_entities)),
+            "state_variables": copy.deepcopy(list(self.state_variables)),
+            "input_signals": copy.deepcopy(list(self.input_signals)),
+            "forces_and_relationships": copy.deepcopy(list(self.forces_and_relationships)),
+            "output_channels": copy.deepcopy(list(self.output_channels)),
+            "scene_graph": copy.deepcopy(list(self.scene_graph)),
+            "signature_behavior": copy.deepcopy(self.signature_behavior),
+            "utility_behaviors": copy.deepcopy(list(self.utility_behaviors)),
+            "narrative_behaviors": copy.deepcopy(list(self.narrative_behaviors)),
+            "resting_state": copy.deepcopy(self.resting_state),
+            "no_javascript_translation": self.no_javascript_translation,
+            "reduced_motion_translation": self.reduced_motion_translation,
+            "mobile_translation": self.mobile_translation,
+            "keyboard_and_focus_behavior": self.keyboard_and_focus_behavior,
+            "performance_budget": copy.deepcopy(self.performance_budget),
+            "interruption_and_resize_behavior": self.interruption_and_resize_behavior,
+            "allowed_implementation_capabilities": list(self.allowed_implementation_capabilities),
+            "prohibited_generic_effects": list(self.prohibited_generic_effects),
+            "observable_acceptance_conditions": list(self.observable_acceptance_conditions),
+            "transfer_test": copy.deepcopy(self.transfer_test),
+        }
+
+    @property
+    def content_hash(self) -> str:
+        return canonical_hash(self.to_dict())
+
+
+@dataclass(frozen=True)
+class ExperiencePlanBundle:
+    """Immutable creative source of truth passed to the realization agent."""
+
+    schema_version: int
+    run_id: str
+    base_sha: str
+    context_snapshot_hash: str
+    selected_concept_id: str
+    copy_deck_hash: str
+    asset_evidence: tuple[AssetVisualEvidence, ...]
+    brand_source_map: BrandSourceMap
+    brand_source_map_hash: str
+    asset_composition_plan: tuple[AssetCompositionPlan, ...]
+    behavior_system: BrandBehaviorSystem
+    layout_and_typography_plan: dict[str, Any]
+    responsive_composition_plan: dict[str, Any]
+    protected_strengths: tuple[str, ...]
+    variation_points: tuple[str, ...]
+    implementation_risks: tuple[str, ...]
+    transfer_test: dict[str, Any]
+    review_rubric: tuple[dict[str, Any], ...]
+    input_artifact_hashes: tuple[str, ...]
+    copy_deck: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> "ExperiencePlanBundle":
+        known = {
+            "schema_version", "run_id", "base_sha", "context_snapshot_hash", "selected_concept_id", "copy_deck_hash",
+            "asset_evidence", "brand_source_map", "brand_source_map_hash", "asset_composition_plan", "behavior_system",
+            "layout_and_typography_plan", "responsive_composition_plan", "protected_strengths", "variation_points",
+            "implementation_risks", "transfer_test", "review_rubric", "input_artifact_hashes",
+            "copy_deck",
+        }
+        value = _strict_object(raw, "experience_plan_bundle", known)
+        version = _schema(value)
+        source_map = BrandSourceMap.from_dict(value.get("brand_source_map"))
+        source_map_hash = _hash(value.get("brand_source_map_hash"), "experience_plan_bundle.brand_source_map_hash", _SHA256_RE)
+        if source_map_hash != source_map.content_hash:
+            raise ContractError("experience_plan_bundle.brand_source_map_hash does not match brand_source_map")
+        evidence_raw = _list(value.get("asset_evidence"), "experience_plan_bundle.asset_evidence", item_type=object, required=False, maximum=80)
+        evidence = tuple(AssetVisualEvidence.from_dict(item) for item in evidence_raw)
+        evidence_by_id = {item.asset_id: item for item in evidence}
+        composition_raw = _list(value.get("asset_composition_plan"), "experience_plan_bundle.asset_composition_plan", item_type=object, required=False, maximum=80)
+        composition = tuple(AssetCompositionPlan.from_dict(item) for item in composition_raw)
+        seen_assets: set[str] = set()
+        for item in composition:
+            if item.asset_id in seen_assets:
+                raise ContractError("experience_plan_bundle contains duplicate asset composition assignments")
+            seen_assets.add(item.asset_id)
+            evidence_item = evidence_by_id.get(item.asset_id)
+            if evidence_item is None:
+                raise ContractError(f"experience_plan_bundle composition references missing asset evidence: {item.asset_id}")
+            if evidence_item.asset_sha256 != item.asset_sha256:
+                raise ContractError(f"experience_plan_bundle asset hash mismatch for {item.asset_id}")
+        transfer_test = _object(value.get("transfer_test"), "experience_plan_bundle.transfer_test")
+        if _text(transfer_test.get("state"), "experience_plan_bundle.transfer_test.state", maximum=20).lower() != "passed":
+            raise ContractError("experience_plan_bundle.transfer_test must pass before realization")
+        rubric_raw = _list(value.get("review_rubric"), "experience_plan_bundle.review_rubric", item_type=object, required=True, maximum=40)
+        rubric = tuple(_named_records(rubric_raw, "experience_plan_bundle.review_rubric", required_fields=("id", "condition"), maximum=40))
+        input_hashes = _text_tuple(value.get("input_artifact_hashes"), "experience_plan_bundle.input_artifact_hashes", maximum=64, item_maximum=128)
+        for index, item in enumerate(input_hashes):
+            if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", item.lower()):
+                raise ContractError(f"experience_plan_bundle.input_artifact_hashes[{index}] is not a content hash")
+        return cls(
+            schema_version=version,
+            run_id=_text(value.get("run_id"), "experience_plan_bundle.run_id", maximum=120),
+            base_sha=_hash(value.get("base_sha"), "experience_plan_bundle.base_sha", _SHA1_RE),
+            context_snapshot_hash=_hash(value.get("context_snapshot_hash"), "experience_plan_bundle.context_snapshot_hash", _SHA256_RE),
+            selected_concept_id=_normalized_id(value.get("selected_concept_id"), "experience_plan_bundle.selected_concept_id"),
+            copy_deck_hash=_hash(value.get("copy_deck_hash"), "experience_plan_bundle.copy_deck_hash", _SHA256_RE),
+            asset_evidence=evidence,
+            brand_source_map=source_map,
+            brand_source_map_hash=source_map_hash,
+            asset_composition_plan=composition,
+            behavior_system=BrandBehaviorSystem.from_dict(value.get("behavior_system")),
+            layout_and_typography_plan=_object(value.get("layout_and_typography_plan"), "experience_plan_bundle.layout_and_typography_plan"),
+            responsive_composition_plan=_object(value.get("responsive_composition_plan"), "experience_plan_bundle.responsive_composition_plan"),
+            protected_strengths=_text_tuple(value.get("protected_strengths"), "experience_plan_bundle.protected_strengths", maximum=40, item_maximum=1_000),
+            variation_points=_text_tuple(value.get("variation_points"), "experience_plan_bundle.variation_points", maximum=40, item_maximum=1_000),
+            implementation_risks=_text_tuple(value.get("implementation_risks"), "experience_plan_bundle.implementation_risks", maximum=40, item_maximum=1_000),
+            transfer_test=transfer_test,
+            review_rubric=rubric,
+            input_artifact_hashes=tuple(item.lower() for item in input_hashes),
+            copy_deck=_optional_object(value.get("copy_deck"), "experience_plan_bundle.copy_deck"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "run_id": self.run_id,
+            "base_sha": self.base_sha,
+            "context_snapshot_hash": self.context_snapshot_hash,
+            "selected_concept_id": self.selected_concept_id,
+            "copy_deck_hash": self.copy_deck_hash,
+            "asset_evidence": [item.to_dict() for item in self.asset_evidence],
+            "brand_source_map": self.brand_source_map.to_dict(),
+            "brand_source_map_hash": self.brand_source_map_hash,
+            "asset_composition_plan": [item.to_dict() for item in self.asset_composition_plan],
+            "behavior_system": self.behavior_system.to_dict(),
+            "layout_and_typography_plan": copy.deepcopy(self.layout_and_typography_plan),
+            "responsive_composition_plan": copy.deepcopy(self.responsive_composition_plan),
+            "protected_strengths": list(self.protected_strengths),
+            "variation_points": list(self.variation_points),
+            "implementation_risks": list(self.implementation_risks),
+            "transfer_test": copy.deepcopy(self.transfer_test),
+            "review_rubric": copy.deepcopy(list(self.review_rubric)),
+            "input_artifact_hashes": list(self.input_artifact_hashes),
+            "copy_deck": copy.deepcopy(self.copy_deck),
+        }
+
+    @property
+    def content_hash(self) -> str:
+        return canonical_hash(self.to_dict())
+
+
+@dataclass(frozen=True)
+class TemporalExperienceEvidence:
+    """Hash-bound local browser evidence for the locked behavior system."""
+
+    schema_version: int
+    candidate_sha: str
+    experience_plan_hash: str
+    route: str
+    viewport: dict[str, Any]
+    reduced_motion: bool
+    interaction_script_id: str
+    frames: tuple[dict[str, Any], ...]
+    layout_shifts: tuple[dict[str, Any], ...]
+    console_errors: tuple[dict[str, Any], ...]
+    network_errors: tuple[dict[str, Any], ...]
+    animation_observations: tuple[dict[str, Any], ...]
+    keyboard_path_observations: tuple[str, ...]
+    resting_state_observations: dict[str, Any]
+    evidence_hash: str
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> "TemporalExperienceEvidence":
+        known = {
+            "schema_version", "candidate_sha", "experience_plan_hash", "route", "viewport", "reduced_motion",
+            "interaction_script_id", "frames", "layout_shifts", "console_errors", "network_errors",
+            "animation_observations", "keyboard_path_observations", "resting_state_observations", "evidence_hash",
+        }
+        value = _strict_object(raw, "temporal_experience_evidence", known)
+        version = _schema(value)
+        viewport = _strict_object(value.get("viewport"), "temporal_experience_evidence.viewport", {"name", "width", "height"})
+        width = _positive_integer(viewport.get("width"), "temporal_experience_evidence.viewport.width")
+        height = _positive_integer(viewport.get("height"), "temporal_experience_evidence.viewport.height")
+        viewport = {"name": _text(viewport.get("name"), "temporal_experience_evidence.viewport.name", maximum=80), "width": width, "height": height}
+        reduced_motion = value.get("reduced_motion")
+        if not isinstance(reduced_motion, bool):
+            raise ContractError("temporal_experience_evidence.reduced_motion must be boolean")
+        raw_frames = _list(value.get("frames"), "temporal_experience_evidence.frames", item_type=object, required=True, maximum=30)
+        frames: list[dict[str, Any]] = []
+        phases: set[str] = set()
+        for index, raw_frame in enumerate(raw_frames):
+            frame = _strict_object(raw_frame, f"temporal_experience_evidence.frames[{index}]", {"phase", "path", "timestamp_ms", "label"})
+            phase = _text(frame.get("phase"), f"temporal_experience_evidence.frames[{index}].phase", maximum=30).lower()
+            if phase not in {"before", "intermediate", "after"}:
+                raise ContractError("temporal_experience_evidence frame phase is invalid")
+            phases.add(phase)
+            normalized = {
+                "phase": phase,
+                "path": safe_relative_path(frame.get("path"), f"temporal_experience_evidence.frames[{index}].path"),
+            }
+            if frame.get("timestamp_ms") is not None:
+                normalized["timestamp_ms"] = _bounded_number(frame.get("timestamp_ms"), f"temporal_experience_evidence.frames[{index}].timestamp_ms", minimum=0)
+            if frame.get("label") is not None:
+                normalized["label"] = _text(frame.get("label"), f"temporal_experience_evidence.frames[{index}].label", required=False, maximum=200)
+            frames.append(normalized)
+        if not {"before", "intermediate", "after"}.issubset(phases):
+            raise ContractError("temporal_experience_evidence requires before, intermediate, and after frames")
+
+        def objects(name: str) -> tuple[dict[str, Any], ...]:
+            items = _list(value.get(name), f"temporal_experience_evidence.{name}", item_type=object, required=False, maximum=60)
+            return tuple(_object(item, f"temporal_experience_evidence.{name}[{index}]") for index, item in enumerate(items))
+
+        identity_without_hash = dict(value)
+        identity_without_hash.pop("evidence_hash", None)
+        evidence_hash = _hash(value.get("evidence_hash"), "temporal_experience_evidence.evidence_hash", _SHA256_RE)
+        if evidence_hash != canonical_hash(identity_without_hash):
+            raise ContractError("temporal_experience_evidence.evidence_hash does not match evidence")
+        return cls(
+            schema_version=version,
+            candidate_sha=_hash(value.get("candidate_sha"), "temporal_experience_evidence.candidate_sha", _SHA1_RE),
+            experience_plan_hash=_hash(value.get("experience_plan_hash"), "temporal_experience_evidence.experience_plan_hash", _SHA256_RE),
+            route=_page_path(value.get("route"), "temporal_experience_evidence.route"),
+            viewport=viewport,
+            reduced_motion=reduced_motion,
+            interaction_script_id=_normalized_id(value.get("interaction_script_id"), "temporal_experience_evidence.interaction_script_id"),
+            frames=tuple(frames),
+            layout_shifts=objects("layout_shifts"),
+            console_errors=objects("console_errors"),
+            network_errors=objects("network_errors"),
+            animation_observations=objects("animation_observations"),
+            keyboard_path_observations=_text_tuple(value.get("keyboard_path_observations"), "temporal_experience_evidence.keyboard_path_observations", maximum=60, item_maximum=240),
+            resting_state_observations=_object(value.get("resting_state_observations"), "temporal_experience_evidence.resting_state_observations"),
+            evidence_hash=evidence_hash,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "candidate_sha": self.candidate_sha,
+            "experience_plan_hash": self.experience_plan_hash,
+            "route": self.route,
+            "viewport": copy.deepcopy(self.viewport),
+            "reduced_motion": self.reduced_motion,
+            "interaction_script_id": self.interaction_script_id,
+            "frames": copy.deepcopy(list(self.frames)),
+            "layout_shifts": copy.deepcopy(list(self.layout_shifts)),
+            "console_errors": copy.deepcopy(list(self.console_errors)),
+            "network_errors": copy.deepcopy(list(self.network_errors)),
+            "animation_observations": copy.deepcopy(list(self.animation_observations)),
+            "keyboard_path_observations": list(self.keyboard_path_observations),
+            "resting_state_observations": copy.deepcopy(self.resting_state_observations),
+            "evidence_hash": self.evidence_hash,
+        }
+
+    @property
+    def content_hash(self) -> str:
+        return canonical_hash(self.to_dict())
 
 
 @dataclass(frozen=True)
@@ -674,6 +1572,7 @@ class DesignContextSnapshot:
     route_inventory: tuple[str, ...] = ()
     current_content: dict[str, Any] = field(default_factory=dict)
     asset_inventory: tuple[dict[str, Any], ...] = ()
+    asset_visual_evidence: tuple[AssetVisualEvidence, ...] = ()
     measured_design: dict[str, Any] = field(default_factory=dict)
     verified_facts: tuple[str, ...] = ()
     unknowns: tuple[str, ...] = ()
@@ -709,7 +1608,7 @@ class DesignContextSnapshot:
             "owner_request", "conversation", "effective_persona", "self_model", "approved_persona_notes",
             "memories", "research", "business_knowledge", "attachments", "site_facts", "source_repository",
             "base_sha", "site_digest", "route_inventory", "current_content", "asset_inventory", "measured_design",
-            "verified_facts", "unknowns", "prohibited_claims", "capabilities", "execution_profile", "design_skill_set",
+            "asset_visual_evidence", "verified_facts", "unknowns", "prohibited_claims", "capabilities", "execution_profile", "design_skill_set",
         }
         result = cls(
             schema_version=version,
@@ -735,6 +1634,10 @@ class DesignContextSnapshot:
             )),
             current_content=_optional_object(value.get("current_content"), "current_content"),
             asset_inventory=objects("asset_inventory"),
+            asset_visual_evidence=tuple(
+                AssetVisualEvidence.from_dict(item)
+                for item in _list(value.get("asset_visual_evidence"), "asset_visual_evidence", item_type=object, required=False, maximum=80)
+            ),
             measured_design=_optional_object(value.get("measured_design"), "measured_design"),
             verified_facts=texts("verified_facts"),
             unknowns=texts("unknowns"),
@@ -784,6 +1687,8 @@ class DesignContextSnapshot:
         }
         if self.design_skill_set is not None:
             result["design_skill_set"] = self.design_skill_set.to_dict()
+        if self.asset_visual_evidence:
+            result["asset_visual_evidence"] = [item.to_dict() for item in self.asset_visual_evidence]
         return result
 
     @property
@@ -1541,6 +2446,26 @@ class RepairBrief(DesignPhaseArtifact):
 @dataclass(frozen=True)
 class RepairReport(DesignPhaseArtifact):
     EXPECTED_PHASES = (DesignPhase.REPAIR.value,)
+
+
+@dataclass(frozen=True)
+class AssetEvidenceReport(DesignPhaseArtifact):
+    EXPECTED_PHASES = (DesignPhase.ASSET_EVIDENCE.value,)
+
+
+@dataclass(frozen=True)
+class BrandSourceReport(DesignPhaseArtifact):
+    EXPECTED_PHASES = (DesignPhase.BRAND_SOURCE.value,)
+
+
+@dataclass(frozen=True)
+class TransferReview(DesignPhaseArtifact):
+    EXPECTED_PHASES = (DesignPhase.TRANSFER_REVIEW.value,)
+
+
+@dataclass(frozen=True)
+class TemporalReview(DesignPhaseArtifact):
+    EXPECTED_PHASES = (DesignPhase.TEMPORAL_REVIEW.value,)
 
 
 @dataclass(frozen=True)

@@ -10,6 +10,7 @@ from site_agent.core.memory import Memory
 from site_agent.core.media_worker import MediaWorker
 from site_agent.core.media_contracts import MediaAnalysis
 from site_agent.hands.opencode_runner import RunnerError, _materialize_media
+from site_agent.hands.local_media import LocalMediaStore
 
 
 class FakeStore:
@@ -176,6 +177,22 @@ def test_media_worker_converts_private_local_vision_urls_to_data_urls(tmp_path):
     assert worker.process_one() is True
     assert analyzer.urls[0].startswith("data:image/webp;base64,")
     assert memory.get_media_asset(uploaded["asset"]["id"]).status.value == "ready"
+    memory.close()
+
+
+def test_local_media_preview_reports_an_image_content_type(tmp_path):
+    output = io.BytesIO()
+    Image.new("RGB", (20, 10), "blue").save(output, format="JPEG")
+    memory = Memory(tmp_path / "memory.db")
+    store = LocalMediaStore(tmp_path / "media")
+    service = MediaService(memory, store, {"site": {"media": {"enabled": True}}})
+    uploaded = service.upload("blue.jpg", output.getvalue())
+
+    assert MediaWorker({"memory": memory, "media_store": store, "media_service": service}).process_one() is True
+    data, content_type = service.read_preview(uploaded["asset"]["id"], thumbnail=False)
+
+    assert data
+    assert content_type == "image/webp"
     memory.close()
 
 

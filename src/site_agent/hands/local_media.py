@@ -59,7 +59,18 @@ class LocalMediaStore(MediaStore):
         return f"/api/intake/media/object?key={quote(str(key), safe='')}"
 
     def content_type(self, key: str) -> str:
-        return mimetypes.guess_type(str(key))[0] or "application/octet-stream"
+        guessed = mimetypes.guess_type(str(key))[0]
+        if guessed:
+            return guessed
+        suffix = Path(str(key)).suffix.lower()
+        return {
+            ".avif": "image/avif",
+            ".gif": "image/gif",
+            ".jpeg": "image/jpeg",
+            ".jpg": "image/jpeg",
+            ".png": "image/png",
+            ".webp": "image/webp",
+        }.get(suffix, "application/octet-stream")
 
 
 __all__ = ["LocalMediaError", "LocalMediaStore"]

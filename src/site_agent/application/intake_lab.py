@@ -894,9 +894,50 @@ class IntakeLabService:
         if not callable(reviewer):
             raise IntakeLabError("visual review is unavailable")
         try:
-            reviewer(safe_id, env=self.review_environment)
+            reviewer(
+                safe_id,
+                env=self.review_environment,
+                source_media=getattr(self, "media_service", None),
+            )
             return self.get_run(safe_id)
         except Exception as exc:  # noqa: BLE001 - keep the adapter boundary bounded
+            raise IntakeLabError(str(exc)[:500]) from exc
+
+    def create_technical_repair(
+        self,
+        run_id: str,
+        *,
+        owner_request: str = "",
+    ) -> dict[str, Any]:
+        """Queue one explicit owner-directed repair from a retained candidate."""
+        safe_id = str(run_id or "").strip()
+        self._raw_local_run(safe_id)
+        creator = getattr(self.design_service, "create_technical_repair_run", None)
+        if not callable(creator):
+            raise IntakeLabError("technical repair is unavailable")
+        prompt = _prompt(owner_request or "Repair the retained candidate using the owner's explicit feedback.")
+        try:
+            created = creator(
+                safe_id,
+                run_id=f"design-{uuid.uuid4().hex}",
+                owner_request=prompt,
+            )
+            if not isinstance(created, Mapping):
+                raise IntakeLabError("technical repair did not produce typed build state")
+            child = created.get("run")
+            if not isinstance(child, Mapping) or not str(child.get("run_id") or "").strip():
+                raise IntakeLabError("technical repair did not produce a run")
+            request = PageBuildRequest.from_dict(created.get("request") or {})
+            target = BuildTarget.from_dict(created.get("target") or {})
+            if target.mode != "local_experiment" or target.push_mode != "none" or target.publishable:
+                raise IntakeLabError("technical repair target is not local-only")
+            child_id = str(child["run_id"])
+            self.design_service.queue_build(child_id, request, target)
+            self.executor.enqueue(child_id)
+            return self.get_run(child_id)
+        except IntakeLabError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - retain a bounded adapter error
             raise IntakeLabError(str(exc)[:500]) from exc
 
     def create_visual_refinement(self, run_id: str) -> dict[str, Any]:

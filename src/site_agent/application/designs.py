@@ -25,6 +25,9 @@ from ..core.design_contracts import (
     DesignSourceBinding,
     DesignRunStatus,
     DesignBrief,
+    AssetVisualEvidence,
+    DesignPlanBundle,
+    ExperiencePlanBundle,
     PageIntake,
     PageBuildRequest,
     SiteIntake,
@@ -130,6 +133,189 @@ class DesignService:
         except OSError:
             pass
         return canonical_hash({"transcript_path": str(transcript_path or "")})
+
+    def _experience_plan_for_run(self, run_id: str) -> ExperiencePlanBundle | None:
+        """Read the immutable strict plan persisted by specialist orchestration.
+
+        Legacy runs and candidates created without specialist planning retain no
+        experience bundle; those continue through the existing quality gates.
+        A malformed persisted bundle is returned as ``None`` here so the build
+        remains inspectable while the strict orchestration artifact remains the
+        source of the diagnostic failure.
+        """
+        records = self.memory.list_design_phase_artifacts(
+            run_id,
+            phase="creative_selection",
+            status="completed",
+        )
+        if not records:
+            return None
+        try:
+            phase = DesignPlanBundle.from_dict(records[-1]["payload"])
+            payload = phase.payload
+            if not isinstance(payload, Mapping):
+                return None
+            return ExperiencePlanBundle.from_dict(payload)
+        except (ContractError, KeyError, TypeError, ValueError):
+            return None
+
+    def _capture_asset_visual_evidence(
+        self,
+        raw_assets: list[Any],
+        *,
+        source_clone: Path | None,
+    ) -> tuple[list[AssetVisualEvidence], list[dict[str, str]], dict[str, dict[str, str]]]:
+        """Freeze deterministic evidence for owner-approved image bytes.
+
+        Media-library images are read through ``MediaService`` and use the same
+        public path convention as the builder's materialization step. Local
+        configured assets are accepted only when they resolve inside the pinned
+        source checkout. Missing or unreadable evidence is recorded as an
+        unknown rather than silently presented as verified.
+        """
+        from ..hands.image_visual_evidence import ImageEvidenceError, extract_image_visual_evidence
+
+        evidence: list[AssetVisualEvidence] = []
+        errors: list[dict[str, str]] = []
+        bindings: dict[str, dict[str, str]] = {}
+        media_settings = (self.config.get("site") or {}).get("media") or {}
+        media_destination = str(media_settings.get("site_asset_dir") or "").strip().strip("/")
+        clone_root = source_clone.resolve() if source_clone is not None else None
+        seen_keys: set[str] = set()
+
+        def role_for(raw: Mapping[str, Any]) -> str:
+            value = str(raw.get("media_role") or raw.get("role") or "").strip().lower()
+            if value in {"logo", "identity_mark", "photograph", "illustration", "texture", "document", "unknown"}:
+                return value
+            usage = str(raw.get("usage") or "").strip().lower()
+            return "logo" if "logo" in usage else "unknown"
+
+        def evidence_id(raw: Mapping[str, Any], index: int, *, media_id: int | None = None) -> str:
+            if media_id is not None:
+                return f"media-{media_id}"
+            value = str(raw.get("visual_evidence_id") or raw.get("id") or raw.get("asset_id") or "").strip()
+            value = re.sub(r"[^A-Za-z0-9._:-]+", "-", value).strip("-")
+            return value if value and re.match(r"^[A-Za-z]", value) else f"asset-{index + 1}"
+
+        def add_evidence(
+            *,
+            raw: Mapping[str, Any],
+            index: int,
+            asset_id: str,
+            relative_path: str,
+            data: bytes,
+            semantic: Mapping[str, Any] | None = None,
+            vision_metadata: Mapping[str, Any] | None = None,
+        ) -> None:
+            if asset_id in seen_keys:
+                return
+            actual_hash = hashlib.sha256(data).hexdigest()
+            expected_hash = str(raw.get("sha256") or raw.get("asset_sha256") or "").strip().lower()
+            if expected_hash and expected_hash != actual_hash:
+                raise DesignServiceError(f"asset {asset_id} bytes do not match the supplied SHA-256")
+            metadata = dict(semantic or {})
+            metadata.update(dict(vision_metadata or {}))
+            has_semantic = any(str(metadata.get(key) or "").strip() for key in ("description", "emotional_tone")) or any(
+                metadata.get(key) for key in ("subjects", "materials_and_textures", "brand_signals", "quality_constraints")
+            )
+            sources = ("deterministic", "vision") if has_semantic else ("deterministic",)
+            analyzer_version = "image-visual-evidence-v1+media-analysis-v1" if has_semantic else "image-visual-evidence-v1"
+            item = extract_image_visual_evidence(
+                asset_id=asset_id,
+                asset_sha256=actual_hash,
+                relative_path=relative_path,
+                data=data,
+                media_role=role_for(raw),
+                semantic=metadata,
+                evidence_sources=sources,
+                analyzer_version=analyzer_version,
+                provider_id=str((vision_metadata or {}).get("provider_id") or "host"),
+                model=str((vision_metadata or {}).get("model") or ""),
+            )
+            evidence.append(item)
+            seen_keys.add(asset_id)
+            raw_key = str(raw.get("id") or raw.get("asset_id") or "").strip()
+            if raw_key:
+                bindings[raw_key] = {
+                    "visual_evidence_id": asset_id,
+                    "visual_evidence_path": relative_path,
+                    "visual_evidence_sha256": actual_hash,
+                }
+
+        for index, raw in enumerate(raw_assets[:80]):
+            if not isinstance(raw, Mapping):
+                continue
+            raw_id = raw.get("id") or raw.get("asset_id")
+            media_id: int | None = None
+            try:
+                if raw_id is not None and not isinstance(raw_id, bool) and int(raw_id) > 0:
+                    media_id = int(raw_id)
+            except (TypeError, ValueError):
+                media_id = None
+
+            if media_id is not None and self.media_service is not None:
+                try:
+                    asset = self.media_service.get(media_id)
+                    status = getattr(getattr(asset, "status", None), "value", getattr(asset, "status", ""))
+                    kind = getattr(getattr(asset, "media_kind", None), "value", getattr(asset, "media_kind", ""))
+                    if status != "ready" or kind != "image" or getattr(asset, "archived_ts", None):
+                        raise DesignServiceError("media asset is not a ready, unarchived image")
+                    if not media_destination:
+                        raise DesignServiceError("site.media.site_asset_dir is not configured")
+                    stem = re.sub(r"[^A-Za-z0-9_-]+", "-", Path(str(asset.original_name or "image")).stem).strip("-")[:60] or "image"
+                    relative = safe_relative_path(f"{media_destination}/ada-{media_id}-{stem}.webp", "asset_visual_evidence.relative_path")
+                    data, _content_type = self.media_service.read_preview(media_id, thumbnail=False)
+                    analysis = asset.analysis if isinstance(asset.analysis, Mapping) else {}
+                    semantic = {
+                        "description": analysis.get("description") or asset.description,
+                        "quality_constraints": analysis.get("quality_notes") or (),
+                    }
+                    vision_metadata = {
+                        **semantic,
+                        "provider_id": asset.provider_id or "media-library",
+                        "model": asset.model,
+                    }
+                    if str(getattr(getattr(asset, "analysis_status", None), "value", "")) != "ready":
+                        vision_metadata = {"description": "", "quality_constraints": ()}
+                    add_evidence(
+                        raw=raw,
+                        index=index,
+                        asset_id=evidence_id(raw, index, media_id=media_id),
+                        relative_path=relative,
+                        data=data,
+                        semantic=semantic,
+                        vision_metadata=vision_metadata,
+                    )
+                except (DesignServiceError, ContractError, ImageEvidenceError, OSError, TypeError, ValueError) as exc:
+                    errors.append({"asset_id": str(raw_id or index + 1), "error": str(exc)[:300]})
+                continue
+
+            raw_path = raw.get("path") or raw.get("relative_path")
+            if not raw_path or clone_root is None:
+                continue
+            path_value = str(raw_path).strip()
+            try:
+                if Path(path_value).is_absolute():
+                    raise DesignServiceError("configured asset path must be relative")
+                relative = safe_relative_path(path_value, "asset_visual_evidence.relative_path")
+                target = (clone_root / relative).resolve()
+                if target.is_symlink() or (target != clone_root and clone_root not in target.parents) or not target.is_file():
+                    raise DesignServiceError("configured asset bytes are unavailable inside the source checkout")
+                data = target.read_bytes()
+                add_evidence(
+                    raw=raw,
+                    index=index,
+                    asset_id=evidence_id(raw, index),
+                    relative_path=relative,
+                    data=data,
+                    semantic={
+                        "description": raw.get("description") or "",
+                        "quality_constraints": raw.get("quality_constraints") or (),
+                    },
+                )
+            except (DesignServiceError, ContractError, ImageEvidenceError, OSError, TypeError, ValueError) as exc:
+                errors.append({"asset_id": str(raw_id or raw_path), "error": str(exc)[:300]})
+        return evidence, errors, bindings
 
     def create_run(
         self,
@@ -379,6 +565,20 @@ class DesignService:
             except Exception:  # noqa: BLE001 - a missing optional digest never blocks capture
                 pass
 
+        asset_visual_evidence, asset_visual_evidence_errors, asset_bindings = self._capture_asset_visual_evidence(
+            raw_assets,
+            source_clone=source_clone,
+        )
+        snapshot_assets: list[dict[str, Any]] = []
+        for raw in raw_assets:
+            if not isinstance(raw, Mapping):
+                continue
+            item = dict(raw)
+            raw_key = str(item.get("id") or item.get("asset_id") or "").strip()
+            if raw_key in asset_bindings:
+                item.update(asset_bindings[raw_key])
+            snapshot_assets.append(item)
+
         snapshot_data = safe_payload({
             "schema_version": 1,
             "captured_at": utc_now(),
@@ -408,7 +608,7 @@ class DesignService:
             "site_digest": site_digest,
             "route_inventory": list(intake.site.get("required_pages") or ()),
             "current_content": site.get("current_content") or {},
-            "asset_inventory": raw_assets,
+            "asset_inventory": snapshot_assets,
             "measured_design": measured_design,
             "verified_facts": raw_verified,
             "unknowns": raw_unknowns,
@@ -416,6 +616,8 @@ class DesignService:
             "capabilities": raw_capabilities,
             "execution_profile": execution_profile,
             **dict(context_extra or {}),
+            "asset_visual_evidence": [item.to_dict() for item in asset_visual_evidence],
+            "asset_visual_evidence_errors": asset_visual_evidence_errors,
             "design_skill_set": skill_set.to_dict(include_content=False),
         }, max_bytes=300_000, preserve_keys={"output_tokens", "max_tokens", "planner_max_tokens", "template_tokens"})
         snapshot = DesignContextSnapshot.from_dict(snapshot_data)
@@ -2022,6 +2224,7 @@ class DesignService:
         policy: QualityPolicy | None = None,
         browser: BrowserQualityAdapter | None = None,
         build_env: Mapping[str, str] | None = None,
+        temporal_evidence: tuple[Mapping[str, Any], ...] = (),
     ):
         """Run host-owned quality gates and only then make a candidate reviewable."""
         run = self.memory.get_design_run(run_id)
@@ -2052,6 +2255,17 @@ class DesignService:
                         timeout_seconds=effective_policy.build_timeout_seconds,
                     ).to_dict()
 
+            experience_plan = self._experience_plan_for_run(run_id)
+            design_engine = self.config.get("design_engine") or {}
+            strict_plan_required = bool(design_engine.get("require_experience_plan")) or (
+                str(design_engine.get("orchestration") or "legacy").strip().lower() == "specialist"
+                and bool(run.get("context_snapshot_hash"))
+            )
+            if strict_plan_required and experience_plan is None:
+                # Let the quality contract record an incomplete strict gate
+                # instead of allowing a candidate with no locked plan to pass.
+                experience_plan = {}
+
             report = run_quality_gates(
                 repo,
                 base_sha=run["base_sha"],
@@ -2061,6 +2275,8 @@ class DesignService:
                 browser=browser,
                 build_runner=build_runner,
                 build_env=build_env,
+                experience_plan=experience_plan,
+                temporal_evidence=temporal_evidence,
             )
             report_data = report.to_dict()
             parent_comparison, parent_findings = self._parent_visual_comparison(run, report_data)
