@@ -125,6 +125,50 @@ def test_tools_spec_respects_writable_patterns(env):
     assert "propose_changes" in spec
 
 
+def test_atelier_payload_tools_read_then_update_draft(env):
+    from site_agent.brain.editor import _tools_spec
+    from site_agent.hands.base import SiteAdapter
+
+    class Payload:
+        def __init__(self):
+            self.updates = []
+
+        def read(self, collection, **kwargs):
+            assert collection == "pages"
+            assert kwargs["identifier"] == "home"
+            return {"id": "7", "sourceId": "home", "title": "Old heading", "content": {"heading": "Old heading"}}
+
+        def update(self, collection, document_id, data):
+            self.updates.append((collection, document_id, data))
+            return {"id": document_id, "sourceId": "home", "title": data["title"], "_status": "draft"}
+
+    class Adapter(SiteAdapter):
+        name = "t"
+        site = {"content_path": "content.json"}
+
+        def get_content(self):
+            return {}
+
+        def get_file(self, path, branch=None):
+            return (None, None)
+
+        def commit_file(self, path, data, message, branch=None):
+            return {}
+
+    payload = Payload()
+    context = {**env[2], "llm": FakeToolsLLM([
+        {"content": None, "tool_calls": _tc(
+            "read_payload_content", collection="pages", identifier="home", identifier_kind="sourceId")},
+        {"content": None, "tool_calls": _tc(
+            "update_payload_draft", collection="pages", id="7", data={"title": "New heading"})},
+    ]), "atelier_payload": payload}
+    result = handle_message(context, Adapter(), "Change the heading on the homepage")
+
+    assert result["reply"].startswith("Payload draft updated:")
+    assert payload.updates == [("pages", "7", {"title": "New heading"})]
+    assert "read_payload_content" in json.dumps(_tools_spec(context))
+
+
 def test_reads_pending_build_from_preview_branch(env):
     from site_agent.brain.editor import _cached_file
     from site_agent.hands import file_cache

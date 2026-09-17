@@ -17,7 +17,10 @@ from site_agent.core.design_contracts import (
     DesignPhaseArtifact,
     DesignSourceBinding,
     DesignRunStatus,
+    ExperienceFidelityReport,
     ExperiencePlanBundle,
+    ExperienceJourney,
+    IncubatedCreativeContext,
     LogoCompositionRule,
     NormalizedPoint,
     NormalizedRegion,
@@ -25,6 +28,7 @@ from site_agent.core.design_contracts import (
     SiteIntake,
     TemporalExperienceEvidence,
     canonical_hash,
+    normalize_workspace_target,
     validate_design_run_transition,
 )
 
@@ -60,6 +64,24 @@ def test_site_intake_round_trips_and_hashes_canonically():
 def test_site_intake_rejects_unknown_schema_version():
     with pytest.raises(ContractError, match="schema_version"):
         SiteIntake.from_dict(_intake(schema_version=99))
+
+
+def test_workspace_target_is_normalized_at_the_design_boundary():
+    target = normalize_workspace_target({
+        "mode": "workspace",
+        "scope": "selected_page",
+        "route": {"path": "/shop", "kind": "page", "sourceId": "route-42"},
+        "preview": {"state": "draft", "url": "https://atelier.example/preview/shop", "revision": 2},
+        "payload": {"collection": "products", "id": "42", "sourceId": "product-42"},
+    })
+
+    assert target["route"]["path"] == "/shop"
+    assert target["preview"]["revision"] == 2
+
+
+def test_workspace_target_rejects_unknown_browser_metadata():
+    with pytest.raises(ContractError, match="unknown fields"):
+        normalize_workspace_target({"route": {"path": "/shop"}, "raw_dom": "ignored"})
 
 
 def _phase_artifact(**overrides):
@@ -108,6 +130,41 @@ def test_site_intake_rejects_unbounded_text_and_unsupported_contact_url():
             "primary_action": "Book a consultation",
             "contact_destination": "javascript:alert(1)",
         }))
+
+
+def test_context_summaries_allow_prose_slashes_but_reject_private_paths():
+    context = IncubatedCreativeContext.from_dict({
+        "genesis_revision": 1,
+        "genesis_hash": "a" * 64,
+        "owner_confirmed_visual_preferences": [],
+        "owner_confirmed_visual_dislikes": [],
+        "research_backed_creative_implications": [],
+        "cross_language_audience_insights": [],
+        "customer_genesis": {},
+        "infusion_deductions": [{
+            "deduction_id": "deduction_" + "a" * 32,
+            "kind": "market_context",
+            "summary": "Demand peaks in the morning / early afternoon.",
+            "confidence": 0.7,
+            "basis": "source",
+        }],
+        "novelty_constraints": {"patterns": []},
+        "design_skill_set": {
+            "names": ["frontend-design.md"],
+            "content_hash": "b" * 64,
+        },
+    })
+
+    assert context.infusion_deductions[0]["summary"].endswith("afternoon.")
+
+    with pytest.raises(ContractError, match="private detail"):
+        IncubatedCreativeContext.from_dict({
+            **context.to_dict(),
+            "infusion_deductions": [{
+                **context.infusion_deductions[0],
+                "summary": "Read the private report at /var/lib/site-agent/report.",
+            }],
+        })
 
 
 def test_local_experiment_target_is_non_publishable_and_never_pushes():
@@ -187,6 +244,7 @@ def test_candidate_lifecycle_has_explicit_preservation_states():
     validate_design_run_transition("building", "candidate_ready")
     validate_design_run_transition("validating", "needs_repair")
     validate_design_run_transition("validating", "incomplete")
+    validate_design_run_transition("needs_repair", "validating")
 
 
 def test_candidate_receipt_is_build_only_and_has_host_identity():
@@ -348,6 +406,65 @@ def _experience_plan(**overrides):
             "evidence_refs": ["asset-logo"],
         },
     }
+    journey = {
+        "schema_version": 1,
+        "journey_id": "measured-arrival-journey",
+        "thesis": "The visitor moves from orientation into a clear commitment through the identity cadence.",
+        "signature_behavior_id": "measured-arrival",
+        "signature_scene_id": "arrival",
+        "scenes": [
+            {
+                "id": "arrival",
+                "order": 1,
+                "content_region": "hero",
+                "narrative_purpose": "Orient the visitor in the offer and the next useful action.",
+                "initial_state": "The complete hero promise and action are visible at rest.",
+                "trigger": "page-load and first bounded scroll",
+                "visible_transition": "The identity cadence guides attention from the mark to the promise.",
+                "completion_condition": "The visitor can identify the offer and primary action.",
+                "exit_condition": "The first viewport is complete without hidden critical content.",
+                "continuity": "The settled hero state hands attention to the proof scene.",
+                "desktop_translation": "Use the full measured spacing cadence across the hero.",
+                "tablet_translation": "Preserve the cadence while reducing simultaneous layers.",
+                "mobile_translation": "Stack the promise and action without losing the identity rhythm.",
+                "keyboard_translation": "Focus order follows the visible narrative order.",
+                "touch_translation": "A short touch scroll advances the same authored transition.",
+                "reduced_motion_translation": "Show the settled state immediately and preserve hierarchy.",
+                "interruption_behavior": "A new input settles the current transition before continuing.",
+                "reverse_behavior": "Reverse scroll restores the prior emphasis without leaving gaps.",
+                "resize_behavior": "Recompute the cadence without changing the narrative order.",
+                "rapid_input_behavior": "Coalesce rapid input into one bounded transition.",
+                "acceptance_condition_ids": ["journey-arrival-visible"],
+                "evidence_refs": ["asset-logo", "intake.audience.primary"],
+            },
+            {
+                "id": "commitment",
+                "order": 2,
+                "content_region": "proof",
+                "narrative_purpose": "Turn orientation into a credible next step.",
+                "initial_state": "The proof and primary action remain readable below the fold.",
+                "trigger": "visitor reaches the proof region",
+                "visible_transition": "Proof settles into view and reinforces the primary action.",
+                "completion_condition": "The visitor can continue to the primary action with context intact.",
+                "exit_condition": "The action remains available and keyboard reachable.",
+                "continuity": "The action closes the authored journey without a generic reveal loop.",
+                "desktop_translation": "Let proof and action share the same spatial cadence.",
+                "tablet_translation": "Keep proof readable beside or above the action.",
+                "mobile_translation": "Place proof before the action in a single readable column.",
+                "keyboard_translation": "Focus reaches proof links and the primary action in order.",
+                "touch_translation": "Touch interaction does not trap or hide the action.",
+                "reduced_motion_translation": "Keep proof and action fully visible without spatial animation.",
+                "interruption_behavior": "Interruptions preserve readable proof and action states.",
+                "reverse_behavior": "Reverse navigation restores the prior proof state cleanly.",
+                "resize_behavior": "Reflow proof and action without changing their meaning.",
+                "rapid_input_behavior": "Ignore duplicate input while a transition is settling.",
+                "acceptance_condition_ids": ["journey-commitment-readable"],
+                "evidence_refs": ["asset-logo", "intake.conversion.primary_action"],
+            },
+        ],
+        "must_pass_condition_ids": ["journey-arrival-visible", "journey-commitment-readable"],
+        "evidence_refs": ["asset-logo", "intake.audience.primary", "intake.conversion.primary_action"],
+    }
     value = {
         "schema_version": 1,
         "run_id": "design-experience-test",
@@ -359,6 +476,7 @@ def _experience_plan(**overrides):
         "brand_source_map": source_map,
         "brand_source_map_hash": canonical_hash(source_map),
         "asset_composition_plan": [composition],
+        "experience_journey": journey,
         "behavior_system": brand_behavior,
         "layout_and_typography_plan": {"type_scale": "restrained"},
         "responsive_composition_plan": {"mobile": "stacked"},
@@ -368,6 +486,13 @@ def _experience_plan(**overrides):
         "transfer_test": {"state": "passed", "evidence_specific_elements": ["asset-logo"]},
         "review_rubric": [{"id": "logo-clearance", "condition": "logo does not collide"}],
         "input_artifact_hashes": ["e" * 64],
+        "copy_deck": {
+            "eyebrow": "North Star Studio",
+            "headline": "Make the next clear move.",
+            "body": "Brand strategy for independent businesses ready to grow with intention.",
+            "primary_action": "Book a consultation",
+            "supporting_copy": ["Thoughtful strategy, made practical."],
+        },
     }
     value.update(overrides)
     return value
@@ -384,6 +509,68 @@ def test_experience_plan_requires_evidence_backed_behavior_and_round_trips():
         ExperiencePlanBundle.from_dict(_experience_plan(behavior_system={**_experience_plan()["behavior_system"], "signature_behavior": {}}))
     with pytest.raises(ContractError, match="brand_source_map_hash"):
         ExperiencePlanBundle.from_dict(_experience_plan(brand_source_map_hash="f" * 64))
+
+
+def test_experience_journey_is_required_and_ordered():
+    with pytest.raises(ContractError, match="experience_journey"):
+        ExperiencePlanBundle.from_dict(_experience_plan(experience_journey=None))
+
+    journey = _experience_plan()["experience_journey"]
+    with pytest.raises(ContractError, match="ordered"):
+        ExperienceJourney.from_dict({
+            **journey,
+            "scenes": [
+                {**journey["scenes"][0], "order": 2},
+                journey["scenes"][1],
+            ],
+        })
+
+
+def test_experience_journey_requires_two_observable_scenes_and_stable_conditions():
+    journey = _experience_plan()["experience_journey"]
+    with pytest.raises(ContractError, match="at least two scenes"):
+        ExperienceJourney.from_dict({**journey, "scenes": [journey["scenes"][0]]})
+
+    with pytest.raises(ContractError, match="must_pass_condition_ids"):
+        ExperienceJourney.from_dict({**journey, "must_pass_condition_ids": ["journey-arrival-visible"]})
+
+
+def test_experience_fidelity_report_requires_complete_condition_coverage():
+    plan = ExperiencePlanBundle.from_dict(_experience_plan())
+    condition_ids = list(plan.experience_journey.must_pass_condition_ids)
+    report = ExperienceFidelityReport.from_dict({
+        "schema_version": 1,
+        "run_id": plan.run_id,
+        "phase": "experience_fidelity",
+        "variant_key": "primary",
+        "attempt": 1,
+        "status": "completed",
+        "base_sha": plan.base_sha,
+        "context_snapshot_hash": plan.context_snapshot_hash,
+        "input_hashes": [plan.content_hash],
+        "producer": "experience-fidelity-specialist",
+        "payload": {
+            "experience_plan_hash": plan.content_hash,
+            "journey_condition_ids": condition_ids,
+            "condition_coverage": [
+                {
+                    "condition_id": condition_id,
+                    "source_location": "src/pages/index.astro",
+                    "trigger": "pointer-enter",
+                    "rendered_state": "completed",
+                    "responsive_translation": "The state remains readable on narrow screens.",
+                    "reduced_motion_translation": "The state changes without motion.",
+                    "status": "implemented",
+                    "notes": "",
+                }
+                for condition_id in condition_ids
+            ],
+            "state": "complete",
+        },
+    })
+
+    assert report.payload["journey_condition_ids"] == condition_ids
+    assert report.payload["state"] == "complete"
 
 
 def test_behavior_contract_rejects_missing_resting_or_reduced_motion_translation():

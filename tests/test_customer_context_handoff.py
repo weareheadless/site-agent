@@ -258,7 +258,11 @@ def test_acceptance_provisions_context_intake_and_exact_website_commit(tmp_path)
             intake_session_id=session_id,
             intake_revision_id=confirmed["session"]["confirmed_revision_id"],
         )
-        scoped.memory.update_design_run(run["run_id"], candidate_sha=candidate_sha)
+        scoped.memory.update_design_run(
+            run["run_id"],
+            candidate_sha=candidate_sha,
+            quality_report_json={"state": "passed", "checks": []},
+        )
         scoped.memory.update_design_intake_session(session_id, design_run_id=run["run_id"])
         service.transition(record.incubation_id, "building")
         service.transition(record.incubation_id, "ready_for_feedback")
@@ -365,7 +369,11 @@ def test_provisioning_refuses_when_accepted_website_source_disappears(tmp_path):
             intake_session_id=session_id,
             intake_revision_id=confirmed["session"]["confirmed_revision_id"],
         )
-        scoped.memory.update_design_run(run["run_id"], candidate_sha=candidate_sha)
+        scoped.memory.update_design_run(
+            run["run_id"],
+            candidate_sha=candidate_sha,
+            quality_report_json={"state": "passed", "checks": []},
+        )
         scoped.memory.update_design_intake_session(session_id, design_run_id=run["run_id"])
         service.transition(record.incubation_id, "building")
         service.transition(record.incubation_id, "ready_for_feedback")

@@ -22,6 +22,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 
 from ..application.actions import ActionServiceError, OwnerActionService
+from ..application.atelier import AtelierChatService
 from ..application.approvals import ApprovalService, ApprovalServiceError, StaleApproval
 from ..application.conversations import ConversationBusy, ConversationNotFound, ConversationService, ConversationServiceError
 from ..application.designs import DesignRunNotFound, DesignService, DesignServiceError
@@ -43,8 +44,10 @@ from ..core.reflect import approve_reflection, effective_persona
 from ..hands import file_cache, pelican_blog
 from ..hands.base import AdapterError, DesignMergeAdapter, MergeAdapter, PreviewAdapter, SiteAdapter, get_adapter
 from ..hands.cicero import CiceroClientError
+from ..hands.site_build import SiteOutputArtifactStore
 from .journal import setup_job, status as journal_status
-from .preview import PreviewAccess, PreviewBuildCache, rewrite_preview_css, rewrite_preview_html
+from .atelier import register_atelier_routes
+from .preview import PreviewAccess, PreviewBuildCache, rewrite_preview_css, rewrite_preview_html, rewrite_preview_js
 
 SESSION_TTL = 12 * 3600
 COOKIE = "sa_session"
@@ -155,6 +158,35 @@ def _design_build_profile(design_service: Any, run: dict[str, Any], variant: str
         return ""
 
 
+def _design_output_artifact(design_service: Any, run: dict[str, Any]) -> Path | None:
+    """Resolve the immutable candidate output for new design runs.
+
+    Historical rows deliberately return ``None`` and retain their legacy
+    source-build path. New rows are artifact-required and fail closed instead
+    of rebuilding a potentially different site while the owner is reviewing it.
+    """
+    if not bool(run.get("artifact_required")):
+        return None
+    artifact_id = str(run.get("output_artifact_id") or "").strip()
+    tree_hash = str(run.get("output_tree_hash") or "").strip().lower()
+    if not artifact_id or not tree_hash:
+        raise HTTPException(status_code=409, detail="design output artifact is not retained")
+    store = getattr(design_service, "output_artifact_store", None)
+    resolver = getattr(store, "resolve", None)
+    if not callable(resolver):
+        raise HTTPException(status_code=409, detail="design output artifact store is unavailable")
+    try:
+        artifact = resolver(artifact_id)
+    except Exception as exc:  # noqa: BLE001 - do not fall back to a rebuild
+        raise HTTPException(status_code=409, detail="design output artifact is unavailable") from exc
+    if str(getattr(artifact, "tree_hash", "") or "").strip().lower() != tree_hash:
+        raise HTTPException(status_code=409, detail="design output artifact identity does not match the run")
+    path = Path(getattr(artifact, "path", "")).expanduser().resolve()
+    if not path.is_dir():
+        raise HTTPException(status_code=409, detail="design output artifact is unavailable")
+    return path
+
+
 def _normalize_ops(meta: dict[str, Any]) -> list[dict[str, Any]]:
     """New-style ops list; tolerates the older single-file / dotted-field shapes."""
     if isinstance(meta.get("ops"), list):
@@ -219,7 +251,13 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
     social_post_service = context.get("social_post_service")
     media_service = context.get("media_service")
     knowledge_service = context.get("business_knowledge_service")
-    design_service = context.get("design_service") or DesignService(memory, config=config)
+    design_service = context.get("design_service") or DesignService(
+        memory,
+        config=config,
+        output_artifact_store=SiteOutputArtifactStore(
+            Path(str(config.get("data_dir") or ".")).expanduser().resolve() / "design-output-artifacts"
+        ),
+    )
     if getattr(design_service, "media_service", None) is None:
         design_service.media_service = media_service
     context.setdefault("home_service", home_service)
@@ -270,7 +308,7 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
                 "Access-Control-Allow-Origin": "*",
                 "Access-Control-Allow-Headers": "Content-Type",
                 "Access-Control-Allow-Methods": "GET, OPTIONS",
-                "Content-Security-Policy": "sandbox allow-scripts; frame-ancestors 'self'",
+                "Content-Security-Policy": "sandbox allow-scripts allow-forms; frame-ancestors 'self'",
                 "Referrer-Policy": "no-referrer",
                 "X-Content-Type-Options": "nosniff",
             })
@@ -341,6 +379,12 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
         docs_url=None,
         redoc_url=None,
         lifespan=lifespan,
+    )
+    register_atelier_routes(
+        app,
+        config=config,
+        env=env,
+        service=context.get("atelier_service") or AtelierChatService(memory, context.get("llm")),
     )
 
     @app.post("/api/login")
@@ -1160,6 +1204,8 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
                     )
                 elif name.lower().endswith(".css"):
                     built = rewrite_preview_css(built, name, preview_token or "")
+                elif name.lower().endswith((".js", ".mjs")):
+                    built = rewrite_preview_js(built, preview_token or "")
                 mt = mimetypes.guess_type(name)[0] or "application/octet-stream"
                 return Response(content=built, media_type=mt,
                                 headers=preview_headers(preview_token))
@@ -1187,6 +1233,8 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
             )
         elif name.lower().endswith(".css"):
             content = rewrite_preview_css(content, name, preview_token or "")
+        elif name.lower().endswith((".js", ".mjs")):
+            content = rewrite_preview_js(content, preview_token or "")
         return Response(content=content, media_type=mt, headers=preview_headers(preview_token))
 
     @app.get("/api/review/{draft_id}/{file_path:path}")
@@ -1231,6 +1279,8 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
         def _serve(rel: str, data: bytes, preview_variant: str = "") -> Response:
             if rel.lower().endswith(".css"):
                 data = rewrite_preview_css(data, rel, preview_token or "", preview_variant)
+            elif rel.lower().endswith((".js", ".mjs")):
+                data = rewrite_preview_js(data, preview_token or "", preview_variant)
             mt = mimetypes.guess_type(rel)[0] or "application/octet-stream"
             return Response(content=data, media_type=mt,
                             headers=preview_headers(preview_token))
@@ -1250,10 +1300,20 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
                 raise HTTPException(status_code=409, detail="design review draft is stale")
             selected_variant, selected_sha = _design_preview_ref(run, variant)
             build_profile = _design_build_profile(design_service, run, selected_variant)
+            artifact_root = (
+                _design_output_artifact(design_service, run)
+                if selected_variant == "deepseek"
+                else None
+            )
             if not candidate_clone.exists() or not (candidate_clone / ".git").exists():
-                raise HTTPException(status_code=404, detail="design candidate is unavailable")
-            built = preview_cache.read_file(candidate_clone, selected_sha, name, profile=build_profile)
-            if not built:
+                if artifact_root is None:
+                    raise HTTPException(status_code=404, detail="design candidate is unavailable")
+            built = (
+                preview_cache.read_artifact(artifact_root, name)
+                if artifact_root is not None
+                else preview_cache.read_file(candidate_clone, selected_sha, name, profile=build_profile)
+            )
+            if not built and artifact_root is None:
                 built = _show_at(selected_sha, name, candidate_clone)
             if not built:
                 raise HTTPException(status_code=404, detail=f"{name} not in design candidate")
@@ -1406,16 +1466,25 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         if not _design_candidate_is_previewable(run):
             raise HTTPException(status_code=409, detail="design run is not ready for preview")
-        if not clone.exists() or not (clone / ".git").exists():
-            raise HTTPException(status_code=404, detail="design candidate clone is unavailable")
         name = file_path.lstrip("/") or "index.html"
         path_parts = Path(name).parts
         if Path(name).is_absolute() or ".." in path_parts or name.startswith((".git/", ".opencode/")):
             raise HTTPException(status_code=400, detail="invalid design preview path")
         selected_variant, selected_sha = _design_preview_ref(run, variant)
         build_profile = _design_build_profile(design_service, run, selected_variant)
-        content = preview_cache.read_file(clone, selected_sha, name, profile=build_profile)
-        if not content:
+        artifact_root = (
+            _design_output_artifact(design_service, run)
+            if selected_variant == "deepseek"
+            else None
+        )
+        if artifact_root is None and (not clone.exists() or not (clone / ".git").exists()):
+            raise HTTPException(status_code=404, detail="design candidate clone is unavailable")
+        content = (
+            preview_cache.read_artifact(artifact_root, name)
+            if artifact_root is not None
+            else preview_cache.read_file(clone, selected_sha, name, profile=build_profile)
+        )
+        if not content and artifact_root is None:
             proc = subprocess.run(
                 ["git", "-C", str(clone), "show", f"{selected_sha}:{name}"],
                 capture_output=True,
@@ -1435,6 +1504,8 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
             )
         elif name.lower().endswith(".css"):
             content = rewrite_preview_css(content, name, preview_token or "", selected_variant)
+        elif name.lower().endswith((".js", ".mjs")):
+            content = rewrite_preview_js(content, preview_token or "", selected_variant)
         return Response(
             content=content,
             media_type=mimetypes.guess_type(name)[0] or "application/octet-stream",

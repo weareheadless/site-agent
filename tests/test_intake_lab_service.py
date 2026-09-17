@@ -10,6 +10,7 @@ from site_agent.application.designs import DesignService
 from site_agent.application.intake_lab import (
     IntakeLabError,
     IntakeLabService,
+    _owner_status,
     build_intake_lab_build_environment,
     build_intake_lab_environment,
 )
@@ -238,6 +239,19 @@ def test_intake_lab_build_environment_keeps_virtualenv_bin_before_resolved_pytho
     assert path_parts.index(str(venv_bin)) < path_parts.index("/usr/bin")
 
 
+def test_intake_lab_build_environment_keeps_user_local_frontend_tools_available(tmp_path, monkeypatch):
+    user_home = tmp_path / "user"
+    user_bin = user_home / ".local" / "bin"
+    user_bin.mkdir(parents=True)
+    monkeypatch.setattr("site_agent.application.intake_lab.Path.home", lambda: user_home)
+
+    build_env = build_intake_lab_build_environment({}, {"PATH": "/usr/bin"}, tmp_path / "build-lab")
+
+    path_parts = build_env["PATH"].split(os.pathsep)
+    assert path_parts[0] == str(Path(sys.executable).expanduser().parent)
+    assert path_parts[1] == str(user_bin.resolve())
+
+
 def test_preview_identity_allows_a_refinement_clone_shared_with_its_parent(tmp_path):
     clone = tmp_path / "runs" / "parent" / "repository"
     (clone / ".git").mkdir(parents=True)
@@ -371,6 +385,37 @@ def test_result_projection_handles_validating_sighted_self_review():
     assert projected["summary"] == "Deterministic checks passed; visual review is still pending."
 
 
+def test_result_projection_does_not_offer_nested_visual_refinement():
+    from site_agent.application.intake_lab import _result_projection
+    from site_agent.core.design_contracts import DesignRunStatus
+
+    projected = _result_projection(
+        DesignRunStatus.NEEDS_REPAIR.value,
+        {"state": "passed"},
+        {"state": "repair", "findings": [{"message": "Increase contrast."}]},
+        None,
+        operation_kind="visual_refinement",
+    )
+
+    assert projected["state"] == "needs_repair"
+    assert "bounded refinement" in projected["next_action"]
+    assert "owner feedback" in projected["next_action"]
+
+
+def test_final_visual_refinement_with_subjective_findings_stays_blocked():
+    assert _owner_status(
+        "ready_for_review",
+        {"state": "passed", "visual_critique": {"state": "repair"}},
+        {"state": "repair"},
+    ) == "blocked"
+
+    assert _owner_status(
+        "ready_for_review",
+        {"state": "passed", "visual_critique": {"state": "inconclusive"}},
+        {"state": "inconclusive"},
+    ) == "blocked"
+
+
 def test_visual_review_retry_passes_the_scoped_media_service():
     run_id = "intake-lab-" + "a" * 32
     media_service = object()
@@ -453,7 +498,7 @@ def test_revision_summary_marks_reviewable(tmp_path):
         }, 1, "root", {}, tmp_path)
 
     assert summarize("ready_for_review", "c" * 40)["reviewable"] is True
-    assert summarize("needs_repair", "c" * 40)["reviewable"] is True
+    assert summarize("needs_repair", "c" * 40)["reviewable"] is False
     assert summarize("validating", "c" * 40)["reviewable"] is False
     assert summarize("ready_for_review", "")["reviewable"] is False
 

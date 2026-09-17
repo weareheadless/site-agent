@@ -1,0 +1,21 @@
+[Unit]
+Description=shared Ada/site-agent API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=admin
+Group=admin
+UMask=0077
+WorkingDirectory=/SOCIAL/site-agent
+EnvironmentFile=/SOCIAL/configs/site-agent-api/.env
+EnvironmentFile=-/ATELIER/.env
+ExecStart=/SOCIAL/site-agent/.venv/bin/python -m site_agent api --config /SOCIAL/configs/site-agent-api/config.yaml
+Restart=on-failure
+RestartSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

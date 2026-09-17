@@ -84,6 +84,40 @@ def _message_json(message: Mapping[str, Any]) -> dict[str, Any]:
     )
 
 
+def _bounded_review_value(value: Any, depth: int = 0) -> Any:
+    """Keep untrusted provider JSON inside the typed review contract bound."""
+    if isinstance(value, str):
+        return value[:600]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if depth >= 2:
+        return str(value)[:600]
+    if isinstance(value, Mapping):
+        return {
+            str(key)[:100]: _bounded_review_value(item, depth + 1)
+            for key, item in list(value.items())[:12]
+        }
+    if isinstance(value, (list, tuple)):
+        return [_bounded_review_value(item, depth + 1) for item in list(value)[:16]]
+    return str(value)[:600]
+
+
+def _bounded_review_result(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Discard provider extras and bound the fields persisted as review evidence."""
+    result: dict[str, Any] = {}
+    for key in ("state", "findings", "strengths", "generic_template_signals", "repair_plan"):
+        if key not in value:
+            continue
+        raw = value[key]
+        if key in {"findings", "repair_plan"} and isinstance(raw, (list, tuple)):
+            result[key] = [_bounded_review_value(item) for item in list(raw)[:16]]
+        elif key in {"strengths", "generic_template_signals"} and isinstance(raw, (list, tuple)):
+            result[key] = [_bounded_review_value(item) for item in list(raw)[:32]]
+        else:
+            result[key] = _bounded_review_value(raw)
+    return result
+
+
 def _encoded_image_data(
     raw: bytes,
     *,
@@ -91,8 +125,7 @@ def _encoded_image_data(
     label: str,
     max_bytes: int = 4_000_000,
 ) -> tuple[str, str]:
-    size = len(raw)
-    if size < 1 or size > max_bytes:
+    if len(raw) < 1:
         raise LLMError("visual review image exceeds the configured size", code="image_too_large")
     try:
         from PIL import Image
@@ -106,6 +139,8 @@ def _encoded_image_data(
             content_type = "image/jpeg"
     except Exception:  # noqa: BLE001 - retain the original evidence if compression is unavailable
         pass
+    if len(raw) > max_bytes:
+        raise LLMError("visual review image exceeds the configured size", code="image_too_large")
     return f"data:{content_type};base64,{base64.b64encode(raw).decode('ascii')}", label
 
 
@@ -255,14 +290,14 @@ def _review_batch(
     content: list[dict[str, Any]] = [{"type": "text", "text": review_text}]
     evidence: list[dict[str, Any]] = []
     for item, data_url in screenshots:
-        content.append({"type": "image_url", "image_url": {"url": data_url, "detail": "low"}})
+        content.append({"type": "image_url", "image_url": {"url": data_url, "detail": "high"}})
         evidence.append(item)
     for item, data_url in source_images or ():
         content.append({
             "type": "text",
             "text": "APPROVED OWNER SOURCE IMAGE (reference only): " + str(item.get("relative_path") or item.get("path") or ""),
         })
-        content.append({"type": "image_url", "image_url": {"url": data_url, "detail": "low"}})
+        content.append({"type": "image_url", "image_url": {"url": data_url, "detail": "high"}})
     payload = {
         "model": model,
         "messages": [
@@ -293,7 +328,7 @@ def _review_batch(
             completion_tokens=int(usage.get("completion_tokens") or 0),
             cost_usd=estimate_usage_cost(dict(usage), dict(prices or {})),
         )
-    result = _message_json(response["choices"][0]["message"])
+    result = _bounded_review_result(_message_json(response["choices"][0]["message"]))
     result.update({
         "run_id": run_id,
         "candidate_sha": candidate_sha,
@@ -462,7 +497,11 @@ def review_design_screenshots(
             if state == "passed":
                 state = "inconclusive"
         grounding = {
-            "review_evidence_hash": canonical_hash(dict(review_evidence)) if review_evidence else "",
+            "review_evidence_hash": (
+                canonical_hash(_bounded_review_value(dict(review_evidence)))
+                if review_evidence
+                else ""
+            ),
             "source_image_count": len(prepared_sources),
             "source_image_errors": source_errors,
             "source_media_attached": [item for item, _ in prepared_sources],

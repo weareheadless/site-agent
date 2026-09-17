@@ -64,7 +64,11 @@ def _handoff_design_request(
         }
 
     source_message_id = job.get("message_id")
-    customer_runtime = bool(str((context.get("config") or {}).get("customer_instance_id") or "").strip())
+    config = context.get("config") or {}
+    engine = config.get("design_engine") if isinstance(config, dict) else {}
+    customer_runtime = bool(str(config.get("customer_instance_id") or "").strip()) or bool(
+        isinstance(engine, dict) and engine.get("production_candidate")
+    )
     create_run = service.create_chat_candidate if customer_runtime else service.create_chat_experiment
     run = create_run(
         request.intake,
@@ -73,6 +77,16 @@ def _handoff_design_request(
         source_message_id=source_message_id,
         chat_job_id=job["id"],
     )
+    target = request.target if isinstance(request.target, dict) else {}
+    if target:
+        service.capture_context_snapshot(
+            run["run_id"],
+            owner_request=str(job.get("message") or request.owner_summary),
+            conversation_id=job.get("conversation_id"),
+            source_message_id=source_message_id,
+            chat_job_id=job["id"],
+            context_extra={"workspace_target": target},
+        )
     try:
         build_request = service.prepare_initial_request(run["run_id"])
     except Exception as exc:  # intake blockers are owner questions, not worker errors
@@ -157,6 +171,11 @@ def run_job(context: dict[str, Any], job: dict[str, Any], worker: str,
             if intake_service is None:
                 raise RuntimeError("design intake service is unavailable")
             result = intake_service.handle_advice_job(context, job, progress)
+            after_turn = context.get("on_intake_advice_complete")
+            if callable(after_turn):
+                followup = after_turn(job, result)
+                if isinstance(followup, dict):
+                    result["build_followup"] = followup
         elif message.startswith("Set up the customer-facing journal for this website."):
             # Journal activation is a native OpenCode Build session. The runner
             # owns only the preview sandbox and objective validation.

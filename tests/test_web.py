@@ -535,7 +535,7 @@ def test_design_ui_uses_internal_review_state(runtime):
     assert "journal_preview_url" not in html
     assert "renderPreviewLink" not in html
     assert "id=\"previewlink\"" not in html
-    assert 'id="preview" title="Staged site preview" sandbox="allow-scripts"' in html
+    assert 'id="preview" title="Staged site preview" sandbox="allow-scripts allow-forms"' in html
     assert 'id="designVariantPicker"' in html
     assert 'value="original"' in html
     assert 'value="deepseek"' in html
@@ -1960,7 +1960,7 @@ def test_published_preview_serves_generated_pelican_listing(tmp_path):
         assert "data-site-agent-preview" in sandboxed_page.text
         assert "preview_token=" in sandboxed_page.text
         assert sandboxed_page.headers["access-control-allow-origin"] == "*"
-        assert sandboxed_page.headers["content-security-policy"] == "sandbox allow-scripts; frame-ancestors 'self'"
+        assert sandboxed_page.headers["content-security-policy"] == "sandbox allow-scripts allow-forms; frame-ancestors 'self'"
         assert sandboxed_css.status_code == 200
         assert sandboxed_css.headers["access-control-allow-origin"] == "*"
         assert client.get(f"/api/home?preview_token={token}").status_code == 401

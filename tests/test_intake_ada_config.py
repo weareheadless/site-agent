@@ -17,18 +17,19 @@ def test_neutral_intake_config_has_no_customer_surface():
     assert config["site"]["clone_path"] == ""
     assert config["vision"]["enabled"] is True
     assert config["vision"]["provider"] == "openrouter"
-    assert config["vision"]["model"] == "deepseek/deepseek-v4-flash-vision-exp"
+    assert config["vision"]["model"] == "deepseek/deepseek-v4.1-flash"
     assert config["vision"]["base_url"] == "https://openrouter.ai/api/v1"
     assert config["llm"]["base_url"] == "https://openrouter.ai/api/v1"
-    assert config["llm"]["model"] == "deepseek/deepseek-v4-flash-0731"
+    assert config["llm"]["model"] == "deepseek/deepseek-v4.1-flash"
     assert config["design_engine"]["provider"] == "openrouter"
-    assert config["design_engine"]["model"] == "deepseek/deepseek-v4-flash-vision-exp"
-    assert config["design_engine"]["planner_model"] == "deepseek/deepseek-v4-flash-0731"
+    assert config["design_engine"]["model"] == "deepseek/deepseek-v4.1-flash"
+    assert config["design_engine"]["planner_model"] == "deepseek/deepseek-v4.1-flash"
+    assert config["design_engine"]["orchestration"] == "creative"
     assert config["design_engine"]["max_tokens"] == 8192
     assert config["design_engine"]["api_key_env"] == "OPENROUTER_API_KEY"
-    assert config["builder"]["model"] == "openrouter/deepseek/deepseek-v4-flash-vision-exp"
+    assert config["builder"]["model"] == "openrouter/deepseek/deepseek-v4.1-flash"
     advisor = config["design_engine"]["intake_advisor"]
-    assert advisor["model"] == "deepseek/deepseek-v4-flash-0731"
+    assert advisor["model"] == "deepseek/deepseek-v4.1-flash"
     assert advisor["base_url"] == "https://openrouter.ai/api/v1"
     assert advisor["api_key_env"] == "OPENROUTER_API_KEY"
     assert config["design_engine"]["libraries"]["gsap"]["enabled"] is True
@@ -37,6 +38,7 @@ def test_neutral_intake_config_has_no_customer_surface():
     assert config["env"]["vision_api_key"] == config["env"]["visual_review_api_key"] == "OPENROUTER_API_KEY"
     assert config["site"]["media"]["enabled"] is False
     assert config["site"]["media"]["site_asset_dir"] == "images/ada-media"
+    assert config["preview"]["ttl_seconds"] == 4 * 60 * 60
     assert config["sources"] == {"subreddits": [], "rss_feeds": [], "keywords": [], "min_score": 0.0, "max_per_run": 25}
     assert sources
 
@@ -49,9 +51,10 @@ def test_neutral_intake_config_has_no_customer_surface():
         ({"persona": {"spirit": "a customer-specific story"}}, "persona.spirit"),
         ({"sources": {"rss_feeds": ["https://example.test/feed.xml"]}}, "sources.rss_feeds"),
         ({"ga": {"enabled": True}}, "ga.enabled"),
+        ({"preview": {"ttl_seconds": 0}}, "preview.ttl_seconds"),
     ],
 )
-def test_intake_config_rejects_customer_specific_values(tmp_path, override, message):
+def test_intake_config_rejects_invalid_values(tmp_path, override, message):
     path = tmp_path / "intake.yaml"
     path.write_text(yaml.safe_dump({"role": "intake", **override}), encoding="utf-8")
 

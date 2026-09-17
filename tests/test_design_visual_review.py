@@ -1,4 +1,5 @@
 import json
+import io
 
 from site_agent.hands import design_visual_review
 
@@ -70,6 +71,24 @@ def test_visual_review_batches_route_evidence_to_avoid_six_image_timeout(monkeyp
     assert len(result.extra["review_batches"]) == 2
 
 
+def test_visual_review_compresses_a_large_valid_screenshot_before_size_guard():
+    from PIL import Image
+
+    source = io.BytesIO()
+    Image.new("RGB", (2_500, 2_500), (24, 48, 40)).save(source, format="BMP")
+    raw = source.getvalue()
+
+    assert len(raw) > 4_000_000
+    data_url, label = design_visual_review._encoded_image_data(
+        raw,
+        content_type="image/bmp",
+        label="large-owner-preview.bmp",
+    )
+
+    assert label == "large-owner-preview.bmp"
+    assert data_url.startswith("data:image/jpeg;base64,")
+
+
 def test_visual_review_receives_grounding_and_approved_source_images(monkeypatch):
     calls = []
 
@@ -84,6 +103,11 @@ def test_visual_review_receives_grounding_and_approved_source_images(monkeypatch
             for item in content
         )
         assert sum(1 for item in content if item.get("type") == "image_url") == 3
+        assert all(
+            item["image_url"]["detail"] == "high"
+            for item in content
+            if item.get("type") == "image_url"
+        )
         assert any(
             item.get("type") == "text" and "APPROVED OWNER SOURCE IMAGE" in item.get("text", "")
             for item in content
@@ -356,6 +380,51 @@ def test_visual_review_reprompts_when_provider_omits_required_state(monkeypatch)
 
     assert result.state == "passed"
     assert len(calls) == 2
+
+
+def test_visual_review_bounds_oversized_provider_findings(monkeypatch):
+    def fake_image_data(path):
+        return "data:image/jpeg;base64,AA==", str(path)
+
+    def fake_post(url, headers, payload, timeout):
+        return {
+            "choices": [{"message": {"content": json.dumps({
+                "state": "passed",
+                "findings": [{"message": "x" * 500_000}],
+                "strengths": ["grounded"],
+                "generic_template_signals": [],
+                "repair_plan": [],
+            })}}]
+        }
+
+    monkeypatch.setattr(design_visual_review, "_image_data", fake_image_data)
+    monkeypatch.setattr(design_visual_review, "_http_post", fake_post)
+    result = design_visual_review.review_design_screenshots(
+        {
+            "env": {"vision_api_key": "VISION_KEY"},
+            "design_engine": {
+                "visual_review": {
+                    "base_url": "https://api.example.test/v1",
+                    "model": "Qwen/Qwen3.8-27B",
+                    "api_key_env": "VISION_KEY",
+                }
+            },
+        },
+        run_id="visual-bounded",
+        candidate_sha="a" * 40,
+        brief={"purpose": "Review the candidate."},
+        screenshots=[{
+            "route": "index.html",
+            "viewport": {"name": "desktop", "width": 1440, "height": 1000},
+            "screenshot_path": "candidate.png",
+            "screenshot_hash": "candidate",
+        }],
+        review_evidence={"runtime": {"scroll_states": ["x" * 500_000]}},
+        env={"VISION_KEY": "secret"},
+    )
+
+    assert result.state == "passed"
+    assert len(result.findings[0]["message"]) == 600
 
 
 def test_visual_review_is_inconclusive_after_finite_retries(monkeypatch):

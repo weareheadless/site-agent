@@ -36,12 +36,14 @@ class IntakeAdaSettings:
     max_sources_per_pass: int = 8
     max_items_per_source: int = 15
     max_passes_before_owner_turn: int = 1
+    preview_ttl_seconds: int = 4 * 60 * 60
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> "IntakeAdaSettings":
         validate_intake_config(config)
         section = config.get("incubation") or {}
         research = config.get("research") or {}
+        preview = config.get("preview") or {}
         root = Path(str(config.get("data_dir") or "data")).expanduser().resolve()
         incubation_root = Path(str(section.get("root") or (root.parent / "incubations"))).expanduser().resolve()
         scaffold = Path(str(section.get("scaffold") or (root.parent / "neutral-scaffold"))).expanduser().resolve()
@@ -58,6 +60,7 @@ class IntakeAdaSettings:
             max_sources_per_pass=int(research.get("max_sources_per_pass", 8)),
             max_items_per_source=int(research.get("max_items_per_source", 15)),
             max_passes_before_owner_turn=int(research.get("max_passes_before_owner_turn", 1)),
+            preview_ttl_seconds=int(preview.get("ttl_seconds", 4 * 60 * 60)),
         )
 
 
@@ -278,8 +281,8 @@ def validate_design_config(config: dict[str, Any]) -> None:
     if manifest and (Path(manifest).is_absolute() or ".." in Path(manifest).parts or "" in Path(manifest).parts):
         raise ConfigError("design_engine.manifest_path must be a safe relative path")
     orchestration = str(engine.get("orchestration", "legacy") or "legacy").strip().lower()
-    if orchestration not in {"legacy", "specialist"}:
-        raise ConfigError("design_engine.orchestration must be legacy or specialist")
+    if orchestration not in {"legacy", "native", "specialist", "creative"}:
+        raise ConfigError("design_engine.orchestration must be legacy, native, specialist, or creative")
     specialist_timeout = engine.get("specialist_timeout_seconds", 600)
     if (
         isinstance(specialist_timeout, bool)
@@ -584,6 +587,13 @@ def validate_intake_config(config: dict[str, Any]) -> None:
         raise ConfigError("schedule is not allowed for Intake Ada")
     if str(config.get("publish_mode") or "disabled").strip() not in {"", "disabled"}:
         raise ConfigError("publish_mode must be disabled for Intake Ada")
+
+    preview = config.get("preview") or {}
+    if not isinstance(preview, dict):
+        raise ConfigError("preview must be an object")
+    preview_ttl = preview.get("ttl_seconds", 4 * 60 * 60)
+    if isinstance(preview_ttl, bool) or not isinstance(preview_ttl, int) or not 60 <= preview_ttl <= 86_400:
+        raise ConfigError("preview.ttl_seconds must be between 60 and 86400")
 
     env_config = config.get("env") or {}
     if not isinstance(env_config, dict):

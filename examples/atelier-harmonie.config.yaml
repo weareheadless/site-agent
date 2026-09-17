@@ -1,0 +1,115 @@
+instance_name: atelier-harmonie
+data_dir: /SOCIAL/configs/atelier-harmonie/data
+
+activation:
+  enabled: false
+
+site:
+  adapter: atelier_payload
+  repository: weareheadless/atelier-harmonie-headless
+  branch: main
+  preview_branch: preview
+  clone_path: /ATELIER/atelier-harmonie-headless
+  preview_url: https://atelier-harmonie.weareheadless.workers.dev
+  writable_patterns:
+    - src/app/(frontend)/**
+    - src/components/**
+    - src/app/(payload)/custom.scss
+    - src/styles/**
+    - public/**
+  payload:
+    enabled: true
+    url: https://atelier-harmonie.weareheadless.workers.dev
+    token_env: ATELIER_HARMONIE_TOKEN
+
+env:
+  atelier_site_agent_token: ATELIER_HARMONIE_TOKEN
+  github_token: GITHUB_PERSONAL_ACCESS_TOKEN
+  vision_api_key: SITE_AGENT_LLM_API_KEY
+
+persona:
+  name: Ada
+  voice: "Warm, clear, restrained French. Prefer concrete craft language over marketing slogans."
+  audience: "Visitors discovering Atelier Harmonie and professional creative partners."
+  directions:
+    - "Write in French unless the owner asks for another language."
+    - "Treat the profile below as observed migration evidence until the owner confirms it."
+
+customer_profile:
+  status: bootstrap_needs_owner_review
+  source: checked_in_migration_snapshot
+  owner_review_required: true
+  business:
+    name: Atelier Harmonie
+    observed_description: "Artisanat d'art autour de la couleur, de la restauration et de la création d'objets qui ont une âme."
+    observed_site_settings:
+      business_name: "ATELIER DE L'HARMONIE EI"
+      public_description: "Découvrez un univers de créations artisanales : tapisserie de siège, restauration de luminaires, coussins déco... Chaque pièce est unique, faite main avec passion pour un intérieur joyeux et coloré."
+      website_url: https://www.atelier-harmonie.com
+      locality: Saint-Pierre-en-Port
+      postal_code: "76540"
+      telephone: "0659015744"
+    observed_offerings:
+      - "Abat-jours artisanaux"
+      - "Appliques murales"
+      - "Lampes à poser, suspensions et lampes baladeuses"
+      - "Créations et projets d'upcycling"
+      - "Projets professionnels et collaborations créatives"
+  brand:
+    observed_language: fr-FR
+    observed_values:
+      - "Créativité responsable"
+      - "Pièces uniques et savoir-faire artisanal"
+  unknowns:
+    - "Nom légal, localisation et coordonnées à afficher"
+    - "Services actuels, prix, délais, stock et modalités de commande"
+    - "Audience prioritaire et objectif de conversion de la nouvelle page"
+    - "Claims, partenaires, certifications et liens validés par la propriétaire"
+
+atelier_intake:
+  enabled: true
+  database_only: true
+  research:
+    enabled: true
+    max_sources_per_pass: 8
+    max_items_per_source: 15
+    max_passes_before_owner_turn: 1
+
+# The intake contract is JSON and DeepSeek may spend part of its completion
+# budget on reasoning. Keep enough room for the closing delimiters; a truncated
+# response must otherwise fall back to a generic question.
+design_engine:
+  enabled: true
+  production_candidate: true
+  orchestration: creative
+  provider: openrouter
+  push_mode: isolated_remote_ref
+  quality:
+    browser: true
+    accessibility: true
+    visual_critic: false
+    native_source_required: false
+    originality_required: true
+  intake_advisor:
+    timeout_seconds: 90
+    max_retries: 1
+    max_tokens: 4096
+
+builder:
+  enabled: true
+  timeout_seconds: 1800
+  provider_timeout_seconds: 2100
+  provider_chunk_timeout_seconds: 180
+  output_tokens: 8192
+  reasoning_effort: low
+
+vision:
+  enabled: true
+  base_url: https://openrouter.ai/api/v1
+  model: google/gemini-2.5-flash
+  timeout_seconds: 120
+  max_tokens: 4096
+
+admin:
+  host: 127.0.0.1
+  port: 3015

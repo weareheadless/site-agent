@@ -23,6 +23,11 @@ DESIGN_INTAKE_SCHEMA_VERSION = 1
 _MAX_TEXT = 20_000
 _MAX_ITEMS = 100
 _PATH = re.compile(r"^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*$")
+_PRIVATE_DETAIL_RE = re.compile(
+    r"https?://|\b[^\s@]+@[^\s@]+\.[^\s@]+\b|"
+    r"(?:^|\s)(?:/(?:[^\s/]+/)*[^\s/]+|[A-Za-z]:[\\/][^\s]+)",
+    re.IGNORECASE,
+)
 
 
 class IntakeOrigin(str, Enum):
@@ -911,7 +916,7 @@ class CreativeInsight:
         if kind not in _CREATIVE_INSIGHT_KINDS:
             raise ContractError("creative_insight.kind is invalid")
         summary = _text(value.get("summary"), "creative_insight.summary", maximum=2_000)
-        if re.search(r"https?://|\b[^\s@]+@[^\s@]+\.[^\s@]+\b|(?:^|\s)(?:/|[A-Za-z]:[\\/])", summary, re.IGNORECASE):
+        if _PRIVATE_DETAIL_RE.search(summary):
             raise ContractError("creative_insight.summary contains prohibited private detail")
         basis = _text(value.get("basis", IntakeUpdateBasis.RECOMMENDATION.value), "creative_insight.basis", maximum=40).lower()
         if basis not in {item.value for item in IntakeUpdateBasis}:

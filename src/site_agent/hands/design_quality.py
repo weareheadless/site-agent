@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import html
 import hashlib
+import ipaddress
 import json
 import os
 import re
@@ -48,6 +49,26 @@ _CONTACT_HOSTS = frozenset({
 })
 
 
+def _is_local_preview_source(value: str) -> bool:
+    """Treat the ephemeral local preview origin as part of the candidate.
+
+    Browser inspection resolves a relative asset path against the preview
+    server, so a local ``/images/...`` becomes an absolute loopback URL in
+    composition evidence. That URL is not an external asset substitution.
+    Remote origins and explicit ``external_url`` evidence remain blocked.
+    """
+    parsed = urlsplit(value if not value.startswith("//") else f"http:{value}")
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    host = str(parsed.hostname or "").strip().lower()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
 def _looks_like_source_path(value: str) -> bool:
     """Ignore descriptive manifest metadata when checking declared paths."""
     value = str(value or "").strip().replace("\\", "/")
@@ -80,10 +101,16 @@ class QualityPolicy:
     )
     contact_destination_unavailable: bool = False
     native_source_required: bool = False
+    react_source_required: bool = False
+    gsap_required: bool = False
     originality_required: bool = False
     internal_scaffold_fingerprints: tuple[str, ...] = ()
     required_font_families: tuple[str, ...] = ()
     approved_font_files: tuple[dict[str, Any], ...] = ()
+    max_rendered_asset_height_viewport_ratio: float = 2.0
+    max_empty_scroll_viewport_ratio: float = 2.0
+    immersive_asset_ids: tuple[str, ...] = ()
+    operation_kind: str = "initial_build"
 
     @classmethod
     def from_config(
@@ -144,6 +171,19 @@ class QualityPolicy:
                 capabilities = available_frontend_libraries(config)
             except Exception:  # noqa: BLE001 - invalid optional capability data is handled by the gate
                 capabilities = ()
+        libraries = engine.get("libraries") or {}
+        gsap_library = libraries.get("gsap") if isinstance(libraries, Mapping) else {}
+        try:
+            max_rendered_asset_height_viewport_ratio = float(
+                quality.get("max_rendered_asset_height_viewport_ratio", cls.max_rendered_asset_height_viewport_ratio)
+            )
+            max_empty_scroll_viewport_ratio = float(
+                quality.get("max_empty_scroll_viewport_ratio", cls.max_empty_scroll_viewport_ratio)
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("design_engine.quality geometry ratios must be numbers") from exc
+        if max_rendered_asset_height_viewport_ratio <= 0 or max_empty_scroll_viewport_ratio <= 0:
+            raise ValueError("design_engine.quality geometry ratios must be positive")
         return cls(
             output_dir=str(quality.get("output_dir") or "output"),
             required_pages=tuple(str(item) for item in pages if str(item).strip()),
@@ -164,6 +204,13 @@ class QualityPolicy:
             viewports=tuple(viewports),
             contact_destination_unavailable=bool(quality.get("contact_destination_unavailable", False)),
             native_source_required=bool(quality.get("native_source_required", engine.get("native_source_required", False))),
+            react_source_required=bool(quality.get("react_source_required", engine.get("react_source_required", False))),
+            gsap_required=bool(
+                quality.get(
+                    "gsap_required",
+                    gsap_library.get("required", False) if isinstance(gsap_library, Mapping) else False,
+                )
+            ),
             originality_required=bool(quality.get("originality_required", engine.get("originality_required", False))),
             internal_scaffold_fingerprints=tuple(
                 str(item).strip().lower()
@@ -179,6 +226,13 @@ class QualityPolicy:
                 dict(item)
                 for item in (quality.get("approved_font_files") or quality.get("approved_fonts") or ())
                 if isinstance(item, Mapping)
+            ),
+            max_rendered_asset_height_viewport_ratio=max_rendered_asset_height_viewport_ratio,
+            max_empty_scroll_viewport_ratio=max_empty_scroll_viewport_ratio,
+            immersive_asset_ids=tuple(
+                str(item).strip()
+                for item in (quality.get("immersive_asset_ids") or ())
+                if str(item).strip()
             ),
         )
 
@@ -321,6 +375,10 @@ def _boxes_intersect(first: Mapping[str, float], second: Mapping[str, float], pa
 def evaluate_composition_plan(
     composition_plan: Sequence[Any],
     rendered_evidence: Sequence[Mapping[str, Any]],
+    *,
+    max_rendered_asset_height_viewport_ratio: float = 2.0,
+    max_empty_scroll_viewport_ratio: float = 2.0,
+    immersive_asset_ids: Sequence[str] = (),
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """Check only objective relationships declared by the frozen composition plan.
 
@@ -337,6 +395,20 @@ def evaluate_composition_plan(
     findings: list[dict[str, Any]] = []
     route_reports: list[dict[str, Any]] = []
     assigned: dict[str, int] = {item.asset_id: 0 for item in plans}
+    immersive_ids = {str(item).strip() for item in immersive_asset_ids if str(item).strip()}
+
+    def treatment_is_immersive(plan: Any) -> bool:
+        if plan.asset_id in immersive_ids:
+            return True
+        for treatment in (plan.desktop_treatment, plan.tablet_treatment, plan.mobile_treatment):
+            if not isinstance(treatment, Mapping):
+                continue
+            if any(
+                treatment.get(key) is True
+                for key in ("immersive", "allow_oversized_rendered_media", "allow_oversized_media")
+            ):
+                return True
+        return False
 
     for raw_route in rendered_evidence:
         route = dict(raw_route) if isinstance(raw_route, Mapping) else {}
@@ -345,6 +417,28 @@ def evaluate_composition_plan(
         raw_elements = route.get("elements") if isinstance(route.get("elements"), list) else []
         elements = [dict(item) for item in raw_elements if isinstance(item, Mapping)]
         route_report = {"route": route_name, "viewport": viewport, "asset_assignments": []}
+        viewport_height = viewport.get("height")
+        if isinstance(viewport_height, bool) or not isinstance(viewport_height, (int, float)) or viewport_height <= 0:
+            viewport_height = None
+        document_height = route.get("document_height")
+        meaningful_bottom = route.get("meaningful_content_bottom")
+        if (
+            viewport_height is not None
+            and isinstance(document_height, (int, float))
+            and not isinstance(document_height, bool)
+            and isinstance(meaningful_bottom, (int, float))
+            and not isinstance(meaningful_bottom, bool)
+            and document_height > meaningful_bottom + viewport_height * max_empty_scroll_viewport_ratio
+        ):
+            findings.append(_finding(
+                "composition", "blocker", "excessive_empty_scroll",
+                "Rendered document height leaves excessive empty scroll after meaningful content.",
+                route=route_name,
+                viewport=viewport,
+                document_height=document_height,
+                meaningful_content_bottom=meaningful_bottom,
+                maximum_empty_scroll=viewport_height * max_empty_scroll_viewport_ratio,
+            ))
         for plan in plans:
             matches = [item for item in elements if str(item.get("asset_id") or "") == plan.asset_id]
             if not matches:
@@ -352,6 +446,46 @@ def evaluate_composition_plan(
             assigned[plan.asset_id] += len(matches)
             for element in matches:
                 assignment = {"asset_id": plan.asset_id, "route": route_name, "status": "passed"}
+                element_box = _browser_box(element.get("box"), f"{plan.asset_id}.box")
+                assignment["geometry"] = {
+                    "box": dict(element_box) if element_box is not None else None,
+                    "intrinsic_width": element.get("intrinsic_width"),
+                    "intrinsic_height": element.get("intrinsic_height"),
+                    "object_fit": str(element.get("object_fit") or ""),
+                    "object_position": str(element.get("object_position") or ""),
+                    "container_box": element.get("container_box"),
+                }
+                if element_box is None:
+                    assignment["status"] = "failed"
+                    findings.append(_finding(
+                        "composition", "blocker", "rendered_geometry_missing",
+                        "Rendered composition asset is missing a measurable browser box.",
+                        asset_id=plan.asset_id, route=route_name,
+                    ))
+                tag = str(element.get("tag") or "").strip().lower()
+                intrinsic_media = any(
+                    isinstance(element.get(key), (int, float)) and not isinstance(element.get(key), bool)
+                    and float(element.get(key)) > 0
+                    for key in ("intrinsic_width", "intrinsic_height")
+                )
+                if (
+                    element_box is not None
+                    and viewport_height is not None
+                    and (tag in {"img", "picture", "video", "canvas", "svg"} or intrinsic_media)
+                    and element_box["height"] > viewport_height * max_rendered_asset_height_viewport_ratio
+                    and not treatment_is_immersive(plan)
+                ):
+                    assignment["status"] = "failed"
+                    findings.append(_finding(
+                        "composition", "blocker", "rendered_media_geometry",
+                        "Rendered media exceeds the configured viewport-relative height budget.",
+                        asset_id=plan.asset_id,
+                        route=route_name,
+                        viewport=viewport,
+                        rendered_height=element_box["height"],
+                        viewport_height=viewport_height,
+                        maximum_height=viewport_height * max_rendered_asset_height_viewport_ratio,
+                    ))
                 rendered_hash = str(element.get("asset_sha256") or "").lower()
                 if rendered_hash != plan.asset_sha256:
                     assignment["status"] = "failed"
@@ -361,7 +495,8 @@ def evaluate_composition_plan(
                         asset_id=plan.asset_id, route=route_name, expected=plan.asset_sha256, actual=rendered_hash,
                     ))
                 source = str(element.get("src") or element.get("href") or element.get("external_url") or "")
-                if source.startswith(("http://", "https://", "//")) or element.get("external_url"):
+                is_absolute_http = source.startswith(("http://", "https://", "//"))
+                if element.get("external_url") or (is_absolute_http and not _is_local_preview_source(source)):
                     assignment["status"] = "failed"
                     findings.append(_finding(
                         "composition", "blocker", "external_asset_substitution",
@@ -461,7 +596,7 @@ def evaluate_temporal_evidence(
         if not observed:
             findings.append(_finding(
                 "temporal", "blocker", "signature_behavior_unobserved",
-                "The locked signature behavior was not observed in temporal evidence.",
+                "The locked signature behavior was not observed in host-owned temporal evidence.",
                 signature_behavior_id=signature_behavior_id,
             ))
     layout_shift = 0.0
@@ -713,7 +848,10 @@ _EXTERNAL_RESOURCE_RE = re.compile(
     r"<(script|link|img|source|video|audio)\b[^>]*(?:src|href)\s*=\s*[\"']((?:https?:)?//[^\"']+)",
     re.IGNORECASE | re.DOTALL,
 )
-_EXTERNAL_CSS_RE = re.compile(r"(?:@import|url)\s*\([^)]*(?:https?:)?//", re.IGNORECASE)
+_EXTERNAL_CSS_RE = re.compile(
+    r"(?:@import\s+(?:url\s*\(\s*)?|url\s*\(\s*)[\"']?(?:https?:)?//",
+    re.IGNORECASE,
+)
 _EXTERNAL_FETCH_RE = re.compile(r"\b(?:fetch|import)\s*\(\s*[\"']https?://", re.IGNORECASE)
 _GSAP_ANIMATION_RE = re.compile(
     r"\b(?:gsap\.(?:to|from|fromTo|timeline|set)|ScrollTrigger\.create|useGSAP)\s*\(",
@@ -770,7 +908,33 @@ def _native_source_findings(
     if not policy.native_source_required:
         return {"status": "skipped", "reason": "native_source_not_required"}, []
     changed = _changed_paths(repo, base_sha, candidate_sha)
-    source_paths = _native_source_files(repo, changed)
+    paths_to_scan = changed
+    if policy.operation_kind in {"visual_refinement", "technical_repair"}:
+        # A bounded repair may intentionally leave the already-valid native
+        # implementation untouched while changing only composition or copy.
+        # Validate the complete retained candidate tree for repair operations;
+        # changed-file-only scanning would falsely report missing React/GSAP.
+        try:
+            paths_to_scan = set(
+                path for path in _git(repo, "ls-tree", "-r", "--name-only", candidate_sha).splitlines()
+                if path
+            ) | changed
+            if policy.allowed_patterns:
+                paths_to_scan = {
+                    path for path in paths_to_scan
+                    if writable(
+                        normalize_path(path),
+                        policy.allowed_patterns,
+                        allowed_hard_denied_paths=policy.allowed_hard_denied_paths,
+                    )
+                }
+        except RuntimeError:
+            paths_to_scan = changed
+    host_provisioned_paths = _host_provisioned_paths(repo, policy)
+    source_paths = [
+        path for path in _native_source_files(repo, paths_to_scan)
+        if path not in host_provisioned_paths
+    ]
     findings: list[dict[str, Any]] = []
     if not source_paths:
         return {"status": "failed", "source_files": []}, [_finding(
@@ -793,6 +957,8 @@ def _native_source_findings(
     external_resources: list[dict[str, str]] = []
     registered_plugins: list[str] = []
     animation_files: list[str] = []
+    react_source_files: list[str] = []
+    gsap_usage_files: list[str] = []
     cleanup_files: list[str] = []
     reduced_motion_files: list[str] = []
 
@@ -808,6 +974,10 @@ def _native_source_findings(
             continue
         imports = sorted({_package_root(match) for match in _IMPORT_RE.findall(text)})
         imported[relative] = imports
+        if path.suffix.lower() in {".jsx", ".tsx"} or any(
+            package in {"react", "react-dom", "@gsap/react"} for package in imports
+        ):
+            react_source_files.append(relative)
         for specifier in imports:
             if specifier.startswith((".", "/", "#", "~", "@/", "astro:", "node:")):
                 continue
@@ -831,6 +1001,7 @@ def _native_source_findings(
 
         if _GSAP_ANIMATION_RE.search(text):
             animation_files.append(relative)
+            gsap_usage_files.append(relative)
             if _CLEANUP_RE.search(text):
                 cleanup_files.append(relative)
             if _REDUCED_MOTION_RE.search(text):
@@ -871,6 +1042,16 @@ def _native_source_findings(
             "Native source references an external runtime, asset, stylesheet, or script; the build must work offline.",
             **item,
         ))
+    if policy.react_source_required and not react_source_files:
+        findings.append(_finding(
+            "native_source", "blocker", "react_source_missing",
+            "The candidate must include a React implementation source file or React integration.",
+        ))
+    if policy.gsap_required and not gsap_usage_files:
+        findings.append(_finding(
+            "native_source", "blocker", "gsap_implementation_missing",
+            "The candidate must implement the defining behavior with the approved GSAP runtime.",
+        ))
     if animation_files and not cleanup_files:
         findings.append(_finding(
             "native_source", "blocker", "animation_cleanup_missing",
@@ -887,9 +1068,12 @@ def _native_source_findings(
     return {
         "status": "failed" if findings else "passed",
         "source_files": source_paths,
+        "host_provisioned_files": sorted(host_provisioned_paths),
         "imports": imported,
         "external_resources": external_resources,
         "animation_files": sorted(set(animation_files)),
+        "react_source_files": sorted(set(react_source_files)),
+        "gsap_usage_files": sorted(set(gsap_usage_files)),
         "cleanup_files": sorted(set(cleanup_files)),
         "reduced_motion_files": sorted(set(reduced_motion_files)),
         "registered_plugins": sorted(registered_plugins),
@@ -1172,7 +1356,12 @@ def _output_findings(repo: Path, policy: QualityPolicy) -> tuple[dict[str, Any],
                 path,
                 require_styling=policy.browser_required or policy.visual_critic,
             ))
-    return {"status": "failed" if findings else "passed", "files": len(files), "output_dir": policy.output_dir}, findings
+    blocking = {"blocker", "critical", "serious"}
+    return {
+        "status": "failed" if any(item.get("severity") in blocking for item in findings) else "passed",
+        "files": len(files),
+        "output_dir": policy.output_dir,
+    }, findings
 
 
 def _content_key(value: str) -> str:
@@ -1414,14 +1603,164 @@ def _html_findings(output: Path, path: Path, *, require_styling: bool = False) -
     return findings
 
 
+def _bounded_browser_text(value: Any, *, maximum: int = 600) -> Any:
+    """Keep browser style fingerprints useful without persisting asset data."""
+    if not isinstance(value, str) or len(value) <= maximum:
+        return value
+    digest = hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()[:16]
+    return f"<omitted sha256={digest} chars={len(value)}>"
+
+
+def _compact_rendered_fingerprint(value: Any) -> Any:
+    """Bound descendant fingerprints produced by the browser probes.
+
+    A CSS ``background-image`` can contain a complete data URL, and the same
+    signature fingerprint is repeated in every animation sample and scroll
+    state.  The host has already compared these values before persistence, so
+    retaining the full descendant tree would add diagnostic bulk without
+    adding evidence. Preserve the measured top-level style and a count/hash
+    for omitted descendants instead.
+    """
+    if not isinstance(value, Mapping):
+        return _bounded_browser_text(value)
+    compact: dict[str, Any] = {}
+    for key, item in value.items():
+        if key in {"descendants", "nodes"} and isinstance(item, (list, tuple)):
+            encoded = json.dumps(item, sort_keys=True, separators=(",", ":"), default=str)
+            compact[f"{key}_count"] = len(item)
+            compact[f"{key}_hash"] = hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
+            continue
+        if key in {"backgroundImage", "background_image", "fingerprint"}:
+            compact[str(key)] = _bounded_browser_text(item)
+            continue
+        compact[str(key)] = _compact_rendered_fingerprint(item) if isinstance(item, Mapping) else _bounded_browser_text(item)
+    return compact
+
+
+def _compact_observable_snapshot(value: Any) -> Any:
+    if not isinstance(value, Mapping):
+        return value
+    compact = dict(value)
+    nodes = compact.get("nodes")
+    if isinstance(nodes, (list, tuple)):
+        compact["nodes"] = [
+            {
+                "key": str(node.get("key") or ""),
+                "tag": str(node.get("tag") or ""),
+                "visible": node.get("visible") is True,
+            }
+            for node in nodes[:12]
+            if isinstance(node, Mapping)
+        ]
+    signatures = compact.get("signature_behaviors")
+    if isinstance(signatures, (list, tuple)):
+        compact["signature_behaviors"] = [
+            {
+                "id": str(item.get("id") or ""),
+                "state": str(item.get("state") or ""),
+                "visible": item.get("visible") is True,
+            }
+            for item in signatures[:12]
+            if isinstance(item, Mapping)
+        ]
+    return compact
+
+
+def _observable_summary(value: Any) -> dict[str, Any]:
+    """Retain the scroll probe's aggregate facts, not repeated DOM snapshots."""
+    if not isinstance(value, Mapping):
+        return {}
+    nodes = value.get("nodes") if isinstance(value.get("nodes"), (list, tuple)) else ()
+    signatures = value.get("signature_behaviors") if isinstance(value.get("signature_behaviors"), (list, tuple)) else ()
+    return {
+        "node_count": len(nodes),
+        "visible_node_count": sum(1 for item in nodes if isinstance(item, Mapping) and item.get("visible") is True),
+        "signature_behavior_ids": [
+            str(item.get("id") or "")
+            for item in signatures
+            if isinstance(item, Mapping) and str(item.get("id") or "")
+        ][:20],
+        "critical_content_visible": value.get("critical_content_visible") is True,
+    }
+
+
+def _compact_journey_conditions(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    compacted: list[dict[str, Any]] = []
+    for item in value[:100]:
+        if not isinstance(item, Mapping):
+            continue
+        compacted.append({
+            key: item[key]
+            for key in (
+                "condition_id",
+                "scene_id",
+                "trigger",
+                "state",
+                "completion",
+                "visible",
+                "interactive",
+                "observed_transition",
+            )
+            if key in item
+        })
+    return compacted
+
+
+def _compact_observable_delta(value: Any) -> Any:
+    if not isinstance(value, Mapping):
+        return value
+    compact = dict(value)
+    changed_nodes = compact.get("changed_nodes")
+    compact["changed_node_count"] = len(changed_nodes) if isinstance(changed_nodes, (list, tuple)) else 0
+    compact["changed_node_keys"] = [
+        str(item.get("key") or "")
+        for item in (changed_nodes or ())
+        if isinstance(item, Mapping) and str(item.get("key") or "")
+    ][:20]
+    compact.pop("changed_nodes", None)
+    signatures = compact.get("signature_behaviors")
+    if isinstance(signatures, (list, tuple)):
+        compact["signature_behaviors"] = [
+            {
+                "id": str(item.get("id") or ""),
+                "state": str(item.get("state") or ""),
+                "observed_via": str(item.get("observed_via") or ""),
+            }
+            for item in signatures[:20]
+            if isinstance(item, Mapping)
+        ]
+    return compact
+
+
+def _compact_interaction_state(value: Any) -> Any:
+    if not isinstance(value, Mapping):
+        return value
+    compact = dict(value)
+    for key in ("before", "after"):
+        if isinstance(compact.get(key), Mapping):
+            compact[key] = _compact_observable_snapshot(compact[key])
+    observations = compact.get("animation_observations")
+    if isinstance(observations, (list, tuple)):
+        compact["animation_observations"] = [
+            {
+                **dict(item),
+                "fingerprint": _bounded_browser_text(item.get("fingerprint")),
+            }
+            for item in observations[:20]
+            if isinstance(item, Mapping)
+        ]
+    return compact
+
+
 def _compact_motion_snapshot(value: Any) -> Any:
-    """Keep motion counters while bounding per-node browser diagnostics.
+    """Keep rendered motion deltas while bounding browser diagnostics.
 
     Playwright records a node snapshot at every scroll position for every route
     and viewport. Those snapshots are useful while debugging locally, but
-    retaining them in the durable quality report duplicates tens of thousands
-    of characters and can exceed the persistence payload limit. The gate only
-    needs the aggregate counters; retain the node count for traceability.
+    retaining every node in the durable quality report duplicates tens of
+    thousands of characters. Keep the bounded samples and aggregate delta.
     """
     if not isinstance(value, Mapping):
         return value
@@ -1437,7 +1776,60 @@ def _compact_motion_snapshot(value: Any) -> Any:
         nodes = compact.pop("motion_nodes", None)
         if isinstance(nodes, (list, tuple)):
             compact["motion_node_count"] = len(nodes)
+    samples = compact.get("observable_samples")
+    if isinstance(samples, list):
+        compact["observable_samples"] = [
+            {
+                "scroll_y": sample.get("scroll_y"),
+                "scroll_height": sample.get("scroll_height"),
+                "node_count": len(sample.get("nodes") or ()) if isinstance(sample, Mapping) else 0,
+                "signature_behavior_count": len(sample.get("signature_behaviors") or ()) if isinstance(sample, Mapping) else 0,
+            }
+            for sample in (samples[0:1] + samples[-1:] if len(samples) > 2 else samples)
+            if isinstance(sample, Mapping)
+        ]
+    if isinstance(compact.get("observable"), Mapping):
+        compact["observable_summary"] = _observable_summary(compact.pop("observable"))
+    if isinstance(compact.get("journey_conditions"), (list, tuple)):
+        compact["journey_conditions"] = _compact_journey_conditions(compact["journey_conditions"])
+    if isinstance(compact.get("scroll_states"), (list, tuple)):
+        compact["scroll_states"] = [
+            _compact_scroll_state(state)
+            for state in compact["scroll_states"][:12]
+            if isinstance(state, Mapping)
+        ]
+    for key in ("observable_delta", "scroll_observable_delta"):
+        if isinstance(compact.get(key), Mapping):
+            compact[key] = _compact_observable_delta(compact[key])
+    if isinstance(compact.get("signature_behaviors"), (list, tuple)):
+        compact["signature_behaviors"] = [
+            {
+                **dict(item),
+                "fingerprint": _bounded_browser_text(item.get("fingerprint")),
+            }
+            for item in compact["signature_behaviors"][:20]
+            if isinstance(item, Mapping)
+        ]
     return compact
+
+
+def _compact_scroll_state(value: Any) -> dict[str, Any]:
+    state = _compact_motion_snapshot(value)
+    if not isinstance(state, Mapping):
+        return {}
+    return {
+        key: state[key]
+        for key in (
+            "position",
+            "scroll_y",
+            "scroll_height",
+            "motion_node_count",
+            "signature_behaviors",
+            "journey_conditions",
+            "observable_summary",
+        )
+        if key in state
+    }
 
 
 def _compact_browser_result(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -1456,7 +1848,12 @@ def _compact_browser_result(value: Mapping[str, Any]) -> dict[str, Any]:
             }
         states = route.get("scroll_states")
         if isinstance(states, list):
-            route["scroll_states"] = [_compact_motion_snapshot(state) for state in states]
+            route["scroll_states"] = [_compact_scroll_state(state) for state in states]
+        if isinstance(route.get("interaction_state"), Mapping):
+            route["interaction_state"] = _compact_interaction_state(route["interaction_state"])
+        for key in ("journey_conditions", "journey_conditions_before", "journey_conditions_after"):
+            if isinstance(route.get(key), (list, tuple)):
+                route[key] = _compact_journey_conditions(route[key])
         routes.append(route)
     result["routes"] = routes
     states = result.get("scroll_states")
@@ -1465,14 +1862,24 @@ def _compact_browser_result(value: Mapping[str, Any]) -> dict[str, Any]:
             {
                 **dict(item),
                 "states": [
-                    _compact_motion_snapshot(state)
+                    _compact_scroll_state(state)
                     for state in (item.get("states") or ())
                 ],
             }
             for item in states
             if isinstance(item, Mapping)
         ]
+    if isinstance(result.get("journey_conditions"), (list, tuple)):
+        result["journey_conditions"] = _compact_journey_conditions(result["journey_conditions"])
     return result
+
+
+def _temporal_contract_item(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Separate route-level journey snapshots from strict temporal evidence."""
+    item = dict(value)
+    item.pop("journey_conditions_before", None)
+    item.pop("journey_conditions_after", None)
+    return item
 
 
 def _browser_findings(output: Path, policy: QualityPolicy, browser: BrowserQualityAdapter | None) -> tuple[dict[str, Any], list[dict[str, Any]], bool]:
@@ -1490,6 +1897,7 @@ def _browser_findings(output: Path, policy: QualityPolicy, browser: BrowserQuali
     text_wrap_evidence: list[dict[str, Any]] = []
     scroll_evidence: list[dict[str, Any]] = []
     interaction_evidence: list[dict[str, Any]] = []
+    journey_evidence: list[dict[str, Any]] = []
     temporal_evidence: list[dict[str, Any]] = []
     external_request_evidence: list[dict[str, Any]] = []
     for viewport in policy.viewports:
@@ -1499,12 +1907,12 @@ def _browser_findings(output: Path, policy: QualityPolicy, browser: BrowserQuali
             return {"status": "unavailable"}, [_finding("browser", "incomplete", "browser_unavailable", safe_provider_message(str(exc)))], True
         evidence["viewports"].append({"viewport": dict(viewport), "result": result})
         temporal_evidence.extend(
-            dict(item)
+            _temporal_contract_item(item)
             for item in (result.get("temporal_evidence") or ())
             if isinstance(item, Mapping)
         )
         temporal_evidence.extend(
-            dict(item)
+            _temporal_contract_item(item)
             for route_item in (result.get("routes") or ())
             if isinstance(route_item, Mapping)
             for item in (route_item.get("temporal_evidence") or ())
@@ -1547,6 +1955,13 @@ def _browser_findings(output: Path, policy: QualityPolicy, browser: BrowserQuali
                 scroll_evidence.append({"viewport": dict(viewport), "route": route_name, "states": route.get("scroll_states")})
             if route.get("interaction_state"):
                 interaction_evidence.append({"viewport": dict(viewport), "route": route_name, "state": route.get("interaction_state")})
+            if route.get("journey_conditions_before") or route.get("journey_conditions_after"):
+                journey_evidence.append({
+                    "viewport": dict(viewport),
+                    "route": route_name,
+                    "before": list(route.get("journey_conditions_before") or ()),
+                    "after": list(route.get("journey_conditions_after") or ()),
+                })
         for route_name, motion_preferences in motion_records:
             motion_evidence.append({
                 "viewport": dict(viewport),
@@ -1555,23 +1970,14 @@ def _browser_findings(output: Path, policy: QualityPolicy, browser: BrowserQuali
             })
             normal_motion = motion_preferences.get("no-preference") or {}
             reduced_motion = motion_preferences.get("reduce") or {}
-            normal_active = int(normal_motion.get("active_animations", 0) or 0)
-            reduced_active = int(reduced_motion.get("active_animations", 0) or 0)
-            normal_runtime = normal_motion.get("runtime") or {}
-            reduced_runtime = reduced_motion.get("runtime") or {}
-            normal_gsap_active = int(normal_runtime.get("gsap_active_tweens") or 0)
-            reduced_gsap_active = int(reduced_runtime.get("gsap_active_tweens") or 0)
-            normal_triggers = int(normal_runtime.get("scroll_trigger_count") or 0)
-            reduced_triggers = int(reduced_runtime.get("scroll_trigger_count") or 0)
-            if (normal_active and reduced_active >= normal_active) or (
-                normal_gsap_active and reduced_gsap_active >= normal_gsap_active
-            ) or (normal_triggers and reduced_triggers):
+            reduced_delta = reduced_motion.get("observable_delta") or {}
+            if reduced_motion.get("motion_observed") is True or reduced_delta.get("observed") is True:
                 findings.append(_finding(
-                    "browser", "blocker", "reduced_motion_ignored",
-                    "Reduced-motion emulation left GSAP, ScrollTrigger, or as many animations active as normal motion.",
+                    "browser", "blocker", "reduced_motion_unsettled",
+                    "Reduced-motion emulation still changed rendered geometry or style after readiness.",
                     viewport=dict(viewport),
                     **({"route": route_name} if route_name else {}),
-                    details={"no_preference": normal_motion, "reduce": reduced_motion},
+                    details={"no_preference": normal_motion.get("observable_delta") or {}, "reduce": reduced_delta},
                 ))
         for key, code, message in (
             ("console_errors", "console_error", "Browser console errors were reported."),
@@ -1583,6 +1989,13 @@ def _browser_findings(output: Path, policy: QualityPolicy, browser: BrowserQuali
             value = result.get(key)
             if value:
                 findings.append(_finding("browser", "blocker", code, message, viewport=dict(viewport), details=value))
+        hidden_resting_text = result.get("hidden_resting_text")
+        if hidden_resting_text:
+            findings.append(_finding(
+                "browser", "blocker", "resting_text_hidden",
+                "Page text is invisible at rest (display none, visibility hidden, or opacity zero).",
+                viewport=dict(viewport), details=hidden_resting_text,
+            ))
         for item in result.get("accessibility") or ():
             findings.append(_finding("accessibility", "blocker", "accessibility", "Browser accessibility findings were reported.", viewport=dict(viewport), details=item))
         if contrast_failures:
@@ -1644,6 +2057,7 @@ def _browser_findings(output: Path, policy: QualityPolicy, browser: BrowserQuali
     evidence["text_wrap_failures"] = text_wrap_evidence
     evidence["scroll_states"] = scroll_evidence
     evidence["interaction_states"] = interaction_evidence
+    evidence["journey_conditions"] = journey_evidence
     evidence["temporal_evidence"] = temporal_evidence
     evidence["external_requests"] = external_request_evidence
     return evidence, findings, False
@@ -1660,6 +2074,7 @@ def _run_quality_in_workspace(
     repair_attempts: int,
     build_evidence: Mapping[str, Any] | None = None,
     build_runner=None,
+    output_artifact_publisher=None,
     build_env: Mapping[str, str] | None = None,
     experience_plan: Any | None = None,
     temporal_evidence: Sequence[Any] = (),
@@ -1698,6 +2113,27 @@ def _run_quality_in_workspace(
     findings.extend(runtime_findings)
     output_evidence, output_findings = _output_findings(workspace, policy)
     findings.extend(output_findings)
+    output_artifact_evidence: dict[str, Any] = {"status": "skipped", "reason": "artifact_store_not_configured"}
+    output_blockers = {
+        "blocker",
+        "critical",
+        "serious",
+    }
+    if callable(output_artifact_publisher) and not any(
+        item.get("severity") in output_blockers for item in output_findings
+    ):
+        try:
+            output_artifact_evidence = {
+                "status": "passed",
+                **dict(output_artifact_publisher(workspace / policy.output_dir)),
+            }
+        except Exception as exc:  # noqa: BLE001 - retain a durable build-boundary failure
+            output_artifact_evidence = {"status": "failed", "error": safe_provider_message(str(exc))}
+            findings.append(_finding(
+                "build", "blocker", "output_artifact_failed",
+                "The authoritative build output could not be retained as an immutable preview artifact.",
+                evidence=output_artifact_evidence,
+            ))
     content_evidence, content_findings = _content_findings(workspace / policy.output_dir, policy)
     findings.extend(content_findings)
     conversion_evidence, conversion_findings = _conversion_findings(workspace / policy.output_dir, policy)
@@ -1707,6 +2143,7 @@ def _run_quality_in_workspace(
     browser_evidence, browser_findings, browser_incomplete = _browser_findings(workspace / policy.output_dir, policy, browser)
     findings.extend(browser_findings)
     composition_evidence: dict[str, Any] = {"status": "skipped", "reason": "experience_plan_not_supplied"}
+    journey_evidence_report: dict[str, Any] = {"status": "skipped", "reason": "experience_plan_not_supplied"}
     temporal_evidence_report: dict[str, Any] = {"status": "skipped", "reason": "experience_plan_not_supplied"}
     experience_plan_hash = ""
     if experience_plan is not None:
@@ -1724,6 +2161,264 @@ def _run_quality_in_workspace(
                 error=str(exc)[:300],
             ))
         else:
+            journey = plan.experience_journey
+            expected_condition_ids = set(journey.must_pass_condition_ids)
+            condition_records: list[dict[str, Any]] = []
+            reduced_condition_records: list[dict[str, Any]] = []
+            for viewport_item in browser_evidence.get("viewports") or ():
+                if not isinstance(viewport_item, Mapping):
+                    continue
+                viewport = viewport_item.get("viewport") if isinstance(viewport_item.get("viewport"), Mapping) else {}
+                result = viewport_item.get("result") if isinstance(viewport_item.get("result"), Mapping) else {}
+                top_level_preferences = result.get("motion_preferences")
+                if isinstance(top_level_preferences, Mapping):
+                    reduced = top_level_preferences.get("reduce")
+                    if isinstance(reduced, Mapping):
+                        for item in reduced.get("journey_conditions") or ():
+                            if isinstance(item, Mapping):
+                                reduced_condition_records.append({
+                                    "viewport": dict(viewport),
+                                    "route": "",
+                                    **dict(item),
+                                })
+                for route_item in result.get("routes") or ():
+                    if not isinstance(route_item, Mapping):
+                        continue
+                    route_name = str(route_item.get("route") or "")
+                    for item in list(route_item.get("journey_conditions_before") or ()) + list(route_item.get("journey_conditions_after") or ()):
+                        if isinstance(item, Mapping):
+                                condition_records.append({
+                                    "viewport": dict(viewport),
+                                    "route": route_name,
+                                    **dict(item),
+                                })
+                    preferences = route_item.get("motion_preferences")
+                    if isinstance(preferences, Mapping):
+                        reduced = preferences.get("reduce")
+                        if isinstance(reduced, Mapping):
+                            for item in reduced.get("journey_conditions") or ():
+                                if isinstance(item, Mapping):
+                                    reduced_condition_records.append({
+                                        "viewport": dict(viewport),
+                                        "route": route_name,
+                                        **dict(item),
+                                    })
+                        for preference_name, destination in (
+                            ("no-preference", condition_records),
+                            ("reduce", reduced_condition_records),
+                        ):
+                            preference = preferences.get(preference_name)
+                            if not isinstance(preference, Mapping):
+                                continue
+                            for scroll_state in preference.get("scroll_states") or ():
+                                if not isinstance(scroll_state, Mapping):
+                                    continue
+                                for item in scroll_state.get("journey_conditions") or ():
+                                    if not isinstance(item, Mapping):
+                                        continue
+                                    destination.append({
+                                        "viewport": dict(viewport),
+                                        "route": route_name,
+                                        "observed_via": "progressive_scroll",
+                                        "scroll_position": scroll_state.get("position"),
+                                        **dict(item),
+                                    })
+            observed_condition_ids = {
+                str(item.get("condition_id") or "").strip()
+                for item in condition_records
+                if item.get("visible") is True and str(item.get("condition_id") or "").strip()
+            }
+            observed_reduced_ids = {
+                str(item.get("condition_id") or "").strip()
+                for item in reduced_condition_records
+                if item.get("visible") is True and str(item.get("condition_id") or "").strip()
+            }
+            missing_condition_ids = sorted(expected_condition_ids - observed_condition_ids)
+            missing_reduced_ids = sorted(expected_condition_ids - observed_reduced_ids)
+            transitioned_ids = sorted({
+                str(item.get("condition_id") or "").strip()
+                for item in condition_records
+                if str(item.get("condition_id") or "").strip()
+                and item.get("observed_transition") is True
+            })
+            scene_order = {
+                str(scene.get("id") or ""): int(scene.get("order") or 0)
+                for scene in journey.scenes
+                if isinstance(scene, Mapping) and str(scene.get("id") or "").strip()
+            }
+            scene_by_condition = {
+                str(condition_id): str(scene.get("id") or "")
+                for scene in journey.scenes
+                if isinstance(scene, Mapping)
+                for condition_id in (scene.get("acceptance_condition_ids") or ())
+            }
+            expected_scene_ids = [scene_id for scene_id, _ in sorted(scene_order.items(), key=lambda item: item[1])]
+            def canonical_scene_id(item: Mapping[str, Any]) -> str:
+                condition_id = str(item.get("condition_id") or "").strip()
+                mapped = scene_by_condition.get(condition_id, "")
+                if mapped:
+                    return mapped
+                scene_id = str(item.get("scene_id") or "").strip()
+                return scene_id if scene_id in scene_order else ""
+
+            def ordered_marker_scene_id(item: Mapping[str, Any]) -> str:
+                """Return only an explicit rendered scene marker.
+
+                Acceptance conditions may be scene-owned in the locked plan
+                while remaining page-level in the rendered evidence. Mapping
+                those condition IDs back to scenes is useful for coverage and
+                transition accounting, but it would manufacture an ordering
+                event when such a condition appears before the scene marker.
+                The ordered-path proof must therefore use the marker's own
+                scene ID and ignore unscoped conditions.
+                """
+                scene_id = str(item.get("scene_id") or "").strip()
+                return scene_id if scene_id in scene_order else ""
+
+            visible_scene_ids = {
+                canonical_scene_id(item)
+                for item in condition_records
+                if item.get("visible") is True and canonical_scene_id(item)
+            }
+            transitioned_scene_ids = {
+                canonical_scene_id(item)
+                for item in condition_records
+                if item.get("observed_transition") is True
+            }
+            transitioned_scene_ids.discard("")
+            missing_transition_scene_ids = sorted(
+                (set(expected_scene_ids) - transitioned_scene_ids),
+                key=lambda scene_id: scene_order.get(scene_id, 0),
+            )
+            ordered_scene_paths: list[dict[str, Any]] = []
+            grouped_records: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
+            for item in condition_records:
+                if item.get("visible") is not True:
+                    continue
+                key = (
+                    str(item.get("route") or ""),
+                    str((item.get("viewport") or {}).get("name") or ""),
+                )
+                grouped_records.setdefault(key, []).append(item)
+            for (route_name, viewport_name), records in grouped_records.items():
+                scene_ids: list[str] = []
+                for item in records:
+                    scene_id = ordered_marker_scene_id(item)
+                    if scene_id in scene_order and scene_id not in scene_ids:
+                        scene_ids.append(scene_id)
+                if scene_ids == expected_scene_ids:
+                    ordered_scene_paths.append({
+                        "route": route_name,
+                        "viewport": viewport_name,
+                        "scene_ids": scene_ids,
+                    })
+            trigger_mismatches: list[dict[str, Any]] = []
+            seen_trigger_mismatches: set[tuple[str, str, str]] = set()
+
+            def trigger_family(value: Any) -> str:
+                # Scene prose is intentionally human-readable (for example,
+                # "the light node reaches the exit marker").  Substring
+                # matching that prose against candidate condition triggers
+                # turns legitimate condition-level interactions into false
+                # mismatches. Only compare when the plan uses the explicit
+                # machine-readable trigger prefixes accepted by the browser
+                # evidence contract.
+                text = str(value or "").strip().casefold()
+                prefix = re.match(r"^(scroll|viewport|progress|focus|keyboard|pointer|hover|enter|click|tap|interaction|load)(?::|\s|$)", text)
+                if not prefix:
+                    return ""
+                token = prefix.group(1)
+                if token in {"scroll", "viewport", "progress"}:
+                    return "scroll"
+                if token in {"focus", "keyboard"}:
+                    return "focus"
+                if token in {"pointer", "hover", "enter"}:
+                    return "pointer"
+                if token in {"click", "tap", "interaction"}:
+                    return "interaction"
+                return "load"
+
+            for item in condition_records:
+                scene_id = canonical_scene_id(item)
+                actual_trigger = str(item.get("trigger") or "").strip()
+                if not scene_id or not actual_trigger or scene_id not in scene_order:
+                    continue
+                expected_scene = next(
+                    (scene for scene in journey.scenes if str(scene.get("id") or "") == scene_id),
+                    None,
+                )
+                expected_trigger = str((expected_scene or {}).get("trigger") or "").strip()
+                expected_family = trigger_family(expected_trigger)
+                actual_family = trigger_family(actual_trigger)
+                key = (scene_id, expected_family, actual_family)
+                if expected_family and actual_family and expected_family != actual_family and key not in seen_trigger_mismatches:
+                    seen_trigger_mismatches.add(key)
+                    trigger_mismatches.append({
+                        "scene_id": scene_id,
+                        "expected": expected_trigger,
+                        "actual": actual_trigger,
+                    })
+            journey_evidence_report = {
+                "status": "passed",
+                "experience_plan_hash": experience_plan_hash,
+                "expected_condition_ids": sorted(expected_condition_ids),
+                "observed_condition_ids": sorted(observed_condition_ids),
+                "reduced_motion_condition_ids": sorted(observed_reduced_ids),
+                "transitioned_condition_ids": transitioned_ids,
+                "expected_scene_ids": expected_scene_ids,
+                "observed_scene_ids": sorted(visible_scene_ids, key=lambda scene_id: scene_order.get(scene_id, 0)),
+                "transitioned_scene_ids": sorted(transitioned_scene_ids, key=lambda scene_id: scene_order.get(scene_id, 0)),
+                "ordered_scene_paths": ordered_scene_paths,
+                "trigger_mismatches": trigger_mismatches,
+                "records": condition_records[:120],
+            }
+            if missing_condition_ids:
+                journey_evidence_report["status"] = "incomplete"
+                findings.append(_finding(
+                    "experience_journey", "incomplete", "journey_condition_missing",
+                    "The rendered candidate did not expose every locked journey condition as visible browser evidence.",
+                    experience_plan_hash=experience_plan_hash,
+                    missing_condition_ids=missing_condition_ids,
+                ))
+            if missing_reduced_ids:
+                journey_evidence_report["status"] = "incomplete"
+                findings.append(_finding(
+                    "experience_journey", "incomplete", "journey_reduced_motion_missing",
+                    "The rendered candidate did not expose every locked journey condition under reduced-motion emulation.",
+                    experience_plan_hash=experience_plan_hash,
+                    missing_condition_ids=missing_reduced_ids,
+                ))
+            if not transitioned_ids:
+                journey_evidence_report["status"] = "failed"
+                findings.append(_finding(
+                    "experience_journey", "blocker", "journey_transition_unobserved",
+                    "The browser review observed journey markers but no host-measured rendered transition.",
+                    experience_plan_hash=experience_plan_hash,
+                ))
+            if missing_transition_scene_ids:
+                journey_evidence_report["status"] = "failed"
+                findings.append(_finding(
+                    "experience_journey", "blocker", "journey_scene_transition_missing",
+                    "The browser review did not observe a rendered transition for every ordered journey scene.",
+                    experience_plan_hash=experience_plan_hash,
+                    missing_scene_ids=missing_transition_scene_ids,
+                ))
+            if not ordered_scene_paths:
+                journey_evidence_report["status"] = "failed"
+                findings.append(_finding(
+                    "experience_journey", "blocker", "journey_scene_order_unobserved",
+                    "The browser review did not observe the locked scenes in their declared order on one complete path.",
+                    experience_plan_hash=experience_plan_hash,
+                    expected_scene_ids=expected_scene_ids,
+                ))
+            if trigger_mismatches:
+                journey_evidence_report["status"] = "failed"
+                findings.append(_finding(
+                    "experience_journey", "blocker", "journey_trigger_mismatch",
+                    "Rendered journey markers report a trigger family different from the locked scene contract.",
+                    experience_plan_hash=experience_plan_hash,
+                    mismatches=trigger_mismatches,
+                ))
             rendered_composition: list[dict[str, Any]] = []
             for viewport_item in browser_evidence.get("viewports") or ():
                 if not isinstance(viewport_item, Mapping):
@@ -1738,8 +2433,20 @@ def _run_quality_in_workspace(
                         "route": route_item.get("route"),
                         "viewport": dict(viewport),
                         "elements": list(elements) if isinstance(elements, list) else [],
+                        "document_height": route_item.get("document_height"),
+                        "meaningful_content_bottom": route_item.get("meaningful_content_bottom"),
                     })
-            if not rendered_composition or not any(item.get("elements") for item in rendered_composition):
+            if not plan.asset_composition_plan:
+                # An asset-free intake has no frozen role assignment to prove.
+                # Do not turn the absence of supplied media into an artificial
+                # owner blocker or require the candidate to invent composition
+                # markers for assets that do not exist.
+                composition_evidence = {
+                    "status": "passed",
+                    "reason": "no_locked_asset_composition",
+                    "routes": rendered_composition,
+                }
+            elif not rendered_composition or not any(item.get("elements") for item in rendered_composition):
                 composition_evidence = {"status": "incomplete", "reason": "browser_composition_roles_missing"}
                 findings.append(_finding(
                     "composition", "incomplete", "composition_evidence_missing",
@@ -1750,10 +2457,77 @@ def _run_quality_in_workspace(
                 composition_evidence, composition_findings = evaluate_composition_plan(
                     plan.asset_composition_plan,
                     rendered_composition,
+                    max_rendered_asset_height_viewport_ratio=policy.max_rendered_asset_height_viewport_ratio,
+                    max_empty_scroll_viewport_ratio=policy.max_empty_scroll_viewport_ratio,
+                    immersive_asset_ids=policy.immersive_asset_ids,
                 )
                 findings.extend(composition_findings)
             signature = plan.behavior_system.signature_behavior
             signature_id = str(signature.get("id") or "") if isinstance(signature, Mapping) else ""
+            rendered_motion_observed = False
+            signature_motion_observed = False
+            for viewport_item in browser_evidence.get("viewports") or ():
+                if not isinstance(viewport_item, Mapping):
+                    continue
+                result = viewport_item.get("result") if isinstance(viewport_item.get("result"), Mapping) else {}
+                preferences = result.get("motion_preferences")
+                if isinstance(preferences, Mapping):
+                    normal = preferences.get("no-preference") if isinstance(preferences.get("no-preference"), Mapping) else {}
+                    delta = normal.get("observable_delta") if isinstance(normal.get("observable_delta"), Mapping) else {}
+                    rendered_motion_observed = rendered_motion_observed or bool(
+                        normal.get("motion_observed") is True or delta.get("observed") is True
+                    )
+                    signature_motion_observed = signature_motion_observed or any(
+                        isinstance(item, Mapping)
+                        and str(item.get("id") or "") == signature_id
+                        and str(item.get("state") or "").lower() in {"observed", "complete", "passed"}
+                        for item in delta.get("signature_behaviors") or ()
+                    )
+                for route_item in result.get("routes") or ():
+                    if not isinstance(route_item, Mapping):
+                        continue
+                    route_preferences = route_item.get("motion_preferences")
+                    if isinstance(route_preferences, Mapping):
+                        normal = route_preferences.get("no-preference") if isinstance(route_preferences.get("no-preference"), Mapping) else {}
+                        delta = normal.get("observable_delta") if isinstance(normal.get("observable_delta"), Mapping) else {}
+                        rendered_motion_observed = rendered_motion_observed or bool(
+                            normal.get("motion_observed") is True or delta.get("observed") is True
+                        )
+                        signature_motion_observed = signature_motion_observed or any(
+                            isinstance(item, Mapping)
+                            and str(item.get("id") or "") == signature_id
+                            and str(item.get("state") or "").lower() in {"observed", "complete", "passed"}
+                            for item in delta.get("signature_behaviors") or ()
+                        )
+                temporal_candidates = list(result.get("temporal_evidence") or ())
+                temporal_candidates.extend(
+                    item
+                    for route_item in result.get("routes") or ()
+                    if isinstance(route_item, Mapping)
+                    for item in (route_item.get("temporal_evidence") or ())
+                )
+                for temporal_item in temporal_candidates:
+                    if not isinstance(temporal_item, Mapping):
+                        continue
+                    signature_motion_observed = signature_motion_observed or any(
+                        isinstance(item, Mapping)
+                        and str(item.get("id") or "") == signature_id
+                        and str(item.get("state") or "").lower() in {"observed", "complete", "passed"}
+                        for item in temporal_item.get("animation_observations") or ()
+                    )
+            if signature_id and not signature_motion_observed:
+                findings.append(_finding(
+                    "motion", "blocker", "motion_behavior_unobserved",
+                    "The locked signature behavior did not produce a measurable rendered change in the owner surface.",
+                    experience_plan_hash=experience_plan_hash,
+                    signature_behavior_id=signature_id,
+                ))
+            elif not signature_id and not rendered_motion_observed:
+                findings.append(_finding(
+                    "motion", "blocker", "motion_unobserved",
+                    "The owner surface did not produce a measurable rendered motion delta after hydration.",
+                    experience_plan_hash=experience_plan_hash,
+                ))
             budget = plan.behavior_system.performance_budget
             raw_budget = budget.get("max_layout_shift", budget.get("max_cumulative_layout_shift", 0.1)) if isinstance(budget, Mapping) else 0.1
             try:
@@ -1812,9 +2586,19 @@ def _run_quality_in_workspace(
             "reduced_motion_files": native_source_evidence.get("reduced_motion_files", []),
         },
         "browser": {
-            "motion_preferences": browser_evidence.get("motion_preferences", []),
-            "scroll_states": browser_evidence.get("scroll_states", []),
-            "interaction_states": browser_evidence.get("interaction_states", []),
+            # The detailed, host-owned records remain under evidence.browser.
+            # Do not duplicate every motion sample here: a long page can
+            # produce thousands of repeated scroll fingerprints and push the
+            # persisted quality contract over its diagnostic bound.
+            "source": "evidence.browser",
+            "viewport_count": len(browser_evidence.get("viewports") or ()),
+            "motion_preference_count": len(browser_evidence.get("motion_preferences") or ()),
+            "scroll_state_count": sum(
+                len(item.get("states") or ())
+                for item in (browser_evidence.get("scroll_states") or ())
+                if isinstance(item, Mapping)
+            ),
+            "interaction_state_count": len(browser_evidence.get("interaction_states") or ()),
         },
     }
     if native_source_evidence.get("animation_files") and not policy.browser_required:
@@ -1839,13 +2623,15 @@ def _run_quality_in_workspace(
             "originality": originality_evidence,
             "fonts": font_evidence,
             "runtime": runtime_evidence,
-            "output": output_evidence,
+        "output": output_evidence,
+        "output_artifact": output_artifact_evidence,
             "content": content_evidence,
             "conversion": conversion_evidence,
             "manifest": manifest_evidence,
             "motion": motion_evidence,
             "browser": browser_evidence,
             "composition": composition_evidence,
+            "experience_journey": journey_evidence_report,
             "temporal": temporal_evidence_report,
         },
         "gates": {
@@ -1861,6 +2647,7 @@ def _run_quality_in_workspace(
             "motion": motion_evidence.get("status"),
             "browser": browser_evidence.get("status"),
             "composition": composition_evidence.get("status"),
+            "experience_journey": journey_evidence_report.get("status"),
             "temporal": temporal_evidence_report.get("status"),
         },
         "repair_attempts": repair_attempts,
@@ -1878,6 +2665,7 @@ def run_quality_gates(
     repair_attempts: int = 0,
     build_evidence: Mapping[str, Any] | None = None,
     build_runner=None,
+    output_artifact_publisher=None,
     build_env: Mapping[str, str] | None = None,
     experience_plan: Any | None = None,
     temporal_evidence: Sequence[Any] = (),
@@ -1922,6 +2710,7 @@ def run_quality_gates(
             repair_attempts=repair_attempts,
             build_evidence=build_evidence,
             build_runner=build_runner,
+            output_artifact_publisher=output_artifact_publisher,
             build_env=build_env,
             experience_plan=experience_plan,
             temporal_evidence=temporal_evidence,

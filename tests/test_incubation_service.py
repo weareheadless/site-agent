@@ -59,7 +59,11 @@ def _graph_run(memory, intake, session_id, run_id, *, status, revision_id=7, par
         intake_revision_id=revision_id,
     )
     if status in {DesignRunStatus.READY_FOR_REVIEW.value, DesignRunStatus.NEEDS_REPAIR.value}:
-        run = memory.update_design_run(run_id, candidate_sha=("b" if not parent_run_id else "c") * 40)
+        run = memory.update_design_run(
+            run_id,
+            candidate_sha=("b" if not parent_run_id else "c") * 40,
+            quality_report_json={"state": "passed", "checks": []},
+        )
     return run
 
 
@@ -117,6 +121,26 @@ def test_lifecycle_graph_keeps_building_for_an_active_child(tmp_path):
         refreshed = service._refresh_lifecycle(record.incubation_id)
 
         assert refreshed.status == "building"
+    finally:
+        service.close()
+        intake_store.close()
+
+
+def test_lifecycle_graph_advances_collecting_incubation_before_active_build(tmp_path):
+    service, intake_store = _service(tmp_path)
+    try:
+        record, memory, session_id, intake = _lifecycle_graph(service)
+        root_id = "intake-lab-" + "g" * 32
+        _graph_run(memory, intake, session_id, root_id, status=DesignRunStatus.BUILDING.value)
+        memory.update_design_intake_session(session_id, design_run_id=root_id)
+
+        refreshed = service._refresh_lifecycle(record.incubation_id)
+
+        assert refreshed.status == "building"
+        assert [item["event"] for item in intake_store.list_events(record.incubation_id)][-2:] == [
+            "descendant_ready_to_build",
+            "descendant_active",
+        ]
     finally:
         service.close()
         intake_store.close()
@@ -515,6 +539,70 @@ def test_build_while_building_reconnects_instead_of_rejecting(tmp_path):
         service.transition(inc.incubation_id, "building", event="build_started")
         with pytest.raises(IncubationServiceError, match="design build service is unavailable"):
             service.build(inc.incubation_id, {})
+    finally:
+        service.close()
+        intake_store.close()
+
+
+def test_explicit_force_new_rebuilds_ready_candidate_from_confirmed_intake(tmp_path):
+    service, intake_store = _service(tmp_path)
+    try:
+        record, memory, session_id, intake = _lifecycle_graph(service)
+        service.transition(record.incubation_id, "ready_to_build", event="intake_confirmed")
+        service.transition(record.incubation_id, "building", event="build_started")
+        service.transition(record.incubation_id, "ready_for_feedback", event="candidate_ready")
+
+        draft = DesignIntakeDraft.from_site_intake(intake).to_dict()
+        calls = []
+
+        class _Intake:
+            def get_session(self, requested_session_id):
+                return {
+                    "session_id": requested_session_id,
+                    "status": "confirmed",
+                    "revision": 7,
+                    "confirmed_revision": 7,
+                    "confirmed_revision_id": 7,
+                    "draft": draft,
+                }
+
+            def build(self, requested_session_id, **kwargs):
+                calls.append((requested_session_id, kwargs))
+                return {
+                    "session": self.get_session(requested_session_id),
+                    "run": {"run_id": "fresh-run", "status": "building"},
+                }
+
+        runtime = IncubationRuntime(lab_service=object(), intake_service=_Intake())
+        service._runtimes[record.incubation_id] = runtime
+        service.intake_service = lambda _incubation_id: runtime.intake_service
+        service.novelty_service = lambda _incubation_id: SimpleNamespace(
+            context_for=lambda _intake: NoveltyContext.from_dict({
+                "query_hash": "c" * 64,
+                "constraints": [],
+                "matches": [],
+            })
+        )
+        service._incubated_creative_context = lambda *args, **kwargs: SimpleNamespace(
+            genesis_revision=7,
+            research_backed_creative_implications=(),
+            to_dict=lambda: {},
+        )
+        service.activity_service = lambda _incubation_id: SimpleNamespace(record=lambda **kwargs: None)
+
+        with pytest.raises(IncubationServiceError, match="incubation is not ready to build"):
+            service.build(record.incubation_id, {"confirmed_revision": 7})
+
+        result = service.build(record.incubation_id, {
+            "confirmed_revision": 7,
+            "force_new": True,
+            "idempotency_key": "explicit-rerun",
+        })
+
+        assert result["run"]["run_id"] == "fresh-run"
+        assert calls[0][1]["force_new"] is True
+        assert service.get_record(record.incubation_id).status == "building"
+        assert runtime.intake_service.get_session(session_id)["confirmed_revision"] == 7
     finally:
         service.close()
         intake_store.close()

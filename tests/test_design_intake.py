@@ -883,6 +883,38 @@ def test_message_after_confirmation_clears_current_build_for_a_new_revision(tmp_
     memory.close()
 
 
+def test_explicit_confirmation_reconciles_a_stale_post_confirmation_job(tmp_path):
+    memory = Memory(tmp_path / "intake.db")
+    service = DesignIntakeService(memory, default_intake=_intake())
+    session = service.create_session()
+    confirmed = service.confirm(
+        session["session_id"],
+        revision=session["revision"],
+        draft_hash=session["draft_hash"],
+        idempotency_key="confirm-stale-job",
+    )
+
+    # Queueing a new owner turn intentionally reopens the conversation. If its
+    # worker loses the revision race before saving anything, the frozen intake
+    # remains safe to confirm and build again.
+    service.send_message(session["session_id"], "Please keep the confirmed direction.")
+    current = service.get_session(session["session_id"])
+    assert current["status"] == "collecting"
+    assert current["revision"] == confirmed["session"]["confirmed_revision"]
+
+    resumed = service.confirm(
+        session["session_id"],
+        revision=current["revision"],
+        draft_hash=current["draft_hash"],
+        idempotency_key="confirm-stale-job-retry",
+    )
+
+    assert resumed["confirmed"] is True
+    assert resumed["session"]["status"] == "confirmed"
+    assert resumed["session"]["confirmed_revision"] == current["revision"]
+    memory.close()
+
+
 def test_empty_draft_stays_collecting_without_inventing_facts(tmp_path):
     memory = Memory(tmp_path / "intake.db")
     service = DesignIntakeService(memory, advisor=UnavailableDesignIntakeAdvisor())

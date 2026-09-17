@@ -31,6 +31,8 @@ from .contracts import (
     safe_provider_message,
 )
 from .design_contracts import (
+    MAX_CONTRACT_BYTES,
+    MAX_QUALITY_REPORT_BYTES,
     DesignContextSnapshot,
     DesignOperationKind,
     DesignRunStatus,
@@ -69,7 +71,7 @@ from .incubation_contracts import (
     ResearchSource,
 )
 
-SCHEMA_VERSION = 37
+SCHEMA_VERSION = 39
 
 MIGRATIONS: dict[int, list[str]] = {
     1: [
@@ -941,6 +943,16 @@ MIGRATIONS: dict[int, list[str]] = {
         "CREATE INDEX IF NOT EXISTS idx_design_phase_artifacts_run ON design_run_phase_artifacts (run_id, phase, variant_key, status)",
         "CREATE INDEX IF NOT EXISTS idx_design_phase_artifacts_status ON design_run_phase_artifacts (status, updated_ts)",
     ],
+    38: [
+        "ALTER TABLE design_runs ADD COLUMN output_artifact_id TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE design_runs ADD COLUMN output_tree_hash TEXT NOT NULL DEFAULT ''",
+    ],
+    39: [
+        # Existing rows predate immutable output publication and remain
+        # inspectable through the narrowly scoped legacy source reader. New
+        # runs opt in explicitly at creation time.
+        "ALTER TABLE design_runs ADD COLUMN artifact_required INTEGER NOT NULL DEFAULT 0 CHECK (artifact_required IN (0, 1))",
+    ],
 }
 
 
@@ -1756,7 +1768,7 @@ class Memory:
         encoded = canonical_json(cleaned)
         if len(encoded.encode("utf-8")) > max_bytes:
             raise ContractError(f"{field_name} exceeds {max_bytes} bytes")
-        return encoded, canonical_hash(cleaned)
+        return encoded, canonical_hash(cleaned, max_bytes=max_bytes)
 
     @staticmethod
     def _decode_design_json(value: Any) -> dict[str, Any]:
@@ -1795,6 +1807,10 @@ class Memory:
         chat_job_id: int | None = None,
         intake_session_id: str | None = None,
         intake_revision_id: int | None = None,
+        # Direct low-level callers may be restoring historical records. The
+        # production DesignService opts new runs in when its immutable output
+        # store is configured.
+        artifact_required: bool = False,
     ) -> dict[str, Any]:
         """Create the immutable input snapshot for a design workflow."""
         run_id = str(run_id or "").strip()
@@ -1810,6 +1826,8 @@ class Memory:
             raise ContractError("mode is invalid")
         if not isinstance(publishable, bool):
             raise ContractError("publishable must be boolean")
+        if not isinstance(artifact_required, bool):
+            raise ContractError("artifact_required must be boolean")
         if mode == "local_experiment" and publishable:
             raise ContractError("local_experiment must not be publishable")
         for value, name in (
@@ -1855,11 +1873,11 @@ class Memory:
             self.conn.execute(
                 "INSERT INTO design_runs "
                 "(run_id, mode, status, intake_json, intake_hash, base_sha, candidate_ref, publishable, design_manifest_path, "
-                "parent_run_id, operation_kind, source_candidate_sha, created_ts, updated_ts) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "parent_run_id, operation_kind, source_candidate_sha, artifact_required, created_ts, updated_ts) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (run_id, mode, str(status), intake_encoded, intake_hash, base_sha, candidate_ref,
-                 int(publishable), design_manifest_path, parent_run_id, operation_kind,
-                 source_candidate_sha, now, now),
+                  int(publishable), design_manifest_path, parent_run_id, operation_kind,
+                  source_candidate_sha, int(artifact_required), now, now),
             )
             self.conn.execute(
                 "UPDATE design_runs SET owner_request = ?, conversation_id = ?, source_message_id = ?, chat_job_id = ? WHERE run_id = ?",
@@ -1992,6 +2010,11 @@ class Memory:
                 if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 1):
                     raise ContractError(f"{name} is invalid")
                 updates[name] = value
+        if "output_artifact_id" in fields:
+            value = str(fields["output_artifact_id"] or "").strip()
+            if value and not re.fullmatch(r"site-output-[0-9a-f]{64}", value):
+                raise ContractError("output_artifact_id is invalid")
+            updates["output_artifact_id"] = value
         if "design_manifest_path" in fields:
             manifest_path = str(fields["design_manifest_path"] or "").strip()
             updates["design_manifest_path"] = safe_relative_path(manifest_path, "design_manifest_path") if manifest_path else ""
@@ -2001,12 +2024,20 @@ class Memory:
             if "design_manifest_hash" not in fields:
                 fields["design_manifest_hash"] = computed_hash
         if "quality_report_json" in fields:
-            encoded, computed_hash = self._design_json(fields["quality_report_json"], "quality_report_json")
+            encoded, computed_hash = self._design_json(
+                fields["quality_report_json"],
+                "quality_report_json",
+                max_bytes=MAX_QUALITY_REPORT_BYTES,
+            )
             updates["quality_report_json"] = encoded
             if "quality_report_hash" not in fields:
                 fields["quality_report_hash"] = computed_hash
         if "planning_json" in fields:
-            encoded, computed_hash = self._design_json(fields["planning_json"], "planning_json")
+            encoded, computed_hash = self._design_json(
+                fields["planning_json"],
+                "planning_json",
+                max_bytes=MAX_CONTRACT_BYTES,
+            )
             updates["planning_json"] = encoded
             if "planning_hash" not in fields:
                 fields["planning_hash"] = computed_hash
@@ -2029,7 +2060,7 @@ class Memory:
                 fields["context_snapshot_hash"] = computed_hash
         for name in (
             "design_manifest_hash", "quality_report_hash", "planning_hash", "context_snapshot_hash",
-            "visual_critique_hash", "transcript_hash",
+            "visual_critique_hash", "transcript_hash", "output_tree_hash",
         ):
             if name in fields:
                 updates[name] = str(fields[name] or "").strip().lower()
@@ -2055,11 +2086,17 @@ class Memory:
             if computed_hash != str(fields["design_manifest_hash"]).strip().lower():
                 raise ContractError("design_manifest_hash does not match design_manifest_json")
         if "quality_report_json" in fields and fields.get("quality_report_hash"):
-            _, computed_hash = self._design_json(fields["quality_report_json"], "quality_report_json")
+            _, computed_hash = self._design_json(
+                fields["quality_report_json"],
+                "quality_report_json",
+                max_bytes=MAX_QUALITY_REPORT_BYTES,
+            )
             if computed_hash != str(fields["quality_report_hash"]).strip().lower():
                 raise ContractError("quality_report_hash does not match quality_report_json")
         if "planning_json" in fields and fields.get("planning_hash"):
-            _, computed_hash = self._design_json(fields["planning_json"], "planning_json")
+            _, computed_hash = self._design_json(
+                fields["planning_json"], "planning_json", max_bytes=MAX_CONTRACT_BYTES
+            )
             if computed_hash != str(fields["planning_hash"]).strip().lower():
                 raise ContractError("planning_hash does not match planning_json")
         if "context_snapshot" in fields and fields.get("context_snapshot_hash"):
@@ -2507,6 +2544,58 @@ class Memory:
             self.conn.execute(
                 f"UPDATE design_intake_sessions SET {', '.join(f'{key} = ?' for key in updates)} WHERE session_id = ?",
                 [*updates.values(), session_id],
+            )
+        return self.get_design_intake_session(session_id)
+
+    @_locked
+    def reconcile_confirmed_design_intake(
+        self,
+        session_id: str,
+        *,
+        revision: int,
+        draft_hash: str,
+    ) -> dict[str, Any] | None:
+        """Restore a frozen session after a stale post-confirmation job.
+
+        A message queued immediately after confirmation intentionally moves the
+        session back to ``collecting``. If that job is rejected as stale
+        without changing the draft, an explicit owner confirmation may safely
+        resume the already-frozen revision. This only repairs that exact
+        persisted identity; it never promotes a newer or unconfirmed draft.
+        """
+        session_id = self._validate_intake_session_id(session_id)
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+            raise ContractError("intake revision is invalid")
+        normalized_hash = str(draft_hash or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", normalized_hash):
+            raise ContractError("intake draft hash is invalid")
+        row = self.conn.execute(
+            "SELECT revision, status, confirmed_revision, confirmed_hash, draft_hash "
+            "FROM design_intake_sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            raise ContractError("intake session was not found")
+        if str(row["status"] or "") == IntakeSessionState.CONFIRMED.value:
+            return self.get_design_intake_session(session_id)
+        if str(row["status"] or "") != IntakeSessionState.COLLECTING.value:
+            return None
+        if int(row["revision"] or 0) != revision or str(row["draft_hash"] or "") != normalized_hash:
+            return None
+        if int(row["confirmed_revision"] or 0) != revision or str(row["confirmed_hash"] or "") != normalized_hash:
+            return None
+        frozen = self.conn.execute(
+            "SELECT 1 FROM design_intake_revisions "
+            "WHERE session_id = ? AND revision = ? AND source_kind = 'owner_confirmation' "
+            "AND draft_hash = ? AND site_intake_json IS NOT NULL LIMIT 1",
+            (session_id, revision, normalized_hash),
+        ).fetchone()
+        if frozen is None:
+            return None
+        with self.conn:
+            self.conn.execute(
+                "UPDATE design_intake_sessions SET status = ?, updated_ts = ? WHERE session_id = ?",
+                (IntakeSessionState.CONFIRMED.value, _now(), session_id),
             )
         return self.get_design_intake_session(session_id)
 

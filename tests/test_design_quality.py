@@ -6,10 +6,50 @@ from tests.test_design_contracts import _experience_plan
 from site_agent.core.design_contracts import DesignManifest, ExperiencePlanBundle
 from site_agent.hands.design_quality import (
     QualityPolicy,
+    _compact_browser_result,
     _font_findings,
+    _native_source_findings,
     _repository_findings,
     run_quality_gates,
 )
+
+
+def test_browser_evidence_compaction_drops_repeated_dom_fingerprints():
+    huge = "data:image/svg+xml;base64," + ("A" * 200_000)
+    condition = {
+        "condition_id": "scene-1-visible",
+        "scene_id": "scene-1",
+        "visible": True,
+        "observed_transition": True,
+        "rendered_fingerprint": {"text": huge, "descendants": [{"backgroundImage": huge}]},
+    }
+    raw = {
+        "routes": [{
+            "journey_conditions_before": [condition],
+            "journey_conditions_after": [condition],
+            "motion_preferences": {
+                "no-preference": {
+                    "scroll_states": [{
+                        "position": 0,
+                        "journey_conditions": [condition],
+                        "observable": {
+                            "critical_content_visible": True,
+                            "nodes": [{"visible": True, "fingerprint": {"backgroundImage": huge}}],
+                        },
+                    }],
+                },
+            },
+        }],
+    }
+
+    compact = _compact_browser_result(raw)
+    encoded = json.dumps(compact)
+
+    assert len(encoded.encode("utf-8")) < 10_000
+    state = compact["routes"][0]["motion_preferences"]["no-preference"]["scroll_states"][0]
+    assert state["journey_conditions"][0]["condition_id"] == "scene-1-visible"
+    assert state["journey_conditions"][0]["observed_transition"] is True
+    assert state["observable_summary"]["critical_content_visible"] is True
 
 
 def _repo(tmp_path):
@@ -65,8 +105,12 @@ def test_experience_plan_gates_use_browser_composition_and_temporal_evidence(tmp
         'data-ada-asset-sha256="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" '
         'data-ada-composition-role="logo" data-ada-focal-coverage="0.9" src="/logo.svg" alt="Logo">'
         '<nav data-ada-composition-role="navigation">Navigation</nav>'
-        '<div data-ada-signature-behavior="measured-arrival" data-ada-behavior-observed="true">'
-        '<h1>Home</h1><p>Useful public copy stays visible at rest.</p></div></main></body></html>'
+         '<div data-ada-signature-behavior="measured-arrival">'
+         '<section data-ada-journey-scene="arrival" data-ada-journey-condition="journey-arrival-visible" '
+         'data-ada-journey-trigger="pointer-enter">'
+         '<h1>Home</h1><p>Useful public copy stays visible at rest.</p></section>'
+         '<section data-ada-journey-scene="commitment" data-ada-journey-condition="journey-commitment-readable" '
+         'data-ada-journey-trigger="keyboard-focus">Commitment</section></main></body></html>'
     )
     plan = _experience_plan()
     experience_plan_hash = ExperiencePlanBundle.from_dict(plan).content_hash
@@ -95,8 +139,31 @@ def test_experience_plan_gates_use_browser_composition_and_temporal_evidence(tmp
             }
             return {
                 "status": "passed",
+                "motion_preferences": {
+                    "no-preference": {"journey_conditions": [
+                            {"condition_id": "journey-arrival-visible", "scene_id": "arrival", "visible": True, "state": "completed", "completion": "arrival is visible"},
+                            {"condition_id": "journey-commitment-readable", "scene_id": "commitment", "visible": True, "state": "active", "completion": "commitment is readable"},
+                    ]},
+                    "reduce": {"journey_conditions": [
+                            {"condition_id": "journey-arrival-visible", "scene_id": "arrival", "visible": True, "state": "completed", "completion": "arrival is visible"},
+                            {"condition_id": "journey-commitment-readable", "scene_id": "commitment", "visible": True, "state": "active", "completion": "commitment is readable"},
+                    ]},
+                },
                 "routes": [{
                     "route": "index.html",
+                    "journey_conditions_before": [
+                        # A page-level condition can belong to a scene in the
+                        # plan without identifying that scene in the rendered
+                        # marker. It must not become a false leading scene in
+                        # the ordered path.
+                        {"condition_id": "journey-commitment-readable", "scene_id": "", "visible": True, "state": "rendered", "completion": ""},
+                            {"condition_id": "journey-arrival-visible", "scene_id": "arrival", "visible": True, "state": "completed", "completion": "arrival is visible"},
+                            {"condition_id": "journey-commitment-readable", "scene_id": "commitment", "visible": True, "state": "active", "completion": "commitment is readable"},
+                    ],
+                    "journey_conditions_after": [
+                            {"condition_id": "journey-arrival-visible", "scene_id": "arrival", "visible": True, "state": "rendered", "completion": "", "observed_transition": True},
+                            {"condition_id": "journey-commitment-readable", "scene_id": "commitment", "visible": True, "state": "rendered", "completion": "", "observed_transition": True},
+                    ],
                     "composition_elements": [
                         {
                             "role": "logo",
@@ -108,7 +175,13 @@ def test_experience_plan_gates_use_browser_composition_and_temporal_evidence(tmp
                         },
                         {"role": "navigation", "box": {"x": 320, "y": 20, "width": 400, "height": 40}},
                     ],
-                    "temporal_evidence": [temporal],
+                 "temporal_evidence": [{
+                     **temporal,
+                     # These route-level observations are intentionally not
+                     # part of the strict temporal evidence contract.
+                     "journey_conditions_before": [],
+                     "journey_conditions_after": [],
+                 }],
                 }],
                 "external_requests": [],
             }
@@ -127,6 +200,33 @@ def test_experience_plan_gates_use_browser_composition_and_temporal_evidence(tmp
     assert report.state == "passed", data
     assert data["gates"]["composition"] == "passed"
     assert data["gates"]["temporal"] == "passed"
+    assert data["evidence"]["experience_journey"]["ordered_scene_paths"] == [{
+        "route": "index.html",
+        "viewport": "desktop",
+        "scene_ids": ["arrival", "commitment"],
+    }]
+
+    class MissingSceneTransitionBrowser(Browser):
+        def inspect(self, output_dir, viewport):
+            result = super().inspect(output_dir, viewport)
+            result["routes"][0]["journey_conditions_after"][1]["observed_transition"] = False
+            return result
+
+    missing_transition = run_quality_gates(
+        repo,
+        base_sha=sha,
+        candidate_sha=sha,
+        run_id="run-experience-plan-missing-scene-transition",
+        policy=_policy(browser_required=True, viewports=({"name": "desktop", "width": 1440, "height": 1000},)),
+        browser=MissingSceneTransitionBrowser(),
+        experience_plan=plan,
+    )
+    missing_data = missing_transition.to_dict()
+    assert missing_transition.state == "failed", missing_data
+    assert any(
+        finding["code"] == "journey_scene_transition_missing"
+        for finding in missing_data["findings"]
+    )
 
 
 def test_font_gate_requires_local_approved_woff2_and_face_declaration(tmp_path):
@@ -416,6 +516,37 @@ def test_root_relative_links_resolve_from_output_root(tmp_path):
     assert report.to_dict()["evidence"]["output"]["status"] == "passed"
 
 
+def test_output_warnings_do_not_block_retained_artifact(tmp_path):
+    repo, sha = _repo(tmp_path)
+    output = repo / "output"
+    output.mkdir()
+    (output / "index.html").write_text(
+        '<html lang="en"><head><title>Home</title>'
+        '<meta name="description" content="A real page">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1"></head>'
+        '<body><h1>Home</h1><p>This form is a placeholder.</p></body></html>'
+    )
+    published = []
+
+    report = run_quality_gates(
+        repo,
+        base_sha=sha,
+        candidate_sha=sha,
+        run_id="run-output-warning",
+        policy=_policy(),
+        output_artifact_publisher=lambda output_dir: published.append(output_dir) or {
+            "artifact_id": "site-output-test",
+            "tree_hash": "a" * 64,
+        },
+    )
+
+    data = report.to_dict()
+    assert data["evidence"]["output"]["status"] == "passed"
+    assert data["evidence"]["output_artifact"]["status"] == "passed"
+    assert published == [output]
+    assert any(finding["code"] == "placeholder_text" for finding in data["findings"])
+
+
 def test_quality_reads_candidate_commit_not_persistent_clone_worktree(tmp_path):
     repo, base_sha = _repo(tmp_path)
     (repo / "index.html").write_text("candidate source")
@@ -646,6 +777,129 @@ def test_host_runtime_paths_from_host_manifest_are_exempt_from_source_allowlist(
     )
 
 
+def test_native_source_gate_does_not_scan_host_provisioned_runtime_files(tmp_path):
+    repo, base_sha = _repo(tmp_path)
+    (repo / "src").mkdir()
+    (repo / "src" / "app.js").write_text("document.body.dataset.ready = 'true';")
+    runtime = repo / "public" / "vendor" / "gsap" / "gsap.min.js"
+    runtime.parent.mkdir(parents=True)
+    runtime.write_text("gsap.registerPlugin(Draggable);")
+    manifest = {
+        "schema_version": 1,
+        "source_homepage_path": "index.html",
+        "source_files": {"homepage": "index.html", "app": "src/app.js"},
+        "host_generated": True,
+        "host_metadata": {"provisioned_runtime_paths": ["public/vendor/gsap/gsap.min.js"]},
+    }
+    (repo / "design").mkdir()
+    (repo / "design" / "ada-design-manifest.json").write_text(json.dumps(manifest))
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "host runtime candidate"], check=True)
+    candidate_sha = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    evidence, findings = _native_source_findings(
+        repo,
+        base_sha,
+        candidate_sha,
+        _policy(
+            native_source_required=True,
+            manifest_path="design/ada-design-manifest.json",
+            allowed_patterns=("index.html", "src/**", "design/**", "public/**"),
+        ),
+    )
+
+    assert findings == []
+    assert evidence["source_files"] == ["src/app.js"]
+    assert evidence["host_provisioned_files"] == ["public/vendor/gsap/gsap.min.js"]
+
+
+def test_native_source_gate_ignores_urls_inside_inline_data_css(tmp_path):
+    repo, base_sha = _repo(tmp_path)
+    (repo / "src").mkdir()
+    (repo / "src" / "styles.css").write_text(
+        "body { background-image: url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3C/svg%3E\"); }\n"
+    )
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "inline texture"], check=True)
+    candidate_sha = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    evidence, findings = _native_source_findings(
+        repo,
+        base_sha,
+        candidate_sha,
+        _policy(
+            native_source_required=True,
+            allowed_patterns=("src/**",),
+        ),
+    )
+
+    assert findings == []
+    assert evidence["external_resources"] == []
+
+
+def test_repair_native_source_gate_scans_retained_candidate_tree(tmp_path):
+    repo, _ = _repo(tmp_path)
+    (repo / "src" / "components").mkdir(parents=True)
+    (repo / "src" / "components" / "LightDescent.tsx").write_text(
+        'import { useGSAP } from "@gsap/react";\n'
+        'import gsap from "gsap";\n'
+        'export default function LightDescent() {\n'
+        '  useGSAP(() => {\n'
+        '    const timeline = gsap.timeline();\n'
+        '    window.matchMedia("(prefers-reduced-motion: no-preference)");\n'
+        '    return () => timeline.kill();\n'
+        '  });\n'
+        '  return <div />;\n'
+        '}\n'
+    )
+    (repo / "src" / "styles.css").write_text(
+        '@media (prefers-reduced-motion: reduce) { * { transition: none; } }\n'
+    )
+    (repo / "package.json").write_text(json.dumps({
+        "dependencies": {"@gsap/react": "2.1.2", "gsap": "3.12.5"},
+    }))
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "native parent"], check=True)
+    base_sha = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    (repo / "src" / "styles.css").write_text(
+        '@media (prefers-reduced-motion: reduce) { * { transition: none; } }\n'
+        '.hero { color: white; }\n'
+    )
+    subprocess.run(["git", "-C", str(repo), "add", "src/styles.css"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "repair composition"], check=True)
+    candidate_sha = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    evidence, findings = _native_source_findings(
+        repo,
+        base_sha,
+        candidate_sha,
+        _policy(
+            native_source_required=True,
+            react_source_required=True,
+            gsap_required=True,
+            operation_kind="technical_repair",
+            approved_capabilities=(
+                {"package": "@gsap/react", "version": "2.1.2"},
+                {"package": "gsap", "version": "3.12.5"},
+            ),
+            allowed_patterns=("index.html", "src/**", "output/**"),
+        ),
+    )
+
+    assert findings == []
+    assert "src/components/LightDescent.tsx" in evidence["source_files"]
+    assert evidence["react_source_files"] == ["src/components/LightDescent.tsx"]
+    assert evidence["gsap_usage_files"] == ["src/components/LightDescent.tsx"]
+
+
 def test_unapproved_dependency_change_is_blocked(tmp_path):
     repo, base_sha = _repo(tmp_path)
     (repo / "package.json").write_text(json.dumps({"dependencies": {"left-pad": "1.3.0"}}))
@@ -742,9 +996,13 @@ def test_browser_evidence_blocks_contrast_and_unreduced_motion(tmp_path):
                     "route": "index.html",
                     "keyboard": {"focusable_count": 0, "focus_visible": True},
                     "motion_preferences": {
-                        "no-preference": {"active_animations": 2},
-                        "reduce": {"active_animations": 2},
+                        "no-preference": {"motion_observed": True, "observable_delta": {"observed": True}},
+                        "reduce": {"motion_observed": True, "observable_delta": {"observed": True}},
                     },
+                }],
+                "hidden_resting_text": [{
+                    "route": "index.html",
+                    "details": [{"tag": "h1", "text": "Hidden headline"}],
                 }],
                 "contrast_failures": [{"text": "Home", "ratio": 2.1}],
                 "font_load_failures": [{"family": "Brand Sans", "loaded": False}],
@@ -764,4 +1022,4 @@ def test_browser_evidence_blocks_contrast_and_unreduced_motion(tmp_path):
     findings = report.to_dict()["findings"]
     codes = {finding["code"] for finding in findings}
     assert report.state == "failed"
-    assert {"contrast_failure", "reduced_motion_ignored", "font_load_failure", "low_resolution_image", "text_wrap_failure"} <= codes
+    assert {"contrast_failure", "reduced_motion_unsettled", "font_load_failure", "low_resolution_image", "text_wrap_failure", "resting_text_hidden"} <= codes

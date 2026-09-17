@@ -113,6 +113,9 @@ _EVENT_KEYS = {
     "state",
     "visual_review_model",
     "worker",
+    "snapshot_id",
+    "commit_sha",
+    "label",
 }
 
 
@@ -159,6 +162,7 @@ def _result_projection(
     report: Mapping[str, Any],
     visual: Mapping[str, Any] | None,
     error: str | None,
+    operation_kind: str = "initial_build",
 ) -> dict[str, Any]:
     quality_state = str(report.get("state") or "pending")
     visual_state = str((visual or {}).get("state") or "pending")
@@ -177,7 +181,11 @@ def _result_projection(
         if visual_state == "repair":
             count = len(visual_findings)
             summary = f"Deterministic checks passed, but visual review found {count} repair item(s)."
-            next_action = "Review the visual findings and decide whether to start the available refinement."
+            next_action = (
+                "This bounded refinement already consumed the automatic repair; further changes require explicit owner feedback."
+                if operation_kind == "visual_refinement"
+                else "Review the visual findings and decide whether to start the available refinement."
+            )
         else:
             count = len(quality_findings)
             summary = f"Deterministic validation found {count} blocking issue(s)."
@@ -237,12 +245,12 @@ def _owner_status(status: str, report: Mapping[str, Any], visual: Mapping[str, A
     if quality_state in {"failed", "incomplete"}:
         return "blocked"
     if status == DesignRunStatus.NEEDS_REPAIR.value:
-        return "blocked" if visual_state == "failed" else "ready_for_feedback"
+        return "blocked"
     if status == DesignRunStatus.INCOMPLETE.value:
-        # A retained candidate with passing deterministic checks is still useful
-        # when the optional visual provider is unavailable or times out.
-        return "ready_for_feedback" if quality_state == "passed" else "blocked"
+        return "blocked"
     if status == DesignRunStatus.READY_FOR_REVIEW.value:
+        if quality_state != "passed" or visual_state in {"repair", "inconclusive", "failed"}:
+            return "blocked"
         return "ready_for_feedback"
     return "working"
 
@@ -491,8 +499,16 @@ def build_intake_lab_build_environment(
     # toolchain before the host's configured build tools.
     runtime_bin = Path(sys.executable).expanduser().parent if sys.executable else None
     if runtime_bin is not None:
+        user_tool_bin = (Path.home() / ".local" / "bin").resolve()
+        tool_paths = [str(runtime_bin)]
+        if user_tool_bin.is_dir() and user_tool_bin != runtime_bin.resolve():
+            # Intake Lab may be launched by a service with a minimal PATH. Keep
+            # the host's user-local Node/npm toolchain available for the
+            # approved Astro build instead of silently falling back to an older
+            # system Node binary.
+            tool_paths.append(str(user_tool_bin))
         result["PATH"] = os.pathsep.join(
-            part for part in (str(runtime_bin), result.get("PATH", "")) if part
+            part for part in (*tool_paths, result.get("PATH", "")) if part
         )
     return result
 
@@ -646,7 +662,6 @@ def _revision_reason(
 
 _REVIEWABLE_STATUSES = {
     DesignRunStatus.READY_FOR_REVIEW.value,
-    DesignRunStatus.NEEDS_REPAIR.value,
 }
 
 
@@ -703,6 +718,7 @@ class IntakeLabService:
         review_environment: Mapping[str, str] | None = None,
         design_intake_service: Any | None = None,
         chat_executor: Any | None = None,
+        live_preview_store: Any | None = None,
     ) -> None:
         if default_intake is not None and not isinstance(default_intake, SiteIntake):
             raise IntakeLabError("default_intake must be a validated SiteIntake")
@@ -719,6 +735,7 @@ class IntakeLabService:
         self.review_environment = dict(review_environment or {})
         self.design_intake_service = design_intake_service
         self.chat_executor = chat_executor
+        self.live_preview_store = live_preview_store
         self.workspace.mkdir(parents=True, exist_ok=True)
 
     def describe(self) -> dict[str, Any]:
@@ -739,7 +756,7 @@ class IntakeLabService:
             "visual_review": {"provider": visual_provider, "model": visual_model},
             "default_prompt": self.default_prompt,
             "default_intake": self.default_intake.to_dict() if self.default_intake is not None else {},
-            "variants": ["candidate"],
+            "variants": ["candidate", "live"],
             "viewports": [
                 {"name": "desktop", "width": 1440, "height": 1000},
                 {"name": "tablet", "width": 768, "height": 1024},
@@ -899,8 +916,36 @@ class IntakeLabService:
                 env=self.review_environment,
                 source_media=getattr(self, "media_service", None),
             )
+            finisher = getattr(getattr(self, "executor", None), "finish_validation", None)
+            if callable(finisher):
+                finisher(safe_id)
             return self.get_run(safe_id)
         except Exception as exc:  # noqa: BLE001 - keep the adapter boundary bounded
+            raise IntakeLabError(str(exc)[:500]) from exc
+
+    def revalidate_run(self, run_id: str) -> dict[str, Any]:
+        """Re-run host gates against a retained candidate without regenerating it."""
+        safe_id = str(run_id or "").strip()
+        run = self._raw_local_run(safe_id)
+        context = getattr(self.executor, "context", {})
+        factory = context.get("browser_quality_factory") if isinstance(context, Mapping) else None
+        if not callable(factory):
+            raise IntakeLabError("browser quality validation is unavailable")
+        try:
+            browser = factory(safe_id, run)
+            report = self.design_service.revalidate_run(
+                safe_id,
+                self.design_service.clone_path_for_run(safe_id),
+                browser=browser,
+                build_env=context.get("build_env") if isinstance(context, Mapping) else None,
+            )
+            finisher = getattr(self.executor, "finish_validation", None)
+            if callable(finisher):
+                finisher(safe_id)
+            return {"run": self.get_run(safe_id), "quality_report": report.to_dict()}
+        except IntakeLabError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - keep the host boundary bounded
             raise IntakeLabError(str(exc)[:500]) from exc
 
     def create_technical_repair(
@@ -1012,6 +1057,37 @@ class IntakeLabService:
             raise IntakeLabError("preview clone is outside the Intake Lab workspace")
         return clone, sha
 
+    def preview_artifact_identity(self, run_id: str, variant: str = "candidate") -> tuple[Path, str] | None:
+        """Resolve the immutable output tree retained by host validation.
+
+        ``None`` is reserved for legacy runs that predate output artifacts; new
+        candidates must carry both the artifact ID and its tree hash before the
+        owner preview can use this path.
+        """
+        if str(variant or "").strip().lower() != "candidate":
+            return None
+        run = self._raw_local_run(run_id)
+        artifact_required = bool(run.get("artifact_required"))
+        artifact_id = str(run.get("output_artifact_id") or "").strip()
+        tree_hash = str(run.get("output_tree_hash") or "").strip().lower()
+        if not artifact_id or not tree_hash:
+            if artifact_required:
+                raise IntakeLabError("candidate output artifact is not retained")
+            return None
+        store = getattr(self.design_service, "output_artifact_store", None)
+        resolver = getattr(store, "resolve", None)
+        if not callable(resolver):
+            if artifact_required:
+                raise IntakeLabError("candidate output artifact store is unavailable")
+            return None
+        try:
+            artifact = resolver(artifact_id)
+        except Exception as exc:  # noqa: BLE001 - expose a bounded preview failure
+            raise IntakeLabError("candidate output artifact is unavailable") from exc
+        if str(getattr(artifact, "tree_hash", "") or "").lower() != tree_hash:
+            raise IntakeLabError("candidate output artifact identity does not match the retained run")
+        return Path(artifact.path).resolve(), artifact_id
+
     def preview_profile(self, run_id: str) -> str:
         """Return the persisted host-owned profile for an immutable candidate."""
         run = self._raw_local_run(run_id)
@@ -1025,6 +1101,36 @@ class IntakeLabService:
             if parent_id and parent_id != str(run_id):
                 return self.preview_profile(parent_id)
             raise IntakeLabError("preview profile is unavailable")
+
+    def live_preview_identity(self, run_id: str) -> tuple[Path, str]:
+        """Resolve the latest immutable checkpoint without exposing its path."""
+        if self.live_preview_store is None:
+            raise IntakeLabError("live preview is not available")
+        self._raw_local_run(run_id)
+        try:
+            latest = self.live_preview_store.latest(str(run_id))
+        except Exception as exc:  # noqa: BLE001 - keep the preview boundary bounded
+            raise IntakeLabError("live preview is unavailable") from exc
+        if not latest:
+            raise IntakeLabError("live preview is not available")
+        snapshot, clone = latest
+        if snapshot.run_id != str(run_id):
+            raise IntakeLabError("live preview identity does not match the run")
+        return Path(clone).resolve(), str(snapshot.commit_sha).lower()
+
+    def live_preview_snapshot(self, run_id: str) -> dict[str, Any] | None:
+        """Return the owner-safe latest checkpoint metadata."""
+        if self.live_preview_store is None:
+            return None
+        try:
+            self._raw_local_run(run_id)
+            latest = self.live_preview_store.latest(str(run_id))
+        except Exception:
+            return None
+        if not latest:
+            return None
+        snapshot, _ = latest
+        return snapshot.to_dict()
 
     def _raw_local_run(self, run_id: str) -> dict[str, Any]:
         if not _RUN_ID.fullmatch(str(run_id or "")):
@@ -1114,7 +1220,13 @@ class IntakeLabService:
         updated_at = run.get("updated_ts") or run.get("updated_at")
         status = str(run.get("status") or "failed")
         error = _redact_text(run.get("error"), self.workspace) if run.get("error") else None
-        result = _result_projection(status, report, visual, error)
+        result = _result_projection(
+            status,
+            report,
+            visual,
+            error,
+            operation_kind=str(run.get("operation_kind") or "initial_build"),
+        )
         duration_end = updated_at if status in _TERMINAL else datetime.now(timezone.utc).isoformat(timespec="seconds")
         duration = _duration_seconds(created_at, duration_end)
         profile_resolver = getattr(getattr(self, "design_service", None), "build_profile_for_run", None)
@@ -1150,6 +1262,8 @@ class IntakeLabService:
             },
             "base_sha": str(run.get("base_sha") or "") or None,
             "candidate_sha": str(run.get("candidate_sha") or "") or None,
+            "output_artifact_id": str(run.get("output_artifact_id") or "") or None,
+            "output_tree_hash": str(run.get("output_tree_hash") or "") or None,
             "publishable": False,
             "push_mode": "none",
             "quality": _quality_projection(report, self.workspace),

@@ -311,6 +311,42 @@ def test_run_opencode_turn_parses_events_and_resumes_session(tmp_path, monkeypat
     assert commands[1][commands[1].index("--session") + 1] == "session-1"
 
 
+def test_run_opencode_turn_stages_oversized_prompt_outside_argv(tmp_path, monkeypatch):
+    class FakeProcess:
+        pid = 12345
+        returncode = 0
+        stdout = iter([
+            json.dumps({"type": "step_start", "sessionID": "session-large"}),
+            json.dumps({"type": "text", "part": {"text": "finished"}}),
+        ])
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    commands = []
+    monkeypatch.setattr(runner, "_opencode_bin", lambda config: "opencode")
+
+    def fake_popen(*args, **kwargs):
+        commands.append(args[0])
+        staged = tmp_path / ".opencode/host-request.md"
+        assert staged.read_text(encoding="utf-8") == "direction\n" * 60_000
+        return FakeProcess()
+
+    monkeypatch.setattr(runner.subprocess, "Popen", fake_popen)
+    brief = "direction\n" * 60_000
+
+    result = runner.run_opencode_turn(
+        tmp_path,
+        brief,
+        {"builder": {"timeout_seconds": 3, "model": "deepseek/model"}},
+    )
+
+    assert result["session_id"] == "session-large"
+    assert commands[0][-1].startswith("Read the complete host request at .opencode/host-request.md")
+    assert len(commands[0][-1].encode("utf-8")) < 1_000
+    assert not (tmp_path / ".opencode/host-request.md").exists()
+
+
 def test_run_opencode_turn_records_step_usage_and_provider_cost(tmp_path, monkeypatch):
     class FakeProcess:
         pid = 12345

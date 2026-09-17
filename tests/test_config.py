@@ -22,7 +22,7 @@ def test_defaults_load_without_instance_file():
     assert config["blog"]["engine"] == "pelican"
     assert config["llm"]["base_url"] == "https://openrouter.ai/api/v1"
     assert config["llm"]["model"] == "deepseek/deepseek-v4-flash-0731"
-    assert config["builder"]["model"] == "openrouter/deepseek/deepseek-v4-flash-vision-exp"
+    assert config["builder"]["model"] == "openrouter/deepseek/deepseek-v4.1-flash"
     assert config["design_engine"]["orchestration"] == "legacy"
     assert config["dream"]["residue_count"] == 0
     assert config["self_model"]["enabled"] is True
@@ -140,7 +140,7 @@ def test_design_quality_required_content_accepts_bounded_text():
     })
 
 
-def test_design_specialist_orchestration_is_explicit_and_bounded():
+def test_design_orchestration_is_explicit_and_bounded():
     validate_design_config({
         "design_engine": {
             "orchestration": "specialist",
@@ -148,7 +148,13 @@ def test_design_specialist_orchestration_is_explicit_and_bounded():
             "required_viewports": [{"name": "desktop", "width": 1440, "height": 1000}],
         }
     })
-    with pytest.raises(ConfigError, match="orchestration must be legacy or specialist"):
+    validate_design_config({
+        "design_engine": {
+            "orchestration": "native",
+            "required_viewports": [{"name": "desktop", "width": 1440, "height": 1000}],
+        }
+    })
+    with pytest.raises(ConfigError, match="orchestration must be legacy, native, specialist, or creative"):
         validate_design_config({
             "design_engine": {
                 "orchestration": "unbounded",

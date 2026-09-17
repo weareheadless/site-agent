@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ..core.contracts import ContractError
-from ..core.design_intake_contracts import DesignIntakeDraft
+from ..core.design_intake_contracts import DesignIntakeDraft, IntakeOrigin
 from ..core.incubation_contracts import CustomerAdaGenesis, EvidenceOrigin, GenesisEvidence
 
 
@@ -89,10 +89,44 @@ class CustomerGenesisService:
                             sections[section_name][key] = str(value or "").strip()
                         else:
                             sections[section_name][key] = _merge(sections[section_name].get(key), value)
-        evidence = list(current.evidence)
-        origin = EvidenceOrigin.OWNER_CORRECTION.value if updates and updates.get("correction") else EvidenceOrigin.OWNER_STATEMENT.value
-        for path in ("business_world.purpose", "research_identity.subjects", "creative_identity.principles"):
-            evidence.append(GenesisEvidence(path, origin, source_id, 1.0))
+        # These three genesis statements are projections of intake fields. Do
+        # not turn bootstrap observations or Ada recommendations into owner
+        # statements merely because a genesis revision was saved after a chat
+        # turn. The latest projection replaces evidence for these paths; the
+        # immutable genesis revision rows retain the historical trail.
+        evidence_paths = {
+            "business_world.purpose": "business.offer_summary",
+            "research_identity.subjects": "audience.primary",
+            "creative_identity.principles": "brand.voice",
+        }
+        evidence = [item for item in current.evidence if item.field_path not in evidence_paths]
+        for path, intake_path in evidence_paths.items():
+            provenance = draft.provenance.get(intake_path)
+            if provenance is None:
+                origin = EvidenceOrigin.OWNER_CORRECTION.value if updates and updates.get("correction") else EvidenceOrigin.OWNER_STATEMENT.value
+                evidence_source = source_id
+                confidence = 1.0
+            elif provenance.origin == IntakeOrigin.CONFIRMED.value:
+                origin = EvidenceOrigin.OWNER_STATEMENT.value
+                evidence_source = f"message:{provenance.source_message_id}" if provenance.source_message_id else source_id
+                confidence = 1.0
+            elif provenance.origin == IntakeOrigin.ADVISED.value:
+                origin = EvidenceOrigin.OWNER_ACCEPTANCE.value
+                evidence_source = f"message:{provenance.source_message_id}" if provenance.source_message_id else source_id
+                confidence = 0.9
+            elif provenance.origin == IntakeOrigin.ASSUMED.value:
+                origin = (
+                    EvidenceOrigin.HOST_OBSERVATION.value
+                    if provenance.source_message_id is None
+                    else EvidenceOrigin.ADA_HYPOTHESIS.value
+                )
+                evidence_source = source_id if provenance.source_message_id is None else f"message:{provenance.source_message_id}"
+                confidence = 0.2
+            else:
+                origin = EvidenceOrigin.ADA_REFLECTION.value
+                evidence_source = f"message:{provenance.source_message_id}" if provenance.source_message_id else source_id
+                confidence = 0.1
+            evidence.append(GenesisEvidence(path, origin, evidence_source, confidence))
         for asset_id in _asset_ids(session.get("assets") or ()):
             evidence.append(GenesisEvidence(
                 "creative_identity.developing_tastes",

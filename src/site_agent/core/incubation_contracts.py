@@ -52,6 +52,7 @@ class EvidenceOrigin(str, Enum):
     OWNER_STATEMENT = "owner_statement"
     OWNER_CORRECTION = "owner_correction"
     OWNER_ACCEPTANCE = "owner_acceptance"
+    HOST_OBSERVATION = "host_observation"
     RESEARCH_EVIDENCE = "research_evidence"
     ADA_HYPOTHESIS = "ada_hypothesis"
     ADA_REFLECTION = "ada_reflection"
@@ -597,6 +598,7 @@ _ACTIVITY_DETAIL_KEYS = {
     "revision", "genesis_revision", "run_status", "quality_state", "trigger", "request_status", "job_status",
     "language", "languages", "translation_note", "previous_value", "new_value", "count",
     "infusion_deduction_count", "genesis_sections",
+    "snapshot_id", "commit_sha", "label",
 }
 
 

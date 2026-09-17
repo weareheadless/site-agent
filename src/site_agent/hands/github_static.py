@@ -51,9 +51,9 @@ def secret(config: dict[str, Any], name: str, env: dict[str, str] | None = None)
 class GithubStatic(SiteAdapter):
     name = "github_static"
 
-    def __init__(self, config: dict[str, Any]):
+    def __init__(self, config: dict[str, Any], env: dict[str, str] | None = None):
         super().__init__(config)
-        self.token = secret(config, "github_token")
+        self.token = secret(config, "github_token", env)
         self.repo = str(self.site.get("repository", "")).strip().strip("/")
         self.branch = str(self.site.get("branch", "main"))
         self.content_path = str(self.site.get("content_path", "content.json"))

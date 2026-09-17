@@ -22,6 +22,10 @@ from .contracts import ContractError
 
 DESIGN_SCHEMA_VERSION = 1
 MAX_CONTRACT_BYTES = 400_000
+# The host quality report carries lossless browser evidence (findings,
+# screenshots, motion and journey measurements). It is a diagnostic record, not
+# a model contract, so it gets a larger persistence bound without truncation.
+MAX_QUALITY_REPORT_BYTES = 2_000_000
 MAX_TEXT_LENGTH = 20_000
 MAX_LIST_ITEMS = 200
 _SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -32,6 +36,11 @@ _CONTEXT_LANGUAGE_RE = re.compile(r"^[a-z]{2,3}(?:-[a-z]{2,4})?$")
 _CONTEXT_INSIGHT_ID_RE = re.compile(r"^insight_[A-Za-z0-9._:-]{2,159}$")
 _CONTEXT_FINDING_ID_RE = re.compile(r"^finding_[A-Za-z0-9._:-]{2,159}$")
 _CONTEXT_DEDUCTION_ID_RE = re.compile(r"^deduction_[A-Za-z0-9._:-]{2,159}$")
+_PRIVATE_DETAIL_RE = re.compile(
+    r"https?://|\b[^\s@]+@[^\s@]+\.[^\s@]+\b|"
+    r"(?:^|\s)(?:/(?:[^\s/]+/)*[^\s/]+|[A-Za-z]:[\\/][^\s]+)",
+    re.IGNORECASE,
+)
 
 
 class DesignRunStatus(str, Enum):
@@ -64,6 +73,7 @@ class DesignPhase(str, Enum):
     CREATIVE_SELECTION = "creative_selection"
     IMPLEMENTATION = "implementation"
     MOTION = "motion"
+    EXPERIENCE_FIDELITY = "experience_fidelity"
     CREATIVE_REALIZATION_REVIEW = "creative_realization_review"
     EXPERIENCE_REVIEW = "experience_review"
     TECHNICAL_REVIEW = "technical_review"
@@ -107,7 +117,9 @@ _DESIGN_RUN_TRANSITIONS: dict[DesignRunStatus, frozenset[DesignRunStatus]] = {
     # visual gate is requested. That gate can reopen validation without
     # making any production mutation.
     DesignRunStatus.READY_FOR_REVIEW: frozenset({DesignRunStatus.VALIDATING, DesignRunStatus.NEEDS_REPAIR}),
-    DesignRunStatus.NEEDS_REPAIR: frozenset({DesignRunStatus.CANCELLED}),
+    # A host-only quality-gate correction may recheck the immutable candidate;
+    # source/code repairs still use an explicit child run.
+    DesignRunStatus.NEEDS_REPAIR: frozenset({DesignRunStatus.CANCELLED, DesignRunStatus.VALIDATING}),
     DesignRunStatus.INCOMPLETE: frozenset({DesignRunStatus.VALIDATING, DesignRunStatus.CANCELLED}),
     DesignRunStatus.INTERRUPTED: frozenset(),
     DesignRunStatus.FAILED: frozenset(),
@@ -147,11 +159,11 @@ def canonical_json(value: Any) -> str:
         raise ContractError("value is not safely JSON serializable") from exc
 
 
-def canonical_hash(value: Any) -> str:
+def canonical_hash(value: Any, *, max_bytes: int = MAX_CONTRACT_BYTES) -> str:
     """Return the SHA-256 of a canonical JSON value."""
     encoded = canonical_json(value).encode("utf-8")
-    if len(encoded) > MAX_CONTRACT_BYTES:
-        raise ContractError(f"contract exceeds {MAX_CONTRACT_BYTES} bytes")
+    if len(encoded) > max_bytes:
+        raise ContractError(f"contract exceeds {max_bytes} bytes")
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -240,6 +252,112 @@ def _optional_object(value: Any, path: str) -> dict[str, Any]:
     if value is None:
         return {}
     return _object(value, path)
+
+
+def normalize_workspace_target(value: Any, path: str = "workspace_target") -> dict[str, Any]:
+    """Validate the browser-selected target before it enters a design run.
+
+    The workspace sends a small, stable envelope rather than arbitrary browser
+    metadata.  Keeping the normalized result as JSON makes it safe to persist
+    in the immutable context snapshot while still giving callers a typed
+    boundary at the LLM/build handoff.
+    """
+    if value is None:
+        return {}
+    target = _strict_object(value, path, {
+        "mode", "phase", "scope", "surface", "site", "route", "preview", "payload",
+    })
+
+    def text_field(section: Mapping[str, Any], key: str, section_path: str, *, maximum: int = 300) -> str:
+        if key not in section or section[key] is None:
+            return ""
+        return _text(section[key], f"{section_path}.{key}", maximum=maximum)
+
+    def enum_field(section: Mapping[str, Any], key: str, section_path: str) -> str:
+        result = text_field(section, key, section_path, maximum=80).lower()
+        if result and not re.fullmatch(r"[a-z][a-z0-9_-]{0,79}", result):
+            raise ContractError(f"{section_path}.{key} is invalid")
+        return result
+
+    normalized: dict[str, Any] = {}
+    for key in ("mode", "phase", "scope", "surface"):
+        value_text = enum_field(target, key, path)
+        if value_text:
+            normalized[key] = value_text
+
+    def site_section(raw: Any) -> dict[str, Any]:
+        section_path = f"{path}.site"
+        section = _strict_object(raw, section_path, {"name", "url"})
+        result: dict[str, Any] = {}
+        name = text_field(section, "name", section_path)
+        if name:
+            result["name"] = name
+        url = text_field(section, "url", section_path, maximum=2_000)
+        if url:
+            result["url"] = _contact(url, f"{section_path}.url")
+        return result
+
+    def route_section(raw: Any) -> dict[str, Any]:
+        section_path = f"{path}.route"
+        section = _strict_object(raw, section_path, {"path", "kind", "sourceId", "source_id"})
+        result: dict[str, Any] = {}
+        route_path = text_field(section, "path", section_path, maximum=512)
+        if route_path:
+            if not route_path.startswith("/") or "//" in route_path or "\\" in route_path:
+                raise ContractError(f"{section_path}.path must be an absolute site path")
+            result["path"] = route_path
+        kind = enum_field(section, "kind", section_path)
+        if kind:
+            result["kind"] = kind
+        source_id = section.get("sourceId") if section.get("sourceId") is not None else section.get("source_id")
+        if source_id is not None:
+            result["sourceId"] = _text(source_id, f"{section_path}.sourceId", maximum=240)
+        return result
+
+    def preview_section(raw: Any) -> dict[str, Any]:
+        section_path = f"{path}.preview"
+        section = _strict_object(raw, section_path, {"state", "url", "revision"})
+        result: dict[str, Any] = {}
+        state = enum_field(section, "state", section_path)
+        if state and state not in {"live", "draft"}:
+            raise ContractError(f"{section_path}.state must be live or draft")
+        if state:
+            result["state"] = state
+        url = text_field(section, "url", section_path, maximum=2_000)
+        if url:
+            result["url"] = _contact(url, f"{section_path}.url") if "://" in url else url
+        if section.get("revision") is not None:
+            revision = section.get("revision")
+            if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+                raise ContractError(f"{section_path}.revision must be a non-negative integer")
+            result["revision"] = revision
+        return result
+
+    def payload_section(raw: Any) -> dict[str, Any]:
+        section_path = f"{path}.payload"
+        section = _strict_object(raw, section_path, {"collection", "id", "sourceId", "source_id", "slug", "status"})
+        result: dict[str, Any] = {}
+        for key in ("collection", "id", "slug", "status"):
+            value_text = text_field(section, key, section_path, maximum=240)
+            if value_text:
+                result[key] = value_text
+        source_id = section.get("sourceId") if section.get("sourceId") is not None else section.get("source_id")
+        if source_id is not None:
+            result["sourceId"] = _text(source_id, f"{section_path}.sourceId", maximum=240)
+        return result
+
+    sections = (
+        ("site", site_section),
+        ("route", route_section),
+        ("preview", preview_section),
+        ("payload", payload_section),
+    )
+    for key, parser in sections:
+        if target.get(key) is not None:
+            parsed = parser(target[key])
+            if parsed:
+                normalized[key] = parsed
+    return normalized
 
 
 def _extra(value: Mapping[str, Any], known: set[str]) -> dict[str, Any]:
@@ -917,6 +1035,170 @@ class BrandBehaviorSystem:
 
 
 @dataclass(frozen=True)
+class ExperienceJourney:
+    """Ordered, observable visitor journey owned by Ada's creative director.
+
+    This is intentionally stricter than a motion or animation list.  Each scene
+    describes what the visitor sees, what causes the transition, how the state
+    completes, and how the meaning survives every required input mode.
+    """
+
+    schema_version: int
+    journey_id: str
+    thesis: str
+    signature_behavior_id: str
+    signature_scene_id: str
+    scenes: tuple[dict[str, Any], ...]
+    must_pass_condition_ids: tuple[str, ...]
+    evidence_refs: tuple[str, ...]
+
+    _SCENE_FIELDS: ClassVar[frozenset[str]] = frozenset({
+        "id", "order", "content_region", "narrative_purpose", "initial_state", "trigger",
+        "visible_transition", "completion_condition", "exit_condition", "continuity",
+        "desktop_translation", "tablet_translation", "mobile_translation",
+        "keyboard_translation", "touch_translation", "reduced_motion_translation",
+        "interruption_behavior", "reverse_behavior", "resize_behavior", "rapid_input_behavior",
+        "acceptance_condition_ids", "evidence_refs",
+    })
+    _VAGUE_LANGUAGE_RE: ClassVar[re.Pattern[str]] = re.compile(
+        r"\b(?:as appropriate|if useful|named or implied|where relevant|when appropriate|if needed)\b",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> "ExperienceJourney":
+        value = _strict_object(raw, "experience_journey", {
+            "schema_version", "journey_id", "thesis", "signature_behavior_id", "signature_scene_id",
+            "scenes", "must_pass_condition_ids", "evidence_refs",
+        })
+        version = _schema(value)
+        raw_scenes = _list(value.get("scenes"), "experience_journey.scenes", item_type=object, maximum=16)
+        if len(raw_scenes) < 2:
+            raise ContractError("experience_journey requires at least two scenes")
+
+        scenes: list[dict[str, Any]] = []
+        scene_ids: set[str] = set()
+        condition_ids: list[str] = []
+        condition_seen: set[str] = set()
+        text_fields = (
+            "content_region", "narrative_purpose", "initial_state", "trigger", "visible_transition",
+            "completion_condition", "exit_condition", "continuity", "desktop_translation",
+            "tablet_translation", "mobile_translation", "keyboard_translation", "touch_translation",
+            "reduced_motion_translation", "interruption_behavior", "reverse_behavior",
+            "resize_behavior", "rapid_input_behavior",
+        )
+        for index, raw_scene in enumerate(raw_scenes):
+            path = f"experience_journey.scenes[{index}]"
+            scene = _strict_object(raw_scene, path, set(cls._SCENE_FIELDS))
+            scene_id = _normalized_id(scene.get("id"), f"{path}.id")
+            if scene_id in scene_ids:
+                raise ContractError(f"{path}.id is duplicated")
+            scene_ids.add(scene_id)
+            order = _positive_integer(scene.get("order"), f"{path}.order")
+            if order != index + 1:
+                raise ContractError("experience_journey.scenes must be ordered consecutively")
+            normalized: dict[str, Any] = {
+                "id": scene_id,
+                "order": order,
+            }
+            for field_name in text_fields:
+                text = _text(scene.get(field_name), f"{path}.{field_name}", maximum=4_000)
+                if cls._VAGUE_LANGUAGE_RE.search(text):
+                    raise ContractError(f"{path}.{field_name} contains non-executable vague language")
+                normalized[field_name] = text
+            raw_conditions = _list(
+                scene.get("acceptance_condition_ids"),
+                f"{path}.acceptance_condition_ids",
+                required=True,
+                maximum=20,
+            )
+            scene_conditions: list[str] = []
+            for condition_index, item in enumerate(raw_conditions):
+                condition_id = _normalized_id(
+                    item,
+                    f"{path}.acceptance_condition_ids[{condition_index}]",
+                    maximum=160,
+                )
+                if condition_id in condition_seen:
+                    raise ContractError("experience_journey acceptance condition IDs must be unique")
+                condition_seen.add(condition_id)
+                condition_ids.append(condition_id)
+                scene_conditions.append(condition_id)
+            normalized["acceptance_condition_ids"] = scene_conditions
+            scene_evidence = _text_tuple(
+                scene.get("evidence_refs"),
+                f"{path}.evidence_refs",
+                maximum=40,
+                item_maximum=300,
+            )
+            if not scene_evidence:
+                raise ContractError(f"{path}.evidence_refs must not be empty")
+            normalized["evidence_refs"] = list(scene_evidence)
+            scenes.append(normalized)
+
+        must_pass = tuple(
+            _normalized_id(item, f"experience_journey.must_pass_condition_ids[{index}]", maximum=160)
+            for index, item in enumerate(_list(
+                value.get("must_pass_condition_ids"),
+                "experience_journey.must_pass_condition_ids",
+                required=True,
+                maximum=64,
+            ))
+        )
+        if not must_pass:
+            raise ContractError("experience_journey.must_pass_condition_ids must not be empty")
+        if len(set(must_pass)) != len(must_pass):
+            raise ContractError("experience_journey.must_pass_condition_ids must be unique")
+        if set(must_pass) != set(condition_ids):
+            raise ContractError("experience_journey.must_pass_condition_ids must match scene acceptance conditions")
+        journey_evidence = _text_tuple(
+            value.get("evidence_refs"),
+            "experience_journey.evidence_refs",
+            maximum=64,
+            item_maximum=300,
+        )
+        if not journey_evidence:
+            raise ContractError("experience_journey.evidence_refs must not be empty")
+        signature_scene_id = _normalized_id(value.get("signature_scene_id"), "experience_journey.signature_scene_id")
+        if signature_scene_id not in scene_ids:
+            raise ContractError("experience_journey.signature_scene_id must reference a scene")
+        thesis = _text(value.get("thesis"), "experience_journey.thesis", maximum=4_000)
+        if cls._VAGUE_LANGUAGE_RE.search(thesis):
+            raise ContractError("experience_journey.thesis contains non-executable vague language")
+        signature_scene = next(scene for scene in scenes if scene["id"] == signature_scene_id)
+        if signature_scene["visible_transition"].casefold() == signature_scene["initial_state"].casefold():
+            raise ContractError("experience_journey signature scene must define a visible state transition")
+        return cls(
+            schema_version=version,
+            journey_id=_normalized_id(value.get("journey_id"), "experience_journey.journey_id"),
+            thesis=thesis,
+            signature_behavior_id=_normalized_id(
+                value.get("signature_behavior_id"), "experience_journey.signature_behavior_id"
+            ),
+            signature_scene_id=signature_scene_id,
+            scenes=tuple(scenes),
+            must_pass_condition_ids=must_pass,
+            evidence_refs=journey_evidence,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "journey_id": self.journey_id,
+            "thesis": self.thesis,
+            "signature_behavior_id": self.signature_behavior_id,
+            "signature_scene_id": self.signature_scene_id,
+            "scenes": copy.deepcopy(list(self.scenes)),
+            "must_pass_condition_ids": list(self.must_pass_condition_ids),
+            "evidence_refs": list(self.evidence_refs),
+        }
+
+    @property
+    def content_hash(self) -> str:
+        return canonical_hash(self.to_dict())
+
+
+@dataclass(frozen=True)
 class ExperiencePlanBundle:
     """Immutable creative source of truth passed to the realization agent."""
 
@@ -930,6 +1212,7 @@ class ExperiencePlanBundle:
     brand_source_map: BrandSourceMap
     brand_source_map_hash: str
     asset_composition_plan: tuple[AssetCompositionPlan, ...]
+    experience_journey: ExperienceJourney
     behavior_system: BrandBehaviorSystem
     layout_and_typography_plan: dict[str, Any]
     responsive_composition_plan: dict[str, Any]
@@ -946,6 +1229,7 @@ class ExperiencePlanBundle:
         known = {
             "schema_version", "run_id", "base_sha", "context_snapshot_hash", "selected_concept_id", "copy_deck_hash",
             "asset_evidence", "brand_source_map", "brand_source_map_hash", "asset_composition_plan", "behavior_system",
+            "experience_journey",
             "layout_and_typography_plan", "responsive_composition_plan", "protected_strengths", "variation_points",
             "implementation_risks", "transfer_test", "review_rubric", "input_artifact_hashes",
             "copy_deck",
@@ -980,6 +1264,11 @@ class ExperiencePlanBundle:
         for index, item in enumerate(input_hashes):
             if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", item.lower()):
                 raise ContractError(f"experience_plan_bundle.input_artifact_hashes[{index}] is not a content hash")
+        journey = ExperienceJourney.from_dict(value.get("experience_journey"))
+        behavior_system = BrandBehaviorSystem.from_dict(value.get("behavior_system"))
+        signature_id = str(behavior_system.signature_behavior.get("id") or "")
+        if journey.signature_behavior_id != signature_id:
+            raise ContractError("experience_plan_bundle journey signature behavior does not match behavior_system")
         return cls(
             schema_version=version,
             run_id=_text(value.get("run_id"), "experience_plan_bundle.run_id", maximum=120),
@@ -991,7 +1280,8 @@ class ExperiencePlanBundle:
             brand_source_map=source_map,
             brand_source_map_hash=source_map_hash,
             asset_composition_plan=composition,
-            behavior_system=BrandBehaviorSystem.from_dict(value.get("behavior_system")),
+            experience_journey=journey,
+            behavior_system=behavior_system,
             layout_and_typography_plan=_object(value.get("layout_and_typography_plan"), "experience_plan_bundle.layout_and_typography_plan"),
             responsive_composition_plan=_object(value.get("responsive_composition_plan"), "experience_plan_bundle.responsive_composition_plan"),
             protected_strengths=_text_tuple(value.get("protected_strengths"), "experience_plan_bundle.protected_strengths", maximum=40, item_maximum=1_000),
@@ -1015,6 +1305,7 @@ class ExperiencePlanBundle:
             "brand_source_map": self.brand_source_map.to_dict(),
             "brand_source_map_hash": self.brand_source_map_hash,
             "asset_composition_plan": [item.to_dict() for item in self.asset_composition_plan],
+            "experience_journey": self.experience_journey.to_dict(),
             "behavior_system": self.behavior_system.to_dict(),
             "layout_and_typography_plan": copy.deepcopy(self.layout_and_typography_plan),
             "responsive_composition_plan": copy.deepcopy(self.responsive_composition_plan),
@@ -1251,6 +1542,7 @@ class DesignRequest:
     intake: SiteIntake
     owner_summary: str
     source_message_id: int | None = None
+    target: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> "DesignRequest":
@@ -1271,17 +1563,21 @@ class DesignRequest:
             intake=SiteIntake.from_dict(intake_value),
             owner_summary=_text(value.get("owner_summary"), "design_request.owner_summary", maximum=2_000),
             source_message_id=source_message_id,
+            target=normalize_workspace_target(value.get("target"), "design_request.target"),
         )
         canonical_hash(result.to_dict())
         return result
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "intent": self.intent,
             "intake": self.intake.to_dict(),
             "owner_summary": self.owner_summary,
             "source_message_id": self.source_message_id,
         }
+        if self.target:
+            result["target"] = copy.deepcopy(self.target)
+        return result
 
 
 @dataclass(frozen=True)
@@ -1321,7 +1617,7 @@ def _context_insights(value: Any, name: str) -> tuple[dict[str, Any], ...]:
         if set(item) - allowed:
             raise ContractError(f"{name}[{index}] contains unsupported fields")
         summary = _text(item.get("summary"), f"{name}[{index}].summary", maximum=2_000)
-        if re.search(r"https?://|\b[^\s@]+@[^\s@]+\.[^\s@]+\b|(?:^|\s)(?:/|[A-Za-z]:[\\/])", summary, re.IGNORECASE):
+        if _PRIVATE_DETAIL_RE.search(summary):
             raise ContractError(f"{name}[{index}].summary contains prohibited private detail")
         normalized: dict[str, Any] = {"summary": summary}
         if "insight_id" in item:
@@ -1391,7 +1687,7 @@ def _context_deductions(value: Any, name: str) -> tuple[dict[str, Any], ...]:
         if not _CONTEXT_DEDUCTION_ID_RE.fullmatch(deduction_id):
             raise ContractError(f"{name}[{index}].deduction_id is invalid")
         summary = _text(item.get("summary"), f"{name}[{index}].summary", maximum=2_000)
-        if re.search(r"https?://|\b[^\s@]+@[^\s@]+\.[^\s@]+\b|(?:^|\s)(?:/|[A-Za-z]:[\\/])", summary, re.IGNORECASE):
+        if _PRIVATE_DETAIL_RE.search(summary):
             raise ContractError(f"{name}[{index}].summary contains prohibited private detail")
         confidence = item.get("confidence")
         if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not 0 <= float(confidence) <= 1:
@@ -1571,6 +1867,7 @@ class DesignContextSnapshot:
     site_digest: str = ""
     route_inventory: tuple[str, ...] = ()
     current_content: dict[str, Any] = field(default_factory=dict)
+    workspace_target: dict[str, Any] = field(default_factory=dict)
     asset_inventory: tuple[dict[str, Any], ...] = ()
     asset_visual_evidence: tuple[AssetVisualEvidence, ...] = ()
     measured_design: dict[str, Any] = field(default_factory=dict)
@@ -1608,7 +1905,7 @@ class DesignContextSnapshot:
             "owner_request", "conversation", "effective_persona", "self_model", "approved_persona_notes",
             "memories", "research", "business_knowledge", "attachments", "site_facts", "source_repository",
             "base_sha", "site_digest", "route_inventory", "current_content", "asset_inventory", "measured_design",
-            "asset_visual_evidence", "verified_facts", "unknowns", "prohibited_claims", "capabilities", "execution_profile", "design_skill_set",
+            "workspace_target", "asset_visual_evidence", "verified_facts", "unknowns", "prohibited_claims", "capabilities", "execution_profile", "design_skill_set",
         }
         result = cls(
             schema_version=version,
@@ -1633,6 +1930,7 @@ class DesignContextSnapshot:
                 _list(value.get("route_inventory"), "route_inventory", required=False)
             )),
             current_content=_optional_object(value.get("current_content"), "current_content"),
+            workspace_target=normalize_workspace_target(value.get("workspace_target"), "workspace_target"),
             asset_inventory=objects("asset_inventory"),
             asset_visual_evidence=tuple(
                 AssetVisualEvidence.from_dict(item)
@@ -1687,6 +1985,8 @@ class DesignContextSnapshot:
         }
         if self.design_skill_set is not None:
             result["design_skill_set"] = self.design_skill_set.to_dict()
+        if self.workspace_target:
+            result["workspace_target"] = copy.deepcopy(self.workspace_target)
         if self.asset_visual_evidence:
             result["asset_visual_evidence"] = [item.to_dict() for item in self.asset_visual_evidence]
         return result
@@ -2429,6 +2729,90 @@ class MotionReport(DesignPhaseArtifact):
 
 
 @dataclass(frozen=True)
+class ExperienceFidelityReport(DesignPhaseArtifact):
+    """Condition-by-condition closure report from the fidelity specialist."""
+
+    EXPECTED_PHASES = (DesignPhase.EXPERIENCE_FIDELITY.value,)
+
+    @classmethod
+    def from_dict(cls, raw: Mapping[str, Any]) -> "ExperienceFidelityReport":
+        artifact = super().from_dict(raw)
+        payload = artifact.payload
+        plan_hash = _hash(payload.get("experience_plan_hash"), "payload.experience_plan_hash", _SHA256_RE)
+        if plan_hash not in artifact.input_hashes:
+            raise ContractError("payload.experience_plan_hash must be included in input_hashes")
+        raw_ids = _list(
+            payload.get("journey_condition_ids"),
+            "payload.journey_condition_ids",
+            required=True,
+            maximum=64,
+        )
+        condition_ids = tuple(
+            _normalized_id(item, f"payload.journey_condition_ids[{index}]", maximum=160)
+            for index, item in enumerate(raw_ids)
+        )
+        if len(set(condition_ids)) != len(condition_ids):
+            raise ContractError("payload.journey_condition_ids must be unique")
+        coverage_raw = _list(
+            payload.get("condition_coverage"),
+            "payload.condition_coverage",
+            item_type=object,
+            required=True,
+            maximum=64,
+        )
+        coverage: list[dict[str, Any]] = []
+        covered_ids: set[str] = set()
+        for index, item in enumerate(coverage_raw):
+            path = f"payload.condition_coverage[{index}]"
+            record = _strict_object(item, path, {
+                "condition_id", "source_location", "trigger", "rendered_state",
+                "responsive_translation", "reduced_motion_translation", "status", "notes",
+            })
+            condition_id = _normalized_id(record.get("condition_id"), f"{path}.condition_id", maximum=160)
+            if condition_id in covered_ids:
+                raise ContractError("payload.condition_coverage contains duplicate condition IDs")
+            covered_ids.add(condition_id)
+            status = _text(record.get("status"), f"{path}.status", maximum=20).lower()
+            if status not in {"implemented", "blocked"}:
+                raise ContractError(f"{path}.status is invalid")
+            coverage.append({
+                "condition_id": condition_id,
+                "source_location": _text(record.get("source_location"), f"{path}.source_location", maximum=1_000),
+                "trigger": _text(record.get("trigger"), f"{path}.trigger", maximum=1_000),
+                "rendered_state": _text(record.get("rendered_state"), f"{path}.rendered_state", maximum=2_000),
+                "responsive_translation": _text(record.get("responsive_translation"), f"{path}.responsive_translation", maximum=2_000),
+                "reduced_motion_translation": _text(record.get("reduced_motion_translation"), f"{path}.reduced_motion_translation", maximum=2_000),
+                "status": status,
+                "notes": _text(record.get("notes"), f"{path}.notes", required=False, maximum=2_000),
+            })
+        if set(condition_ids) != covered_ids:
+            raise ContractError("payload.condition_coverage must contain every journey condition ID")
+        state = _text(payload.get("state"), "payload.state", maximum=20).lower()
+        if state not in {"complete", "blocked"}:
+            raise ContractError("payload.state is invalid")
+        if state == "complete" and any(item["status"] != "implemented" for item in coverage):
+            raise ContractError("payload.state cannot be complete with blocked conditions")
+        normalized_payload = dict(payload)
+        normalized_payload["experience_plan_hash"] = plan_hash
+        normalized_payload["journey_condition_ids"] = list(condition_ids)
+        normalized_payload["condition_coverage"] = coverage
+        normalized_payload["state"] = state
+        return cls(
+            schema_version=artifact.schema_version,
+            run_id=artifact.run_id,
+            phase=artifact.phase,
+            variant_key=artifact.variant_key,
+            attempt=artifact.attempt,
+            status=artifact.status,
+            base_sha=artifact.base_sha,
+            context_snapshot_hash=artifact.context_snapshot_hash,
+            input_hashes=artifact.input_hashes,
+            producer=artifact.producer,
+            payload=normalized_payload,
+        )
+
+
+@dataclass(frozen=True)
 class CreativeRealizationReview(DesignPhaseArtifact):
     EXPECTED_PHASES = (DesignPhase.CREATIVE_REALIZATION_REVIEW.value, DesignPhase.CREATIVE_FINAL_SIGNOFF.value)
 
@@ -2596,10 +2980,16 @@ class DesignCandidateReceipt:
     model: str
     publishable: bool
     build_profile: str = ""
+    output_artifact_id: str = ""
+    output_tree_hash: str = ""
     transcript_path: str = ""
     transcript_artifact_id: int | None = None
     design_manifest: dict[str, Any] = field(default_factory=dict)
     build_error: str = ""
+    direction_path: str = ""
+    direction_hash: str = ""
+    direction_transcript_path: str = ""
+    experience_plan: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> "DesignCandidateReceipt":
@@ -2626,6 +3016,22 @@ class DesignCandidateReceipt:
             raise ContractError("transcript_artifact_id is invalid")
         if not transcript_path and transcript_artifact_id is None:
             raise ContractError("candidate receipt requires transcript_path or transcript_artifact_id")
+        direction_path = str(value.get("direction_path") or "").strip()
+        if direction_path:
+            direction_path = safe_relative_path(direction_path, "direction_path")
+        direction_hash = ""
+        if value.get("direction_hash"):
+            direction_hash = _hash(value.get("direction_hash"), "direction_hash", _SHA256_RE)
+        if bool(direction_path) != bool(direction_hash):
+            raise ContractError("direction_path and direction_hash must be supplied together")
+        direction_transcript_path = str(value.get("direction_transcript_path") or "").strip()
+        if direction_transcript_path:
+            direction_transcript_path = safe_relative_path(direction_transcript_path, "direction_transcript_path")
+        if direction_path and not direction_transcript_path:
+            raise ContractError("direction_path requires direction_transcript_path")
+        experience_plan = _optional_object(value.get("experience_plan"), "experience_plan")
+        if experience_plan:
+            ExperiencePlanBundle.from_dict(experience_plan)
         return cls(
             run_id=_text(value.get("run_id"), "run_id", maximum=120),
             operation_kind=validate_design_operation_kind(value.get("operation_kind")),
@@ -2641,10 +3047,19 @@ class DesignCandidateReceipt:
             model=_text(value.get("model", value.get("model_id")), "model", maximum=240),
             publishable=publishable,
             build_profile=_text(value.get("build_profile"), "build_profile", required=False, maximum=80),
+            output_artifact_id=_text(value.get("output_artifact_id"), "output_artifact_id", required=False, maximum=160),
+            output_tree_hash=(
+                _hash(value.get("output_tree_hash"), "output_tree_hash", _SHA256_RE)
+                if value.get("output_tree_hash") else ""
+            ),
             transcript_path=transcript_path,
             transcript_artifact_id=transcript_artifact_id,
             design_manifest=design_manifest,
             build_error=_text(value.get("build_error"), "build_error", required=False, maximum=2_000),
+            direction_path=direction_path,
+            direction_hash=direction_hash,
+            direction_transcript_path=direction_transcript_path,
+            experience_plan=experience_plan,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -2663,10 +3078,16 @@ class DesignCandidateReceipt:
             "model": self.model,
             "publishable": self.publishable,
             "build_profile": self.build_profile,
+            "output_artifact_id": self.output_artifact_id,
+            "output_tree_hash": self.output_tree_hash,
             "transcript_path": self.transcript_path,
             "transcript_artifact_id": self.transcript_artifact_id,
             "design_manifest": copy.deepcopy(self.design_manifest),
             "build_error": self.build_error,
+            "direction_path": self.direction_path,
+            "direction_hash": self.direction_hash,
+            "direction_transcript_path": self.direction_transcript_path,
+            "experience_plan": copy.deepcopy(self.experience_plan),
         }
 
     @property

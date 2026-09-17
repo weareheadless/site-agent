@@ -14,7 +14,7 @@ from typing import Any
 from ..hands.base import AdapterError, SiteAdapter
 from ..hands.repo_changes import HARD_DENY, normalize_path, writable
 from ..core.design_contracts import DesignRequest
-from .prompts import inner_life_context
+from .prompts import configured_site_profile_prompt, inner_life_context
 
 
 class EditError(ValueError):
@@ -51,7 +51,7 @@ def set_dotted(doc: dict[str, Any], field: str, value: Any) -> Any:
 
 
 _READ_ACTIONS = {"read_file", "list_files", "get_content", "get_metrics", "list_drafts", "recall",
-                 "search_media", "search_business_knowledge"}
+                 "search_media", "search_business_knowledge", "read_payload_content"}
 
 
 def _looks_like_design_request(message: str) -> bool:
@@ -73,6 +73,10 @@ def _content_summary(content: dict[str, Any]) -> str:
             inner = ", ".join(f"{k}: {shape(v, depth + 1)}" for k, v in list(value.items())[:12])
             return "{" + inner + "}"
         if isinstance(value, list):
+            if value and all(isinstance(item, dict) for item in value[:5]):
+                sample = ", ".join(shape(item, depth + 1) for item in value[:5])
+                suffix = ", …" if len(value) > 5 else ""
+                return f"list[{len(value)}] [{sample}{suffix}]"
             return f"list[{len(value)}]"
         text = str(value)
         return f"{text[:60]}…" if len(text) > 60 else text
@@ -277,6 +281,26 @@ def _writable_patterns(context: dict[str, Any]) -> list[str]:
     return [str(p) for p in ((context["config"].get("site") or {}).get("writable_patterns") or [])]
 
 
+def _atelier_payload(context: dict[str, Any]):
+    return context.get("atelier_payload")
+
+
+def _payload_result(document: Any, *, action: str) -> str:
+    if not isinstance(document, dict):
+        return f"Atelier Payload {action} completed, but returned no document."
+    compact = {
+        key: document.get(key)
+        for key in ("id", "sourceId", "slug", "title", "_status", "updatedAt")
+        if key in document
+    }
+    if action == "read":
+        for key in ("content", "sections", "description", "excerpt", "metaDescription", "seo"):
+            if key in document:
+                compact[key] = document[key]
+    rendered = json.dumps(compact, ensure_ascii=False, default=str)
+    return rendered[:8000] + ("…" if len(rendered) > 8000 else "")
+
+
 def _tools_spec(context: dict[str, Any], *, design_intent: bool = False) -> list[dict[str, Any]]:
     def fn(name, desc, props, required=None):
         return {
@@ -311,20 +335,87 @@ def _tools_spec(context: dict[str, Any], *, design_intent: bool = False) -> list
         fn("design_request",
            "Start the canonical asynchronous design workflow for a new site, redesign, or complete page. "
            "Return a complete validated intake; do not invent facts or destinations.",
-           {
-               "intent": {"type": "string", "enum": ["initial_site", "redesign", "derived_page"]},
-               "intake": {"type": "object"},
-               "owner_summary": {"type": "string"},
-           }, ["intent", "intake", "owner_summary"]),
+            {
+                "intent": {"type": "string", "enum": ["initial_site", "redesign", "derived_page"]},
+                "intake": {"type": "object"},
+                "owner_summary": {"type": "string"},
+                "target": {
+                    "type": "object",
+                    "description": "The selected post-intake workspace target, when supplied in context.",
+                    "additionalProperties": True,
+                },
+            }, ["intent", "intake", "owner_summary"]),
         fn("propose_changes",
-           "Stage one or more file operations as a proposal the owner must approve. "
-           "ops entries: {op:'edit',path,find(unique exact snippet),replace} | "
-           "{op:'write',path,content(full file)} | {op:'delete',path} | "
-           "{op:'set_field',field(dotted into content.json),value}",
-           {"summary": {"type": "string"},
-            "ops": {"type": "array", "items": {"type": "object"}}},
-           ["summary", "ops"]),
+            "Stage one or more file operations as a proposal the owner must approve. "
+            "ops entries: {op:'edit',path,find(unique exact snippet),replace} | "
+            "{op:'write',path,content(full file)} | {op:'delete',path} | "
+            "{op:'set_field',field(dotted into content.json),value}",
+            {"summary": {"type": "string"},
+             "ops": {"type": "array", "items": {"type": "object"}}},
+            ["summary", "ops"]),
     ]
+    if _atelier_payload(context) is not None:
+        collection = {"type": "string", "enum": ["pages", "products", "posts"]}
+        data = {
+            "type": "object",
+            "description": "Only fields from the selected collection's editable draft schema.",
+            "additionalProperties": True,
+        }
+        tools.extend([
+            fn(
+                "read_payload_content",
+                "Read one Atelier Payload document. Use this before changing content; identify it with the selected workspace document sourceId when available.",
+                {
+                    "collection": collection,
+                    "identifier": {"type": "string", "description": "Payload id, sourceId, or slug"},
+                    "identifier_kind": {"type": "string", "enum": ["id", "sourceId", "slug"]},
+                    "draft": {"type": "boolean"},
+                },
+                ["collection", "identifier"],
+            ),
+            fn(
+                "create_payload_draft",
+                "Create a new draft in Atelier Payload. Ask for missing required business facts instead of inventing them.",
+                {"collection": collection, "data": data},
+                ["collection", "data"],
+            ),
+            fn(
+                "update_payload_draft",
+                "Update only the requested fields on an existing Atelier Payload draft. Never publish as part of this tool.",
+                {"collection": collection, "id": {"type": "string"}, "data": data},
+                ["collection", "id", "data"],
+            ),
+             fn(
+                 "publish_payload_document",
+                 "Publish an existing Atelier Payload document only when the owner explicitly asks to publish it.",
+                 {"collection": collection, "id": {"type": "string"}},
+                 ["collection", "id"],
+             ),
+             fn(
+                 "read_payload_global",
+                 "Read one shared Atelier Payload global. Use this before changing navigation or site-wide settings.",
+                 {
+                     "global": {"type": "string", "enum": ["navigation", "siteSettings"]},
+                     "draft": {"type": "boolean"},
+                 },
+                 ["global"],
+             ),
+             fn(
+                 "update_payload_global",
+                 "Update selected fields on a shared Atelier Payload global draft. Never publish as part of this tool.",
+                 {
+                     "global": {"type": "string", "enum": ["navigation", "siteSettings"]},
+                     "data": {"type": "object", "additionalProperties": True},
+                 },
+                 ["global", "data"],
+             ),
+             fn(
+                 "publish_payload_global",
+                 "Publish a shared Atelier Payload global only when the owner explicitly asks to publish it.",
+                 {"global": {"type": "string", "enum": ["navigation", "siteSettings"]}},
+                 ["global"],
+             ),
+         ])
     from ..hands import opencode_runner as _runner
 
     cfg = context.get("config") if isinstance(context.get("config"), dict) else context
@@ -370,6 +461,13 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
         "propose_changes": lambda: "staging the change",
         "spawn_build": lambda: "briefing the builder agent",
         "design_request": lambda: "preparing the typed design handoff",
+        "read_payload_content": lambda: "reading the selected Payload document",
+        "create_payload_draft": lambda: "creating a Payload draft",
+        "update_payload_draft": lambda: "updating the Payload draft",
+        "publish_payload_document": lambda: "publishing the Payload document",
+        "read_payload_global": lambda: "reading the shared Payload global",
+        "update_payload_global": lambda: "updating the shared Payload global draft",
+        "publish_payload_global": lambda: "publishing the shared Payload global",
     }.get(name, lambda: name)
     say(phrase())
     if name == "read_file":
@@ -459,6 +557,53 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
         if service is None:
             return "Approved business knowledge is not available."
         return json.dumps(service.search(str(args.get("query") or ""), int(args.get("limit", 8))))
+    if name in {
+        "read_payload_content", "create_payload_draft", "update_payload_draft", "publish_payload_document",
+        "read_payload_global", "update_payload_global", "publish_payload_global",
+    }:
+        payload = _atelier_payload(context)
+        if payload is None:
+            return "Atelier Payload content editing is not configured on this site-agent instance."
+        try:
+            if name == "read_payload_content":
+                document = payload.read(
+                    str(args.get("collection") or ""),
+                    identifier=str(args.get("identifier") or ""),
+                    identifier_kind=str(args.get("identifier_kind") or "sourceId"),
+                    draft=bool(args.get("draft", True)),
+                )
+                return _payload_result(document, action="read")
+            if name == "read_payload_global":
+                document = payload.read_global(
+                    str(args.get("global") or ""),
+                    draft=bool(args.get("draft", True)),
+                )
+                return _payload_result(document, action="read")
+            if name == "create_payload_draft":
+                document = payload.create(str(args.get("collection") or ""), args.get("data") or {})
+                context["_last_action_succeeded"] = True
+                return f"Payload draft created: {_payload_result(document, action='write')}"
+            if name == "update_payload_draft":
+                document = payload.update(
+                    str(args.get("collection") or ""),
+                    str(args.get("id") or ""),
+                    args.get("data") or {},
+                )
+                context["_last_action_succeeded"] = True
+                return f"Payload draft updated: {_payload_result(document, action='write')}"
+            if name == "publish_payload_document":
+                document = payload.publish(str(args.get("collection") or ""), str(args.get("id") or ""))
+                context["_last_action_succeeded"] = True
+                return f"Payload document published: {_payload_result(document, action='write')}"
+            if name == "update_payload_global":
+                document = payload.update_global(str(args.get("global") or ""), args.get("data") or {})
+                context["_last_action_succeeded"] = True
+                return f"Payload global draft updated: {_payload_result(document, action='write')}"
+            document = payload.publish_global(str(args.get("global") or ""))
+            context["_last_action_succeeded"] = True
+            return f"Payload global published: {_payload_result(document, action='write')}"
+        except Exception as exc:  # noqa: BLE001 — a tool failure should be explained to Ada
+            return f"REFUSED: Payload content action failed: {str(exc)[:500]}"
     if name == "propose_changes":
         summary = str(args.get("summary", "site changes"))[:200]
         say("checking every operation against the live files")
@@ -553,7 +698,15 @@ def _max_work_steps(context: dict[str, Any], default: int = 8) -> int:
     return max(1, min(configured, 24))
 
 
-SIDE_EFFECTS = {"propose_changes", "spawn_build"}
+SIDE_EFFECTS = {
+    "propose_changes",
+    "spawn_build",
+    "create_payload_draft",
+    "update_payload_draft",
+    "publish_payload_document",
+    "update_payload_global",
+    "publish_payload_global",
+}
 
 
 def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message: str,
@@ -570,9 +723,31 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
         + SYSTEM_NOTE_TOOLS.replace("%%WRITABLE%%", patterns)
         + "\n\nReference — content.json fields: " + _content_summary_cached(context, adapter)
     )
+    profile = configured_site_profile_prompt(context.get("config") or {})
+    if profile:
+        system += "\n\n" + profile
+    intake = context.get("atelier_intake")
+    if intake is not None and callable(getattr(intake, "context_prompt", None)):
+        try:
+            intake_context = intake.context_prompt()
+        except Exception:  # noqa: BLE001 — intake context must never break editing
+            intake_context = ""
+        if intake_context:
+            system += "\n\n" + intake_context
     system += _tweakmap_block(context)
     system += _template_tokens_block(context)
     system += _decision_ledger_block(context)
+    if _atelier_payload(context) is not None:
+        system += (
+            "\n\nAtelier Payload workflow: the selected workspace document is supplied in the user context. "
+            "For a focused content request, read that document first, then update only the requested "
+            "fields with update_payload_draft. Payload edits remain drafts. Use create_payload_draft "
+            "only when the owner has supplied the required facts; do not invent titles, prices, dates, "
+            "or URLs. Never call publish_payload_document unless the owner explicitly asks to publish. "
+            "For shared navigation or site identity, read the relevant global first and use update_payload_global; "
+            "global edits remain drafts. Never call publish_payload_global unless the owner explicitly asks to publish. "
+            "Broad visual requests belong on the typed design workflow instead of Payload content tools."
+        )
     try:
         from .prompts import memory_context
         mem = memory_context(context["memory"], max_observations=20)

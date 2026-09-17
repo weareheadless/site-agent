@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+import site_agent.hands.site_build as site_build
 from site_agent.hands.site_build import (
     ASTRO_REACT_PROFILE,
     ASTRO_REACT_TOOLCHAIN_DEPENDENCIES,
@@ -34,6 +35,7 @@ def test_prepare_native_workspace_bootstraps_only_technical_astro_files(tmp_path
 
 def test_build_site_runs_profile_commands_in_workspace(tmp_path, monkeypatch):
     calls = []
+    monkeypatch.setattr(site_build, "_is_noexec_mount", lambda _path: False)
 
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
@@ -70,3 +72,47 @@ def test_build_site_runs_profile_commands_in_workspace(tmp_path, monkeypatch):
     assert result.ok is True
     assert [call[0] for call in calls] == [list(ASTRO_REACT_PROFILE.install_command), list(ASTRO_REACT_PROFILE.check_command), list(ASTRO_REACT_PROFILE.build_command)]
     assert calls[0][1]["env"]["npm_config_cache"] == str(tmp_path / "cache")
+
+
+def test_build_site_stages_noexec_workspace_on_an_executable_mount(tmp_path, monkeypatch):
+    workspace = initialize_toolchain_workspace(tmp_path / "site", "Native Site")
+    package = json.loads((workspace / "package.json").read_text(encoding="utf-8"))
+    declared = {**package["dependencies"], **package["devDependencies"]}
+    (workspace / "package-lock.json").write_text(json.dumps({
+        "name": package["name"],
+        "version": "0.0.0",
+        "lockfileVersion": 3,
+        "requires": True,
+        "packages": {
+            "": {"name": package["name"], "version": "0.0.0"},
+            **{f"node_modules/{name}": {"version": version} for name, version in declared.items()},
+        },
+    }), encoding="utf-8")
+    calls = []
+
+    monkeypatch.setattr(
+        site_build,
+        "_is_noexec_mount",
+        lambda path: Path(path).resolve() == workspace.resolve(),
+    )
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        output = Path(kwargs["cwd"]) / "dist"
+        output.mkdir(exist_ok=True)
+        (output / "index.html").write_text("candidate", encoding="utf-8")
+
+        class Result:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return Result()
+
+    monkeypatch.setattr(site_build.subprocess, "run", fake_run)
+
+    result = build_site(workspace, ASTRO_REACT_PROFILE, npm_cache=tmp_path / "cache")
+
+    assert result.ok is True
+    assert (workspace / "dist" / "index.html").read_text(encoding="utf-8") == "candidate"
+    assert all(Path(kwargs["cwd"]) != workspace for _, kwargs in calls)

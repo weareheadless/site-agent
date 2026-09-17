@@ -1,0 +1,14 @@
+# One shared Ada API process. Customer state lives in each tenant config/data
+# directory; do not create one systemd process per tenant.
+instance_name: site-agent-api
+data_dir: /SOCIAL/site-agent-api
+
+atelier_api:
+  enabled: true
+  host: 127.0.0.1
+  port: 3014
+  prefix: /v1/atelier
+  tenants:
+    atelier-harmonie:
+      config_path: /SOCIAL/configs/atelier-harmonie/config.yaml
+      api_token_env: ATELIER_HARMONIE_TOKEN

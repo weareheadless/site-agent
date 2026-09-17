@@ -2,7 +2,7 @@ import json
 import pytest
 import subprocess
 
-from site_agent.application.designs import DesignService, DesignServiceError
+from site_agent.application.designs import DesignService, DesignServiceError, owner_review_requirements_met
 from site_agent.core.design_contracts import (
     BuildTarget,
     DesignCandidateReceipt,
@@ -12,6 +12,7 @@ from site_agent.core.design_contracts import (
     PageIntake,
     SiteIntake,
     VisualCritiqueReport,
+    canonical_hash,
 )
 from site_agent.core.memory import Memory
 from site_agent.hands.design_quality import QualityPolicy
@@ -20,7 +21,38 @@ from site_agent.hands.site_build import (
     ASTRO_REACT_PROFILE,
     ASTRO_REACT_TOOLCHAIN_DEPENDENCIES,
     PELICAN_BASELINE_PROFILE,
+    SiteOutputArtifactStore,
 )
+from tests.test_design_contracts import _experience_plan
+
+
+def test_owner_review_requires_a_passing_ready_run():
+    base = {
+        "candidate_sha": "a" * 40,
+        "quality_report_json": {"state": "passed"},
+        "artifact_required": False,
+    }
+
+    assert owner_review_requirements_met({**base, "status": "ready_for_review"}) is True
+    assert owner_review_requirements_met({**base, "status": "needs_repair"}) is False
+    assert owner_review_requirements_met({**base, "status": "incomplete"}) is False
+    assert owner_review_requirements_met({
+        **base,
+        "status": "ready_for_review",
+        "quality_report_json": {
+            "state": "passed",
+            "visual_critique": {"state": "repair"},
+        },
+    }) is False
+    assert owner_review_requirements_met({
+        **base,
+        "status": "ready_for_review",
+        "operation_kind": "visual_refinement",
+        "quality_report_json": {
+            "state": "passed",
+            "visual_critique": {"state": "repair"},
+        },
+    }) is False
 
 
 def _intake() -> SiteIntake:
@@ -353,6 +385,19 @@ def test_technical_repair_child_preserves_parent_candidate_and_workspace(tmp_pat
         parent["run_id"],
         candidate_sha="b" * 40,
         planning_json={"build_profile": "astro_react"},
+        quality_report_json={
+            "visual_critique": {
+                "state": "repair",
+                "run_id": parent["run_id"],
+                "candidate_sha": "b" * 40,
+                "screenshot_evidence": [{"screenshot_path": "/tmp/parent.png"}],
+                "findings": [{
+                    "area": "conversion",
+                    "severity": "high",
+                    "observation": "Keep the action honest.",
+                }],
+            },
+        },
     )
     memory.transition_design_run(parent["run_id"], "failed", error="quality gates failed")
     child = service.create_technical_repair_run(parent["run_id"], run_id="repair-child")
@@ -363,11 +408,217 @@ def test_technical_repair_child_preserves_parent_candidate_and_workspace(tmp_pat
     assert child["run"]["source_candidate_sha"] == "b" * 40
     assert child["run"]["status"] == "planning"
     assert child["request"]["content"]["technical_repair"]["parent_candidate_sha"] == "b" * 40
+    assert child["request"]["content"]["visual_critique"]["screenshot_evidence"] == [
+        {"screenshot_path": "/tmp/parent.png"},
+    ]
     assert child["target"]["operation_kind"] == "technical_repair"
     assert child["target"]["allowed_paths"] == list(ASTRO_REACT_PROFILE.writable_patterns)
     assert service.quality_policy_for_run(child["run"]["run_id"]).required_pages == (
         "home", "about", "contact"
     )
+    memory.close()
+
+
+def test_repair_quality_reuses_parent_experience_plan(tmp_path):
+    memory = Memory(tmp_path / "service.db")
+    service = DesignService(
+        memory,
+        config={
+            "data_dir": str(tmp_path / "data"),
+            "site": {"clone_path": str(tmp_path / "live" / "clone")},
+        },
+    )
+    parent = service.create_experiment(
+        _intake(),
+        experiment_root=tmp_path / "lab" / "clone",
+        base_sha="a" * 40,
+        run_id="plan-parent",
+    )
+    memory.update_design_run(parent["run_id"], candidate_sha="b" * 40)
+    memory.transition_design_run(parent["run_id"], "failed", error="quality gates failed")
+    phase = memory.claim_design_phase(
+        parent["run_id"],
+        "creative_selection",
+        variant_key="primary",
+        base_sha="a" * 40,
+        context_snapshot_hash="c" * 64,
+        input_hashes=("e" * 64,),
+        provider_id="test",
+        model="test",
+    )
+    raw_plan = _experience_plan()
+    raw_plan["review_rubric"] = ["logo does not collide"]
+    raw_plan["asset_composition_plan"][0]["logo_rule"] = "Keep the supplied mark unmodified."
+    raw_plan["asset_composition_plan"][0]["focal_region_to_preserve"] = "preserve the visible mark"
+    phase_payload = {
+        "schema_version": 1,
+        "run_id": parent["run_id"],
+        "phase": "creative_selection",
+        "variant_key": "primary",
+        "attempt": 1,
+        "status": "completed",
+        "base_sha": "a" * 40,
+        "context_snapshot_hash": "c" * 64,
+        "input_hashes": ["e" * 64],
+        "producer": "test",
+        "payload": raw_plan,
+    }
+    memory.complete_design_phase(phase["id"], phase_payload)
+    child = service.create_technical_repair_run(parent["run_id"], run_id="plan-child")
+
+    inherited = service._experience_plan_for_run(child["run"]["run_id"])
+
+    assert inherited is not None
+    assert inherited.content_hash
+    assert inherited.review_rubric[0]["condition"] == "logo does not collide"
+    assert inherited.asset_composition_plan[0].logo_rule is None
+    assert inherited.asset_composition_plan[0].focal_region_to_preserve is None
+    memory.close()
+
+
+def test_creative_run_reads_the_persisted_plan_from_planning_state(tmp_path):
+    memory = Memory(tmp_path / "service.db")
+    service = DesignService(
+        memory,
+        config={"design_engine": {"orchestration": "creative"}},
+    )
+    run = service.create_run(_intake(), run_id="creative-plan-state", base_sha="a" * 40)
+    raw_plan = _experience_plan(
+        run_id=run["run_id"],
+        base_sha="a" * 40,
+        context_snapshot_hash="c" * 64,
+    )
+    memory.update_design_run(run["run_id"], planning_json={"experience_plan": raw_plan})
+
+    plan = service._experience_plan_for_run(run["run_id"])
+
+    assert plan is not None
+    assert plan.run_id == run["run_id"]
+    assert plan.base_sha == "a" * 40
+    memory.close()
+
+
+def test_creative_quality_validation_never_skips_a_missing_experience_plan(tmp_path, monkeypatch):
+    memory = Memory(tmp_path / "service.db")
+    service = DesignService(
+        memory,
+        config={"design_engine": {"orchestration": "creative"}},
+    )
+    run = service.create_run(_intake(), run_id="creative-plan-required", base_sha="a" * 40)
+    memory.update_design_run(run["run_id"], candidate_sha="b" * 40)
+    for status in ("assessing_intake", "planning", "building", "candidate_ready", "validating"):
+        memory.transition_design_run(run["run_id"], status)
+    captured = {}
+
+    def fake_quality(*args, **kwargs):
+        captured["experience_plan"] = kwargs.get("experience_plan")
+        return QualityReport.from_dict({
+            "run_id": run["run_id"],
+            "candidate_sha": "b" * 40,
+            "state": "incomplete",
+            "findings": [],
+            "evidence": {},
+            "gates": {},
+        })
+
+    monkeypatch.setattr("site_agent.application.designs.run_quality_gates", fake_quality)
+    service.validate_run(run["run_id"], tmp_path, policy=QualityPolicy(build_command=None))
+
+    assert captured["experience_plan"] == {}
+    memory.close()
+
+
+def test_creative_execute_build_rejects_a_receipt_without_the_locked_plan(tmp_path):
+    memory = Memory(tmp_path / "service.db")
+
+    class PlanlessBuilder:
+        def build_design(self, request, target, progress=None):
+            return DesignCandidateReceipt.from_dict({
+                "run_id": request.run_id,
+                "operation_kind": "initial_build",
+                "base_sha": target.base_sha,
+                "candidate_sha": "c" * 40,
+                "candidate_ref": target.candidate_ref,
+                "diff_summary": "candidate",
+                "changed_paths": ["index.html"],
+                "manifest_path": "design/ada-design-manifest.json",
+                "manifest_hash": "d" * 64,
+                "opencode_session_id": "planless-session",
+                "transcript_path": "artifacts/planless.jsonl",
+                "provider": "test",
+                "model": "test-model",
+                "publishable": False,
+            })
+
+    service = DesignService(
+        memory,
+        builder=PlanlessBuilder(),
+        config={"design_engine": {"orchestration": "creative"}},
+    )
+    run = service.create_run(
+        _intake(),
+        mode="local_experiment",
+        publishable=False,
+        base_sha="a" * 40,
+        run_id="creative-planless-receipt",
+    )
+    request = PageBuildRequest.from_dict({
+        "schema_version": 1,
+        "run_id": run["run_id"],
+        "mode": "initial_homepage",
+        "base_sha": "a" * 40,
+        "page_path": "index.html",
+        "purpose": "Create the homepage.",
+        "acceptance_criteria": ["Keep the homepage accessible."],
+    })
+    target = BuildTarget.from_dict({
+        "mode": "local_experiment",
+        "base_sha": "a" * 40,
+        "candidate_ref": run["candidate_ref"],
+        "push_mode": "none",
+        "publishable": False,
+    })
+
+    with pytest.raises(DesignServiceError, match="no hash-bound experience plan"):
+        service.execute_build(run["run_id"], request, target)
+
+    assert service.get_run(run["run_id"])["status"] == "failed"
+    memory.close()
+
+
+def test_quality_validation_rejects_evidence_bound_to_a_different_plan_hash(tmp_path, monkeypatch):
+    memory = Memory(tmp_path / "service.db")
+    service = DesignService(memory, config={"design_engine": {"orchestration": "creative"}})
+    run = service.create_run(_intake(), run_id="creative-plan-hash", base_sha="a" * 40)
+    raw_plan = _experience_plan(
+        run_id=run["run_id"],
+        base_sha="a" * 40,
+        context_snapshot_hash="c" * 64,
+    )
+    memory.update_design_run(
+        run["run_id"],
+        candidate_sha="b" * 40,
+        planning_json={"experience_plan": raw_plan},
+    )
+    for status in ("assessing_intake", "planning", "building", "candidate_ready", "validating"):
+        memory.transition_design_run(run["run_id"], status)
+
+    monkeypatch.setattr(
+        "site_agent.application.designs.run_quality_gates",
+        lambda *args, **kwargs: QualityReport.from_dict({
+            "run_id": run["run_id"],
+            "candidate_sha": "b" * 40,
+            "state": "passed",
+            "findings": [],
+            "evidence": {"experience_journey": {"experience_plan_hash": "e" * 64}},
+            "gates": {},
+        }),
+    )
+
+    report = service.validate_run(run["run_id"], tmp_path, policy=QualityPolicy(build_command=None))
+
+    assert report.state == "incomplete"
+    assert any(item["code"] == "experience_plan_identity_missing" for item in report.findings)
     memory.close()
 
 
@@ -707,6 +958,153 @@ def test_validate_run_persists_report_and_makes_passing_candidate_reviewable(tmp
     memory.close()
 
 
+def test_validate_run_persists_output_identity_before_owner_surface_inspection(tmp_path, monkeypatch):
+    memory = Memory(tmp_path / "service.db")
+    output = tmp_path / "authoritative-output"
+    output.mkdir()
+    (output / "index.html").write_text("<html><body><h1>Candidate</h1></body></html>", encoding="utf-8")
+    store = SiteOutputArtifactStore(tmp_path / "output-artifacts")
+    service = DesignService(memory, output_artifact_store=store)
+    run = service.create_run(_intake(), run_id="design-artifact-before-browser", base_sha="a" * 40)
+    memory.update_design_run(
+        run["run_id"],
+        candidate_sha="b" * 40,
+        candidate_ref=run["candidate_ref"],
+        planning_json={"build_profile": PELICAN_BASELINE_PROFILE.name},
+    )
+    for status in ("assessing_intake", "planning", "building", "candidate_ready", "validating"):
+        memory.transition_design_run(run["run_id"], status)
+
+    class OwnerSurfaceBrowser:
+        def __init__(self):
+            self.bound = None
+
+        def bind_output_artifact(self, artifact):
+            self.bound = dict(artifact)
+
+        def inspect(self, _output_dir, _viewport):
+            persisted = memory.get_design_run(run["run_id"])
+            assert persisted["output_artifact_id"] == self.bound["artifact_id"]
+            assert persisted["output_tree_hash"] == self.bound["tree_hash"]
+            return {"routes": []}
+
+    browser = OwnerSurfaceBrowser()
+
+    def fake_quality(*_args, **kwargs):
+        published = kwargs["output_artifact_publisher"](output)
+        kwargs["browser"].inspect(output, {"name": "desktop", "width": 1440, "height": 900})
+        return QualityReport.from_dict({
+            "run_id": run["run_id"],
+            "candidate_sha": "b" * 40,
+            "state": "passed",
+            "findings": [],
+            "evidence": {"output_artifact": {"status": "passed", **published}},
+            "gates": {},
+        })
+
+    monkeypatch.setattr("site_agent.application.designs.run_quality_gates", fake_quality)
+
+    report = service.validate_run(
+        run["run_id"],
+        tmp_path,
+        policy=QualityPolicy(build_command=None),
+        browser=browser,
+    )
+
+    assert report.state == "passed"
+    assert memory.get_design_run(run["run_id"])["output_artifact_id"] == browser.bound["artifact_id"]
+    memory.close()
+
+
+def test_review_draft_requires_react_gsap_build_and_browser_evidence(tmp_path):
+    memory = Memory(tmp_path / "service.db")
+    store = SiteOutputArtifactStore(tmp_path / "output-artifacts")
+    service = DesignService(memory, output_artifact_store=store)
+    run = service.create_run(_intake(), run_id="design-review-requires-implementation", base_sha="a" * 40)
+    memory.update_design_run(run["run_id"], candidate_sha="b" * 40, candidate_ref=run["candidate_ref"])
+    for status in ("assessing_intake", "planning", "building", "candidate_ready", "validating", "ready_for_review"):
+        memory.transition_design_run(run["run_id"], status)
+
+    output = tmp_path / "output"
+    output.mkdir()
+    (output / "index.html").write_text("<html><body><h1>Candidate</h1></body></html>", encoding="utf-8")
+    published = store.publish(output, profile=PELICAN_BASELINE_PROFILE, candidate_sha="b" * 40)
+    report = {
+        "run_id": run["run_id"],
+        "candidate_sha": "b" * 40,
+        "state": "passed",
+        "findings": [],
+        "evidence": {
+            "output_artifact": {"status": "passed", **published},
+            "native_source": {"status": "skipped", "source_files": []},
+            "browser": {"status": "passed"},
+        },
+        "gates": {"build": "passed", "output": "passed", "browser": "passed", "native_source": "skipped"},
+    }
+    memory.update_design_run(
+        run["run_id"],
+        quality_report_json=report,
+        quality_report_hash=canonical_hash(report),
+        output_artifact_id=published["artifact_id"],
+        output_tree_hash=published["tree_hash"],
+        design_manifest_path="design/ada-design-manifest.json",
+        design_manifest_hash="c" * 64,
+    )
+
+    with pytest.raises(DesignServiceError, match="implementation|quality"):
+        service.create_review_draft(run["run_id"])
+
+    memory.close()
+
+
+def test_validate_run_retains_large_quality_report_with_bounded_artifact_preview(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    memory = Memory(tmp_path / "service.db")
+    service = DesignService(
+        memory,
+        config={"site": {"clone_path": str(repo)}},
+    )
+    run = service.create_run(_intake(), run_id="design-large-quality", base_sha="a" * 40)
+    memory.update_design_run(
+        run["run_id"],
+        candidate_sha="c" * 40,
+        candidate_ref=run["candidate_ref"],
+    )
+    for status in ("assessing_intake", "planning", "building", "candidate_ready", "validating"):
+        memory.transition_design_run(run["run_id"], status)
+
+    large_report = QualityReport.from_dict({
+        "run_id": run["run_id"],
+        "candidate_sha": "c" * 40,
+        "state": "passed",
+        "findings": [],
+        "evidence": {"browser": {"diagnostic": "x" * 120_000}},
+        "gates": {"browser": "passed"},
+    })
+    monkeypatch.setattr(
+        "site_agent.application.designs.run_quality_gates",
+        lambda *args, **kwargs: large_report,
+    )
+
+    report = service.validate_run(
+        run["run_id"],
+        repo,
+        policy=QualityPolicy(build_command=None),
+    )
+
+    stored = service.get_run(run["run_id"])
+    assert report.state == "passed"
+    assert stored["status"] == "ready_for_review"
+    assert stored["quality_report_json"]["evidence"]["browser"]["diagnostic"] == "x" * 120_000
+    assert stored["quality_report_hash"]
+    artifact = memory.get_artifact(stored["build_artifact_id"])
+    assert artifact is not None
+    assert "quality_report" not in artifact.preview_data
+    assert artifact.preview_data["quality_report_hash"] == stored["quality_report_hash"]
+    memory.close()
+
+
 def test_visual_review_persists_critique_and_marks_run_needs_repair(tmp_path):
     memory = Memory(tmp_path / "service.db")
     service = DesignService(memory)
@@ -735,6 +1133,42 @@ def test_visual_review_persists_critique_and_marks_run_needs_repair(tmp_path):
     assert stored["status"] == "needs_repair"
     assert stored["visual_critique_hash"]
     assert stored["quality_report_json"]["visual_critique"]["candidate_sha"] == "c" * 40
+    memory.close()
+
+
+def test_final_visual_refinement_stays_blocked_after_visual_repair(tmp_path):
+    memory = Memory(tmp_path / "service.db")
+    service = DesignService(memory)
+    run = service.create_run(
+        _intake(),
+        run_id="design-final-visual-review",
+        base_sha="a" * 40,
+        operation_kind="visual_refinement",
+    )
+    memory.update_design_run(run["run_id"], candidate_sha="c" * 40, candidate_ref=run["candidate_ref"])
+    for status in ("assessing_intake", "planning", "building", "candidate_ready", "validating"):
+        memory.transition_design_run(run["run_id"], status)
+    memory.update_design_run(
+        run["run_id"],
+        quality_report_json={"run_id": run["run_id"], "candidate_sha": "c" * 40, "state": "passed"},
+    )
+    critique = VisualCritiqueReport.from_dict({
+        "run_id": run["run_id"],
+        "candidate_sha": "c" * 40,
+        "model_id": "Qwen/Qwen3.8-27B",
+        "state": "repair",
+        "findings": [{"severity": "medium", "category": "hierarchy", "message": "Owner can review the hierarchy."}],
+    })
+
+    result = service.visual_review_run(
+        run["run_id"],
+        reviewer=lambda *args, **kwargs: critique,
+    )
+
+    stored = memory.get_design_run(run["run_id"])
+    assert result.state == "repair"
+    assert stored["status"] == "needs_repair"
+    assert stored["quality_report_json"]["visual_critique"]["state"] == "repair"
     memory.close()
 
 
@@ -928,12 +1362,18 @@ def test_visual_refinement_records_parent_screenshot_delta_when_coverage_matches
         }),
     )
 
-    report = service.validate_run(child["run_id"], tmp_path, policy=QualityPolicy(build_command=None))
+    report = service.validate_run(
+        child["run_id"],
+        tmp_path,
+        policy=QualityPolicy(build_command=None, visual_critic=True),
+    )
 
     comparison = report.to_dict()["evidence"]["parent_visual_comparison"]
     assert comparison["status"] == "passed"
     assert comparison["changed"] == [["index.html", "desktop:1440x1000"]]
-    assert service.get_run(child["run_id"])["status"] == "ready_for_review"
+    stored = service.get_run(child["run_id"])
+    assert stored["status"] == "validating"
+    assert any(event["stage"] == "visual_review_pending" for event in stored["events"])
     memory.close()
 
 
@@ -991,7 +1431,12 @@ def test_visual_refinement_is_an_independent_child_from_parent_candidate(tmp_pat
         quality_report_json={"state": "passed", "visual_critique": critique.to_dict()},
     )
 
-    child = service.create_visual_refinement_run(parent["run_id"], critique, run_id="design-refined")
+    child = service.create_visual_refinement_run(
+        parent["run_id"],
+        critique,
+        run_id="design-refined",
+        locked_plan={"oversized_plan": "x" * 110_000},
+    )
 
     child_run = child["run"]
     assert child_run["parent_run_id"] == parent["run_id"]
@@ -1006,6 +1451,11 @@ def test_visual_refinement_is_an_independent_child_from_parent_candidate(tmp_pat
     assert child["request"]["mode"] == "visual_refinement"
     assert child["request"]["base_sha"] == "b" * 40
     assert child["request"]["content"]["visual_critique"]["candidate_sha"] == "b" * 40
+    assert child["request"]["content"]["specialist_locked_plan_ref"] == {
+        "parent_run_id": parent["run_id"],
+        "phase": "creative_selection",
+    }
+    assert "specialist_locked_plan" not in child["request"]["content"]
     child_policy = service.quality_policy_for_run(child_run["run_id"])
     assert child_policy.required_pages == ("index.html", "articles.html")
     assert child_policy.required_content == ("North Star Studio", "Brand strategy")

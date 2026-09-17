@@ -18,12 +18,18 @@ from ..application.design_intake import DesignIntakeServiceError
 from ..application.incubations import IncubationApplicationService, IncubationServiceError
 from ..application.intake_lab import IntakeLabError, IntakeLabService
 from ..hands.local_media import LocalMediaStore
-from .preview import PreviewAccess, PreviewBuildCache, rewrite_preview_css, rewrite_preview_html
+from .preview import (
+    PreviewAccess,
+    PreviewBuildCache,
+    rewrite_preview_css,
+    rewrite_preview_html,
+    rewrite_preview_js,
+)
 
 
 STATIC_PATH = Path(__file__).parent / "static" / "intake_lab.html"
 _RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$")
-_VARIANTS = {"candidate"}
+_VARIANTS = {"candidate", "live"}
 _MAX_BODY_BYTES = 400_000
 INTAKE_SESSION_COOKIE = "ada_intake_session"
 _INTAKE_SESSION_MAX_AGE = 60 * 60 * 24 * 30
@@ -64,9 +70,16 @@ def _site_url(service: IntakeLabService) -> str:
 def _preview_headers() -> dict[str, str]:
     return {
         "Cache-Control": "private, no-store",
-        "Access-Control-Allow-Origin": "null",
+        # The Design iframe is intentionally sandboxed without
+        # ``allow-same-origin``, so Chromium gives it an opaque (``null``)
+        # origin.  A literal ``null`` ACAO value is inconsistently handled for
+        # module scripts and their dynamic imports; the preview token is the
+        # actual capability boundary, so allow anonymous cross-origin reads
+        # here just as the shared review adapter does.
+        "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Headers": "Content-Type",
-        "Content-Security-Policy": "sandbox allow-scripts; frame-ancestors 'self'",
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Content-Security-Policy": "sandbox allow-scripts allow-forms; frame-ancestors 'self'",
         "Referrer-Policy": "no-referrer",
         "X-Content-Type-Options": "nosniff",
     }
@@ -219,6 +232,10 @@ def create_app(
 
     def preview_available(run_id: str, variant: str, page: str) -> bool:
         try:
+            artifact_resolver = getattr(service, "preview_artifact_identity", None)
+            artifact = artifact_resolver(run_id, variant) if variant == "candidate" and callable(artifact_resolver) else None
+            if artifact:
+                return bool(cache.read_artifact(artifact[0], page))
             clone, sha = service.preview_identity(run_id, variant)
             profile_resolver = getattr(service, "preview_profile", None)
             profile = profile_resolver(run_id) if callable(profile_resolver) else ""
@@ -228,7 +245,19 @@ def create_app(
 
     def _incubation_preview_available(incubation_id: str, run_id: str, page: str) -> bool:
         try:
+            artifact_resolver = getattr(incubation_service, "design_preview_artifact_identity", None)
+            artifact = artifact_resolver(incubation_id, run_id, "candidate") if callable(artifact_resolver) else None
+            if artifact:
+                return bool(cache.read_artifact(artifact[0], page))
             clone, sha = incubation_service.design_preview_identity(incubation_id, run_id, "candidate")  # type: ignore[union-attr]
+            profile = incubation_service.design_preview_profile(incubation_id, run_id)  # type: ignore[union-attr]
+            return bool(cache.read_file(clone, sha, page, profile=profile))
+        except (IncubationServiceError, OSError, RuntimeError):
+            return False
+
+    def _incubation_live_preview_available(incubation_id: str, run_id: str, page: str) -> bool:
+        try:
+            clone, sha = incubation_service.design_live_preview_identity(incubation_id, run_id)  # type: ignore[union-attr]
             profile = incubation_service.design_preview_profile(incubation_id, run_id)  # type: ignore[union-attr]
             return bool(cache.read_file(clone, sha, page, profile=profile))
         except (IncubationServiceError, OSError, RuntimeError):
@@ -533,8 +562,14 @@ def create_app(
             _incubation(incubation_id)
             safe_id = _run_id(run_id)
             incubation_service.design_run(incubation_id, safe_id)  # type: ignore[union-attr]
-            token = access.issue((incubation_id, safe_id, "intake-lab"))
-            return JSONResponse({"token": token, "expires_in": access.ttl}, headers={"Cache-Control": "no-store"})
+            variant = str(request.query_params.get("variant") or "candidate").strip().lower()
+            if variant not in _VARIANTS:
+                return _error("invalid_variant", "preview variant is invalid", 400)
+            token = access.issue((incubation_id, safe_id, "intake-lab", variant))
+            return JSONResponse(
+                {"token": token, "expires_in": access.ttl, "variant": variant},
+                headers={"Cache-Control": "no-store"},
+            )
         except HTTPException:
             raise
         except IncubationServiceError:
@@ -558,6 +593,20 @@ def create_app(
         except IncubationServiceError as exc:
             return _incubation_error(exc, "technical_repair_unavailable")
 
+    @app.post("/api/incubations/{incubation_id}/runs/{run_id}/validate", status_code=202)
+    def incubation_validate_run(request: Request, incubation_id: str, run_id: str):
+        try:
+            _require_api_origin(request)
+            _incubation(incubation_id)
+            return incubation_service.revalidate_design_run(  # type: ignore[union-attr]
+                incubation_id,
+                _run_id(run_id),
+            )
+        except HTTPException:
+            raise
+        except IncubationServiceError as exc:
+            return _incubation_error(exc, "quality_revalidation_unavailable")
+
     @app.post("/api/incubations/{incubation_id}/runs/{run_id}/visual-review", status_code=202)
     async def incubation_visual_review(request: Request, incubation_id: str, run_id: str):
         try:
@@ -573,6 +622,21 @@ def create_app(
         except IncubationServiceError as exc:
             return _incubation_error(exc, "visual_review_unavailable")
 
+    @app.post("/api/incubations/{incubation_id}/runs/{run_id}/visual-refinement", status_code=202)
+    async def incubation_visual_refinement(request: Request, incubation_id: str, run_id: str):
+        try:
+            _require_api_origin(request)
+            _incubation(incubation_id)
+            run = incubation_service.create_visual_refinement(  # type: ignore[union-attr]
+                incubation_id,
+                _run_id(run_id),
+            )
+            return {"parent_run_id": _run_id(run_id), "run": run}
+        except HTTPException:
+            raise
+        except IncubationServiceError as exc:
+            return _incubation_error(exc, "visual_refinement_unavailable")
+
     @app.get("/api/incubations/{incubation_id}/runs/{run_id}/pages")
     async def incubation_run_pages(request: Request, incubation_id: str, run_id: str):
         try:
@@ -586,7 +650,11 @@ def create_app(
                 "base_sha": run.get("base_sha"),
                 "candidate_sha": run.get("candidate_sha"),
                 "pages": [
-                    {"path": page, "candidate": _incubation_preview_available(incubation_id, safe_id, page)}
+                    {
+                        "path": page,
+                        "candidate": _incubation_preview_available(incubation_id, safe_id, page),
+                        "live": _incubation_live_preview_available(incubation_id, safe_id, page),
+                    }
                     for page in pages
                 ],
             }
@@ -605,13 +673,27 @@ def create_app(
         if origin and origin != "null" and not _same_origin(request, origin):
             raise HTTPException(status_code=403, detail="request origin is not allowed")
         token = request.query_params.get("preview_token")
-        if not access.valid(token, (incubation_id, safe_id, "intake-lab")):
+        if not (
+            access.valid(token, (incubation_id, safe_id, "intake-lab", variant))
+            or (variant == "candidate" and access.valid(token, (incubation_id, safe_id, "intake-lab")))
+        ):
             raise HTTPException(status_code=403, detail="preview token is invalid")
         safe_path = _safe_file_path(file_path)
         try:
-            clone, sha = incubation_service.design_preview_identity(incubation_id, safe_id, variant)  # type: ignore[union-attr]
-            profile = incubation_service.design_preview_profile(incubation_id, safe_id)  # type: ignore[union-attr]
-            data = cache.read_file(clone, sha, safe_path, profile=profile)
+            artifact = None
+            artifact_resolver = getattr(incubation_service, "design_preview_artifact_identity", None)
+            if variant == "candidate" and callable(artifact_resolver):
+                artifact = artifact_resolver(incubation_id, safe_id, "candidate")
+            if artifact:
+                data = cache.read_artifact(artifact[0], safe_path)
+            elif variant == "live":
+                clone, sha = incubation_service.design_live_preview_identity(incubation_id, safe_id)  # type: ignore[union-attr]
+                profile = incubation_service.design_preview_profile(incubation_id, safe_id)  # type: ignore[union-attr]
+                data = cache.read_file(clone, sha, safe_path, profile=profile)
+            else:
+                clone, sha = incubation_service.design_preview_identity(incubation_id, safe_id, variant)  # type: ignore[union-attr]
+                profile = incubation_service.design_preview_profile(incubation_id, safe_id)  # type: ignore[union-attr]
+                data = cache.read_file(clone, sha, safe_path, profile=profile)
             if not data:
                 raise HTTPException(status_code=404, detail="preview file not found")
             if Path(safe_path).suffix.lower() in {".html", ".htm"}:
@@ -621,6 +703,8 @@ def create_app(
                 )
             elif Path(safe_path).suffix.lower() == ".css":
                 data = rewrite_preview_css(data, safe_path, token or "", variant)
+            elif Path(safe_path).suffix.lower() in {".js", ".mjs"}:
+                data = rewrite_preview_js(data, token or "", variant)
             return Response(
                 content=data,
                 media_type=mimetypes.guess_type(safe_path)[0] or "application/octet-stream",
@@ -776,6 +860,18 @@ def create_app(
             raise
         except IncubationServiceError:
             return _error("provisioning_unavailable", "provisioning is unavailable", 503)
+
+    @app.get("/api/incubations/{incubation_id}/workspace")
+    async def incubation_workspace(request: Request, incubation_id: str):
+        """Return the small owner projection used by the continuous workspace."""
+        try:
+            _require_api_origin(request)
+            _incubation(incubation_id)
+            return incubation_service.owner_projection(incubation_id)  # type: ignore[union-attr]
+        except HTTPException:
+            raise
+        except IncubationServiceError as exc:
+            return _incubation_error(exc, "workspace_unavailable")
 
     @app.delete("/api/incubations/{incubation_id}")
     async def incubation_delete(request: Request, incubation_id: str):
@@ -1186,9 +1282,12 @@ def create_app(
             _require_api_origin(request)
             safe_id = _run_id(run_id)
             service.get_run(safe_id)
-            token = access.issue((safe_id, "intake-lab"))
+            variant = str(request.query_params.get("variant") or "candidate").strip().lower()
+            if variant not in _VARIANTS:
+                return _error("invalid_variant", "preview variant is invalid", 400)
+            token = access.issue((safe_id, "intake-lab", variant))
             return JSONResponse(
-                {"token": token, "expires_in": access.ttl},
+                {"token": token, "expires_in": access.ttl, "variant": variant},
                 headers={"Cache-Control": "no-store"},
             )
         except HTTPException:
@@ -1211,6 +1310,7 @@ def create_app(
                     {
                         "path": page,
                         "candidate": preview_available(safe_id, "candidate", page),
+                        "live": preview_available(safe_id, "live", page),
                     }
                     for page in pages
                 ],
@@ -1252,16 +1352,31 @@ def create_app(
         if origin and origin != "null" and not _same_origin(request, origin):
             raise HTTPException(status_code=403, detail="request origin is not allowed")
         token = request.query_params.get("preview_token")
-        if not access.valid(token, (safe_id, "intake-lab")):
+        if not (
+            access.valid(token, (safe_id, "intake-lab", variant))
+            or (variant == "candidate" and access.valid(token, (safe_id, "intake-lab")))
+        ):
             raise HTTPException(status_code=403, detail="preview token is invalid")
         safe_path = _safe_file_path(file_path)
         try:
-            clone, sha = service.preview_identity(safe_id, variant)
+            artifact = None
+            artifact_resolver = getattr(service, "preview_artifact_identity", None)
+            if variant == "candidate" and callable(artifact_resolver):
+                artifact = artifact_resolver(safe_id, variant)
+            if artifact:
+                data = cache.read_artifact(artifact[0], safe_path)
+            elif variant == "live":
+                clone, sha = service.live_preview_identity(safe_id)
+                profile_resolver = getattr(service, "preview_profile", None)
+                profile = profile_resolver(safe_id) if callable(profile_resolver) else ""
+                data = cache.read_file(clone, sha, safe_path, profile=profile)
+            else:
+                clone, sha = service.preview_identity(safe_id, variant)
+                profile_resolver = getattr(service, "preview_profile", None)
+                profile = profile_resolver(safe_id) if callable(profile_resolver) else ""
+                data = cache.read_file(clone, sha, safe_path, profile=profile)
         except IntakeLabError as exc:
             raise HTTPException(status_code=404, detail="preview variant is unavailable") from exc
-        profile_resolver = getattr(service, "preview_profile", None)
-        profile = profile_resolver(safe_id) if callable(profile_resolver) else ""
-        data = cache.read_file(clone, sha, safe_path, profile=profile)
         if not data:
             raise HTTPException(status_code=404, detail="preview file not found")
         suffix = Path(safe_path).suffix.lower()
@@ -1277,6 +1392,8 @@ def create_app(
             )
         elif suffix == ".css":
             data = rewrite_preview_css(data, safe_path, token or "", variant)
+        elif suffix in {".js", ".mjs"}:
+            data = rewrite_preview_js(data, token or "", variant)
         media_type = mimetypes.guess_type(safe_path)[0] or "application/octet-stream"
         return Response(content=data, media_type=media_type, headers=_preview_headers())
 

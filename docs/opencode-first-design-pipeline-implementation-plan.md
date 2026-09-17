@@ -2,6 +2,13 @@
 
 **Status:** Authoritative corrective implementation contract
 
+**Creative-execution authority:**
+`docs/brand-composition-and-behavior-system-implementation-plan.md` is
+authoritative for experience planning, integrated implementation ownership,
+motion/fidelity specialist behavior, and the evidence required to call a design
+complete. This document remains authoritative for durable execution, candidate
+retention, Git/provider isolation, host build ownership, and approval safety.
+
 **Date:** 2026-08-31
 
 **Acceptance implementation model:** `deepseek-ai/DeepSeek-V4-Flash`

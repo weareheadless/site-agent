@@ -75,6 +75,47 @@ def test_composition_gate_checks_frozen_asset_hash_and_logo_clearance():
     )
     assert any(item["code"] == "asset_hash_mismatch" for item in hash_findings)
 
+    local_preview_evidence = [{
+        **evidence[0],
+        "elements": [{
+            **evidence[0]["elements"][0],
+            "src": "http://127.0.0.1:35955/images/ada-media/logo.webp",
+        }],
+    }]
+    _, local_findings = evaluate_composition_plan([_composition()], local_preview_evidence)
+    assert not any(item["code"] == "external_asset_substitution" for item in local_findings)
+
+    remote_evidence = [{
+        **evidence[0],
+        "elements": [{
+            **evidence[0]["elements"][0],
+            "src": "https://cdn.example.test/logo.webp",
+        }],
+    }]
+    _, remote_findings = evaluate_composition_plan([_composition()], remote_evidence)
+    assert any(item["code"] == "external_asset_substitution" for item in remote_findings)
+
+
+def test_composition_gate_blocks_oversized_rendered_media_without_immersive_exception():
+    evidence = [{
+        "route": "index.html",
+        "viewport": {"name": "mobile", "width": 390, "height": 844},
+        "elements": [{
+            "tag": "img",
+            "role": "atmosphere",
+            "asset_id": "asset-logo",
+            "asset_sha256": "a" * 64,
+            "box": {"x": 0, "y": 0, "width": 390, "height": 1800},
+            "intrinsic_width": 1200,
+            "intrinsic_height": 5400,
+        }],
+    }]
+
+    report, findings = evaluate_composition_plan([_composition(logo_rule=None)], evidence)
+
+    assert report["status"] == "failed"
+    assert any(item["code"] == "rendered_media_geometry" for item in findings)
+
 
 def test_temporal_gate_requires_signature_observation_and_clean_runtime():
     raw = {
@@ -108,4 +149,7 @@ def test_temporal_gate_requires_signature_observation_and_clean_runtime():
     failed["evidence_hash"] = canonical_hash({key: value for key, value in failed.items() if key != "evidence_hash"})
     failed_evidence = TemporalExperienceEvidence.from_dict(failed)
     _, failed_findings = evaluate_temporal_evidence(failed_evidence, signature_behavior_id="arrival")
-    assert any(item["code"] == "signature_behavior_unobserved" for item in failed_findings)
+    assert any(
+        item["code"] == "signature_behavior_unobserved" and item["severity"] == "blocker"
+        for item in failed_findings
+    )

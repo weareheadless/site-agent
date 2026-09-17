@@ -1,6 +1,6 @@
 from site_agent.application.customer_genesis import CustomerGenesisService
 from site_agent.core.design_contracts import SiteIntake
-from site_agent.core.design_intake_contracts import DesignIntakeDraft
+from site_agent.core.design_intake_contracts import DesignIntakeDraft, IntakeFieldProvenance
 from site_agent.core.incubation_contracts import EvidenceOrigin
 from site_agent.core.memory import Memory
 
@@ -69,5 +69,30 @@ def test_genesis_incorporates_qwen_asset_analysis_into_developing_tastes(tmp_pat
         origins = {item.origin for item in proposal.evidence}
         assert EvidenceOrigin.ASSET_ANALYSIS.value in origins
         assert any(item.source_id == "asset:7" for item in proposal.evidence)
+    finally:
+        memory.close()
+
+
+def test_genesis_preserves_bootstrap_observation_provenance(tmp_path):
+    memory = Memory(tmp_path / "incubation.db")
+    try:
+        draft = DesignIntakeDraft.empty()
+        for path, value in (
+            ("business.offer_summary", "Observed but not owner-confirmed"),
+            ("audience.primary", "Observed audience"),
+            ("brand.voice", "Observed voice"),
+        ):
+            draft = draft.with_value(
+                path,
+                value,
+                IntakeFieldProvenance(path=path, origin="assumed", note="migration snapshot"),
+            )
+        proposal = CustomerGenesisService(memory).propose_from_session({
+            "session_id": "intake-" + "c" * 32,
+            "draft": draft.to_dict(),
+        })
+
+        assert {item.origin for item in proposal.evidence} == {EvidenceOrigin.HOST_OBSERVATION.value}
+        assert all(item.confidence == 0.2 for item in proposal.evidence)
     finally:
         memory.close()

@@ -13,6 +13,11 @@ incubation:
   rejected_ttl_hours: 24
   scaffold: /var/lib/helloada/neutral-scaffold
 
+preview:
+  # Intake Lab review links remain usable while an owner inspects a candidate.
+  # The capability is still scoped to one run and kept in process memory.
+  ttl_seconds: 14400
+
 provisioning:
   customer_root: /var/lib/helloada/customers
 
@@ -83,7 +88,7 @@ providers:
 
 llm:
   base_url: https://openrouter.ai/api/v1
-  model: deepseek/deepseek-v4-flash-0731
+  model: deepseek/deepseek-v4.1-flash
   timeout_seconds: 300
   max_tokens: 16384
   tool_calling: false
@@ -101,12 +106,24 @@ design_engine:
   enabled: true
   intake_schema_version: 1
   provider: openrouter
-  # Text-only planning is used only when no image bytes are available. For the
-  # initial homepage, the typed planner receives bounded copies of the supplied
-  # images and switches to the vision planner so it can choose imagery itself.
-  model: deepseek/deepseek-v4-flash-vision-exp
-  planner_model: deepseek/deepseek-v4-flash-0731
-  vision_planner_model: deepseek/deepseek-v4-flash-vision-exp
+  # One Ada Build turn designs and realizes the whole site from the confirmed
+  # intake context and installed skills, including purposeful motion and its
+  # reduced-motion branch. Validation observes the rendered owner surface; no
+  # post-hoc motion specialist or specialist committee is used.
+  orchestration: creative
+  # The experience-fidelity phase closes every locked journey condition in the
+  # worktree, so it needs a real budget. High reasoning on the strict planning
+  # contract is slow; the bounded fidelity correction is evidence-driven and
+  # stays low so the final owner-surface render still fits its budget.
+  specialist_timeout_seconds: 1800
+  specialist_reasoning_effort: low
+  reasoning_by_phase:
+    creative_selection: high
+    transfer_review: high
+    experience_fidelity: low
+  model: deepseek/deepseek-v4.1-flash
+  planner_model: deepseek/deepseek-v4.1-flash
+  vision_planner_model: deepseek/deepseek-v4.1-flash
   api_key_env: OPENROUTER_API_KEY
   intake_advisor:
     # The intake conversation is a strict JSON-extraction loop, so it gets its
@@ -116,47 +133,59 @@ design_engine:
     provider: openrouter
     base_url: https://openrouter.ai/api/v1
     api_key_env: OPENROUTER_API_KEY
-    model: deepseek/deepseek-v4-flash-0731
+    model: deepseek/deepseek-v4.1-flash
     timeout_seconds: 90
     max_retries: 1
     max_tokens: 4096
     enable_thinking: false
-  repair_attempts: 0
+  repair_attempts: 1
   max_tokens: 8192
   required_viewports:
     - {name: desktop, width: 1440, height: 1000}
     - {name: tablet, width: 768, height: 1024}
     - {name: mobile, width: 390, height: 844}
   libraries:
-     # Approved frontend capabilities for the controlled baseline. `required`
-     # makes the host enforce the capability instead of leaving it to model
-     # preference; the runtime remains pinned and host-provisioned.
-     gsap:
-       enabled: true
-       required: true
+    # Approved frontend capabilities for the controlled baseline. `required`
+    # makes the host enforce the capability instead of leaving it to model
+    # preference; the runtime remains pinned and host-provisioned.
+    gsap:
+      enabled: true
+      required: true
   quality:
     browser: true
     accessibility: true
     visual_critic: true
+    native_source_required: true
+    react_source_required: true
+    gsap_required: true
     allowed_hard_denied_paths: []
 
 builder:
   enabled: true
-  model: openrouter/deepseek/deepseek-v4-flash-vision-exp
-  timeout_seconds: 1800
+  model: openrouter/deepseek/deepseek-v4.1-flash
+  # First pass is intentionally time-boxed: produce a complete, working page
+  # and let the owner steer refinement, rather than spending 30 minutes before
+  # the owner ever sees a candidate.
+  timeout_seconds: 900
   provider_timeout_seconds: 2100
   provider_chunk_timeout_seconds: 180
-  # DeepSeek V4 Flash reasons before acting; the token budget must cover both
-  # the thinking and the implementation writes or a turn ends with 0 edits.
+  # Keep the request within the configured provider credit ceiling. The model
+  # can still use its full integrated build turn; requesting more than the
+  # account can afford fails before Ada gets a chance to act.
+  # The creative direction response is a typed plan, not just prose. DeepSeek
+  # may spend a large share of the turn on reasoning, so leave enough output
+  # headroom for the complete JSON object and its closing delimiters.
   output_tokens: 32768
+  # Keep the native direction and integrated realization inside the available
+  # provider credit ceiling; the typed host gates remain authoritative.
   reasoning_effort: low
-  validation_repair_attempts: 0
+  validation_repair_attempts: 1
 
 vision:
   enabled: true
   provider: openrouter
   base_url: https://openrouter.ai/api/v1
-  model: deepseek/deepseek-v4-flash-vision-exp
+  model: deepseek/deepseek-v4.1-flash
   timeout_seconds: 45
   max_tokens: 1200
   include_usage: true

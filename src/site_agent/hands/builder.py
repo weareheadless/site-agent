@@ -79,7 +79,37 @@ class NativeOpenCodeBuilder:
             from .opencode_runner import stage_design_build
 
             engine = self.context.get("config", {}).get("design_engine") or {}
-            if str(engine.get("orchestration") or "legacy").strip().lower() == "specialist":
+            orchestration = str(engine.get("orchestration") or "legacy").strip().lower()
+            if orchestration == "creative":
+                # One integrated Ada build owns composition, content, responsive
+                # behavior, GSAP, and reduced motion. Review/repair observes the
+                # rendered result instead of handing motion to a second author.
+                operation_kind = str(getattr(target, "operation_kind", "initial_build") or "initial_build")
+                request_content = getattr(request, "content", {}) or {}
+                repair_brief = (
+                    request_content.get("specialist_repair_brief")
+                    if isinstance(request_content, dict)
+                    else None
+                )
+                if operation_kind == "initial_build":
+                    return stage_design_build(self.context, request, target, progress)
+                if operation_kind == "visual_refinement":
+                    locked_plan = (
+                        request_content.get("specialist_locked_plan")
+                        if isinstance(request_content, dict)
+                        else None
+                    )
+                if (
+                    operation_kind == "visual_refinement"
+                    and (isinstance(repair_brief, dict) or isinstance(locked_plan, dict))
+                ):
+                    return stage_design_build(
+                        self.context, request, target, progress,
+                        design_plan=locked_plan,
+                        repair_brief=repair_brief if isinstance(repair_brief, dict) else None,
+                    )
+                return stage_design_build(self.context, request, target, progress)
+            if orchestration == "specialist":
                 from ..application.design_orchestration import SpecialistDesignCoordinator
 
                 operation_kind = str(getattr(target, "operation_kind", "initial_build") or "initial_build")
@@ -94,14 +124,17 @@ class NativeOpenCodeBuilder:
                     if isinstance(request_content, dict)
                     else None
                 )
-                if operation_kind == "visual_refinement" and isinstance(repair_brief, dict):
+                if (
+                    operation_kind == "visual_refinement"
+                    and (isinstance(repair_brief, dict) or isinstance(locked_plan, dict))
+                ):
                     return stage_design_build(
                         self.context,
                         request,
                         target,
                         progress,
                         design_plan=locked_plan,
-                        repair_brief=repair_brief,
+                        repair_brief=repair_brief if isinstance(repair_brief, dict) else None,
                     )
                 if operation_kind != "initial_build":
                     return stage_design_build(self.context, request, target, progress)

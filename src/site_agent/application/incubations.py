@@ -25,6 +25,13 @@ from ..brain.incubation_research import (
 from ..core.contracts import ContractError, utc_now
 from ..core.design_contracts import DesignRunStatus, DesignSkillReceipt, IncubatedCreativeContext, SiteIntake
 from ..core.design_intake_contracts import DesignIntakeDraft
+from ..core.intake_lab_contracts import (
+    OwnerPhase,
+    OwnerTraceEntry,
+    TraceBasis,
+    TraceCategory,
+    trace_entry_id,
+)
 from ..core.incubation_contracts import (
     CustomerAdaGenesis,
     IncubationRecord,
@@ -38,6 +45,7 @@ from .incubation_research import IncubationResearchError, IncubationResearchExec
 from .incubation_activity import IncubationActivityService
 from .customer_genesis import CustomerGenesisService
 from .customer_context import CustomerContextService
+from .designs import owner_review_requirements_met
 from .novelty import NoveltyService, NoveltyServiceError
 from .provisioning import (
     CustomerActivationService,
@@ -714,7 +722,10 @@ class IncubationApplicationService:
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         record = self.get_record(incubation_id)
-        if record.status == IncubationStatus.ACCEPTED.value:
+        if record.status in {
+            IncubationStatus.READY_FOR_FEEDBACK.value,
+            IncubationStatus.ACCEPTED.value,
+        }:
             self.transition(incubation_id, IncubationStatus.COLLECTING.value, event="new_intake_revision")
         session = self._session(incubation_id)
         try:
@@ -738,6 +749,97 @@ class IncubationApplicationService:
             intake_session_id=str(result.get("session_id") or session.get("session_id") or "") or None,
         )
         return {"session": self.intake_service(incubation_id).get_session(session["session_id"]), **result}
+
+    def auto_build_after_intake_turn(
+        self,
+        incubation_id: str,
+        job: Mapping[str, Any],
+        result: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Start one staged modification after Ada completes an owner turn.
+
+        This callback is attached to the durable chat worker.  It only runs for
+        an incubation that already has an objectively valid displayed candidate;
+        the initial build is started by the explicit intake confirmation path.
+        The current displayed candidate remains immutable while the new run is
+        staged.
+        """
+        record = self.get_record(incubation_id)
+        if record.status not in {
+            IncubationStatus.COLLECTING.value,
+            IncubationStatus.READY_FOR_FEEDBACK.value,
+            IncubationStatus.ACCEPTED.value,
+        }:
+            return None
+        memory = self.open_store(incubation_id).memory
+        sessions = memory.list_design_intake_sessions(limit=1)
+        if not sessions:
+            return None
+        session_id = str(job.get("intake_session_id") or sessions[0].get("session_id") or "").strip()
+        if not session_id:
+            return None
+        session = self.intake_service(incubation_id).get_session(session_id)
+        owner_candidates = [
+            item for item in memory.list_design_runs(mode="local_experiment", limit=500)
+            if self._owner_candidate_ready(item)
+        ]
+        if not owner_candidates:
+            return None
+        active_statuses = {
+            DesignRunStatus.CREATED.value,
+            DesignRunStatus.ASSESSING_INTAKE.value,
+            DesignRunStatus.PLANNING.value,
+            DesignRunStatus.BUILDING.value,
+            DesignRunStatus.CANDIDATE_READY.value,
+            DesignRunStatus.VALIDATING.value,
+        }
+        if any(item.get("status") in active_statuses for item in memory.list_design_runs(mode="local_experiment", limit=500)):
+            return None
+        readiness = session.get("readiness") if isinstance(session.get("readiness"), Mapping) else {}
+        if session.get("status") != "confirmed":
+            if str(readiness.get("state") or "") != "ready_to_build":
+                return {"modification_status": "waiting_for_owner_detail"}
+            confirmed = self.intake_service(incubation_id).confirm(
+                session_id,
+                revision=int(session.get("revision") or 0),
+                draft_hash=str(session.get("draft_hash") or ""),
+                confirmation_text="Apply the requested update",
+                idempotency_key=f"modification-confirm-{int(job.get('id') or 0)}",
+            )
+            session = confirmed["session"]
+        current = self.get_record(incubation_id)
+        if current.status == IncubationStatus.COLLECTING.value:
+            self.transition(
+                incubation_id,
+                IncubationStatus.READY_TO_BUILD.value,
+                event="modification_ready",
+                detail={"session_id": session_id},
+            )
+        built = self.build(
+            incubation_id,
+            {
+                "confirmed_revision": int(session.get("confirmed_revision") or session.get("revision") or 0),
+                "owner_request": str(job.get("message") or "Apply the owner's requested update."),
+                "idempotency_key": f"modification-build-{int(job.get('id') or 0)}",
+                "force_new": True,
+            },
+        )
+        self.activity_service(incubation_id).record(
+            category="design",
+            kind="owner_modification_started",
+            state="started",
+            summary="Started a new staged build from the owner's Ada conversation.",
+            provenance="owner_confirmation",
+            detail={"status": "modifying"},
+            intake_session_id=session_id,
+            intake_revision=int(session.get("confirmed_revision") or session.get("revision") or 0) or None,
+            design_run_id=str((built.get("run") or {}).get("run_id") or "") or None,
+        )
+        return {
+            "modification_status": "started",
+            "design_run_id": str((built.get("run") or {}).get("run_id") or ""),
+            "incubation_status": str((built.get("incubation") or {}).get("status") or "building"),
+        }
 
     def request_research(self, incubation_id: str, body: Mapping[str, Any]) -> dict[str, Any]:
         record = self.get_record(incubation_id)
@@ -816,6 +918,22 @@ class IncubationApplicationService:
         except Exception as exc:
             raise IncubationServiceError(str(exc)[:500]) from exc
 
+    def create_visual_refinement(self, incubation_id: str, run_id: str) -> dict[str, Any]:
+        try:
+            return self.lab_service_for(incubation_id).create_visual_refinement(run_id)
+        except IncubationServiceError:
+            raise
+        except Exception as exc:
+            raise IncubationServiceError(str(exc)[:500]) from exc
+
+    def revalidate_design_run(self, incubation_id: str, run_id: str) -> dict[str, Any]:
+        try:
+            return self.lab_service_for(incubation_id).revalidate_run(run_id)
+        except IncubationServiceError:
+            raise
+        except Exception as exc:
+            raise IncubationServiceError("host quality revalidation is unavailable") from exc
+
     def design_pages(self, incubation_id: str, run_id: str) -> list[str]:
         try:
             return self.lab_service_for(incubation_id).pages(run_id)
@@ -831,6 +949,31 @@ class IncubationApplicationService:
             raise
         except Exception as exc:
             raise IncubationServiceError("design preview is unavailable") from exc
+
+    def design_preview_artifact_identity(self, incubation_id: str, run_id: str, variant: str = "candidate") -> tuple[Path, str] | None:
+        try:
+            service = self.lab_service_for(incubation_id)
+            resolver = getattr(service, "preview_artifact_identity", None)
+            if not callable(resolver):
+                return None
+            return resolver(run_id, variant)
+        except IncubationServiceError:
+            raise
+        except Exception as exc:
+            raise IncubationServiceError("design output artifact is unavailable") from exc
+
+    def design_live_preview_identity(self, incubation_id: str, run_id: str) -> tuple[Path, str]:
+        """Return the latest immutable live checkpoint for a scoped run."""
+        try:
+            service = self.lab_service_for(incubation_id)
+            resolver = getattr(service, "live_preview_identity", None)
+            if not callable(resolver):
+                raise IncubationServiceError("live preview is unavailable")
+            return resolver(run_id)
+        except IncubationServiceError:
+            raise
+        except Exception as exc:
+            raise IncubationServiceError("live preview is unavailable") from exc
 
     def design_preview_profile(self, incubation_id: str, run_id: str) -> str:
         try:
@@ -940,6 +1083,11 @@ class IncubationApplicationService:
             "revisions": [item["genesis"].to_dict() for item in memory.list_customer_genesis_revisions(limit=100)],
         }
 
+    @staticmethod
+    def _owner_candidate_ready(run: Mapping[str, Any]) -> bool:
+        """Return whether host evidence is sufficient for owner feedback."""
+        return owner_review_requirements_met(run)
+
     def _refresh_lifecycle(self, incubation_id: str) -> IncubationRecord:
         record = self.get_record(incubation_id)
         if record.status in {
@@ -1015,7 +1163,18 @@ class IncubationApplicationService:
         }
         active = [run for run in runs if run.get("status") in active_statuses]
         reviewable = [run for run in runs if run.get("status") == DesignRunStatus.READY_FOR_REVIEW.value]
+        owner_ready = [run for run in runs if self._owner_candidate_ready(run)]
         if active:
+            if record.status in {
+                IncubationStatus.COLLECTING.value,
+                IncubationStatus.RESEARCHING.value,
+            }:
+                record = self.transition(
+                    incubation_id,
+                    IncubationStatus.READY_TO_BUILD.value,
+                    event="descendant_ready_to_build",
+                    detail={"run_ids": [str(run.get("run_id") or "") for run in active]},
+                )
             if record.status != IncubationStatus.BUILDING.value:
                 return self.transition(
                     incubation_id,
@@ -1024,18 +1183,30 @@ class IncubationApplicationService:
                     detail={"run_ids": [str(run.get("run_id") or "") for run in active]},
                 )
             return record
-        if reviewable and record.status in {
+        if owner_ready and record.status in {
             IncubationStatus.BUILDING.value,
             IncubationStatus.BLOCKED.value,
         }:
-            latest = max(reviewable, key=lambda run: str(run.get("updated_ts") or run.get("created_ts") or ""))
+            if record.status == IncubationStatus.BLOCKED.value:
+                # A previously blocked lifecycle can contain a retained,
+                # objectively valid candidate after a read-only gate finished.
+                # Re-enter the normal build boundary before exposing it as
+                # ready; no production state is changed by this transition.
+                self.transition(
+                    incubation_id,
+                    IncubationStatus.BUILDING.value,
+                    event="candidate_retained",
+                    detail={"reason": "objective_quality_passed"},
+                )
+                record = self.get_record(incubation_id)
+            latest = max(owner_ready, key=lambda run: str(run.get("updated_ts") or run.get("created_ts") or ""))
             return self.transition(
                 incubation_id,
                 IncubationStatus.READY_FOR_FEEDBACK.value,
                 event="candidate_ready",
-                detail={"run_id": latest.get("run_id"), "candidate_count": len(reviewable)},
+                detail={"run_id": latest.get("run_id"), "candidate_count": len(owner_ready)},
             )
-        if not reviewable and record.status == IncubationStatus.BUILDING.value:
+        if not owner_ready and record.status == IncubationStatus.BUILDING.value:
             terminal = [run for run in runs if run.get("status") in terminal_statuses]
             if terminal and len(terminal) == len(runs):
                 latest = max(terminal, key=lambda run: str(run.get("updated_ts") or run.get("created_ts") or ""))
@@ -1046,6 +1217,331 @@ class IncubationApplicationService:
                     detail={"run_id": latest.get("run_id"), "status": latest.get("status"), "run_count": len(runs)},
                 )
         return record
+
+    def owner_projection(self, incubation_id: str) -> dict[str, Any]:
+        """Project durable incubation state into the small owner workspace API."""
+        record = self._refresh_lifecycle(incubation_id)
+        scoped = self.open_store(incubation_id)
+        memory = scoped.memory
+        sessions = memory.list_design_intake_sessions(limit=1)
+        session: dict[str, Any] = {}
+        draft = DesignIntakeDraft.empty()
+        if sessions:
+            try:
+                session = self.intake_service(incubation_id).get_session(str(sessions[0]["session_id"]))
+                draft = DesignIntakeDraft.from_dict(session.get("draft") or {})
+            except Exception:
+                session = dict(sessions[0])
+        session_id = str(session.get("session_id") or "")
+        all_runs = [
+            item for item in memory.list_design_runs(mode="local_experiment", limit=500)
+            if not session_id or str(item.get("intake_session_id") or "") == session_id
+        ]
+        candidates = [item for item in all_runs if str(item.get("candidate_sha") or "").strip()]
+        owner_candidates = [item for item in candidates if self._owner_candidate_ready(item)]
+        displayed = max(
+            owner_candidates or candidates,
+            key=lambda item: str(item.get("updated_ts") or item.get("created_ts") or ""),
+            default=None,
+        )
+        active = next(
+            (
+                item for item in sorted(
+                    all_runs,
+                    key=lambda value: str(value.get("updated_ts") or value.get("created_ts") or ""),
+                    reverse=True,
+                )
+                if item.get("status") in {
+                    DesignRunStatus.CREATED.value,
+                    DesignRunStatus.ASSESSING_INTAKE.value,
+                    DesignRunStatus.PLANNING.value,
+                    DesignRunStatus.BUILDING.value,
+                    DesignRunStatus.CANDIDATE_READY.value,
+                    DesignRunStatus.VALIDATING.value,
+                }
+            ),
+            None,
+        )
+
+        def _text(value: Any, maximum: int = 360) -> str:
+            if isinstance(value, Mapping):
+                value = "; ".join(f"{key}: {_text(item, 100)}" for key, item in list(value.items())[:8])
+            elif isinstance(value, (list, tuple, set)):
+                value = ", ".join(_text(item, 100) for item in list(value)[:12])
+            return " ".join(str(value or "").split())[:maximum]
+
+        def _entry(
+            category: TraceCategory,
+            summary: str,
+            basis: TraceBasis,
+            created_at: Any,
+            *,
+            source_ids: Any = (),
+            confidence: float | None = None,
+            implications: Any = (),
+            identity: Any = None,
+        ) -> OwnerTraceEntry | None:
+            text = _text(summary, 500)
+            if not text:
+                return None
+            try:
+                return OwnerTraceEntry.from_dict({
+                    "entry_id": trace_entry_id(category.value, identity if identity is not None else text),
+                    "category": category.value,
+                    "summary": text,
+                    "basis": basis.value,
+                    "created_at": str(created_at or record.updated_at),
+                    "source_ids": [str(item)[:160] for item in (source_ids or ()) if str(item).strip()][:20],
+                    "confidence": confidence,
+                    "implications": [_text(item, 240) for item in (implications or ()) if _text(item, 240)][:12],
+                })
+            except (ContractError, TypeError, ValueError):
+                return None
+
+        trace: dict[str, OwnerTraceEntry] = {}
+
+        def _add(item: OwnerTraceEntry | None) -> None:
+            if item is not None:
+                trace[item.entry_id] = item
+
+        origin_basis = {
+            "confirmed": (TraceBasis.OWNER, 1.0),
+            "advised": (TraceBasis.INFERENCE, 0.65),
+            "assumed": (TraceBasis.INFERENCE, 0.45),
+            "deferred": (TraceBasis.SYSTEM, None),
+        }
+        for path, provenance in list(draft.provenance.items())[:80]:
+            value = draft.value(path)
+            if value in (None, "", [], {}):
+                continue
+            basis, confidence = origin_basis.get(str(provenance.origin), (TraceBasis.SYSTEM, None))
+            top = path.split(".", 1)[0]
+            category = {
+                "business": TraceCategory.BUSINESS,
+                "audience": TraceCategory.AUDIENCE,
+                "conversion": TraceCategory.DECISION,
+                "brand": TraceCategory.DECISION,
+                "constraints": TraceCategory.DECISION,
+                "site": TraceCategory.INTAKE,
+                "design": TraceCategory.DECISION,
+            }.get(top, TraceCategory.INTAKE)
+            label = path.rsplit(".", 1)[-1].replace("_", " ")
+            _add(_entry(
+                category,
+                f"{label.capitalize()}: {_text(value)}",
+                basis,
+                session.get("updated_ts") or session.get("updated_at") or record.updated_at,
+                source_ids=[f"message:{provenance.source_message_id}"] if provenance.source_message_id else (),
+                confidence=confidence,
+                implications=[provenance.note] if provenance.note else (),
+                identity={"path": path, "value": value, "origin": provenance.origin},
+            ))
+        for item in (*draft.deferred,):
+            _add(_entry(
+                TraceCategory.QUESTION,
+                f"Ada is waiting on {item.path.replace('_', ' ')}: {item.note}",
+                TraceBasis.SYSTEM,
+                session.get("updated_ts") or record.updated_at,
+                source_ids=[f"message:{item.source_message_id}"] if item.source_message_id else (),
+                identity={"kind": "deferred", "path": item.path, "note": item.note},
+            ))
+        for question in list(draft.open_topics)[:20]:
+            _add(_entry(
+                TraceCategory.QUESTION,
+                f"Open question: {question}",
+                TraceBasis.SYSTEM,
+                session.get("updated_ts") or record.updated_at,
+                identity={"kind": "open_topic", "question": question},
+            ))
+
+        sources = {str(item.get("source_id") or ""): item for item in memory.list_research_sources(limit=200)}
+        for source in sources.values():
+            title = _text(source.get("title") or source.get("kind") or "Public source", 280)
+            trust = str(source.get("trust_state") or "candidate").replace("_", " ")
+            _add(_entry(
+                TraceCategory.RESEARCH,
+                f"Research source: {title} ({trust}).",
+                TraceBasis.RESEARCH,
+                source.get("fetched_at") or source.get("updated_ts") or record.updated_at,
+                source_ids=[source.get("source_id")],
+                confidence=0.6 if trust == "allowed" else 0.25,
+                identity={"source_id": source.get("source_id"), "trust_state": source.get("trust_state")},
+            ))
+        for finding in memory.list_research_findings(limit=200):
+            data = finding.to_dict()
+            source = sources.get(str(data.get("source_id") or ""), {})
+            _add(_entry(
+                TraceCategory.RESEARCH,
+                _text(data.get("summary"), 500),
+                TraceBasis.RESEARCH,
+                data.get("published_at") or record.updated_at,
+                source_ids=[data.get("source_id"), data.get("finding_id")],
+                confidence=float(data.get("confidence") or 0.0),
+                implications=[f"Source: {_text(source.get('title') or data.get('source_id'), 160)}"],
+                identity={"finding_id": data.get("finding_id")},
+            ))
+        for item in memory.list_incubation_insights(limit=200):
+            kind = str(item.get("kind") or "")
+            category = (
+                TraceCategory.AUDIENCE if kind.startswith("audience_")
+                else TraceCategory.BUSINESS if kind == "business_context"
+                else TraceCategory.DECISION
+            )
+            basis = TraceBasis.OWNER if item.get("status") == "owner_confirmed" else TraceBasis.INFERENCE
+            _add(_entry(
+                category,
+                str(item.get("summary") or ""),
+                basis,
+                item.get("created_at") or record.updated_at,
+                source_ids=item.get("finding_ids") or (),
+                confidence=float(item.get("confidence") or 0.0),
+                implications=item.get("supports_paths") or (),
+                identity={"insight_id": item.get("insight_id")},
+            ))
+        for item in memory.list_incubation_deductions(limit=200):
+            kind = str(item.get("kind") or "")
+            category = (
+                TraceCategory.COMPETITION if kind == "competitor_note"
+                else TraceCategory.AUDIENCE if kind.startswith("audience_")
+                else TraceCategory.DECISION if kind == "creative_leaning"
+                else TraceCategory.DETERMINATION
+            )
+            basis = TraceBasis.RESEARCH if str(item.get("basis") or "") in {"source", "snapshot"} or str(item.get("basis") or "").startswith("source:") else TraceBasis.INFERENCE
+            _add(_entry(
+                category,
+                str(item.get("summary") or ""),
+                basis,
+                item.get("created_at") or record.updated_at,
+                source_ids=[*(item.get("source_refs") or ()), *(item.get("citation_uris") or ())],
+                confidence=float(item.get("confidence") or 0.0),
+                implications=item.get("supports_paths") or item.get("horizon_questions") or (),
+                identity={"deduction_id": item.get("deduction_id")},
+            ))
+
+        activity_rows = memory.list_incubation_activity(limit=500).get("activities", [])
+        for activity in activity_rows:
+            kind = str(activity.get("kind") or "")
+            detail = activity.get("detail") if isinstance(activity.get("detail"), Mapping) else {}
+            if kind == "live_preview_checkpoint":
+                _add(_entry(
+                    TraceCategory.PREVIEW,
+                    "A stable live preview snapshot is available.",
+                    TraceBasis.SYSTEM,
+                    activity.get("occurred_at") or record.updated_at,
+                    source_ids=[detail.get("snapshot_id") or activity.get("design_run_id")],
+                    identity={"activity_id": activity.get("activity_id")},
+                ))
+            elif kind in {"design_run_queued", "owner_modification_started", "creative_context_frozen"}:
+                _add(_entry(
+                    TraceCategory.BUILD if kind != "creative_context_frozen" else TraceCategory.DECISION,
+                    str(activity.get("summary") or "Ada prepared the next staged build."),
+                    TraceBasis.SYSTEM if kind != "creative_context_frozen" else TraceBasis.INFERENCE,
+                    activity.get("occurred_at") or record.updated_at,
+                    source_ids=[activity.get("design_run_id")] if activity.get("design_run_id") else (),
+                    confidence=activity.get("confidence"),
+                    identity={"activity_id": activity.get("activity_id")},
+                ))
+        trace_entries = sorted(trace.values(), key=lambda item: (item.created_at, item.entry_id))[-160:]
+
+        status = record.status
+        if status == IncubationStatus.PROVISIONED.value:
+            phase = OwnerPhase.MANAGED
+        elif status == IncubationStatus.PROVISIONING.value:
+            phase = OwnerPhase.PROVISIONING
+        elif status == IncubationStatus.BLOCKED.value:
+            phase = OwnerPhase.BLOCKED
+        elif status == IncubationStatus.BUILDING.value:
+            phase = OwnerPhase.BUILDING
+        elif status == IncubationStatus.COLLECTING.value and bool(owner_candidates):
+            phase = OwnerPhase.MODIFYING
+        elif status in {IncubationStatus.READY_FOR_FEEDBACK.value, IncubationStatus.ACCEPTED.value}:
+            phase = OwnerPhase.READY
+        elif status == IncubationStatus.READY_TO_BUILD.value:
+            phase = OwnerPhase.BUILDING
+        else:
+            phase = OwnerPhase.INTAKE
+        phase_labels = {
+            OwnerPhase.INTAKE: "Ada is understanding the brief",
+            OwnerPhase.BUILDING: "Ada is building the website",
+            OwnerPhase.READY: "Candidate ready for you",
+            OwnerPhase.MODIFYING: "Ada is applying your requested changes",
+            OwnerPhase.PROVISIONING: "Provisioning your website",
+            OwnerPhase.MANAGED: "Website ready to manage",
+            OwnerPhase.BLOCKED: "Ada needs to resolve a technical problem",
+        }
+        candidate: dict[str, Any] | None = None
+        live_snapshot: dict[str, Any] | None = None
+        active_live_snapshot: dict[str, Any] | None = None
+        if displayed is not None:
+            run_id = str(displayed.get("run_id") or "")
+            pages: list[str] = []
+            try:
+                pages = self.design_pages(incubation_id, run_id)
+            except Exception:
+                pages = []
+            lab = self.lab_service_for(incubation_id) if self.runtime(incubation_id).lab_service is not None else None
+            if lab is not None:
+                getter = getattr(lab, "live_preview_snapshot", None)
+                if callable(getter):
+                    live_snapshot = getter(run_id)
+            candidate = {
+                "run_id": run_id,
+                "candidate_sha": str(displayed.get("candidate_sha") or "").lower(),
+                "pages": pages,
+                "live_preview": live_snapshot,
+                "displayed": phase == OwnerPhase.READY,
+            }
+        if active is not None and str(active.get("run_id") or "") != str((displayed or {}).get("run_id") or ""):
+            active_run_id = str(active.get("run_id") or "")
+            try:
+                runtime = self.runtime(incubation_id)
+                lab = runtime.lab_service
+                getter = getattr(lab, "live_preview_snapshot", None)
+                if callable(getter):
+                    active_live_snapshot = getter(active_run_id)
+            except Exception:
+                active_live_snapshot = None
+        public_messages = []
+        for message in list(session.get("messages") or [])[-80:]:
+            if not isinstance(message, Mapping) or str(message.get("role") or "") not in {"user", "assistant"}:
+                continue
+            public_messages.append({
+                "id": message.get("id"),
+                "role": message.get("role"),
+                "text": _text(message.get("text") or message.get("content"), 4_000),
+                "created_at": message.get("created_ts") or message.get("created_at"),
+            })
+        provisioning = self.get_record(incubation_id)
+        return {
+            "schema_version": 1,
+            "incubation_id": incubation_id,
+            "phase": phase.value,
+            "phase_label": phase_labels[phase],
+            "site_name": _text(draft.value("business.name") if draft.fields else "New site", 160) or "New site",
+            "readiness": str((session.get("readiness") or {}).get("state") or "collecting"),
+            "confirmation": {
+                "session_id": session_id,
+                "revision": session.get("revision"),
+                "draft_hash": session.get("draft_hash"),
+                "confirmed": session.get("status") == "confirmed",
+            },
+            "candidate": candidate,
+            "active_build": {"run_id": str(active.get("run_id") or "")} if active else None,
+            "live_build": (
+                {"run_id": str(active.get("run_id") or ""), "snapshot": active_live_snapshot}
+                if active and active_live_snapshot else None
+            ),
+            "can_provision": phase == OwnerPhase.READY and candidate is not None,
+            "primary_action": "provision" if phase == OwnerPhase.READY and candidate is not None else None,
+            "messages": public_messages,
+            "trace": [item.to_dict() for item in trace_entries],
+            "trace_cursor": trace_entries[-1].entry_id if trace_entries else None,
+            "provisioning": {
+                "status": provisioning.status,
+                "customer_instance_id": provisioning.customer_instance_id,
+            },
+            "updated_at": provisioning.updated_at,
+        }
 
     def _shared_design_skill_set(self, incubation_id: str) -> DesignSkillSet:
         runtime = self.runtime(incubation_id)
@@ -1269,11 +1765,26 @@ class IncubationApplicationService:
             record = self.get_record(incubation_id)
             if record.status == IncubationStatus.COLLECTING.value:
                 record = self.transition(incubation_id, IncubationStatus.READY_TO_BUILD.value, event="intake_confirmed", detail={"session_id": session_id, "revision": revision})
+            build_result: dict[str, Any] | None = None
+            runtime = self.runtime(incubation_id)
+            if record.status == IncubationStatus.READY_TO_BUILD.value and runtime.lab_service is not None:
+                build_result = self.build(
+                    incubation_id,
+                    {
+                        "confirmed_revision": int(confirmed_session.get("confirmed_revision") or revision),
+                        "owner_request": str(body.get("owner_request") or ""),
+                        "idempotency_key": f"confirmed-build-{session_id}-{revision}",
+                    },
+                )
+                record = self.get_record(incubation_id)
         except Exception as exc:
             if isinstance(exc, IncubationServiceError):
                 raise
             raise IncubationServiceError(str(exc)[:500]) from exc
-        return {"session": result["session"], "genesis": genesis.to_dict(), "incubation": record.to_dict()}
+        response = {"session": result["session"], "genesis": genesis.to_dict(), "incubation": record.to_dict()}
+        if build_result is not None:
+            response["build"] = build_result
+        return response
 
     def build(self, incubation_id: str, body: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(body, Mapping):
@@ -1282,6 +1793,11 @@ class IncubationApplicationService:
         if record.status == IncubationStatus.BUILDING.value:
             # An owner retry while a candidate is already in flight reconnects
             # to it: intake_service.build reuses the active run idempotently.
+            pass
+        elif record.status == IncubationStatus.READY_FOR_FEEDBACK.value and bool(body.get("force_new")):
+            # An explicit force-new build is the safe recovery path when a
+            # reviewable candidate must be regenerated from the same confirmed
+            # intake. It does not reopen or mutate the intake revision.
             pass
         elif record.status not in {IncubationStatus.READY_TO_BUILD.value, IncubationStatus.BLOCKED.value}:
             # BLOCKED only ever means a candidate that failed (see
@@ -1397,13 +1913,13 @@ class IncubationApplicationService:
             candidates = [
                 item for item in memory.list_design_runs(mode="local_experiment", limit=500)
                 if str(item.get("intake_session_id") or "") == session_id
-                and item.get("status") == DesignRunStatus.READY_FOR_REVIEW.value
+                and self._owner_candidate_ready(item)
             ]
             run = max(candidates, key=lambda item: str(item.get("updated_ts") or item.get("created_ts") or ""), default=None)
             selected_run_id = str((run or {}).get("run_id") or "")
         run_id = selected_run_id
-        if not run or run.get("status") != DesignRunStatus.READY_FOR_REVIEW.value:
-            raise IncubationServiceError("a ready-for-review candidate is required")
+        if not run or not self._owner_candidate_ready(run):
+            raise IncubationServiceError("an objectively valid candidate is required")
         candidate_sha = str(body.get("candidate_sha") or run.get("candidate_sha") or "").strip().lower()
         if not re.fullmatch(r"[0-9a-f]{40}", candidate_sha):
             raise IncubationServiceError("candidate_sha is invalid")
@@ -1488,12 +2004,30 @@ class IncubationApplicationService:
         if not isinstance(body, Mapping):
             raise IncubationServiceError("provisioning request must be an object")
         record = self.get_record(incubation_id)
+        requested_run_id = str(body.get("run_id") or "").strip()
+        requested_candidate_sha = str(body.get("candidate_sha") or "").strip().lower()
         if record.status == IncubationStatus.PROVISIONED.value and record.provisioning_request_id:
+            if requested_candidate_sha and requested_candidate_sha != str(record.accepted_candidate_sha or "").lower():
+                raise IncubationServiceError("provisioning candidate does not match the accepted candidate")
+            if requested_run_id and requested_run_id != str(record.accepted_run_id or ""):
+                raise IncubationServiceError("provisioning run does not match the accepted candidate")
             receipt = self.intake_store.get_receipt(record.provisioning_request_id)
             if receipt:
                 return {"receipt": receipt.to_dict(), "incubation": record.to_dict(), "idempotent": True}
+        if record.status == IncubationStatus.READY_FOR_FEEDBACK.value:
+            if not requested_run_id or not requested_candidate_sha:
+                raise IncubationServiceError("provisioning requires the exact displayed candidate")
+            self.accept(
+                incubation_id,
+                {"run_id": requested_run_id, "candidate_sha": requested_candidate_sha},
+            )
+            record = self.get_record(incubation_id)
         if record.status != IncubationStatus.ACCEPTED.value:
             raise IncubationServiceError("incubation must be accepted before provisioning")
+        if requested_candidate_sha and requested_candidate_sha != str(record.accepted_candidate_sha or "").lower():
+            raise IncubationServiceError("provisioning candidate does not match the accepted candidate")
+        if requested_run_id and requested_run_id != str(record.accepted_run_id or ""):
+            raise IncubationServiceError("provisioning run does not match the accepted candidate")
         request_id = _request_id(body.get("request_id"), incubation_id)
         customer_id = _customer_id(body.get("customer_instance_id"), request_id)
         try:

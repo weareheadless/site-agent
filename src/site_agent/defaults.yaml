@@ -43,6 +43,20 @@ persona:
   taboo: []
   lures: []       # legacy location; prefer dream.lures
 
+# Optional bootstrap facts for a tenant that has not completed Intake Ada.
+# Keep this bounded and mark public-site observations as needing owner review;
+# the editor prompt will refuse to invent missing business facts.
+customer_profile: {}
+
+atelier_intake:
+  enabled: false
+  database_only: true
+  research:
+    enabled: true
+    max_sources_per_pass: 8
+    max_items_per_source: 15
+    max_passes_before_owner_turn: 1
+
 schedule:
   digest: {every: daily, at: "09:00"}
   learn: {every: daily, at: "10:00"}
@@ -148,6 +162,11 @@ site:
     max_chat_attachments: 12
     site_asset_dir: ""
     # access key id + secret resolved via env mapping below
+  payload:              # optional Atelier Payload draft gateway
+    enabled: false
+    url: ""
+    token_env: ATELIER_SITE_AGENT_TOKEN
+    timeout_seconds: 30
   cloudflare:
     account_id: ""
     project_name: ""
@@ -212,6 +231,13 @@ admin:
 
 publish_mode: ask_first
 
+atelier_api:
+  enabled: false
+  host: 127.0.0.1
+  port: 3014
+  prefix: /v1/atelier
+  tenants: {}
+
 env:
   llm_api_key: SITE_AGENT_LLM_API_KEY
   vision_api_key: SITE_AGENT_VISION_API_KEY
@@ -222,10 +248,11 @@ env:
   r2_secret_access_key: R2_SECRET_ACCESS_KEY
   cicero_service_token: CICERO_SERVICE_TOKEN
   crawlseo_service_token: CRAWLSEO_SERVICE_TOKEN
+  atelier_site_agent_token: ATELIER_SITE_AGENT_TOKEN
 
 builder:
   enabled: false
-  model: openrouter/deepseek/deepseek-v4-flash-vision-exp
+  model: openrouter/deepseek/deepseek-v4.1-flash
   timeout_seconds: 1800
   provider_timeout_seconds: 2100
   provider_chunk_timeout_seconds: 180

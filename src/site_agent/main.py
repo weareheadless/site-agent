@@ -7,12 +7,14 @@ import os
 import ipaddress
 import sys
 from pathlib import Path
+from urllib.parse import quote
 
 import yaml
 
 from . import __version__
 from .config import (
     ConfigError,
+    IntakeAdaSettings,
     data_dir,
     load,
     load_env_file,
@@ -31,6 +33,7 @@ from .application.design_lab import DesignLabError, DesignLabService
 from .hands.builder import BuilderError, OperationRoutingBuilder
 from .hands.crawlseo import CrawlSEOError
 from .hands.design_experiment import DesignExperimentError
+from .hands.site_build import SiteOutputArtifactStore
 from .runtime import Runtime
 from .site_scaffold import initialize_site
 
@@ -173,7 +176,11 @@ def _cmd_design_experiment(args: argparse.Namespace) -> int:
     memory = Memory(Path(config["data_dir"]) / "design.db")
     run_id = ""
     try:
-        service = DesignService(memory, config=config)
+        service = DesignService(
+            memory,
+            config=config,
+            output_artifact_store=SiteOutputArtifactStore(lab_root / "output-artifacts"),
+        )
         service.validate_experiment_root(clone_root)
         clone = clone_public_repository(
             str((config.get("site") or {}).get("repository") or ""),
@@ -315,8 +322,9 @@ def _cmd_intake_lab(args: argparse.Namespace) -> int:
     from .hands.builder import NativeOpenCodeBuilder
     from .hands.local_media import LocalMediaStore
     from .hands.playwright_quality import PlaywrightQualityAdapter
+    from .hands.site_build import SiteOutputArtifactStore
     from .web.intake_lab import create_app
-    from .web.preview import PreviewBuildCache
+    from .web.preview import LivePreviewStore, PreviewAccess, PreviewBuildCache
 
     if not _loopback_host(args.host):
         print("[site-agent] Intake Lab host must be a loopback address", file=sys.stderr)
@@ -344,6 +352,8 @@ def _cmd_intake_lab(args: argparse.Namespace) -> int:
         "scaffold": str(workspace / "neutral-scaffold"),
     }
     validate_intake_config(config)
+    intake_settings = IntakeAdaSettings.from_config(config)
+    preview_access = PreviewAccess(ttl=intake_settings.preview_ttl_seconds)
     from .brain.design_guidance import load_design_skills
     from .brain.incubation_research import LLMIncubationResearchPlanner
 
@@ -393,17 +403,19 @@ def _cmd_intake_lab(args: argparse.Namespace) -> int:
                 local_llm,
                 local_config.get("research") or {},
             )
-            local_builder = OperationRoutingBuilder({
+            local_runtime_context = {
                 "config": local_config,
                 "memory": local_memory,
                 "env": local_environment,
                 "design_skill_set": design_skill_set,
-            })
+            }
+            local_builder = OperationRoutingBuilder(local_runtime_context)
             local_design = DesignService(
                 local_memory,
                 config=local_config,
                 builder=local_builder,
                 skill_set=design_skill_set,
+                output_artifact_store=SiteOutputArtifactStore(incubation_workspace / "output-artifacts"),
             )
 
             def local_browser_factory(run_id, run):
@@ -412,22 +424,47 @@ def _cmd_intake_lab(args: argparse.Namespace) -> int:
                     routes = local_design.quality_policy_for_run(run_id).required_pages
                 except Exception:
                     routes = run_intake.site.get("required_pages") or ()
+                preview_variant = str(run.get("_preview_variant") or "candidate").strip().lower()
+                if preview_variant not in {"candidate", "live"}:
+                    preview_variant = "candidate"
+
+                def owner_surface_url(route_name: str) -> str:
+                    return (
+                        f"http://{args.host}:{int(args.port)}/?incubation_id={quote(scoped.incubation_id)}"
+                        f"&preview_run_id={quote(str(run_id), safe='')}"
+                        f"&preview_variant={quote(preview_variant, safe='')}&preview_page={quote(str(route_name), safe='')}"
+                    )
+
                 return PlaywrightQualityAdapter(
                     incubation_workspace / "screenshots" / str(run_id),
-                    variant="candidate",
+                    variant=preview_variant,
                     routes=routes,
                     env=local_build_environment,
+                    owner_surface_url_factory=owner_surface_url,
+                    owner_surface_origin=f"http://{args.host}:{int(args.port)}",
                 )
 
-            local_executor = DesignJobExecutor({
-                "config": local_config,
-                "memory": local_memory,
-                "env": local_environment,
+            def local_sighted_browser_factory(run_id, run):
+                return local_browser_factory(
+                    run_id,
+                    {**dict(run), "_preview_variant": "live"},
+                )
+
+            local_runtime_context.update({
                 "build_env": local_build_environment,
                 "review_environment": local_environment,
                 "browser_quality_factory": local_browser_factory,
+                "sighted_browser_quality_factory": local_sighted_browser_factory,
                 "recover_retained_candidates": True,
-            }, local_design)
+            })
+            local_executor = DesignJobExecutor(local_runtime_context, local_design)
+            live_preview_store = LivePreviewStore(incubation_workspace / "live-previews", retention=4)
+
+            def checkpoint_live_preview(run_id: str, source_worktree: Path, label: str) -> dict[str, Any]:
+                return live_preview_store.checkpoint(run_id, source_worktree, label=label)
+
+            local_runtime_context["on_live_preview_checkpoint"] = checkpoint_live_preview
+            local_runtime_context["on_sighted_preview_checkpoint"] = checkpoint_live_preview
             local_lab = IntakeLabService(
                 local_design,
                 local_executor,
@@ -436,6 +473,7 @@ def _cmd_intake_lab(args: argparse.Namespace) -> int:
                 default_intake=None,
                 default_prompt="Start by learning what the business offers, who it serves, and what visitors should do next.",
                 review_environment=local_environment,
+                live_preview_store=live_preview_store,
             )
             local_design_intake = DesignIntakeService(
                 local_memory,
@@ -466,6 +504,11 @@ def _cmd_intake_lab(args: argparse.Namespace) -> int:
                 "design_skill_set": design_skill_set,
                 "activity_service": local_activity,
             }
+            local_context["on_intake_advice_complete"] = lambda job, result: incubations.auto_build_after_intake_turn(
+                scoped.incubation_id,
+                job,
+                result,
+            )
             local_chat = ChatJobExecutor(local_context)
             local_media_store = LocalMediaStore(incubation_workspace / "media")
             local_media_service = MediaService(local_memory, local_media_store, local_config)
@@ -473,6 +516,12 @@ def _cmd_intake_lab(args: argparse.Namespace) -> int:
             local_builder.context["media_service"] = local_media_service
             local_executor.context["media_store"] = local_media_store
             local_executor.context["media_service"] = local_media_service
+            # The design service captures immutable visual evidence while it
+            # freezes the run context.  Keep it on the same incubation-scoped
+            # media service used by the builder; otherwise the specialist
+            # planner sees only numeric asset inventory IDs and an empty
+            # evidence set even though the builder can materialize the images.
+            local_design.media_service = local_media_service
             local_context["media_store"] = local_media_store
             local_context["media_service"] = local_media_service
             local_analyzer = None
@@ -528,6 +577,7 @@ def _cmd_intake_lab(args: argparse.Namespace) -> int:
         app = create_app(
             lab_service,
             workspace=workspace,
+            preview_access=preview_access,
             preview_cache=PreviewBuildCache(
                 build_env=build_environment,
                 temp_root=workspace / ".preview-builds",
@@ -644,6 +694,11 @@ def _build_runtime(args: argparse.Namespace):
     scheduler = Scheduler(memory, lock_path=data_dir(config) / "scheduler.lock")
     runtime = Runtime(config, memory, scheduler, llm, effective_persona(config, memory))
     context = runtime.context()
+    from .hands.atelier_payload import AtelierPayloadClient
+
+    atelier_payload = AtelierPayloadClient.from_config(config, raw_env)
+    if atelier_payload is not None:
+        context["atelier_payload"] = atelier_payload
     site = config.get("site") or {}
     engine = config.get("design_engine") or {}
     builder_config = config.get("builder") or {}
@@ -763,6 +818,28 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_api(args: argparse.Namespace) -> int:
+    """Serve the shared tenant-aware Ada API without a customer admin process."""
+    import uvicorn
+
+    from .application.atelier import AtelierTenantRegistry
+    from .web.atelier import create_atelier_api_app
+
+    raw_env = dict(os.environ)
+    config, _ = load(args.config, raw_env)
+    registry = AtelierTenantRegistry.from_config(config, raw_env)
+    api = config.get("atelier_api") or {}
+    app = create_atelier_api_app(registry, prefix=str(api.get("prefix") or "/v1/atelier"))
+    host = str(api.get("host") or "127.0.0.1")
+    port = int(api.get("port") or 3014)
+    print(f"[site-agent] shared Ada API on http://{host}:{port}")
+    try:
+        uvicorn.run(app, host=host, port=port, log_level="warning")
+    finally:
+        registry.close()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="site-agent", description="Portable AI website content manager")
     parser.add_argument("--version", action="version", version=f"site-agent {__version__}")
@@ -777,6 +854,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("once", parents=[common], help="run all due jobs and exit")
     sub.add_parser("run", parents=[common], help="run the scheduler loop (long-lived)")
     sub.add_parser("serve", parents=[common], help="run admin web server (Phase 4)")
+    sub.add_parser("api", parents=[common], help="run the shared tenant-aware Ada API")
     init_parser = sub.add_parser("init-site", help="create the standard Pelican starting point in an empty site directory")
     init_parser.add_argument("--directory", required=True, help="empty customer website directory")
     init_parser.add_argument("--name", default="New Website", help="customer website name")
@@ -830,7 +908,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"unrecognized arguments: {' '.join(unknown)}")
     if getattr(args, "config", None) is None:
         args.config = None
-    handlers = {"check": _cmd_check, "once": _cmd_once, "run": _cmd_run, "serve": _cmd_serve,
+    handlers = {"check": _cmd_check, "once": _cmd_once, "run": _cmd_run, "serve": _cmd_serve, "api": _cmd_api,
                 "init-site": _cmd_init_site, "provision-r2": _cmd_provision_r2,
                 "design-experiment": _cmd_design_experiment, "intake-lab": _cmd_intake_lab}
     if args.command == "design-lab":

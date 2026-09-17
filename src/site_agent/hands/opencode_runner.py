@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import subprocess
+import time
 from dataclasses import replace
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -31,6 +32,7 @@ class RunnerError(RuntimeError):
 
 
 PREVIEW_BRANCH = "preview"
+_MAX_OPENCODE_ARG_PROMPT_BYTES = 100_000
 
 
 import re as _re
@@ -244,14 +246,434 @@ def _design_transcript_path(config: dict[str, Any], run_id: str) -> Path:
     return path
 
 
-def _persist_design_transcript(config: dict[str, Any], run_id: str, transcript: str) -> str:
+def _persist_design_transcript(
+    config: dict[str, Any],
+    run_id: str,
+    transcript: str,
+    *,
+    filename: str = "opencode.jsonl",
+) -> str:
     path = _design_transcript_path(config, run_id)
+    if filename != "opencode.jsonl":
+        if not _re.fullmatch(r"[A-Za-z0-9._-]{1,120}", str(filename)):
+            raise RunnerError("design transcript filename is unsafe")
+        path = path.with_name(str(filename))
     try:
         path.write_text(str(transcript or "") + ("\n" if transcript and not str(transcript).endswith("\n") else ""), encoding="utf-8")
     except OSError as exc:
         raise RunnerError(f"could not persist OpenCode transcript: {exc}") from exc
     data_root = Path(str(config.get("data_dir") or (Path.cwd() / ".site-agent-data"))).expanduser().resolve()
     return str(path.resolve().relative_to(data_root))
+
+
+def _persist_design_direction(config: dict[str, Any], run_id: str, direction: str) -> tuple[str, str]:
+    """Persist Ada's read-only direction outside the customer repository."""
+    from ..core.contracts import safe_payload
+
+    text = str(direction or "").replace("\x00", "").strip()
+    if not text:
+        raise RunnerError("native direction turn returned no design direction")
+    try:
+        text = str(safe_payload({"content": text[:60_000]}, max_bytes=80_000)["content"]).strip()
+    except Exception as exc:  # noqa: BLE001 - normalize artifact failures
+        raise RunnerError(f"native design direction is not safely persistable: {exc}") from exc
+    path = _design_transcript_path(config, run_id).with_name("direction.md")
+    try:
+        path.write_text(text + "\n", encoding="utf-8")
+    except OSError as exc:
+        raise RunnerError(f"could not persist native design direction: {exc}") from exc
+    digest = hashlib.sha256((text + "\n").encode("utf-8")).hexdigest()
+    data_root = Path(str(config.get("data_dir") or (Path.cwd() / ".site-agent-data"))).expanduser().resolve()
+    return str(path.resolve().relative_to(data_root)), digest
+
+
+def _native_direction_text(result: Mapping[str, Any]) -> str:
+    """Extract the model-authored direction, not OpenCode's CLI warning."""
+
+    def is_fallback_warning(value: str) -> bool:
+        lowered = value.lower()
+        return "is a subagent" in lowered and "falling back" in lowered
+
+    transcript_candidates: list[str] = []
+    transcript = str(result.get("transcript") or "")
+    for raw_line in transcript.splitlines():
+        try:
+            event = json.loads(raw_line)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(event, Mapping):
+            continue
+        part = event.get("part") or {}
+        if not isinstance(part, Mapping):
+            part = {}
+        value = event.get("text") or part.get("text") or ""
+        if isinstance(value, str) and value.strip() and not is_fallback_warning(value):
+            transcript_candidates.append(value.strip())
+
+    # The final text event is the completed direction after any progress text.
+    for candidate in reversed(transcript_candidates):
+        if len(candidate) >= 80:
+            return candidate
+    if transcript_candidates:
+        return transcript_candidates[-1]
+
+    raw_values: list[str] = []
+    raw_output = str(result.get("raw_output") or "")
+    if raw_output:
+        raw_values.extend(raw_output.splitlines())
+    raw_tail = result.get("raw_tail") or ()
+    if isinstance(raw_tail, Sequence) and not isinstance(raw_tail, (str, bytes)):
+        raw_values.extend(str(value) for value in raw_tail)
+    cleaned_raw = "\n".join(
+        value.strip() for value in raw_values if value.strip() and not is_fallback_warning(value)
+    ).strip()
+    if cleaned_raw:
+        return cleaned_raw
+
+    reply = str(result.get("reply") or "").strip()
+    return "" if is_fallback_warning(reply) else reply
+
+
+def _native_direction_payload(
+    result: Mapping[str, Any],
+    request,
+    *,
+    require_experience_plan: bool,
+) -> tuple[str, Any | None]:
+    """Decode Ada's direction and, for new creative runs, its locked plan."""
+    if not require_experience_plan:
+        return _native_direction_text(result), None
+
+    from ..core.design_contracts import ExperienceJourney, ExperiencePlanBundle, canonical_hash, canonical_json
+    from ..application.design_orchestration import SpecialistDesignCoordinator
+    from .opencode_provider import decode_structured_output
+
+    try:
+        payload = decode_structured_output(result)
+    except Exception as exc:  # noqa: BLE001 - preserve a typed build failure
+        raise RunnerError(f"creative direction did not return structured JSON: {exc}", result=dict(result)) from exc
+    required_payload_fields = {"direction", "experience_plan"}
+    if not required_payload_fields.issubset(payload):
+        # Some OpenCode versions expose an auxiliary ``structured`` value that
+        # contains only provider metadata while the complete JSON object is in
+        # the event transcript.  Re-run the same strict decoder without that
+        # auxiliary shortcut before rejecting an otherwise valid response.
+        fallback_result = dict(result)
+        fallback_result.pop("structured", None)
+        try:
+            transcript_payload = decode_structured_output(fallback_result)
+        except Exception:  # noqa: BLE001 - the original contract error is clearer
+            transcript_payload = {}
+        if isinstance(transcript_payload, Mapping) and required_payload_fields.issubset(transcript_payload):
+            payload = dict(transcript_payload)
+    if not required_payload_fields.issubset(payload):
+        for envelope_key in ("payload", "result", "data", "output"):
+            nested = payload.get(envelope_key)
+            if isinstance(nested, Mapping) and required_payload_fields.issubset(nested):
+                payload = dict(nested)
+                break
+    if not required_payload_fields.issubset(payload):
+        raise RunnerError(
+            "creative direction must return direction and experience_plan",
+            result=dict(result),
+        )
+    # Providers occasionally add harmless envelope metadata despite the
+    # structured-output instruction.  Keep the two typed fields and discard
+    # only that envelope metadata before validating the plan.
+    payload = {key: payload[key] for key in required_payload_fields}
+    direction = str(payload.get("direction") or "").strip()
+    if not direction:
+        raise RunnerError("creative direction returned no human-readable direction", result=dict(result))
+    raw_plan = payload.get("experience_plan")
+    if not isinstance(raw_plan, Mapping):
+        raise RunnerError("creative direction experience_plan must be an object", result=dict(result))
+    # The direction model owns the creative decisions, while the host owns
+    # identity and evidence binding.  Requiring the model to calculate hashes
+    # for its own JSON made this boundary needlessly fragile and encouraged it
+    # to search for application source it cannot access from the build
+    # worktree.  Normalize only unambiguous scalar shapes, then bind the
+    # frozen host artifacts before strict contract validation.
+    normalized = SpecialistDesignCoordinator._normalize_experience_plan_payload(raw_plan)
+    plan_fields = {
+        "schema_version", "run_id", "base_sha", "context_snapshot_hash", "selected_concept_id",
+        "copy_deck_hash", "asset_evidence", "brand_source_map", "brand_source_map_hash",
+        "asset_composition_plan", "experience_journey", "behavior_system", "layout_and_typography_plan",
+        "responsive_composition_plan", "protected_strengths", "variation_points", "implementation_risks",
+        "transfer_test", "review_rubric", "input_artifact_hashes", "copy_deck",
+    }
+    normalized = {key: value for key, value in normalized.items() if key in plan_fields}
+    normalized["schema_version"] = 1
+    normalized["run_id"] = request.run_id
+    normalized["base_sha"] = request.base_sha
+    normalized["context_snapshot_hash"] = request.context_snapshot_hash
+
+    snapshot_items = [
+        item.to_dict() if hasattr(item, "to_dict") else dict(item)
+        for item in (request.context_snapshot.asset_visual_evidence if request.context_snapshot else ())
+    ]
+    snapshot_evidence = {
+        str(item.get("asset_id")): item
+        for item in snapshot_items
+        if isinstance(item, Mapping) and item.get("asset_id")
+    }
+    if snapshot_items:
+        normalized["asset_evidence"] = snapshot_items
+
+    source_map = normalized.get("brand_source_map")
+    if not isinstance(source_map, Mapping):
+        raise RunnerError("creative direction omitted the typed brand_source_map", result=dict(result))
+    source_map = dict(source_map)
+    source_map_fields_set = {
+        "schema_version", "identity_assets", "primary_brand_signals", "geometry_vocabulary", "spacing_rhythm",
+        "line_and_edge_language", "color_relationships", "type_relationship_hypotheses", "material_relationships",
+        "image_treatment_hypotheses", "signals_to_preserve", "signals_not_safe_to_infer", "owner_evidence_refs",
+        "asset_evidence_refs", "confidence_by_signal",
+    }
+    source_map = {key: value for key, value in source_map.items() if key in source_map_fields_set}
+    source_map["schema_version"] = 1
+    source_map_fields = (
+        "identity_assets", "primary_brand_signals", "geometry_vocabulary", "spacing_rhythm",
+        "line_and_edge_language", "color_relationships", "type_relationship_hypotheses",
+        "material_relationships", "image_treatment_hypotheses", "signals_to_preserve",
+        "signals_not_safe_to_infer", "owner_evidence_refs", "asset_evidence_refs",
+    )
+    for field in source_map_fields:
+        value = source_map.get(field)
+        if isinstance(value, str):
+            value = [value]
+        elif isinstance(value, Mapping):
+            value = [canonical_json(dict(value))]
+        if isinstance(value, (list, tuple)):
+            source_map[field] = [
+                canonical_json(dict(item)) if isinstance(item, Mapping) else str(item)
+                for item in value
+                if str(item).strip()
+            ]
+    confidence = source_map.get("confidence_by_signal")
+    if isinstance(confidence, Mapping):
+        normalized_confidence: dict[str, Any] = {}
+        for key, score in confidence.items():
+            normalized_key = _re.sub(r"[^A-Za-z0-9._:-]+", "-", str(key).strip()).strip("-._:")
+            if not normalized_key or not normalized_key[0].isalpha():
+                normalized_key = f"signal-{normalized_key or 'unnamed'}"
+            if isinstance(score, str):
+                try:
+                    score = float(score.strip())
+                except ValueError:
+                    continue
+            if isinstance(score, bool) or not isinstance(score, (int, float)):
+                continue
+            normalized_confidence[normalized_key[:120]] = score
+        source_map["confidence_by_signal"] = normalized_confidence
+    normalized["brand_source_map"] = source_map
+    normalized["brand_source_map_hash"] = canonical_hash(source_map)
+
+    def resolve_asset_id(value: Any) -> str:
+        candidate = str(value or "").strip()
+        if candidate in snapshot_evidence:
+            return candidate
+        suffix = candidate.rsplit(".", 1)[-1].rsplit("-", 1)[-1]
+        matches = [key for key in snapshot_evidence if key.rsplit("-", 1)[-1] == suffix]
+        return matches[0] if len(matches) == 1 else candidate
+
+    compositions = normalized.get("asset_composition_plan")
+    if isinstance(compositions, Mapping):
+        compositions = [compositions]
+    if isinstance(compositions, (list, tuple)):
+        bound_compositions: list[Any] = []
+        for item in compositions:
+            if not isinstance(item, Mapping):
+                bound_compositions.append(item)
+                continue
+            composition_fields = {
+                "schema_version", "asset_id", "asset_sha256", "narrative_role", "page_regions",
+                "relationship_to_copy", "relationship_to_other_assets", "structural_contribution", "crop_policy",
+                "focal_region_to_preserve", "negative_space_usage", "layering_and_overlap_policy",
+                "background_and_contrast_policy", "desktop_treatment", "tablet_treatment", "mobile_treatment",
+                "loading_priority", "accessibility_intent", "prohibited_uses", "acceptance_conditions",
+                "evidence_refs", "logo_rule",
+            }
+            bound = {key: value for key, value in item.items() if key in composition_fields}
+            bound["schema_version"] = 1
+            asset_id = resolve_asset_id(bound.get("asset_id"))
+            bound["asset_id"] = asset_id
+            evidence = snapshot_evidence.get(asset_id)
+            if evidence is not None:
+                bound["asset_sha256"] = evidence.get("asset_sha256")
+            logo_rule = bound.get("logo_rule")
+            if isinstance(logo_rule, Mapping):
+                logo_fields = {
+                    "schema_version", "asset_id", "optical_sizing", "clear_space", "allowed_backgrounds",
+                    "navigation_relationship", "breakpoint_treatments", "minimum_optical_size",
+                    "maximum_optical_size", "collision_exclusions", "role", "evidence_refs",
+                }
+                bound_logo = {key: value for key, value in logo_rule.items() if key in logo_fields}
+                bound_logo["schema_version"] = 1
+                bound_logo["asset_id"] = resolve_asset_id(bound_logo.get("asset_id") or asset_id)
+                required_logo_fields = {
+                    "schema_version", "asset_id", "optical_sizing", "clear_space", "allowed_backgrounds",
+                    "navigation_relationship", "breakpoint_treatments", "minimum_optical_size",
+                    "maximum_optical_size", "collision_exclusions", "role", "evidence_refs",
+                }
+                # The optical rule is optional.  If the model returns a
+                # prose/legacy logo shape, do not invent measurements to make
+                # it fit the typed contract; preserve the composition plan
+                # and omit only this optional rule.
+                bound["logo_rule"] = (
+                    bound_logo if required_logo_fields.issubset(bound_logo) else None
+                )
+            bound_compositions.append(bound)
+        normalized["asset_composition_plan"] = bound_compositions
+
+    journey = normalized.get("experience_journey")
+    if isinstance(journey, Mapping):
+        journey_fields = {
+            "schema_version", "journey_id", "thesis", "signature_behavior_id", "signature_scene_id",
+            "scenes", "must_pass_condition_ids", "evidence_refs",
+        }
+        normalized_journey = {key: value for key, value in journey.items() if key in journey_fields}
+        normalized_journey["schema_version"] = 1
+        scenes = normalized_journey.get("scenes")
+        if isinstance(scenes, (list, tuple)):
+            normalized_journey["scenes"] = [
+                {key: value for key, value in scene.items() if key in ExperienceJourney._SCENE_FIELDS}
+                if isinstance(scene, Mapping) else scene
+                for scene in scenes
+            ]
+        normalized["experience_journey"] = normalized_journey
+
+    copy_deck = normalized.get("copy_deck")
+    if not isinstance(copy_deck, Mapping):
+        raise RunnerError(
+            "creative direction must return the integrated final copy deck",
+            result=dict(result),
+        )
+    copy_deck = dict(copy_deck)
+    for field in ("headline", "body", "primary_action"):
+        value = copy_deck.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise RunnerError(
+                f"creative direction copy_deck.{field} must contain final visible copy",
+                result=dict(result),
+            )
+        copy_deck[field] = value.strip()
+    normalized["copy_deck"] = copy_deck
+    normalized["copy_deck_hash"] = canonical_hash(copy_deck)
+
+    behavior = normalized.get("behavior_system")
+    if isinstance(behavior, Mapping):
+        behavior_fields = {
+            "schema_version", "thesis", "business_relevance", "audience_effect", "evidence_refs",
+            "conceptual_entities", "state_variables", "input_signals", "forces_and_relationships",
+            "output_channels", "scene_graph", "signature_behavior", "utility_behaviors",
+            "narrative_behaviors", "resting_state", "no_javascript_translation", "reduced_motion_translation",
+            "mobile_translation", "keyboard_and_focus_behavior", "performance_budget",
+            "interruption_and_resize_behavior", "allowed_implementation_capabilities",
+            "prohibited_generic_effects", "observable_acceptance_conditions", "transfer_test",
+        }
+        behavior = {key: value for key, value in behavior.items() if key in behavior_fields}
+        behavior["schema_version"] = 1
+        normalized["behavior_system"] = behavior
+        if not isinstance(normalized.get("transfer_test"), Mapping):
+            behavior_transfer = behavior.get("transfer_test")
+            if isinstance(behavior_transfer, Mapping):
+                normalized["transfer_test"] = dict(behavior_transfer)
+        if not isinstance(normalized.get("review_rubric"), (list, tuple)):
+            conditions = behavior.get("observable_acceptance_conditions")
+            if isinstance(conditions, (list, tuple)):
+                normalized["review_rubric"] = [
+                    {"id": f"rubric-{index + 1}", "condition": str(condition)}
+                    for index, condition in enumerate(conditions)
+                    if str(condition).strip()
+                ]
+
+    input_hashes = normalized.get("input_artifact_hashes")
+    valid_hashes = []
+    if isinstance(input_hashes, (list, tuple)):
+        valid_hashes = [
+            str(value).lower()
+            for value in input_hashes
+            if _re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", str(value).lower())
+        ]
+    if request.context_snapshot_hash:
+        valid_hashes.append(str(request.context_snapshot_hash).lower())
+    valid_hashes.append(normalized["copy_deck_hash"])
+    normalized["input_artifact_hashes"] = list(dict.fromkeys(valid_hashes))
+
+    try:
+        plan = ExperiencePlanBundle.from_dict(normalized)
+    except Exception as exc:  # noqa: BLE001 - contract validation is the boundary
+        raise RunnerError(f"creative direction returned an invalid experience plan: {exc}", result=dict(result)) from exc
+    if not request.context_snapshot_hash or plan.context_snapshot_hash != request.context_snapshot_hash:
+        raise RunnerError("creative experience plan is not bound to the frozen context snapshot", result=dict(result))
+    if snapshot_evidence and not plan.asset_evidence:
+        raise RunnerError("creative experience plan omitted the frozen visual asset evidence", result=dict(result))
+    for item in plan.asset_evidence:
+        if (snapshot_evidence.get(item.asset_id) or {}).get("asset_sha256") != item.asset_sha256:
+            raise RunnerError(
+                f"creative experience plan asset evidence is not bound to the frozen snapshot: {item.asset_id}",
+                result=dict(result),
+            )
+    return direction, plan
+
+
+def _bind_experience_plan_artifacts(plan: Any, request, direction_hash: str):
+    """Add host-known artifact hashes without inventing creative decisions."""
+    from ..core.design_contracts import ExperiencePlanBundle
+
+    typed = plan if isinstance(plan, ExperiencePlanBundle) else ExperiencePlanBundle.from_dict(plan)
+    values = list(typed.input_artifact_hashes)
+    values.extend((request.context_snapshot_hash, direction_hash))
+    values.extend(item.asset_sha256 for item in typed.asset_evidence)
+    bound = typed.to_dict()
+    bound["input_artifact_hashes"] = list(dict.fromkeys(value.lower() for value in values if value))
+    return ExperiencePlanBundle.from_dict(bound)
+
+
+def _persist_integrated_composition(
+    context: Mapping[str, Any],
+    request,
+    plan: Any,
+    *,
+    direction_path: str,
+    direction_hash: str,
+) -> None:
+    """Persist the single composition handoff before source generation starts."""
+    memory = context.get("memory")
+    if memory is None:
+        return
+    from ..core.design_contracts import ExperiencePlanBundle
+
+    typed = plan if isinstance(plan, ExperiencePlanBundle) else ExperiencePlanBundle.from_dict(plan)
+    run = memory.get_design_run(request.run_id)
+    if run is None:
+        # Low-level runner tests and migration callers can stage a candidate
+        # without the application lifecycle row. The durable service validates
+        # that row before invoking this function, so only that path receives
+        # the persisted handoff.
+        return
+    planning = dict(run.get("planning_json") or {})
+    planning["experience_plan"] = typed.to_dict()
+    planning["experience_plan_hash"] = typed.content_hash
+    planning["integrated_composition"] = {
+        "state": "planned",
+        "direction_path": direction_path,
+        "direction_hash": direction_hash,
+        "experience_plan_hash": typed.content_hash,
+        "copy_deck_hash": typed.copy_deck_hash,
+    }
+    memory.update_design_run(request.run_id, planning_json=planning)
+    memory.add_design_run_event(
+        request.run_id,
+        "integrated_composition",
+        "Ada composed copy, approved media, layout, and experience into one handoff before generation.",
+        {
+            "direction_path": direction_path,
+            "direction_hash": direction_hash,
+            "experience_plan_hash": typed.content_hash,
+            "copy_deck_hash": typed.copy_deck_hash,
+        },
+    )
 
 
 def _remove_builder_worktree(repo: Path, worktree: Path) -> None:
@@ -356,6 +778,7 @@ def _design_prompt(
     materialized_font_paths: tuple[str, ...] = (),
     design_plan: Any | None = None,
     repair_brief: Mapping[str, Any] | None = None,
+    native_direction: str = "",
 ) -> str:
     from ..core.design_contracts import canonical_json
     from ..brain.design_guidance import INCUBATED_CONTEXT_APPLICATION_RULES
@@ -381,21 +804,24 @@ def _design_prompt(
         else ""
     )
     is_visual_refinement = request.mode == "visual_refinement" or getattr(target, "operation_kind", "") == "visual_refinement"
-    if is_visual_refinement:
+    is_technical_repair = getattr(target, "operation_kind", "") == "technical_repair"
+    is_parent_repair = is_visual_refinement or is_technical_repair
+    if is_parent_repair:
         # The parent candidate is the source of truth for a repair. Keep the
         # durable snapshot hash for audit evidence, but do not make stale
         # pre-build markup or measured values compete with the parent source.
         request_data["context_snapshot"] = None
         request_data["context_snapshot_hash"] = ""
+        repair_kind = "visual refinement" if is_visual_refinement else "technical repair"
         frozen_context = (
             f"FROZEN CONTEXT SNAPSHOT HASH (host metadata only): {context_hash}\n"
-            "This is a visual refinement of the parent candidate at the immutable base SHA. "
+            f"This is a {repair_kind} of the parent candidate at the immutable base SHA. "
             "The parent repository contents and rendered pages are the source of truth. "
             "Inspect them before editing and preserve the existing visual system, content, routes, "
             "responsive behavior, and accessibility except where the critique requires a focused repair. "
             "Do not redesign the site from scratch, remove content, or replace unrelated files.\n\n"
         ) if context_hash else (
-            "This is a visual refinement of the parent candidate at the immutable base SHA. "
+            f"This is a {repair_kind} of the parent candidate at the immutable base SHA. "
             "Inspect the parent repository contents and rendered pages before editing. Apply only focused "
             "repairs from the critique; do not redesign the site from scratch or remove unrelated content.\n\n"
         )
@@ -521,17 +947,35 @@ def _design_prompt(
         plan_data = design_plan.to_dict() if hasattr(design_plan, "to_dict") else dict(design_plan)
         locked_plan_block = (
             "LOCKED CREATIVE PLAN (host-selected; implement this direction rather than inventing a new one):\n"
-            + canonical_json(plan_data)[:80_000]
+            + canonical_json(plan_data)
             + "\nUse the selected direction, copy decisions, composition, asset treatment, and motion intent in this plan. "
+            "The experience_journey is executable: implement every scene and every must-pass condition, including its "
+            "trigger, visible transition, completion/exit condition, responsive translations, keyboard/touch behavior, "
+            "reduced-motion translation, interruption, reverse, resize, and rapid-input behavior. Do not replace it "
+            "with a generic hero animation or section reveal. "
             "If a plan field conflicts with a verified intake fact or host policy, preserve the fact/policy and record "
             "the conflict instead of silently inventing a replacement. If the plan contains asset_composition_plan, "
             "mark each rendered approved asset element with data-ada-asset-id and data-ada-asset-sha256 using the exact "
             "frozen values, add data-ada-composition-role for measurable roles such as logo or navigation, and add "
-            "data-ada-focal-coverage only when the implementation can support an honest measured value. Mark the element "
-            "that realizes signature_behavior with data-ada-signature-behavior using the exact behavior id; do not add "
-            "external asset URLs or claim behavior that the implementation does not actually execute. These attributes "
-            "are host evidence hooks, not a substitute for the locked plan.\n\n"
-        )
+             "data-ada-focal-coverage only when the implementation can support an honest measured value. Mark the element "
+              "that realizes signature_behavior with data-ada-signature-behavior using the exact behavior id; do not add "
+              "a hidden marker. For every must-pass experience journey condition, mark the actual visible realization "
+              "with data-ada-journey-condition using the exact condition ID, data-ada-journey-scene using its scene ID, "
+               "and data-ada-journey-trigger as selector metadata. These markers must be on the rendered behavior rather "
+               "than a hidden manifest or comment. Put each scene marker on the element whose visible style, geometry, or "
+               "content state actually changes for that scene; a static document wrapper such as main is not evidence of "
+               "a scene transition. Do not add candidate-authored state or completion claims; the host "
+              "compares rendered geometry, style, visibility, and text before and after bounded probes. Never use "
+              "external asset URLs or claim behavior that the implementation does not actually execute. These attributes "
+              "are host selectors, not a substitute for the locked plan.\n\n"
+              "JOURNEY MARKER RUNTIME CONTRACT (non-negotiable): every data-ada-journey-condition marker must be the "
+              "exact DOM node whose own computed style, geometry, or content changes during that condition. Apply the "
+              "runtime transition to the marked node itself; do not mark a static ancestor while only a descendant moves, "
+              "and do not mark a child while only its parent moves. Every ordered scene must have a real progressive "
+              "scroll, pointer, keyboard, or interaction transition that changes its marked node after initial render; "
+              "a one-shot entrance, a candidate-authored state label, or viewport position alone is not evidence. Keep "
+              "the marked conditions visible and readable under reduced motion while preserving the locked scene order.\n\n"
+         )
     repair_brief_block = ""
     if repair_brief is not None:
         repair_brief_block = (
@@ -539,6 +983,43 @@ def _design_prompt(
             + canonical_json(dict(repair_brief))[:60_000]
             + "\nApply only these concrete findings to the retained candidate. Do not redesign, add a new direction, "
             "or continue after one implementation and one local verification pass.\n\n"
+        )
+    integrated_motion_block = (
+        "INTEGRATED MOTION IMPLEMENTATION (same Ada turn):\n"
+        "Own the defining interaction together with the composition, copy, and responsive layout in this turn. Use the "
+        "installed GSAP, GSAP React, ScrollTrigger, and performance skills when they fit the chosen behavior. Choose one "
+        "subject-specific signature behavior rather than scattered generic reveals. Keep public text, navigation, controls, "
+        "and conversion content visible in the server-rendered state; do not pre-hide critical content with opacity or "
+         "visibility. Use explicit visible end states, scoped cleanup, progressive scroll triggers, and a reduced-motion "
+         "branch that immediately presents the complete readable state. Import useGSAP as a React hook, but never pass "
+         "useGSAP to gsap.registerPlugin; register only actual GSAP plugins such as locally imported ScrollTrigger. "
+         "Implement the signature behavior at every required "
+          "viewport, including tablet and mobile; do not put the defining scroll behavior behind a desktop-only media query. "
+           "The signature marker is a runtime contract, not metadata: under no-preference emulation, the marked element or "
+           "one of its rendered descendants must produce a measurable rendered fingerprint change during the host's probe "
+           "at desktop, tablet, and mobile. Do not leave an identity-transform-only mobile branch, rely on a source marker, "
+          "or assume that a desktop matchMedia branch proves mobile hydration; verify the mobile branch after hydration and "
+          "after the effect has advanced. Do not make the signature only a one-shot entrance that has settled before the "
+          "host's bounded no-preference samples; retain an observable time- or scroll-linked change on the marker or its "
+          "rendered descendant throughout the ordinary probe and progressive scroll. Reserve space for any sticky or fixed "
+          "chrome so the first visible heading, offer, and primary action never sit beneath it; do not use a negative hero "
+          "offset to create an overlap. "
+           "Give every hero or full-bleed image an explicit bounded container height/aspect treatment at every breakpoint so "
+          "intrinsic image dimensions cannot create an unbounded mobile or tablet section. The host will observe rendered "
+          "geometry/style and pixel changes in the owner iframe, so source markers or animation-engine counts are not evidence. "
+          "For the locked journey, animate the exact marked condition nodes themselves and leave a measurable scroll-linked "
+          "or persistent time-linked change for each ordered scene; styling only an unmarked wrapper does not satisfy the "
+          "contract.\n\n"
+     )
+    native_direction_block = ""
+    if native_direction.strip():
+        native_direction_block = (
+            "ADA'S READ-ONLY DESIGN DIRECTION (produced immediately before this writable Build turn):\n"
+            + native_direction.strip()[:60_000]
+            + "\n\nUse this direction as the coherent starting point for the implementation. Preserve verified intake facts, "
+            + "owner-approved assets, accessibility requirements, and host policy when resolving any conflict. Do not "
+            + "invent a second direction, turn the direction into a hidden manifest, or stop at a critique; realize it "
+            + "in the actual source and rendered behavior.\n\n"
         )
     allowed_paths = set(getattr(target, "allowed_paths", ()) or ())
     native_framework_block = ""
@@ -560,6 +1041,20 @@ def _design_prompt(
             + ". Do not use ranges or newer versions. Run the Astro npm check/build commands only after the native "
             "source exists; build output is host-generated and must not be authored.\n\n"
         )
+    retained_implementation_block = ""
+    if is_technical_repair:
+        retained_implementation_block = (
+            "RETAINED IMPLEMENTATION PRESERVATION CONTRACT (hard acceptance condition):\n"
+            "This is not a fresh build. The immutable parent candidate already contains the approved native implementation "
+            "and is the only source of truth for the repair. Inspect its existing source files before editing and preserve "
+            "the React source or Astro React integration, the actual approved GSAP runtime usage, the animation/timeline/"
+            "trigger/listener teardown path, and the reduced-motion branch. Apply the requested visual fixes inside that "
+            "implementation. Never replace a React/GSAP component with CSS-only markup, a static mock, or a new unrelated "
+            "page; never delete the source file that owns the signature behavior. If a proposed edit would remove React, "
+            "GSAP, cleanup, or reduced-motion evidence, reject that edit and keep the parent implementation intact. The "
+            "host will reject this repair if native source, GSAP implementation, cleanup, or readable resting content is "
+            "missing.\n\n"
+        )
     return (
         "Execute this host-validated design build request in the disposable worktree. "
         "The host owns the target policy, immutable base, changed-path validation, and "
@@ -567,7 +1062,8 @@ def _design_prompt(
         "outside the request. Make the implementation changes, run the requested local "
         "checks, and leave changes uncommitted for host validation. This is an implementation "
         "task, not a request for advice: after the minimum inspection, edit the allowed files "
-        "and do not stop at a plan, limitation, or verbal critique.\n\n"
+        "and do not stop at a plan, limitation, or verbal critique. Keep the creative decision and implementation "
+        "in the same primary session.\n\n"
           + frozen_context
           + creative_block
           + incubated_context_block
@@ -575,27 +1071,151 @@ def _design_prompt(
           + "\n\n"
           + conversion_safety
            + required_content_block
-            + media_block
-            + font_block
+              + media_block
+              + font_block
               + font_safety
+              + native_direction_block
               + locked_plan_block
               + repair_brief_block
-              + native_framework_block
-             + "CREATIVE DESIGN PROCESS (required, not a host-provided visual scaffold):\n"
+               + native_framework_block
+               + retained_implementation_block
+                + integrated_motion_block
+              + "CREATIVE DESIGN PROCESS (required, not a host-provided visual scaffold):\n"
          + "1. " + inspection + "\n"
           + "2. Keep planning concise and choose one subject-specific direction silently. Do not narrate alternatives, spend multiple turns rereading the repository, or delegate unless a specific blocker requires bounded read-only exploration. Delegated agents may inspect and report findings only; they must not edit this worktree or install packages.\n"
-           + ("3. For a visual_refinement request, inspect the parent candidate and critique before editing, then make the smallest focused repair. Preserve unaffected content, routes, styles, and behavior; do not rewrite the site or substitute a new visual direction.\n"
-              if is_visual_refinement else
-               "3. For an initial_homepage request, inspect the supplied media files and exact request, then make the first implementation edit. Do not write a plan or wait for approval. For other requests, make the first implementation edit immediately after the minimum required inspection.\n")
-           + ("4. After a refinement edit, verify the repaired elements and re-check all required routes and viewports for regressions.\n"
-              if is_visual_refinement else
+            + ("3. For a visual_refinement or technical_repair request, inspect the parent candidate and critique before editing, then make the smallest focused repair. Preserve unaffected content, routes, styles, native source, and behavior; do not rewrite the site or substitute a new visual direction.\n"
+               if is_parent_repair else
+                "3. For an initial_homepage request, inspect the supplied media files and exact request, then make the first implementation edit. Do not write a plan or wait for approval. For other requests, make the first implementation edit immediately after the minimum required inspection.\n")
+            + ("4. After a refinement or repair edit, verify the repaired elements in the source, confirm the preserved React/GSAP/cleanup/reduced-motion implementation is still present, and run the project's own build/check script to catch regressions.\n"
+               if is_parent_repair else
                 "4. After the first edit, establish the content hierarchy, conversion path, typography, composition, image treatment, responsive translation, motion purpose, and reduced-motion behavior through the implementation itself. You have complete control of the source; do not use a host template, predetermined section markup, or host-generated CSS/token system. Keep critical content visible in a static or full-page capture; never leave offscreen sections hidden behind opacity or visibility until scroll, and provide a visible no-JS/reduced-motion resting state.\n")
-          + "5. Run the real site build and one bounded programmatic check of every required route and viewport, then record honest evidence. If this is a self-review refinement, you already saw the candidate rendered in the attached screenshots; use them.\n"
-          + "6. Delegate a read-only critique only when useful evidence is available, repair concrete findings in this same primary session, then rebuild once and finish. Do not keep working after the requested checks pass.\n"
-           + "7. Leave implementation changes uncommitted for host finalization. Do not author or edit the acceptance manifest; the host generates and validates it from the typed request and the changed files. You may include a short design rationale in your final response, but do not turn prose into file paths.\n"
-          + "8. Missing browser or visual evidence is incomplete, never passed.\n\n"
+              + "5. Run the project's own build/check script when it helps you catch mistakes, then stop. Do not start a browser, HTTP server, custom CDP harness, or rendering/self-review loop yourself; that work belongs to the host, which observes the retained candidate after this turn.\n"
+             + "6. Leave implementation changes uncommitted for host finalization. Do not author or edit the acceptance manifest; the host generates and validates it from the typed request and the changed files. You may include a short design rationale in your final response, but do not turn prose into file paths.\n"
+             + "7. The host treats missing browser or visual evidence as incomplete, never passed; final owner-surface validation remains independent of this implementation turn.\n\n"
         + "PAGE BUILD REQUEST (canonical JSON):\n"
         + canonical_json(request_data)
+        + "\n\nBUILD TARGET (canonical JSON):\n"
+        + canonical_json(target.to_dict())
+    )
+
+
+def _native_direction_prompt(
+    request,
+    target,
+    materialized_media_paths: tuple[str, ...] = (),
+    evidence_paths: tuple[str, ...] = (),
+    *,
+    require_experience_plan: bool = False,
+) -> str:
+    """Prompt Ada's bounded read-only direction turn without choosing for her."""
+    from ..core.design_contracts import canonical_json
+
+    media = tuple(materialized_media_paths) + tuple(evidence_paths)
+    media_block = (
+        "\nThe host attached these exact local visual files. Read them visually; do not edit or replace them:\n"
+        + "\n".join(f"- {path}" for path in media)
+        + "\n"
+        if media
+        else ""
+    )
+    output_contract = (
+        "Return exactly one JSON object with exactly two fields: direction (a concise human-readable string) and "
+        "experience_plan (a complete typed experience plan). Keep the object compact and syntactically complete; do "
+        "not use Markdown fences or commentary. The host replaces identity, evidence, and artifact-hash fields before "
+        "validation. The experience_plan must include selected_concept_id, asset_evidence, brand_source_map, "
+        "asset_composition_plan, experience_journey, behavior_system, layout_and_typography_plan, "
+        "responsive_composition_plan, protected_strengths, variation_points, implementation_risks, transfer_test, "
+        "review_rubric, input_artifact_hashes, and copy_deck. The copy_deck must contain final visitor-facing homepage "
+        "copy as an object with non-empty string fields headline, body, and primary_action; it may also include a short "
+        "eyebrow and supporting_copy array. Write actual copy, not instructions or placeholders. The brand_source_map "
+        "must be an object with exactly these fields: "
+        "schema_version, identity_assets, primary_brand_signals, geometry_vocabulary, spacing_rhythm, "
+        "line_and_edge_language, color_relationships, type_relationship_hypotheses, material_relationships, "
+        "image_treatment_hypotheses, signals_to_preserve, signals_not_safe_to_infer, owner_evidence_refs, "
+        "asset_evidence_refs, and confidence_by_signal. Use arrays of plain strings for the descriptive and reference "
+        "fields, a numeric object for confidence_by_signal, and exact IDs from the supplied evidence for references; "
+         "provide at least one owner or asset evidence reference. Do not omit brand_source_map even when the other "
+         "creative fields are present. asset_evidence may be an empty array because the host binds the frozen visual "
+         "evidence after this turn; input_artifact_hashes may also be an empty array because the host binds artifact "
+         "hashes. asset_composition_plan must be a JSON array of at most three records with exact asset_id values "
+         "from the supplied evidence and these fields: schema_version, asset_id, asset_sha256, narrative_role, "
+        "page_regions, relationship_to_copy, relationship_to_other_assets, structural_contribution, crop_policy, "
+        "focal_region_to_preserve, negative_space_usage, layering_and_overlap_policy, background_and_contrast_policy, "
+        "desktop_treatment, tablet_treatment, mobile_treatment, loading_priority, accessibility_intent, prohibited_uses, "
+          "acceptance_conditions, evidence_refs, and logo_rule. Select only the strongest page assets; do not create "
+          "composition records for assets the page does not use. Use arrays where the contract names arrays, objects for the "
+          "three responsive treatments, and null for an unused logo_rule. experience_journey must be a JSON object with exactly these fields: "
+         "schema_version, journey_id, thesis, signature_behavior_id, signature_scene_id, scenes, "
+          "must_pass_condition_ids, and evidence_refs. Its scenes array must contain at least two objects, with one "
+          "object for each meaningful ordered scene required by the confirmed intake; never force a fixed scene count "
+          "or collapse a richer journey to two scenes. Use exactly the typed scene fields "
+         "these fields: id, order, content_region, narrative_purpose, initial_state, trigger, visible_transition, "
+         "completion_condition, exit_condition, continuity, desktop_translation, tablet_translation, mobile_translation, "
+         "keyboard_translation, touch_translation, reduced_motion_translation, interruption_behavior, reverse_behavior, "
+         "resize_behavior, rapid_input_behavior, acceptance_condition_ids, and evidence_refs. Use id, not scene_id; "
+         "do not return a bare scene array or compact aliases such as intent, viewport_span, primary_asset, motion, or "
+         "conversion_role. Every scene must use consecutive order values, unique acceptance condition IDs, and concrete "
+          "observable transitions. The top-level transfer_test field is mandatory and must be exactly an object with state "
+          "passed; do not omit it or place it only inside behavior_system. The behavior_system must be an object with exactly these fields: schema_version, thesis, "
+         "business_relevance, audience_effect, evidence_refs, conceptual_entities, state_variables, input_signals, "
+         "forces_and_relationships, output_channels, scene_graph, signature_behavior, utility_behaviors, narrative_behaviors, "
+         "resting_state, no_javascript_translation, reduced_motion_translation, mobile_translation, keyboard_and_focus_behavior, "
+         "performance_budget, interruption_and_resize_behavior, allowed_implementation_capabilities, prohibited_generic_effects, "
+         "observable_acceptance_conditions, and transfer_test. Keep direction and every plan string concise (normally "
+         "under 160 characters), use at most one short record in each optional behavior array, and leave optional arrays "
+         "empty when they carry no distinct requirement. Include a concrete subject-specific thesis, a "
+         "signature behavior with an honest reduced-motion translation, asset treatment grounded in the supplied evidence, "
+         "implementation risks, a review rubric, and a transfer_test object whose state is exactly passed. Use concise "
+        "strings and no invented facts."
+        if require_experience_plan
+        else
+        "Return one concise human-readable direction for the next native OpenCode Build turn. Do not provide JSON, "
+        "alternatives, generic template advice, code, file edits, gate verdicts, or a plan for another agent."
+    )
+    request_data = request.to_dict()
+    raw_snapshot = request_data.get("context_snapshot")
+    if isinstance(raw_snapshot, Mapping):
+        snapshot_fields = (
+            "schema_version", "captured_at", "owner_request", "base_sha", "site_facts",
+            "asset_visual_evidence", "verified_facts", "unknowns", "prohibited_claims",
+        )
+        compact_snapshot = {
+            key: raw_snapshot[key]
+            for key in snapshot_fields
+            if key in raw_snapshot
+        }
+        evidence_fields = (
+            "schema_version", "asset_id", "asset_sha256", "relative_path", "media_role",
+            "pixel_width", "pixel_height", "aspect_ratio", "has_alpha", "safe_backgrounds",
+            "dominant_colors", "semantic_description", "subjects", "materials_and_textures",
+            "emotional_tone", "brand_signals", "quality_constraints", "evidence_sources", "confidence",
+        )
+        compact_snapshot["asset_visual_evidence"] = [
+            {
+                key: item[key]
+                for key in evidence_fields
+                if isinstance(item, Mapping) and key in item
+            }
+            for item in (raw_snapshot.get("asset_visual_evidence") or ())
+            if isinstance(item, Mapping)
+        ]
+        request_data["context_snapshot"] = compact_snapshot
+    return (
+        "This is Ada's read-only design-direction turn for a confirmed design intake. Inspect the typed request, "
+        "the configured framework boundary, and every attached owner-approved visual file. Do not edit, write, "
+        "delete, install, run shell commands, delegate, publish, or change the worktree.\n\n"
+        "Keep inspection bounded: do not use repository-wide recursive globs and do not enumerate node_modules, .git, "
+        "dist, .astro, output, or other generated/dependency directories. Read only the relevant package/config files, "
+        "existing source entrypoints, public assets, and the attached evidence needed to understand the confirmed intake.\n"
+        + output_contract
+        + " It must state the "
+        "subject-specific visual thesis, content hierarchy, typography approach, color/material language, image and "
+        "asset treatment, signature interaction or motion purpose, responsive translation, reduced-motion resting "
+        "behavior, conversion path, and implementation risks. Ground every choice in the confirmed intake, supplied "
+         "media, constraints, and available capabilities. Keep unknown facts unresolved.\n"
+        + media_block
+        + "\nPAGE BUILD REQUEST (canonical JSON):\n"
+         + canonical_json(request_data)
         + "\n\nBUILD TARGET (canonical JSON):\n"
         + canonical_json(target.to_dict())
     )
@@ -1165,6 +1785,108 @@ def _provision_referenced_frontend_libraries(
     return provisioned
 
 
+def _journey_source_coverage(worktree: Path, base_sha: str, design_plan: Any) -> dict[str, Any]:
+    """Build a bounded source coverage map before the fidelity pass.
+
+    The map is diagnostic only: source markers never replace browser evidence.
+    It prevents the host from claiming that the primary implementation covered
+    a condition when the implementation did not leave any trace of it.
+    """
+    from ..core.design_contracts import ExperiencePlanBundle
+
+    plan = design_plan if isinstance(design_plan, ExperiencePlanBundle) else ExperiencePlanBundle.from_dict(design_plan.payload)
+    changed_paths = _changed_paths(worktree, base_sha)
+    source_files: list[tuple[str, str]] = []
+    for relative in sorted(changed_paths):
+        if relative.startswith((".opencode/", "design/")):
+            continue
+        path = worktree / relative
+        if not path.is_file() or path.is_symlink() or path.suffix.lower() not in {
+            ".html", ".astro", ".css", ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte",
+        }:
+            continue
+        try:
+            source_files.append((relative, path.read_text(encoding="utf-8", errors="replace")))
+        except OSError:
+            continue
+    records: list[dict[str, Any]] = []
+    for condition_id in plan.experience_journey.must_pass_condition_ids:
+        exact_marker = _re.compile(
+            r"data-ada-journey-condition\s*=\s*['\"]" + _re.escape(condition_id) + r"['\"]"
+        )
+        matches = [path for path, text in source_files if exact_marker.search(text)]
+        records.append({
+            "condition_id": condition_id,
+            "source_location": matches[0] if matches else "",
+            "status": "implemented" if matches else "missing",
+        })
+    signature_id = plan.experience_journey.signature_behavior_id
+    signature_marker = _re.compile(
+        r"data-ada-signature-behavior\s*=\s*['\"]" + _re.escape(signature_id) + r"['\"]"
+    )
+    signature_matches = [path for path, text in source_files if signature_marker.search(text)]
+    return {
+        "experience_plan_hash": plan.content_hash,
+        "journey_condition_ids": list(plan.experience_journey.must_pass_condition_ids),
+        "journey_coverage": records,
+        "signature_behavior_id": signature_id,
+        "signature_source_locations": signature_matches[:8],
+        "status": "complete" if all(item["status"] == "implemented" for item in records) and signature_matches else "incomplete",
+        "source_files": [path for path, _ in source_files[:120]],
+    }
+
+
+def _run_local_design_self_check(
+    config: dict[str, Any],
+    execution_context: dict[str, Any],
+    worktree: Path,
+    npm_cache: Path,
+    *,
+    progress=None,
+    timeout_seconds: int | None = None,
+) -> dict[str, Any]:
+    """Build the freshly implemented candidate before fidelity can claim it.
+
+    The fidelity specialist may repair an implementation, but it must never be
+    the first component to discover that the primary implementation cannot
+    build. This uses the same host-owned profile as validation and preview.
+    """
+    from .site_build import SiteBuildError, build_site, get_build_profile
+
+    engine = config.get("design_engine") or {}
+    builder = config.get("builder") or {}
+    quality = engine.get("quality") or {}
+    profile_name = str(engine.get("build_profile") or "astro_react").strip()
+    try:
+        profile = get_build_profile(profile_name)
+        result = build_site(
+            worktree,
+            profile,
+            npm_cache=npm_cache,
+            env=design_lab_environment(
+                execution_context.get("env") or None,
+                model_env_name=str((config.get("env") or {}).get("llm_api_key") or ""),
+            ),
+            timeout_seconds=int(
+                timeout_seconds
+                or quality.get("build_timeout_seconds")
+                or builder.get("provider_timeout_seconds")
+                or 900
+            ),
+        )
+    except SiteBuildError as exc:
+        raise RunnerError(f"mandatory local design self-check failed: {str(exc)[:1_000]}") from exc
+    report = result.to_dict()
+    if not result.ok:
+        raise RunnerError(
+            "mandatory local design self-check failed",
+            result={"local_check": report},
+        )
+    if progress:
+        progress("primary implementation passed the mandatory local build check")
+    return report
+
+
 def finalize_design_target(
     context: dict[str, Any],
     site_clone: Path,
@@ -1177,6 +1899,10 @@ def finalize_design_target(
     session_id: str = "",
     transcript_path: str = "",
     host_provisioned_paths: set[str] | None = None,
+    direction_path: str = "",
+    direction_hash: str = "",
+    direction_transcript_path: str = "",
+    experience_plan: Any | None = None,
 ) -> Any:
     """Commit a path-safe candidate and finalize its local or remote target."""
     from ..core.design_contracts import DesignCandidateReceipt
@@ -1261,8 +1987,16 @@ def finalize_design_target(
         "provider": provider,
         "model": model,
         "publishable": target.publishable,
-        "design_manifest": design_manifest,
-    })
+          "design_manifest": design_manifest,
+           "direction_path": direction_path,
+           "direction_hash": direction_hash,
+           "direction_transcript_path": direction_transcript_path,
+           "experience_plan": (
+               experience_plan.to_dict()
+               if hasattr(experience_plan, "to_dict")
+               else dict(experience_plan or {})
+           ),
+       })
 
 
 def stage_design_build(
@@ -1275,7 +2009,7 @@ def stage_design_build(
     plan_builder: Callable[[tuple[str, ...], dict[str, Any]], Any] | None = None,
 ):
     """Run a typed design request without creating a legacy merge draft."""
-    from ..core.design_contracts import BuildTarget, PageBuildRequest, canonical_json
+    from ..core.design_contracts import BuildTarget, ExperiencePlanBundle, PageBuildRequest, canonical_json
 
     if not isinstance(request, PageBuildRequest) or not isinstance(target, BuildTarget):
         raise RunnerError("typed design builds require PageBuildRequest and BuildTarget")
@@ -1285,13 +2019,30 @@ def stage_design_build(
         if request.context_snapshot.content_hash != request.context_snapshot_hash:
             raise RunnerError("design context snapshot hash is invalid")
     config = context["config"]
+    creative_orchestration = str(
+        (config.get("design_engine") or {}).get("orchestration") or "legacy"
+    ).strip().lower() == "creative"
+    if creative_orchestration and isinstance(design_plan, Mapping):
+        try:
+            # Repair requests persist the locked bundle as JSON so the durable
+            # request stays bounded. Normalize it at the execution boundary;
+            # the fidelity closure needs the typed immutable plan, not the
+            # transport dictionary.
+            design_plan = ExperiencePlanBundle.from_dict(design_plan)
+        except Exception as exc:  # noqa: BLE001 - malformed creative state must fail closed
+            raise RunnerError(f"creative repair received an invalid locked experience plan: {exc}") from exc
     execution_config = _native_asset_config(_typed_execution_config(config, request, target))
     execution_context = {**context, "config": execution_config}
     site_clone, worktree, base_sha = prepare_design_worktree(execution_config, target, progress)
     session_id: str | None = None
     output: list[str] = []
     transcript_path = ""
+    direction_transcript_path = ""
+    direction_path = ""
+    direction_hash = ""
     host_provisioned_paths: set[str] = set()
+    experience_plan = None
+    specialist_agent_paths: tuple[str, ...] = ()
     materialized_media_paths: list[str] = []
     materialized_font_paths: list[str] = []
     provision_error = ""
@@ -1339,6 +2090,8 @@ def stage_design_build(
         if materialized_font_paths and progress:
             progress("placing approved local WOFF2 fonts in the design worktree")
         is_visual_refinement = request.mode == "visual_refinement" or target.operation_kind == "visual_refinement"
+        is_technical_repair = target.operation_kind == "technical_repair"
+        is_parent_repair = is_visual_refinement or is_technical_repair
         builder_snapshot = request.context_snapshot if request.mode == "derived_page" else None
         if builder_snapshot is not None:
             digest = builder_snapshot.site_digest
@@ -1346,7 +2099,7 @@ def stage_design_build(
         elif request.mode == "initial_homepage":
             digest = ""
             tokens = ""
-        elif is_visual_refinement:
+        elif is_parent_repair:
             # A refinement must see the actual parent candidate, not the
             # baseline snapshot captured before the initial build.
             digest = _site_digest(execution_context, worktree, ref=base_sha)
@@ -1377,14 +2130,14 @@ def stage_design_build(
               persona=(builder_snapshot.effective_persona
                        if builder_snapshot is not None
                        else (request.context_snapshot.effective_persona
-                             if is_visual_refinement and request.context_snapshot is not None
-                             else ("" if request.mode in {"initial_homepage", "visual_refinement"}
-                                   else _current_persona(config, context.get("memory"))))),
+                       if is_parent_repair and request.context_snapshot is not None
+                              else ("" if request.mode in {"initial_homepage", "visual_refinement"} or is_parent_repair
+                                    else _current_persona(config, context.get("memory"))))),
              site_digest=digest,
              template_tokens=tokens,
               memory=(context.get("memory")
-                      if request.mode not in {"initial_homepage", "visual_refinement"} and builder_snapshot is None
-                      else None),
+                       if not is_parent_repair and request.mode not in {"initial_homepage", "visual_refinement"} and builder_snapshot is None
+                       else None),
              context_snapshot=builder_snapshot,
              context_snapshot_hash=(request.context_snapshot_hash if builder_snapshot is not None else ""),
               approved_capabilities=(request.context_snapshot.capabilities
@@ -1401,7 +2154,7 @@ def stage_design_build(
         if execution_context.get("memory") is not None:
             turn_kwargs["memory"] = execution_context.get("memory")
         evidence_paths: list[str] = []
-        if is_visual_refinement:
+        if is_parent_repair:
             evidence_paths = _stage_visual_evidence(
                 worktree,
                 _refinement_evidence_sources(request),
@@ -1414,26 +2167,155 @@ def stage_design_build(
                 materialized_media_paths,
                 prefix="media",
                 limit=6,
+                max_edge=640,
             )
         if evidence_paths:
             host_provisioned_paths.update(evidence_paths)
             if progress:
                 progress("attaching visual evidence for the design builder")
-        if design_plan is None and plan_builder is not None and repair_brief is None:
-            design_plan = plan_builder(tuple(evidence_paths), execution_context)
-        if design_plan is not None or repair_brief is not None:
+        native_orchestration = str(
+            (execution_config.get("design_engine") or {}).get("orchestration") or "legacy"
+        ).strip().lower() == "native"
+        snapshot_evidence_errors = (
+            request.context_snapshot.extra.get("asset_visual_evidence_errors") or ()
+            if request.context_snapshot is not None and isinstance(request.context_snapshot.extra, Mapping)
+            else ()
+        )
+        if (
+            creative_orchestration
+            and request.mode == "initial_homepage"
+            and request.context_snapshot is not None
+            and (request.context_snapshot.asset_visual_evidence or snapshot_evidence_errors)
+            and (snapshot_evidence_errors or not evidence_paths)
+        ):
+            raise RunnerError(
+                "creative generation requires complete attached visual evidence for the frozen owner assets"
+            )
+        native_direction = ""
+        attached_image_files = [*materialized_media_paths, *evidence_paths]
+        # The composition turn must see the same approved media that the Build
+        # turn will realize. Semantic evidence alone cannot prevent a model from
+        # choosing an unusable crop or treating a logo as a generic rectangle.
+        direction_image_files = list(attached_image_files)
+        if (
+            (native_orchestration or creative_orchestration)
+            and request.mode == "initial_homepage"
+            and target.operation_kind == "initial_build"
+            and design_plan is None
+            and repair_brief is None
+        ):
+            _write_native_direction_agent(worktree / ".opencode", structured=creative_orchestration)
+            direction_agent_path = worktree / ".opencode" / "agent" / "native-direction.md"
+            if progress:
+                progress("Ada is establishing a read-only design direction")
+            direction_kwargs: dict[str, Any] = {
+                "progress": progress,
+                "agent_name": "native-direction",
+            }
+            if direction_image_files:
+                direction_kwargs["image_files"] = direction_image_files
+            if "env" in context:
+                direction_kwargs["api_key"] = provider_key
+                direction_kwargs["env"] = context.get("env")
+                direction_kwargs["api_key_env"] = provider_env_name
+            try:
+                direction_result = run_opencode_turn(
+                    worktree,
+                    _native_direction_prompt(
+                        request,
+                        target,
+                        tuple(direction_image_files),
+                        require_experience_plan=creative_orchestration,
+                    ),
+                    execution_config,
+                    **direction_kwargs,
+                )
+            except RunnerError as exc:
+                partial = dict(exc.result or {})
+                raw_direction_transcript = str(
+                    partial.get("transcript") or json.dumps(partial, ensure_ascii=True, sort_keys=True)
+                )
+                direction_transcript_path = _persist_design_transcript(
+                    execution_config,
+                    request.run_id,
+                    raw_direction_transcript,
+                    filename="direction-opencode.jsonl",
+                )
+                partial["direction_transcript_path"] = direction_transcript_path
+                raise RunnerError(str(exc), result=partial) from exc
+            finally:
+                try:
+                    direction_agent_path.unlink()
+                except FileNotFoundError:
+                    pass
+            direction_transcript_path = _persist_design_transcript(
+                execution_config,
+                request.run_id,
+                str(direction_result.get("transcript") or json.dumps(direction_result, ensure_ascii=True, sort_keys=True)),
+                filename="direction-opencode.jsonl",
+            )
+            native_direction, experience_plan = _native_direction_payload(
+                direction_result,
+                request,
+                require_experience_plan=creative_orchestration,
+            )
+            direction_path, direction_hash = _persist_design_direction(
+                execution_config,
+                request.run_id,
+                native_direction,
+            )
+            if creative_orchestration and experience_plan is not None:
+                experience_plan = _bind_experience_plan_artifacts(
+                    experience_plan,
+                    request,
+                    direction_hash,
+                )
+                design_plan = experience_plan
+                _persist_integrated_composition(
+                    execution_context,
+                    request,
+                    experience_plan,
+                    direction_path=direction_path,
+                    direction_hash=direction_hash,
+                )
+            if progress:
+                progress("Ada's design direction is persisted; starting the integrated Build turn")
+        if repair_brief is not None:
+            # Repair turns still need the host-written role definition. Keep
+            # this independent from planning: a bounded repair is deliberately
+            # given its frozen findings instead of asking Ada to create a new
+            # plan first.
             from .opencode_provider import write_specialist_agents
 
-            write_specialist_agents(
+            specialist_agent_paths = write_specialist_agents(
                 worktree,
-                ("repair-implementer" if repair_brief is not None else "site-implementer",),
+                ("repair-implementer",),
             )
+        elif design_plan is None and plan_builder is not None:
+            # Specialist planning runs in disposable scratch workspaces, while
+            # the staged evidence belongs to this design worktree.  Give the
+            # read-only specialists absolute paths so OpenCode does not resolve
+            # the relative evidence names against the wrong scratch directory.
+            plan_image_files = tuple(
+                str((worktree / path).resolve())
+                if not Path(path).expanduser().is_absolute()
+                else str(Path(path).expanduser().resolve())
+                for path in evidence_paths
+            )
+            design_plan = plan_builder(plan_image_files, execution_context)
+            if design_plan is not None:
+                from .opencode_provider import write_specialist_agents
+
+                specialist_agent_paths = write_specialist_agents(
+                    worktree,
+                    ("site-implementer",),
+                )
         if "env" in context:
             turn_kwargs["api_key"] = provider_key
             turn_kwargs["env"] = context.get("env")
             turn_kwargs["api_key_env"] = provider_env_name
-        if evidence_paths:
-            turn_kwargs["image_files"] = evidence_paths
+        if attached_image_files:
+            turn_kwargs["image_files"] = attached_image_files
         try:
             initial = run_opencode_turn(
                 worktree,
@@ -1444,11 +2326,14 @@ def stage_design_build(
                     tuple(materialized_font_paths),
                     design_plan,
                     repair_brief,
+                    native_direction=native_direction,
                 ),
                 execution_config,
                 agent_name=(
                     "repair-implementer"
                     if repair_brief is not None
+                    else "build"
+                    if creative_orchestration
                     else "site-implementer"
                     if design_plan is not None
                     else "build"
@@ -1484,32 +2369,104 @@ def stage_design_build(
                     "usage": dict(initial.get("usage") or {}),
                 },
             )
-        if design_plan is not None and repair_brief is None and not turn_error:
+        recoverable_turn_timeout = bool(
+            turn_error and turn_error.startswith("opencode timed out after ")
+        )
+        if design_plan is not None and (
+            repair_brief is None or recoverable_turn_timeout
+        ) and (
+            not turn_error or recoverable_turn_timeout
+        ):
             from ..application.design_orchestration import SpecialistDesignCoordinator
 
             coordinator = SpecialistDesignCoordinator(execution_context)
-            coordinator.record_implementation_phase(
-                request,
-                target,
-                plan=design_plan,
-                provider_result={
-                    "session_id": str(initial.get("session_id") or ""),
-                    "reply": str(initial.get("reply") or "")[-6_000:],
-                    "tool_calls": list(initial.get("tool_calls") or ())[-32:],
-                    "usage": dict(initial.get("usage") or {}),
-                },
+            journey_coverage = (
+                _journey_source_coverage(worktree, base_sha, design_plan)
+                if repair_brief is None
+                else {}
             )
+            try:
+                host_provisioned_paths.update(_provision_referenced_frontend_libraries(
+                    execution_config,
+                    request,
+                    worktree,
+                    _changed_paths(worktree, base_sha),
+                ))
+            except Exception as exc:  # noqa: BLE001 - dependency provisioning is a mandatory build precondition
+                raise RunnerError(f"approved frontend runtime provisioning failed: {str(exc)[:2_000]}") from exc
+            try:
+                local_check = _run_local_design_self_check(
+                    execution_config,
+                    execution_context,
+                    worktree,
+                    npm_cache,
+                    progress=progress,
+                )
+            except RunnerError as exc:
+                partial = dict(exc.result or {})
+                partial.setdefault("session_id", session_id or "")
+                partial["transcript_path"] = transcript_path
+                raise RunnerError(str(exc), result=partial) from exc
+            if repair_brief is None:
+                coordinator.record_implementation_phase(
+                    request,
+                    target,
+                    plan=design_plan,
+                    provider_result={
+                        "session_id": str(initial.get("session_id") or ""),
+                        "reply": str(initial.get("reply") or "")[-6_000:],
+                        "tool_calls": list(initial.get("tool_calls") or ())[-32:],
+                        "usage": dict(initial.get("usage") or {}),
+                        "provider_turn_error": turn_error,
+                        **journey_coverage,
+                        "local_check_status": "passed",
+                        "local_check": local_check,
+                    },
+                )
+            if recoverable_turn_timeout:
+                output.append(
+                    "The primary implementation turn timed out after authoring; "
+                    "the host completed the bounded local check and continued with "
+                    "the required experience-fidelity phase."
+                )
             if progress:
-                progress("running the bounded motion specialist phase")
-            motion_report = coordinator.run_motion_phase(
-                request,
-                target,
-                plan=design_plan,
-                workspace=worktree,
-                progress=progress,
-                image_files=evidence_paths,
-            )
-            output.append(canonical_json(motion_report.to_dict()))
+                progress("running the experience-fidelity specialist phase")
+            try:
+                fidelity_report = coordinator.run_experience_fidelity_phase(
+                    request,
+                    target,
+                    plan=design_plan,
+                    workspace=worktree,
+                    progress=progress,
+                    image_files=evidence_paths,
+                )
+                output.append(canonical_json(fidelity_report.to_dict()))
+            except Exception as exc:  # noqa: BLE001 - mandatory closure must not be swallowed
+                if progress:
+                    progress(
+                        "experience-fidelity phase did not complete; the candidate cannot be finalized"
+                    )
+                raise RunnerError(
+                    "mandatory experience-fidelity phase did not complete: " + str(exc)[:1_500],
+                    result={
+                        **initial,
+                        "transcript_path": transcript_path,
+                        "experience_fidelity_error": str(exc)[:1_500],
+                    },
+                ) from exc
+            # A timeout after source authoring is recoverable once the host
+            # local check and the existing fidelity phase have both run. Other
+            # provider failures remain explicit build errors below. Browser
+            # validation happens after the immutable candidate is finalized,
+            # through the durable design-job path.
+            if recoverable_turn_timeout:
+                turn_error = ""
+        for relative_path in specialist_agent_paths:
+            try:
+                (worktree / relative_path).unlink()
+            except FileNotFoundError:
+                pass
+        specialist_agent_paths = ()
         try:
             host_provisioned_paths.update(_provision_referenced_frontend_libraries(
                 execution_config,
@@ -1533,9 +2490,13 @@ def stage_design_build(
                 execution_context, site_clone, worktree, target, base_sha, request,
                 "\n\n".join(filter(None, output)), progress,
                 session_id=session_id or "",
-                transcript_path=transcript_path,
-                host_provisioned_paths=host_provisioned_paths,
-            )
+                 transcript_path=transcript_path,
+                 host_provisioned_paths=host_provisioned_paths,
+                  direction_path=direction_path,
+                  direction_hash=direction_hash,
+                  direction_transcript_path=direction_transcript_path,
+                  experience_plan=experience_plan,
+              )
         except Exception as exc:  # noqa: BLE001 - retain the transcript for failed finalization
             partial = dict(getattr(exc, "result", {}) or {})
             partial.setdefault("session_id", session_id or "")
@@ -1546,6 +2507,14 @@ def stage_design_build(
             receipt = replace(receipt, build_error=build_error)
         return receipt
     finally:
+        # Role definitions are disposable provider inputs, never candidate
+        # source.  Remove them before computing the immutable diff and also on
+        # every failure path so the closure cannot leak host scaffolding.
+        for relative_path in specialist_agent_paths:
+            try:
+                (worktree / relative_path).unlink()
+            except FileNotFoundError:
+                pass
         _remove_builder_worktree(site_clone, worktree)
 
 
@@ -1628,8 +2597,8 @@ GSAP production guardrails:
   reduce branch, do not create or start GSAP timelines, ScrollTriggers,
   requestAnimationFrame loops, or CSS animations/transitions. Make content
   visible at first paint and use gsap.matchMedia() or an equivalent media-query
-  branch only to disable or revert nonessential motion. Test both reduce and
-  no-preference modes before finishing.
+  branch only to disable or revert nonessential motion. Implement both reduce
+  and no-preference behavior; the host validates both.
 - Initialize scroll choreography once after the page and media are ready, refresh
   it after layout changes, and leave every target visible if the animation does
   not initialize. Check the top, middle, and bottom of the page, not only the
@@ -1665,9 +2634,11 @@ GSAP production guardrails:
   to the configured explore/general subagents when it materially reduces work.
   Keep final design decisions and implementation edits in this primary session;
   never have subagents edit the same worktree concurrently.
-- Never leave implementation-specific selectors, assets, fonts, or motion
-  unverified: render the authored output after editing and inspect the actual
-  browser result.
+- You author source; the host owns rendering and validation. After editing,
+  run the project's own build/check script when useful, then stop. Do not
+  launch a browser, HTTP server, or custom rendering/self-review harness: the
+  host renders the candidate and runs the authoritative browser, interaction,
+  motion, and reduced-motion gates.
 - The installed design and motion skills ARE the quality bar: engineering
   mastery AND taste. They are not a menu to mix and match — you must satisfy
   them, not approximate them. Your creative freedom is in choosing HOW the
@@ -1696,8 +2667,9 @@ GSAP production guardrails:
 
 BUILDER_TOOLSET = (
     "YOUR TOOLSET (what you actually have, use it freely):\n"
-    "- Shell: bash — run commands, git, and CLIs for bounded checks. Do not install packages "
-    "or download third-party runtime archives; approved local runtimes are host-provided.\n"
+    "- Shell: bash — limited to the project's own build/check scripts and read-only inspection. "
+    "You cannot launch a browser or HTTP server, run arbitrary processes, or install packages; "
+    "the host owns rendering and validation.\n"
     "- Files: read, write, edit, patch any repository file.\n"
     "- Search: glob + grep across the repo, web search and web fetch when you need "
     "pinned versions or external references.\n"
@@ -1959,6 +2931,45 @@ def _write_researcher_agent(oc: Path, prompt: str) -> None:
     (agent_dir / "researcher.md").write_text(text, encoding="utf-8")
 
 
+def _write_native_direction_agent(oc: Path, *, structured: bool = False) -> None:
+    """Install the bounded read-only agent used before a native Build turn."""
+    agent_dir = oc / "agent"
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    output = (
+        "Return one compact JSON object containing direction and a complete typed experience plan. The plan must include "
+        "an integrated copy_deck with final non-empty headline, body, and primary_action strings, "
+        "brand_source_map as an object with the exact fields schema_version, identity_assets, primary_brand_signals, "
+        "geometry_vocabulary, spacing_rhythm, line_and_edge_language, color_relationships, "
+        "type_relationship_hypotheses, material_relationships, image_treatment_hypotheses, signals_to_preserve, "
+        "signals_not_safe_to_infer, owner_evidence_refs, asset_evidence_refs, and confidence_by_signal. Use the exact "
+        "supplied evidence IDs in its reference arrays. asset_composition_plan must be an array of records whose asset_id "
+        "is an exact supplied evidence ID, with the complete typed asset-composition fields and responsive treatment "
+        "objects. Do not use Markdown fences or commentary."
+        if structured
+        else
+        "Return only one concise human-readable design direction for the next integrated Build turn. Do not provide "
+        "JSON, alternatives, or generic template advice."
+    )
+    text = (
+        "---\n"
+        "description: Ada's read-only design direction pass.\n"
+        "mode: primary\n"
+        "permission:\n"
+        "  task: deny\n"
+        "  edit: deny\n"
+        "  write: deny\n"
+        "  bash: deny\n"
+        "---\n\n"
+        "You are Ada's read-only design director. Inspect the confirmed typed intake, the configured framework, "
+        "and supplied visual evidence. Never edit, write, delete, install, run shell commands, delegate, publish, "
+        "or approve. Keep repository inspection bounded: never enumerate node_modules, .git, dist, .astro, output, "
+        "or other generated/dependency directories; use only relevant source/config paths. "
+        + output
+        + " Do not invent business facts or provide code.\n"
+    )
+    (agent_dir / "native-direction.md").write_text(text, encoding="utf-8")
+
+
 def build_brief(message: str, config: dict[str, Any]) -> str:
     persona = (config.get("persona") or {})
     voice = persona.get("voice") or ""
@@ -2080,6 +3091,35 @@ def _qualified_model(model: str, *, provider: str | None = None) -> str:
 def _model_provider(model: str) -> str:
     qualified = _qualified_model(model)
     return qualified.split("/", 1)[0].lower() if "/" in qualified else "openrouter"
+
+
+def _stage_cli_prompt(clone: Path, brief: str) -> tuple[str, Path | None, bytes | None]:
+    """Keep large host prompts out of the process argument vector."""
+    encoded = str(brief).encode("utf-8")
+    if len(encoded) <= _MAX_OPENCODE_ARG_PROMPT_BYTES:
+        return str(brief), None, None
+    path = clone / ".opencode" / "host-request.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    previous = path.read_bytes() if path.exists() else None
+    path.write_bytes(encoded)
+    return (
+        "Read the complete host request at .opencode/host-request.md and follow it exactly. "
+        "Treat that file as the complete request for this turn; do not summarize it or ask for it again.",
+        path,
+        previous,
+    )
+
+
+def _restore_cli_prompt(path: Path | None, previous: bytes | None) -> None:
+    if path is None:
+        return
+    if previous is None:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        return
+    path.write_bytes(previous)
 
 
 def run_opencode(clone: Path, brief: str, config: dict[str, Any], progress=None, *, memory: Any | None = None) -> str:
@@ -2297,7 +3337,8 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
         cmd.extend(["--model", _qualified_model(builder_model)])
     if session_id:
         cmd.extend(["--session", session_id])
-    cmd.append(brief)
+    cli_prompt, staged_prompt_path, previous_prompt = _stage_cli_prompt(clone, brief)
+    cmd.append(cli_prompt)
     if image_files:
         for image_value in image_files:
             image_path = Path(str(image_value)).expanduser()
@@ -2306,18 +3347,22 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
             cmd.extend(["-f", str(image_path)])
     if progress:
         progress("opencode is at work on the repository")
-    proc = subprocess.Popen(
-        cmd, cwd=clone, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, bufsize=1, stdin=subprocess.DEVNULL,
-        env=_isolated_env(
-            clone,
-            api_key if api_key is not None else resolve_secret(config, "llm_api_key"),
-            provider=_model_provider(builder_model),
-            source_env=env,
-            api_key_env=api_key_env,
-        ),
-        start_new_session=True,
-    )
+    try:
+        proc = subprocess.Popen(
+            cmd, cwd=clone, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, bufsize=1, stdin=subprocess.DEVNULL,
+            env=_isolated_env(
+                clone,
+                api_key if api_key is not None else resolve_secret(config, "llm_api_key"),
+                provider=_model_provider(builder_model),
+                source_env=env,
+                api_key_env=api_key_env,
+            ),
+            start_new_session=True,
+        )
+    except BaseException:
+        _restore_cli_prompt(staged_prompt_path, previous_prompt)
+        raise
     timed_out = threading.Event()
 
     def terminate_process(grace: float = 10.0, *, force: bool = False) -> None:
@@ -2392,6 +3437,7 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
             "native_tool_calls": len(tool_calls),
             "usage": dict(usage_total),
             **({"cost": reported_cost} if has_reported_cost else {}),
+            "raw_output": "\n".join(tail),
             "transcript": "\n".join(transcript_lines) + ("\n" if transcript_lines else ""),
         }
 
@@ -2426,6 +3472,7 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
                 tool_calls.append({
                     "tool": part.get("tool") or part.get("name") or "unknown",
                     "status": state.get("status") if isinstance(state, dict) else "unknown",
+                    "error": str(state.get("error") or "")[:300] if isinstance(state, dict) else "",
                 })
             text = event.get("text") or part.get("text") or ""
             if not isinstance(text, str) or not text:
@@ -2455,6 +3502,7 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
     finally:
         watchdog.cancel()
         record_usage()
+        _restore_cli_prompt(staged_prompt_path, previous_prompt)
     if timed_out.is_set():
         raise RunnerError(f"opencode timed out after {timeout}s", result=partial_result())
     if protocol_error:
@@ -2468,12 +3516,22 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
             f"opencode exited {proc.returncode}: {detail[:400]}",
             result=partial_result(),
         )
-    if tail and tail[-1].startswith("✗ "):
+    # A capability the host deliberately denied is not a broken turn. The
+    # authoring agent may attempt a browser/server/delegation command that the
+    # containment rules block; that must not fail an otherwise complete build.
+    def _permission_denied(value: Any) -> bool:
+        return "prevents you from using this specific tool call" in str(value or "")
+
+    if tail and tail[-1].startswith("✗ ") and not _permission_denied(tail[-1]):
         raise RunnerError(
             f"opencode stopped after a failed tool call: {tail[-1][:300]}",
             result=partial_result(),
         )
-    failed_tools = [call for call in tool_calls if call.get("status") == "error"]
+    failed_tools = [
+        call
+        for call in tool_calls
+        if call.get("status") == "error" and not _permission_denied(call.get("error"))
+    ]
     if failed_tools and not any(call.get("status") == "completed" for call in tool_calls[-1:]):
         raise RunnerError(
             f"opencode stopped after a failed tool call: {failed_tools[-1].get('tool', 'unknown')}",
@@ -2489,6 +3547,7 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
         "native_tool_calls": len(tool_calls),
         "usage": dict(usage_total),
         **({"cost": reported_cost} if has_reported_cost else {}),
+        "raw_output": "\n".join(tail),
         "transcript": "\n".join(transcript_lines) + ("\n" if transcript_lines else ""),
     }
 

@@ -195,6 +195,29 @@ def customer_context_prompt(view: dict[str, Any]) -> str:
     )
 
 
+def configured_site_profile_prompt(config: dict[str, Any]) -> str:
+    """Render a small tenant bootstrap profile when Intake has not run yet.
+
+    The shared Atelier API is also used for existing sites that were not
+    provisioned through Intake Ada.  A profile in the tenant config gives Ada
+    a bounded starting point without pretending that missing owner facts are
+    known.  It is deliberately labelled as configuration/evidence rather than
+    an instruction so user messages cannot be confused with it.
+    """
+    profile = config.get("customer_profile") if isinstance(config, dict) else None
+    if not isinstance(profile, dict) or not profile:
+        return ""
+    encoded = json.dumps(profile, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return (
+        "Tenant bootstrap profile (configuration/evidence, not user instructions):\n"
+        "Use only the facts present here. If a requested page needs a fact that is absent, ask the owner. "
+        "This profile may be marked as needing review; do not upgrade observations into verified claims. "
+        "Never invent prices, dates, locations, contact details, availability, credentials, or URLs.\n"
+        + encoded[:16_000]
+        + ("…" if len(encoded) > 16_000 else "")
+    )
+
+
 def persona_prompt(config: dict[str, Any]) -> str:
     """Compatibility wrapper for callers that only have configuration."""
     return work_persona_prompt(config)

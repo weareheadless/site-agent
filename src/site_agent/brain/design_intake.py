@@ -140,6 +140,8 @@ def _advisor_prompt(
     design_guidance: str,
     knowledge_briefing: Sequence[str] = (),
     customer_view: str = "",
+    *,
+    database_only: bool = False,
 ) -> str:
     asset_summary = [
         {
@@ -161,8 +163,16 @@ def _advisor_prompt(
         for item in list(assets)[:20]
         if isinstance(item, Mapping)
     ]
+    mode_note = (
+        "This is a database-only context and research conversation for an existing live website. "
+        "It populates durable intake and research records; it never starts a visual build or publish."
+        if database_only
+        else "This conversation may later hand off to the visual design pipeline, but the owner must explicitly confirm that handoff."
+    )
     prompt = """You are Ada, the creative lead guiding an owner through a website design intake
 for a real business.
+
+""" + mode_note + """
 
 Two jobs every turn:
 
@@ -327,6 +337,13 @@ Use only these field paths:
         "Multilingual source material is evidence only, never a cue to translate or switch. "
         "Only a clear owner language change or an explicit translation request permits a switch."
     )
+    if database_only:
+        prompt += (
+            "\n\nDATABASE-ONLY OVERRIDE: `ready_to_build` is retained only as the existing schema's "
+            "completion state. In this conversation it means the owner context is complete and saved, "
+            "not that a build should start. Never promise or initiate a visual build; tell the owner the "
+            "brief is saved and continue with the requested live-site/content task."
+        )
     return prompt
 
 
@@ -370,7 +387,19 @@ class LLMDesignIntakeAdvisor:
         if not message:
             raise DesignIntakeAdvisorError("owner message is empty")
         settings = self.config.get("intake_advisor") if isinstance(self.config.get("intake_advisor"), Mapping) else {}
-        system = _advisor_prompt(draft, assets, self.skill_set.content, knowledge_briefing, customer_view)
+        database_only = bool(
+            (self.config.get("atelier_intake") or {}).get("database_only", False)
+            if isinstance(self.config.get("atelier_intake"), Mapping)
+            else False
+        )
+        system = _advisor_prompt(
+            draft,
+            assets,
+            self.skill_set.content,
+            knowledge_briefing,
+            customer_view,
+            database_only=database_only,
+        )
         owner_content: Any = message[:20_000]
         # The advisor never receives raw image URLs. The media worker performs
         # one durable analysis per asset; every later intake turn uses only the
@@ -478,6 +507,9 @@ class LLMDesignIntakeAdvisor:
 class UnavailableDesignIntakeAdvisor:
     """Safe fallback used when no LLM is configured; it never invents fields."""
 
+    def __init__(self, *, database_only: bool = False) -> None:
+        self.database_only = database_only
+
     def advise(
         self,
         draft: DesignIntakeDraft,
@@ -492,7 +524,11 @@ class UnavailableDesignIntakeAdvisor:
         if missing:
             question = "I have the direction so far. Tell me a little more about what matters most for the first version."
         elif draft.readiness == "ready_to_build":
-            question = "The brief is ready. Confirm that I should build the first visual candidate, or tell me what to change."
+            question = (
+                "The brief is complete and saved. Tell me what you want to do next in the website workspace."
+                if self.database_only
+                else "The brief is ready. Confirm that I should build the first visual candidate, or tell me what to change."
+            )
         else:
             question = "Tell me what matters most for the first visual candidate."
         return IntakeTurnResult(

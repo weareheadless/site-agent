@@ -36,6 +36,7 @@ from ..hands.site_build import (
     ASTRO_REACT_PROFILE,
     PELICAN_BASELINE_PROFILE,
     SiteBuildResult,
+    SiteOutputArtifactStore,
     build_site,
     copy_build_output,
     get_build_profile,
@@ -372,6 +373,7 @@ class DesignLabService:
                 memory,
                 config=local_config,
                 skill_set=self.skill_set,
+                output_artifact_store=SiteOutputArtifactStore(self.workspace / "output-artifacts"),
             )
             run = design_service.create_experiment(
                 intake,

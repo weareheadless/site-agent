@@ -3,13 +3,15 @@ import hashlib
 import subprocess
 from types import SimpleNamespace
 
+import pytest
 from PIL import Image
 
-from site_agent.core.design_contracts import BuildTarget, DesignContextSnapshot, PageBuildRequest
+from site_agent.core.design_contracts import BuildTarget, DesignContextSnapshot, ExperiencePlanBundle, PageBuildRequest
 from site_agent.core.memory import Memory
 from site_agent.hands import opencode_runner as runner
 from site_agent.hands.builder import BuilderError, OperationRoutingBuilder
-from site_agent.hands.site_build import ASTRO_REACT_PROFILE
+from site_agent.hands.site_build import ASTRO_REACT_PROFILE, SiteBuildResult
+from tests.test_design_contracts import _experience_plan
 
 
 def test_stage_visual_evidence_writes_downscaled_jpgs_under_opencode(tmp_path):
@@ -83,6 +85,69 @@ def _clone(tmp_path):
     _git(clone, "commit", "-qm", "baseline")
     base_sha = _git(clone, "rev-parse", "HEAD").stdout.strip()
     return clone, base_sha
+
+
+def test_primary_implementation_local_self_check_returns_host_build_evidence(tmp_path, monkeypatch):
+    observed = {}
+
+    def fake_build(root, profile, *, npm_cache, env, timeout_seconds):
+        observed.update({
+            "root": root,
+            "profile": profile.name,
+            "npm_cache": npm_cache,
+            "timeout_seconds": timeout_seconds,
+        })
+        return SiteBuildResult(
+            profile=profile.name,
+            ok=True,
+            output_dir=profile.output_dir,
+            commands=({"command": ["test"], "status": "passed"},),
+            route_inventory=("index.html",),
+        )
+
+    monkeypatch.setattr("site_agent.hands.site_build.build_site", fake_build)
+    report = runner._run_local_design_self_check(
+        {
+            "design_engine": {
+                "build_profile": "astro_react",
+                "quality": {"build_timeout_seconds": 37},
+            },
+            "builder": {"provider_timeout_seconds": 900},
+            "env": {"llm_api_key": "OPENROUTER_API_KEY"},
+        },
+        {"env": {}},
+        tmp_path,
+        tmp_path / "npm-cache",
+    )
+
+    assert report["ok"] is True
+    assert report["route_inventory"] == ["index.html"]
+    assert observed == {
+        "root": tmp_path,
+        "profile": "astro_react",
+        "npm_cache": tmp_path / "npm-cache",
+        "timeout_seconds": 37,
+    }
+
+
+def test_primary_implementation_local_self_check_rejects_failed_build(tmp_path, monkeypatch):
+    def fake_build(root, profile, **kwargs):
+        return SiteBuildResult(
+            profile=profile.name,
+            ok=False,
+            output_dir=profile.output_dir,
+            commands=({"command": ["test"], "status": "failed"},),
+        )
+
+    monkeypatch.setattr("site_agent.hands.site_build.build_site", fake_build)
+
+    with pytest.raises(runner.RunnerError, match="mandatory local design self-check failed"):
+        runner._run_local_design_self_check(
+            {"design_engine": {"build_profile": "astro_react"}},
+            {"env": {}},
+            tmp_path,
+            tmp_path / "npm-cache",
+        )
 
 
 def test_native_astro_finalization_accepts_the_host_approved_package_manifest(tmp_path):
@@ -199,6 +264,416 @@ def test_local_design_build_commits_exact_base_to_local_ref_without_push(tmp_pat
     assert manifest["source_files"] == {"changed": ["index.html"]}
     assert receipt.transcript_path == "design-runs/design-run-1/opencode.jsonl"
     assert (tmp_path / "data" / receipt.transcript_path).read_text() == '{"type":"text","sessionID":"design-session"}\n'
+    memory.close()
+
+
+def test_native_initial_build_persists_direction_before_writable_build(tmp_path, monkeypatch):
+    clone, base_sha = _clone(tmp_path)
+    memory = Memory(tmp_path / "data" / "memory.db")
+    config = {
+        "data_dir": str(tmp_path / "data"),
+        "site": {"clone_path": str(clone), "writable_patterns": ["*.html", "design/**"]},
+        "design_engine": {"orchestration": "native"},
+        "builder": {"enabled": True},
+    }
+    request = PageBuildRequest.from_dict({
+        "schema_version": 1,
+        "run_id": "native-direction-build",
+        "mode": "initial_homepage",
+        "base_sha": base_sha,
+        "page_path": "index.html",
+        "purpose": "Create the homepage.",
+        "site_intake_hash": "a" * 64,
+        "acceptance_criteria": ["Keep the homepage accessible."],
+    })
+    target = BuildTarget.from_dict({
+        "mode": "local_experiment",
+        "base_sha": base_sha,
+        "candidate_ref": "refs/ada-design-lab/native-direction-build",
+        "push_mode": "none",
+        "publishable": False,
+        "clone_path": str(clone),
+        "allowed_paths": ["*.html", "design/**"],
+    })
+    calls = []
+
+    monkeypatch.setattr(runner, "install_agent_files", lambda *args, **kwargs: None)
+
+    def fake_turn(worktree, prompt, config, **kwargs):
+        calls.append({"agent_name": kwargs.get("agent_name"), "prompt": prompt})
+        if kwargs.get("agent_name") == "native-direction":
+            return {
+                "session_id": "direction-session",
+                "reply": "A quiet editorial threshold opens into a tactile story of the owner’s work.",
+                "transcript": '{"type":"text","sessionID":"direction-session"}\n',
+            }
+        (worktree / "index.html").write_text("<html><body><h1>Candidate</h1></body></html>")
+        return {
+            "session_id": "build-session",
+            "reply": "implemented",
+            "transcript": '{"type":"text","sessionID":"build-session"}\n',
+        }
+
+    monkeypatch.setattr(runner, "run_opencode_turn", fake_turn)
+
+    receipt = runner.stage_design_build({"config": config, "memory": memory}, request, target)
+
+    assert [call["agent_name"] for call in calls] == ["native-direction", "build"]
+    assert "A quiet editorial threshold" in calls[1]["prompt"]
+    assert receipt.direction_path == "design-runs/native-direction-build/direction.md"
+    assert receipt.direction_transcript_path == "design-runs/native-direction-build/direction-opencode.jsonl"
+    direction_file = tmp_path / "data" / receipt.direction_path
+    assert direction_file.read_text() == "A quiet editorial threshold opens into a tactile story of the owner’s work.\n"
+    assert (tmp_path / "data" / receipt.direction_transcript_path).is_file()
+    memory.close()
+
+
+def test_creative_technical_repair_skips_new_direction_turn(tmp_path, monkeypatch):
+    clone, base_sha = _clone(tmp_path)
+    memory = Memory(tmp_path / "data" / "memory.db")
+    config = {
+        "data_dir": str(tmp_path / "data"),
+        "site": {"clone_path": str(clone), "writable_patterns": ["*.html", "design/**"]},
+        "design_engine": {"orchestration": "creative"},
+        "builder": {"enabled": True},
+    }
+    request = PageBuildRequest.from_dict({
+        "schema_version": 1,
+        "run_id": "technical-repair-no-direction",
+        "mode": "initial_homepage",
+        "base_sha": base_sha,
+        "page_path": "index.html",
+        "purpose": "Repair the retained candidate.",
+        "site_intake_hash": "a" * 64,
+        "acceptance_criteria": ["Preserve the native implementation."],
+        "content": {"technical_repair": {"parent_run_id": "parent"}},
+    })
+    target = BuildTarget.from_dict({
+        "mode": "local_experiment",
+        "base_sha": base_sha,
+        "candidate_ref": "refs/ada-design-lab/technical-repair-no-direction",
+        "push_mode": "none",
+        "publishable": False,
+        "clone_path": str(clone),
+        "allowed_paths": ["*.html", "design/**"],
+        "operation_kind": "technical_repair",
+    })
+    calls = []
+
+    monkeypatch.setattr(runner, "install_agent_files", lambda *args, **kwargs: None)
+
+    def fake_turn(worktree, prompt, config, **kwargs):
+        calls.append({"agent_name": kwargs.get("agent_name"), "prompt": prompt})
+        (worktree / "index.html").write_text("<html><body><h1>Candidate</h1></body></html>")
+        return {
+            "session_id": "repair-session",
+            "reply": "implemented",
+            "transcript": '{"type":"text","sessionID":"repair-session"}\n',
+        }
+
+    monkeypatch.setattr(runner, "run_opencode_turn", fake_turn)
+
+    runner.stage_design_build({"config": config, "memory": memory}, request, target)
+
+    assert [call["agent_name"] for call in calls] == ["build"]
+    assert "RETAINED IMPLEMENTATION PRESERVATION CONTRACT" in calls[0]["prompt"]
+    memory.close()
+
+
+def test_creative_direction_prompt_requires_typed_journey_shape(tmp_path):
+    clone, base_sha = _clone(tmp_path)
+    request = PageBuildRequest.from_dict({
+        "schema_version": 1,
+        "run_id": "creative-direction-contract",
+        "mode": "initial_homepage",
+        "base_sha": base_sha,
+        "page_path": "index.html",
+        "purpose": "Create the homepage.",
+        "site_intake_hash": "a" * 64,
+        "acceptance_criteria": ["Keep the homepage accessible."],
+    })
+    target = BuildTarget.from_dict({
+        "mode": "local_experiment",
+        "base_sha": base_sha,
+        "candidate_ref": "refs/ada-design-lab/creative-direction-contract",
+        "push_mode": "none",
+        "publishable": False,
+        "clone_path": str(clone),
+        "allowed_paths": ["*.html", "design/**"],
+    })
+
+    prompt = runner._native_direction_prompt(request, target, require_experience_plan=True)
+
+    assert "experience_journey must be a JSON object" in prompt
+    assert "at least two objects" in prompt
+    assert "never force a fixed scene count" in prompt
+    assert "exactly two objects" not in prompt
+    assert "Use id, not scene_id" in prompt
+    assert "behavior_system must be an object" in prompt
+    assert "asset_evidence may be an empty array" in prompt
+    assert "at most three records" in prompt
+    assert "top-level transfer_test field is mandatory" in prompt
+
+
+def test_creative_direction_rejects_an_incomplete_visible_copy_deck(tmp_path):
+    clone, base_sha = _clone(tmp_path)
+    snapshot = DesignContextSnapshot.from_dict({
+        "schema_version": 1,
+        "captured_at": "2026-09-15T12:00:00+00:00",
+        "owner_request": "Create the homepage.",
+        "base_sha": base_sha,
+        "site_facts": {"business": {"name": "North Star Studio"}},
+        "asset_inventory": [],
+        "asset_visual_evidence": [],
+        "execution_profile": {},
+    })
+    request = PageBuildRequest.from_dict({
+        "schema_version": 1,
+        "run_id": "creative-copy-contract",
+        "mode": "initial_homepage",
+        "base_sha": base_sha,
+        "page_path": "index.html",
+        "purpose": "Create the homepage.",
+        "site_intake_hash": "b" * 64,
+        "acceptance_criteria": ["Keep the homepage accessible."],
+        "context_snapshot": snapshot.to_dict(),
+        "context_snapshot_hash": snapshot.content_hash,
+    })
+    raw_plan = _experience_plan(
+        run_id=request.run_id,
+        base_sha=base_sha,
+        context_snapshot_hash=snapshot.content_hash,
+        asset_evidence=[],
+        asset_composition_plan=[],
+        copy_deck={"headline": "A real headline"},
+    )
+
+    with pytest.raises(runner.RunnerError, match="copy_deck.body"):
+        runner._native_direction_payload(
+            {
+                "reply": json.dumps({
+                    "direction": "A clear threshold into the work.",
+                    "experience_plan": raw_plan,
+                }),
+            },
+            request,
+            require_experience_plan=True,
+        )
+
+
+def test_native_direction_agent_is_primary_but_read_only(tmp_path):
+    oc = tmp_path / ".opencode"
+
+    runner._write_native_direction_agent(oc)
+
+    definition = (oc / "agent" / "native-direction.md").read_text()
+    assert "mode: primary" in definition
+    assert "task: deny" in definition
+    assert "edit: deny" in definition
+    assert "write: deny" in definition
+    assert "bash: deny" in definition
+
+
+def test_native_direction_discards_subagent_warning_and_uses_final_text_event(tmp_path, monkeypatch):
+    clone, base_sha = _clone(tmp_path)
+    memory = Memory(tmp_path / "data" / "memory.db")
+    config = {
+        "data_dir": str(tmp_path / "data"),
+        "site": {"clone_path": str(clone), "writable_patterns": ["*.html", "design/**"]},
+        "design_engine": {"orchestration": "native"},
+        "builder": {"enabled": True},
+    }
+    request = PageBuildRequest.from_dict({
+        "schema_version": 1,
+        "run_id": "native-direction-warning",
+        "mode": "initial_homepage",
+        "base_sha": base_sha,
+        "page_path": "index.html",
+        "purpose": "Create the homepage.",
+        "site_intake_hash": "a" * 64,
+        "acceptance_criteria": ["Keep the homepage accessible."],
+    })
+    target = BuildTarget.from_dict({
+        "mode": "local_experiment",
+        "base_sha": base_sha,
+        "candidate_ref": "refs/ada-design-lab/native-direction-warning",
+        "push_mode": "none",
+        "publishable": False,
+        "clone_path": str(clone),
+        "allowed_paths": ["*.html", "design/**"],
+    })
+    direction = "# Direction\n\n" + ("Use a slow, high-contrast descent into the experience." * 8)
+    warning = '!  agent "native-direction" is a subagent, not a primary agent. Falling back to default agent'
+
+    monkeypatch.setattr(runner, "install_agent_files", lambda *args, **kwargs: None)
+
+    def fake_turn(worktree, prompt, config, **kwargs):
+        if kwargs.get("agent_name") == "native-direction":
+            return {
+                "reply": warning,
+                "raw_tail": [warning],
+                "transcript": json.dumps({"type": "text", "part": {"type": "text", "text": direction}}) + "\n",
+            }
+        (worktree / "index.html").write_text("<html><body><h1>Candidate</h1></body></html>")
+        return {
+            "session_id": "build-session",
+            "reply": "implemented",
+            "transcript": '{"type":"text"}\n',
+        }
+
+    monkeypatch.setattr(runner, "run_opencode_turn", fake_turn)
+
+    receipt = runner.stage_design_build({"config": config, "memory": memory}, request, target)
+
+    persisted = (tmp_path / "data" / receipt.direction_path).read_text()
+    assert persisted == direction + "\n"
+    assert warning not in persisted
+    memory.close()
+
+
+def test_creative_build_turn_receives_a_compact_hash_bound_experience_plan(
+    tmp_path, monkeypatch
+):
+    clone, base_sha = _clone(tmp_path)
+    memory = Memory(tmp_path / "data" / "memory.db")
+    snapshot = DesignContextSnapshot.from_dict({
+        "schema_version": 1,
+        "captured_at": "2026-09-15T12:00:00+00:00",
+        "owner_request": "Create the homepage.",
+        "base_sha": base_sha,
+        "site_facts": {"business": {"name": "North Star Studio"}},
+        "asset_inventory": [],
+        "asset_visual_evidence": [],
+        "execution_profile": {},
+    })
+    raw_plan = _experience_plan(
+        run_id="creative-direction-freeform",
+        base_sha=base_sha,
+        context_snapshot_hash=snapshot.content_hash,
+        asset_evidence=[],
+        asset_composition_plan=[],
+    )
+    memory.create_design_run(
+        run_id="creative-direction-freeform",
+        mode="local_experiment",
+        intake_json={"schema_version": 1},
+        intake_hash="b" * 64,
+        base_sha=base_sha,
+        candidate_ref="refs/ada-design-lab/creative-direction-freeform",
+    )
+    config = {
+        "data_dir": str(tmp_path / "data"),
+        "site": {"clone_path": str(clone), "writable_patterns": ["*.html", "design/**"]},
+        "design_engine": {"orchestration": "creative"},
+        "builder": {"enabled": True},
+    }
+    request = PageBuildRequest.from_dict({
+        "schema_version": 1,
+        "run_id": "creative-direction-freeform",
+        "mode": "initial_homepage",
+        "base_sha": base_sha,
+        "page_path": "index.html",
+        "purpose": "Create the homepage.",
+        "site_intake_hash": "b" * 64,
+        "acceptance_criteria": ["Keep the homepage accessible."],
+        "supplied_media_asset_ids": [1],
+        "context_snapshot": snapshot.to_dict(),
+        "context_snapshot_hash": snapshot.content_hash,
+    })
+    target = BuildTarget.from_dict({
+        "mode": "local_experiment",
+        "base_sha": base_sha,
+        "candidate_ref": "refs/ada-design-lab/creative-direction-freeform",
+        "push_mode": "none",
+        "publishable": False,
+        "clone_path": str(clone),
+        "allowed_paths": ["*.html", "design/**"],
+    })
+    calls = []
+    phase_calls = []
+
+    def fake_materialize_media(_context, worktree):
+        image_path = worktree / "public" / "images" / "owner.webp"
+        image_path.parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGB", (900, 600), "#334455").save(image_path, format="WEBP")
+        return ["public/images/owner.webp"]
+
+    monkeypatch.setattr(runner, "_typed_execution_config", lambda config, request, target: config)
+    monkeypatch.setattr(runner, "install_agent_files", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_materialize_media", fake_materialize_media)
+    monkeypatch.setattr(runner, "_verify_materialized_media", lambda *args, **kwargs: None)
+    from site_agent.application.design_orchestration import SpecialistDesignCoordinator
+
+    monkeypatch.setattr(
+        SpecialistDesignCoordinator,
+        "record_implementation_phase",
+        lambda self, request, target, *, plan, provider_result: phase_calls.append("implementation"),
+    )
+    monkeypatch.setattr(
+        SpecialistDesignCoordinator,
+        "run_experience_fidelity_phase",
+        lambda self, request, target, *, plan, workspace, progress, image_files, **kwargs: (
+            phase_calls.append("experience_fidelity")
+            or SimpleNamespace(to_dict=lambda: {"state": "complete"})
+        ),
+    )
+    monkeypatch.setattr(runner, "_journey_source_coverage", lambda *args, **kwargs: {})
+    monkeypatch.setattr(runner, "_run_local_design_self_check", lambda *args, **kwargs: {"ok": True})
+    monkeypatch.setattr(runner, "_provision_referenced_frontend_libraries", lambda *args, **kwargs: ())
+
+    def fake_turn(worktree, prompt, config, **kwargs):
+        calls.append({
+            "agent_name": kwargs.get("agent_name"),
+            "prompt": prompt,
+            "image_files": tuple(kwargs.get("image_files") or ()),
+        })
+        if kwargs.get("agent_name") == "native-direction":
+            direction = "A quiet threshold opens into a tactile story of the owner's work."
+            text = json.dumps({"direction": direction, "experience_plan": raw_plan})
+            return {
+                "session_id": "direction-session",
+                "reply": text,
+                "transcript": json.dumps({"type": "text", "text": text}) + "\n",
+            }
+        (worktree / "index.html").write_text("<html><body><h1>Candidate</h1></body></html>")
+        return {
+            "session_id": "build-session",
+            "reply": "implemented",
+            "transcript": '{"type":"text","text":"implemented"}\n',
+        }
+
+    monkeypatch.setattr(runner, "run_opencode_turn", fake_turn)
+
+    receipt = runner.stage_design_build({"config": config, "memory": memory}, request, target)
+
+    assert [call["agent_name"] for call in calls] == ["native-direction", "build"]
+    assert calls[0]["image_files"]
+    assert calls[0]["image_files"] == calls[1]["image_files"]
+    assert "public/images/owner.webp" in calls[0]["image_files"]
+    assert "Return exactly one JSON object" in calls[0]["prompt"]
+    assert "brand_source_map" in calls[0]["prompt"]
+    assert "asset_composition_plan" in calls[0]["prompt"]
+    assert "final visitor-facing homepage copy" in calls[0]["prompt"]
+    assert "do not enumerate node_modules" in calls[0]["prompt"]
+    assert "top-level transfer_test field is mandatory" in calls[0]["prompt"]
+    assert "never pass useGSAP to gsap.registerPlugin" in calls[1]["prompt"]
+    assert "signature marker is a runtime contract, not metadata" in calls[1]["prompt"]
+    assert "one-shot entrance that has settled" in calls[1]["prompt"]
+    assert "first visible heading, offer, and primary action never sit beneath it" in calls[1]["prompt"]
+    assert "a static document wrapper such as main is not evidence" in calls[1]["prompt"]
+    assert "A quiet threshold opens" in calls[1]["prompt"]
+    assert "LOCKED CREATIVE PLAN" in calls[1]["prompt"]
+    assert phase_calls == ["implementation", "experience_fidelity"]
+    assert receipt.experience_plan["run_id"] == request.run_id
+    assert receipt.experience_plan["base_sha"] == base_sha
+    assert receipt.direction_path == "design-runs/creative-direction-freeform/direction.md"
+    persisted = memory.get_design_run(request.run_id)
+    assert persisted["planning_json"]["integrated_composition"]["state"] == "planned"
+    assert persisted["planning_json"]["experience_plan_hash"] == ExperiencePlanBundle.from_dict(receipt.experience_plan).content_hash
+    assert any(
+        event["stage"] == "integrated_composition"
+        for event in memory.list_design_run_events(request.run_id)
+    )
     memory.close()
 
 
@@ -457,6 +932,157 @@ def test_failed_opencode_turn_can_retain_a_safe_partial_candidate(tmp_path, monk
     memory.close()
 
 
+def test_specialist_timeout_after_source_authoring_runs_host_gates_before_finalizing(
+    tmp_path, monkeypatch
+):
+    clone, base_sha = _clone(tmp_path)
+    memory = Memory(tmp_path / "data" / "memory.db")
+    config = {
+        "data_dir": str(tmp_path / "data"),
+        "site": {"clone_path": str(clone), "writable_patterns": ["*.html", "design/**"]},
+        "builder": {"enabled": True},
+    }
+    request = PageBuildRequest.from_dict({
+        "schema_version": 1,
+        "run_id": "specialist-timeout-recovery",
+        "mode": "initial_homepage",
+        "base_sha": base_sha,
+        "page_path": "index.html",
+        "purpose": "Create the homepage.",
+        "site_intake_hash": "a" * 64,
+        "acceptance_criteria": ["Keep the homepage accessible."],
+    })
+    target = BuildTarget.from_dict({
+        "mode": "local_experiment",
+        "base_sha": base_sha,
+        "candidate_ref": "refs/ada-design-lab/specialist-timeout-recovery",
+        "push_mode": "none",
+        "publishable": False,
+        "clone_path": str(clone),
+        "allowed_paths": ["*.html", "design/**"],
+    })
+    plan = {"experience_journey": {"scenes": [{"id": "arrival"}]}}
+    calls = []
+
+    class FidelityReport:
+        def to_dict(self):
+            return {"status": "passed"}
+
+    class FakeCoordinator:
+        def __init__(self, context):
+            calls.append(("coordinator", context))
+
+        def record_implementation_phase(self, request, target, *, plan, provider_result):
+            calls.append(("implementation", provider_result))
+
+        def run_experience_fidelity_phase(self, request, target, *, plan, workspace, progress, image_files):
+            calls.append(("fidelity", plan))
+            return FidelityReport()
+
+    def failed_turn(worktree, prompt, config, **kwargs):
+        (worktree / "index.html").write_text("<html><body><h1>Candidate</h1></body></html>")
+        raise runner.RunnerError(
+            "opencode timed out after 1800s",
+            result={"session_id": "specialist-session", "reply": "implemented", "transcript": "timeout\n"},
+        )
+
+    monkeypatch.setattr("site_agent.application.design_orchestration.SpecialistDesignCoordinator", FakeCoordinator)
+    monkeypatch.setattr(runner, "_journey_source_coverage", lambda *args, **kwargs: {})
+    monkeypatch.setattr(runner, "_run_local_design_self_check", lambda *args, **kwargs: {"ok": True})
+    monkeypatch.setattr(runner, "_provision_referenced_frontend_libraries", lambda *args, **kwargs: ())
+    monkeypatch.setattr(runner, "run_opencode_turn", failed_turn)
+
+    receipt = runner.stage_design_build(
+        {"config": config, "memory": memory}, request, target, design_plan=plan
+    )
+
+    assert receipt.build_error == ""
+    assert [item[0] for item in calls] == ["coordinator", "implementation", "fidelity"]
+    assert calls[1][1]["provider_turn_error"] == "opencode timed out after 1800s"
+    assert _git(clone, "rev-parse", target.candidate_ref).stdout.strip() == receipt.candidate_sha
+    assert _git(clone, "status", "--porcelain").stdout == ""
+    memory.close()
+
+
+def test_creative_host_repair_timeout_runs_plan_closure_before_finalizing(tmp_path, monkeypatch):
+    clone, base_sha = _clone(tmp_path)
+    memory = Memory(tmp_path / "data" / "memory.db")
+    config = {
+        "data_dir": str(tmp_path / "data"),
+        "site": {"clone_path": str(clone), "writable_patterns": ["*.html", "design/**"]},
+        "builder": {"enabled": True},
+        "design_engine": {"orchestration": "creative"},
+    }
+    request = PageBuildRequest.from_dict({
+        "schema_version": 1,
+        "run_id": "creative-host-timeout-recovery",
+        "mode": "visual_refinement",
+        "base_sha": base_sha,
+        "page_path": "index.html",
+        "purpose": "Repair the retained candidate.",
+        "site_intake_hash": "a" * 64,
+        "acceptance_criteria": ["Preserve the locked experience."],
+        "content": {
+            "specialist_locked_plan": _experience_plan(
+                run_id="creative-host-timeout-recovery",
+                base_sha=base_sha,
+                context_snapshot_hash="c" * 64,
+            ),
+            "specialist_repair_brief": {"source": "host_deterministic_evidence"},
+        },
+    })
+    target = BuildTarget.from_dict({
+        "mode": "local_experiment",
+        "base_sha": base_sha,
+        "candidate_ref": "refs/ada-design-lab/creative-host-timeout-recovery",
+        "push_mode": "none",
+        "publishable": False,
+        "clone_path": str(clone),
+        "allowed_paths": ["*.html", "design/**"],
+        "operation_kind": "visual_refinement",
+    })
+    calls = []
+
+    class FidelityReport:
+        def to_dict(self):
+            return {"status": "passed"}
+
+    class FakeCoordinator:
+        def __init__(self, context):
+            calls.append(("coordinator", context))
+
+        def run_experience_fidelity_phase(self, request, target, *, plan, workspace, progress, image_files):
+            calls.append(("fidelity", plan))
+            return FidelityReport()
+
+    def failed_turn(worktree, prompt, config, **kwargs):
+        (worktree / "index.html").write_text("<html><body><h1>Repaired</h1></body></html>")
+        raise runner.RunnerError(
+            "opencode timed out after 900s",
+            result={"session_id": "creative-host-session", "reply": "implemented", "transcript": "timeout\n"},
+        )
+
+    monkeypatch.setattr("site_agent.application.design_orchestration.SpecialistDesignCoordinator", FakeCoordinator)
+    monkeypatch.setattr(runner, "_run_local_design_self_check", lambda *args, **kwargs: {"ok": True})
+    monkeypatch.setattr(runner, "_provision_referenced_frontend_libraries", lambda *args, **kwargs: ())
+    monkeypatch.setattr(runner, "run_opencode_turn", failed_turn)
+
+    receipt = runner.stage_design_build(
+        {"config": config, "memory": memory},
+        request,
+        target,
+        design_plan=request.content["specialist_locked_plan"],
+        repair_brief={"source": "host_deterministic_evidence"},
+    )
+
+    assert receipt.build_error == ""
+    assert [item[0] for item in calls] == ["coordinator", "fidelity"]
+    assert isinstance(calls[1][1], ExperiencePlanBundle)
+    assert _git(clone, "rev-parse", target.candidate_ref).stdout.strip() == receipt.candidate_sha
+    assert _git(clone, "status", "--porcelain").stdout == ""
+    memory.close()
+
+
 def test_initial_design_setup_excludes_site_context_but_keeps_capability_allowances(tmp_path, monkeypatch):
     clone, base_sha = _clone(tmp_path)
     snapshot = DesignContextSnapshot.from_dict({
@@ -565,9 +1191,18 @@ def test_visual_refinement_setup_uses_parent_source_and_frozen_persona(tmp_path,
     def fake_install(*args, **kwargs):
         installed.update(kwargs)
 
+    class FakeCoordinator:
+        def __init__(self, context):
+            self.context = context
+
+        def record_repair_phase(self, request, target, *, repair_brief, provider_result):
+            return None
+
     def fake_turn(worktree, prompt, config, **kwargs):
         assert "visual refinement of the parent candidate" in prompt
         assert "Do not redesign the site from scratch" in prompt
+        assert kwargs["agent_name"] == "repair-implementer"
+        assert (worktree / ".opencode/agent/repair-implementer.md").is_file()
         (worktree / "index.html").write_text("<html><body><h1>Refined</h1></body></html>")
         return {"session_id": "design-session", "reply": "implemented"}
 
@@ -576,8 +1211,14 @@ def test_visual_refinement_setup_uses_parent_source_and_frozen_persona(tmp_path,
     monkeypatch.setattr(runner, "_template_tokens", lambda *args, **kwargs: "PARENT TOKENS")
     monkeypatch.setattr(runner, "install_agent_files", fake_install)
     monkeypatch.setattr(runner, "run_opencode_turn", fake_turn)
+    monkeypatch.setattr("site_agent.application.design_orchestration.SpecialistDesignCoordinator", FakeCoordinator)
 
-    runner.stage_design_build({"config": config, "memory": memory, "env": {}}, request, target)
+    runner.stage_design_build(
+        {"config": config, "memory": memory, "env": {}},
+        request,
+        target,
+        repair_brief={"failed_findings": [{"code": "journey_scene_order_unobserved"}]},
+    )
 
     assert installed["persona"] == "PARENT_PERSONA"
     assert installed["site_digest"] == "PARENT DIGEST"

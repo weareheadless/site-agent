@@ -211,6 +211,12 @@ class DesignIntakeService:
         self.activity_service = activity_service
         self.genesis_service = genesis_service
         self.on_revision_saved = on_revision_saved
+        database_only = bool(
+            (self.config.get("atelier_intake") or {}).get("database_only", False)
+            if isinstance(self.config.get("atelier_intake"), Mapping)
+            else False
+        )
+        self.database_only = database_only
         if advisor is not None:
             self.advisor = advisor
         elif llm is not None and getattr(llm, "api_key", True):
@@ -223,7 +229,7 @@ class DesignIntakeService:
             except DesignIntakeAdvisorError:
                 self.advisor = UnavailableDesignIntakeAdvisor()
         else:
-            self.advisor = UnavailableDesignIntakeAdvisor()
+            self.advisor = UnavailableDesignIntakeAdvisor(database_only=database_only)
 
     def describe(self) -> dict[str, Any]:
         return {
@@ -611,7 +617,7 @@ class DesignIntakeService:
             fallback_used = True
             if progress:
                 progress("Ada's planning service was unavailable; saved a safe follow-up")
-            turn = UnavailableDesignIntakeAdvisor().advise(
+            turn = UnavailableDesignIntakeAdvisor(database_only=self.database_only).advise(
                 draft,
                 history,
                 message,
@@ -1006,6 +1012,17 @@ class DesignIntakeService:
             "confirmation_text": confirmation_text,
         })
         try:
+            if session.get("status") not in {
+                IntakeSessionState.READY_TO_BUILD.value,
+                IntakeSessionState.CONFIRMED.value,
+            }:
+                reconciled = self.memory.reconcile_confirmed_design_intake(
+                    session_id,
+                    revision=revision,
+                    draft_hash=draft_hash,
+                )
+                if reconciled is not None:
+                    session = reconciled
             intake = self._confirmed_intake(session)
             summary = DesignIntakeDraft.from_dict(session.get("draft") or {}).summary()
             confirmed = self.memory.confirm_design_intake(

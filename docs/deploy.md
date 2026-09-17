@@ -1,5 +1,49 @@
 # Deploying site-agent — worked example: OceanicVibes
 
+## Shared Ada API
+
+Customer-facing Payload workspaces should use the shared tenant-aware API, not
+one systemd process per customer. Start with the checked-in examples:
+
+```bash
+sudo mkdir -p /SOCIAL/configs/site-agent-api /SOCIAL/configs/atelier-harmonie/data
+sudo cp /SOCIAL/site-agent/examples/atelier-api.config.yaml \
+   /SOCIAL/configs/site-agent-api/config.yaml
+sudo cp /SOCIAL/site-agent/examples/atelier-harmonie.config.yaml \
+   /SOCIAL/configs/atelier-harmonie/config.yaml
+```
+
+Create `/SOCIAL/configs/site-agent-api/.env` with mode `600`. It must contain
+the tenant's API/Payload token and the LLM key, for example:
+
+```ini
+ATELIER_HARMONIE_TOKEN=replace-with-a-random-tenant-token
+SITE_AGENT_LLM_API_KEY=server-side-model-key
+```
+
+Install one shared unit and one Nginx ingress:
+
+```bash
+sudo cp /SOCIAL/site-agent/deploy/site-agent-api.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now site-agent-api
+sudo cp /SOCIAL/site-agent/deploy/nginx-ada-api.helloada.app.conf \
+  /etc/nginx/sites-available/api.helloada.app.conf
+sudo ln -sfn /etc/nginx/sites-available/api.helloada.app.conf \
+  /etc/nginx/sites-enabled/api.helloada.app.conf
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+After `api.helloada.app` resolves to this host, provision TLS with:
+
+```bash
+sudo certbot --nginx -d api.helloada.app
+```
+
+The Atelier Worker then uses `https://api.helloada.app/v1` as
+`SITE_AGENT_URL`. The bearer token is tenant-scoped; the API resolves it to the
+tenant's separate config, Payload client, memory database, and job worker.
+
 One install of the product per machine, one instance directory per site.
 Code lives in `/opt/site-agent`, site instances live in `/SOCIAL/configs/<site>/`.
 

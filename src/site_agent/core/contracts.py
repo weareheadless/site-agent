@@ -50,6 +50,7 @@ class ArtifactKind(str, Enum):
     BUSINESS_INFORMATION = "business_information"
     SOCIAL_POST = "social_post"
     DESIGN_TRANSCRIPT = "design_transcript"
+    DESIGN_DIRECTION = "design_direction"
     DESIGN_BUILD = "design_build"
     DESIGN_SCREENSHOTS = "design_screenshots"
     DESIGN_PHASE = "design_phase"

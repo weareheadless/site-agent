@@ -346,7 +346,8 @@ def test_typed_prompt_names_the_frozen_snapshot_and_native_creative_process():
     assert "read-only" in prompt
     assert "predetermined section markup" in prompt
     assert "same primary session" in prompt
-    assert "one bounded programmatic check" in prompt
+    assert "Do not start a browser, HTTP server, custom CDP harness" in prompt
+    assert "that work belongs to the host" in prompt
     assert "inspect the supplied media files" in prompt
     assert "Do not inspect admin surfaces" in prompt
 
@@ -568,6 +569,38 @@ def test_visual_refinement_prompt_preserves_parent_context_and_is_not_initial_bu
     assert "the validated intake is the sole creative brief" not in prompt
 
 
+def test_technical_repair_prompt_preserves_native_implementation():
+    request = PageBuildRequest.from_dict({
+        "schema_version": 1,
+        "run_id": "technical-native-repair",
+        "mode": "initial_homepage",
+        "base_sha": "a" * 40,
+        "page_path": "index.html",
+        "purpose": "Repair the retained candidate.",
+        "acceptance_criteria": ["Preserve the parent implementation."],
+        "content": {"technical_repair": {"parent_run_id": "parent"}},
+    })
+    target = BuildTarget.from_dict({
+        "mode": "local_experiment",
+        "base_sha": "a" * 40,
+        "candidate_ref": "refs/ada-design-lab/technical-native-repair",
+        "push_mode": "none",
+        "publishable": False,
+        "clone_path": "/tmp/design-clone",
+        "operation_kind": "technical_repair",
+    })
+
+    prompt = runner._design_prompt(request, target)
+
+    assert "technical repair of the parent candidate" in prompt
+    assert "RETAINED IMPLEMENTATION PRESERVATION CONTRACT" in prompt
+    assert "React source or Astro React integration" in prompt
+    assert "approved GSAP runtime usage" in prompt
+    assert "animation/timeline/trigger/listener teardown path" in prompt
+    assert "Never replace a React/GSAP component with CSS-only markup" in prompt
+    assert "confirm the preserved React/GSAP/cleanup/reduced-motion implementation" in prompt
+
+
 def test_typed_agent_setup_uses_snapshot_without_rereading_memory(tmp_path):
     clone = tmp_path / "clone"
     clone.mkdir()
@@ -701,6 +734,13 @@ def test_chat_job_handoff_queues_one_design_run_without_running_opencode(tmp_pat
                 "intent": "redesign",
                 "intake": intake,
                 "owner_summary": "I will prepare one reviewable redesign.",
+                "target": {
+                    "mode": "workspace",
+                    "scope": "selected_page",
+                    "route": {"path": "/shop", "kind": "page", "sourceId": "route-42"},
+                    "preview": {"state": "draft", "url": "https://atelier.example/atelier-preview/shop"},
+                    "payload": {"collection": "products", "id": "42", "sourceId": "product-source-id"},
+                },
             },
         },
     )
@@ -726,6 +766,7 @@ def test_chat_job_handoff_queues_one_design_run_without_running_opencode(tmp_pat
     assert run["chat_job_id"] == job["id"]
     assert run["mode"] == "local_experiment"
     assert run["publishable"] is False
+    assert run["context_snapshot"]["workspace_target"]["route"]["path"] == "/shop"
     experiment_root = next(
         event["detail"]["root"]
         for event in memory.list_design_run_events(run["run_id"])

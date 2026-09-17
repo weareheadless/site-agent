@@ -19,6 +19,7 @@ from typing import Any
 from ..core.contracts import Artifact, ArtifactKind, ContractError, safe_payload, utc_now
 from ..core.design_contracts import (
     BuildTarget,
+    MAX_QUALITY_REPORT_BYTES,
     DesignContextSnapshot,
     DesignCandidateReceipt,
     DesignManifest,
@@ -60,6 +61,68 @@ class DesignRunNotFound(DesignServiceError):
 
 DEEPSEEK_DESIGN_MODEL = "deepseek/deepseek-v4-flash-vision-exp"
 
+_OWNER_REVIEW_STATUSES = frozenset({
+    DesignRunStatus.READY_FOR_REVIEW.value,
+})
+_OWNER_REQUIRED_GATES = (
+    "build",
+    "output",
+    "native_source",
+    "browser",
+    "motion",
+    "composition",
+    "experience_journey",
+)
+
+
+def owner_review_requirements_met(run: Mapping[str, Any]) -> bool:
+    """Return whether host evidence is sufficient for owner-facing review.
+
+    Historical rows without an artifact requirement retain their old read-only
+    compatibility behavior. Every current host-composed candidate must prove
+    the immutable output, React source, GSAP usage, build, browser, and locked
+    experience gates before either review surface can expose it as ready.
+    """
+    if not str(run.get("candidate_sha") or "").strip():
+        return False
+    if str(run.get("status") or "") not in _OWNER_REVIEW_STATUSES:
+        return False
+    report = run.get("quality_report_json") if isinstance(run.get("quality_report_json"), Mapping) else {}
+    if str(report.get("state") or "") != "passed":
+        return False
+    visual = report.get("visual_critique") if isinstance(report.get("visual_critique"), Mapping) else None
+    visual_state = str((visual or {}).get("state") or "").strip().lower()
+    if visual_state in {"inconclusive", "failed"}:
+        return False
+    # A subjective visual repair is still a failed creative gate. The bounded
+    # repair budget limits Ada's automatic work; it never makes an unresolved
+    # candidate eligible for the owner surface.
+    if visual_state == "repair":
+        return False
+    if not bool(run.get("artifact_required")):
+        return True
+
+    artifact_id = str(run.get("output_artifact_id") or "").strip()
+    tree_hash = str(run.get("output_tree_hash") or "").strip().lower()
+    evidence = report.get("evidence") if isinstance(report.get("evidence"), Mapping) else {}
+    output_artifact = evidence.get("output_artifact") if isinstance(evidence.get("output_artifact"), Mapping) else {}
+    if (
+        not artifact_id
+        or not tree_hash
+        or output_artifact.get("status") != "passed"
+        or str(output_artifact.get("artifact_id") or "").strip() != artifact_id
+        or str(output_artifact.get("tree_hash") or "").strip().lower() != tree_hash
+    ):
+        return False
+
+    gates = report.get("gates") if isinstance(report.get("gates"), Mapping) else {}
+    if any(gates.get(name) != "passed" for name in _OWNER_REQUIRED_GATES):
+        return False
+    native_source = evidence.get("native_source") if isinstance(evidence.get("native_source"), Mapping) else {}
+    if not native_source.get("react_source_files") or not native_source.get("gsap_usage_files"):
+        return False
+    return True
+
 
 def _resolved(path: str | Path) -> Path | None:
     value = str(path or "").strip()
@@ -93,12 +156,14 @@ class DesignService:
         builder=None,
         skill_set: DesignSkillSet | None = None,
         media_service=None,
+        output_artifact_store=None,
     ) -> None:
         self.memory = memory
         self.config = config or {}
         self.builder = builder
         self.skill_set = skill_set
         self.media_service = media_service
+        self.output_artifact_store = output_artifact_store
 
     def _record_design_artifact(
         self,
@@ -135,29 +200,74 @@ class DesignService:
         return canonical_hash({"transcript_path": str(transcript_path or "")})
 
     def _experience_plan_for_run(self, run_id: str) -> ExperiencePlanBundle | None:
-        """Read the immutable strict plan persisted by specialist orchestration.
+        """Read the immutable strict plan persisted by the design handoff.
 
-        Legacy runs and candidates created without specialist planning retain no
-        experience bundle; those continue through the existing quality gates.
-        A malformed persisted bundle is returned as ``None`` here so the build
-        remains inspectable while the strict orchestration artifact remains the
-        source of the diagnostic failure.
+        New creative runs persist the plan in ``planning_json`` immediately after
+        Ada's direction/build handoff. Older specialist runs retain their phase
+        artifact fallback, and repair/refinement children inherit the locked plan
+        from their parent. A malformed persisted bundle remains inspectable and
+        is returned as ``None`` so the strict quality gate can record the failure.
         """
-        records = self.memory.list_design_phase_artifacts(
-            run_id,
-            phase="creative_selection",
-            status="completed",
-        )
-        if not records:
-            return None
-        try:
-            phase = DesignPlanBundle.from_dict(records[-1]["payload"])
-            payload = phase.payload
-            if not isinstance(payload, Mapping):
-                return None
-            return ExperiencePlanBundle.from_dict(payload)
-        except (ContractError, KeyError, TypeError, ValueError):
-            return None
+        seen: set[str] = set()
+        current_id = str(run_id or "").strip()
+        while current_id and current_id not in seen:
+            seen.add(current_id)
+            try:
+                run = self.memory.get_design_run(current_id) or {}
+            except Exception:
+                run = {}
+            planning = run.get("planning_json") if isinstance(run.get("planning_json"), Mapping) else {}
+            persisted = planning.get("experience_plan") if isinstance(planning, Mapping) else None
+            if isinstance(persisted, Mapping):
+                try:
+                    return ExperiencePlanBundle.from_dict(persisted)
+                except (ContractError, KeyError, TypeError, ValueError):
+                    return None
+            records = self.memory.list_design_phase_artifacts(
+                current_id,
+                phase="creative_selection",
+                status="completed",
+            )
+            if records:
+                try:
+                    phase = DesignPlanBundle.from_dict(records[-1]["payload"])
+                    payload = phase.payload
+                    if isinstance(payload, Mapping):
+                        # Creative selection artifacts are durable model output,
+                        # while the locked bundle is host-normalized immediately
+                        # after that phase. Repair/refinement runs may only have
+                        # the former, so apply the same deterministic, bounded
+                        # shape normalization before reading the inherited plan.
+                        # Keep contract validation authoritative; this does not
+                        # synthesize missing creative decisions.
+                        from .design_orchestration import SpecialistDesignCoordinator
+
+                        normalized = SpecialistDesignCoordinator._normalize_experience_plan_payload(payload)
+                        normalized.setdefault("schema_version", 1)
+                        composition = normalized.get("asset_composition_plan")
+                        if isinstance(composition, list):
+                            required_logo_fields = {
+                                "schema_version", "asset_id", "optical_sizing", "clear_space", "allowed_backgrounds",
+                                "navigation_relationship", "breakpoint_treatments", "minimum_optical_size",
+                                "maximum_optical_size", "collision_exclusions", "role", "evidence_refs",
+                            }
+                            for item in composition:
+                                if not isinstance(item, Mapping):
+                                    continue
+                                if item.get("logo_rule") is not None and (
+                                    not isinstance(item.get("logo_rule"), Mapping)
+                                    or not required_logo_fields.issubset(item["logo_rule"])
+                                ):
+                                    item["logo_rule"] = None
+                                if item.get("focal_region_to_preserve") is not None and not isinstance(
+                                    item.get("focal_region_to_preserve"), Mapping
+                                ):
+                                    item["focal_region_to_preserve"] = None
+                        return ExperiencePlanBundle.from_dict(normalized)
+                except (ContractError, KeyError, TypeError, ValueError):
+                    return None
+            current_id = str(run.get("parent_run_id") or "").strip()
+        return None
 
     def _capture_asset_visual_evidence(
         self,
@@ -367,6 +477,11 @@ class DesignService:
                 chat_job_id=chat_job_id,
                 intake_session_id=intake_session_id,
                 intake_revision_id=intake_revision_id,
+                # A production composition always injects the immutable output
+                # store. Bare service instances remain readable for historical
+                # and unit-test workflows until they are given that host
+                # capability.
+                artifact_required=callable(getattr(self.output_artifact_store, "publish", None)),
             )
             self.memory.add_design_run_event(run_id, "created", "Design run created.", {
                 "mode": mode,
@@ -516,6 +631,8 @@ class DesignService:
                 "browser_required": bool(quality_config.get("browser", quality_config.get("browser_required", False))),
                 "visual_critic": bool(quality_config.get("visual_critic", False)),
                 "native_source_required": bool(quality_config.get("native_source_required", False)),
+                "react_source_required": bool(quality_config.get("react_source_required", False)),
+                "gsap_required": bool(quality_config.get("gsap_required", False)),
                 "originality_required": bool(quality_config.get("originality_required", False)),
                 "internal_scaffold_fingerprints": list(quality_config.get("internal_scaffold_fingerprints") or ()),
                 "required_font_families": list(
@@ -765,6 +882,18 @@ class DesignService:
             "parent_candidate_sha": parent_sha,
             "parent_status": str(parent.get("status") or ""),
         }
+        parent_quality = parent.get("quality_report_json") or {}
+        parent_visual_critique = (
+            parent_quality.get("visual_critique")
+            if isinstance(parent_quality, Mapping)
+            else None
+        )
+        if isinstance(parent_visual_critique, Mapping):
+            # Technical repairs from a visually reviewed candidate must see the
+            # same actionable critique and screenshot paths as a visual child.
+            # Keep it as an immutable parent artifact; the repair request does
+            # not ask Ada to invent a second visual direction.
+            content["visual_critique"] = dict(parent_visual_critique)
         request_data["content"] = content
         request = PageBuildRequest.from_dict(request_data)
 
@@ -1154,6 +1283,7 @@ class DesignService:
             conversion = intake_data.get("conversion") if isinstance(intake_data, Mapping) else {}
             policy = replace(
                 policy,
+                operation_kind=operation_kind,
                 contact_destination_unavailable=(
                     isinstance(conversion, Mapping)
                     and conversion.get("not_available") is True
@@ -1269,6 +1399,10 @@ class DesignService:
         report = run.get("quality_report_json") or {}
         if report.get("state") != "passed":
             raise DesignServiceError("only candidates with passing quality gates can enter review")
+        if not owner_review_requirements_met(run):
+            raise DesignServiceError(
+                "owner review requires a retained React/GSAP implementation, build, and browser evidence"
+            )
         if not run.get("candidate_sha") or not run.get("quality_report_hash") or not run.get("design_manifest_path") or not run.get("design_manifest_hash"):
             raise DesignServiceError("review requires immutable candidate, manifest, and quality identities")
         for draft in self.memory.list_drafts(status="pending", limit=500):
@@ -1491,6 +1625,53 @@ class DesignService:
                 raise DesignServiceError("design builder receipt operation kind does not match the design run")
             if receipt.base_sha != target.base_sha or receipt.publishable != target.publishable:
                 raise DesignServiceError("design builder receipt policy does not match the design run")
+            # The creative builder persists its integrated composition before
+            # authoring so a failed realization still has an inspectable plan.
+            # Reload here before adding receipt artifacts; otherwise this local
+            # pre-build planning snapshot could overwrite that durable handoff.
+            planning = dict((self.memory.get_design_run(run_id) or {}).get("planning_json") or planning)
+            engine_orchestration = str(
+                (self.config.get("design_engine") or {}).get("orchestration") or "legacy"
+            ).strip().lower()
+            requires_handoff_plan = (
+                engine_orchestration == "creative"
+                and str(run.get("operation_kind") or "initial_build") == "initial_build"
+                and request.mode == "initial_homepage"
+            )
+            experience_plan = None
+            if requires_handoff_plan:
+                if not receipt.experience_plan:
+                    raise DesignServiceError(
+                        "creative design build returned no hash-bound experience plan"
+                    )
+                try:
+                    experience_plan = ExperiencePlanBundle.from_dict(receipt.experience_plan)
+                except (ContractError, KeyError, TypeError, ValueError) as exc:
+                    raise DesignServiceError(
+                        f"creative design build returned an invalid experience plan: {exc}"
+                    ) from exc
+                if experience_plan.run_id != run_id or experience_plan.base_sha != target.base_sha:
+                    raise DesignServiceError(
+                        "experience plan identity does not match the design run"
+                    )
+                if not request.context_snapshot_hash or experience_plan.context_snapshot_hash != request.context_snapshot_hash:
+                    raise DesignServiceError(
+                        "experience plan context snapshot does not match the build request"
+                    )
+                snapshot_evidence = {
+                    item.asset_id: item.asset_sha256
+                    for item in (request.context_snapshot.asset_visual_evidence if request.context_snapshot else ())
+                }
+                for item in experience_plan.asset_evidence:
+                    if snapshot_evidence.get(item.asset_id) != item.asset_sha256:
+                        raise DesignServiceError(
+                            f"experience plan asset evidence is not bound to the frozen snapshot: {item.asset_id}"
+                        )
+                planning["experience_plan"] = experience_plan.to_dict()
+                planning["experience_plan_hash"] = experience_plan.content_hash
+                if receipt.direction_path and receipt.direction_hash:
+                    planning["direction_hash"] = receipt.direction_hash
+                self.memory.update_design_run(run_id, planning_json=planning)
             transcript_hash = self._transcript_hash(receipt.transcript_path)
             transcript_artifact_id = receipt.transcript_artifact_id
             if transcript_artifact_id is None:
@@ -1504,6 +1685,46 @@ class DesignService:
                     preview_data={"path": receipt.transcript_path, "sha256": transcript_hash},
                 )
                 receipt = replace(receipt, transcript_artifact_id=transcript_artifact_id)
+            if receipt.direction_path and receipt.direction_hash:
+                direction_file = Path(str(self.config.get("data_dir") or ".")) / receipt.direction_path
+                try:
+                    direction_text = direction_file.read_text(encoding="utf-8")
+                except OSError as exc:
+                    raise DesignServiceError(f"native design direction artifact is unavailable: {exc}") from exc
+                direction_hash = hashlib.sha256(direction_text.encode("utf-8")).hexdigest()
+                if direction_hash != receipt.direction_hash:
+                    raise DesignServiceError("native design direction artifact hash does not match the build receipt")
+                direction_artifact_id = self._record_design_artifact(
+                    kind=ArtifactKind.DESIGN_DIRECTION,
+                    run_id=run_id,
+                    title="Ada design direction",
+                    summary="Human-readable direction produced by Ada before the integrated native Build turn.",
+                    provider_id=receipt.provider_id,
+                    content_hash=direction_hash,
+                    preview_data={
+                        "path": receipt.direction_path,
+                        "sha256": direction_hash,
+                        "direction_transcript_path": receipt.direction_transcript_path
+                        or planning.get("direction_transcript_path", ""),
+                        "content": direction_text[:60_000],
+                    },
+                )
+                planning["direction_artifact_id"] = direction_artifact_id
+                planning["direction_path"] = receipt.direction_path
+                planning["direction_hash"] = direction_hash
+                if receipt.direction_transcript_path:
+                    planning["direction_transcript_path"] = receipt.direction_transcript_path
+                self.memory.update_design_run(run_id, planning_json=planning)
+                self.memory.add_design_run_event(
+                    run_id,
+                    "direction",
+                    "Ada's read-only design direction was persisted before the integrated Build turn.",
+                    {
+                        "artifact_id": direction_artifact_id,
+                        "path": receipt.direction_path,
+                        "sha256": direction_hash,
+                    },
+                )
             evidence = {
                 "candidate_sha": receipt.candidate_sha,
                 "candidate_ref": receipt.candidate_ref,
@@ -1519,6 +1740,8 @@ class DesignService:
             }
             if receipt.design_manifest:
                 evidence["design_manifest_json"] = receipt.design_manifest
+            if isinstance(experience_plan, ExperiencePlanBundle):
+                evidence["experience_plan_hash"] = experience_plan.content_hash
             self.memory.update_design_run(run_id, **evidence)
             if receipt.build_error:
                 self.memory.transition_design_run(run_id, DesignRunStatus.FAILED.value, error=receipt.build_error)
@@ -1563,6 +1786,38 @@ class DesignService:
                         )
                         self.memory.add_design_run_event(run_id, "transcript", "Failed design turn transcript retained.", {
                             "transcript_artifact_id": transcript_artifact_id,
+                        })
+                    except Exception:
+                        pass
+                direction_transcript_path = str(partial.get("direction_transcript_path") or "").strip()
+                if direction_transcript_path:
+                    try:
+                        direction_transcript_path = safe_relative_path(
+                            direction_transcript_path,
+                            "direction_transcript_path",
+                        )
+                        direction_transcript_hash = self._transcript_hash(direction_transcript_path)
+                        direction_artifact_id = self._record_design_artifact(
+                            kind=ArtifactKind.DESIGN_TRANSCRIPT,
+                            run_id=run_id,
+                            title="Ada direction transcript",
+                            summary="Raw OpenCode event transcript for the failed read-only direction turn.",
+                            provider_id=str(partial.get("provider_id") or "opencode"),
+                            content_hash=direction_transcript_hash,
+                            preview_data={
+                                "path": direction_transcript_path,
+                                "sha256": direction_transcript_hash,
+                                "turn": "direction",
+                            },
+                        )
+                        current_planning = self.memory.get_design_run(run_id) or {}
+                        planning = current_planning.get("planning_json") or {}
+                        if isinstance(planning, Mapping):
+                            planning = dict(planning)
+                            planning["direction_transcript_path"] = direction_transcript_path
+                            self.memory.update_design_run(run_id, planning_json=planning)
+                        self.memory.add_design_run_event(run_id, "direction_transcript", "Failed direction transcript retained.", {
+                            "artifact_id": direction_artifact_id,
                         })
                     except Exception:
                         pass
@@ -1816,20 +2071,18 @@ class DesignService:
             )
         parent_quality = parent.get("quality_report_json") or {}
         if parent_quality.get("state") != "passed":
+            # A host-evidence repair starts from a parent that failed a
+            # deterministic gate, so a visual-regression comparison against that
+            # parent is not a valid acceptance condition. The child's own
+            # deterministic gates and visual review still decide its outcome.
             return (
                 {
-                    "status": "failed",
+                    "status": "skipped",
                     "reason": "parent_quality_not_passed",
                     "parent_run_id": parent_run_id,
                     "parent_quality_state": parent_quality.get("state"),
                 },
-                [{
-                    "gate": "visual_regression",
-                    "severity": "blocker",
-                    "code": "parent_quality_not_passed",
-                    "message": "Visual refinement requires a parent with passing deterministic quality evidence.",
-                    "parent_run_id": parent_run_id,
-                }],
+                [],
             )
         parent_sha = str(parent.get("candidate_sha") or parent_quality.get("candidate_sha") or "")
         base_sha = str(run.get("base_sha") or "")
@@ -1966,7 +2219,7 @@ class DesignService:
             self.memory.update_design_run(
                 run_id,
                 quality_report_json=combined,
-                quality_report_hash=canonical_hash(combined),
+                quality_report_hash=canonical_hash(combined, max_bytes=MAX_QUALITY_REPORT_BYTES),
                 visual_critique_hash=canonical_hash(critique_data),
             )
             if critique.state == "passed":
@@ -1975,7 +2228,8 @@ class DesignService:
                 next_status = DesignRunStatus.INCOMPLETE
             else:
                 next_status = DesignRunStatus.NEEDS_REPAIR
-            self._advance(run_id, next_status, f"Visual review ended in {critique.state}.")
+            message = f"Visual review ended in {critique.state}."
+            self._advance(run_id, next_status, message)
             self.memory.add_design_run_event(run_id, "visual_review", "Read-only visual critique recorded.", {
                 "candidate_sha": candidate_sha,
                 "model_id": critique.model_id,
@@ -2004,11 +2258,19 @@ class DesignService:
         repair_brief: Mapping[str, Any] | None = None,
         locked_plan: Mapping[str, Any] | None = None,
         creative_director_session_id: str = "",
+        host_evidence_repair: bool = False,
     ) -> dict[str, Any]:
         """Create the one active refinement operation from an immutable v1.
 
         A failed or cancelled child may be replaced explicitly; a live child
         still blocks duplicates for the same parent candidate.
+
+        ``host_evidence_repair`` is the single bounded autonomous-repair path
+        required by the behavior-system plan: when host runtime evidence proves
+        the locked experience was not realized, the parent quality report is
+        expected to have failed, so that precondition is relaxed. The critique
+        is still required to be actionable and bound to the parent candidate,
+        and the child is still a single plan-bound repair.
         """
         if not isinstance(critique, VisualCritiqueReport):
             raise DesignServiceError("visual refinement requires a typed critique")
@@ -2019,10 +2281,12 @@ class DesignService:
             DesignRunStatus.NEEDS_REPAIR.value,
             DesignRunStatus.READY_FOR_REVIEW.value,
             DesignRunStatus.VALIDATING.value,
+            DesignRunStatus.INCOMPLETE.value,
+            DesignRunStatus.CANDIDATE_READY.value,
         }:
             raise DesignServiceError("parent design run is not available for visual refinement")
         parent_quality = parent.get("quality_report_json") or {}
-        if parent_quality.get("state") != "passed":
+        if not host_evidence_repair and parent_quality.get("state") != "passed":
             raise DesignServiceError("parent design run must pass deterministic quality before visual refinement")
         if critique.run_id != parent_run_id or critique.candidate_sha != parent.get("candidate_sha"):
             raise DesignServiceError("visual critique is not bound to the parent candidate")
@@ -2091,7 +2355,14 @@ class DesignService:
         if repair_brief is not None:
             content["specialist_repair_brief"] = dict(repair_brief)
         if locked_plan is not None:
-            content["specialist_locked_plan"] = dict(locked_plan)
+            # The full plan is already durably retained as the parent's
+            # creative-selection phase artifact. Persist only a reference here;
+            # the worker hydrates it in memory before the repair build so the
+            # child planning envelope stays below the persistence limit.
+            content["specialist_locked_plan_ref"] = {
+                "parent_run_id": parent_run_id,
+                "phase": "creative_selection",
+            }
         if creative_director_session_id:
             content["specialist_creative_director_session_id"] = str(creative_director_session_id)
         request_data["content"] = content
@@ -2258,6 +2529,9 @@ class DesignService:
             experience_plan = self._experience_plan_for_run(run_id)
             design_engine = self.config.get("design_engine") or {}
             strict_plan_required = bool(design_engine.get("require_experience_plan")) or (
+                str(design_engine.get("orchestration") or "legacy").strip().lower() == "creative"
+                and str(run.get("operation_kind") or "initial_build") == "initial_build"
+            ) or (
                 str(design_engine.get("orchestration") or "legacy").strip().lower() == "specialist"
                 and bool(run.get("context_snapshot_hash"))
             )
@@ -2265,6 +2539,46 @@ class DesignService:
                 # Let the quality contract record an incomplete strict gate
                 # instead of allowing a candidate with no locked plan to pass.
                 experience_plan = {}
+
+            output_artifact_publisher = None
+            output_store = self.output_artifact_store
+            if output_store is not None and callable(getattr(output_store, "publish", None)):
+                output_profile = self.build_profile_for_run(run_id)
+
+                def output_artifact_publisher(output_dir: Path) -> Mapping[str, Any]:
+                    published = dict(output_store.publish(
+                        output_dir,
+                        profile=output_profile,
+                        candidate_sha=str(run["candidate_sha"]),
+                    ))
+                    artifact_id = str(published.get("artifact_id") or "").strip()
+                    tree_hash = str(published.get("tree_hash") or "").strip().lower()
+                    if not artifact_id or not tree_hash:
+                        raise DesignServiceError("authoritative output artifact has no durable identity")
+                    # Publish and persist the exact immutable tree before the
+                    # browser enters the owner surface.  The preview route
+                    # resolves identity from this row; binding adapter-local
+                    # metadata first is not sufficient for an HTTP iframe.
+                    self.memory.update_design_run(
+                        run_id,
+                        output_artifact_id=artifact_id,
+                        output_tree_hash=tree_hash,
+                    )
+                    binder = getattr(browser, "bind_output_artifact", None)
+                    if callable(binder):
+                        binder(published)
+                    return {
+                        key: published[key]
+                        for key in (
+                            "artifact_id",
+                            "tree_hash",
+                            "profile",
+                            "output_dir",
+                            "route_inventory",
+                            "candidate_sha",
+                        )
+                        if key in published
+                    }
 
             report = run_quality_gates(
                 repo,
@@ -2277,8 +2591,27 @@ class DesignService:
                 build_env=build_env,
                 experience_plan=experience_plan,
                 temporal_evidence=temporal_evidence,
+                output_artifact_publisher=output_artifact_publisher,
             )
             report_data = report.to_dict()
+            if isinstance(experience_plan, ExperiencePlanBundle):
+                expected_plan_hash = experience_plan.content_hash
+                quality_evidence = report_data.get("evidence") if isinstance(report_data.get("evidence"), Mapping) else {}
+                observed_plan_hashes = {
+                    str(node.get("experience_plan_hash") or "")
+                    for node in quality_evidence.values()
+                    if isinstance(node, Mapping) and node.get("experience_plan_hash")
+                }
+                if expected_plan_hash not in observed_plan_hashes:
+                    report_data["state"] = "incomplete"
+                    report_data.setdefault("findings", []).append({
+                        "gate": "experience_plan",
+                        "severity": "incomplete",
+                        "code": "experience_plan_identity_missing",
+                        "message": "Quality evidence is not bound to the persisted experience plan.",
+                        "expected": expected_plan_hash,
+                    })
+                    report_data.setdefault("gates", {})["experience_plan"] = "incomplete"
             parent_comparison, parent_findings = self._parent_visual_comparison(run, report_data)
             if parent_comparison is not None:
                 evidence = dict(report_data.get("evidence") or {})
@@ -2293,7 +2626,7 @@ class DesignService:
                 elif parent_comparison["status"] == "incomplete" and report_data.get("state") == "passed":
                     report_data["state"] = "incomplete"
             validated_report = QualityReport.from_dict(report_data)
-            quality_hash = canonical_hash(report_data)
+            quality_hash = canonical_hash(report_data, max_bytes=MAX_QUALITY_REPORT_BYTES)
             build_artifact_id = self._record_design_artifact(
                 kind=ArtifactKind.DESIGN_BUILD,
                 run_id=run_id,
@@ -2303,7 +2636,10 @@ class DesignService:
                 content_hash=quality_hash,
                 preview_data={
                     "candidate_sha": run["candidate_sha"],
-                    "quality_report": report_data,
+                    "quality_report_hash": quality_hash,
+                    "state": report_data.get("state"),
+                    "gates": report_data.get("gates") or {},
+                    "finding_count": len(report_data.get("findings") or ()),
                 },
             )
             screenshot_evidence = self._screenshot_evidence(report_data)
@@ -2329,7 +2665,7 @@ class DesignService:
                 operation_kind = str(run.get("operation_kind") or "initial_build").strip()
                 wants_self_review = (
                     effective_policy.visual_critic
-                    and operation_kind == "initial_build"
+                    and operation_kind in {"initial_build", "visual_refinement"}
                 )
                 if wants_self_review:
                     self.memory.add_design_run_event(
@@ -2370,6 +2706,48 @@ class DesignService:
             if isinstance(exc, DesignServiceError):
                 raise
             raise DesignServiceError(str(exc)) from exc
+
+    def revalidate_run(
+        self,
+        run_id: str,
+        repo: str | Path,
+        *,
+        policy: QualityPolicy | None = None,
+        browser: BrowserQualityAdapter | None = None,
+        build_env: Mapping[str, str] | None = None,
+        temporal_evidence: tuple[Mapping[str, Any], ...] = (),
+    ):
+        """Re-run host quality gates against the same immutable candidate.
+
+        An adapter or policy correction must be able to recheck persisted
+        output without asking Ada to regenerate it or mutating production.
+        """
+        run = self.memory.get_design_run(run_id)
+        if run is None:
+            raise DesignRunNotFound(f"no such design run: {run_id}")
+        if run["status"] in {
+            DesignRunStatus.NEEDS_REPAIR.value,
+            DesignRunStatus.INCOMPLETE.value,
+            DesignRunStatus.READY_FOR_REVIEW.value,
+        }:
+            self._advance(
+                run_id,
+                DesignRunStatus.VALIDATING,
+                "Host quality correction applied; rechecking the immutable candidate.",
+            )
+        elif run["status"] not in {
+            DesignRunStatus.CANDIDATE_READY.value,
+            DesignRunStatus.VALIDATING.value,
+        }:
+            raise DesignServiceError("design run is not eligible for host revalidation")
+        return self.validate_run(
+            run_id,
+            repo,
+            policy=policy,
+            browser=browser,
+            build_env=build_env,
+            temporal_evidence=temporal_evidence,
+        )
 
 
 __all__ = ["DesignRunNotFound", "DesignService", "DesignServiceError"]

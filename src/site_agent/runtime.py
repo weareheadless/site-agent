@@ -8,6 +8,7 @@ should depend on this boundary instead of inventing another global context.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from .application.actions import OwnerActionService
@@ -23,6 +24,7 @@ from .core.memory import Memory
 from .core.scheduler import Scheduler
 from .hands.cicero import CiceroClient, configured as cicero_configured
 from .hands.crawlseo import CrawlSEOClient, configured as crawlseo_configured
+from .hands.site_build import SiteOutputArtifactStore
 
 
 @dataclass(frozen=True)
@@ -120,7 +122,15 @@ class Runtime:
             object.__setattr__(
                 self,
                 "design_service",
-                DesignService(self.memory, config=self.config, media_service=self.media_service),
+                DesignService(
+                    self.memory,
+                    config=self.config,
+                    media_service=self.media_service,
+                    output_artifact_store=SiteOutputArtifactStore(
+                        Path(str(self.config.get("data_dir") or ".")).expanduser().resolve()
+                        / "design-output-artifacts"
+                    ),
+                ),
             )
         if self.customer_context_service is None:
             object.__setattr__(self, "customer_context_service", CustomerContextService(self.memory))
