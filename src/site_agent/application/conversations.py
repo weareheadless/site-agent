@@ -47,7 +47,13 @@ class ConversationService:
                 if self.media_service is not None:
                     try:
                         asset = self.media_service.get(int(item["asset_id"]))
-                        item["thumbnail_url"] = f"/api/media/{asset.asset_id}/thumbnail" if asset.thumbnail_key else None
+                        serialize = getattr(self.media_service, "serialize", None)
+                        if callable(serialize):
+                            item.update(serialize(asset))
+                        else:
+                            item["thumbnail_url"] = (
+                                f"/api/media/{asset.asset_id}/thumbnail" if asset.thumbnail_key else None
+                            )
                     except Exception:
                         pass
                 resolved.append(item)

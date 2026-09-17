@@ -33,6 +33,110 @@ _SAFE_NAME = re.compile(r"^[a-z][a-z0-9-]{1,62}$")
 _SAFE_ENV = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
+@dataclass(frozen=True)
+class AtelierJourney:
+    """The two independent facts that decide Ada's owner-facing phase."""
+
+    website_present: bool
+    incubation_needed: bool
+
+    @property
+    def initial_phase(self) -> str:
+        if self.website_present and self.incubation_needed:
+            return "incubation"
+        if not self.website_present:
+            return "intake"
+        return "workspace"
+
+
+def _journey_for_config(config: Mapping[str, Any]) -> AtelierJourney:
+    site = config.get("site") if isinstance(config.get("site"), Mapping) else {}
+    journey = config.get("ada_journey") or config.get("journey") or {}
+    journey = journey if isinstance(journey, Mapping) else {}
+
+    if "website_present" in journey:
+        website_present = bool(journey.get("website_present"))
+    elif "website_present" in site:
+        website_present = bool(site.get("website_present"))
+    else:
+        payload = site.get("payload") if isinstance(site.get("payload"), Mapping) else {}
+        profile = config.get("customer_profile") if isinstance(config.get("customer_profile"), Mapping) else {}
+        business = profile.get("business") if isinstance(profile.get("business"), Mapping) else {}
+        observed_settings = business.get("observed_site_settings") if isinstance(business.get("observed_site_settings"), Mapping) else {}
+        website_present = bool(payload.get("enabled") or observed_settings.get("website_url"))
+
+    intake = config.get("atelier_intake") if isinstance(config.get("atelier_intake"), Mapping) else {}
+    if "incubation_needed" in journey:
+        incubation_needed = bool(journey.get("incubation_needed"))
+    elif "incubation_needed" in intake:
+        incubation_needed = bool(intake.get("incubation_needed"))
+    else:
+        # Incubation is a research bridge for a site that already exists. A
+        # new site gets the full intake/build path instead of this shortcut.
+        incubation_needed = website_present and bool(intake.get("enabled", False))
+
+    if not website_present:
+        # A no-site tenant must never be put into the existing-site incubation
+        # path by an old or copied config flag.
+        incubation_needed = False
+    return AtelierJourney(website_present=website_present, incubation_needed=incubation_needed)
+
+
+class AtelierDesignBuildHandoff:
+    """Bridge confirmed no-site intake into the normal typed design worker."""
+
+    def __init__(self, context: dict[str, Any]) -> None:
+        self.context = context
+
+    def submit(
+        self,
+        request: str,
+        intake: Mapping[str, Any],
+        *,
+        run_id: str,
+        conversation_id: int | None,
+        source_message_id: int | None,
+        intake_session_id: str | None,
+        intake_revision_id: int | None,
+        context_extra: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        from ..core.design_contracts import SiteIntake
+
+        service = self.context.get("design_service")
+        executor = self.context.get("design_executor")
+        if service is None or executor is None:
+            raise AtelierBridgeError("the full design build service is unavailable")
+        site_intake = SiteIntake.from_dict(dict(intake))
+        base_sha = service.resolve_base_sha()
+        run = service.create_run(
+            site_intake,
+            mode="production_candidate",
+            base_sha=base_sha,
+            candidate_ref=f"refs/ada-design/{run_id}",
+            publishable=True,
+            run_id=run_id,
+            owner_request=request,
+            conversation_id=conversation_id,
+            source_message_id=source_message_id,
+            chat_job_id=None,
+            intake_session_id=intake_session_id,
+            intake_revision_id=intake_revision_id,
+        )
+        service.capture_context_snapshot(
+            run["run_id"],
+            owner_request=request,
+            conversation_id=conversation_id,
+            source_message_id=source_message_id,
+            chat_job_id=None,
+            context_extra=context_extra,
+        )
+        build_request = service.prepare_initial_request(run["run_id"])
+        target = service.build_target_for_run(run["run_id"])
+        service.queue_build(run["run_id"], build_request, target)
+        executor.enqueue(run["run_id"])
+        return service.get_run(run["run_id"])
+
+
 @dataclass
 class AtelierTenant:
     """All process-local dependencies for one isolated customer workspace."""
@@ -118,12 +222,16 @@ class AtelierTenantRegistry:
                 from ..hands.atelier_payload import AtelierPayloadClient
 
                 payload_client = AtelierPayloadClient.from_config(tenant_config, dict(env))
-                if payload_client is None:
-                    raise ConfigError(f"Atelier tenant {tenant_id} must enable site.payload")
+                journey = _journey_for_config(tenant_config)
                 context.update({
                     "atelier_payload": payload_client,
                     "atelier_tenant_id": tenant_id,
+                    "atelier_journey": journey,
                 })
+                if payload_client is not None:
+                    from ..hands.atelier_payload import AtelierPayloadMediaService
+
+                    context["media_service"] = AtelierPayloadMediaService(payload_client)
                 vision_config = tenant_config.get("vision") or {}
                 if isinstance(vision_config, Mapping) and bool(vision_config.get("enabled")) and context.get("media_analyzer") is None:
                     from ..core.vision import VisionClient
@@ -178,12 +286,30 @@ class AtelierTenantRegistry:
                         raise ConfigError(f"Atelier design approval adapter is unavailable: {exc}") from exc
                     context["design_adapter"] = design_adapter
                 intake_settings = tenant_config.get("atelier_intake") or {}
+                if not isinstance(intake_settings, Mapping):
+                    intake_settings = {}
+                intake_enabled = bool(intake_settings.get("enabled", False)) or journey.incubation_needed
+                if not journey.website_present and not journey.incubation_needed:
+                    # New-site tenants still need the typed full-intake front
+                    # door even when they do not carry the Atelier incubation
+                    # block in their config.
+                    intake_settings = dict(intake_settings)
+                    intake_settings["enabled"] = True
+                    intake_settings["database_only"] = False
+                    research_settings = intake_settings.get("research")
+                    research_settings = dict(research_settings) if isinstance(research_settings, Mapping) else {}
+                    research_settings["enabled"] = False
+                    intake_settings["research"] = research_settings
+                    tenant_config = dict(tenant_config)
+                    tenant_config["atelier_intake"] = intake_settings
+                    intake_enabled = True
                 intake_coordinator = None
-                if isinstance(intake_settings, Mapping) and bool(intake_settings.get("enabled", False)):
+                if intake_enabled:
                     intake_coordinator = AtelierIntakeCoordinator(
                         memory,
                         config=tenant_config,
                         llm=context.get("llm"),
+                        media_service=context.get("media_service"),
                     )
                     context.update({
                         "atelier_intake": intake_coordinator,
@@ -234,12 +360,23 @@ class AtelierTenantRegistry:
                     tenant.context["design_service"],
                 )
                 tenant.context["design_executor"] = tenant.design_executor
+                journey = self._tenant_journey(tenant)
+                if journey is not None and not journey.website_present:
+                    intake_service = tenant.context.get("design_intake_service")
+                    if intake_service is not None:
+                        handoff = AtelierDesignBuildHandoff(tenant.context)
+                        intake_service.lab_service = handoff
+                        tenant.context["design_intake_build_service"] = handoff
                 tenant.design_executor.start()
                 tenant.executor = ChatJobExecutor(
                     tenant.context,
-                    adapter_factory=lambda tenant=tenant: AtelierPayloadSiteAdapter(
-                        tenant.config,
-                        payload_client=tenant.context.get("atelier_payload"),
+                    adapter_factory=lambda tenant=tenant: (
+                        AtelierPayloadSiteAdapter(
+                            tenant.config,
+                            payload_client=tenant.context.get("atelier_payload"),
+                        )
+                        if tenant.context.get("atelier_payload") is not None
+                        else self._site_adapter(tenant)
                     ),
                 )
                 tenant.executor.start()
@@ -249,6 +386,20 @@ class AtelierTenantRegistry:
                 self._stop_tenant(tenant)
             raise
         self._started = True
+
+    @staticmethod
+    def _site_adapter(tenant: AtelierTenant) -> Any:
+        """Use the configured normal site adapter for a new-site tenant."""
+        from ..hands.base import get_adapter
+
+        site = tenant.config.get("site") if isinstance(tenant.config.get("site"), Mapping) else {}
+        name = str(site.get("adapter") or "github_static").strip()
+        return get_adapter(name, tenant.config)
+
+    @staticmethod
+    def _tenant_journey(tenant: AtelierTenant) -> AtelierJourney | None:
+        value = tenant.context.get("atelier_journey")
+        return value if isinstance(value, AtelierJourney) else None
 
     def _stop_tenant(self, tenant: AtelierTenant) -> None:
         if tenant.executor is not None:
@@ -301,13 +452,48 @@ class AtelierChatService:
         self._require_llm(self.llm)
         return self.memory, self.llm, "legacy"
 
+    @staticmethod
+    def _attachment_rows(value: Any) -> list[dict[str, int]]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise AtelierBridgeError("attachments must be a list")
+        if len(value) > 12:
+            raise AtelierBridgeError("choose up to 12 images")
+        rows: list[dict[str, int]] = []
+        seen: set[int] = set()
+        for position, raw in enumerate(value):
+            raw_id = (raw.get("asset_id") or raw.get("id")) if isinstance(raw, Mapping) else raw
+            try:
+                asset_id = int(raw_id)
+            except (TypeError, ValueError) as exc:
+                raise AtelierBridgeError("attachment ID is invalid") from exc
+            if asset_id < 1 or asset_id in seen:
+                raise AtelierBridgeError("attachments must contain unique positive IDs")
+            seen.add(asset_id)
+            rows.append({"asset_id": asset_id, "position": position})
+        return rows
+
+    @staticmethod
+    def _journey(tenant: AtelierTenant | None) -> AtelierJourney | None:
+        value = tenant.context.get("atelier_journey") if tenant is not None else None
+        return value if isinstance(value, AtelierJourney) else None
+
+    @classmethod
+    def _intake_mode(cls, tenant: AtelierTenant | None) -> str:
+        journey = cls._journey(tenant)
+        return journey.initial_phase if journey is not None else "intake"
+
     def enqueue(self, body: Mapping[str, Any], *, tenant: AtelierTenant | None = None) -> dict[str, Any]:
         memory, _llm, tenant_id = self._scope(tenant)
         message = str(body.get("message") or "").strip()
-        if not message:
+        attachments = self._attachment_rows(body.get("attachments"))
+        if not message and not attachments:
             raise AtelierBridgeError("empty message")
         if len(message) > 8000:
             raise AtelierBridgeError("message too long")
+        if not message:
+            message = "Please review the attached images."
 
         conversation_id = body.get("conversation_id")
         if conversation_id is not None:
@@ -320,19 +506,28 @@ class AtelierChatService:
             intake = tenant.context.get("atelier_intake")
             if intake is not None and intake.needs_intake(conversation_id):
                 try:
-                    result = intake.send_message(
-                        message,
-                        conversation_id=conversation_id,
-                        idempotency_key=body.get("idempotency_key"),
-                    )
+                    intake_kwargs = {
+                        "conversation_id": conversation_id,
+                        "idempotency_key": body.get("idempotency_key"),
+                    }
+                    if attachments:
+                        intake_kwargs["attachments"] = [item["asset_id"] for item in attachments]
+                    result = intake.send_message(message, **intake_kwargs)
                 except Exception as exc:  # noqa: BLE001 — keep bridge errors bounded
                     raise AtelierBridgeError(str(exc)[:500]) from exc
-                return {
+                response = {
                     "job_id": int(result["job_id"]),
                     "conversation_id": int(result["conversation_id"]),
                     "intake_session_id": str(result.get("session_id") or ""),
-                    "mode": "intake",
+                    "mode": self._intake_mode(tenant),
                 }
+                if journey := self._journey(tenant):
+                    response.update({
+                        "phase": journey.initial_phase,
+                        "website_present": journey.website_present,
+                        "incubation_needed": journey.incubation_needed,
+                    })
+                return response
         conversations = {item["id"] for item in memory.list_conversations(limit=200)}
         if not conversation_id or conversation_id not in conversations:
             conversation_id = memory.create_conversation(title=message[:80])
@@ -342,12 +537,36 @@ class AtelierChatService:
             context = {}
         context = dict(context)
         context["site"] = tenant_id
+        journey = self._journey(tenant)
+        if journey is not None:
+            context["website_present"] = journey.website_present
+            context["incubation_needed"] = journey.incubation_needed
+            context["journey"] = "workspace"
+        media_service = tenant.context.get("media_service") if tenant is not None else None
+        if attachments and media_service is None:
+            raise AtelierBridgeError("image attachments are unavailable")
+        if attachments and media_service is not None:
+            try:
+                media_service.resolve_attachments([item["asset_id"] for item in attachments])
+            except Exception as exc:  # noqa: BLE001 — normalize provider-specific errors
+                raise AtelierBridgeError(str(exc)[:500]) from exc
         job_id = memory.enqueue_chat_job(
             conversation_id,
             self._contextual_message(message, context),
-            [],
+            attachments,
         )
-        return {"job_id": int(job_id), "conversation_id": int(conversation_id), "mode": "workspace"}
+        response = {
+            "job_id": int(job_id),
+            "conversation_id": int(conversation_id),
+            "mode": "workspace",
+            "phase": "workspace",
+        }
+        if journey is not None:
+            response.update({
+                "website_present": journey.website_present,
+                "incubation_needed": journey.incubation_needed,
+            })
+        return response
 
     def status(self, conversation_id: Any = None, *, tenant: AtelierTenant | None = None) -> dict[str, Any]:
         """Return the tenant-scoped chat phase without starting website work.
@@ -364,6 +583,7 @@ class AtelierChatService:
             except (TypeError, ValueError) as exc:
                 raise AtelierBridgeError("conversation_id must be an integer") from exc
 
+        journey = self._journey(tenant)
         intake_enabled = bool(tenant is not None and tenant.context.get("atelier_intake") is not None)
         needs_intake = False
         intake_status: dict[str, Any] = {}
@@ -374,12 +594,22 @@ class AtelierChatService:
                 needs_intake = not bool(intake_status.get("confirmed"))
             except Exception as exc:  # noqa: BLE001 — keep status errors bounded
                 raise AtelierBridgeError(str(exc)[:500]) from exc
-        mode = "intake" if needs_intake else "workspace"
+        if journey is None:
+            mode = "intake" if needs_intake else "workspace"
+        elif needs_intake:
+            mode = journey.initial_phase
+        else:
+            mode = "workspace"
+        website_present = journey.website_present if journey is not None else mode == "workspace"
+        incubation_needed = journey.incubation_needed if journey is not None else intake_enabled
         return {
             "tenant": tenant_id,
             "mode": mode,
             "phase": mode,
-            "website_context_enabled": mode == "workspace",
+            "website_context_enabled": website_present and mode == "workspace",
+            "website_present": website_present,
+            "incubation_needed": incubation_needed,
+            "journey": "incubation" if mode == "incubation" else "full_intake" if mode == "intake" else "workspace",
             "intake_enabled": intake_enabled,
             "conversation_id": normalized_id or intake_status.get("conversation_id"),
             "intake": intake_status,
@@ -391,7 +621,7 @@ class AtelierChatService:
         *,
         tenant: AtelierTenant | None = None,
     ) -> dict[str, Any]:
-        """Explicitly accept an intake brief; acceptance never queues a build."""
+        """Accept intake; only a confirmed no-site journey queues its first build."""
         _memory, _llm, _tenant_id = self._scope(tenant)
         if tenant is None or tenant.context.get("atelier_intake") is None:
             raise AtelierBridgeError("Atelier intake is not enabled")
@@ -413,13 +643,40 @@ class AtelierChatService:
         if not confirmation_text or len(confirmation_text) > 2_000:
             raise AtelierBridgeError("confirmation_text is invalid")
         try:
-            return coordinator.confirm(
+            result = coordinator.confirm(
                 conversation_id,
                 revision=revision,
                 draft_hash=draft_hash,
                 confirmation_text=confirmation_text,
                 idempotency_key=body.get("idempotency_key"),
             )
+            journey = self._journey(tenant)
+            if journey is not None and not journey.website_present:
+                intake_service = tenant.context.get("design_intake_service")
+                if intake_service is None or getattr(intake_service, "lab_service", None) is None:
+                    raise AtelierBridgeError("the full design build service is unavailable")
+                session = result.get("session") if isinstance(result, Mapping) else None
+                if not isinstance(session, Mapping):
+                    session = result if isinstance(result, Mapping) else {}
+                build = intake_service.build(
+                    str(session.get("session_id") or ""),
+                    confirmed_revision=int(
+                        session.get("confirmed_revision_id")
+                        or session.get("confirmed_revision")
+                        or revision
+                    ),
+                    owner_request=str(body.get("owner_request") or "Build the first website from the confirmed intake."),
+                    idempotency_key=f"confirmed-build-{session.get('session_id') or conversation_id}-{revision}",
+                )
+                build_view = {
+                    key: build[key]
+                    for key in ("idempotency_key", "build_pending", "idempotent", "recovered")
+                    if key in build
+                }
+                if isinstance(build.get("run"), Mapping):
+                    build_view["run"] = self._public_design_run(build["run"])
+                result = {**result, "build": build_view}
+            return result
         except Exception as exc:  # noqa: BLE001 — keep bridge errors bounded
             raise AtelierBridgeError(str(exc)[:500]) from exc
 
@@ -817,7 +1074,7 @@ class AtelierChatService:
             key: str(context.get(key) or "")[:300]
             for key in (
                 "site", "route", "collection", "document", "document_id", "slug", "state",
-                "mode", "phase", "scope",
+                "mode", "phase", "scope", "website_present", "incubation_needed", "journey",
             )
             if context.get(key) is not None
         }

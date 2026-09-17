@@ -1,10 +1,10 @@
-"""Database-only intake and research for an Atelier tenant.
+"""Tenant-scoped intake and research for an Atelier conversation.
 
-Atelier is already a live Payload workspace, so it should not enter the Intake
-Lab's isolated design/build pipeline just to learn the business.  This adapter
-reuses the same typed conversational intake, genesis, research planning, and
-research persistence services, but deliberately attaches no design service or
-build executor.
+An existing Payload website uses this coordinator for an incubation/research
+conversation and deliberately stays out of the design/build pipeline until the
+owner accepts the working brief.  A tenant without a website can use the same
+typed intake contract as its full-intake front door; the normal workspace/build
+handoff remains a separate explicit transition.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ def _present(value: Any) -> bool:
 class AtelierIntakeCoordinator:
     """Route an Atelier owner through intake until the working brief is ready."""
 
-    def __init__(self, memory: Memory, *, config: Mapping[str, Any], llm: Any) -> None:
+    def __init__(self, memory: Memory, *, config: Mapping[str, Any], llm: Any, media_service: Any = None) -> None:
         self.memory = memory
         self.config = dict(config)
         settings = self.config.get("atelier_intake") or {}
@@ -54,8 +54,6 @@ class AtelierIntakeCoordinator:
         research_config = self.settings.get("research") or {}
         self.research_config = dict(research_config) if isinstance(research_config, Mapping) else {}
         self.database_only = bool(self.settings.get("database_only", True))
-        if not self.database_only:
-            raise ValueError("Atelier intake currently supports database_only=true only")
         self.research_enabled = bool(self.research_config.get("enabled", True))
         self.max_passes_per_revision = max(
             1,
@@ -72,8 +70,9 @@ class AtelierIntakeCoordinator:
         )
         self.research_planner = LLMIncubationResearchPlanner(llm, self.research_config)
         self.research_executor = IncubationResearchExecutor(self.research_service)
-        # No DesignService, LabService, or build callback is attached here. A
-        # completed turn only persists intake/genesis/research records.
+        # The coordinator itself never starts a build. Existing-site tenants
+        # therefore remain database-only, while no-site tenants can hand the
+        # confirmed session to the normal design/build conversation explicitly.
         self.intake_service = DesignIntakeService(
             memory,
             config=self.config,
@@ -81,6 +80,7 @@ class AtelierIntakeCoordinator:
             default_intake=None,
             design_service=None,
             lab_service=None,
+            media_service=media_service,
             activity_service=self.activity_service,
             genesis_service=self.genesis_service,
             on_revision_saved=self._on_revision_saved,

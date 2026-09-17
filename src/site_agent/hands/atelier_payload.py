@@ -348,6 +348,179 @@ class AtelierPayloadClient:
         ).get("media") or {}
 
 
+@dataclass(frozen=True)
+class AtelierPayloadMediaAsset:
+    """Provider-neutral media shape used by the shared conversation services."""
+
+    asset_id: int
+    original_name: str
+    content_type: str
+    original_size: int
+    width: int | None
+    height: int | None
+    description: str
+    tags: tuple[str, ...]
+    ocr_text: str
+    analysis: dict[str, Any]
+    url: str
+    alt_text: str
+    analysis_status: str
+    analysis_error: str = ""
+    status: str = "ready"
+    media_kind: str = "image"
+    archived_ts: None = None
+    normalized_key: str = "payload"
+    thumbnail_key: str = "payload"
+
+
+def _media_array_values(value: Any, *, limit: int = 20) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        return ()
+    result: list[str] = []
+    for item in value[:limit]:
+        raw = item.get("value") if isinstance(item, Mapping) else item
+        text = str(raw or "").strip()
+        if text:
+            result.append(text[:500])
+    return tuple(result)
+
+
+class AtelierPayloadMediaService:
+    """Adapt Payload's media collection to the conversation media contract.
+
+    Atelier owns the binary and metadata record in Payload.  The shared site
+    agent still needs the same small interface as the local media service so
+    intake and chat jobs can validate and describe attached images without
+    copying them into a second R2/library implementation.
+    """
+
+    def __init__(self, payload: AtelierPayloadClient, *, max_attachments: int = 12) -> None:
+        self.payload = payload
+        self.max_attachments = max(1, min(int(max_attachments), 20))
+
+    @staticmethod
+    def _url(payload: AtelierPayloadClient, document: Mapping[str, Any]) -> str:
+        sizes = document.get("sizes") if isinstance(document.get("sizes"), Mapping) else {}
+        large = sizes.get("large") if isinstance(sizes, Mapping) else {}
+        candidate = str(
+            document.get("url")
+            or (large.get("url") if isinstance(large, Mapping) else "")
+            or document.get("originalUrl")
+            or ""
+        ).strip()
+        if candidate.startswith("/"):
+            return f"{payload.base_url}{candidate}"
+        return candidate
+
+    def _asset(self, document: Mapping[str, Any]) -> AtelierPayloadMediaAsset:
+        try:
+            asset_id = int(document.get("id"))
+        except (TypeError, ValueError) as exc:
+            raise AtelierPayloadError("Payload media id must be numeric for chat attachments") from exc
+        analysis = document.get("analysis") if isinstance(document.get("analysis"), Mapping) else {}
+        alt_text = str(analysis.get("alt_text") or document.get("alt") or document.get("filename") or "Atelier image").strip()
+        return AtelierPayloadMediaAsset(
+            asset_id=asset_id,
+            original_name=str(document.get("filename") or "image").strip()[:120],
+            content_type=str(document.get("mimeType") or document.get("mime_type") or "image/*"),
+            original_size=int(document.get("filesize") or document.get("size") or 0),
+            width=int(document.get("width")) if document.get("width") is not None else None,
+            height=int(document.get("height")) if document.get("height") is not None else None,
+            description=str(document.get("description") or analysis.get("description") or "").strip()[:500],
+            tags=_media_array_values(document.get("tags") or analysis.get("tags")),
+            ocr_text=str(document.get("ocrText") or analysis.get("ocr_text") or "").strip()[:2_000],
+            analysis=dict(analysis),
+            url=self._url(self.payload, document),
+            alt_text=alt_text[:500],
+            analysis_status=str(document.get("analysisStatus") or "pending").strip().lower(),
+            analysis_error=str(document.get("analysisError") or "").strip()[:500],
+        )
+
+    def get(self, asset_id: int) -> AtelierPayloadMediaAsset:
+        document = self.payload.read_media(str(asset_id), identifier_kind="id", draft=True)
+        return self._asset(document)
+
+    def serialize(self, asset: AtelierPayloadMediaAsset | Mapping[str, Any]) -> dict[str, Any]:
+        if isinstance(asset, Mapping):
+            asset = self._asset(asset)
+        return {
+            "id": asset.asset_id,
+            "asset_id": asset.asset_id,
+            "type": "media_asset",
+            "status": asset.status,
+            "kind": asset.media_kind,
+            "status_message": "Available in Payload; Ada analyzes uploaded images automatically.",
+            "name": asset.original_name,
+            "filename": asset.original_name,
+            "content_type": asset.content_type,
+            "size": asset.original_size,
+            "width": asset.width,
+            "height": asset.height,
+            "description": asset.description,
+            "tags": list(asset.tags),
+            "ocr_text": asset.ocr_text,
+            "analysis_status": asset.analysis_status,
+            "analysis_error": asset.analysis_error or None,
+            "analysis": asset.analysis,
+            "alt_text": asset.alt_text,
+            "thumbnail_url": asset.url or None,
+            "preview_url": asset.url or None,
+            "url": asset.url or None,
+        }
+
+    def preview_url(self, asset_id: int, *, page: int | None = None) -> str:
+        del page
+        asset = self.get(asset_id)
+        if not asset.url:
+            raise AtelierPayloadError("Payload media does not expose a readable image URL")
+        return asset.url
+
+    def read_preview(self, asset_id: int, *, thumbnail: bool = False) -> tuple[bytes, str]:
+        del thumbnail
+        url = self.preview_url(asset_id)
+        request = urllib.request.Request(url, headers={"Accept": "image/*", "User-Agent": "site-agent/atelier-media"})
+        try:
+            with urllib.request.urlopen(request, timeout=self.payload.timeout_seconds) as response:
+                return response.read(25 * 1024 * 1024 + 1), response.headers.get_content_type() or "image/*"
+        except (urllib.error.URLError, TimeoutError) as exc:
+            raise AtelierPayloadError("Atelier Payload media preview is unreachable") from exc
+
+    def resolve_attachments(self, asset_ids: list[Any] | None) -> list[dict[str, Any]]:
+        ids = list(asset_ids or [])
+        if len(ids) > self.max_attachments:
+            raise AtelierPayloadError(f"Choose up to {self.max_attachments} images at a time.")
+        result: list[dict[str, Any]] = []
+        seen: set[int] = set()
+        for position, raw_id in enumerate(ids):
+            try:
+                asset_id = int(raw_id)
+            except (TypeError, ValueError) as exc:
+                raise AtelierPayloadError("One of the attached images is invalid.") from exc
+            if asset_id in seen:
+                raise AtelierPayloadError("Choose each image only once.")
+            seen.add(asset_id)
+            asset = self.get(asset_id)
+            if not asset.url or not asset.content_type.lower().startswith("image/"):
+                raise AtelierPayloadError("One of the attached files is not an image.")
+            result.append({
+                "type": "media_asset",
+                "asset_id": asset.asset_id,
+                "position": position,
+                "name": asset.original_name,
+                "description": asset.description,
+                "alt_text": asset.alt_text,
+                "width": asset.width,
+                "height": asset.height,
+                "tags": list(asset.tags),
+                "analysis_status": asset.analysis_status,
+                "analysis_error": asset.analysis_error or None,
+                "thumbnail_url": asset.url,
+                "preview_url": asset.url,
+                "url": asset.url,
+            })
+        return result
+
+
 class AtelierPayloadSiteAdapter(SiteAdapter):
     """No-file adapter used by the shared API's chat worker.
 
