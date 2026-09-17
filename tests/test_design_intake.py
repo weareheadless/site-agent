@@ -1,10 +1,13 @@
 import pytest
 
+import json
+
 from site_agent.application.design_intake import DesignIntakeService, DesignIntakeServiceError
 from site_agent.application.customer_genesis import CustomerGenesisService
 from site_agent.brain.design_intake import (
     DesignIntakeAdvisorError,
     UnavailableDesignIntakeAdvisor,
+    _advisor_prompt,
 )
 from site_agent.core.design_contracts import SiteIntake
 from site_agent.core.design_intake_contracts import (
@@ -1591,6 +1594,64 @@ def test_customer_view_json_is_compact_and_omits_run_detail(tmp_path):
     assert "rev-b" in view
     assert "quality_report" not in view
     assert service._customer_view_json({}) == ""
+    memory.close()
+
+
+def test_existing_site_customer_view_carries_the_owner_visible_page(tmp_path):
+    memory = Memory(tmp_path / "intake.db")
+    service = DesignIntakeService(
+        memory,
+        config={
+            "site": {
+                "payload": {"enabled": True, "url": "https://atelier.example.test"},
+            },
+            "customer_profile": {
+                "business": {"observed_site_settings": {"website_url": "https://atelier-harmonie.com"}},
+            },
+            "atelier_intake": {"database_only": True},
+        },
+    )
+    view = json.loads(service._customer_view_json({}, owner_context={
+        "phase": "incubation",
+        "route": "/",
+        "scope": "selected_page_reference",
+        "target": {
+            "mode": "incubation",
+            "route": {"path": "/", "kind": "page", "sourceId": "home-source"},
+        },
+    }))
+    prompt = _advisor_prompt(
+        DesignIntakeDraft.empty(),
+        (),
+        "",
+        customer_view=json.dumps(view),
+        database_only=True,
+    )
+
+    assert view["existing_site"]["status"] == "existing_live_website"
+    assert view["owner_visible_surface"]["target"]["route"]["path"] == "/"
+    assert "existing live website" in prompt
+    assert "selected_page_reference" in prompt
+    assert "The first build is the MAIN PAGE only." not in prompt
+    memory.close()
+
+
+def test_intake_advice_job_persists_owner_surface_context(tmp_path):
+    memory = Memory(tmp_path / "intake.db")
+    service = DesignIntakeService(memory, default_intake=_intake(), advisor=_Advisor())
+    session = service.create_session()
+    queued = service.send_message(
+        session["session_id"],
+        "Continue with the current page.",
+        owner_context={"phase": "incubation", "route": "/", "scope": "selected_page_reference"},
+    )
+    job = memory.get_chat_job(queued["job_id"])
+
+    assert job["payload"]["owner_context"] == {
+        "phase": "incubation",
+        "route": "/",
+        "scope": "selected_page_reference",
+    }
     memory.close()
 
 

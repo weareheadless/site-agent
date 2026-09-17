@@ -199,6 +199,7 @@ class AtelierIntakeCoordinator:
         *,
         conversation_id: int | None = None,
         attachments: Any = None,
+        owner_context: Mapping[str, Any] | None = None,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         session = self._session(conversation_id)
@@ -206,6 +207,7 @@ class AtelierIntakeCoordinator:
             str(session["session_id"]),
             message,
             attachments=attachments,
+            owner_context=owner_context,
             idempotency_key=idempotency_key,
         )
 

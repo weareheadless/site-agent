@@ -495,6 +495,7 @@ class DesignIntakeService:
         message: str,
         *,
         attachments: Any = None,
+        owner_context: Mapping[str, Any] | None = None,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         session = self._row(session_id)
@@ -516,6 +517,7 @@ class DesignIntakeService:
                 int(session["conversation_id"]), message,
                 session_id=session["session_id"],
                 attachments=attachment_rows,
+                owner_context=self._owner_surface_context(owner_context),
                 idempotency_key=idempotency_key,
             )
             job = self.memory.get_chat_job(job_id) or {}
@@ -602,7 +604,8 @@ class DesignIntakeService:
         briefing = self._knowledge_briefing()
         fallback_used = False
         preview_of_lab = isinstance(self.advisor, LLMDesignIntakeAdvisor)
-        customer_view = self._customer_view_json(session) if preview_of_lab else ""
+        owner_context = payload.get("owner_context") if isinstance(payload.get("owner_context"), Mapping) else {}
+        customer_view = self._customer_view_json(session, owner_context=owner_context) if preview_of_lab else ""
         advise_kwargs: dict[str, Any] = {"assets": asset_context, "knowledge_briefing": briefing}
         if preview_of_lab:
             advise_kwargs["customer_view"] = customer_view
@@ -800,39 +803,98 @@ class DesignIntakeService:
             return ""
         return "BACKGROUND ANALYSIS — " + " | ".join(lines)
 
-    def _customer_view_json(self, session: Mapping[str, Any]) -> str:
+    @staticmethod
+    def _owner_surface_context(value: Any) -> dict[str, Any]:
+        """Keep only bounded, non-instructional metadata from the owner pane."""
+        if not isinstance(value, Mapping):
+            return {}
+        result: dict[str, Any] = {}
+        for key in (
+            "mode", "phase", "scope", "site", "route", "collection", "document",
+            "document_id", "slug", "state",
+        ):
+            if value.get(key) is not None:
+                result[key] = str(value.get(key))[:300]
+        raw_target = value.get("target")
+        if isinstance(raw_target, Mapping):
+            target: dict[str, Any] = {}
+            for key in ("mode", "phase", "scope", "surface"):
+                if raw_target.get(key) is not None:
+                    target[key] = str(raw_target.get(key))[:120]
+            for group, allowed in {
+                "route": ("path", "kind", "sourceId", "source_id"),
+                "preview": ("state", "url", "revision"),
+                "payload": ("collection", "id", "sourceId", "source_id", "slug", "status"),
+                "site": ("name", "url"),
+            }.items():
+                raw_group = raw_target.get(group)
+                if not isinstance(raw_group, Mapping):
+                    continue
+                target[group] = {
+                    key: str(raw_group[key])[:300]
+                    for key in allowed
+                    if raw_group.get(key) is not None
+                }
+            if target:
+                result["target"] = target
+        return result
+
+    def _customer_view_json(
+        self,
+        session: Mapping[str, Any],
+        *,
+        owner_context: Mapping[str, Any] | None = None,
+    ) -> str:
         """A compact, truthful picture of the build state the owner can see.
 
         This lets the advisor answer "show me the new version" by referencing a
         run that actually exists instead of guessing. Best-effort: an unreadable
         or unavailable run yields an empty block, never an exception.
         """
+        compact: dict[str, Any] = {}
         run_id = str(session.get("design_run_id") or "").strip()
-        if self.lab_service is None or not run_id:
+        if self.lab_service is not None and run_id:
+            try:
+                run = self.lab_service.get_run(run_id)
+            except Exception:  # noqa: BLE001 - customer view is advisory context only
+                run = None
+            if isinstance(run, Mapping) and str(run.get("run_id") or ""):
+                revisions = run.get("revisions") if isinstance(run.get("revisions"), list) else []
+                compact.update({
+                    "active_run_id": str(run.get("run_id") or ""),
+                    "active_status": str(run.get("status") or ""),
+                    "preferred_run_id": str(run.get("preferred_run_id") or ""),
+                    "versions": [
+                        {
+                            "run_id": str(item.get("run_id") or ""),
+                            "number": item.get("number"),
+                            "operation_kind": item.get("operation_kind"),
+                            "status": item.get("status"),
+                            "reviewable": bool(item.get("reviewable")),
+                        }
+                        for item in revisions
+                        if isinstance(item, Mapping) and str(item.get("run_id") or "")
+                    ],
+                })
+        site = self.config.get("site") if isinstance(self.config.get("site"), Mapping) else {}
+        payload = site.get("payload") if isinstance(site.get("payload"), Mapping) else {}
+        profile = self.config.get("customer_profile") if isinstance(self.config.get("customer_profile"), Mapping) else {}
+        business = profile.get("business") if isinstance(profile.get("business"), Mapping) else {}
+        observed = business.get("observed_site_settings") if isinstance(business.get("observed_site_settings"), Mapping) else {}
+        public_url = str(observed.get("website_url") or "").strip()[:300]
+        workspace_url = str(payload.get("url") or site.get("preview_url") or "").strip()[:300]
+        if self.database_only or bool(payload.get("enabled")) or public_url:
+            compact["existing_site"] = {
+                "status": "existing_live_website",
+                "public_url": public_url,
+                "workspace_url": workspace_url,
+                "owner_surface": "The owner is looking at this existing website in the adjacent review pane.",
+            }
+        surface = self._owner_surface_context(owner_context)
+        if surface:
+            compact["owner_visible_surface"] = surface
+        if not compact:
             return ""
-        try:
-            run = self.lab_service.get_run(run_id)
-        except Exception:  # noqa: BLE001 - customer view is advisory context only
-            return ""
-        if not isinstance(run, Mapping) or not str(run.get("run_id") or ""):
-            return ""
-        revisions = run.get("revisions") if isinstance(run.get("revisions"), list) else []
-        compact = {
-            "active_run_id": str(run.get("run_id") or ""),
-            "active_status": str(run.get("status") or ""),
-            "preferred_run_id": str(run.get("preferred_run_id") or ""),
-            "versions": [
-                {
-                    "run_id": str(item.get("run_id") or ""),
-                    "number": item.get("number"),
-                    "operation_kind": item.get("operation_kind"),
-                    "status": item.get("status"),
-                    "reviewable": bool(item.get("reviewable")),
-                }
-                for item in revisions
-                if isinstance(item, Mapping) and str(item.get("run_id") or "")
-            ],
-        }
         return canonical_json(compact)[:6_000]
 
     def _resolve_ui_action(

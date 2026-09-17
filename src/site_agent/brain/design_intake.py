@@ -169,6 +169,14 @@ def _advisor_prompt(
         if database_only
         else "This conversation may later hand off to the visual design pipeline, but the owner must explicitly confirm that handoff."
     )
+    scope_note = (
+        "This is NOT a new-site intake. The business already has an existing live website, and the owner is viewing "
+        "that website in the adjacent review pane. Do not ask the owner to confirm what a first version should focus on "
+        "or imply that the site has not been built. Use the existing page and navigation metadata in CUSTOMER VIEW as "
+        "the reference for incubation and research."
+        if database_only
+        else "The first build is the MAIN PAGE only. Once the main page is clear, record site.required_pages (e.g. [\"index.html\"]) and do not demand a full sitemap for the first pass."
+    )
     prompt = """You are Ada, the creative lead guiding an owner through a website design intake
 for a real business.
 
@@ -262,9 +270,7 @@ Integrity rules (these are data facts, not style):
   ask the owner to classify, approve, or choose image usage; the vision-enabled
   builder inspects the supplied files and chooses the strongest relevant images
   for the page. An explicit inspiration_only binding is the only exclusion.
-- The first build is the MAIN PAGE only. Once the main page is clear, record
-  site.required_pages (e.g. ["index.html"]) and do not demand a full sitemap
-  for the first pass.
+ - """ + scope_note + """
 - Never invent business facts: contact destinations, testimonials, prices,
   guarantees, locations, or legal claims. Never claim the owner confirmed
   something they did not.
@@ -290,8 +296,10 @@ Customer view + ui_action (only when the owner is asking about a build):
 - A "CUSTOMER VIEW" block below lists what the owner can currently see: the
   active design run, its status, every saved version (revision) with its
   number, operation, status, and whether it is reviewable, plus the preferred
-  run_id to show. This is the source of truth for what exists — never guess a
-  run_id that is not listed.
+  run_id to show. It may also identify an existing live website and the exact
+  page currently visible to the owner. Treat those explicit surface facts as
+  the source of truth for the conversation — never guess a run_id, page, or
+  website state that is not listed.
 - If the owner asks to see/open/preview a preferred or the latest reviewable
   version, return "ui_action": {"action": "open_preview",
   "run_id": "<preferred_run_id or a reviewable revision run_id from the list>"}.

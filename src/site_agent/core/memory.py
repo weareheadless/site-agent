@@ -5320,6 +5320,7 @@ class Memory:
         *,
         session_id: str,
         attachments: list[dict[str, int]] | None = None,
+        owner_context: dict[str, Any] | None = None,
         idempotency_key: str | None = None,
     ) -> int:
         """Queue one durable, message-bound Ada intake advice turn."""
@@ -5328,7 +5329,7 @@ class Memory:
             message,
             attachments,
             operation_kind="design_intake_advice",
-            payload={"session_id": str(session_id)},
+            payload={"session_id": str(session_id), "owner_context": owner_context or {}},
             intake_session_id=str(session_id),
             idempotency_key=idempotency_key,
         )

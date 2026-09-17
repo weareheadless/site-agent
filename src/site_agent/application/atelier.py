@@ -488,6 +488,8 @@ class AtelierChatService:
         memory, _llm, tenant_id = self._scope(tenant)
         message = str(body.get("message") or "").strip()
         attachments = self._attachment_rows(body.get("attachments"))
+        owner_context = body.get("context")
+        owner_context = dict(owner_context) if isinstance(owner_context, Mapping) else {}
         if not message and not attachments:
             raise AtelierBridgeError("empty message")
         if len(message) > 8000:
@@ -512,6 +514,8 @@ class AtelierChatService:
                     }
                     if attachments:
                         intake_kwargs["attachments"] = [item["asset_id"] for item in attachments]
+                    if owner_context:
+                        intake_kwargs["owner_context"] = owner_context
                     result = intake.send_message(message, **intake_kwargs)
                 except Exception as exc:  # noqa: BLE001 — keep bridge errors bounded
                     raise AtelierBridgeError(str(exc)[:500]) from exc
@@ -532,10 +536,7 @@ class AtelierChatService:
         if not conversation_id or conversation_id not in conversations:
             conversation_id = memory.create_conversation(title=message[:80])
 
-        context = body.get("context")
-        if not isinstance(context, dict):
-            context = {}
-        context = dict(context)
+        context = owner_context
         context["site"] = tenant_id
         journey = self._journey(tenant)
         if journey is not None:
