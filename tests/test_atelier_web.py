@@ -91,6 +91,40 @@ def test_atelier_bridge_enqueues_contextual_chat(tmp_path):
     memory.close()
 
 
+def test_existing_site_snapshot_reads_selected_page_and_navigation(tmp_path):
+    class _Payload:
+        def read(self, collection, *, identifier, identifier_kind, draft):
+            assert (collection, identifier, identifier_kind, draft) == ("pages", "home-source", "sourceId", True)
+            return {
+                "sourceId": "home-source",
+                "slug": "home",
+                "title": "Atelier Harmonie",
+                "content": {"heading": "Une maison douce", "body": "Book a consultation."},
+            }
+
+        def read_global(self, slug, *, draft):
+            assert (slug, draft) == ("navigation", True)
+            return {"items": [{"label": "Menu", "path": "/menu"}]}
+
+    memory = Memory(tmp_path / "memory.db")
+    coordinator = AtelierIntakeCoordinator(
+        memory,
+        config={"atelier_intake": {"database_only": True}},
+        llm=None,
+        payload_client=_Payload(),
+    )
+    snapshot = coordinator._existing_site_snapshot({
+        "route": "/",
+        "collection": "pages",
+        "target": {"route": {"path": "/", "kind": "page", "sourceId": "home-source"}},
+    })
+
+    assert snapshot["status"] == "existing_live_website"
+    assert snapshot["page"]["title"] == "Atelier Harmonie"
+    assert snapshot["navigation"]["items"][0]["label"] == "Menu"
+    memory.close()
+
+
 def test_atelier_bridge_reports_workspace_phase_without_intake(tmp_path):
     memory = Memory(tmp_path / "memory.db")
     app = FastAPI()

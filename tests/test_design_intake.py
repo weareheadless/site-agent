@@ -1618,6 +1618,10 @@ def test_existing_site_customer_view_carries_the_owner_visible_page(tmp_path):
         "target": {
             "mode": "incubation",
             "route": {"path": "/", "kind": "page", "sourceId": "home-source"},
+            "site": {
+                "name": "atelier-harmonie",
+                "routes": [{"path": "/", "kind": "home", "collection": "pages", "sourceId": "home-source"}],
+            },
         },
     }))
     prompt = _advisor_prompt(
@@ -1630,6 +1634,7 @@ def test_existing_site_customer_view_carries_the_owner_visible_page(tmp_path):
 
     assert view["existing_site"]["status"] == "existing_live_website"
     assert view["owner_visible_surface"]["target"]["route"]["path"] == "/"
+    assert view["owner_visible_surface"]["target"]["site"]["routes"][0]["path"] == "/"
     assert "existing live website" in prompt
     assert "selected_page_reference" in prompt
     assert "The first build is the MAIN PAGE only." not in prompt

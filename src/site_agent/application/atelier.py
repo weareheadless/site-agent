@@ -310,6 +310,7 @@ class AtelierTenantRegistry:
                         config=tenant_config,
                         llm=context.get("llm"),
                         media_service=context.get("media_service"),
+                        payload_client=payload_client,
                     )
                     context.update({
                         "atelier_intake": intake_coordinator,

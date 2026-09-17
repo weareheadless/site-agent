@@ -17,7 +17,7 @@ from ..brain.design_intake import (
     UnavailableDesignIntakeAdvisor,
 )
 from ..brain.design_guidance import DesignSkillSet
-from ..core.contracts import ContractError, utc_now
+from ..core.contracts import ContractError, safe_payload, utc_now
 from ..core.design_contracts import DesignRunStatus, SiteIntake, canonical_hash, canonical_json
 from ..core.design_intake_contracts import (
     DesignIntakeDraft,
@@ -835,8 +835,24 @@ class DesignIntakeService:
                     for key in allowed
                     if raw_group.get(key) is not None
                 }
+                if group == "site" and isinstance(raw_group.get("routes"), list):
+                    target[group]["routes"] = [
+                        {
+                            key: str(route.get(key))[:240]
+                            for key in ("path", "kind", "collection", "sourceId", "source_id")
+                            if route.get(key) is not None
+                        }
+                        for route in raw_group["routes"][:40]
+                        if isinstance(route, Mapping)
+                    ]
             if target:
                 result["target"] = target
+        snapshot = value.get("existing_site_snapshot")
+        if isinstance(snapshot, Mapping):
+            try:
+                result["existing_site_snapshot"] = safe_payload(snapshot, max_bytes=24_000)
+            except ContractError:
+                result["existing_site_snapshot"] = {"status": "existing_live_website", "available": False}
         return result
 
     def _customer_view_json(
