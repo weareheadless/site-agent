@@ -197,6 +197,7 @@ class AtelierPayloadClient:
         identifier: str,
         identifier_kind: str = "sourceId",
         draft: bool = True,
+        locale: str | None = None,
     ) -> dict[str, Any]:
         collection = self._collection(collection)
         identifier = str(identifier or "").strip()
@@ -207,7 +208,12 @@ class AtelierPayloadClient:
         response = self._request(
             "GET",
             "/api/atelier/content",
-            query={"collection": collection, identifier_kind: identifier, "draft": str(bool(draft)).lower()},
+            query={
+                "collection": collection,
+                identifier_kind: identifier,
+                "draft": str(bool(draft)).lower(),
+                **({"locale": str(locale).strip()} if str(locale or "").strip() else {}),
+            },
         )
         document = response.get("document")
         if not isinstance(document, dict):
@@ -220,6 +226,7 @@ class AtelierPayloadClient:
         *,
         draft: bool = True,
         limit: int = 100,
+        locale: str | None = None,
     ) -> list[dict[str, Any]]:
         collection = self._collection(collection)
         bounded_limit = max(1, min(int(limit), 100))
@@ -230,6 +237,7 @@ class AtelierPayloadClient:
                 "collection": collection,
                 "draft": str(bool(draft)).lower(),
                 "limit": str(bounded_limit),
+                **({"locale": str(locale).strip()} if str(locale or "").strip() else {}),
             },
         )
         documents = response.get("documents")
@@ -237,15 +245,20 @@ class AtelierPayloadClient:
             raise AtelierPayloadError("gateway returned no document list")
         return [item for item in documents if isinstance(item, dict)]
 
-    def create(self, collection: str, data: Mapping[str, Any]) -> dict[str, Any]:
+    def create(self, collection: str, data: Mapping[str, Any], *, locale: str | None = None) -> dict[str, Any]:
         collection = self._collection(collection)
         return self._request(
             "POST",
             "/api/atelier/content",
-            payload={"operation": "create", "collection": collection, "data": self._data(collection, data)},
+            payload={
+                "operation": "create",
+                "collection": collection,
+                "data": self._data(collection, data),
+                **({"locale": str(locale).strip()} if str(locale or "").strip() else {}),
+            },
         ).get("document") or {}
 
-    def update(self, collection: str, document_id: str, data: Mapping[str, Any]) -> dict[str, Any]:
+    def update(self, collection: str, document_id: str, data: Mapping[str, Any], *, locale: str | None = None) -> dict[str, Any]:
         collection = self._collection(collection)
         document_id = str(document_id or "").strip()
         if not document_id:
@@ -258,6 +271,7 @@ class AtelierPayloadClient:
                 "collection": collection,
                 "id": document_id,
                 "data": self._data(collection, data),
+                **({"locale": str(locale).strip()} if str(locale or "").strip() else {}),
             },
         ).get("document") or {}
 
@@ -272,24 +286,33 @@ class AtelierPayloadClient:
             payload={"operation": "publish", "collection": collection, "id": document_id},
         ).get("document") or {}
 
-    def read_global(self, slug: str, *, draft: bool = True) -> dict[str, Any]:
+    def read_global(self, slug: str, *, draft: bool = True, locale: str | None = None) -> dict[str, Any]:
         slug = self._global(slug)
         response = self._request(
             "GET",
             "/api/atelier/global",
-            query={"global": slug, "draft": str(bool(draft)).lower()},
+            query={
+                "global": slug,
+                "draft": str(bool(draft)).lower(),
+                **({"locale": str(locale).strip()} if str(locale or "").strip() else {}),
+            },
         )
         document = response.get("global")
         if not isinstance(document, dict):
             raise AtelierPayloadError("gateway returned no global")
         return document
 
-    def update_global(self, slug: str, data: Mapping[str, Any]) -> dict[str, Any]:
+    def update_global(self, slug: str, data: Mapping[str, Any], *, locale: str | None = None) -> dict[str, Any]:
         slug = self._global(slug)
         return self._request(
             "POST",
             "/api/atelier/global",
-            payload={"operation": "update", "global": slug, "data": self._global_data(slug, data)},
+            payload={
+                "operation": "update",
+                "global": slug,
+                "data": self._global_data(slug, data),
+                **({"locale": str(locale).strip()} if str(locale or "").strip() else {}),
+            },
         ).get("global") or {}
 
     def publish_global(self, slug: str) -> dict[str, Any]:

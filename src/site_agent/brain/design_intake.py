@@ -28,6 +28,7 @@ class DesignIntakeAdvisor(Protocol):
         *,
         assets: Sequence[Mapping[str, Any]] = (),
         knowledge_briefing: Sequence[str] = (),
+        owner_language: str = "",
     ) -> IntakeTurnResult:
         ...
 
@@ -142,6 +143,7 @@ def _advisor_prompt(
     customer_view: str = "",
     *,
     database_only: bool = False,
+    owner_language: str = "",
 ) -> str:
     asset_summary = [
         {
@@ -177,6 +179,12 @@ def _advisor_prompt(
         if database_only
         else "The first build is the MAIN PAGE only. Once the main page is clear, record site.required_pages (e.g. [\"index.html\"]) and do not demand a full sitemap for the first pass."
     )
+    language_preference = (
+        f"The workspace language selected by the owner is `{owner_language}`. Keep every visible reply, note, "
+        "and creative insight in that language unless the owner explicitly asks for a translation."
+        if owner_language
+        else "No workspace language preference was supplied; infer the reply language from the owner conversation."
+    )
     prompt = """You are Ada, the creative lead guiding an owner through a website design intake
 for a real business.
 
@@ -200,8 +208,11 @@ Two jobs every turn:
    conversation. The owner's language, tone, and business context come from
    the conversation itself.
 
-Language continuity:
-- Keep the visible reply in the language of the owner's latest message, as
+ Language continuity:
+ - """ + language_preference + """
+ - When a workspace language setting is supplied, it is authoritative over
+   language inference from the latest owner message, research, source text, or OCR.
+ - Keep the visible reply in the language of the owner's latest message, as
   inferred from the recent conversation, and keep that language stable across
   turns.
 - Proper names are not language signals. Do not infer reply language from research, source text, OCR, or field values.
@@ -348,7 +359,8 @@ Use only these field paths:
         )
     prompt += (
         "\n\nFINAL RESPONSE CONTRACT:\n"
-        "Before writing any human-readable output, use the established language of the recent owner conversation. "
+        + ("The explicit workspace language setting is authoritative. " if owner_language else "")
+         + "Before writing any human-readable output, use the established language of the recent owner conversation. "
         "A standalone proper name or other language-neutral fragment does not reset that language. "
         "Multilingual source material is evidence only, never a cue to translate or switch. "
         "Only a clear owner language change or an explicit translation request permits a switch."
@@ -396,6 +408,7 @@ class LLMDesignIntakeAdvisor:
         assets: Sequence[Mapping[str, Any]] = (),
         knowledge_briefing: Sequence[str] = (),
         customer_view: str = "",
+        owner_language: str = "",
     ) -> IntakeTurnResult:
         if not isinstance(draft, DesignIntakeDraft):
             raise DesignIntakeAdvisorError("intake draft is invalid")
@@ -415,6 +428,7 @@ class LLMDesignIntakeAdvisor:
             knowledge_briefing,
             customer_view,
             database_only=database_only,
+            owner_language=str(owner_language or "").strip()[:24],
         )
         owner_content: Any = message[:20_000]
         # The advisor never receives raw image URLs. The media worker performs
@@ -460,8 +474,8 @@ class LLMDesignIntakeAdvisor:
                 if _looks_jsonish(raw):
                     # Truncated/incomplete JSON contract (or a provider that
                     # ignored JSON mode and leaked the shape) must never be
-                    # shown to the owner. The service falls back to a natural,
-                    # safe follow-up instead.
+                    # shown to the owner. The application reports a connection
+                    # issue without creating a fabricated assistant turn.
                     raise
                 try:
                     turn = _plain_text_turn(raw)
@@ -521,7 +535,7 @@ class LLMDesignIntakeAdvisor:
 
 
 class UnavailableDesignIntakeAdvisor:
-    """Safe fallback used when no LLM is configured; it never invents fields."""
+    """Explicit unavailable adapter; it never creates a fake conversation turn."""
 
     def __init__(self, *, database_only: bool = False) -> None:
         self.database_only = database_only
@@ -535,23 +549,9 @@ class UnavailableDesignIntakeAdvisor:
         assets: Sequence[Mapping[str, Any]] = (),
         knowledge_briefing: Sequence[str] = (),
         customer_view: str = "",
+        owner_language: str = "",
     ) -> IntakeTurnResult:
-        missing = draft.unresolved_core_paths
-        if missing:
-            question = "I have the direction so far. Tell me a little more about what matters most for the first version."
-        elif draft.readiness == "ready_to_build":
-            question = (
-                "The brief is complete and saved. Tell me what you want to do next in the website workspace."
-                if self.database_only
-                else "The brief is ready. Confirm that I should build the first visual candidate, or tell me what to change."
-            )
-        else:
-            question = "Tell me what matters most for the first visual candidate."
-        return IntakeTurnResult(
-            schema_version=1,
-            assistant_message=question,
-            suggested_readiness=draft.readiness,
-        )
+        raise DesignIntakeAdvisorError("Connection issue, try again.")
 
     def request_owner_assets(
         self,

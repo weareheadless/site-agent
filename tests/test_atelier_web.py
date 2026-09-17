@@ -546,7 +546,7 @@ def test_payload_media_service_resolves_chat_attachments():
     assert resolved[0]["analysis_error"] is None
 
 
-def test_no_site_confirmation_hands_off_to_the_full_design_build(tmp_path):
+def test_no_site_confirmation_requires_an_explicit_first_page_action(tmp_path):
     class Intake:
         def confirm(self, conversation_id, **kwargs):
             assert conversation_id == 12
@@ -555,6 +555,16 @@ def test_no_site_confirmation_hands_off_to_the_full_design_build(tmp_path):
                 "session_id": "intake-new-site",
                 "conversation_id": 12,
                 "revision": 2,
+                "confirmed_revision": 2,
+                "confirmed_revision_id": 22,
+                "confirmed": True,
+            }
+
+        def status(self, conversation_id):
+            assert conversation_id == 12
+            return {
+                "session_id": "intake-new-site",
+                "conversation_id": 12,
                 "confirmed_revision": 2,
                 "confirmed_revision_id": 22,
                 "confirmed": True,
@@ -599,9 +609,16 @@ def test_no_site_confirmation_hands_off_to_the_full_design_build(tmp_path):
             headers={"Authorization": "Bearer new-site-token"},
             json={"conversation_id": 12, "revision": 2, "draft_hash": "abc"},
         )
+        start_response = client.post(
+            "/v1/atelier/chat/design/start",
+            headers={"Authorization": "Bearer new-site-token"},
+            json={"conversation_id": 12, "confirmed_revision": 22},
+        )
 
     assert response.status_code == 200
-    assert response.json()["build"]["run"]["run_id"] == "design-first-site"
+    assert "build" not in response.json()
+    assert start_response.status_code == 200
+    assert start_response.json()["run"]["run_id"] == "design-first-site"
     memory.close()
 
 

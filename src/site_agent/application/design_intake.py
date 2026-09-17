@@ -39,6 +39,9 @@ class DesignIntakeServiceError(ValueError):
     """The conversational intake request cannot be safely completed."""
 
 
+_CONNECTION_ISSUE = "Connection issue, try again."
+
+
 _SESSION_ID = re.compile(r"^intake-[0-9a-f]{32}$")
 
 # The builder's creative prompt is composed from the confirmed intake unless the
@@ -602,32 +605,22 @@ class DesignIntakeService:
             progress("intake / considering the next useful step")
             progress("intake / asking Ada for the next useful step")
         briefing = self._knowledge_briefing()
-        fallback_used = False
         preview_of_lab = isinstance(self.advisor, LLMDesignIntakeAdvisor)
         owner_context = payload.get("owner_context") if isinstance(payload.get("owner_context"), Mapping) else {}
         customer_view = self._customer_view_json(session, owner_context=owner_context) if preview_of_lab else ""
+        owner_language = self._owner_language(owner_context)
         advise_kwargs: dict[str, Any] = {"assets": asset_context, "knowledge_briefing": briefing}
         if preview_of_lab:
             advise_kwargs["customer_view"] = customer_view
+            advise_kwargs["owner_language"] = owner_language
         try:
             turn = self.advisor.advise(draft, history, message, **advise_kwargs)
-        except DesignIntakeAdvisorError:
+        except DesignIntakeAdvisorError as exc:
             if not isinstance(self.advisor, LLMDesignIntakeAdvisor):
                 raise
-            # A provider failure should not strand the owner's conversation. The
-            # message is already durable, so return a truthful follow-up without
-            # inventing any intake fields or marking the draft ready.
-            fallback_used = True
             if progress:
-                progress("Ada's planning service was unavailable; saved a safe follow-up")
-            turn = UnavailableDesignIntakeAdvisor(database_only=self.database_only).advise(
-                draft,
-                history,
-                message,
-                assets=asset_context,
-                knowledge_briefing=briefing,
-                customer_view=customer_view,
-            )
+                progress("Ada's planning service was unavailable; no assistant reply was created")
+            raise DesignIntakeServiceError(_CONNECTION_ISSUE) from exc
         advisor_call_count = int(getattr(self.advisor, "last_call_count", 0)) if isinstance(self.advisor, LLMDesignIntakeAdvisor) else 1
         updated = merge_intake_turn(draft, turn, source_message_id=source_message_id)
         if progress:
@@ -639,6 +632,7 @@ class DesignIntakeService:
             source_message_id=source_message_id,
             expected_revision=int(session.get("revision") or 0),
         )
+        saved = {**saved, "owner_language": owner_language}
         # Customer-Ada genesis is downstream of the first build-critical fact;
         # incomplete owner turns must still persist as ordinary intake turns.
         offer_summary = updated.value("business.offer_summary")
@@ -706,7 +700,12 @@ class DesignIntakeService:
                 intake_session_id=session_id,
                 intake_revision=int(saved.get("revision") or 0) or None,
             )
-            self._persist_creative_insights(turn.creative_insights, session, source_message_id)
+            self._persist_creative_insights(
+                turn.creative_insights,
+                session,
+                source_message_id,
+                owner_language=owner_language,
+            )
         research: Mapping[str, Any] | None = None
         if self.on_revision_saved is not None:
             try:
@@ -748,7 +747,6 @@ class DesignIntakeService:
             "assumptions": [item.to_dict() for item in updated.assumptions],
             "deferred": [item.to_dict() for item in updated.deferred],
             "creative_insights": [item.to_dict() for item in turn.creative_insights],
-            "advisor_fallback": fallback_used,
             "advisor_call_count": advisor_call_count,
             "research": dict(research) if research is not None else None,
             "ui_action": self._resolve_ui_action(turn.ui_action, session),
@@ -810,7 +808,7 @@ class DesignIntakeService:
             return {}
         result: dict[str, Any] = {}
         for key in (
-            "mode", "phase", "scope", "site", "route", "collection", "document",
+            "mode", "phase", "scope", "language", "site", "route", "collection", "document",
             "document_id", "slug", "state",
         ):
             if value.get(key) is not None:
@@ -854,6 +852,19 @@ class DesignIntakeService:
             except ContractError:
                 result["existing_site_snapshot"] = {"status": "existing_live_website", "available": False}
         return result
+
+    def _owner_language(self, value: Any) -> str:
+        """Resolve the explicit workspace language without treating site text as a cue."""
+        raw = value.get("language") if isinstance(value, Mapping) else None
+        if not raw:
+            site = self.config.get("site") if isinstance(self.config.get("site"), Mapping) else {}
+            raw = site.get("language")
+        if not raw:
+            profile = self.config.get("customer_profile") if isinstance(self.config.get("customer_profile"), Mapping) else {}
+            business = profile.get("business") if isinstance(profile.get("business"), Mapping) else {}
+            raw = business.get("observed_language")
+        language = str(raw or "").strip().replace("_", "-").lower()
+        return language[:24] if re.fullmatch(r"[a-z]{2,3}(?:-[a-z0-9]{2,8}){0,2}", language) else ""
 
     def _customer_view_json(
         self,
@@ -956,6 +967,8 @@ class DesignIntakeService:
         insights: Any,
         session: Mapping[str, Any],
         source_message_id: int,
+        *,
+        owner_language: str = "",
     ) -> None:
         """Persist the advisor's bounded design observations as incubation insights.
 
@@ -974,7 +987,7 @@ class DesignIntakeService:
             supports = [str(path) for path in list(item.get("related_intake_paths") or ())[:12] if str(path).strip()]
             if not supports:
                 supports = ["site.required_pages"]
-            owner_language = str(session.get("language") or "en").strip().lower()
+            insight_language = str(owner_language or session.get("language") or "en").strip().lower()
             insight_id = "insight_" + hashlib.sha256(
                 canonical_hash({
                     "source": "intake_turn",
@@ -990,7 +1003,7 @@ class DesignIntakeService:
                     "insight_id": insight_id,
                     "kind": "creative_implication",
                     "summary": summary,
-                    "owner_language": owner_language,
+                    "owner_language": insight_language,
                     "source_languages": [],
                     "finding_ids": [],
                     "supports_paths": supports,
@@ -1320,7 +1333,22 @@ class DesignIntakeService:
             return []
         intake = SiteIntake.from_dict(run.get("intake_json") or {})
         business_name = str((intake.business or {}).get("name") or "").strip()
-        request = self._asset_request_message(business_name, notes)
+        try:
+            request = self._asset_request_message(business_name, notes)
+        except DesignIntakeServiceError as exc:
+            self._activity(
+                category="design",
+                kind="asset_request_surfaced",
+                state="needs_attention",
+                summary="Could not ask the owner for the missing imagery because Ada was unavailable.",
+                provenance="host_validation",
+                confidence=0.5,
+                detail={"error_code": str(exc)[:120], "status": "needs_attention"},
+                conversation_id=int(conversation_id),
+                design_run_id=run_id,
+                intake_session_id=str(run["intake_session_id"]),
+            )
+            return list(notes)
         if not request:
             return list(notes)
         try:
@@ -1362,25 +1390,19 @@ class DesignIntakeService:
         """Write the owner-facing asset request in Ada's voice.
 
         The prompt describes the goal and context only; it never contains an
-        example sentence. When the advisor is unavailable or returns nothing,
-        fall back to a neutral short request that still avoids quoting the
-        visual review verbatim.
+        example sentence. An unavailable advisor must not create a fabricated
+        conversation turn.
         """
         written = ""
         request = getattr(self.advisor, "request_owner_assets", None)
         if callable(request):
             try:
                 written = request(business_name=business_name, context=notes)
-            except Exception:  # noqa: BLE001 - a provider failure keeps a safe fallback
+            except Exception:  # noqa: BLE001 - provider failure is handled as a connection issue below
                 written = ""
         if written:
             return written[:1_200]
-        subjects = ", ".join(notes[:2])
-        return (
-            "I noticed a few kinds of photos aren't in your set yet, and they'd bring the site to life — "
-            + f"({subjects}). If you happen to have any like that, send them over and I'll weave them into "
-            "the candidate. Nothing is blocked either way."
-        )
+        raise DesignIntakeServiceError(_CONNECTION_ISSUE)
 
 
 __all__ = ["DesignIntakeService", "DesignIntakeServiceError"]

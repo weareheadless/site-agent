@@ -9,6 +9,7 @@ approval.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from ..hands.base import AdapterError, SiteAdapter
@@ -32,6 +33,13 @@ def slugify(text: str) -> str:
     while "--" in slug:
         slug = slug.replace("--", "-")
     return slug or "untitled"
+
+
+def _workspace_language(message: str) -> str:
+    """Read only the explicit language metadata added by the trusted bridge."""
+    context_block = str(message or "").split("[User request]", 1)[0]
+    match = re.search(r'"language"\s*:\s*"([a-z]{2,3}(?:-[a-z0-9]{2,8}){0,2})"', context_block, re.IGNORECASE)
+    return match.group(1).lower() if match else ""
 
 
 def set_dotted(doc: dict[str, Any], field: str, value: Any) -> Any:
@@ -565,29 +573,38 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
         if payload is None:
             return "Atelier Payload content editing is not configured on this site-agent instance."
         try:
+            locale = context.get("_workspace_language") or None
             if name == "read_payload_content":
+                read_kwargs = {
+                    "identifier": str(args.get("identifier") or ""),
+                    "identifier_kind": str(args.get("identifier_kind") or "sourceId"),
+                    "draft": bool(args.get("draft", True)),
+                }
+                if locale:
+                    read_kwargs["locale"] = locale
                 document = payload.read(
                     str(args.get("collection") or ""),
-                    identifier=str(args.get("identifier") or ""),
-                    identifier_kind=str(args.get("identifier_kind") or "sourceId"),
-                    draft=bool(args.get("draft", True)),
+                    **read_kwargs,
                 )
                 return _payload_result(document, action="read")
             if name == "read_payload_global":
-                document = payload.read_global(
-                    str(args.get("global") or ""),
-                    draft=bool(args.get("draft", True)),
-                )
+                read_kwargs = {"draft": bool(args.get("draft", True))}
+                if locale:
+                    read_kwargs["locale"] = locale
+                document = payload.read_global(str(args.get("global") or ""), **read_kwargs)
                 return _payload_result(document, action="read")
             if name == "create_payload_draft":
-                document = payload.create(str(args.get("collection") or ""), args.get("data") or {})
+                write_kwargs = {"locale": locale} if locale else {}
+                document = payload.create(str(args.get("collection") or ""), args.get("data") or {}, **write_kwargs)
                 context["_last_action_succeeded"] = True
                 return f"Payload draft created: {_payload_result(document, action='write')}"
             if name == "update_payload_draft":
+                write_kwargs = {"locale": locale} if locale else {}
                 document = payload.update(
                     str(args.get("collection") or ""),
                     str(args.get("id") or ""),
                     args.get("data") or {},
+                    **write_kwargs,
                 )
                 context["_last_action_succeeded"] = True
                 return f"Payload draft updated: {_payload_result(document, action='write')}"
@@ -596,7 +613,8 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
                 context["_last_action_succeeded"] = True
                 return f"Payload document published: {_payload_result(document, action='write')}"
             if name == "update_payload_global":
-                document = payload.update_global(str(args.get("global") or ""), args.get("data") or {})
+                write_kwargs = {"locale": locale} if locale else {}
+                document = payload.update_global(str(args.get("global") or ""), args.get("data") or {}, **write_kwargs)
                 context["_last_action_succeeded"] = True
                 return f"Payload global draft updated: {_payload_result(document, action='write')}"
             document = payload.publish_global(str(args.get("global") or ""))
@@ -726,6 +744,12 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
     profile = configured_site_profile_prompt(context.get("config") or {})
     if profile:
         system += "\n\n" + profile
+    workspace_language = _workspace_language(message)
+    if workspace_language:
+        system += (
+            "\n\nExplicit workspace language setting: " + workspace_language
+            + ". Write the owner-facing reply in this language unless the owner explicitly requests a translation."
+        )
     intake = context.get("atelier_intake")
     if intake is not None and callable(getattr(intake, "context_prompt", None)):
         try:
@@ -757,6 +781,9 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
         pass
 
     convo = [{"role": "system", "content": system}, *history, {"role": "user", "content": message}]
+    workspace_language = _workspace_language(message)
+    if workspace_language:
+        context["_workspace_language"] = workspace_language
     context.pop("_last_proposal_id", None)
     context.pop("_last_merge_draft_id", None)
     context.pop("_last_action_succeeded", None)
@@ -783,7 +810,10 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
             ]
         convo.append(assistant_msg)
         if not calls:
-            return {"reply": (resp.get("content") or "").strip() or "(no reply)",
+            reply = (resp.get("content") or "").strip()
+            if not reply:
+                raise RuntimeError("Connection issue, try again.")
+            return {"reply": reply,
                     "proposal_id": context.get("_last_proposal_id"),
                     "merge_draft_id": context.get("_last_merge_draft_id")}
         side_effect_calls = [c for c in calls if c["function"]["name"] in SIDE_EFFECTS]
@@ -813,9 +843,7 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
                 return {"reply": result,
                         "proposal_id": context.get("_last_proposal_id"),
                         "merge_draft_id": context.get("_last_merge_draft_id")}
-    return {"reply": f"I reached the {max_steps}-step working limit mid-task — say \"continue\" and I'll pick it up.",
-            "proposal_id": context.get("_last_proposal_id"),
-            "merge_draft_id": context.get("_last_merge_draft_id")}
+    raise RuntimeError("Connection issue, try again.")
 
 
 def handle_message(

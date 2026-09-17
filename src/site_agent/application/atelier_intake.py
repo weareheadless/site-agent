@@ -257,12 +257,15 @@ class AtelierIntakeCoordinator:
             "collection": collection,
         }
         try:
-            document = payload.read(
-                collection,
-                identifier=identifier,
-                identifier_kind="sourceId",
-                draft=True,
-            )
+            language = str(owner_context.get("language") or "").strip()
+            read_kwargs = {
+                "identifier": identifier,
+                "identifier_kind": "sourceId",
+                "draft": True,
+            }
+            if language:
+                read_kwargs["locale"] = language
+            document = payload.read(collection, **read_kwargs)
             fields = {
                 key: document.get(key)
                 for key in (
@@ -275,7 +278,10 @@ class AtelierIntakeCoordinator:
         except Exception:
             snapshot["page"] = {"available": False}
         try:
-            navigation = payload.read_global("navigation", draft=True)
+            navigation_kwargs = {"draft": True}
+            if language:
+                navigation_kwargs["locale"] = language
+            navigation = payload.read_global("navigation", **navigation_kwargs)
             snapshot["navigation"] = safe_payload(
                 {
                     key: navigation.get(key)
@@ -348,7 +354,11 @@ class AtelierIntakeCoordinator:
         if len(existing) >= self.max_passes_per_revision:
             return {"status": "owner_turn_required", "count": len(existing)}
 
-        owner_language = str(draft.value("site.language") or "en").strip().lower().replace("_", "-")
+        owner_language = str(
+            revision.get("owner_language")
+            or draft.value("site.language")
+            or "en"
+        ).strip().lower().replace("_", "-")
         planning_error = ""
         try:
             plan = self.research_planner.plan(

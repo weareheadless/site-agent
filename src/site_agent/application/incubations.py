@@ -470,7 +470,11 @@ class IncubationApplicationService:
             )
             return {"status": "owner_turn_required", "count": len(passes_on_revision)}
 
-        owner_language = str(draft.value("site.language") or "en").strip().lower().replace("_", "-")
+        owner_language = str(
+            revision.get("owner_language")
+            or draft.value("site.language")
+            or "en"
+        ).strip().lower().replace("_", "-")
         planner = self.runtime(incubation_id).research_planner
         planning_error = ""
         try:

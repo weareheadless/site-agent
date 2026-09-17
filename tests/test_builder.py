@@ -842,6 +842,8 @@ def test_tweakmap_injected_into_tool_prompt(tmp_path):
 
         def chat_tools(self, messages, tools, temperature=None):
             self.calls.append(messages)
+            if len(self.calls) > 1:
+                return {"content": "Staged.", "tool_calls": None}
             return {
                 "content": "Staged.",
                 "tool_calls": [
@@ -1228,6 +1230,8 @@ def test_template_tokens_injected_into_chat_tools_prompt(tmp_path):
 
         def chat_tools(self, messages, tools, temperature=None):
             self.calls.append(messages)
+            if len(self.calls) > 1:
+                return {"content": "Staged.", "tool_calls": None}
             return {
                 "content": "Staged.",
                 "tool_calls": [

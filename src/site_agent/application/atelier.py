@@ -623,7 +623,7 @@ class AtelierChatService:
         *,
         tenant: AtelierTenant | None = None,
     ) -> dict[str, Any]:
-        """Accept intake; only a confirmed no-site journey queues its first build."""
+        """Accept intake without starting a design run."""
         _memory, _llm, _tenant_id = self._scope(tenant)
         if tenant is None or tenant.context.get("atelier_intake") is None:
             raise AtelierBridgeError("Atelier intake is not enabled")
@@ -652,35 +652,60 @@ class AtelierChatService:
                 confirmation_text=confirmation_text,
                 idempotency_key=body.get("idempotency_key"),
             )
-            journey = self._journey(tenant)
-            if journey is not None and not journey.website_present:
-                intake_service = tenant.context.get("design_intake_service")
-                if intake_service is None or getattr(intake_service, "lab_service", None) is None:
-                    raise AtelierBridgeError("the full design build service is unavailable")
-                session = result.get("session") if isinstance(result, Mapping) else None
-                if not isinstance(session, Mapping):
-                    session = result if isinstance(result, Mapping) else {}
-                build = intake_service.build(
-                    str(session.get("session_id") or ""),
-                    confirmed_revision=int(
-                        session.get("confirmed_revision_id")
-                        or session.get("confirmed_revision")
-                        or revision
-                    ),
-                    owner_request=str(body.get("owner_request") or "Build the first website from the confirmed intake."),
-                    idempotency_key=f"confirmed-build-{session.get('session_id') or conversation_id}-{revision}",
-                )
-                build_view = {
-                    key: build[key]
-                    for key in ("idempotency_key", "build_pending", "idempotent", "recovered")
-                    if key in build
-                }
-                if isinstance(build.get("run"), Mapping):
-                    build_view["run"] = self._public_design_run(build["run"])
-                result = {**result, "build": build_view}
             return result
         except Exception as exc:  # noqa: BLE001 — keep bridge errors bounded
             raise AtelierBridgeError(str(exc)[:500]) from exc
+
+    def start_first_page(
+        self,
+        body: Mapping[str, Any],
+        *,
+        tenant: AtelierTenant | None = None,
+    ) -> dict[str, Any]:
+        """Start the first page only through an explicit post-intake action."""
+        _memory, _llm, _tenant_id = self._scope(tenant)
+        if tenant is None or tenant.context.get("atelier_intake") is None:
+            raise AtelierBridgeError("Atelier intake is not enabled")
+        journey = self._journey(tenant)
+        if journey is not None and journey.website_present:
+            raise AtelierBridgeError("an existing website needs an explicit page target")
+        coordinator = tenant.context["atelier_intake"]
+        intake_service = tenant.context.get("design_intake_service")
+        if intake_service is None or getattr(intake_service, "lab_service", None) is None:
+            raise AtelierBridgeError("the full design build service is unavailable")
+        conversation_id = body.get("conversation_id")
+        if conversation_id is not None:
+            try:
+                conversation_id = int(conversation_id)
+            except (TypeError, ValueError) as exc:
+                raise AtelierBridgeError("conversation_id must be an integer") from exc
+        status = coordinator.status(conversation_id)
+        if not status.get("confirmed"):
+            raise AtelierBridgeError("the working brief must be accepted before starting a page")
+        session_id = str(status.get("session_id") or "")
+        confirmed_revision = body.get("confirmed_revision") or status.get("confirmed_revision_id") or status.get("confirmed_revision")
+        try:
+            confirmed_revision = int(confirmed_revision)
+        except (TypeError, ValueError) as exc:
+            raise AtelierBridgeError("confirmed_revision must be an integer") from exc
+        try:
+            build = intake_service.build(
+                session_id,
+                confirmed_revision=confirmed_revision,
+                owner_request=str(body.get("owner_request") or "Start the first page design from the confirmed working brief."),
+                idempotency_key=body.get("idempotency_key"),
+                context_extra={"operation": "first_page_design", "page": "index.html"},
+            )
+        except Exception as exc:  # noqa: BLE001 — normalize bridge errors
+            raise AtelierBridgeError(str(exc)[:500]) from exc
+        response = {
+            key: build[key]
+            for key in ("idempotency_key", "build_pending", "idempotent", "recovered")
+            if key in build
+        }
+        if isinstance(build.get("run"), Mapping):
+            response["run"] = self._public_design_run(build["run"])
+        return response
 
     def conversations(
         self,
@@ -1075,7 +1100,7 @@ class AtelierChatService:
         safe_context = {
             key: str(context.get(key) or "")[:300]
             for key in (
-                "site", "route", "collection", "document", "document_id", "slug", "state",
+                "site", "language", "route", "collection", "document", "document_id", "slug", "state",
                 "mode", "phase", "scope", "website_present", "incubation_needed", "journey",
             )
             if context.get(key) is not None

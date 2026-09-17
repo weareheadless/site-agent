@@ -100,6 +100,20 @@ def register_atelier_routes(
         except AtelierBridgeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.post(f"{prefix}/chat/design/start")
+    async def atelier_design_start(request: Request):
+        tenant = require_service(request)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - normalize malformed bridge input
+            raise HTTPException(status_code=400, detail="invalid json")
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="request body must be an object")
+        try:
+            return service.start_first_page(body, tenant=tenant)
+        except AtelierBridgeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.get(f"{prefix}/chat/conversations")
     def atelier_conversations(request: Request, include_archived: bool = False, limit: int = 50):
         tenant = require_service(request)

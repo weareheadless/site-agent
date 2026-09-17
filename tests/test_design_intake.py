@@ -387,7 +387,7 @@ def test_asset_request_notes_ignore_subjective_and_conversion_findings():
     assert asset_request_notes(critique) == ()
 
 
-def test_surface_review_asset_requests_posts_one_durable_chat_request(tmp_path):
+def test_surface_review_asset_requests_does_not_fabricate_when_ada_is_unavailable(tmp_path):
     memory = Memory(tmp_path / "intake.db")
     service = DesignIntakeService(memory, default_intake=_intake())
     session = service.create_session()
@@ -423,13 +423,10 @@ def test_surface_review_asset_requests_posts_one_durable_chat_request(tmp_path):
     assert first == ["The site presents no imagery of the local Mayan kitchen; only cave photos are used."]
     assert second == first
     messages = memory.get_messages(conversation_id)
-    assert len(messages) == 1
-    assert messages[0]["role"] == "assistant"
-    assert "no imagery of the local Mayan kitchen" in messages[0]["text"]
-    assert "send them over" in messages[0]["text"] or "happen to have any" in messages[0]["text"]
+    assert messages == []
     events = memory.list_design_run_events(run_id, limit=50)
     surfaced = [e for e in events if e.get("stage") == "asset_request_surfaced"]
-    assert len(surfaced) == 1
+    assert surfaced == []
     memory.close()
 
 
@@ -928,7 +925,7 @@ def test_empty_draft_stays_collecting_without_inventing_facts(tmp_path):
     memory.close()
 
 
-def test_llm_failure_completes_with_truthful_safe_follow_up(tmp_path):
+def test_llm_failure_returns_connection_issue_without_fake_follow_up(tmp_path):
     class _FailingLLM:
         api_key = "configured"
 
@@ -952,13 +949,10 @@ def test_llm_failure_completes_with_truthful_safe_follow_up(tmp_path):
         "fallback-worker",
     )
 
-    assert result["advisor_fallback"] is True
-    assert "I have the direction so far" in result["reply"]
-    assert "open_questions" not in result
-    assert "open_questions" not in service.get_session(session["session_id"])["readiness"]
-    assert memory.get_chat_job(queued["job_id"])["status"] == "done"
+    assert result == {"error": "Connection issue, try again."}
+    assert memory.get_chat_job(queued["job_id"])["status"] == "error"
     stored = service.get_session(session["session_id"])
-    assert stored["messages"][-1]["role"] == "assistant"
+    assert stored["messages"][-1]["role"] == "user"
     assert stored["draft"]["fields"] == {}
     memory.close()
 
