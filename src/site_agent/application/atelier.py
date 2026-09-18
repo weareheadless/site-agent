@@ -498,6 +498,17 @@ class AtelierChatService:
         if not message:
             message = "Please review the attached images."
 
+        # The tenant journey is authoritative. Preserve it in the intake
+        # context instead of asking the advisor to infer an existing site from
+        # the owner's wording or from a page label.
+        journey = self._journey(tenant)
+        if journey is not None:
+            owner_context.update({
+                "website_present": journey.website_present,
+                "incubation_needed": journey.incubation_needed,
+                "journey": journey.initial_phase,
+            })
+
         conversation_id = body.get("conversation_id")
         if conversation_id is not None:
             try:
@@ -539,7 +550,6 @@ class AtelierChatService:
 
         context = owner_context
         context["site"] = tenant_id
-        journey = self._journey(tenant)
         if journey is not None:
             context["website_present"] = journey.website_present
             context["incubation_needed"] = journey.incubation_needed

@@ -44,6 +44,21 @@ _CONNECTION_ISSUE = "Connection issue, try again."
 
 _SESSION_ID = re.compile(r"^intake-[0-9a-f]{32}$")
 
+
+def _website_present_from_config(config: Mapping[str, Any]) -> bool:
+    """Resolve the tenant journey from explicit site evidence/configuration."""
+    journey = config.get("ada_journey") or config.get("journey") or {}
+    if isinstance(journey, Mapping) and "website_present" in journey:
+        return bool(journey.get("website_present"))
+    site = config.get("site") if isinstance(config.get("site"), Mapping) else {}
+    if "website_present" in site:
+        return bool(site.get("website_present"))
+    payload = site.get("payload") if isinstance(site.get("payload"), Mapping) else {}
+    profile = config.get("customer_profile") if isinstance(config.get("customer_profile"), Mapping) else {}
+    business = profile.get("business") if isinstance(profile.get("business"), Mapping) else {}
+    observed = business.get("observed_site_settings") if isinstance(business.get("observed_site_settings"), Mapping) else {}
+    return bool(payload.get("enabled") or observed.get("website_url"))
+
 # The builder's creative prompt is composed from the confirmed intake unless the
 # owner supplied a real design request. Placeholders from older clients would
 # otherwise reach the design pipeline.
@@ -220,6 +235,7 @@ class DesignIntakeService:
             else False
         )
         self.database_only = database_only
+        self.website_present = _website_present_from_config(self.config)
         if advisor is not None:
             self.advisor = advisor
         elif llm is not None and getattr(llm, "api_key", True):
@@ -228,6 +244,8 @@ class DesignIntakeService:
                     llm,
                     self.config.get("design_engine") or {},
                     skill_set=self.skill_set,
+                    database_only=database_only,
+                    website_present=self.website_present,
                 )
             except DesignIntakeAdvisorError:
                 self.advisor = UnavailableDesignIntakeAdvisor()
@@ -809,10 +827,11 @@ class DesignIntakeService:
         result: dict[str, Any] = {}
         for key in (
             "mode", "phase", "scope", "language", "site", "route", "collection", "document",
-            "document_id", "slug", "state",
+            "document_id", "slug", "state", "website_present", "incubation_needed", "journey",
         ):
             if value.get(key) is not None:
-                result[key] = str(value.get(key))[:300]
+                raw_value = value.get(key)
+                result[key] = raw_value if isinstance(raw_value, bool) else str(raw_value)[:300]
         raw_target = value.get("target")
         if isinstance(raw_target, Mapping):
             target: dict[str, Any] = {}
@@ -910,12 +929,12 @@ class DesignIntakeService:
         observed = business.get("observed_site_settings") if isinstance(business.get("observed_site_settings"), Mapping) else {}
         public_url = str(observed.get("website_url") or "").strip()[:300]
         workspace_url = str(payload.get("url") or site.get("preview_url") or "").strip()[:300]
-        if self.database_only or bool(payload.get("enabled")) or public_url:
+        if self.website_present:
             compact["existing_site"] = {
                 "status": "existing_live_website",
                 "public_url": public_url,
                 "workspace_url": workspace_url,
-                "owner_surface": "The owner is looking at this existing website in the adjacent review pane.",
+                "owner_surface": "The owner is looking at this existing website in the left review pane; the Ada conversation is in the right panel.",
             }
         surface = self._owner_surface_context(owner_context)
         if surface:

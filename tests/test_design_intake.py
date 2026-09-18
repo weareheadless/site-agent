@@ -1632,6 +1632,32 @@ def test_existing_site_customer_view_carries_the_owner_visible_page(tmp_path):
     assert "existing live website" in prompt
     assert "selected_page_reference" in prompt
     assert "The first build is the MAIN PAGE only." not in prompt
+    assert "readiness means the incubation brief is complete" in prompt
+    assert "offer to confirm and build the first visual page" not in prompt
+    memory.close()
+
+
+def test_design_intake_advisor_receives_the_authoritative_existing_site_journey(tmp_path):
+    class _LLM:
+        api_key = "configured"
+
+        def chat(self, messages, **kwargs):
+            return "{}"
+
+    memory = Memory(tmp_path / "intake.db")
+    service = DesignIntakeService(
+        memory,
+        config={
+            "site": {"payload": {"enabled": True}},
+            "atelier_intake": {"enabled": True, "database_only": True},
+            "design_engine": {"intake_advisor": {}},
+        },
+        llm=_LLM(),
+    )
+
+    assert service.website_present is True
+    assert service.advisor.website_present is True
+    assert service.advisor.database_only is True
     memory.close()
 
 

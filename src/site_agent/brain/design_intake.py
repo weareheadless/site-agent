@@ -135,6 +135,26 @@ def _history_payload(history: Sequence[Mapping[str, Any]]) -> list[dict[str, Any
     return result
 
 
+def _config_website_present(config: Mapping[str, Any] | None) -> bool:
+    """Resolve the tenant's journey without guessing from owner language.
+
+    The application normally passes this as an explicit constructor value. The
+    fallback keeps direct prompt tests and standalone advisor use honest too.
+    """
+    value = config if isinstance(config, Mapping) else {}
+    journey = value.get("ada_journey") or value.get("journey") or {}
+    if isinstance(journey, Mapping) and "website_present" in journey:
+        return bool(journey.get("website_present"))
+    site = value.get("site") if isinstance(value.get("site"), Mapping) else {}
+    if "website_present" in site:
+        return bool(site.get("website_present"))
+    payload = site.get("payload") if isinstance(site.get("payload"), Mapping) else {}
+    profile = value.get("customer_profile") if isinstance(value.get("customer_profile"), Mapping) else {}
+    business = profile.get("business") if isinstance(profile.get("business"), Mapping) else {}
+    observed = business.get("observed_site_settings") if isinstance(business.get("observed_site_settings"), Mapping) else {}
+    return bool(payload.get("enabled") or observed.get("website_url"))
+
+
 def _advisor_prompt(
     draft: DesignIntakeDraft,
     assets: Sequence[Mapping[str, Any]],
@@ -144,7 +164,9 @@ def _advisor_prompt(
     *,
     database_only: bool = False,
     owner_language: str = "",
+    website_present: bool | None = None,
 ) -> str:
+    existing_site = bool(database_only) if website_present is None else bool(website_present)
     asset_summary = [
         {
             "asset_id": item.get("asset_id") or item.get("id"),
@@ -166,17 +188,18 @@ def _advisor_prompt(
         if isinstance(item, Mapping)
     ]
     mode_note = (
-        "This is a database-only context and research conversation for an existing live website. "
-        "It populates durable intake and research records; it never starts a visual build or publish."
-        if database_only
-        else "This conversation may later hand off to the visual design pipeline, but the owner must explicitly confirm that handoff."
+        "This is an existing-site incubation and research conversation for a live website. "
+        "It records a verified working brief against the current site; it must not treat the site as a new project. "
+        + ("It is database-only: it never starts a visual build or publish." if database_only else "Any later visual handoff still requires explicit owner confirmation.")
+        if existing_site
+        else "This is a new-site intake conversation. It may later hand off to the visual design pipeline, but the owner must explicitly confirm that handoff."
     )
     scope_note = (
         "This is NOT a new-site intake. The business already has an existing live website, and the owner is viewing "
-        "that website in the adjacent review pane. Do not ask the owner to confirm what a first version should focus on "
+        "that website in the left review pane, beside the Ada conversation in the right panel. Do not ask the owner to confirm what a first version should focus on "
         "or imply that the site has not been built. Use the existing page and navigation metadata in CUSTOMER VIEW as "
         "the reference for incubation and research."
-        if database_only
+        if existing_site
         else "The first build is the MAIN PAGE only. Once the main page is clear, record site.required_pages (e.g. [\"index.html\"]) and do not demand a full sitemap for the first pass."
     )
     language_preference = (
@@ -184,6 +207,11 @@ def _advisor_prompt(
         "and creative insight in that language unless the owner explicitly asks for a translation."
         if owner_language
         else "No workspace language preference was supplied; infer the reply language from the owner conversation."
+    )
+    readiness_note = (
+        "When ALL core facts are present and owner-stated, set `suggested_readiness` to `ready_to_build` and make the assistant_message a short summary asking the owner to confirm the working brief. In this existing-site conversation, readiness means the incubation brief is complete; it is never permission to launch, build, create, or redesign a first page or homepage. Never say that the existing site has not been built."
+        if existing_site
+        else "When ALL core facts are present and owner-stated, set \"suggested_readiness\": \"ready_to_build\" and make the assistant_message a short summary plus an offer to confirm and build the first visual page."
     )
     prompt = """You are Ada, the creative lead guiding an owner through a website design intake
 for a real business.
@@ -294,10 +322,8 @@ Readiness gate:
   design.assumption_permission.
 - business.name must come from the OWNER. A recommended/placeholder name does
   not satisfy it.
-- When ALL core facts are present and owner-stated, set "suggested_readiness":
-  "ready_to_build" and make the assistant_message a short summary plus an
-  offer to confirm and build the first visual page.
-- Otherwise set "suggested_readiness": "collecting", and make the assistant
+ - """ + readiness_note + """
+ - Otherwise set "suggested_readiness": "collecting", and make the assistant
   message ASK for whatever is missing and genuinely unanswered. Never write
   "ready to build", "I can start building", "confirm and I'll build", or any
   build-offer wording in prose unless suggested_readiness is
@@ -391,11 +417,23 @@ class LLMDesignIntakeAdvisor:
         config: Mapping[str, Any] | None = None,
         *,
         skill_set: DesignSkillSet | None = None,
+        database_only: bool | None = None,
+        website_present: bool | None = None,
     ) -> None:
         if llm is None or not callable(getattr(llm, "chat", None)):
             raise DesignIntakeAdvisorError("intake advisor is not configured")
         self.llm = llm
         self.config = dict(config or {})
+        self.database_only = (
+            bool(database_only)
+            if database_only is not None
+            else bool(
+                (self.config.get("atelier_intake") or {}).get("database_only", False)
+                if isinstance(self.config.get("atelier_intake"), Mapping)
+                else False
+            )
+        )
+        self.website_present = _config_website_present(self.config) if website_present is None else bool(website_present)
         self.skill_set = skill_set or load_design_skills()
         self.last_call_count = 0
 
@@ -416,11 +454,7 @@ class LLMDesignIntakeAdvisor:
         if not message:
             raise DesignIntakeAdvisorError("owner message is empty")
         settings = self.config.get("intake_advisor") if isinstance(self.config.get("intake_advisor"), Mapping) else {}
-        database_only = bool(
-            (self.config.get("atelier_intake") or {}).get("database_only", False)
-            if isinstance(self.config.get("atelier_intake"), Mapping)
-            else False
-        )
+        database_only = self.database_only
         system = _advisor_prompt(
             draft,
             assets,
@@ -429,6 +463,7 @@ class LLMDesignIntakeAdvisor:
             customer_view,
             database_only=database_only,
             owner_language=str(owner_language or "").strip()[:24],
+            website_present=self.website_present,
         )
         owner_content: Any = message[:20_000]
         # The advisor never receives raw image URLs. The media worker performs

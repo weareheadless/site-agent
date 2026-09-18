@@ -371,6 +371,67 @@ def test_shared_api_routes_new_tenant_conversations_through_database_intake(tmp_
     tenant.memory.close()
 
 
+def test_shared_api_stamps_existing_site_journey_into_intake_context(tmp_path):
+    class Intake:
+        def __init__(self):
+            self.contexts = []
+
+        def needs_intake(self, conversation_id):
+            return True
+
+        def send_message(self, message, *, conversation_id=None, owner_context=None, idempotency_key=None):
+            self.contexts.append(dict(owner_context or {}))
+            return {"job_id": 45, "conversation_id": conversation_id or 10, "session_id": "intake-existing"}
+
+    class Tenant:
+        def __init__(self):
+            self.tenant_id = "atelier-existing"
+            self.api_token = "existing-token"
+            self.memory = Memory(tmp_path / "atelier-existing" / "memory.db")
+            self.context = {
+                "llm": object(),
+                "atelier_intake": Intake(),
+                "atelier_journey": AtelierJourney(website_present=True, incubation_needed=True),
+            }
+
+    tenant = Tenant()
+
+    class Registry:
+        tenants = {"atelier-existing": tenant}
+
+        @staticmethod
+        def for_token(token):
+            return tenant if token == tenant.api_token else None
+
+    app = FastAPI()
+    registry = Registry()
+    register_atelier_routes(
+        app,
+        config={},
+        env={},
+        service=AtelierChatService(registry=registry),
+        registry=registry,
+        prefix="/v1/atelier",
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/atelier/chat",
+            headers={"Authorization": "Bearer existing-token"},
+            json={"message": "Continue the research."},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["phase"] == "incubation"
+    assert response.json()["website_present"] is True
+    assert tenant.context["atelier_intake"].contexts == [{
+        "website_present": True,
+        "incubation_needed": True,
+        "journey": "incubation",
+    }]
+    tenant.memory.close()
+
+
 def test_atelier_journey_separates_existing_site_incubation_from_new_site_intake():
     existing = _journey_for_config({
         "site": {"payload": {"enabled": True}},
