@@ -15,7 +15,13 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 
-from ..application.atelier import AtelierBridgeError, AtelierChatService, AtelierTenant, AtelierTenantRegistry
+from ..application.atelier import (
+    AtelierBridgeError,
+    AtelierChatService,
+    AtelierSourceConflict,
+    AtelierTenant,
+    AtelierTenantRegistry,
+)
 from ..config import resolve_secret
 
 
@@ -225,6 +231,83 @@ def register_atelier_routes(
             return service.media(limit=limit, tenant=tenant)
         except AtelierBridgeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get(f"{prefix}/source/inventory")
+    def atelier_source_inventory_get(request: Request, branch: str | None = None):
+        tenant = require_service(request)
+        try:
+            body = {"branch": branch} if branch else {}
+            return service.source_inventory(body, tenant=tenant)
+        except AtelierBridgeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post(f"{prefix}/source/inventory")
+    async def atelier_source_inventory(request: Request):
+        tenant = require_service(request)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - normalize malformed bridge input
+            raise HTTPException(status_code=400, detail="invalid json")
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="request body must be an object")
+        try:
+            return service.source_inventory(body, tenant=tenant)
+        except AtelierBridgeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post(f"{prefix}/source/edit")
+    async def atelier_source_edit(request: Request):
+        tenant = require_service(request)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - normalize malformed bridge input
+            raise HTTPException(status_code=400, detail="invalid json")
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="request body must be an object")
+        try:
+            return service.source_edit(body, tenant=tenant)
+        except AtelierSourceConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except AtelierBridgeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get(f"{prefix}/source/preview")
+    def atelier_source_preview_latest(request: Request, branch: str | None = None):
+        tenant = require_service(request)
+        try:
+            return service.source_preview_latest(branch, tenant=tenant)
+        except AtelierBridgeError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post(f"{prefix}/source/preview")
+    async def atelier_source_preview(request: Request):
+        tenant = require_service(request)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - normalize malformed bridge input
+            raise HTTPException(status_code=400, detail="invalid json")
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="request body must be an object")
+        try:
+            return service.source_preview_start(body, tenant=tenant)
+        except AtelierBridgeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get(f"{prefix}/source/preview/{{job_id}}")
+    def atelier_source_preview_status(job_id: str, request: Request):
+        tenant = require_service(request)
+        try:
+            return service.source_preview_status(job_id, tenant=tenant)
+        except AtelierBridgeError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post(f"{prefix}/source/preview/{{job_id}}/deploy")
+    def atelier_source_preview_deploy(job_id: str, request: Request):
+        tenant = require_service(request)
+        try:
+            return service.source_preview_promote(job_id, tenant=tenant)
+        except AtelierBridgeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.get(f"{prefix}/chat/jobs/{{job_id}}")
     def atelier_chat_job(job_id: str, request: Request):

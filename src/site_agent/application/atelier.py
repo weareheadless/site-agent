@@ -1146,3 +1146,156 @@ class AtelierChatService:
             f"{json.dumps(safe_context, ensure_ascii=False, sort_keys=True)}\n\n"
             f"[User request]\n{message}"
         )
+class AtelierSourceConflict(AtelierBridgeError):
+    """A source edit was based on stale or mismatched source evidence."""
+
+
+                from .source_editor import SourceEditorService
+                from .source_deployment import SourceDeploymentService
+
+                context["source_editor"] = SourceEditorService(tenant_config, dict(env))
+                context["source_deployment"] = SourceDeploymentService(tenant_config, dict(env), memory=memory)
+        source_deployment = tenant.context.pop("source_deployment", None)
+        close_source_deployment = getattr(source_deployment, "close", None)
+        if callable(close_source_deployment):
+            close_source_deployment()
+        config: Mapping[str, Any] | None = None,
+        env: Mapping[str, str] | None = None,
+        source_editor: Any | None = None,
+        source_deployment: Any | None = None,
+        self.config = dict(config or {})
+        self.env = dict(env or {})
+        self.source_editor = source_editor
+        self.source_deployment = source_deployment
+    def _source_editor(self, tenant: AtelierTenant | None) -> Any:
+        if self.registry is not None:
+            if tenant is None or tenant.tenant_id not in self.registry.tenants:
+                raise AtelierBridgeError("tenant is not authorized")
+            editor = tenant.context.get("source_editor")
+            if editor is not None:
+                return editor
+            config = tenant.config
+            env = tenant.context.get("env") or {}
+        else:
+            editor = self.source_editor
+            if editor is not None:
+                return editor
+            config = self.config
+            env = self.env
+        if not config:
+            raise AtelierBridgeError("Atelier source editing is not configured")
+        from .source_editor import SourceEditorService
+
+        return SourceEditorService(config, env)
+
+    def _source_deployer(self, tenant: AtelierTenant | None) -> Any:
+        if self.registry is not None:
+            if tenant is None or tenant.tenant_id not in self.registry.tenants:
+                raise AtelierBridgeError("tenant is not authorized")
+            deployer = tenant.context.get("source_deployment")
+            if deployer is not None:
+                return deployer
+            config = tenant.config
+            env = tenant.context.get("env") or {}
+        else:
+            deployer = self.source_deployment
+            if deployer is not None:
+                return deployer
+            config = self.config
+            env = self.env
+        if not config:
+            raise AtelierBridgeError("Atelier source deployment is not configured")
+        from .source_deployment import SourceDeploymentService
+
+        return SourceDeploymentService(config, env)
+
+    def source_inventory(
+        self,
+        body: Mapping[str, Any] | None = None,
+        *,
+        tenant: AtelierTenant | None = None,
+    ) -> dict[str, Any]:
+        """Inventory editable source fields for the tenant's selected branch."""
+        if body is not None and not isinstance(body, Mapping):
+            raise AtelierBridgeError("source inventory body must be an object")
+        from .source_editor import SourceEditorError
+
+        try:
+            return self._source_editor(tenant).inventory(body or {})
+        except SourceEditorError as exc:
+            raise AtelierBridgeError(str(exc)[:500]) from exc
+
+    def source_edit(
+        self,
+        body: Mapping[str, Any],
+        *,
+        tenant: AtelierTenant | None = None,
+    ) -> dict[str, Any]:
+        """Apply one hash/range-checked source edit to the preview branch."""
+        if not isinstance(body, Mapping):
+            raise AtelierBridgeError("source edit body must be an object")
+        from .source_editor import SourceConflictError, SourceEditorError
+
+        try:
+            return self._source_editor(tenant).edit(body)
+        except SourceConflictError as exc:
+            raise AtelierSourceConflict(str(exc)[:500]) from exc
+        except SourceEditorError as exc:
+            raise AtelierBridgeError(str(exc)[:500]) from exc
+
+    def source_preview_start(
+        self,
+        body: Mapping[str, Any] | None = None,
+        *,
+        tenant: AtelierTenant | None = None,
+    ) -> dict[str, Any]:
+        """Validate a GitHub draft asynchronously and upload a version preview."""
+        if body is not None and not isinstance(body, Mapping):
+            raise AtelierBridgeError("source preview body must be an object")
+        from .source_deployment import SourceDeploymentError
+
+        try:
+            return self._source_deployer(tenant).start(body or {})
+        except SourceDeploymentError as exc:
+            raise AtelierBridgeError(str(exc)[:500]) from exc
+
+    def source_preview_status(
+        self,
+        job_id: str,
+        *,
+        tenant: AtelierTenant | None = None,
+    ) -> dict[str, Any]:
+        """Return one source preview build without exposing command secrets."""
+        from .source_deployment import SourceDeploymentError
+
+        try:
+            return self._source_deployer(tenant).status(job_id)
+        except SourceDeploymentError as exc:
+            raise AtelierBridgeError(str(exc)[:500]) from exc
+
+    def source_preview_latest(
+        self,
+        branch: str | None = None,
+        *,
+        tenant: AtelierTenant | None = None,
+    ) -> dict[str, Any]:
+        from .source_deployment import SourceDeploymentError
+
+        try:
+            return self._source_deployer(tenant).latest(branch)
+        except SourceDeploymentError as exc:
+            raise AtelierBridgeError(str(exc)[:500]) from exc
+
+    def source_preview_promote(
+        self,
+        job_id: str,
+        *,
+        tenant: AtelierTenant | None = None,
+    ) -> dict[str, Any]:
+        """Deploy one previously validated source preview through the approval boundary."""
+        from .source_deployment import SourceDeploymentError
+
+        try:
+            return self._source_deployer(tenant).promote(job_id)
+        except SourceDeploymentError as exc:
+            raise AtelierBridgeError(str(exc)[:500]) from exc

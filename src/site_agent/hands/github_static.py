@@ -9,9 +9,15 @@ from __future__ import annotations
 
 import base64
 import json
+import os
+import re
+import shutil
+import subprocess
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 from ..config import resolve_secret
@@ -53,10 +59,190 @@ class GithubStatic(SiteAdapter):
 
     def __init__(self, config: dict[str, Any], env: dict[str, str] | None = None):
         super().__init__(config)
-        self.token = secret(config, "github_token", env)
+        self.env = dict(env or {})
+        self.token = secret(config, "github_token", self.env)
         self.repo = str(self.site.get("repository", "")).strip().strip("/")
         self.branch = str(self.site.get("branch", "main"))
         self.content_path = str(self.site.get("content_path", "content.json"))
+        self._api_unavailable = False
+
+    def _local_checkout(self) -> Path | None:
+        raw = str(self.site.get("clone_path") or "").strip()
+        if not raw:
+            return None
+        path = Path(raw).expanduser().resolve()
+        return path if (path / ".git").exists() else None
+
+    def _git_env(self) -> dict[str, str]:
+        env = dict(os.environ)
+        env.update(self.env)
+        command = str(self.site.get("git_ssh_command") or "").strip()
+        key = Path("/ATELIER/atelier-github_ed25519")
+        if not command and key.is_file():
+            command = f"ssh -i {key} -o IdentitiesOnly=yes"
+        if command:
+            env["GIT_SSH_COMMAND"] = command
+        return env
+
+    @staticmethod
+    def _branch_ref(branch: str) -> str:
+        value = str(branch or "").strip()
+        if not value or not re.fullmatch(r"[A-Za-z0-9._/-]+", value) or value.startswith("/") or value.endswith("/") or ".." in Path(value).parts:
+            raise AdapterError("github: invalid branch")
+        return f"refs/remotes/origin/{value}"
+
+    @staticmethod
+    def _source_path(path: str) -> str:
+        value = str(path or "").replace("\\", "/").strip("/")
+        if not value or value == ".git" or value.startswith(".git/") or ".." in Path(value).parts:
+            raise AdapterError("github: invalid source path")
+        return value
+
+    def _git(self, args: list[str], cwd: Path, *, timeout: int = 120) -> subprocess.CompletedProcess[bytes]:
+        try:
+            result = subprocess.run(
+                ["git", *args],
+                cwd=str(cwd),
+                env=self._git_env(),
+                capture_output=True,
+                timeout=timeout,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise AdapterError(f"github git transport failed: {str(exc)[:300]}") from exc
+        if result.returncode:
+            output = (result.stderr or result.stdout or b"git command failed").decode(errors="replace").strip()
+            raise AdapterError(f"github git transport: {output[-500:]}")
+        return result
+
+    def _local_remote_ref(self, branch: str) -> str:
+        checkout = self._local_checkout()
+        if checkout is None:
+            raise AdapterError("github: local source checkout is not configured")
+        ref = self._branch_ref(branch)
+        self._git(["fetch", "--no-tags", "origin", f"+{branch}:{ref}"], checkout)
+        return ref
+
+    def _local_branch_head(self, branch: str) -> str | None:
+        checkout = self._local_checkout()
+        if checkout is None:
+            return None
+        try:
+            ref = self._local_remote_ref(branch)
+            return self._git(["rev-parse", ref], checkout).stdout.decode().strip() or None
+        except AdapterError:
+            try:
+                return self._git(["rev-parse", f"refs/heads/{branch}"], checkout).stdout.decode().strip() or None
+            except AdapterError:
+                return None
+
+    def _local_get_file(self, path: str, branch: str) -> tuple[str | None, bytes | None]:
+        checkout = self._local_checkout()
+        if checkout is None:
+            raise AdapterError("github: local source checkout is not configured")
+        source_path = self._source_path(path)
+        ref = self._local_remote_ref(branch)
+        spec = f"{ref}:{source_path}"
+        try:
+            sha = self._git(["rev-parse", spec], checkout).stdout.decode().strip() or None
+            data = self._git(["show", spec], checkout).stdout
+            return sha, data
+        except AdapterError as exc:
+            if "needed a single revision" in str(exc) or "exists on disk" in str(exc):
+                return None, None
+            raise
+
+    def _local_list_files(self, branch: str) -> list[str]:
+        checkout = self._local_checkout()
+        if checkout is None:
+            raise AdapterError("github: local source checkout is not configured")
+        ref = self._local_remote_ref(branch)
+        output = self._git(["ls-tree", "-r", "--name-only", ref], checkout).stdout.decode()
+        return [line.strip() for line in output.splitlines() if line.strip()]
+
+    def _local_ensure_branch(self, name: str) -> dict[str, Any]:
+        checkout = self._local_checkout()
+        if checkout is None:
+            raise AdapterError("github: local source checkout is not configured")
+        target = str(name or "").strip()
+        try:
+            result = self._git(["ls-remote", "--exit-code", "--heads", "origin", f"refs/heads/{target}"], checkout)
+            sha = result.stdout.decode().split()[0] if result.stdout.decode().split() else ""
+            return {"created": False, "branch": target, "sha": sha}
+        except AdapterError:
+            base_sha = self._local_branch_head(self.branch)
+            if not base_sha:
+                raise AdapterError("github: production branch has no head")
+            self._git(["push", "origin", f"{base_sha}:refs/heads/{target}"], checkout)
+            return {"created": True, "branch": target, "sha": base_sha}
+
+    def _local_commit_file(
+        self,
+        path: str,
+        data: bytes,
+        message: str,
+        branch: str,
+        expected_sha: str | None = None,
+    ) -> dict[str, Any]:
+        checkout = self._local_checkout()
+        if checkout is None:
+            raise AdapterError("github: local source checkout is not configured")
+        current_sha, _current_data = self._local_get_file(path, branch)
+        if expected_sha is not None and current_sha != expected_sha:
+            return {
+                "adapter": self.name,
+                "committed": False,
+                "status": 409,
+                "path": path,
+                "branch": branch,
+                "reason": "file changed since the source edit was read",
+            }
+
+        worktree_root = Path(tempfile.mkdtemp(prefix="atelier-github-edit-"))
+        worktree = worktree_root / "repo"
+        try:
+            ref = self._branch_ref(branch)
+            self._git(["worktree", "add", "--detach", str(worktree), ref], checkout)
+            target = worktree / self._source_path(path)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+            self._git(["add", "--", self._source_path(path)], worktree)
+            self._git(
+                [
+                    "-c", "user.name=Atelier source editor",
+                    "-c", "user.email=atelier-source@weareheadless.com",
+                    "commit", "-m", message[:200],
+                ],
+                worktree,
+            )
+            commit_sha = self._git(["rev-parse", "HEAD"], worktree).stdout.decode().strip()
+            try:
+                self._git(["push", "origin", f"HEAD:refs/heads/{branch}"], worktree)
+            except AdapterError as exc:
+                if "non-fast-forward" in str(exc) or "fetch first" in str(exc):
+                    return {
+                        "adapter": self.name,
+                        "committed": False,
+                        "status": 409,
+                        "path": path,
+                        "branch": branch,
+                        "reason": "preview branch changed during the source commit",
+                    }
+                raise
+            return {
+                "adapter": self.name,
+                "committed": True,
+                "branch": branch,
+                "path": path,
+                "commit_sha": commit_sha,
+            }
+        finally:
+            if worktree.exists():
+                try:
+                    self._git(["worktree", "remove", "--force", str(worktree)], checkout)
+                except AdapterError:
+                    pass
+            shutil.rmtree(worktree_root, ignore_errors=True)
 
     def _url(self, path: str) -> str:
         encoded = "/".join(part for part in path.split("/") if part)
@@ -65,29 +251,42 @@ class GithubStatic(SiteAdapter):
     def validate(self) -> None:
         if not self.repo or "/" not in self.repo:
             raise AdapterError(f"{self.name}: site.repository must be 'owner/repo'")
-        if not self.token:
+        if not self.token and self._local_checkout() is None:
             raise AdapterError(f"{self.name}: github_token not configured")
 
     def get_file(self, path: str, branch: str | None = None) -> tuple[str | None, bytes | None]:
-        ref = urllib.parse.quote(branch or self.branch)
+        target_branch = branch or self.branch
+        if self._api_unavailable:
+            return self._local_get_file(path, target_branch)
+        ref = urllib.parse.quote(target_branch)
         try:
             status, body = _request("GET", f"{self._url(path)}?ref={ref}", token=self.token)
         except AdapterError as exc:
             if " 404" in str(exc):
-                return None, None
+                self._api_unavailable = True
+                return self._local_get_file(path, target_branch)
             raise
         if status != 200:
             return None, None
+        self._api_unavailable = False
         content = base64.b64decode(body.get("content") or "")
         return body.get("sha"), content
 
     def ensure_branch(self, name: str) -> dict[str, Any]:
         """Create a branch pointing at the current head of the working branch."""
-        _, head = _request(
-            "GET",
-            f"{API}/repos/{self.repo}/git/ref/heads/{urllib.parse.quote(self.branch)}",
-            token=self.token,
-        )
+        if self._api_unavailable:
+            return self._local_ensure_branch(name)
+        try:
+            _, head = _request(
+                "GET",
+                f"{API}/repos/{self.repo}/git/ref/heads/{urllib.parse.quote(self.branch)}",
+                token=self.token,
+            )
+        except AdapterError as exc:
+            if " 404" in str(exc):
+                self._api_unavailable = True
+                return self._local_ensure_branch(name)
+            raise
         head_sha = head["object"]["sha"]
         try:
             _, created = _request(
@@ -98,9 +297,34 @@ class GithubStatic(SiteAdapter):
             )
             return {"created": True, "branch": name, "sha": created.get("object", {}).get("sha")}
         except AdapterError as exc:
+            if " 404" in str(exc):
+                self._api_unavailable = True
+                return self._local_ensure_branch(name)
             if "422" in str(exc):  # already exists — fine for a preview branch
                 return {"created": False, "branch": name}
             raise
+
+    def get_branch_head(self, name: str | None = None) -> str | None:
+        """Return the immutable commit currently pointed at by a branch."""
+        branch = name or self.branch
+        if self._api_unavailable:
+            return self._local_branch_head(branch)
+        try:
+            status, body = _request(
+                "GET",
+                f"{API}/repos/{self.repo}/git/ref/heads/{urllib.parse.quote(branch)}",
+                token=self.token,
+            )
+        except AdapterError as exc:
+            if " 404" in str(exc):
+                self._api_unavailable = True
+                return self._local_branch_head(branch)
+            raise
+        if status != 200:
+            return None
+        self._api_unavailable = False
+        value = body.get("object", {}).get("sha") if isinstance(body, dict) else None
+        return str(value or "").strip() or None
 
     def get_content(self, branch: str | None = None) -> dict[str, Any]:
         _, data = self.get_file(self.content_path, branch=branch)
@@ -108,8 +332,17 @@ class GithubStatic(SiteAdapter):
             raise AdapterError(f"{self.name}: {self.content_path} not found on branch '{branch or self.branch}'")
         return json.loads(data)
 
-    def commit_file(self, path: str, data: bytes, message: str, branch: str | None = None) -> dict[str, Any]:
+    def commit_file(
+        self,
+        path: str,
+        data: bytes,
+        message: str,
+        branch: str | None = None,
+        expected_sha: str | None = None,
+    ) -> dict[str, Any]:
         target_branch = branch or self.branch
+        if self._api_unavailable:
+            return self._local_commit_file(path, data, message, target_branch, expected_sha)
         payload: dict[str, Any] = {
             "message": message,
             "content": base64.b64encode(data).decode(),
@@ -122,8 +355,42 @@ class GithubStatic(SiteAdapter):
         body: Any = {}
         for _ in range(3):
             sha, _ = self.get_file(path, branch=target_branch)
+            if self._api_unavailable:
+                return self._local_commit_file(path, data, message, target_branch, expected_sha)
+            if expected_sha is not None and sha != expected_sha:
+                return {
+                    "adapter": self.name,
+                    "committed": False,
+                    "status": 409,
+                    "path": path,
+                    "branch": target_branch,
+                    "reason": "file changed since the source edit was read",
+                }
             payload["sha"] = sha
-            last_status, body = _request("PUT", self._url(path), token=self.token, payload=payload)
+            try:
+                last_status, body = _request("PUT", self._url(path), token=self.token, payload=payload)
+            except AdapterError as exc:
+                if " 404" in str(exc):
+                    self._api_unavailable = True
+                    return self._local_commit_file(path, data, message, target_branch, expected_sha)
+                if " 409" not in str(exc):
+                    raise
+                # The contents API does not return a status tuple for HTTP
+                # errors. Re-read before retrying so a concurrent edit cannot
+                # be silently overwritten by the retry.
+                if expected_sha is not None:
+                    current_sha, _ = self.get_file(path, branch=target_branch)
+                    if current_sha != expected_sha:
+                        return {
+                            "adapter": self.name,
+                            "committed": False,
+                            "status": 409,
+                            "path": path,
+                            "branch": target_branch,
+                            "reason": "file changed during the source commit",
+                        }
+                last_status = 409
+                body = {}
             if last_status in (200, 201):
                 break
             if last_status != 409:
@@ -238,11 +505,19 @@ class GithubStatic(SiteAdapter):
 
     def list_files(self, branch: str | None = None) -> list[str]:
         ref = branch or self.branch
-        _, tree = _request(
-            "GET",
-            f"{API}/repos/{self.repo}/git/trees/{urllib.parse.quote(ref)}?recursive=1",
-            token=self.token,
-        )
+        if self._api_unavailable:
+            return self._local_list_files(ref)
+        try:
+            _, tree = _request(
+                "GET",
+                f"{API}/repos/{self.repo}/git/trees/{urllib.parse.quote(ref)}?recursive=1",
+                token=self.token,
+            )
+        except AdapterError as exc:
+            if " 404" not in str(exc):
+                raise
+            self._api_unavailable = True
+            return self._local_list_files(ref)
         return [item["path"] for item in tree.get("tree", []) if item.get("type") == "blob"]
 
     def revert_commit(self, sha: str) -> dict[str, Any]:

@@ -384,7 +384,12 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
         app,
         config=config,
         env=env,
-        service=context.get("atelier_service") or AtelierChatService(memory, context.get("llm")),
+        service=context.get("atelier_service") or AtelierChatService(
+            memory,
+            context.get("llm"),
+            config=config,
+            env=env,
+        ),
     )
 
     @app.post("/api/login")

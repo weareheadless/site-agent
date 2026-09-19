@@ -133,3 +133,55 @@ conversation bridge and is consumed by Ada's global tools.
 Content mutations still belong to Payload. Design requests continue through the
 existing site-agent design/candidate/approval machinery; this bridge does not
 create a second job system.
+
+## Source inventory and preview edits
+
+The source bridge is separate from Payload content editing. It reads the
+configured repository through the GitHub static adapter, runs the Atelier
+repository's `scripts/source-inventory.ts`, and commits one checked source
+value or validated batch per file to `site.preview_branch`.
+
+Optional tenant settings select the local checkout and TypeScript runner used
+by the inventory command:
+
+```yaml
+site:
+  clone_path: /ATELIER/atelier-harmonie-headless
+  preview_branch: preview
+  source_editor:
+    inventory_script: scripts/source-inventory.ts
+    node_tool: npx --no-install tsx
+    prefer_local_checkout: true
+  source_deployment:
+    clone_path: /ATELIER/atelier-harmonie-headless
+    worker_name: atelier-harmonie
+    preview_alias_prefix: atelier-draft
+    cloudflare_env_file: /ATELIER/atelier-harmonie-cloudflare.env
+```
+
+`GET /v1/atelier/source/inventory?branch=main` or `POST
+/v1/atelier/source/inventory` with an optional `{ "branch": "main" }` body
+returns the inventory plus its source branch. `POST
+/v1/atelier/source/edit` accepts an inventory field, replacement `value`,
+`source_hash`, and its `valueStart`/`valueEnd` range. The edit is rejected with
+`409` if the file hash or inventoried range is stale, and only editable text,
+string literals, JSX text, and image URL fields are patched. The same endpoint
+also accepts `{ "edits": [ ... ] }`; all fields and files are validated before
+the first write, multiple edits to one file share one commit, and different
+files receive one commit each. No deployment or production-branch merge is
+performed by the edit route.
+
+After a source commit, `POST /v1/atelier/source/preview` accepts its `branch`
+and exact GitHub `commit` and returns a job handle. The job runs typecheck,
+lint, a fresh source scan, the Next build, and the OpenNext build in an
+isolated Git worktree. It then uploads the exact build as a Cloudflare Worker
+version with a version-preview alias; production traffic is unchanged. Poll
+`GET /v1/atelier/source/preview/{job_id}` for `preview_url`, `version_id`,
+validation checks, or a safe failure. Recent job records are retained in the
+tenant memory database for commit/version traceability.
+
+`POST /v1/atelier/source/preview/{job_id}/deploy` is the explicit promotion
+boundary. It sends the validated version to 100% production traffic only after
+the owner chooses deployment. The Cloudflare API token/account ID remain
+server-only; the browser receives only job status, URLs, and commit/version
+metadata.
