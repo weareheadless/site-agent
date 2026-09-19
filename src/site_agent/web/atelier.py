@@ -1,4 +1,4 @@
-"""The narrow server-to-server bridge used by the Atelier Payload workspace.
+"""The narrow server-to-server bridge used by the Payload workspace.
 
 This module intentionally does not share the browser's password session. The
 Payload server calls these endpoints with a dedicated bearer token, while the

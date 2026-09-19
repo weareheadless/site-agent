@@ -694,11 +694,11 @@ def _build_runtime(args: argparse.Namespace):
     scheduler = Scheduler(memory, lock_path=data_dir(config) / "scheduler.lock")
     runtime = Runtime(config, memory, scheduler, llm, effective_persona(config, memory))
     context = runtime.context()
-    from .hands.atelier_payload import AtelierPayloadClient
+    from .hands.payload_gateway import PayloadGatewayClient
 
-    atelier_payload = AtelierPayloadClient.from_config(config, raw_env)
-    if atelier_payload is not None:
-        context["atelier_payload"] = atelier_payload
+    payload_gateway = PayloadGatewayClient.from_config(config, raw_env)
+    if payload_gateway is not None:
+        context["payload_gateway"] = payload_gateway
     site = config.get("site") or {}
     engine = config.get("design_engine") or {}
     builder_config = config.get("builder") or {}

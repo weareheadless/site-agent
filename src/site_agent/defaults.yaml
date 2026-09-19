@@ -56,6 +56,22 @@ atelier_intake:
     max_sources_per_pass: 8
     max_items_per_source: 15
     max_passes_before_owner_turn: 1
+    planner:
+      max_tokens: 1200
+      enable_thinking: false
+    synthesizer:
+      max_tokens: 300
+
+atelier_scheduler:
+  enabled: false
+  poll_seconds: 300
+  schedule:
+    digest: {every: weekly, weekday: monday, at: "08:00"}
+    learn: {every: weekly, weekday: monday, at: "08:20"}
+    article: {every: weekly, weekday: tuesday, at: "09:00"}
+
+atelier_editorial:
+  enabled: false
 
 schedule:
   digest: {every: daily, at: "09:00"}
@@ -162,11 +178,18 @@ site:
     max_chat_attachments: 12
     site_asset_dir: ""
     # access key id + secret resolved via env mapping below
-  payload:              # optional Atelier Payload draft gateway
+  payload:              # optional Payload draft gateway
     enabled: false
     url: ""
-    token_env: ATELIER_SITE_AGENT_TOKEN
+    api_prefix: /api
+    token_env: PAYLOAD_GATEWAY_TOKEN
     timeout_seconds: 30
+    # Required when enabled. Values are instance-specific and belong in the
+    # tenant config, not in the Payload adapter implementation.
+    contract:
+      collections: {}
+      globals: {}
+      media_fields: []
   cloudflare:
     account_id: ""
     project_name: ""
@@ -248,7 +271,7 @@ env:
   r2_secret_access_key: R2_SECRET_ACCESS_KEY
   cicero_service_token: CICERO_SERVICE_TOKEN
   crawlseo_service_token: CRAWLSEO_SERVICE_TOKEN
-  atelier_site_agent_token: ATELIER_SITE_AGENT_TOKEN
+  payload_gateway_token: PAYLOAD_GATEWAY_TOKEN
 
 builder:
   enabled: false

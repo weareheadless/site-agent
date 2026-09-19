@@ -125,7 +125,23 @@ def test_tools_spec_respects_writable_patterns(env):
     assert "propose_changes" in spec
 
 
-def test_atelier_payload_tools_read_then_update_draft(env):
+def test_payload_tool_schema_uses_the_gateway_contract(env):
+    from site_agent.brain.editor import _tools_spec
+
+    class Contract:
+        collections = ("articles",)
+        globals = ("settings",)
+
+    class Payload:
+        contract = Contract()
+
+    tools = _tools_spec({**env[2], "payload_gateway": Payload()})
+    by_name = {tool["function"]["name"]: tool for tool in tools}
+    assert by_name["read_payload_content"]["function"]["parameters"]["properties"]["collection"]["enum"] == ["articles"]
+    assert by_name["read_payload_global"]["function"]["parameters"]["properties"]["global"]["enum"] == ["settings"]
+
+
+def test_payload_gateway_tools_read_then_update_draft(env):
     from site_agent.brain.editor import _tools_spec
     from site_agent.hands.base import SiteAdapter
 
@@ -161,12 +177,127 @@ def test_atelier_payload_tools_read_then_update_draft(env):
             "read_payload_content", collection="pages", identifier="home", identifier_kind="sourceId")},
         {"content": None, "tool_calls": _tc(
             "update_payload_draft", collection="pages", id="7", data={"title": "New heading"})},
-    ]), "atelier_payload": payload}
+    ]), "payload_gateway": payload}
     result = handle_message(context, Adapter(), "Change the heading on the homepage")
 
     assert result["reply"].startswith("Payload draft updated:")
     assert payload.updates == [("pages", "7", {"title": "New heading"})]
     assert "read_payload_content" in json.dumps(_tools_spec(context))
+
+
+def test_payload_gateway_editable_tools_inspect_then_set_registered_field(env):
+    from site_agent.brain.editor import _tools_spec
+    from site_agent.hands.base import SiteAdapter
+
+    class Payload:
+        def __init__(self):
+            self.calls = []
+
+        def inspect_editable_fields(self, collection, **kwargs):
+            self.calls.append(("inspect", collection, kwargs))
+            return {
+                "collection": collection,
+                "document_id": "7",
+                "fields": [{
+                    "id": "home-hero-heading",
+                    "key": "home.hero.heading",
+                    "type": "text",
+                    "value": "Old heading",
+                }],
+            }
+
+        def set_editable_field(self, collection, **kwargs):
+            self.calls.append(("set", collection, kwargs))
+            return {
+                "collection": collection,
+                "document_id": "7",
+                "field": {"key": kwargs["key"], "value": kwargs["value"]},
+            }
+
+    class Adapter(SiteAdapter):
+        name = "t"
+        site = {"content_path": "content.json"}
+
+        def get_content(self):
+            return {}
+
+        def get_file(self, path, branch=None):
+            return (None, None)
+
+        def commit_file(self, path, data, message, branch=None):
+            return {}
+
+    payload = Payload()
+    context = {**env[2], "llm": FakeToolsLLM([
+        {"content": None, "tool_calls": _tc(
+            "inspect_editable_fields", collection="pages", identifier="home", identifier_kind="sourceId")},
+        {"content": None, "tool_calls": _tc(
+            "set_editable_field", collection="pages", identifier="home",
+            identifier_kind="sourceId", key="home.hero.heading",
+            value="New heading", expected_value="Old heading")},
+    ]), "payload_gateway": payload}
+
+    result = handle_message(context, Adapter(), "Change the homepage hero heading")
+
+    assert result["reply"].startswith("Editable field draft updated:")
+    assert payload.calls[0][0] == "inspect"
+    assert payload.calls[1][2]["key"] == "home.hero.heading"
+    assert payload.calls[1][2]["expected_value"] == "Old heading"
+    spec = json.dumps(_tools_spec(context))
+    assert "inspect_editable_fields" in spec
+    assert "set_editable_field" in spec
+
+
+def test_payload_gateway_editable_tool_migrates_a_new_section_contract(env):
+    from site_agent.hands.base import SiteAdapter
+
+    class Payload:
+        def __init__(self):
+            self.calls = []
+
+        def migrate_editable_fields(self, collection, **kwargs):
+            self.calls.append((collection, kwargs))
+            return {
+                "collection": collection,
+                "document_id": "7",
+                "fields": kwargs["fields"],
+            }
+
+    class Adapter(SiteAdapter):
+        name = "t"
+        site = {"content_path": "content.json"}
+
+        def get_content(self):
+            return {}
+
+        def get_file(self, path, branch=None):
+            return (None, None)
+
+        def commit_file(self, path, data, message, branch=None):
+            return {}
+
+    fields = [
+        {"key": "home.ada.test.eyebrow", "type": "text", "label": "Ada test eyebrow"},
+        {"key": "home.ada.test.title", "type": "text", "label": "Ada test title"},
+        {"key": "home.ada.test.body", "type": "richText", "label": "Ada test body"},
+        {"key": "home.ada.test.image", "type": "image", "label": "Ada test image"},
+    ]
+    payload = Payload()
+    context = {**env[2], "llm": FakeToolsLLM([
+        {"content": None, "tool_calls": _tc(
+            "migrate_editable_fields", collection="pages", identifier="home",
+            identifier_kind="sourceId", fields=fields)},
+    ]), "payload_gateway": payload}
+
+    result = handle_message(context, Adapter(), "Create a new editable test section on the homepage")
+
+    assert result["reply"].startswith("Editable field migration draft applied:")
+    assert payload.calls == [("pages", {
+        "identifier": "home",
+        "identifier_kind": "sourceId",
+        "fields": fields,
+        "locale": None,
+    })]
 
 
 def test_reads_pending_build_from_preview_branch(env):

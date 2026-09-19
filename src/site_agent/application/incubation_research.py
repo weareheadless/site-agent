@@ -650,11 +650,32 @@ class IncubationResearchService:
                     summary = proposed_summary[:2_000]
                     translated = source_language != owner_language
                 proposed_kind = str(proposal.get("kind") or kind).strip().lower()
-                if proposed_kind in {"audience_language", "audience_concern", "audience_desire", "business_context", "content_opportunity", "creative_implication", "contradiction"}:
+                if proposed_kind in {"audience_language", "audience_concern", "audience_desire", "trend", "business_context", "content_opportunity", "creative_implication", "contradiction"}:
                     kind = proposed_kind
             if not summary:
                 continue
-            supports = ["audience.primary"] if kind == "audience_language" else ["site.required_pages"]
+            proposal_paths = proposal.get("supports_paths") if isinstance(proposal, Mapping) else None
+            supports = [
+                str(item).strip()[:160]
+                for item in (proposal_paths if isinstance(proposal_paths, list) else [])
+                if re.fullmatch(r"[a-z][a-z0-9_.-]*", str(item).strip())
+            ][:8]
+            if not supports:
+                supports = (
+                    ["audience.concerns"] if kind == "audience_concern" else
+                    ["audience.motivations"] if kind == "audience_desire" else
+                    ["site.navigation_intent"] if kind == "trend" else
+                    ["audience.primary"] if kind == "audience_language" else
+                    ["site.required_pages"]
+                )
+            try:
+                proposal_confidence = float(proposal.get("confidence")) if proposal is not None else 1.0
+            except (TypeError, ValueError):
+                proposal_confidence = 1.0
+            confidence = min(
+                max(0.0, min(1.0, float(raw_finding.get("confidence") or 0.0))),
+                max(0.0, min(1.0, proposal_confidence)),
+            )
             insight_id = "insight_" + hashlib.sha256(
                 canonical_hash({
                     "request_id": request.get("request_id"),
@@ -673,7 +694,7 @@ class IncubationResearchService:
                 "finding_ids": [finding_id],
                 "supports_paths": supports,
                 "contradicts_paths": [],
-                "confidence": float(raw_finding.get("confidence") or 0.0),
+                "confidence": confidence,
                 "status": "inferred",
                 "created_at": self.now(),
             })

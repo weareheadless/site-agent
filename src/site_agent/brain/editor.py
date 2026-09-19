@@ -59,7 +59,8 @@ def set_dotted(doc: dict[str, Any], field: str, value: Any) -> Any:
 
 
 _READ_ACTIONS = {"read_file", "list_files", "get_content", "get_metrics", "list_drafts", "recall",
-                 "search_media", "search_business_knowledge", "read_payload_content"}
+                 "search_media", "search_business_knowledge", "read_payload_content",
+                 "inspect_editable_fields", "validate_editable_fields"}
 
 
 def _looks_like_design_request(message: str) -> bool:
@@ -289,13 +290,13 @@ def _writable_patterns(context: dict[str, Any]) -> list[str]:
     return [str(p) for p in ((context["config"].get("site") or {}).get("writable_patterns") or [])]
 
 
-def _atelier_payload(context: dict[str, Any]):
-    return context.get("atelier_payload")
+def _payload_gateway(context: dict[str, Any]):
+    return context.get("payload_gateway")
 
 
 def _payload_result(document: Any, *, action: str) -> str:
     if not isinstance(document, dict):
-        return f"Atelier Payload {action} completed, but returned no document."
+        return f"Payload {action} completed, but returned no document."
     compact = {
         key: document.get(key)
         for key in ("id", "sourceId", "slug", "title", "_status", "updatedAt")
@@ -305,6 +306,21 @@ def _payload_result(document: Any, *, action: str) -> str:
         for key in ("content", "sections", "description", "excerpt", "metaDescription", "seo"):
             if key in document:
                 compact[key] = document[key]
+    rendered = json.dumps(compact, ensure_ascii=False, default=str)
+    return rendered[:8000] + ("…" if len(rendered) > 8000 else "")
+
+
+def _editable_fields_result(result: Any, *, action: str) -> str:
+    """Keep the field gateway response useful without exposing a whole document."""
+    if not isinstance(result, dict):
+        return f"Editable field {action} completed, but returned no result."
+    compact = {
+        key: result.get(key)
+        for key in (
+            "collection", "document_id", "revision", "valid", "validation_errors", "field", "fields",
+        )
+        if key in result
+    }
     rendered = json.dumps(compact, ensure_ascii=False, default=str)
     return rendered[:8000] + ("…" if len(rendered) > 8000 else "")
 
@@ -362,8 +378,17 @@ def _tools_spec(context: dict[str, Any], *, design_intent: bool = False) -> list
              "ops": {"type": "array", "items": {"type": "object"}}},
             ["summary", "ops"]),
     ]
-    if _atelier_payload(context) is not None:
-        collection = {"type": "string", "enum": ["pages", "products", "posts"]}
+    if _payload_gateway(context) is not None:
+        payload = _payload_gateway(context)
+        contract = getattr(payload, "contract", None)
+        configured_collections = tuple(getattr(contract, "collections", ()) or ())
+        configured_globals = tuple(getattr(contract, "globals", ()) or ())
+        collection = {"type": "string"}
+        if configured_collections:
+            collection["enum"] = list(configured_collections)
+        payload_global = {"type": "string"}
+        if configured_globals:
+            payload_global["enum"] = list(configured_globals)
         data = {
             "type": "object",
             "description": "Only fields from the selected collection's editable draft schema.",
@@ -372,7 +397,7 @@ def _tools_spec(context: dict[str, Any], *, design_intent: bool = False) -> list
         tools.extend([
             fn(
                 "read_payload_content",
-                "Read one Atelier Payload document. Use this before changing content; identify it with the selected workspace document sourceId when available.",
+                "Read one Payload document. Use this before changing content; identify it with the selected workspace document sourceId when available.",
                 {
                     "collection": collection,
                     "identifier": {"type": "string", "description": "Payload id, sourceId, or slug"},
@@ -382,45 +407,116 @@ def _tools_spec(context: dict[str, Any], *, design_intent: bool = False) -> list
                 ["collection", "identifier"],
             ),
             fn(
+                "inspect_editable_fields",
+                "Read the explicit editable-field registry for one Payload document. Do not scan source code or infer fields from rendered text; use only the returned stable field IDs.",
+                {
+                    "collection": collection,
+                    "identifier": {"type": "string", "description": "Payload id, sourceId, or slug"},
+                    "identifier_kind": {"type": "string", "enum": ["id", "sourceId", "slug"]},
+                    "draft": {"type": "boolean"},
+                },
+                ["collection", "identifier"],
+            ),
+            fn(
+                "define_editable_field",
+                "Define one stable, declarative field binding on an existing Payload document. This writes a draft only. Use a dotted field ID such as page.hero.heading; never generate a field ID from visible copy or a DOM position.",
+                {
+                    "collection": collection,
+                    "identifier": {"type": "string", "description": "Payload id, sourceId, or slug"},
+                    "identifier_kind": {"type": "string", "enum": ["id", "sourceId", "slug"]},
+                    "key": {"type": "string", "description": "Stable dotted ID, for example page.hero.heading"},
+                    "type": {"type": "string", "enum": ["text", "richText", "image", "link"]},
+                    "label": {"type": "string"},
+                    "section": {"type": "string"},
+                    "value": {"description": "Initial text, rich-text-compatible value, or portable image source ID"},
+                    "image": {"description": "Portable media source ID or {sourceId/id} reference for an image field"},
+                    "rich_text": {"type": "object", "additionalProperties": True},
+                },
+                ["collection", "identifier", "key", "type", "label"],
+            ),
+            fn(
+                "migrate_editable_fields",
+                "Apply an explicit batch of declarative field definitions to an existing Payload document in one draft update. The definitions must come from an intentional migration plan; this tool does not scan source code or infer fields.",
+                {
+                    "collection": collection,
+                    "identifier": {"type": "string", "description": "Payload id, sourceId, or slug"},
+                    "identifier_kind": {"type": "string", "enum": ["id", "sourceId", "slug"]},
+                    "fields": {
+                        "type": "array",
+                        "maxItems": 100,
+                        "items": {
+                            "type": "object",
+                            "required": ["key", "type", "label"],
+                            "additionalProperties": True,
+                        },
+                    },
+                },
+                ["collection", "identifier", "fields"],
+            ),
+            fn(
+                "set_editable_field",
+                "Update the value of an existing registered field in a draft. Inspect the registry first and pass expected_value when the current value matters; this tool cannot create a missing binding.",
+                {
+                    "collection": collection,
+                    "identifier": {"type": "string", "description": "Payload id, sourceId, or slug"},
+                    "identifier_kind": {"type": "string", "enum": ["id", "sourceId", "slug"]},
+                    "key": {"type": "string"},
+                    "value": {"description": "New text or rich text value"},
+                    "image": {"description": "New portable media source ID or {sourceId/id} reference"},
+                    "expected_value": {"type": "string"},
+                },
+                ["collection", "identifier", "key"],
+            ),
+            fn(
+                "validate_editable_fields",
+                "Validate the explicit field registry without writing. Reports invalid IDs, duplicate bindings, missing labels, or unsupported types.",
+                {
+                    "collection": collection,
+                    "identifier": {"type": "string", "description": "Payload id, sourceId, or slug"},
+                    "identifier_kind": {"type": "string", "enum": ["id", "sourceId", "slug"]},
+                },
+                ["collection", "identifier"],
+            ),
+            fn(
                 "create_payload_draft",
-                "Create a new draft in Atelier Payload. Ask for missing required business facts instead of inventing them.",
+                "Create a new Payload draft. Ask for missing required business facts instead of inventing them.",
                 {"collection": collection, "data": data},
                 ["collection", "data"],
             ),
             fn(
                 "update_payload_draft",
-                "Update only the requested fields on an existing Atelier Payload draft. Never publish as part of this tool.",
+                "Update only the requested fields on an existing Payload draft. Never publish as part of this tool.",
                 {"collection": collection, "id": {"type": "string"}, "data": data},
                 ["collection", "id", "data"],
             ),
              fn(
                  "publish_payload_document",
-                 "Publish an existing Atelier Payload document only when the owner explicitly asks to publish it.",
+                  "Publish an existing Payload document only when the owner explicitly asks to publish it.",
                  {"collection": collection, "id": {"type": "string"}},
                  ["collection", "id"],
              ),
              fn(
                  "read_payload_global",
-                 "Read one shared Atelier Payload global. Use this before changing navigation or site-wide settings.",
+                  "Read one shared Payload global. Use this before changing navigation or site-wide settings.",
                  {
-                     "global": {"type": "string", "enum": ["navigation", "siteSettings"]},
+                      "global": payload_global,
                      "draft": {"type": "boolean"},
                  },
                  ["global"],
              ),
              fn(
                  "update_payload_global",
-                 "Update selected fields on a shared Atelier Payload global draft. Never publish as part of this tool.",
+                  "Update selected fields on a shared Payload global draft. Never publish as part of this tool.",
                  {
-                     "global": {"type": "string", "enum": ["navigation", "siteSettings"]},
+                      "global": payload_global,
                      "data": {"type": "object", "additionalProperties": True},
                  },
                  ["global", "data"],
              ),
              fn(
                  "publish_payload_global",
-                 "Publish a shared Atelier Payload global only when the owner explicitly asks to publish it.",
-                 {"global": {"type": "string", "enum": ["navigation", "siteSettings"]}},
+                  "Publish a shared Payload global only when the owner explicitly asks to publish it.",
+                  {"global": payload_global},
                  ["global"],
              ),
          ])
@@ -469,7 +565,12 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
         "propose_changes": lambda: "staging the change",
         "spawn_build": lambda: "briefing the builder agent",
         "design_request": lambda: "preparing the typed design handoff",
-        "read_payload_content": lambda: "reading the selected Payload document",
+         "read_payload_content": lambda: "reading the selected Payload document",
+        "inspect_editable_fields": lambda: "reading the declared editable fields",
+        "define_editable_field": lambda: "declaring an editable field draft",
+        "set_editable_field": lambda: "updating an editable field draft",
+        "migrate_editable_fields": lambda: "migrating declared editable fields",
+        "validate_editable_fields": lambda: "validating the declared editable fields",
         "create_payload_draft": lambda: "creating a Payload draft",
         "update_payload_draft": lambda: "updating the Payload draft",
         "publish_payload_document": lambda: "publishing the Payload document",
@@ -568,10 +669,12 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
     if name in {
         "read_payload_content", "create_payload_draft", "update_payload_draft", "publish_payload_document",
         "read_payload_global", "update_payload_global", "publish_payload_global",
+        "inspect_editable_fields", "define_editable_field", "set_editable_field", "validate_editable_fields",
+        "migrate_editable_fields",
     }:
-        payload = _atelier_payload(context)
+        payload = _payload_gateway(context)
         if payload is None:
-            return "Atelier Payload content editing is not configured on this site-agent instance."
+            return "Payload content editing is not configured on this site-agent instance."
         try:
             locale = context.get("_workspace_language") or None
             if name == "read_payload_content":
@@ -587,6 +690,62 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
                     **read_kwargs,
                 )
                 return _payload_result(document, action="read")
+            if name == "inspect_editable_fields":
+                result = payload.inspect_editable_fields(
+                    str(args.get("collection") or ""),
+                    identifier=str(args.get("identifier") or ""),
+                    identifier_kind=str(args.get("identifier_kind") or "sourceId"),
+                    draft=bool(args.get("draft", True)),
+                    locale=locale,
+                )
+                return _editable_fields_result(result, action="inspection")
+            if name == "define_editable_field":
+                result = payload.define_editable_field(
+                    str(args.get("collection") or ""),
+                    identifier=str(args.get("identifier") or ""),
+                    identifier_kind=str(args.get("identifier_kind") or "sourceId"),
+                    key=str(args.get("key") or ""),
+                    field_type=str(args.get("type") or ""),
+                    label=str(args.get("label") or ""),
+                    section=args.get("section"),
+                    value=args.get("value"),
+                    image=args.get("image"),
+                    rich_text=args.get("rich_text"),
+                    locale=locale,
+                )
+                context["_last_action_succeeded"] = True
+                return f"Editable field draft defined: {_editable_fields_result(result, action='definition')}"
+            if name == "set_editable_field":
+                result = payload.set_editable_field(
+                    str(args.get("collection") or ""),
+                    identifier=str(args.get("identifier") or ""),
+                    identifier_kind=str(args.get("identifier_kind") or "sourceId"),
+                    key=str(args.get("key") or ""),
+                    value=args.get("value"),
+                    image=args.get("image"),
+                    expected_value=args.get("expected_value"),
+                    locale=locale,
+                )
+                context["_last_action_succeeded"] = True
+                return f"Editable field draft updated: {_editable_fields_result(result, action='update')}"
+            if name == "migrate_editable_fields":
+                result = payload.migrate_editable_fields(
+                    str(args.get("collection") or ""),
+                    identifier=str(args.get("identifier") or ""),
+                    identifier_kind=str(args.get("identifier_kind") or "sourceId"),
+                    fields=args.get("fields") or [],
+                    locale=locale,
+                )
+                context["_last_action_succeeded"] = True
+                return f"Editable field migration draft applied: {_editable_fields_result(result, action='migration')}"
+            if name == "validate_editable_fields":
+                result = payload.validate_editable_fields(
+                    str(args.get("collection") or ""),
+                    identifier=str(args.get("identifier") or ""),
+                    identifier_kind=str(args.get("identifier_kind") or "sourceId"),
+                    locale=locale,
+                )
+                return _editable_fields_result(result, action="validation")
             if name == "read_payload_global":
                 read_kwargs = {"draft": bool(args.get("draft", True))}
                 if locale:
@@ -721,6 +880,9 @@ SIDE_EFFECTS = {
     "spawn_build",
     "create_payload_draft",
     "update_payload_draft",
+    "define_editable_field",
+    "set_editable_field",
+    "migrate_editable_fields",
     "publish_payload_document",
     "update_payload_global",
     "publish_payload_global",
@@ -761,11 +923,15 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
     system += _tweakmap_block(context)
     system += _template_tokens_block(context)
     system += _decision_ledger_block(context)
-    if _atelier_payload(context) is not None:
+    if _payload_gateway(context) is not None:
         system += (
-            "\n\nAtelier Payload workflow: the selected workspace document is supplied in the user context. "
-            "For a focused content request, read that document first, then update only the requested "
-            "fields with update_payload_draft. Payload edits remain drafts. Use create_payload_draft "
+            "\n\nPayload workflow: the selected workspace document is supplied in the user context. "
+            "For a focused content request, inspect the explicit editable-field registry first, then "
+            "use set_editable_field for a registered binding. Use define_editable_field only when Ada "
+            "is creating or deliberately migrating a stable field ID; never scan source code, rendered "
+            "text, or image URLs to discover fields. Payload edits remain drafts. Read the document first "
+            "when broader context is needed, and use update_payload_draft only for non-visual structured "
+            "document fields. Use create_payload_draft "
             "only when the owner has supplied the required facts; do not invent titles, prices, dates, "
             "or URLs. Never call publish_payload_document unless the owner explicitly asks to publish. "
             "For shared navigation or site identity, read the relevant global first and use update_payload_global; "

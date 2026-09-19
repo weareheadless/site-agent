@@ -19,7 +19,10 @@ Registered today:
 
 from __future__ import annotations
 
+import datetime
+import re
 import time
+import unicodedata
 from typing import Any
 
 from ..brain import article as brain_article
@@ -131,7 +134,12 @@ def _with_inner_identity(context: dict[str, Any], fn: Any) -> Any:
 
 
 def _journal_enabled(context: dict[str, Any]) -> bool:
-    configured = bool((context.get("config", {}).get("blog") or {}).get("journal_enabled", False))
+    config = context.get("config", {})
+    editorial = config.get("atelier_editorial") if isinstance(config, dict) else {}
+    configured = bool(
+        (config.get("blog") or {}).get("journal_enabled", False)
+        or (isinstance(editorial, dict) and editorial.get("enabled", False))
+    )
     return bool(context["memory"].kv_get("journal_enabled", configured))
 
 
@@ -146,7 +154,78 @@ def _article(context: dict[str, Any]) -> None:
         else:
             context["memory"].record_action("article_research", "skipped: CrawlSEO provider is unavailable")
         return
-    _with_persona(context, brain_article.draft_article, "editorial")
+    draft_id = _with_persona(context, brain_article.draft_article, "editorial")
+    if isinstance(draft_id, int):
+        _mirror_article_draft_to_atelier(context, draft_id)
+
+
+def _article_slug(title: str, draft_id: int) -> str:
+    normalized = unicodedata.normalize("NFKD", str(title or ""))
+    normalized = normalized.encode("ascii", "ignore").decode("ascii").lower()
+    slug = re.sub(r"[^a-z0-9]+", "-", normalized).strip("-")[:100]
+    return slug or f"ada-article-{draft_id}"
+
+
+def _article_html(markdown_body: str) -> str:
+    try:
+        import markdown
+
+        return markdown.markdown(
+            str(markdown_body or ""),
+            extensions=["extra", "sane_lists"],
+            output_format="html5",
+        )
+    except Exception:  # noqa: BLE001 - a local draft remains useful if rendering is unavailable
+        return f"<p>{str(markdown_body or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')}</p>"
+
+
+def _mirror_article_draft_to_atelier(context: dict[str, Any], draft_id: int) -> None:
+    """Put the existing Ada article draft into Payload without publishing it."""
+    payload = context.get("payload_gateway")
+    if payload is None:
+        return
+    memory = context["memory"]
+    draft = next((item for item in memory.list_drafts(limit=100) if int(item.get("id") or 0) == draft_id), None)
+    if not draft:
+        return
+    title = str(draft.get("title") or "Ada draft").strip()[:300]
+    slug = _article_slug(title, draft_id)
+    site = context.get("config", {}).get("site") or {}
+    site_url = str(site.get("preview_url") or (context.get("config", {}).get("blog") or {}).get("site_url") or "").rstrip("/")
+    language = str(
+        ((context.get("config", {}).get("customer_profile") or {}).get("brand") or {}).get("observed_language")
+        or (context.get("config", {}).get("site") or {}).get("language")
+        or "fr"
+    ).strip().lower().split("-", 1)[0]
+    source_id = f"ada-article-{draft_id}"
+    body = str(draft.get("body") or "")
+    plain = re.sub(r"[#*_>`]", "", body)
+    plain = " ".join(plain.split())[:240]
+    post = {
+        "sourceId": source_id,
+        "slug": slug,
+        "title": title,
+        "sourceUrl": f"{site_url}/post/{slug}" if site_url else f"/post/{slug}",
+        "excerpt": plain,
+        "content": [{"html": _article_html(body)}],
+        "modifiedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+        "author": str((context.get("config", {}).get("persona") or {}).get("name") or "Ada"),
+    }
+    try:
+        existing = next(
+            (item for item in payload.list("posts", draft=True, limit=100) if str(item.get("sourceId") or "") == source_id),
+            None,
+        )
+        if existing and existing.get("id") is not None:
+            document = payload.update("posts", str(existing["id"]), post, locale=language)
+        else:
+            document = payload.create("posts", post, locale=language)
+        meta = dict(draft.get("meta") or {})
+        meta.update({"payload_post_id": document.get("id"), "payload_source_id": source_id, "payload_slug": slug})
+        memory.save_draft(title, body, kind=str(draft.get("kind") or "article"), meta=meta, draft_id=draft_id)
+        memory.record_action("article", f"draft #{draft_id} mirrored to the Payload blog as a draft")
+    except Exception as exc:  # noqa: BLE001 - Payload failure must not lose the local owner-review draft
+        memory.record_action("article", f"draft #{draft_id} kept locally; Payload mirror deferred: {str(exc)[:240]}")
 
 
 def _prune_seen(seen: dict[str, float], now: float) -> dict[str, float]:
@@ -227,6 +306,39 @@ def _seo_site_report_cycle(context: dict[str, Any]) -> None:
 
 def _article_research_cycle(context: dict[str, Any]) -> None:
     _with_persona(context, brain_article_research.reconcile, "research")
+
+
+def register_atelier_jobs(scheduler: Scheduler, config: dict[str, Any], context: dict[str, Any]) -> None:
+    """Register Ada's reusable reading/editorial loop for a shared tenant API.
+
+    The normal CLI activation path already calls :func:`register_builtin`. The
+    shared Atelier API deliberately keeps tenant activation separate, so it
+    uses this small selection of the same digest, learning, and article jobs
+    instead of silently dropping Ada's original news loop.
+    """
+    settings = config.get("atelier_scheduler") or {}
+    if not isinstance(settings, dict) or not bool(settings.get("enabled", False)):
+        return
+    schedule = settings.get("schedule") if isinstance(settings.get("schedule"), dict) else {}
+    sources = (_effective_source_config(context).get("sources") or {})
+    has_sources = bool(sources.get("subreddits") or sources.get("rss_feeds"))
+    if has_sources:
+        scheduler.job("digest", schedule.get("digest", {"every": "weekly", "weekday": "monday", "at": "08:00"}), lambda: _digest(context))
+    if context.get("llm") and (has_sources or bool(settings.get("learning_enabled", False))):
+        scheduler.job("learn", schedule.get("learn", {"every": "weekly", "weekday": "monday", "at": "08:20"}), lambda: _with_persona(context, brain_digest.learn, "research"))
+    if context.get("llm") and bool((config.get("atelier_editorial") or {}).get("enabled", False)):
+        scheduler.job("article", schedule.get("article", {"every": "weekly", "weekday": "tuesday", "at": "09:00"}), lambda: _article(context))
+    intake = context.get("atelier_intake")
+    if intake is not None and bool(getattr(intake, "research_enabled", False)):
+        scheduler.job(
+            "research_recovery",
+            schedule.get("research_recovery", {"every": "daily", "at": "08:40"}),
+            intake.recover_research_after_restart,
+        )
+    if context.get("llm") and bool(settings.get("weekly_report", False)):
+        scheduler.job("weekly_report", schedule.get("weekly_report", {"every": "weekly", "weekday": "monday", "at": "09:00"}), lambda: _with_persona(context, brain_report.weekly_report, "strategy"))
+    scheduler.job("health_check", schedule.get("health_check", {"every": "daily", "at": "12:00"}), lambda: maintenance.health_check(context))
+    scheduler.job("reindex_memory", schedule.get("reindex_memory", {"every": "daily", "at": "03:30"}), lambda: _reindex_memory(context))
 
 
 def _social_post(context: dict[str, Any]) -> None:

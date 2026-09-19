@@ -17,6 +17,7 @@ import re
 import shlex
 import subprocess
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
@@ -90,6 +91,7 @@ class SourceEditorService:
         self.env = dict(os.environ if env is None else env)
         self.adapter = adapter or GithubStatic(self.config, self.env)
         self.runner = runner or subprocess.run
+        self._inventory_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
 
     @property
     def site(self) -> Mapping[str, Any]:
@@ -134,6 +136,18 @@ class SourceEditorService:
 
     def _source_branch(self, value: Any = None) -> str:
         return self._branch(value, default=str(self.site.get("branch") or "main"))
+
+    def _branch_revision(self, branch: str) -> str:
+        get_head = getattr(self.adapter, "get_branch_head", None)
+        if not callable(get_head):
+            return ""
+        try:
+            return str(get_head(branch) or "").strip().lower()
+        except Exception:
+            # Revision lookup is an optimization. Inventory remains usable if
+            # the adapter cannot provide it, but cross-request caching is then
+            # intentionally less certain.
+            return ""
 
     def _preview_branch(self) -> str:
         value = self.settings.get("preview_branch") or self.site.get("preview_branch")
@@ -373,15 +387,28 @@ class SourceEditorService:
                 ensure_branch(preview_branch)
             except Exception as exc:  # noqa: BLE001 - normalize adapter details
                 raise SourceEditorError(str(exc)[:500]) from exc
+
+        revision = self._branch_revision(source_branch)
+        cache_key = (source_branch, revision or "unknown")
+        cache_seconds = _int_setting(self.settings.get("cache_seconds"), 300, 0, 3600)
+        cached = self._inventory_cache.get(cache_key)
+        if cached and cache_seconds > 0 and time.monotonic() - cached[0] < cache_seconds:
+            return {**cached[1], "cached": True}
+
         prefer_local = self._prefer_local_checkout() and self._local_checkout_matches(source_branch)
         with self.materialize_source(source_branch, prefer_local=prefer_local) as root:
             inventory = self._run_inventory(root)
             source_kind = "local_checkout" if prefer_local else "github_materialized"
-        return {
+        result = {
             "branch": source_branch,
+            "revision": revision,
             "source": source_kind,
             "inventory": inventory,
+            "cached": False,
         }
+        if cache_seconds > 0:
+            self._inventory_cache[cache_key] = (time.monotonic(), result)
+        return result
 
     @staticmethod
     def _pick(mapping: Mapping[str, Any], *keys: str) -> Any:

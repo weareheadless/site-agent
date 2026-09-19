@@ -266,14 +266,17 @@ class Scheduler:
             )
         return out
 
-    def run_forever(self, poll_seconds: int = 300) -> None:
+    def run_forever(self, poll_seconds: int = 300, stop_event: Any | None = None) -> None:
         if not self.acquire_lock():
             raise RuntimeError(f"another cycle is running ({self.lock_path})")
         try:
             import time
 
-            while True:
+            while stop_event is None or not stop_event.is_set():
                 self.run_once()
-                time.sleep(poll_seconds)
+                if stop_event is not None:
+                    stop_event.wait(poll_seconds)
+                else:
+                    time.sleep(poll_seconds)
         finally:
             self.release_lock()

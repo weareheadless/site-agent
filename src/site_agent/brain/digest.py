@@ -28,7 +28,10 @@ def _prompt(persona: str, observations: list[dict[str, Any]]) -> list[dict[str, 
         "Here is what you read today:\n"
         + "\n".join(lines)
         + "\n\nReply with JSON only: {\"learned\": [\"one insight per string, max 5\"], "
-        "\"themes\": [\"recurring topics, max 6\"]}"
+          "\"themes\": [\"recurring topics, max 6\"], "
+          "\"audience_needs\": [\"needs expressed or evidenced by readers, max 5\"], "
+          "\"trends\": [\"recurring or emerging signals, max 5\"]}. "
+          "Keep needs and trends cautious and grounded in the reading; never invent demographics or demand."
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
@@ -57,15 +60,35 @@ def learn(context: dict[str, Any]) -> None:
 
     learned = [str(x) for x in (parsed.get("learned") or [])][:5]
     themes = [str(x) for x in (parsed.get("themes") or [])][:6]
+    audience_needs = [str(x) for x in (parsed.get("audience_needs") or [])][:5]
+    trends = [str(x) for x in (parsed.get("trends") or [])][:5]
     body = "\n".join(f"- {item}" for item in learned) or "(nothing worth recording)"
     memory.record_observation(
         "learning",
         body,
-        meta={"themes": themes, "from_id": min(r["id"] for r in rows), "to_id": max(r["id"] for r in rows)},
+        meta={
+            "themes": themes,
+            "audience_needs": audience_needs,
+            "trends": trends,
+            "from_id": min(r["id"] for r in rows),
+            "to_id": max(r["id"] for r in rows),
+        },
     )
     if themes:
         previous = memory.kv_get("themes", [])
         merged = list(dict.fromkeys([*themes, *previous]))[:12]
         memory.kv_set("themes", merged)
+    for key, values, limit in (
+        ("audience_needs", audience_needs, 12),
+        ("trends", trends, 12),
+    ):
+        if values:
+            previous = memory.kv_get(key, [])
+            previous = previous if isinstance(previous, list) else []
+            memory.kv_set(key, list(dict.fromkeys([*values, *previous]))[:limit])
     memory.kv_set("learned_until_id", max(r["id"] for r in rows))
-    memory.record_action("learn", f"{len(learned)} insights from {len(rows)} items")
+    memory.record_action(
+        "learn",
+        f"{len(learned)} insights, {len(audience_needs)} audience needs, "
+        f"{len(trends)} trends from {len(rows)} items",
+    )

@@ -156,6 +156,7 @@ class InsightKind(str, Enum):
     AUDIENCE_LANGUAGE = "audience_language"
     AUDIENCE_CONCERN = "audience_concern"
     AUDIENCE_DESIRE = "audience_desire"
+    TREND = "trend"
     BUSINESS_CONTEXT = "business_context"
     CONTENT_OPPORTUNITY = "content_opportunity"
     CREATIVE_IMPLICATION = "creative_implication"

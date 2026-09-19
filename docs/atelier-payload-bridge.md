@@ -9,7 +9,7 @@ not change Intake Lab authentication or state.
 Set the same secret value in both services, using server-only configuration:
 
 ```text
-Atelier Payload: SITE_AGENT_URL + ATELIER_SITE_AGENT_TOKEN
+Payload gateway: SITE_AGENT_URL + PAYLOAD_GATEWAY_TOKEN
 site-agent:     tenant-specific API token (for example ATELIER_HARMONIE_TOKEN)
 ```
 
@@ -33,14 +33,28 @@ site:
   payload:
     enabled: true
     url: https://atelier-harmonie.weareheadless.workers.dev
+    api_prefix: /api/atelier
     token_env: ATELIER_HARMONIE_TOKEN
+    contract:
+      # These names and fields belong to the tenant config, not the adapter.
+      collections:
+        pages: [sourceId, slug, title, content]
+      globals: {}
+      media_fields: [alt, description, tags, analysis]
 ```
 
-The client can read, create drafts, update drafts, and explicitly publish one of
-the `pages`, `products`, or `posts` collections. It can also read/update drafts
-and explicitly publish the shared `navigation` and `siteSettings` globals. It
-rejects fields outside the configured contracts and does not expose arbitrary
-Payload API access to Ada.
+The client can read, create drafts, update drafts, and explicitly publish the
+configured collections. It can also read/update drafts and explicitly publish
+configured globals. It rejects fields outside the configured contracts and does
+not expose arbitrary Payload API access to Ada.
+
+The same client exposes the declarative editable-field contract through
+`GET/POST /api/atelier/editable-fields`. Ada can inspect or validate the
+registered rows, define a stable dotted binding, and update an existing binding
+in a draft. These operations never scan source code or rendered markup and never
+publish. A field definition is intentionally separate from ordinary document
+updates so a page created from scratch can define its visual editing contract
+before its components bind to those IDs.
 
 For tenants that have not completed Intake Ada yet, add a bounded
 `customer_profile` section to the tenant config. Mark migrated observations as
@@ -133,6 +147,27 @@ conversation bridge and is consumed by Ada's global tools.
 Content mutations still belong to Payload. Design requests continue through the
 existing site-agent design/candidate/approval machinery; this bridge does not
 create a second job system.
+
+### Declarative editable fields
+
+`GET /api/atelier/editable-fields` accepts the same document selectors as the
+content gateway:
+
+```text
+?collection=pages&sourceId=home&draft=true
+```
+
+`POST /api/atelier/editable-fields` accepts one of these operations:
+
+- `validate`: check IDs, duplicates, labels, and types without writing;
+- `define`: create or complete one stable field binding in the document draft;
+- `migrate`: apply an explicit batch of field declarations;
+- `set_value`: update a field that already exists, optionally using
+  `expected_value` for optimistic concurrency.
+
+Field IDs use dotted names such as `home.hero.heading`. Image values use a
+portable media source ID (or a Payload media reference), not a URL discovered
+from JSX or HTML. The frontend emits controls only for rows in this registry.
 
 ## Source inventory and preview edits
 

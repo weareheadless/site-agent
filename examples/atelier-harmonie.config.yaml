@@ -5,7 +5,7 @@ activation:
   enabled: false
 
 site:
-  adapter: atelier_payload
+  adapter: payload_gateway
   repository: weareheadless/atelier-harmonie-headless
   branch: main
   preview_branch: preview
@@ -20,10 +20,22 @@ site:
   payload:
     enabled: true
     url: https://atelier-harmonie.weareheadless.workers.dev
+    api_prefix: /api/atelier
     token_env: ATELIER_HARMONIE_TOKEN
+    contract:
+      # The gateway client is schema-neutral; each tenant declares the fields
+      # its Payload instance permits for draft reads and writes.
+      collections:
+        pages: [sourceId, slug, title, sourceUrl, pageKind, metaDescription, canonicalUrl, content, sections, openGraph, seo, gallery]
+        products: [sourceId, slug, title, sourceUrl, description, content, sections, price, currency, availability, gallery, category]
+        posts: [sourceId, slug, title, sourceUrl, excerpt, content, sections, publishedAt, modifiedAt, author, featuredImage, gallery]
+      globals:
+        navigation: [items, groups, footer, footerGroups]
+        siteSettings: [siteName, businessName, description, websiteUrl, tagline, contactLabel, telephone, email, facebookUrl, instagramUrl, promoText, promoHref, promoCta, footerKicker, footerTitle, footerNote, logo, address]
+      media_fields: [alt, description, tags, analysisStatus, analysisProvider, analysisModel, analysisVersion, analysisError, analysisUpdatedAt, dominantColors, suggestedUses, qualityNotes, ocrText, proposedKnowledge, sourceKind, analysis]
 
 env:
-  atelier_site_agent_token: ATELIER_HARMONIE_TOKEN
+  payload_gateway_token: ATELIER_HARMONIE_TOKEN
   github_token: GITHUB_PERSONAL_ACCESS_TOKEN
   vision_api_key: SITE_AGENT_LLM_API_KEY
 

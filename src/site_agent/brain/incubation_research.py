@@ -120,9 +120,14 @@ class LLMIncubationResearchPlanner:
                     model=str(self.config.get("model") or "") or None,
                     json_mode=True,
                     temperature=float(self.config.get("temperature", 0.1)),
-                    max_tokens=int(self.config.get("max_tokens", 2000)),
+                    max_tokens=int(self.config.get("max_tokens", 1200)),
                     timeout_seconds=float(self.config.get("timeout_seconds", 90)),
                     max_retries=int(self.config.get("max_retries", 0)),
+                    # The planner is a small structured response. Reasoning in
+                    # the hidden channel can consume the entire JSON budget and
+                    # was the reason Atelier's first automatic passes ended in
+                    # planner_IncubationResearchPlanningError.
+                    enable_thinking=bool(self.config.get("enable_thinking", False)),
                 )
                 decoded = extract_json(raw)
                 if not isinstance(decoded, Mapping):
@@ -224,6 +229,83 @@ class LLMIncubationResearchPlanner:
         return result
 
 
+class LLMIncubationResearchSynthesizer:
+    """Translate one bounded finding into a clearly labelled research signal.
+
+    Findings remain the source evidence. This adapter only gives the owner a
+    useful label (audience concern, audience desire, or trend) and a short
+    synthesis; it must never turn a public observation into an owner-confirmed
+    business fact.
+    """
+
+    _KINDS = {
+        "audience_concern",
+        "audience_desire",
+        "trend",
+        "content_opportunity",
+    }
+
+    def __init__(self, llm: Any, config: Mapping[str, Any] | None = None) -> None:
+        self.llm = llm
+        settings = config.get("synthesizer") if isinstance(config, Mapping) else None
+        self.config = dict(settings) if isinstance(settings, Mapping) else {}
+
+    def __call__(self, evidence: Mapping[str, Any]) -> Mapping[str, Any]:
+        if self.llm is None or not callable(getattr(self.llm, "chat", None)):
+            return {}
+        owner_language = str(evidence.get("owner_language") or "en").strip()
+        source_language = str(evidence.get("source_language") or "und").strip()
+        summary = " ".join(str(evidence.get("summary") or "").split())[:2_000]
+        prompt = (
+            "Classify one public research finding for a small business website. "
+            "This is an inferred signal, not an owner-confirmed fact. Distinguish "
+            "an audience concern, an audience desire, a recurring market/content "
+            "trend, or a useful content opportunity. Do not invent demographics, "
+            "intent, prices, demand, or business claims. Return JSON only with "
+            'exactly {"kind":"audience_concern|audience_desire|trend|content_opportunity",'
+            '"summary":"one cautious sentence","confidence":0.0,"supports_paths":["..."]}.\n\n'
+            f"Owner language: {owner_language}\n"
+            f"Source language: {source_language}\n"
+            f"Finding: {summary}"
+        )
+        try:
+            raw = self.llm.chat(
+                [{"role": "system", "content": prompt}],
+                json_mode=True,
+                temperature=float(self.config.get("temperature", 0.2)),
+                max_tokens=int(self.config.get("max_tokens", 300)),
+                timeout_seconds=float(self.config.get("timeout_seconds", 60)),
+                max_retries=int(self.config.get("max_retries", 0)),
+                enable_thinking=False,
+            )
+            decoded = extract_json(raw)
+        except Exception:  # noqa: BLE001 - raw findings remain useful without synthesis
+            return {}
+        if not isinstance(decoded, Mapping):
+            return {}
+        kind = str(decoded.get("kind") or "").strip().lower()
+        if kind not in self._KINDS:
+            kind = "content_opportunity"
+        proposed = " ".join(str(decoded.get("summary") or "").split())[:2_000]
+        if not proposed:
+            return {}
+        paths = decoded.get("supports_paths")
+        supports_paths = [
+            str(item).strip()[:160]
+            for item in (paths if isinstance(paths, list) else [])
+            if re.fullmatch(r"[a-z][a-z0-9_.-]*", str(item).strip())
+        ][:8]
+        try:
+            confidence = max(0.0, min(1.0, float(decoded.get("confidence", 0.35))))
+        except (TypeError, ValueError):
+            confidence = 0.35
+        return {
+            "kind": kind,
+            "summary": proposed,
+            "confidence": confidence,
+            "supports_paths": supports_paths,
+        }
+
 def _language(value: Any) -> str:
     language = str(value or "").strip().lower().replace("_", "-")
     return language if _LANGUAGE.fullmatch(language) else ""
@@ -266,5 +348,6 @@ __all__ = [
     "IncubationResearchPlan",
     "IncubationResearchPlanningError",
     "LLMIncubationResearchPlanner",
+    "LLMIncubationResearchSynthesizer",
     "base_plan",
 ]

@@ -16,7 +16,14 @@ from site_agent.application.atelier_intake import AtelierIntakeCoordinator
 from site_agent.core.memory import Memory
 from site_agent.core.design_contracts import SiteIntake
 from site_agent.core.design_intake_contracts import DesignIntakeDraft
-from site_agent.hands.atelier_payload import AtelierPayloadClient, AtelierPayloadError, AtelierPayloadMediaService
+from site_agent.hands.payload_gateway import (
+    PayloadContract,
+    PayloadGatewayClient,
+    PayloadGatewayError,
+    PayloadGatewaySiteAdapter,
+    PayloadMediaService,
+)
+from site_agent.hands.base import ADAPTERS
 from site_agent.web.atelier import register_atelier_routes
 
 
@@ -237,26 +244,100 @@ def test_atelier_intake_requires_explicit_owner_acceptance(tmp_path):
     memory.close()
 
 
-def test_atelier_payload_client_is_server_configured_and_schema_bounded():
-    client = AtelierPayloadClient.from_config(
+def test_payload_gateway_client_is_server_configured_and_schema_bounded():
+    client = PayloadGatewayClient.from_config(
         {
             "site": {
                 "payload": {
                     "enabled": True,
                     "url": "https://atelier.example.test",
+                    "api_prefix": "/v1/content",
+                    "contract": {
+                        "collections": {"pages": ["sourceId", "title"]},
+                        "globals": {"navigation": ["items"]},
+                        "media_fields": ["alt"],
+                    },
                 }
             },
             "env": {},
         },
-        {"ATELIER_SITE_AGENT_TOKEN": "atelier-secret"},
+        {"PAYLOAD_GATEWAY_TOKEN": "atelier-secret"},
     )
     assert client is not None
     assert client.base_url == "https://atelier.example.test"
+    assert client.gateway_prefix == "/v1/content"
 
-    with pytest.raises(AtelierPayloadError, match="outside the pages draft contract"):
+    with pytest.raises(PayloadGatewayError, match="outside the pages draft contract"):
         client._data("pages", {"password": "never"})
-    with pytest.raises(AtelierPayloadError, match="outside the navigation global contract"):
+    with pytest.raises(PayloadGatewayError, match="outside the navigation global contract"):
         client._global_data("navigation", {"password": "never"})
+
+
+def test_payload_gateway_client_uses_declarative_editable_field_gateway(monkeypatch):
+    client = PayloadGatewayClient(
+        "https://atelier.example.test",
+        "atelier-secret",
+        PayloadContract({"pages": frozenset({"title"})}, {}, frozenset()),
+        gateway_prefix="/api/atelier",
+    )
+    requests = []
+
+    def request(_self, method, path, *, query=None, payload=None):
+        requests.append((method, path, query, payload))
+        return {"fields": [], "valid": True}
+
+    monkeypatch.setattr(PayloadGatewayClient, "_request", request)
+
+    client.inspect_editable_fields("pages", identifier="home")
+    client.define_editable_field(
+        "pages",
+        identifier="home",
+        key="home.hero.heading",
+        field_type="text",
+        label="Hero heading",
+        value="Une maison douce",
+    )
+    client.set_editable_field(
+        "pages",
+        identifier="home",
+        key="home.hero.heading",
+        value="Une maison joyeuse",
+        expected_value="Une maison douce",
+    )
+    client.migrate_editable_fields(
+        "pages",
+        identifier="home",
+        fields=[{
+            "key": "home.diy.body",
+            "type": "richText",
+            "label": "DIY introduction",
+            "value": "Une introduction.",
+        }],
+    )
+    client.validate_editable_fields("pages", identifier="home")
+
+    assert requests[0][0:2] == ("GET", "/api/atelier/editable-fields")
+    assert requests[0][2]["sourceId"] == "home"
+    assert requests[1][3]["operation"] == "define"
+    assert requests[1][3]["key"] == "home.hero.heading"
+    assert requests[2][3]["operation"] == "set_value"
+    assert requests[2][3]["expected_value"] == "Une maison douce"
+    assert requests[3][3]["operation"] == "migrate"
+    assert requests[3][3]["fields"][0]["key"] == "home.diy.body"
+    assert requests[4][3]["operation"] == "validate"
+
+
+def test_payload_gateway_contract_is_instance_configured_and_adapter_is_registered():
+    client = PayloadGatewayClient(
+        "https://example.test",
+        "secret",
+        PayloadContract({"articles": frozenset({"headline"})}, {}, frozenset()),
+    )
+
+    assert client._collection("articles") == "articles"
+    with pytest.raises(PayloadGatewayError, match="unsupported Payload collection"):
+        client._collection("pages")
+    assert ADAPTERS["payload_gateway"] is PayloadGatewaySiteAdapter
 
 
 def test_shared_api_scopes_jobs_to_the_token_selected_tenant(tmp_path):
@@ -599,7 +680,7 @@ def test_payload_media_service_resolves_chat_attachments():
                 "tags": [{"value": "lamp"}],
             }
 
-    service = AtelierPayloadMediaService(Payload())
+    service = PayloadMediaService(Payload())
     resolved = service.resolve_attachments([7])
     assert resolved[0]["asset_id"] == 7
     assert resolved[0]["url"] == "https://atelier.example.test/media/lamp.jpg"
@@ -733,7 +814,7 @@ def test_shared_api_exposes_media_library_and_analysis(tmp_path):
         config={},
         memory=memory,
         runtime=None,
-        context={"llm": object(), "atelier_payload": payload, "media_analyzer": Analyzer()},
+        context={"llm": object(), "payload_gateway": payload, "media_analyzer": Analyzer()},
         api_token="media-token",
     )
     registry = AtelierTenantRegistry({tenant.tenant_id: tenant})

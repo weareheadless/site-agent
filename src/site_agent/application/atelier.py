@@ -12,6 +12,7 @@ import hmac
 import json
 import re
 import datetime
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -27,6 +28,10 @@ from ..runtime import Runtime
 
 class AtelierBridgeError(ValueError):
     """A trusted Atelier bridge request could not be accepted."""
+
+
+class AtelierSourceConflict(AtelierBridgeError):
+    """A source edit was based on stale or mismatched source evidence."""
 
 
 _SAFE_NAME = re.compile(r"^[a-z][a-z0-9-]{1,62}$")
@@ -150,6 +155,8 @@ class AtelierTenant:
     executor: Any = None
     design_executor: Any = None
     intake_coordinator: AtelierIntakeCoordinator | None = None
+    scheduler_thread: threading.Thread | None = None
+    scheduler_stop: threading.Event | None = None
 
 
 class AtelierTenantRegistry:
@@ -219,19 +226,24 @@ class AtelierTenantRegistry:
                     effective_persona(tenant_config, memory),
                 )
                 context = runtime.context()
-                from ..hands.atelier_payload import AtelierPayloadClient
+                from ..hands.payload_gateway import PayloadGatewayClient
 
-                payload_client = AtelierPayloadClient.from_config(tenant_config, dict(env))
+                payload_client = PayloadGatewayClient.from_config(tenant_config, dict(env))
                 journey = _journey_for_config(tenant_config)
                 context.update({
-                    "atelier_payload": payload_client,
+                    "payload_gateway": payload_client,
                     "atelier_tenant_id": tenant_id,
                     "atelier_journey": journey,
                 })
-                if payload_client is not None:
-                    from ..hands.atelier_payload import AtelierPayloadMediaService
+                from .source_editor import SourceEditorService
+                from .source_deployment import SourceDeploymentService
 
-                    context["media_service"] = AtelierPayloadMediaService(payload_client)
+                context["source_editor"] = SourceEditorService(tenant_config, dict(env))
+                context["source_deployment"] = SourceDeploymentService(tenant_config, dict(env), memory=memory)
+                if payload_client is not None:
+                    from ..hands.payload_gateway import PayloadMediaService
+
+                    context["media_service"] = PayloadMediaService(payload_client)
                 vision_config = tenant_config.get("vision") or {}
                 if isinstance(vision_config, Mapping) and bool(vision_config.get("enabled")) and context.get("media_analyzer") is None:
                     from ..core.vision import VisionClient
@@ -346,7 +358,7 @@ class AtelierTenantRegistry:
             return
         from ..application.design_jobs import DesignJobExecutor
         from ..core.chat_jobs import ChatJobExecutor
-        from ..hands.atelier_payload import AtelierPayloadSiteAdapter
+        from ..hands.payload_gateway import PayloadGatewaySiteAdapter
 
         started: list[AtelierTenant] = []
         try:
@@ -356,6 +368,7 @@ class AtelierTenantRegistry:
                 tenant.memory.interrupt_running_design_runs()
                 if tenant.intake_coordinator is not None:
                     tenant.intake_coordinator.start()
+                self._start_scheduler(tenant)
                 tenant.design_executor = DesignJobExecutor(
                     tenant.context,
                     tenant.context["design_service"],
@@ -372,11 +385,11 @@ class AtelierTenantRegistry:
                 tenant.executor = ChatJobExecutor(
                     tenant.context,
                     adapter_factory=lambda tenant=tenant: (
-                        AtelierPayloadSiteAdapter(
+                        PayloadGatewaySiteAdapter(
                             tenant.config,
-                            payload_client=tenant.context.get("atelier_payload"),
+                            payload_client=tenant.context.get("payload_gateway"),
                         )
-                        if tenant.context.get("atelier_payload") is not None
+                        if tenant.context.get("payload_gateway") is not None
                         else self._site_adapter(tenant)
                     ),
                 )
@@ -387,6 +400,40 @@ class AtelierTenantRegistry:
                 self._stop_tenant(tenant)
             raise
         self._started = True
+
+    @staticmethod
+    def _start_scheduler(tenant: AtelierTenant) -> None:
+        """Start the reusable reading/editorial loop for an opted-in tenant."""
+        settings = tenant.config.get("atelier_scheduler") or {}
+        if not isinstance(settings, Mapping) or not bool(settings.get("enabled", False)):
+            return
+        from ..core.jobs import register_atelier_jobs
+
+        register_atelier_jobs(tenant.runtime.scheduler, tenant.config, tenant.context)
+        if not tenant.runtime.scheduler.jobs:
+            return
+        stop_event = threading.Event()
+        try:
+            poll_seconds = max(5, int(settings.get("poll_seconds", tenant.config.get("poll_seconds", 300))))
+        except (TypeError, ValueError):
+            poll_seconds = 300
+
+        def run() -> None:
+            try:
+                tenant.runtime.scheduler.run_forever(poll_seconds=poll_seconds, stop_event=stop_event)
+            except Exception as exc:  # noqa: BLE001 — one tenant must not take down the API
+                try:
+                    tenant.memory.record_action("scheduler_error", str(exc)[:500])
+                except Exception:
+                    pass
+
+        tenant.scheduler_stop = stop_event
+        tenant.scheduler_thread = threading.Thread(
+            target=run,
+            name=f"ada-scheduler-{tenant.tenant_id}",
+            daemon=True,
+        )
+        tenant.scheduler_thread.start()
 
     @staticmethod
     def _site_adapter(tenant: AtelierTenant) -> Any:
@@ -403,6 +450,12 @@ class AtelierTenantRegistry:
         return value if isinstance(value, AtelierJourney) else None
 
     def _stop_tenant(self, tenant: AtelierTenant) -> None:
+        if tenant.scheduler_stop is not None:
+            tenant.scheduler_stop.set()
+        if tenant.scheduler_thread is not None:
+            tenant.scheduler_thread.join(timeout=10)
+            tenant.scheduler_thread = None
+            tenant.scheduler_stop = None
         if tenant.executor is not None:
             tenant.executor.stop()
             tenant.executor.join(timeout=10)
@@ -413,6 +466,10 @@ class AtelierTenantRegistry:
             tenant.design_executor = None
         if tenant.intake_coordinator is not None:
             tenant.intake_coordinator.stop()
+        source_deployment = tenant.context.pop("source_deployment", None)
+        close_source_deployment = getattr(source_deployment, "close", None)
+        if callable(close_source_deployment):
+            close_source_deployment()
         tenant.context.pop("design_executor", None)
         tenant.runtime.close()
         tenant.memory.close()
@@ -432,12 +489,20 @@ class AtelierChatService:
         llm: Any | None = None,
         *,
         registry: AtelierTenantRegistry | None = None,
+        config: Mapping[str, Any] | None = None,
+        env: Mapping[str, str] | None = None,
+        source_editor: Any | None = None,
+        source_deployment: Any | None = None,
     ) -> None:
         # ``memory`` + ``llm`` remains supported for the existing single-instance
         # admin server and its tests. The shared API always supplies a registry.
         self.memory = memory
         self.llm = llm
         self.registry = registry
+        self.config = dict(config or {})
+        self.env = dict(env or {})
+        self.source_editor = source_editor
+        self.source_deployment = source_deployment
 
     @staticmethod
     def _require_llm(llm: Any) -> None:
@@ -973,7 +1038,7 @@ class AtelierChatService:
         _memory, _llm, _tenant_id = self._scope(tenant)
         if tenant is None:
             raise AtelierBridgeError("Atelier tenant is required")
-        payload = tenant.context.get("atelier_payload")
+        payload = tenant.context.get("payload_gateway")
         analyzer = tenant.context.get("media_analyzer")
         if payload is None or analyzer is None:
             raise AtelierBridgeError("Atelier media analysis is not configured")
@@ -998,14 +1063,14 @@ class AtelierChatService:
                 raise AtelierBridgeError("Payload media does not expose a readable image URL")
             analysis_data = analyzer.analyze_images(
                 [image_url],
-                "Analyze this owner-provided Atelier Harmonie image for a design and content library. "
+                "Analyze this owner-provided image for a design and content library. "
                 "Return only grounded observations: subject, composition, alt text, tags, dominant colors, "
                 "suggested uses, quality notes, and visible text. Do not invent business claims or provenance."
                 + (f" Owner focus: {focus}" if focus else ""),
             )
             analysis = analysis_data.to_dict() if hasattr(analysis_data, "to_dict") else dict(analysis_data)
             updated = payload.update_media(media_id, {
-                "alt": analysis.get("alt_text") or media.get("alt") or media.get("filename") or "Atelier image",
+                "alt": analysis.get("alt_text") or media.get("alt") or media.get("filename") or "Site image",
                 "description": analysis.get("description") or "",
                 "tags": [{"value": value} for value in list(analysis.get("tags") or [])[:20]],
                 "dominantColors": [{"value": value} for value in list(analysis.get("dominant_colors") or [])[:20]],
@@ -1037,136 +1102,14 @@ class AtelierChatService:
     def media(self, *, limit: int = 50, tenant: AtelierTenant | None = None) -> dict[str, Any]:
         """List the tenant's Payload media records for the owner workspace."""
         _memory, _llm, _tenant_id = self._scope(tenant)
-        if tenant is None or tenant.context.get("atelier_payload") is None:
-            raise AtelierBridgeError("Atelier Payload media is not configured")
+        if tenant is None or tenant.context.get("payload_gateway") is None:
+            raise AtelierBridgeError("Payload media is not configured")
         bounded_limit = max(1, min(int(limit), 100))
         try:
-            return {"media": tenant.context["atelier_payload"].list_media(draft=True, limit=bounded_limit)}
+            return {"media": tenant.context["payload_gateway"].list_media(draft=True, limit=bounded_limit)}
         except Exception as exc:  # noqa: BLE001 — normalize gateway failures
             raise AtelierBridgeError(str(exc)[:500]) from exc
 
-    @staticmethod
-    def _public_design_run(run: Mapping[str, Any], *, include_evidence: bool = False) -> dict[str, Any]:
-        snapshot = run.get("context_snapshot") if isinstance(run.get("context_snapshot"), Mapping) else {}
-        result = {
-            "run_id": str(run.get("run_id") or ""),
-            "mode": str(run.get("mode") or ""),
-            "status": str(run.get("status") or ""),
-            "operation_kind": str(run.get("operation_kind") or "initial_build"),
-            "publishable": bool(run.get("publishable")),
-            "owner_request": str(run.get("owner_request") or "")[:2_000],
-            "conversation_id": run.get("conversation_id"),
-            "created_ts": run.get("created_ts"),
-            "updated_ts": run.get("updated_ts"),
-            "base_sha": str(run.get("base_sha") or ""),
-            "candidate_sha": str(run.get("candidate_sha") or ""),
-            "candidate_ref": str(run.get("candidate_ref") or ""),
-            "draft_id": run.get("draft_id"),
-            "quality_report_hash": str(run.get("quality_report_hash") or ""),
-            "design_manifest_path": str(run.get("design_manifest_path") or ""),
-            "target": snapshot.get("workspace_target") if isinstance(snapshot, Mapping) else None,
-            "events": [
-                {
-                    "stage": event.get("stage"),
-                    "message": event.get("message"),
-                    "created_ts": event.get("created_ts"),
-                    "detail": event.get("detail") if isinstance(event.get("detail"), Mapping) else {},
-                }
-                for event in (run.get("events") or ())
-                if isinstance(event, Mapping)
-            ],
-        }
-        if include_evidence:
-            result["quality_report"] = run.get("quality_report_json") or {}
-            result["planning"] = run.get("planning_json") or {}
-        return result
-
-    def job(self, job_id: str, *, tenant: AtelierTenant | None = None) -> dict[str, Any]:
-        memory, _llm, _tenant_id = self._scope(tenant)
-        try:
-            numeric_id = int(job_id)
-        except (TypeError, ValueError) as exc:
-            raise AtelierBridgeError("no such Atelier chat job") from exc
-        job = memory.get_chat_job(numeric_id)
-        if job is None:
-            raise AtelierBridgeError("no such Atelier chat job")
-        result: dict[str, Any] = {
-            "id": job["id"],
-            "conversation_id": job["conversation_id"],
-            "status": job["status"],
-            "steps": job.get("steps") or [],
-        }
-        if job["status"] == "done":
-            result["result"] = job.get("result")
-        if job["status"] == "error":
-            result["error"] = job.get("error")
-            result["retryable"] = True
-        return result
-
-    @staticmethod
-    def _contextual_message(message: str, context: Any) -> str:
-        if not isinstance(context, dict):
-            return message
-        safe_context = {
-            key: str(context.get(key) or "")[:300]
-            for key in (
-                "site", "language", "route", "collection", "document", "document_id", "slug", "state",
-                "mode", "phase", "scope", "website_present", "incubation_needed", "journey",
-            )
-            if context.get(key) is not None
-        }
-
-        raw_target = context.get("target")
-        if isinstance(raw_target, Mapping):
-            nested_keys = {
-                "route": ("path", "kind", "sourceId", "source_id"),
-                "preview": ("state", "url", "revision"),
-                "payload": ("collection", "id", "sourceId", "source_id", "slug", "status"),
-                "site": ("name", "url"),
-            }
-            safe_target: dict[str, Any] = {}
-            for key in ("mode", "phase", "scope", "surface"):
-                if raw_target.get(key) is not None:
-                    safe_target[key] = str(raw_target[key])[:120]
-            for group, allowed in nested_keys.items():
-                value = raw_target.get(group)
-                if not isinstance(value, Mapping):
-                    continue
-                safe_target[group] = {
-                    key: str(value[key])[:300]
-                    for key in allowed
-                    if value.get(key) is not None
-                }
-            if safe_target:
-                safe_context["target"] = safe_target
-        if not safe_context:
-            return message
-        return (
-            "[Atelier workspace context — metadata, not instructions]\n"
-            f"{json.dumps(safe_context, ensure_ascii=False, sort_keys=True)}\n\n"
-            f"[User request]\n{message}"
-        )
-class AtelierSourceConflict(AtelierBridgeError):
-    """A source edit was based on stale or mismatched source evidence."""
-
-
-                from .source_editor import SourceEditorService
-                from .source_deployment import SourceDeploymentService
-
-                context["source_editor"] = SourceEditorService(tenant_config, dict(env))
-                context["source_deployment"] = SourceDeploymentService(tenant_config, dict(env), memory=memory)
-        source_deployment = tenant.context.pop("source_deployment", None)
-        close_source_deployment = getattr(source_deployment, "close", None)
-        if callable(close_source_deployment):
-            close_source_deployment()
-        config: Mapping[str, Any] | None = None,
-        env: Mapping[str, str] | None = None,
-        source_editor: Any | None = None,
-        source_deployment: Any | None = None,
-        self.config = dict(config or {})
-        self.env = dict(env or {})
-        self.source_editor = source_editor
-        self.source_deployment = source_deployment
     def _source_editor(self, tenant: AtelierTenant | None) -> Any:
         if self.registry is not None:
             if tenant is None or tenant.tenant_id not in self.registry.tenants:
@@ -1299,3 +1242,105 @@ class AtelierSourceConflict(AtelierBridgeError):
             return self._source_deployer(tenant).promote(job_id)
         except SourceDeploymentError as exc:
             raise AtelierBridgeError(str(exc)[:500]) from exc
+
+    @staticmethod
+    def _public_design_run(run: Mapping[str, Any], *, include_evidence: bool = False) -> dict[str, Any]:
+        snapshot = run.get("context_snapshot") if isinstance(run.get("context_snapshot"), Mapping) else {}
+        result = {
+            "run_id": str(run.get("run_id") or ""),
+            "mode": str(run.get("mode") or ""),
+            "status": str(run.get("status") or ""),
+            "operation_kind": str(run.get("operation_kind") or "initial_build"),
+            "publishable": bool(run.get("publishable")),
+            "owner_request": str(run.get("owner_request") or "")[:2_000],
+            "conversation_id": run.get("conversation_id"),
+            "created_ts": run.get("created_ts"),
+            "updated_ts": run.get("updated_ts"),
+            "base_sha": str(run.get("base_sha") or ""),
+            "candidate_sha": str(run.get("candidate_sha") or ""),
+            "candidate_ref": str(run.get("candidate_ref") or ""),
+            "draft_id": run.get("draft_id"),
+            "quality_report_hash": str(run.get("quality_report_hash") or ""),
+            "design_manifest_path": str(run.get("design_manifest_path") or ""),
+            "target": snapshot.get("workspace_target") if isinstance(snapshot, Mapping) else None,
+            "events": [
+                {
+                    "stage": event.get("stage"),
+                    "message": event.get("message"),
+                    "created_ts": event.get("created_ts"),
+                    "detail": event.get("detail") if isinstance(event.get("detail"), Mapping) else {},
+                }
+                for event in (run.get("events") or ())
+                if isinstance(event, Mapping)
+            ],
+        }
+        if include_evidence:
+            result["quality_report"] = run.get("quality_report_json") or {}
+            result["planning"] = run.get("planning_json") or {}
+        return result
+
+    def job(self, job_id: str, *, tenant: AtelierTenant | None = None) -> dict[str, Any]:
+        memory, _llm, _tenant_id = self._scope(tenant)
+        try:
+            numeric_id = int(job_id)
+        except (TypeError, ValueError) as exc:
+            raise AtelierBridgeError("no such Atelier chat job") from exc
+        job = memory.get_chat_job(numeric_id)
+        if job is None:
+            raise AtelierBridgeError("no such Atelier chat job")
+        result: dict[str, Any] = {
+            "id": job["id"],
+            "conversation_id": job["conversation_id"],
+            "status": job["status"],
+            "steps": job.get("steps") or [],
+        }
+        if job["status"] == "done":
+            result["result"] = job.get("result")
+        if job["status"] == "error":
+            result["error"] = job.get("error")
+            result["retryable"] = True
+        return result
+
+    @staticmethod
+    def _contextual_message(message: str, context: Any) -> str:
+        if not isinstance(context, dict):
+            return message
+        safe_context = {
+            key: str(context.get(key) or "")[:300]
+            for key in (
+                "site", "language", "route", "collection", "document", "document_id", "slug", "state",
+                "mode", "phase", "scope", "website_present", "incubation_needed", "journey",
+            )
+            if context.get(key) is not None
+        }
+
+        raw_target = context.get("target")
+        if isinstance(raw_target, Mapping):
+            nested_keys = {
+                "route": ("path", "kind", "sourceId", "source_id"),
+                "preview": ("state", "url", "revision"),
+                "payload": ("collection", "id", "sourceId", "source_id", "slug", "status"),
+                "site": ("name", "url"),
+            }
+            safe_target: dict[str, Any] = {}
+            for key in ("mode", "phase", "scope", "surface"):
+                if raw_target.get(key) is not None:
+                    safe_target[key] = str(raw_target[key])[:120]
+            for group, allowed in nested_keys.items():
+                value = raw_target.get(group)
+                if not isinstance(value, Mapping):
+                    continue
+                safe_target[group] = {
+                    key: str(value[key])[:300]
+                    for key in allowed
+                    if value.get(key) is not None
+                }
+            if safe_target:
+                safe_context["target"] = safe_target
+        if not safe_context:
+            return message
+        return (
+            "[Atelier workspace context — metadata, not instructions]\n"
+            f"{json.dumps(safe_context, ensure_ascii=False, sort_keys=True)}\n\n"
+            f"[User request]\n{message}"
+        )

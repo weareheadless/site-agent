@@ -16,6 +16,7 @@ from typing import Any
 from ..brain.incubation_research import (
     IncubationResearchPlanningError,
     LLMIncubationResearchPlanner,
+    LLMIncubationResearchSynthesizer,
     base_plan,
 )
 from ..core.contracts import ContractError, safe_payload
@@ -74,6 +75,7 @@ class AtelierIntakeCoordinator:
         self.research_service = IncubationResearchService(
             memory,
             activity_service=self.activity_service,
+            synthesizer=LLMIncubationResearchSynthesizer(llm, self.research_config),
             max_sources_per_pass=int(self.research_config.get("max_sources_per_pass", 8)),
             max_items_per_source=int(self.research_config.get("max_items_per_source", 15)),
         )
@@ -102,6 +104,57 @@ class AtelierIntakeCoordinator:
     def stop(self) -> None:
         self.research_executor.stop()
         self.research_executor.join(timeout=10)
+
+    def recover_research_after_restart(self) -> None:
+        """Give a tenant one safe retry after a process restart.
+
+        Older Atelier workers could save a revision after the planner had
+        exhausted its JSON budget. Do not make the owner repeat that turn: one
+        ``infusion`` retry is allowed for the latest ready revision, and the
+        durable marker prevents a restart loop from spending indefinitely.
+        """
+        sessions = self.memory.list_design_intake_sessions(limit=1)
+        if not sessions:
+            return
+        session_id = str(sessions[0].get("session_id") or "").strip()
+        if not session_id:
+            return
+        try:
+            session = self.intake_service.get_session(session_id)
+        except (ContractError, KeyError, TypeError, ValueError):
+            return
+        try:
+            draft = DesignIntakeDraft.from_dict(session.get("draft") or {})
+        except (ContractError, TypeError, ValueError):
+            return
+        if not self._research_context_ready(draft):
+            return
+        revision = int(session.get("revision") or 0)
+        marker = f"{session_id}:{revision}"
+        if revision < 1 or self.memory.kv_get("atelier_research_recovery_marker") == marker:
+            return
+        requests = [
+            item for item in self.memory.list_research_requests(limit=500)
+            if int(item.get("intake_revision") or 0) == revision
+            and item.get("status") in {"queued", "running", "completed"}
+        ]
+        if requests:
+            self.memory.kv_set("atelier_research_recovery_marker", marker)
+            return
+        owner_language = str(
+            draft.value("site.language") or "en"
+        ).strip().lower().replace("_", "-")
+        result = self._schedule_research(
+            draft,
+            revision,
+            owner_language=owner_language,
+            trigger=ResearchTrigger.INFUSION.value,
+        )
+        self.memory.kv_set("atelier_research_recovery_marker", marker)
+        self.memory.record_action(
+            "research_recovery",
+            f"replayed revision {revision}: {str(result.get('status') or 'unknown')}",
+        )
 
     def _bootstrap_draft(self) -> DesignIntakeDraft:
         """Seed observations as assumptions so Ada asks the owner to confirm them."""
@@ -174,9 +227,104 @@ class AtelierIntakeCoordinator:
             "draft_hash": str(session.get("draft_hash") or ""),
             "readiness": dict(readiness),
             "summary": session.get("summary") if isinstance(session.get("summary"), Mapping) else {},
+            "research": self.research_status(),
             "confirmed_revision": session.get("confirmed_revision"),
             "confirmed_revision_id": session.get("confirmed_revision_id"),
             "confirmed": str(session.get("status") or "") == IntakeSessionState.CONFIRMED.value,
+        }
+
+    def research_status(self) -> dict[str, Any]:
+        """Return a bounded owner-facing view of automatic and periodic research."""
+        projection = self.research_service.projection()
+        requests = [item for item in projection.get("requests", []) if isinstance(item, Mapping)]
+        latest = max(
+            requests,
+            key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""),
+            default=None,
+        )
+        request_id = str(latest.get("request_id") or "") if latest else ""
+        job_rows = [item for item in projection.get("jobs", []) if isinstance(item, Mapping)]
+        job = next((item for item in job_rows if item.get("request_id") == request_id), None)
+        source_rows = {
+            str(item.get("source_id") or ""): item
+            for item in projection.get("sources", [])
+            if isinstance(item, Mapping) and str(item.get("source_id") or "").strip()
+        }
+        finding_rows = [
+            item.to_dict() if hasattr(item, "to_dict") else dict(item)
+            for item in projection.get("findings", [])
+        ]
+        finding_by_id = {
+            str(item.get("finding_id") or ""): item
+            for item in finding_rows
+            if str(item.get("finding_id") or "").strip()
+        }
+        insight_rows = [item for item in projection.get("insights", []) if isinstance(item, Mapping)]
+        insight_by_id = {
+            str(item.get("insight_id") or ""): item
+            for item in insight_rows
+            if str(item.get("insight_id") or "").strip()
+        }
+        finding_ids = list(latest.get("finding_ids") or []) if latest else []
+        insight_ids = list(latest.get("insight_ids") or []) if latest else []
+        selected_findings = [finding_by_id[item] for item in finding_ids if item in finding_by_id][:8]
+        selected_insights = [insight_by_id[item] for item in insight_ids if item in insight_by_id][:8]
+
+        def source_view(source_id: str) -> dict[str, Any]:
+            source = source_rows.get(source_id) or {}
+            return {
+                "source_id": source_id,
+                "title": str(source.get("title") or source.get("url") or "Public source")[:180],
+                "url": str(source.get("url") or "")[:500],
+                "language": str(source.get("language") or "und")[:24],
+                "trust_state": str(source.get("trust_state") or "")[:24],
+            }
+
+        findings = [
+            {
+                "finding_id": str(item.get("finding_id") or ""),
+                "source_id": str(item.get("source_id") or ""),
+                "summary": str(item.get("summary") or "")[:420],
+                "relevance": item.get("relevance"),
+                "confidence": item.get("confidence"),
+                "published_at": item.get("published_at"),
+                "source": source_view(str(item.get("source_id") or "")),
+            }
+            for item in selected_findings
+        ]
+        insights = [
+            {
+                "insight_id": str(item.get("insight_id") or ""),
+                "kind": str(item.get("kind") or ""),
+                "summary": str(item.get("summary") or "")[:420],
+                "confidence": item.get("confidence"),
+                "status": str(item.get("status") or "inferred"),
+                "finding_ids": list(item.get("finding_ids") or [])[:8],
+                "sources": [
+                    source_view(str(finding_by_id[finding_id].get("source_id") or ""))
+                    for finding_id in list(item.get("finding_ids") or [])[:8]
+                    if finding_id in finding_by_id
+                ],
+            }
+            for item in selected_insights
+        ]
+        learning = [
+            item for item in self.memory.recent_observations(source="learning", limit=3)
+            if str(item.get("text") or "").strip()
+        ]
+        return {
+            "status": str(latest.get("status") or "not_started") if latest else "not_started",
+            "request_id": request_id or None,
+            "job_id": str(job.get("job_id") or "") if job else None,
+            "error": str(latest.get("error") or "")[:500] if latest else "",
+            "updated_at": latest.get("updated_at") if latest else None,
+            "insights": insights,
+            "findings": findings,
+            "sources": [source_view(str(item.get("source_id") or "")) for item in selected_findings[:8]],
+            "themes": [str(item)[:180] for item in (self.memory.kv_get("themes", []) or [])[:8]],
+            "audience_needs": [str(item)[:240] for item in (self.memory.kv_get("audience_needs", []) or [])[:6]],
+            "trends": [str(item)[:240] for item in (self.memory.kv_get("trends", []) or [])[:6]],
+            "latest_learning": str(learning[0].get("text") or "")[:800] if learning else "",
         }
 
     def confirm(
@@ -359,6 +507,21 @@ class AtelierIntakeCoordinator:
             or draft.value("site.language")
             or "en"
         ).strip().lower().replace("_", "-")
+        return self._schedule_research(
+            draft,
+            current_revision,
+            owner_language=owner_language,
+            trigger=ResearchTrigger.INTAKE_THRESHOLD.value,
+        )
+
+    def _schedule_research(
+        self,
+        draft: DesignIntakeDraft,
+        current_revision: int,
+        *,
+        owner_language: str,
+        trigger: str,
+    ) -> dict[str, Any]:
         planning_error = ""
         try:
             plan = self.research_planner.plan(
@@ -367,7 +530,7 @@ class AtelierIntakeCoordinator:
                 excluded_communities=self._excluded_communities(),
             )
         except IncubationResearchPlanningError as exc:
-            planning_error = f"planner_{type(exc).__name__}"
+            planning_error = f"planner_{type(exc).__name__}: {str(exc)[:240]}"
             plan = base_plan(draft, owner_language=owner_language)
 
         plan_data = plan.to_dict()
@@ -375,7 +538,7 @@ class AtelierIntakeCoordinator:
             {
                 **plan_data,
                 "feed_urls": [str(item.get("url") or "") for item in plan_data.get("candidate_feeds") or []],
-                "trigger": ResearchTrigger.INTAKE_THRESHOLD.value,
+                "trigger": trigger,
                 "intake_revision": current_revision,
                 "fetch": True,
             },
