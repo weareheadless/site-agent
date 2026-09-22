@@ -71,7 +71,7 @@ from .incubation_contracts import (
     ResearchSource,
 )
 
-SCHEMA_VERSION = 39
+SCHEMA_VERSION = 40
 
 MIGRATIONS: dict[int, list[str]] = {
     1: [
@@ -953,6 +953,21 @@ MIGRATIONS: dict[int, list[str]] = {
         # runs opt in explicitly at creation time.
         "ALTER TABLE design_runs ADD COLUMN artifact_required INTEGER NOT NULL DEFAULT 0 CHECK (artifact_required IN (0, 1))",
     ],
+    40: [
+        """CREATE TABLE IF NOT EXISTS timing_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            operation TEXT NOT NULL,
+            phase TEXT NOT NULL DEFAULT '',
+            duration_ms INTEGER NOT NULL,
+            success INTEGER NOT NULL DEFAULT 1 CHECK (success IN (0, 1)),
+            job_id INTEGER,
+            conversation_id INTEGER,
+            metadata_json TEXT NOT NULL DEFAULT '{}'
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_timing_events_operation_ts ON timing_events (operation, ts)",
+        "CREATE INDEX IF NOT EXISTS idx_timing_events_job ON timing_events (job_id, ts)",
+    ],
 }
 
 
@@ -1708,6 +1723,24 @@ class Memory:
             cur = self.conn.execute(
                 "UPDATE drafts SET status = ?, updated_ts = ? WHERE id = ?",
                 (status, _now(), draft_id),
+            )
+        return cur.rowcount > 0
+
+    @_locked
+    def update_draft_meta(self, draft_id: int, meta: dict[str, Any]) -> bool:
+        """Replace one draft's structured metadata without touching its copy.
+
+        Preview preparation is asynchronous.  The draft is created when Ada's
+        candidate is staged, then receives the exact candidate/build receipt
+        once the preview service accepts it.  Keeping this update separate from
+        title/body avoids rewriting owner-facing copy during that transition.
+        """
+        if not isinstance(meta, dict):
+            raise ContractError("draft meta must be an object")
+        with self.conn:
+            cur = self.conn.execute(
+                "UPDATE drafts SET meta = ?, updated_ts = ? WHERE id = ?",
+                (json.dumps(meta), _now(), draft_id),
             )
         return cur.rowcount > 0
 
@@ -4848,6 +4881,70 @@ class Memory:
             )
 
     @_locked
+    def record_timing(
+        self,
+        operation: str,
+        duration_ms: int,
+        *,
+        phase: str = "",
+        success: bool = True,
+        job_id: int | None = None,
+        conversation_id: int | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Persist one bounded timing event when detailed observability is on."""
+        operation = str(operation or "").strip()[:120]
+        if not operation:
+            return
+        try:
+            encoded = json.dumps(metadata or {}, ensure_ascii=False, separators=(",", ":"))
+        except (TypeError, ValueError):
+            encoded = "{}"
+        encoded = encoded[:4_000]
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO timing_events "
+                "(ts, operation, phase, duration_ms, success, job_id, conversation_id, metadata_json) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    _now(),
+                    operation,
+                    str(phase or "")[:120],
+                    max(0, int(duration_ms)),
+                    1 if success else 0,
+                    job_id,
+                    conversation_id,
+                    encoded,
+                ),
+            )
+
+    @_locked
+    def list_timing_events(
+        self,
+        *,
+        operation: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Read recent timing rows for operator diagnostics."""
+        limit = max(1, min(int(limit), 1_000))
+        if operation:
+            rows = self.conn.execute(
+                "SELECT * FROM timing_events WHERE operation = ? ORDER BY id DESC LIMIT ?",
+                (str(operation)[:120], limit),
+            )
+        else:
+            rows = self.conn.execute("SELECT * FROM timing_events ORDER BY id DESC LIMIT ?", (limit,))
+        result = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["metadata"] = json.loads(item.pop("metadata_json") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                item["metadata"] = {}
+            result.append(item)
+        return result
+
+    @_locked
     def compact_candidates(
         self,
         before_ts: str,
@@ -5547,8 +5644,16 @@ class Memory:
         actor: str = "ada",
         version_type: str = "edit",
         commit_message: str = "",
+        idempotent: bool = False,
     ) -> int:
         with self.conn:
+            if idempotent and draft_id is not None:
+                existing = self.conn.execute(
+                    "SELECT id FROM publishes WHERE draft_id = ? AND commit_sha = ? LIMIT 1",
+                    (draft_id, commit_sha),
+                ).fetchone()
+                if existing is not None:
+                    return int(existing[0])
             cur = self.conn.execute(
                 "INSERT INTO publishes "
                 "(ts, summary, path, commit_sha, draft_id, parent_sha, actor, version_type, commit_message) "
@@ -5577,6 +5682,22 @@ class Memory:
                 )
                 return cur.rowcount
             return 0
+
+    @_locked
+    def mark_publishes_reverted_after(self, version_id: int) -> int:
+        """Mark versions newer than a restored version as no longer current.
+
+        A rollback restores the complete tree from one historical version. The
+        restored version itself remains valid; only the later publishes are
+        superseded by the rollback.
+        """
+        with self.conn:
+            cur = self.conn.execute(
+                "UPDATE publishes SET reverted_ts = ? "
+                "WHERE id > ? AND reverted_ts IS NULL",
+                (_now(), int(version_id)),
+            )
+        return cur.rowcount
 
     @_locked
     def list_publishes(self, limit: int = 20) -> list[dict[str, Any]]:
