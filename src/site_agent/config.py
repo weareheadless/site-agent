@@ -562,7 +562,7 @@ def validate_intake_config(config: dict[str, Any]) -> None:
     sources = config.get("sources") or {}
     if not isinstance(sources, dict):
         raise ConfigError("sources must be an object")
-    for key in ("subreddits", "rss_feeds", "keywords"):
+    for key in ("subreddits", "community_feeds", "rss_feeds", "keywords"):
         if sources.get(key) not in (None, []):
             raise ConfigError(f"sources.{key} is customer-specific")
     for key, value in (("ga", config.get("ga") or {}), ("seo", config.get("seo") or {})):

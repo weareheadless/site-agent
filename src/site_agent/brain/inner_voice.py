@@ -45,6 +45,16 @@ INNER_VOICE_PERSONA = (
 
 _DIALOGUE_LIMIT = 15
 
+ARTICLE_CRITIQUE_RUBRIC = (
+    "\nFor an article draft, check these specifically: does it answer an identifiable reader question and the "
+    "underlying decision or constraint; does it reflect the supplied market context without inventing motives; "
+    "does it speak from the supplied business expertise instead of narrating "
+    "research; are reader vocabulary and professional terminology distinguished carefully; are technical claims, "
+    "comparisons, diagnoses, and procedures supported or appropriately qualified; does it avoid false binaries "
+    "where options depend on conditions; and does it use search demand as context rather than proof of value or "
+    "truth? Flag a concrete sentence or missing piece for each real problem."
+)
+
 
 def _material(memory: Any) -> dict[str, Any]:
     learnings = [r["text"] for r in memory.recent_observations(source="learning", limit=3)]
@@ -162,11 +172,13 @@ def _voice_context(memory: Any, extra: str = "") -> str:
 def _challenge_prompt(subject: str, subject_blob: str, context_blob: str) -> list[dict[str, str]]:
     """The critical friend speaking about the subject, against real context."""
     system = INNER_VOICE_PERSONA
+    article_rubric = ARTICLE_CRITIQUE_RUBRIC if "article" in subject.lower() else ""
     user = (
         f"WHAT SHE IS ABOUT TO DO ({subject}):\n\n{subject_blob}\n\n"
         f"CONTEXT THE VOICE HAS (use it to catch what she can no longer see — "
         f"contradiction, self-echo, blind spots, mismatch with reality):\n"
-        f"{context_blob}\n\n"
+        f"{context_blob}\n"
+        f"{article_rubric}\n\n"
         'Reply with JSON only: {"problems": ["specific problem, quoting or locating '
         'it in the subject", ...]} — an empty list means it is genuinely good.'
     )

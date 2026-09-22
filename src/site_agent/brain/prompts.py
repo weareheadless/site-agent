@@ -191,6 +191,9 @@ def customer_context_prompt(view: dict[str, Any]) -> str:
         "Canonical customer context is the source of truth for this site's business, audience, "
         "brand, conversion, owner relationship, and constraints. Use only the supplied facts; "
         "keep explicit unknowns and contradictions unresolved rather than inventing them.\n"
+        "For editorial work, keep audience language, market context, owner-confirmed expertise, external research, "
+        "search-demand signals, and unresolved hypotheses as separate evidence layers. Do not let one layer stand "
+        "in for another.\n"
         "Customer context:\n" + encoded
     )
 

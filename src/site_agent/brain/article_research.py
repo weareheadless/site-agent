@@ -86,10 +86,14 @@ def _idea_prompt(context: Mapping[str, Any]) -> list[dict[str, str]]:
     audience = str((config.get("persona") or {}).get("audience") or "the site's audience")
     language = str(settings.get("language") or "en")
     market = str(settings.get("market") or "US")
+    audience_questions = memory.kv_get("audience_questions", [])
+    if not isinstance(audience_questions, list):
+        audience_questions = []
     payload = {
         "audience": audience,
         "target_language": language,
         "target_market": market,
+        "audience_questions": [str(item)[:400] for item in audience_questions[:8]],
         "recent_reading": _news(memory),
         "themes": memory.kv_get("themes", [])[:8],
         "gsc_top_pages": _snapshot(memory, "gsc"),
@@ -103,19 +107,33 @@ def _idea_prompt(context: Mapping[str, Any]) -> list[dict[str, str]]:
             "role": "system",
             "content": (
                 str(context.get("persona_prompt") or "")
-                + "\n\nChoose one audience-led article hypothesis. The idea must come from a real reader need, "
-                "recent observation, learning, community question, or sourced news. Search demand may inform "
-                "the later research, but it must not create or replace the idea. Avoid duplicates. Return JSON only. "
+                + "\n\nChoose one audience-led article hypothesis. Start with a real reader question or decision, not a "
+                "keyword and not a generic summary of the news. The idea must come from a real reader need, "
+                "recent observation, learning, community question, or sourced news. Separate the surface request "
+                "from the reader's situation, stakes, constraints, and desired outcome. Search demand is only a "
+                "traffic signal: it may reveal a price-sensitive or anxious audience, but it must never replace "
+                "the audience need or decide the angle by itself. Explain why the topic matters to this business "
+                "and what the owner can credibly clarify. Analyze the supplied market context too: alternatives, "
+                "price sensitivity, timing, regulation, competitive conventions, and the factors that change the "
+                "reader's decision. If the market evidence is missing, name that gap instead of inferring it. Do not invent expertise; use supplied owner knowledge, "
+                "approved evidence, or name the gap for owner review. Avoid duplicates. Return JSON only. "
                 "candidate_queries must be 5 to 10 concise Google queries that could surface local intent for this "
                 "idea (include the relevant destination or market in queries where it matters). Each query must be "
-                "one phrase: do not use semicolons, commas, pipes, or newline-separated alternatives."
+                "one phrase: do not use semicolons, commas, pipes, or newline-separated alternatives. Make the "
+                "queries reflect different ways a reader might express the same decision, including the reader's "
+                "own vocabulary and the field's professional vocabulary when those differ."
             ),
         },
         {
             "role": "user",
             "content": (
                 json.dumps(payload, ensure_ascii=False, default=str)[:18_000]
-                + '\n\nReturn exactly: {"working_title":"...","audience_need":"...","thesis":"...",'
+                + '\n\nReturn exactly: {"working_title":"...","audience_need":"...",'
+                '"reader_question":"...","reader_situation":"...","reader_intent":"...",'
+                '"business_relevance":"...","market_context":"...","expert_angle":"...",'
+                '"expertise_basis":["owner knowledge, approved evidence, or a clearly named gap"],'
+                '"technical_watchouts":["terms, claims, trade-offs, or distinctions requiring care"],'
+                '"scope_boundaries":["what the article must not claim"],"thesis":"...",'
                 '"why_now":"...","origin":"news|audience_concern|learning|community_question",'
                 '"source_urls":["https://..."],"candidate_queries":["...","..."],"language":"...","market":"..."}'
             ),
@@ -146,6 +164,46 @@ def _candidate_queries(value: Any) -> list[str]:
     return queries
 
 
+def _bounded_strings(value: Any, *, limit: int = 8, maximum: int = 500) -> list[str]:
+    raw = value if isinstance(value, list) else []
+    result: list[str] = []
+    for item in raw[:limit]:
+        text = " ".join(str(item or "").split())[:maximum]
+        if text:
+            result.append(text)
+    return result
+
+
+def _terminology_notes(value: Any) -> list[dict[str, str]]:
+    """Keep terminology guidance structured without assuming a particular niche.
+
+    The model may know that readers and practitioners use different words, but
+    it must also say whether that distinction is owner-confirmed, sourced, or
+    still uncertain.  Uncertain notes are useful guardrails, not facts.
+    """
+    raw = value if isinstance(value, list) else []
+    result: list[dict[str, str]] = []
+    for item in raw[:12]:
+        if isinstance(item, Mapping):
+            reader_term = " ".join(str(item.get("reader_term") or item.get("term") or "").split())[:120]
+            preferred_term = " ".join(str(item.get("preferred_term") or item.get("professional_term") or "").split())[:160]
+            distinction = " ".join(str(item.get("distinction") or item.get("guidance") or "").split())[:360]
+            basis = " ".join(str(item.get("basis") or "uncertain").split())[:80]
+        else:
+            reader_term = " ".join(str(item or "").split())[:120]
+            preferred_term = ""
+            distinction = ""
+            basis = "uncertain"
+        if reader_term or preferred_term or distinction:
+            result.append({
+                "reader_term": reader_term,
+                "preferred_term": preferred_term,
+                "distinction": distinction,
+                "basis": basis or "uncertain",
+            })
+    return result
+
+
 def _validate_idea(raw: str, config: Mapping[str, Any]) -> dict[str, Any]:
     idea = extract_json(raw)
     if not isinstance(idea, Mapping):
@@ -154,6 +212,15 @@ def _validate_idea(raw: str, config: Mapping[str, Any]) -> dict[str, Any]:
     result = {
         "working_title": str(idea.get("working_title") or "").strip()[:300],
         "audience_need": str(idea.get("audience_need") or "").strip()[:700],
+        "reader_question": str(idea.get("reader_question") or "").strip()[:700],
+        "reader_situation": str(idea.get("reader_situation") or "").strip()[:900],
+        "reader_intent": str(idea.get("reader_intent") or "").strip()[:500],
+        "business_relevance": str(idea.get("business_relevance") or "").strip()[:900],
+        "market_context": str(idea.get("market_context") or "").strip()[:900],
+        "expert_angle": str(idea.get("expert_angle") or "").strip()[:900],
+        "expertise_basis": _bounded_strings(idea.get("expertise_basis"), limit=8, maximum=500),
+        "technical_watchouts": _bounded_strings(idea.get("technical_watchouts"), limit=10, maximum=500),
+        "scope_boundaries": _bounded_strings(idea.get("scope_boundaries"), limit=8, maximum=500),
         "thesis": str(idea.get("thesis") or "").strip()[:1200],
         "why_now": str(idea.get("why_now") or "").strip()[:700],
         "origin": str(idea.get("origin") or "").strip().lower(),
@@ -162,8 +229,23 @@ def _validate_idea(raw: str, config: Mapping[str, Any]) -> dict[str, Any]:
         "language": str(idea.get("language") or settings.get("language") or "en").strip().lower()[:16],
         "market": str(idea.get("market") or settings.get("market") or "US").strip().upper()[:2],
     }
-    if not result["working_title"] or not result["audience_need"] or not result["thesis"] or not result["candidate_queries"]:
-        raise ValueError("article idea needs a title, audience need, thesis, and candidate queries")
+    if (
+        not result["working_title"]
+        or not result["audience_need"]
+        or not result["reader_question"]
+        or not result["reader_situation"]
+        or not result["reader_intent"]
+        or not result["business_relevance"]
+        or not result["market_context"]
+        or not result["expert_angle"]
+        or not result["expertise_basis"]
+        or not result["thesis"]
+        or not result["candidate_queries"]
+    ):
+        raise ValueError(
+            "article idea needs a title, audience need, reader question and situation, reader intent, "
+            "business relevance, market context, expert angle, expertise basis, thesis, and candidate queries"
+        )
     if result["origin"] not in _ORIGINS:
         raise ValueError("article idea origin is not supported")
     time_sensitive = any(word in f"{result['why_now']} {result['thesis']}".lower() for word in ("today", "current", "this week", "now", "recent"))
@@ -199,7 +281,13 @@ def _request_selected_idea(context: Mapping[str, Any], row: Mapping[str, Any], i
     try:
         response = service.request_article_keyword_research(
             idea_key=str(row["cycle_key"]),
-            idea_summary=f"{idea['audience_need']} Thesis: {idea['thesis']}",
+            idea_summary=(
+                f"Reader question: {idea['reader_question']} "
+                f"Situation: {idea['reader_situation']} "
+                f"Market context: {idea['market_context']} "
+                f"Expert angle: {idea['expert_angle']} "
+                f"Thesis: {idea['thesis']}"
+            ),
             queries=list(idea.get("candidate_queries") or []),
             language=str(idea["language"]),
             country=str(idea["market"]),
@@ -301,11 +389,15 @@ def _research_note_prompt(idea: Mapping[str, Any], result: list[Any]) -> list[di
             "role": "system",
             "content": (
                 "Interpret exact candidate search metrics for the already-selected article idea. Preserve the "
-                "original audience need and thesis. Search volume is context, never a verdict and never a reason "
-                "to replace the topic. Sparse or zero demand must not automatically reject an idea. Choose exactly "
-                "one query for a single SERP snapshot: it should normally be one of the submitted candidates, but "
-                "an explicitly editorial alternative is allowed when its reasoning explains why the submitted "
-                "candidates miss the real need. Return JSON only."
+                "original reader question, situation, business relevance, market context, expert angle, and thesis. Search volume "
+                "is context, never a verdict and never a reason to replace the topic. It can reveal a practical, "
+                "price-sensitive, anxious, or comparison-led intent, but do not turn that signal into a claim about "
+                "people's motives. Sparse or zero demand must not automatically reject an idea. Choose exactly one "
+                "query for a single SERP snapshot: it should normally be one of the submitted candidates, but an "
+                "explicitly editorial alternative is allowed when its reasoning explains why the submitted candidates "
+                "miss the real need. Identify terminology differences, technical claims, false binaries, and scope "
+                "boundaries that the writer must verify or qualify. Do not treat SERP wording as domain truth. Return "
+                "JSON only."
             ),
         },
         {
@@ -315,8 +407,13 @@ def _research_note_prompt(idea: Mapping[str, Any], result: list[Any]) -> list[di
                 + "\n\nExact candidate metrics:\n" + json.dumps(result[:10], ensure_ascii=False, default=str)
                 + '\n\nReturn exactly: {"original_thesis":"...","decision":"keep|reframe|editorial_despite_low_demand",'
                 '"selected_query":"...","selected_from_query":"...","reader_language":["..."],'
-                '"related_questions":["..."],"useful_terms":["..."],"reframed_title":"...",'
-                '"reframed_thesis":"...","reasoning":"..."}'
+                '"reader_question":"...","market_context":"...","question_fit":"...",'
+                '"demand_interpretation":"...","related_questions":["..."],"useful_terms":["..."],'
+                '"terminology_notes":[{"reader_term":"...","preferred_term":"...",'
+                '"distinction":"...","basis":"owner|source|uncertain"}],'
+                '"technical_claims_to_verify":["..."],"scope_boundaries":["..."],'
+                '"misconceptions_to_avoid":["..."],"reframed_title":"...",'
+                '"reframed_thesis":"...","expert_angle":"...","reasoning":"..."}'
             ),
         },
     ]
@@ -336,14 +433,37 @@ def _note(raw: str, idea: Mapping[str, Any]) -> dict[str, Any]:
     selected_from = str(parsed.get("selected_from_query") or "").strip()[:120]
     if not selected_from and selected in candidates:
         selected_from = selected
+    candidate_lookup = {query.strip().lower(): query for query in candidates if query.strip()}
+    selected_candidate = candidate_lookup.get(selected.lower())
+    selected_from_candidate = candidate_lookup.get(selected_from.lower())
+    if selected_candidate:
+        selected = selected_candidate
+        selected_from = selected_from_candidate or selected_candidate
+    elif not selected:
+        raise ValueError("article research note selected no query")
+    elif not selected_from_candidate or not str(parsed.get("reasoning") or "").strip():
+        raise ValueError(
+            "article research note must select a submitted query or justify an editorial alternative with its source query"
+        )
     return {
         "original_thesis": str(parsed.get("original_thesis") or idea.get("thesis") or "")[:1200],
         "decision": decision,
         "selected_query": selected,
         "selected_from_query": selected_from,
+        "reader_question": str(parsed.get("reader_question") or idea.get("reader_question") or "")[:700],
+        "market_context": str(parsed.get("market_context") or idea.get("market_context") or "")[:900],
+        "question_fit": str(parsed.get("question_fit") or "")[:900],
+        "demand_interpretation": str(parsed.get("demand_interpretation") or "")[:900],
         "reader_language": [str(item)[:160] for item in (parsed.get("reader_language") or [])][:8],
         "related_questions": [str(item)[:240] for item in (parsed.get("related_questions") or [])][:8],
         "useful_terms": [str(item)[:120] for item in (parsed.get("useful_terms") or [])][:12],
+        "terminology_notes": _terminology_notes(parsed.get("terminology_notes")),
+        "technical_claims_to_verify": _bounded_strings(parsed.get("technical_claims_to_verify"), limit=10, maximum=500),
+        "scope_boundaries": _bounded_strings(
+            parsed.get("scope_boundaries") or idea.get("scope_boundaries"), limit=8, maximum=500
+        ),
+        "misconceptions_to_avoid": _bounded_strings(parsed.get("misconceptions_to_avoid"), limit=8, maximum=500),
+        "expert_angle": str(parsed.get("expert_angle") or idea.get("expert_angle") or "")[:900],
         "reframed_title": str(parsed.get("reframed_title") or idea.get("working_title") or "")[:300],
         "reframed_thesis": str(parsed.get("reframed_thesis") or idea.get("thesis") or "")[:1200],
         "reasoning": str(parsed.get("reasoning") or "")[:1600],

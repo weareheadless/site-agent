@@ -11,7 +11,12 @@ from .base import Item, published_ts
 _UA = "site-agent/0.1 (read-only RSS reader)"
 
 
-def fetch_feeds(feed_configs: list[dict[str, Any]], limit_per_source: int = 15) -> list[Item]:
+def _fetch_feeds(
+    feed_configs: list[dict[str, Any]],
+    *,
+    limit_per_source: int = 15,
+    source_prefix: str = "rss",
+) -> list[Item]:
     items: list[Item] = []
     for config in feed_configs:
         if isinstance(config, str):
@@ -28,10 +33,19 @@ def fetch_feeds(feed_configs: list[dict[str, Any]], limit_per_source: int = 15) 
                         title=str(getattr(raw, "title", "")).strip(),
                         summary=str(getattr(raw, "summary", "") or ""),
                         link=str(getattr(raw, "link", "")),
-                        source=f"rss/{name}",
+                        source=f"{source_prefix}/{name}",
                         published=published_ts(raw),
                     )
                 )
         except Exception as exc:  # noqa: BLE001
             items.append(Item(title=f"[feed error] {name}: {exc}", summary="", link="", source="error"))
     return items
+
+
+def fetch_feeds(feed_configs: list[dict[str, Any]], limit_per_source: int = 15) -> list[Item]:
+    return _fetch_feeds(feed_configs, limit_per_source=limit_per_source, source_prefix="rss")
+
+
+def fetch_community_feeds(feed_configs: list[dict[str, Any]], limit_per_source: int = 15) -> list[Item]:
+    """Read configured forum/community feeds without assuming a platform or niche."""
+    return _fetch_feeds(feed_configs, limit_per_source=limit_per_source, source_prefix="community")

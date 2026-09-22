@@ -59,6 +59,14 @@ def test_fetch_subreddits_parses_feed_entries(monkeypatch):
     assert items[0].clean_summary.startswith("some html")
 
 
+def test_fetch_community_feeds_preserves_a_generic_community_source(monkeypatch):
+    parsed = SimpleNamespace(entries=[_entry("Question from a forum")])
+    monkeypatch.setattr("site_agent.senses.rss.feedparser.parse", lambda _url, agent=None: parsed)
+    items = senses.fetch_community_feeds([{"name": "industry-forum", "url": "https://forum.example/feed.xml"}])
+    assert items[0].source == "community/industry-forum"
+    assert items[0].title == "Question from a forum"
+
+
 def test_collect_combines_sources_and_scores(monkeypatch):
     monkeypatch.setattr(
         senses, "fetch_subreddits", lambda entries: [Item("Mouthfill progress", "", "https://r/1", "reddit/freediving")]
@@ -66,9 +74,19 @@ def test_collect_combines_sources_and_scores(monkeypatch):
     monkeypatch.setattr(
         senses, "fetch_feeds", lambda feeds: [Item("Deeper Blue newsletter", "", "https://n/1", "rss/deeperblue")]
     )
-    config = {"sources": {"subreddits": ["freediving"], "rss_feeds": [{"name": "deeperblue"}], "keywords": ["mouthfill"]}}
+    monkeypatch.setattr(
+        senses, "fetch_community_feeds", lambda feeds: [Item("Forum question", "", "https://f/1", "community/forum")]
+    )
+    config = {
+        "sources": {
+            "subreddits": ["freediving"],
+            "community_feeds": [{"name": "forum"}],
+            "rss_feeds": [{"name": "deeperblue"}],
+            "keywords": ["mouthfill"],
+        }
+    }
     items = senses.collect(config)
-    assert len(items) == 2
+    assert len(items) == 3
     scored = [i for i in items if i.matched]
     assert len(scored) == 1 and scored[0].source == "reddit/freediving"
 

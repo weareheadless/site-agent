@@ -6,7 +6,7 @@ from typing import Any
 
 from .base import Item, canonical_link, score_item, strip_html
 from .reddit import fetch_subreddits
-from .rss import fetch_feeds
+from .rss import fetch_community_feeds, fetch_feeds
 
 
 def collect(config: dict[str, Any], max_total: int = 25) -> list[Item]:
@@ -14,6 +14,8 @@ def collect(config: dict[str, Any], max_total: int = 25) -> list[Item]:
     items: list[Item] = []
     if sources.get("subreddits"):
         items.extend(fetch_subreddits(sources["subreddits"]))
+    if sources.get("community_feeds"):
+        items.extend(fetch_community_feeds(sources["community_feeds"]))
     if sources.get("rss_feeds"):
         items.extend(fetch_feeds(sources["rss_feeds"]))
     keywords = [str(k) for k in (sources.get("keywords") or [])]
@@ -23,4 +25,7 @@ def collect(config: dict[str, Any], max_total: int = 25) -> list[Item]:
     return items[:max_total]
 
 
-__all__ = ["Item", "canonical_link", "collect", "fetch_feeds", "fetch_subreddits", "score_item", "strip_html"]
+__all__ = [
+    "Item", "canonical_link", "collect", "fetch_community_feeds", "fetch_feeds", "fetch_subreddits",
+    "score_item", "strip_html",
+]

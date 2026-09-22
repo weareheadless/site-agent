@@ -448,6 +448,15 @@ It returns a bounded editorial hypothesis:
 {
   "working_title": "...",
   "audience_need": "...",
+  "reader_question": "...",
+  "reader_situation": "...",
+  "reader_intent": "...",
+  "business_relevance": "...",
+  "market_context": "...",
+  "expert_angle": "...",
+  "expertise_basis": ["owner knowledge, approved evidence, or a named gap"],
+  "technical_watchouts": ["terms, claims, or trade-offs requiring care"],
+  "scope_boundaries": ["what the article must not claim"],
   "thesis": "...",
   "why_now": "...",
   "origin": "news|audience_concern|learning|community_question",
@@ -461,6 +470,8 @@ It returns a bounded editorial hypothesis:
 Reject and do not pay for an idea when:
 
 - the audience need is empty;
+- the reader question, situation, or intent is empty;
+- the business relevance, expert angle, or expertise basis is empty;
 - the thesis is empty;
 - it duplicates a pending, approved, or recently declined idea;
 - a time-sensitive claim has no source URL;
@@ -612,9 +623,18 @@ When research completes, ask Ada to produce a compact note:
 {
   "original_thesis": "...",
   "decision": "keep|reframe|editorial_despite_low_demand",
+  "reader_question": "...",
+  "market_context": "...",
+  "question_fit": "...",
+  "demand_interpretation": "...",
   "reader_language": ["..."],
   "related_questions": ["..."],
   "useful_terms": ["..."],
+  "terminology_notes": [{"reader_term": "...", "preferred_term": "...", "distinction": "...", "basis": "owner|source|uncertain"}],
+  "technical_claims_to_verify": ["..."],
+  "scope_boundaries": ["..."],
+  "misconceptions_to_avoid": ["..."],
+  "expert_angle": "...",
   "reframed_title": "...",
   "reframed_thesis": "...",
   "reasoning": "..."
@@ -624,8 +644,11 @@ When research completes, ask Ada to produce a compact note:
 Prompt rules:
 
 - preserve the original audience concern;
+- identify the underlying reader decision, constraint, and desired outcome;
 - do not select a different topic because it has more volume;
 - treat volume as context, not a verdict;
+- treat reader vocabulary, professional terminology, and technical truth as separate things to verify;
+- flag false binaries, claims needing owner/source confirmation, and the limits of any diagnosis or procedure;
 - allow `editorial_despite_low_demand`;
 - do not invent source URLs or metrics;
 - keep only evidence relevant to the selected idea.
@@ -642,6 +665,7 @@ path with:
 
 - the original idea;
 - the compact research note;
+- the business's credible expert angle and expertise basis;
 - current sourced news used by the idea;
 - relevant audience/customer context;
 - owner feedback;
@@ -651,11 +675,14 @@ path with:
 
 Update the writing prompt to say explicitly:
 
-- write for the stated reader need and thesis;
+- answer the stated reader question, situation, and thesis from the business's credible point of view;
+- use research to ground the answer, not to narrate the research process;
 - use research terminology only when natural;
 - do not optimize for keyword density;
 - do not force the seed into the title or headings;
 - retain Ada's point of view;
+- do not invent technical procedures, diagnoses, standards, credentials, outcomes, or first-hand experience;
+- do not turn search demand into proof of truth, expertise, or reader motives;
 - distinguish sourced current facts from evergreen guidance.
 
 Save the normal pending article draft and include lineage in draft metadata:

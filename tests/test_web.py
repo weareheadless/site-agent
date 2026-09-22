@@ -1103,6 +1103,15 @@ def test_article_details_expose_research_and_publish_trace(runtime):
         {
             "working_title": "A useful guide",
             "audience_need": "Readers need clarity.",
+            "reader_question": "How do I make the right choice?",
+            "reader_situation": "The reader is comparing options before contacting the business.",
+            "reader_intent": "Choose the right next step.",
+            "business_relevance": "The business can clarify the decision.",
+            "market_context": "Readers compare alternatives and price before contacting the business.",
+            "expert_angle": "Explain which conditions change the recommendation.",
+            "expertise_basis": ["Owner-confirmed practice."],
+            "technical_watchouts": ["Avoid universal claims."],
+            "scope_boundaries": ["Do not diagnose without the relevant facts."],
             "thesis": "Explain the practical answer.",
             "why_now": "A recurring community question",
             "origin": "community_question",
@@ -1137,6 +1146,8 @@ def test_article_details_expose_research_and_publish_trace(runtime):
     assert details.status_code == 200
     decision = details.json()["decision_details"]
     assert decision["selection"]["audience_need"] == "Readers need clarity."
+    assert decision["selection"]["reader_question"] == "How do I make the right choice?"
+    assert decision["selection"]["expert_angle"] == "Explain which conditions change the recommendation."
     assert decision["selection"]["selected_query"] == "reader question basics"
     assert decision["keyword_research"]["status"] == "completed"
     assert decision["keyword_research"]["result_count"] == 1
@@ -1178,6 +1189,13 @@ def test_article_publish_requires_keyword_evidence_or_explicit_exception(runtime
         {
             "working_title": "A useful guide",
             "audience_need": "Readers need clarity.",
+            "reader_question": "How do I make the right choice?",
+            "reader_situation": "The reader wants to compare options.",
+            "reader_intent": "Choose a next step.",
+            "business_relevance": "The business can clarify the decision.",
+            "market_context": "Readers compare alternatives before contacting the business.",
+            "expert_angle": "Explain the relevant conditions.",
+            "expertise_basis": ["Owner-confirmed practice."],
             "thesis": "Explain the practical answer.",
             "why_now": "A recurring community question",
             "origin": "community_question",

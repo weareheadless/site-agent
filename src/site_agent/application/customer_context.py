@@ -317,7 +317,15 @@ class CustomerContextService:
         elif purpose == "design":
             keys = ("business", "audience", "conversion", "brand", "site", "constraints", "assets", "creative_identity", "design", "research", "research_manifest")
         elif purpose == "editorial":
-            keys = ("business", "audience", "brand", "conversion", "constraints", "knowledge", "research", "research_manifest")
+            keys = (
+                "business", "audience", "brand", "conversion", "constraints", "knowledge", "research",
+                "research_manifest", "contradictions", "open_questions",
+            )
+        elif purpose in {"article", "article_research"}:
+            keys = (
+                "business", "audience", "brand", "conversion", "site", "constraints", "knowledge",
+                "research", "research_manifest", "contradictions", "open_questions",
+            )
         elif purpose == "research":
             keys = ("business", "audience", "research", "research_manifest", "knowledge", "contradictions", "open_questions")
         elif purpose == "strategy":

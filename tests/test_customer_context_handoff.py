@@ -119,7 +119,11 @@ def test_context_service_keeps_exact_lineage_and_bounded_views(tmp_path):
         assert context.research_manifest.target_language == "en"
         assert manifest.context_hash == context.computed_hash
         assert manifest.research_manifest_hash == context.research_manifest.computed_hash
-        assert CustomerContextService(memory).task_view("identity")["context"]["context_id"] == context.context_id
+        service = CustomerContextService(memory)
+        assert service.task_view("identity")["context"]["context_id"] == context.context_id
+        article_view = service.task_view("article_research")
+        assert "conversion" in article_view and "brand" in article_view and "site" in article_view
+        assert "research_manifest" in article_view and "open_questions" in article_view
     finally:
         memory.close()
 

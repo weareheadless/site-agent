@@ -30,8 +30,10 @@ def _prompt(persona: str, observations: list[dict[str, Any]]) -> list[dict[str, 
         + "\n\nReply with JSON only: {\"learned\": [\"one insight per string, max 5\"], "
           "\"themes\": [\"recurring topics, max 6\"], "
           "\"audience_needs\": [\"needs expressed or evidenced by readers, max 5\"], "
+          "\"audience_questions\": [\"questions readers actually ask or try to answer, max 5\"], "
           "\"trends\": [\"recurring or emerging signals, max 5\"]}. "
-          "Keep needs and trends cautious and grounded in the reading; never invent demographics or demand."
+          "Keep needs, questions, and trends cautious and grounded in the reading; never invent demographics or demand. "
+          "Preserve the reader's wording when it reveals a real decision, fear, constraint, or desired outcome."
     )
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
@@ -61,6 +63,7 @@ def learn(context: dict[str, Any]) -> None:
     learned = [str(x) for x in (parsed.get("learned") or [])][:5]
     themes = [str(x) for x in (parsed.get("themes") or [])][:6]
     audience_needs = [str(x) for x in (parsed.get("audience_needs") or [])][:5]
+    audience_questions = [str(x) for x in (parsed.get("audience_questions") or [])][:5]
     trends = [str(x) for x in (parsed.get("trends") or [])][:5]
     body = "\n".join(f"- {item}" for item in learned) or "(nothing worth recording)"
     memory.record_observation(
@@ -69,6 +72,7 @@ def learn(context: dict[str, Any]) -> None:
         meta={
             "themes": themes,
             "audience_needs": audience_needs,
+            "audience_questions": audience_questions,
             "trends": trends,
             "from_id": min(r["id"] for r in rows),
             "to_id": max(r["id"] for r in rows),
@@ -80,6 +84,7 @@ def learn(context: dict[str, Any]) -> None:
         memory.kv_set("themes", merged)
     for key, values, limit in (
         ("audience_needs", audience_needs, 12),
+        ("audience_questions", audience_questions, 12),
         ("trends", trends, 12),
     ):
         if values:

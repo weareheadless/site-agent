@@ -103,13 +103,19 @@ def test_learn_distills_observations_into_insights(env):
     memory, config = env
     memory.record_observation("reddit/freediving", "Weight belt failure story.", meta={"link": "https://r/1"})
     memory.record_observation("rss/news", "New depth record announced.", meta={})
-    llm = FakeLLM([json.dumps({"learned": ["Gear safety is a hot topic"], "themes": ["safety", "gear"]})])
+    llm = FakeLLM([json.dumps({
+        "learned": ["Gear safety is a hot topic"],
+        "themes": ["safety", "gear"],
+        "audience_questions": ["How do I choose the safe setup for my situation?"],
+    })])
     learn(_context(memory, config, llm))
 
     learnings = memory.recent_observations(source="learning")
     assert len(learnings) == 1
     assert "Gear safety" in learnings[0]["text"]
     assert learnings[0]["meta"]["themes"] == ["safety", "gear"]
+    assert learnings[0]["meta"]["audience_questions"] == ["How do I choose the safe setup for my situation?"]
+    assert memory.kv_get("audience_questions") == ["How do I choose the safe setup for my situation?"]
     assert memory.kv_get("learned_until_id") == 2
     assert "themes" in json.dumps(memory.kv_get("themes")) or memory.kv_get("themes") == ["safety", "gear"]
 
@@ -283,6 +289,8 @@ def test_draft_article_for_idea_uses_selected_query_and_serp_evidence(env):
     assert "school.example" in content
     assert "do not use keyword density targets" in content
     assert "Why it matters: Readers need clarity." in content
+    assert "Reader question: Readers need clarity." in content
+    assert "Do not create a false opposition" in write_call["messages"][0]["content"]
 
 
 def test_inner_voice_challenge_records_dialogue_and_returns_problems(env):

@@ -2002,6 +2002,15 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
             "selection": {
                 "title": idea_data.get("working_title") or draft.get("title", ""),
                 "audience_need": idea_data.get("audience_need", ""),
+                "reader_question": idea_data.get("reader_question", ""),
+                "reader_situation": idea_data.get("reader_situation", ""),
+                "reader_intent": idea_data.get("reader_intent", ""),
+                "business_relevance": idea_data.get("business_relevance", ""),
+                "market_context": idea_data.get("market_context", ""),
+                "expert_angle": idea_data.get("expert_angle", ""),
+                "expertise_basis": idea_data.get("expertise_basis", []),
+                "technical_watchouts": idea_data.get("technical_watchouts", []),
+                "scope_boundaries": idea_data.get("scope_boundaries", []),
                 "thesis": idea_data.get("thesis", ""),
                 "why_now": idea_data.get("why_now", ""),
                 "origin": idea_data.get("origin", lineage.get("origin", "")),
@@ -2060,6 +2069,11 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
             "",
             "Selection rationale:",
             f"Audience need: {_commit_text(selection.get('audience_need')) or 'not recorded'}",
+            f"Reader question: {_commit_text(selection.get('reader_question')) or 'not recorded'}",
+            f"Reader intent: {_commit_text(selection.get('reader_intent')) or 'not recorded'}",
+            f"Business relevance: {_commit_text(selection.get('business_relevance')) or 'not recorded'}",
+            f"Market context: {_commit_text(selection.get('market_context')) or 'not recorded'}",
+            f"Expert angle: {_commit_text(selection.get('expert_angle')) or 'not recorded'}",
             f"Why now: {_commit_text(selection.get('why_now')) or 'not recorded'}",
             f"Thesis: {_commit_text(selection.get('thesis')) or 'not recorded'}",
             f"Origin: {_commit_text(selection.get('origin')) or 'not recorded'}",
@@ -2105,6 +2119,19 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
                 or not str(note.get("reasoning") or "").strip()
             ):
                 return "article has no keyword research rows; an explicit editorial_despite_low_demand reason is required"
+        selection = details["selection"]
+        required_brief = {
+            "reader question": selection.get("reader_question"),
+            "reader situation": selection.get("reader_situation"),
+            "reader intent": selection.get("reader_intent"),
+            "business relevance": selection.get("business_relevance"),
+            "market context": selection.get("market_context"),
+            "expert angle": selection.get("expert_angle"),
+            "expertise basis": selection.get("expertise_basis"),
+        }
+        missing = [label for label, value in required_brief.items() if not value]
+        if missing:
+            return "article editorial brief is incomplete: missing " + ", ".join(missing)
         return None
 
     def _publish_article(ad: SiteAdapter, draft: dict[str, Any]) -> dict[str, Any]:

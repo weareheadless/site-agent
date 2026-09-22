@@ -91,21 +91,30 @@ def _effective_source_config(context: dict[str, Any]) -> dict[str, Any]:
     source_rows = research.get("sources") if isinstance(research, dict) else []
     if not isinstance(source_rows, list):
         source_rows = []
-    feeds = [
-        {
+    feeds = []
+    community_feeds = []
+    for source in source_rows:
+        if not (
+            isinstance(source, dict)
+            and not source.get("excluded")
+            and str(source.get("trust_state") or "") == "allowed"
+            and str(source.get("ongoing_subscription") or "") == "approved"
+            and str(source.get("feed_url") or source.get("url") or "").strip()
+        ):
+            continue
+        feed = {
             "name": str(source.get("title") or source.get("source_id") or "approved-source"),
             "url": str(source.get("feed_url") or source.get("url") or ""),
         }
-        for source in source_rows
-        if isinstance(source, dict)
-        and not source.get("excluded")
-        and str(source.get("trust_state") or "") == "allowed"
-        and str(source.get("ongoing_subscription") or "") == "approved"
-        and str(source.get("feed_url") or source.get("url") or "").strip()
-    ]
+        source_kind = str(source.get("kind") or source.get("source_kind") or source.get("type") or "").lower()
+        if source_kind in {"community", "community_feed", "forum", "forum_feed"}:
+            community_feeds.append(feed)
+        else:
+            feeds.append(feed)
     sources = dict(config.get("sources") or {})
     sources["subreddits"] = []
     sources["rss_feeds"] = feeds
+    sources["community_feeds"] = community_feeds
     identity = research.get("genesis_identity") if isinstance(research, dict) else {}
     if isinstance(identity, dict) and isinstance(identity.get("subjects"), list):
         sources["keywords"] = [str(item) for item in identity["subjects"] if str(item).strip()]
@@ -305,7 +314,9 @@ def _seo_site_report_cycle(context: dict[str, Any]) -> None:
 
 
 def _article_research_cycle(context: dict[str, Any]) -> None:
-    _with_persona(context, brain_article_research.reconcile, "research")
+    # Reconciliation culminates in a reader-facing article, so it needs the
+    # complete editorial/business context as well as the research evidence.
+    _with_persona(context, brain_article_research.reconcile, "article_research")
 
 
 def register_atelier_jobs(scheduler: Scheduler, config: dict[str, Any], context: dict[str, Any]) -> None:
@@ -321,7 +332,7 @@ def register_atelier_jobs(scheduler: Scheduler, config: dict[str, Any], context:
         return
     schedule = settings.get("schedule") if isinstance(settings.get("schedule"), dict) else {}
     sources = (_effective_source_config(context).get("sources") or {})
-    has_sources = bool(sources.get("subreddits") or sources.get("rss_feeds"))
+    has_sources = bool(sources.get("subreddits") or sources.get("rss_feeds") or sources.get("community_feeds"))
     if has_sources:
         scheduler.job("digest", schedule.get("digest", {"every": "weekly", "weekday": "monday", "at": "08:00"}), lambda: _digest(context))
     if context.get("llm") and (has_sources or bool(settings.get("learning_enabled", False))):
@@ -375,7 +386,7 @@ def register_builtin(scheduler: Scheduler, config: dict[str, Any], context: dict
     scheduler.job("heartbeat", _spec(config, "heartbeat"), lambda: _heartbeat(context))
     scheduler.job("health_check", _spec(config, "health_check"), lambda: maintenance.health_check(context))
     sources = (_effective_source_config(context).get("sources") or {})
-    if sources.get("subreddits") or sources.get("rss_feeds"):
+    if sources.get("subreddits") or sources.get("rss_feeds") or sources.get("community_feeds"):
         scheduler.job("digest", _spec(config, "digest"), lambda: _digest(context))
     if context.get("llm"):
         scheduler.job("learn", _spec(config, "learn"), lambda: _with_persona(context, brain_digest.learn, "research"))

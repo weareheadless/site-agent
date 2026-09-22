@@ -7,6 +7,15 @@ from site_agent.core.memory import Memory
 DEFAULT_IDEA = {
     "working_title": "A useful guide",
     "audience_need": "Readers need clarity.",
+    "reader_question": "How do I make the right choice?",
+    "reader_situation": "A reader is comparing options and wants to avoid an expensive mistake.",
+    "reader_intent": "Choose a suitable next step with confidence.",
+    "business_relevance": "The business can clarify the decision before the reader asks for help.",
+    "market_context": "Readers are comparing alternatives and cost before committing to a provider.",
+    "expert_angle": "Explain the conditions that make each option appropriate.",
+    "expertise_basis": ["Owner-confirmed practice and approved source material."],
+    "technical_watchouts": ["Do not treat context-dependent options as a universal ranking."],
+    "scope_boundaries": ["Do not diagnose a specific case without the required facts."],
     "thesis": "Explain the practical answer.",
     "why_now": "A recurring community question",
     "origin": "community_question",
@@ -153,6 +162,38 @@ def test_article_idea_needs_5_to_10_unique_candidate_queries():
     ]})
     with pytest.raises(ValueError, match="unique"):
         article_research._validate_idea(duplicate, config)
+
+
+def test_article_idea_requires_reader_question_and_expertise_boundary():
+    config = {"seo": {"article_research": {"enabled": True}}}
+    missing_question = dict(DEFAULT_IDEA)
+    missing_question.pop("reader_question")
+    with pytest.raises(ValueError, match="reader question"):
+        article_research._validate_idea(__import__("json").dumps(missing_question), config)
+
+    missing_basis = {**DEFAULT_IDEA, "expertise_basis": []}
+    with pytest.raises(ValueError, match="expertise basis"):
+        article_research._validate_idea(__import__("json").dumps(missing_basis), config)
+
+
+def test_research_note_must_ground_an_editorial_alternative_in_a_candidate_query():
+    alternative = {
+        "decision": "reframe",
+        "selected_query": "a better wording the provider did not measure",
+        "selected_from_query": "",
+        "reasoning": "",
+    }
+    with pytest.raises(ValueError, match="submitted query or justify"):
+        article_research._note(__import__("json").dumps(alternative), DEFAULT_IDEA)
+
+    justified = {
+        **alternative,
+        "selected_from_query": DEFAULT_IDEA["candidate_queries"][0],
+        "reasoning": "The submitted wording misses the reader's actual decision.",
+    }
+    note = article_research._note(__import__("json").dumps(justified), DEFAULT_IDEA)
+    assert note["selected_query"] == "a better wording the provider did not measure"
+    assert note["selected_from_query"] == DEFAULT_IDEA["candidate_queries"][0]
 
 
 def test_rejection_records_raw_candidate_and_reason(tmp_path):
