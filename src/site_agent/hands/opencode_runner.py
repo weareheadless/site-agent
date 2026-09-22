@@ -22,6 +22,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Callable
 
+from ..credentials import credential_environment, github_api_token, github_remote, github_ssh_command
 from .design_lab_git import design_lab_environment
 
 
@@ -46,6 +47,7 @@ _CODE_SYMBOLS = "{}=;|#&*"
 _MECH_PREFIXES = ("total ", "permission", "chmod ", "error:", "warning:", "usage:", "fatal: ")
 _DIFF_LEADS = ("diff --git", "index ", "--- a/", "+++ b/", "@@", "deleted file", "new file", "similarity index")
 _DSML_RE = _re.compile(r"(?:DSML|<\s*tool\b|<\s*invoke\b|<\s*parameter\b)", _re.I)
+_MAX_LIVE_PROGRESS_STEPS = 200
 _EXTENSIONS = frozenset((
     "html", "htm", "css", "js", "jsx", "ts", "tsx", "json", "md", "py",
     "svg", "png", "jpg", "jpeg", "webp", "gif", "toml", "txt", "yml", "yaml",
@@ -132,9 +134,18 @@ class ProseFilter:
         return line if _looks_like_prose(line) else ""
 
 
-def _git(clone: Path, *args: str, token: str | None = None, timeout: int = 120) -> str:
+def _git(
+    clone: Path,
+    *args: str,
+    token: str | None = None,
+    timeout: int = 120,
+    ssh_command: str | None = None,
+) -> str:
     cmd = ["git", "-C", str(clone), *args]
     env = os.environ.copy()
+    command = ssh_command if ssh_command is not None else github_ssh_command({}, env)
+    if command:
+        env["GIT_SSH_COMMAND"] = command
     if token:
         auth = base64.b64encode(f"x-access-token:{token}".encode()).decode()
         env.update({
@@ -148,8 +159,13 @@ def _git(clone: Path, *args: str, token: str | None = None, timeout: int = 120) 
     return proc.stdout
 
 
-def _origin_url(repo: str) -> str:
-    return f"https://github.com/{repo}.git"
+def _origin_url(
+    repo: str,
+    config: Mapping[str, Any] | None = None,
+    env: Mapping[str, str] | None = None,
+) -> str:
+    remote = f"https://github.com/{repo}.git"
+    return github_remote(remote, config, env) if config is not None else remote
 
 
 def worktree_status(config: dict[str, Any]) -> dict[str, Any]:
@@ -211,20 +227,22 @@ def ensure_clone(config: dict[str, Any], progress=None) -> Path:
         if progress:
             progress("using the provisioned local Git clone")
         return clone
+    credential_env = credential_environment(config)
     token = _token(config)
+    ssh_command = github_ssh_command(config, credential_env)
     _git(clone, "config", "user.name", "Ada (site-agent)")
     _git(clone, "config", "user.email", "ada@site-agent.local")
-    _git(clone, "remote", "set-url", "origin", _origin_url(repo))
+    _git(clone, "remote", "set-url", "origin", _origin_url(repo, config, credential_env), ssh_command=ssh_command)
     if progress:
         progress("syncing with GitHub")
-    _git(clone, "fetch", "origin", "--prune", token=token, timeout=180)
+    _git(clone, "fetch", "origin", "--prune", token=token, timeout=180, ssh_command=ssh_command)
     return clone
 
 
 def _token(config: dict[str, Any]) -> str:
     from ..config import resolve_secret
 
-    return resolve_secret(config, "github_token")
+    return github_api_token(config) or resolve_secret(config, "github_token", credential_environment(config))
 
 
 def _builder_worktree_path(config: dict[str, Any]) -> Path:
@@ -719,17 +737,19 @@ def builder_available(config: dict[str, Any]) -> bool:
     return bool(b.get("enabled")) and bool(str(config.get("site", {}).get("clone_path", "")).strip())
 
 
-def _build_base_ref(memory: Any) -> str:
+def _build_base_ref(memory: Any, config: Mapping[str, Any] | None = None) -> str:
     """Start from origin/preview when an earlier build is still waiting for
     approval, so a follow-up request improves that preview instead of
     discarding the unapproved page and starting from main again."""
+    site = config.get("site") if isinstance(config, Mapping) and isinstance(config.get("site"), Mapping) else {}
+    preview_branch = str(site.get("preview_branch") or PREVIEW_BRANCH)
     if memory is not None:
         try:
             pending = memory.list_drafts(status="pending")
         except Exception:  # noqa: BLE001
             pending = []
         if any(d.get("kind") == "merge" for d in pending):
-            return "origin/preview"
+            return f"origin/{preview_branch}"
     return "origin/main"
 
 
@@ -1021,24 +1041,26 @@ def _design_prompt(
             + "invent a second direction, turn the direction into a hidden manifest, or stop at a critique; realize it "
             + "in the actual source and rendered behavior.\n\n"
         )
+    build_profile = str(getattr(target, "build_profile", "") or "").strip().lower()
     allowed_paths = set(getattr(target, "allowed_paths", ()) or ())
     native_framework_block = ""
-    if {"package.json", "astro.config.mjs", "src/**"}.issubset(allowed_paths):
-        from .site_build import ASTRO_REACT_TOOLCHAIN_DEPENDENCIES
+    if build_profile == "next_react":
+        from .site_build import NEXT_REACT_TOOLCHAIN_DEPENDENCIES
 
         approved_dependencies = ", ".join(
-            f"{item['package']}@{item['version']}" for item in ASTRO_REACT_TOOLCHAIN_DEPENDENCIES
+            f"{item['package']}@{item['version']}" for item in NEXT_REACT_TOOLCHAIN_DEPENDENCIES
         )
         native_framework_block = (
-            "NATIVE ASTRO/REACT TOOLCHAIN CONTRACT:\n"
-            "This target is the host-approved astro_react source workspace. The existing checkout may contain a legacy "
+            "NATIVE NEXT/REACT/PAYLOAD TOOLCHAIN CONTRACT:\n"
+            "This target is the host-approved next_react source workspace. The existing checkout may contain a legacy "
             "Pelican site, but that legacy implementation is not the target for this run. Do not execute build.sh or edit "
             "pelicanconf.py, requirements.txt, content/, themes/, output/, root index.html, root main.js, root script.js, "
             "root styles.css, or images/. Do not duplicate the host materialized media outside public/images/ada-media/. "
-            "Author the page in the Astro/React source boundary, with the homepage at src/pages/index.astro, and use only "
-            "the exact host-approved dependencies in package.json. The approved direct dependency set and versions are: "
+            "Author the page in the Next App Router source boundary, with the homepage at src/app/page.tsx, and preserve "
+            "the Payload integration/configuration when present. Use only the exact host-approved dependencies in "
+            "package.json. The approved direct dependency set and versions are: "
             + approved_dependencies
-            + ". Do not use ranges or newer versions. Run the Astro npm check/build commands only after the native "
+            + ". Do not use ranges or newer versions. Run the Next/React npm check/build commands only after the native "
             "source exists; build output is host-generated and must not be authored.\n\n"
         )
     retained_implementation_block = ""
@@ -1047,7 +1069,7 @@ def _design_prompt(
             "RETAINED IMPLEMENTATION PRESERVATION CONTRACT (hard acceptance condition):\n"
             "This is not a fresh build. The immutable parent candidate already contains the approved native implementation "
             "and is the only source of truth for the repair. Inspect its existing source files before editing and preserve "
-            "the React source or Astro React integration, the actual approved GSAP runtime usage, the animation/timeline/"
+            "the React source or Next React integration, the actual approved GSAP runtime usage, the animation/timeline/"
             "trigger/listener teardown path, and the reduced-motion branch. Apply the requested visual fixes inside that "
             "implementation. Never replace a React/GSAP component with CSS-only markup, a static mock, or a new unrelated "
             "page; never delete the source file that owns the signature behavior. If a proposed edit would remove React, "
@@ -1176,7 +1198,7 @@ def _native_direction_prompt(
     raw_snapshot = request_data.get("context_snapshot")
     if isinstance(raw_snapshot, Mapping):
         snapshot_fields = (
-            "schema_version", "captured_at", "owner_request", "base_sha", "site_facts",
+            "schema_version", "captured_at", "owner_request", "base_sha", "build_profile", "site_facts",
             "asset_visual_evidence", "verified_facts", "unknowns", "prohibited_claims",
         )
         compact_snapshot = {
@@ -1205,7 +1227,7 @@ def _native_direction_prompt(
         "the configured framework boundary, and every attached owner-approved visual file. Do not edit, write, "
         "delete, install, run shell commands, delegate, publish, or change the worktree.\n\n"
         "Keep inspection bounded: do not use repository-wide recursive globs and do not enumerate node_modules, .git, "
-        "dist, .astro, output, or other generated/dependency directories. Read only the relevant package/config files, "
+         "dist, .next, .open-next, out, output, or other generated/dependency directories. Read only the relevant package/config files, "
         "existing source entrypoints, public assets, and the attached evidence needed to understand the confirmed intake.\n"
         + output_contract
         + " It must state the "
@@ -1262,7 +1284,7 @@ def _validate_design_paths(
 def _typed_design_quality_policy(config: dict[str, Any], request, target):
     """Return the configured host gates for typed builds, when enabled."""
     from .design_quality import QualityPolicy
-    from .site_build import ASTRO_REACT_PROFILE
+    from .site_build import NEXT_REACT_PROFILE
 
     # Keep the low-level builder usable in focused unit tests and by callers
     # that intentionally defer quality validation to DesignService.validate_run.
@@ -1291,9 +1313,9 @@ def _typed_design_quality_policy(config: dict[str, Any], request, target):
     )
     if target.allowed_paths:
         policy = replace(policy, allowed_patterns=target.allowed_paths)
-    if tuple(target.allowed_paths) == ASTRO_REACT_PROFILE.writable_patterns:
+    if str(getattr(target, "build_profile", "") or "").strip().lower() == NEXT_REACT_PROFILE.name:
         # package.json is globally denied because ordinary site edits must not
-        # replace the application's manifest. Native Astro builds are the
+        # replace the application's manifest. Native Next builds are the
         # explicit exception: the host owns this profile's exact toolchain and
         # permits the model to retain any required manifest change.
         policy = replace(
@@ -1332,6 +1354,10 @@ def _typed_execution_config(config: dict[str, Any], request, target) -> dict[str
 
     result = copy.deepcopy(config)
     engine = dict(result.get("design_engine") or {})
+    build_profile = str(profile.get("build_profile") or getattr(target, "build_profile", "") or "").strip().lower()
+    if build_profile != "next_react":
+        raise RunnerError("typed design execution profile must use build_profile next_react")
+    engine["build_profile"] = build_profile
     engine["model"] = model
     engine["provider"] = provider
     if "provider_base_url" in profile:
@@ -1382,7 +1408,7 @@ def _typed_execution_config(config: dict[str, Any], request, target) -> dict[str
 
 
 def _native_asset_config(config: dict[str, Any]) -> dict[str, Any]:
-    """Project configured site assets into Astro's public-file boundary."""
+    """Project configured site assets into Next's public-file boundary."""
     result = copy.deepcopy(config)
     site = dict(result.get("site") or {})
     media = dict(site.get("media") or {})
@@ -1642,9 +1668,9 @@ def _write_host_design_manifest(
 
     homepage = "index.html"
     if not (worktree / homepage).is_file():
-        astro_homepage = worktree / "src" / "pages" / "index.astro"
-        if request.page_path == "index.html" and astro_homepage.is_file():
-            homepage = "src/pages/index.astro"
+        next_homepage = worktree / "src" / "app" / "page.tsx"
+        if request.page_path == "index.html" and next_homepage.is_file():
+            homepage = "src/app/page.tsx"
         else:
             homepage = request.page_path
     source_files: list[str] = []
@@ -1697,7 +1723,11 @@ def _write_host_design_manifest(
             "operation_kind": target.operation_kind,
             "base_sha": base_sha,
             "candidate_ref": target.candidate_ref,
-            "build_profile": str((config.get("design_engine") or {}).get("build_profile") or "astro_react"),
+            "build_profile": str(
+                getattr(target, "build_profile", "")
+                or (config.get("design_engine") or {}).get("build_profile")
+                or "next_react"
+            ),
             "routes": required_pages,
             "approved_capabilities": capabilities,
             "skill_set_hash": str(getattr(skill_set, "content_hash", "") or ""),
@@ -1802,7 +1832,7 @@ def _journey_source_coverage(worktree: Path, base_sha: str, design_plan: Any) ->
             continue
         path = worktree / relative
         if not path.is_file() or path.is_symlink() or path.suffix.lower() not in {
-            ".html", ".astro", ".css", ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte",
+            ".html", ".css", ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte",
         }:
             continue
         try:
@@ -1856,7 +1886,7 @@ def _run_local_design_self_check(
     engine = config.get("design_engine") or {}
     builder = config.get("builder") or {}
     quality = engine.get("quality") or {}
-    profile_name = str(engine.get("build_profile") or "astro_react").strip()
+    profile_name = str(engine.get("build_profile") or "next_react").strip()
     try:
         profile = get_build_profile(profile_name)
         result = build_site(
@@ -1945,12 +1975,14 @@ def finalize_design_target(
     if target.push_mode == "shared_preview":
         if progress:
             progress("pushing the production candidate to the preview ref")
+        ssh_command = github_ssh_command(config, credential_environment(config))
         _git(worktree, "push", "--force-with-lease", "origin", f"HEAD:{target.candidate_ref or PREVIEW_BRANCH}",
-             token=_token(config), timeout=180)
+             token=_token(config), timeout=180, ssh_command=ssh_command)
     elif target.push_mode == "isolated_remote_ref":
         if progress:
             progress("pushing the production candidate to its isolated ref")
-        _git(worktree, "push", "origin", f"HEAD:{target.candidate_ref}", token=_token(config), timeout=180)
+        ssh_command = github_ssh_command(config, credential_environment(config))
+        _git(worktree, "push", "origin", f"HEAD:{target.candidate_ref}", token=_token(config), timeout=180, ssh_command=ssh_command)
     else:
         if progress:
             progress("recording the candidate in its local immutable ref")
@@ -2047,11 +2079,11 @@ def stage_design_build(
     materialized_font_paths: list[str] = []
     provision_error = ""
     try:
-        from .site_build import ASTRO_REACT_PROFILE, prepare_native_workspace, prepare_site_toolchain
+        from .site_build import NEXT_REACT_PROFILE, prepare_native_workspace, prepare_site_toolchain
 
-        native_astro_target = tuple(target.allowed_paths) == ASTRO_REACT_PROFILE.writable_patterns
-        if native_astro_target:
-            host_provisioned_paths.update(prepare_native_workspace(worktree, ASTRO_REACT_PROFILE))
+        native_next_target = str(target.build_profile or "").strip().lower() == NEXT_REACT_PROFILE.name
+        if native_next_target:
+            host_provisioned_paths.update(prepare_native_workspace(worktree, NEXT_REACT_PROFILE))
         prepared = _change_state(worktree)
 
         raw_data_dir = str(execution_config.get("data_dir") or "").strip()
@@ -2060,7 +2092,7 @@ def stage_design_build(
             prepared_toolchain = (
                 prepare_site_toolchain(
                     worktree,
-                    ASTRO_REACT_PROFILE,
+                    NEXT_REACT_PROFILE,
                     npm_cache=npm_cache,
                     env=design_lab_environment(
                         execution_context.get("env") or {},
@@ -2068,7 +2100,7 @@ def stage_design_build(
                     ),
                     timeout_seconds=int((execution_config.get("builder") or {}).get("provider_timeout_seconds", 900)),
                 )
-                if native_astro_target
+                if native_next_target
                 else ()
             )
         except Exception as exc:  # noqa: BLE001 - toolchain failure is a build failure
@@ -2518,20 +2550,96 @@ def stage_design_build(
         _remove_builder_worktree(site_clone, worktree)
 
 
+def _update_staged_draft_meta(context: dict[str, Any], draft_id: int, patch: Mapping[str, Any]) -> None:
+    memory = context.get("memory")
+    if memory is None:
+        return
+    draft = next(
+        (item for item in memory.list_drafts(limit=200) if int(item.get("id") or 0) == int(draft_id)),
+        None,
+    )
+    if not draft:
+        return
+    meta = dict(draft.get("meta") or {})
+    meta.update(dict(patch))
+    update = getattr(memory, "update_draft_meta", None)
+    if callable(update):
+        update(int(draft_id), meta)
+    else:
+        memory.save_draft(
+            str(draft.get("title") or ""),
+            str(draft.get("body") or ""),
+            kind=str(draft.get("kind") or "merge"),
+            meta=meta,
+            draft_id=int(draft_id),
+        )
+
+
+def _candidate_sha(context: dict[str, Any], outcome: Mapping[str, Any], branch: str) -> str:
+    value = str(outcome.get("candidate_sha") or "").strip().lower()
+    if _re.fullmatch(r"[0-9a-f]{40}", value):
+        return value
+    for owner in (context.get("source_deployment"), context.get("source_editor")):
+        adapter = getattr(owner, "adapter", None)
+        get_head = getattr(adapter, "get_branch_head", None)
+        if not callable(get_head):
+            continue
+        try:
+            value = str(get_head(branch) or "").strip().lower()
+        except Exception:  # noqa: BLE001 - receipt lookup must not hide the candidate
+            continue
+        if _re.fullmatch(r"[0-9a-f]{40}", value):
+            return value
+    return ""
+
+
 def stage_merge_draft(context: dict[str, Any], message: str, outcome: dict[str, Any]) -> int:
-    """Turn a finished build into an approval-gated merge draft. A new build
-    replaces the preview branch wholesale, so older pending merge drafts are
-    marked discarded — their work is folded into the new cumulative preview."""
+    """Turn a finished build into an approval-gated, revision-bound draft."""
     memory = context["memory"]
     for older in memory.list_drafts(status="pending"):
         if older.get("kind") == "merge":
             memory.update_draft_status(older["id"], "discarded")
-    meta = {"head": "preview", "base": "main", "summary": message[:160]}
+    changed_paths = outcome.get("changed_paths") if isinstance(outcome.get("changed_paths"), list) else []
+    preview = dict(
+        outcome.get("preview")
+        if isinstance(outcome.get("preview"), Mapping)
+        else preview_plan_for_paths(changed_paths)
+    )
+    site = context.get("config", {}).get("site") or {}
+    branch = str(outcome.get("branch") or site.get("preview_branch") or PREVIEW_BRANCH)
+    candidate_sha = _candidate_sha(context, outcome, branch)
+    base_sha = ""
+    for owner in (context.get("source_deployment"), context.get("source_editor")):
+        adapter = getattr(owner, "adapter", None)
+        get_head = getattr(adapter, "get_branch_head", None)
+        if not callable(get_head):
+            continue
+        try:
+            value = str(get_head(str(site.get("branch") or "main")) or "").strip().lower()
+        except Exception:  # noqa: BLE001 - candidate metadata remains best effort
+            continue
+        if _re.fullmatch(r"[0-9a-f]{40}", value):
+            base_sha = value
+            break
+    if not base_sha:
+        base_sha = str(outcome.get("base_sha") or "").strip().lower()
+    if candidate_sha:
+        preview["head_sha"] = candidate_sha
+    meta = {
+        "head": branch,
+        "base": str(site.get("branch") or "main"),
+        "head_sha": candidate_sha,
+        "base_sha": base_sha,
+        "summary": message[:160],
+        "changed_paths": [str(path) for path in changed_paths],
+        "preview": preview,
+    }
     if context.get("_media_asset_ids"):
         meta["media_asset_ids"] = list(context["_media_asset_ids"])
         meta["materialized_media_paths"] = list(context.get("_materialized_media_paths") or [])
+    title_state = "ready" if preview.get("status") == "ready" and not preview.get("requires_build") else "preparing"
     return memory.save_draft(
-        title=f"Preview ready: {message[:60]}",
+        title=f"Preview {title_state}: {message[:60]}",
         body=outcome.get("diff_stat", ""),
         kind="merge",
         meta=meta,
@@ -2539,7 +2647,7 @@ def stage_merge_draft(context: dict[str, Any], message: str, outcome: dict[str, 
 
 
 def stage_build(context: dict[str, Any], message: str, progress=None, media_asset_ids=None) -> dict[str, Any]:
-    """Full build cycle that lands as an approval-gated merge draft."""
+    """Build, prepare the actual owner preview, and create its review draft."""
     previous = context.get("_media_asset_ids")
     if media_asset_ids is not None:
         context["_media_asset_ids"] = list(media_asset_ids)
@@ -2552,10 +2660,86 @@ def stage_build(context: dict[str, Any], message: str, progress=None, media_asse
             context["_media_asset_ids"] = previous
     reply = (outcome.get("output") or "").strip()
     merge_draft_id = None
+    preview = outcome.get("preview") if isinstance(outcome.get("preview"), Mapping) else None
+    change: dict[str, Any] = {
+        "status": "no_change" if not outcome.get("changed") else "preparing_preview",
+        "changed_paths": list(outcome.get("changed_paths") or []),
+        "candidate_sha": str(outcome.get("candidate_sha") or ""),
+    }
     if outcome.get("changed") and context.get("memory") is not None:
         merge_draft_id = stage_merge_draft(context, message, outcome)
-        reply += f"\n\nReview it live on the preview URL — approve draft #{merge_draft_id} to publish."
-    return {"reply": reply, "merge_draft_id": merge_draft_id, "changed": bool(outcome.get("changed"))}
+        preview = dict(preview or preview_plan_for_paths([]))
+        candidate_sha = _candidate_sha(context, outcome, str(outcome.get("branch") or PREVIEW_BRANCH))
+        if preview.get("requires_build"):
+            deployer = context.get("source_deployment")
+            start = getattr(deployer, "start", None)
+            if callable(start) and _re.fullmatch(r"[0-9a-f]{40}", candidate_sha):
+                try:
+                    deployment = start({
+                        "branch": str(outcome.get("branch") or PREVIEW_BRANCH),
+                        "commit": candidate_sha,
+                        "mode": "compiled_preview",
+                        "draft_id": merge_draft_id,
+                    })
+                    preview.update({
+                        "status": "building",
+                        "job_id": deployment.get("id") if isinstance(deployment, Mapping) else None,
+                        "head_sha": candidate_sha,
+                    })
+                    change["preview_job_id"] = preview.get("job_id")
+                except Exception as exc:  # noqa: BLE001 - retain truthful blocked state
+                    preview.update({"status": "blocked", "error": str(exc)[:500], "head_sha": candidate_sha})
+            else:
+                preview.update({
+                    "status": "blocked",
+                    "error": "the compiled preview service is unavailable",
+                    "head_sha": candidate_sha,
+                })
+        else:
+            preview.update({"status": "ready", "head_sha": candidate_sha})
+
+        _update_staged_draft_meta(context, merge_draft_id, {
+            "head_sha": candidate_sha,
+            "preview": preview,
+        })
+        change.update({
+            "status": "ready_for_review" if preview.get("status") == "ready" else "preparing_preview" if preview.get("status") == "building" else "blocked",
+            "draft_id": merge_draft_id,
+            "candidate_sha": candidate_sha,
+            "preview": preview,
+        })
+        changed = ", ".join(str(path) for path in (outcome.get("changed_paths") or [])[:6]) or "the requested site files"
+        if preview.get("status") == "ready":
+            reply = (
+                f"I made the requested change and prepared it in the website preview.\n\n"
+                f"What changed: {message[:400]}\n"
+                f"Files involved: {changed}.\n\n"
+                f"Review draft #{merge_draft_id} in Design. The public site is unchanged until you approve it."
+            )
+        elif preview.get("status") == "building":
+            reply = (
+                f"I made the requested change in a private candidate.\n\n"
+                f"What changed: {message[:400]}\n"
+                f"I’m preparing the real website preview now; it will appear in Design when ready. "
+                f"The public site is unchanged."
+            )
+        else:
+            reply = (
+                "I made a private candidate, but I could not prepare its review preview yet. "
+                f"Nothing was published. Please retry preview preparation before approving draft #{merge_draft_id}."
+            )
+    elif not outcome.get("changed"):
+        reply = (
+            "I did not create a site change from this request. Nothing was published. "
+            "There is no preview to review yet."
+        )
+    return {
+        "reply": reply,
+        "merge_draft_id": merge_draft_id,
+        "changed": bool(outcome.get("changed")),
+        "preview": preview,
+        "change": change,
+    }
 
 
 ADA_INSTRUCTIONS = """# Ada's Working Instructions
@@ -2650,6 +2834,14 @@ GSAP production guardrails:
   asks how you are, wonders out loud — answer as yourself, in plain prose,
   and touch nothing. Only make changes when something is actually requested,
   and never invent work to have something to commit.
+- Owner-facing transparency must stay useful and non-technical. Never mention
+  repository files, branches, worktrees, GitHub, credentials, sandbox limits,
+  prompts, models, or tooling hiccups in the owner-facing answer. Do not claim
+  that a file read failed unless a file tool actually returned an error in this
+  turn. If you are still brainstorming, say that these are initial ideas based
+  on the brief and that nothing has changed or been previewed; verify the live
+  page before building. If an internal check fails, report only the consequence
+  and the next step, not the internal mechanism.
 - You are honest about being a model with no body or location. Never claim to
   have personally been somewhere, never invent live conditions (weather, water
   temperature, crowds, this-morning reports), even inside the persona. Vivid,
@@ -2962,7 +3154,7 @@ def _write_native_direction_agent(oc: Path, *, structured: bool = False) -> None
         "---\n\n"
         "You are Ada's read-only design director. Inspect the confirmed typed intake, the configured framework, "
         "and supplied visual evidence. Never edit, write, delete, install, run shell commands, delegate, publish, "
-        "or approve. Keep repository inspection bounded: never enumerate node_modules, .git, dist, .astro, output, "
+        "or approve. Keep repository inspection bounded: never enumerate node_modules, .git, dist, .next, .open-next, out, output, "
         "or other generated/dependency directories; use only relevant source/config paths. "
         + output
         + " Do not invent business facts or provide code.\n"
@@ -3320,7 +3512,7 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
     """
     import signal
     import threading
-    from ..config import resolve_secret
+    from ..config import resolve_secret, timing_enabled
 
     b = config.get("builder") or {}
     timeout = max(1, int(timeout_seconds or b.get("timeout_seconds", 1800)))
@@ -3363,6 +3555,8 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
     except BaseException:
         _restore_cli_prompt(staged_prompt_path, previous_prompt)
         raise
+    timing_on = timing_enabled(config, env)
+    process_started = time.monotonic()
     timed_out = threading.Event()
 
     def terminate_process(grace: float = 10.0, *, force: bool = False) -> None:
@@ -3402,6 +3596,7 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
     transcript_lines: list[str] = []
     session = session_id
     protocol_error: str | None = None
+    last_tool_prose_index = 0
     usage_total = {"prompt_tokens": 0, "completion_tokens": 0}
     reported_cost = 0.0
     has_reported_cost = False
@@ -3468,6 +3663,7 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
             part = event.get("part") or {}
             event_type = event.get("type") or part.get("type") or ""
             if event_type == "tool_use" or part.get("type") == "tool":
+                last_tool_prose_index = len(prose)
                 state = part.get("state") or {}
                 tool_calls.append({
                     "tool": part.get("tool") or part.get("name") or "unknown",
@@ -3490,7 +3686,7 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
                 if not step:
                     continue
                 prose.append(step)
-                if progress and len(seen) < 8:
+                if progress and len(seen) < _MAX_LIVE_PROGRESS_STEPS:
                     key = step[:100].lower()
                     if key not in seen:
                         seen.add(key)
@@ -3503,6 +3699,23 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
         watchdog.cancel()
         record_usage()
         _restore_cli_prompt(staged_prompt_path, previous_prompt)
+        if timing_on and memory is not None and hasattr(memory, "record_timing"):
+            try:
+                memory.record_timing(
+                    "opencode.process",
+                    int(round((time.monotonic() - process_started) * 1000)),
+                    phase=agent_name,
+                    success=not timed_out.is_set() and proc.returncode == 0,
+                    metadata={
+                        "model": builder_model,
+                        "timeout_seconds": timeout,
+                        "returncode": proc.returncode,
+                        "events": len(events),
+                        "tool_calls": len(tool_calls),
+                    },
+                )
+            except Exception:  # noqa: BLE001 - observability must not break builds
+                pass
     if timed_out.is_set():
         raise RunnerError(f"opencode timed out after {timeout}s", result=partial_result())
     if protocol_error:
@@ -3537,7 +3750,11 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
             f"opencode stopped after a failed tool call: {failed_tools[-1].get('tool', 'unknown')}",
             result=partial_result(),
         )
-    reply_lines = prose[-24:] or tail[-24:]
+    # OpenCode streams planning narration before each tool call. That narration
+    # is useful as live progress, but it is not the completed owner-facing
+    # answer. Return only the final prose segment after the last tool event so
+    # the chat does not dump the entire work log when the job finishes.
+    reply_lines = prose[last_tool_prose_index:] or prose[-24:] or tail[-24:]
     return {
         "reply": chr(10).join(reply_lines),
         "raw_tail": list(tail)[-80:],
@@ -3653,6 +3870,33 @@ def _changed_paths(clone: Path, base_ref: str) -> set[str]:
         _git(clone, "ls-files", "--others", "--exclude-standard", "-z"),
     ]
     return {path for output in outputs for path in output.split("\0") if path}
+
+
+def preview_plan_for_paths(changed_paths: Sequence[str]) -> dict[str, Any]:
+    """Choose the cheapest truthful preview strategy for a candidate.
+
+    CSS can be layered onto the existing authenticated review iframe. Rendered
+    code cannot: TS/TSX/JS/markup/config changes need a compiled preview
+    runtime, but not a production deployment. Keep this classification
+    deterministic and path-based instead of asking Ada to infer it from prose.
+    """
+    paths = sorted({str(path).replace("\\", "/").lstrip("/") for path in changed_paths if str(path).strip()})
+    css_only = bool(paths) and all(Path(path).suffix.lower() == ".css" for path in paths)
+    if css_only:
+        return {
+            "mode": "overlay",
+            "status": "ready",
+            "requires_build": False,
+            "changed_paths": paths,
+            "reason": "CSS-only changes are layered onto the review iframe without a site build.",
+        }
+    return {
+        "mode": "compile",
+        "status": "build_required",
+        "requires_build": True,
+        "changed_paths": paths,
+        "reason": "Rendered source changes need an isolated compiled preview runtime.",
+    }
 
 
 def _change_state(clone: Path) -> tuple[str, tuple[tuple[str, str], ...]]:
@@ -3875,7 +4119,7 @@ def _prepare_builder_context(context: dict[str, Any], progress=None,
 
     config = context["config"]
     memory = context.get("memory")
-    base_ref = base_ref or _build_base_ref(memory)
+    base_ref = base_ref or _build_base_ref(memory, config)
     site_clone = Path(str((config.get("site") or {}).get("clone_path", ""))).resolve()
     clone = prepare_preview(config, progress, base_ref=base_ref)
     media_paths = _materialize_media(context, clone)
@@ -4141,18 +4385,34 @@ def _finish_builder(context: dict[str, Any], clone: Path, base_ref: str,
             raise RunnerError("Ada finished without implementation changes")
     if progress:
         progress("pushing preview branch to GitHub")
-    _git(clone, "push", "--force-with-lease", "origin", f"HEAD:{PREVIEW_BRANCH}",
+    preview_branch = str((config.get("site") or {}).get("preview_branch") or PREVIEW_BRANCH)
+    _git(clone, "push", "--force-with-lease", "origin", f"HEAD:{preview_branch}",
          token=_token(config), timeout=180)
 
+    changed_paths = sorted(_changed_paths(clone, "origin/main"))
     stat = _git(clone, "diff", "--stat", "origin/main...HEAD")
+    candidate_sha = _git(clone, "rev-parse", "HEAD").strip().lower()
     try:
-        preview_head = _git(clone, "rev-parse", "HEAD").strip()
+        base_sha = _git(clone, "rev-parse", base_ref).strip().lower()
+    except RunnerError:
+        base_sha = ""
+    try:
+        preview_head = candidate_sha
         from .tweakmap import store_builder_map
 
         store_builder_map(clone, memory, preview_head)
     except Exception:  # noqa: BLE001 — a missing tweak map must never fail the build
         pass
-    return {"changed": True, "output": output, "diff_stat": stat[-600:], "branch": PREVIEW_BRANCH}
+    return {
+        "changed": True,
+        "output": output,
+        "diff_stat": stat[-600:],
+        "branch": preview_branch,
+        "base_sha": base_sha,
+        "candidate_sha": candidate_sha,
+        "changed_paths": changed_paths,
+        "preview": preview_plan_for_paths(changed_paths),
+    }
 
 
 def run_brief(context: dict[str, Any], message: str, progress=None) -> dict[str, Any]:

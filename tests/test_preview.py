@@ -57,15 +57,14 @@ def test_rewrite_preview_html_propagates_design_variant_to_assets_and_runtime():
     assert b'const variant = "original"' in rendered
 
 
-def test_rewrite_preview_html_keeps_astro_hydration_modules_inside_the_preview_scope():
-    html = b'''<astro-island component-url="/_astro/Choreography.js"
-        renderer-url="/_astro/client.js" before-hydration-url="/_astro/pre.js"></astro-island>'''
+def test_rewrite_preview_html_keeps_next_hydration_modules_inside_the_preview_scope():
+    html = b'''<script src="/_next/static/chunks/app.js"></script>
+        <script src="/_next/static/chunks/react.js"></script>'''
 
     rendered = rewrite_preview_html(html, 7, "index.html", "", "token", "candidate")
 
-    assert b'component-url="./_astro/Choreography.js?preview_token=token&variant=candidate"' in rendered
-    assert b'renderer-url="./_astro/client.js?preview_token=token&variant=candidate"' in rendered
-    assert b'before-hydration-url="./_astro/pre.js?preview_token=token&variant=candidate"' in rendered
+    assert b'src="./_next/static/chunks/app.js?preview_token=token&variant=candidate"' in rendered
+    assert b'src="./_next/static/chunks/react.js?preview_token=token&variant=candidate"' in rendered
 
 
 def test_rewrite_preview_html_accepts_an_explicit_intake_lab_root():
@@ -326,7 +325,7 @@ def test_preview_build_cache_separates_overlay_builds(tmp_path):
     cache.clear()
 
 
-def test_preview_build_cache_uses_explicit_astro_profile_and_dist(tmp_path, monkeypatch):
+def test_preview_build_cache_uses_explicit_next_profile_and_out(tmp_path, monkeypatch):
     clone = tmp_path / "site"
     clone.mkdir()
     run = lambda *args: subprocess.run(["git", "-C", str(clone), *args], check=True, capture_output=True)
@@ -335,21 +334,21 @@ def test_preview_build_cache_uses_explicit_astro_profile_and_dist(tmp_path, monk
     run("config", "user.name", "test")
     (clone / "package.json").write_text('{"name":"preview-test"}\n')
     run("add", "-A")
-    run("commit", "-qm", "astro candidate")
+    run("commit", "-qm", "next candidate")
     calls = []
 
     def fake_build(root, profile, *, npm_cache=None, env=None, timeout_seconds=None):
         calls.append((root, profile.name, profile.output_dir, timeout_seconds))
         output = root / profile.output_dir
         output.mkdir(parents=True)
-        (output / "index.html").write_text("astro preview")
+        (output / "index.html").write_text("next preview")
         return SiteBuildResult(profile.name, True, profile.output_dir, (), ("index.html",))
 
     monkeypatch.setattr(preview, "build_site", fake_build)
     cache = PreviewBuildCache(build_env={"PATH": "/usr/bin"})
 
-    assert cache.read_file(clone, "main", "index.html", profile="astro_react") == b"astro preview"
-    assert calls and calls[0][1:] == ("astro_react", "dist", 60)
+    assert cache.read_file(clone, "main", "index.html", profile="next_react") == b"next preview"
+    assert calls and calls[0][1:] == ("next_react", "out", 60)
     assert cache.read_file(clone, "main", "index.html", profile="not-a-profile") == b""
     cache.clear()
 
@@ -363,7 +362,7 @@ def test_preview_build_cache_uses_the_configured_temp_root(tmp_path, monkeypatch
     run("config", "user.name", "test")
     (clone / "package.json").write_text('{"name":"preview-test"}\n')
     run("add", "-A")
-    run("commit", "-qm", "astro candidate")
+    run("commit", "-qm", "next candidate")
     preview_root = tmp_path / "preview-builds"
     build_roots = []
 
@@ -371,12 +370,12 @@ def test_preview_build_cache_uses_the_configured_temp_root(tmp_path, monkeypatch
         build_roots.append(Path(root))
         output = root / profile.output_dir
         output.mkdir(parents=True)
-        (output / "index.html").write_text("astro preview")
+        (output / "index.html").write_text("next preview")
         return SiteBuildResult(profile.name, True, profile.output_dir, (), ("index.html",))
 
     monkeypatch.setattr(preview, "build_site", fake_build)
     cache = PreviewBuildCache(temp_root=preview_root)
 
-    assert cache.read_file(clone, "main", "index.html", profile="astro_react") == b"astro preview"
+    assert cache.read_file(clone, "main", "index.html", profile="next_react") == b"next preview"
     assert build_roots and build_roots[0].parent.parent == preview_root.resolve()
     cache.clear()

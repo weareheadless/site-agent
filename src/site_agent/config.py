@@ -274,6 +274,11 @@ def validate_design_config(config: dict[str, Any]) -> None:
     engine = config.get("design_engine") or {}
     if not isinstance(engine, dict):
         raise ConfigError("design_engine must be an object")
+    profile = str(engine.get("build_profile") or "").strip().lower()
+    if profile and profile not in {"next_react", "pelican_baseline"}:
+        raise ConfigError("design_engine.build_profile must be next_react or pelican_baseline")
+    if engine.get("enabled", False) is True and profile not in {"next_react", "pelican_baseline"}:
+        raise ConfigError("design_engine.build_profile is required when design_engine is enabled")
     version = engine.get("intake_schema_version", 1)
     if isinstance(version, bool) or not isinstance(version, int) or version != 1:
         raise ConfigError("design_engine.intake_schema_version must be 1")
@@ -399,6 +404,36 @@ def validate_design_config(config: dict[str, Any]) -> None:
         family = item.get("family")
         if family is not None and (not isinstance(family, str) or not family.strip() or len(family.strip()) > 200):
             raise ConfigError(f"design_engine.fonts[{index}].family must be non-empty text")
+
+
+def validate_credentials_config(config: dict[str, Any]) -> None:
+    """Validate host credential wiring without requiring secrets to be present."""
+    credentials = config.get("credentials") or {}
+    if not isinstance(credentials, dict):
+        raise ConfigError("credentials must be an object")
+    profile_file = credentials.get("profile_file")
+    if profile_file is not None and not isinstance(profile_file, str):
+        raise ConfigError("credentials.profile_file must be text")
+    for name in ("github", "cloudflare"):
+        profile = credentials.get(name) or {}
+        if not isinstance(profile, dict):
+            raise ConfigError(f"credentials.{name} must be an object")
+        for key in ("env_file", "ssh_key_path", "key_path", "ssh_command"):
+            value = profile.get(key)
+            if value is not None and not isinstance(value, str):
+                raise ConfigError(f"credentials.{name}.{key} must be text")
+        for key, fallback in (
+            ("api_token_env", "CLOUDFLARE_API_TOKEN" if name == "cloudflare" else "GITHUB_TOKEN"),
+            ("account_id_env", "CLOUDFLARE_ACCOUNT_ID"),
+        ):
+            if key not in profile:
+                continue
+            value = str(profile.get(key) or fallback).strip()
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", value):
+                raise ConfigError(f"credentials.{name}.{key} must be a valid environment variable name")
+        command = str(profile.get("ssh_command") or "")
+        if any(character in command for character in "\r\n") or len(command) > 500:
+            raise ConfigError("credentials.github.ssh_command is invalid")
 
 
 def validate_research_config(config: dict[str, Any]) -> None:
@@ -671,6 +706,7 @@ def load_intake_config(
     validate_intake_config(merged)
     validate_research_config(merged)
     validate_seo_workflow_config(merged)
+    validate_credentials_config(merged)
     validate_design_config(merged)
     if validate_integrations:
         validate_media_config(merged, env)
@@ -723,6 +759,7 @@ def load(
     merged = deep_merge(defaults, override)
     validate_research_config(merged)
     validate_seo_workflow_config(merged)
+    validate_credentials_config(merged)
     if validate_integrations:
         validate_media_config(merged, env)
     validate_design_config(merged)
@@ -735,7 +772,13 @@ def resolve_secret(
     env: dict[str, str] | None = None,
 ) -> str:
     """Resolve an instance secret without coupling core code to an adapter."""
-    env = os.environ if env is None else env
+    from .credentials import cloudflare_api_token, credential_environment, github_api_token
+
+    env = credential_environment(config, os.environ if env is None else env)
+    if name == "github_token":
+        return github_api_token(config, env)
+    if name == "cloudflare_api_token":
+        return cloudflare_api_token(config, env)
     var = str((config.get("env") or {}).get(name, ""))
     return env.get(var, "") if var else ""
 
@@ -772,6 +815,21 @@ def resolve_env(config: dict[str, Any], env: dict[str, str] | None = None) -> di
         value = env.get(str(var), "")
         resolved[name] = {"var": str(var), "set": bool(value)}
     return resolved
+
+
+def timing_enabled(config: dict[str, Any], env: dict[str, str] | None = None) -> bool:
+    """Return whether detailed operation timing is enabled for this runtime.
+
+    The environment override is intentionally global and wins over tenant
+    configuration so an operator can turn the instrumentation off without a
+    code or database change.
+    """
+    env = os.environ if env is None else env
+    override = str(env.get("SITE_AGENT_TIMING_ENABLED", "")).strip().lower()
+    if override:
+        return override in {"1", "true", "yes", "on"}
+    observability = config.get("observability") or {}
+    return bool(observability.get("timing_enabled", False)) if isinstance(observability, dict) else False
 
 
 def data_dir(config: dict[str, Any], env: dict[str, str] | None = None) -> Path:

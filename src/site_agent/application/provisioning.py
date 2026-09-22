@@ -37,6 +37,7 @@ from ..core.incubation_contracts import (
 from ..core.intake_ada_store import IntakeAdaStore
 from ..core.memory import SCHEMA_VERSION, Memory
 from ..hands.local_media import LocalMediaStore
+from ..hands.site_build import NEXT_REACT_PROFILE
 from .media import MediaService
 from .customer_context import CustomerContextService, design_run_content_hash
 
@@ -755,7 +756,7 @@ def generate_customer_config(
              "branch": "main",
              "clone_path": site_path,
              "preview_branch": "",
-             "writable_patterns": ["*.html", "*.css", "*.js", "content/**", "themes/**", "images/**", "output/**", "design/**", "*.xml", "pelicanconf.py", "build.sh"],
+              "writable_patterns": list(NEXT_REACT_PROFILE.writable_patterns),
              "media": {"enabled": False},
              "cloudflare": {"account_id": "", "project_name": "", "mode": "none"},
              "prohibited_claims": list(bundle.prohibited_claims),
@@ -770,6 +771,7 @@ def generate_customer_config(
         },
         "design_engine": {
             "enabled": has_website,
+            "build_profile": NEXT_REACT_PROFILE.name,
             "intake_schema_version": 1,
             "manifest_path": "design/ada-design-manifest.json",
             "provider": "openrouter",

@@ -311,6 +311,46 @@ def test_run_opencode_turn_parses_events_and_resumes_session(tmp_path, monkeypat
     assert commands[1][commands[1].index("--session") + 1] == "session-1"
 
 
+def test_run_opencode_turn_streams_all_live_steps_but_returns_only_final_segment(tmp_path, monkeypatch):
+    class FakeProcess:
+        pid = 12345
+        returncode = 0
+
+        def __init__(self, lines):
+            self.stdout = iter(lines)
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    lines = [json.dumps({"type": "step_start", "sessionID": "session-progress"})]
+    lines.extend(
+        json.dumps({"type": "text", "part": {"text": f"Inspecting repository area {index}."}})
+        for index in range(10)
+    )
+    lines.append(json.dumps({
+        "type": "tool_use",
+        "part": {"type": "tool", "tool": "read", "state": {"status": "completed"}},
+    }))
+    lines.extend([
+        json.dumps({"type": "text", "part": {"text": "The mobile preview is ready."}}),
+        json.dumps({"type": "text", "part": {"text": "Review the updated draft when ready."}}),
+    ])
+
+    monkeypatch.setattr(runner, "_opencode_bin", lambda config: "opencode")
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: FakeProcess(lines))
+    progress: list[str] = []
+
+    result = runner.run_opencode_turn(
+        tmp_path,
+        "inspect the mobile preview",
+        {"builder": {"timeout_seconds": 3, "model": "deepseek/model"}},
+        progress=progress.append,
+    )
+
+    assert all(f"Inspecting repository area {index}." in progress for index in range(10))
+    assert result["reply"] == "The mobile preview is ready.\nReview the updated draft when ready."
+
+
 def test_run_opencode_turn_stages_oversized_prompt_outside_argv(tmp_path, monkeypatch):
     class FakeProcess:
         pid = 12345
@@ -582,6 +622,47 @@ def test_builder_origin_url_never_persists_token():
     assert "token" not in url
 
 
+def test_ensure_clone_upgrades_https_origin_before_fetching_with_host_ssh(tmp_path, monkeypatch):
+    clone = tmp_path / "clone"
+    (clone / ".git").mkdir(parents=True)
+    key = tmp_path / "github_ed25519"
+    key.write_text("private-key-placeholder")
+    key.chmod(0o600)
+    profile = tmp_path / "host-credentials.yaml"
+    profile.write_text(
+        "credentials:\n"
+        "  github:\n"
+        f"    ssh_key_path: {key}\n",
+        encoding="utf-8",
+    )
+    config = {
+        "credentials": {"profile_file": str(profile)},
+        "site": {
+            "repository": "weareheadless/atelier-harmonie-headless",
+            "clone_path": str(clone),
+        },
+    }
+    calls = []
+
+    def fake_git(_clone, *args, **kwargs):
+        calls.append((args, kwargs))
+        if args[:2] == ("remote", "get-url"):
+            return "https://github.com/weareheadless/atelier-harmonie-headless.git\n"
+        return ""
+
+    monkeypatch.setattr(runner, "_git", fake_git)
+
+    assert runner.ensure_clone(config) == clone
+    assert any(
+        args[:3] == ("remote", "set-url", "origin")
+        and args[3] == "git@github.com:weareheadless/atelier-harmonie-headless.git"
+        for args, _ in calls
+    )
+    fetch = next((item for item in calls if item[0][:2] == ("fetch", "origin")), None)
+    assert fetch is not None
+    assert str(key) in str(fetch[1]["ssh_command"])
+
+
 def test_build_base_ref_stacks_on_pending_merge(tmp_path):
     memory = Memory(tmp_path / "m.db")
     assert runner._build_base_ref(memory) == "origin/main"
@@ -657,7 +738,92 @@ def test_stage_merge_draft_supersedes_older_pending_merges(tmp_path):
     draft = [d for d in memory.list_drafts(limit=10) if d["id"] == new][0]
     assert draft["kind"] == "merge"
     assert draft["meta"]["summary"] == "improve the page"
+    assert draft["meta"]["preview"]["mode"] == "compile"
     memory.close()
+
+
+def test_stage_build_returns_owner_ready_css_receipt(tmp_path, monkeypatch):
+    memory = Memory(tmp_path / "m.db")
+    candidate = "a" * 40
+    monkeypatch.setattr(
+        runner,
+        "run_brief",
+        lambda context, message, progress=None: {
+            "changed": True,
+            "output": "internal builder transcript",
+            "diff_stat": "styles.css | 4 +++-",
+            "branch": "preview",
+            "candidate_sha": candidate,
+            "base_sha": "b" * 40,
+            "changed_paths": ["src/app/(frontend)/styles.css"],
+            "preview": runner.preview_plan_for_paths(["src/app/(frontend)/styles.css"]),
+        },
+    )
+
+    result = runner.stage_build(
+        {"memory": memory, "config": {"site": {"branch": "main", "preview_branch": "preview"}}},
+        "give the homepage headings more room",
+    )
+
+    assert result["change"]["status"] == "ready_for_review"
+    assert result["preview"]["status"] == "ready"
+    assert "What changed:" in result["reply"]
+    assert "internal builder transcript" not in result["reply"]
+    draft = memory.list_drafts(limit=1)[0]
+    assert draft["meta"]["head_sha"] == candidate
+    assert draft["meta"]["preview"]["status"] == "ready"
+    memory.close()
+
+
+def test_stage_build_queues_compiled_preview_and_does_not_claim_ready(tmp_path, monkeypatch):
+    memory = Memory(tmp_path / "m.db")
+    candidate = "c" * 40
+
+    class Deployer:
+        def start(self, request):
+            assert request["mode"] == "compiled_preview"
+            assert request["commit"] == candidate
+            return {"id": "preview-job-1", "status": "queued"}
+
+    monkeypatch.setattr(
+        runner,
+        "run_brief",
+        lambda context, message, progress=None: {
+            "changed": True,
+            "output": "internal builder transcript",
+            "diff_stat": "Page.tsx | 4 +++-",
+            "branch": "preview",
+            "candidate_sha": candidate,
+            "base_sha": "b" * 40,
+            "changed_paths": ["src/components/Page.tsx"],
+            "preview": runner.preview_plan_for_paths(["src/components/Page.tsx"]),
+        },
+    )
+
+    result = runner.stage_build(
+        {
+            "memory": memory,
+            "config": {"site": {"branch": "main", "preview_branch": "preview"}},
+            "source_deployment": Deployer(),
+        },
+        "change the homepage component",
+    )
+
+    assert result["change"]["status"] == "preparing_preview"
+    assert result["preview"]["status"] == "building"
+    assert result["preview"]["job_id"] == "preview-job-1"
+    assert "preparing the real website preview" in result["reply"]
+    memory.close()
+
+
+def test_preview_plan_uses_overlay_for_css_and_compile_for_rendered_code():
+    css = runner.preview_plan_for_paths(["src/app/(frontend)/styles.css"])
+    assert css["mode"] == "overlay"
+    assert css["requires_build"] is False
+
+    code = runner.preview_plan_for_paths(["src/components/SiteChrome.tsx"])
+    assert code["mode"] == "compile"
+    assert code["requires_build"] is True
 
 
 def test_site_digest_builds_structural_summary(tmp_path):

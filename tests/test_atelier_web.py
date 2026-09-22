@@ -23,7 +23,7 @@ from site_agent.hands.payload_gateway import (
     PayloadGatewaySiteAdapter,
     PayloadMediaService,
 )
-from site_agent.hands.base import ADAPTERS
+from site_agent.hands.base import ADAPTERS, AdapterError
 from site_agent.web.atelier import register_atelier_routes
 
 
@@ -43,6 +43,39 @@ def test_atelier_bridge_requires_a_server_token(tmp_path):
             headers={"Authorization": "Bearer wrong"},
             json={"message": "hello"},
         ).status_code == 401
+
+
+@pytest.mark.parametrize("api_key", ["workspace_api", "atelier_api"])
+def test_shared_host_credentials_are_inherited_by_tenants(tmp_path, api_key):
+    tenant_config = tmp_path / "tenant.yaml"
+    tenant_config.write_text(
+        f"instance_name: demo\ndata_dir: {tmp_path / 'data'}\n",
+        encoding="utf-8",
+    )
+    registry = AtelierTenantRegistry.from_config(
+        {
+            "credentials": {
+                "github": {"ssh_key_path": "/host/github.key"},
+                "cloudflare": {"env_file": "/host/cloudflare.env", "api_token_env": "CF_TOKEN"},
+            },
+            api_key: {
+                "enabled": True,
+                "tenants": {
+                    "demo": {
+                        "config_path": str(tenant_config),
+                        "api_token_env": "ATELIER_DEMO_TOKEN",
+                    }
+                },
+            },
+        },
+        {"ATELIER_DEMO_TOKEN": "bridge-secret", "CF_TOKEN": "cloudflare-secret"},
+    )
+    try:
+        credentials = registry.tenants["demo"].config["credentials"]
+        assert credentials["github"]["ssh_key_path"] == "/host/github.key"
+        assert credentials["cloudflare"]["api_token_env"] == "CF_TOKEN"
+    finally:
+        registry.close()
 
 
 def test_atelier_bridge_enqueues_contextual_chat(tmp_path):
@@ -151,6 +184,34 @@ def test_atelier_bridge_reports_workspace_phase_without_intake(tmp_path):
     assert response.status_code == 200
     assert response.json()["mode"] == "workspace"
     assert response.json()["website_context_enabled"] is True
+    memory.close()
+
+
+def test_atelier_bridge_reports_active_chat_job_for_resume(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    conversation_id = memory.create_conversation("A working conversation")
+    job_id = memory.enqueue_chat_job(conversation_id, "Keep working in the background")
+    app = FastAPI()
+    register_atelier_routes(
+        app,
+        config={},
+        env={"ATELIER_SITE_AGENT_TOKEN": "atelier-secret"},
+        service=AtelierChatService(memory, object()),
+    )
+
+    with TestClient(app) as client:
+        response = client.get(
+            f"/api/atelier/chat/status?conversation_id={conversation_id}",
+            headers={"Authorization": "Bearer atelier-secret"},
+        )
+
+    assert response.status_code == 200
+    active_job = response.json()["active_job"]
+    assert active_job["id"] == job_id
+    assert active_job["conversation_id"] == conversation_id
+    assert active_job["status"] == "queued"
+    assert active_job["created_ts"]
+    assert active_job["updated_ts"]
     memory.close()
 
 
@@ -338,6 +399,39 @@ def test_payload_gateway_contract_is_instance_configured_and_adapter_is_register
     with pytest.raises(PayloadGatewayError, match="unsupported Payload collection"):
         client._collection("pages")
     assert ADAPTERS["payload_gateway"] is PayloadGatewaySiteAdapter
+
+
+def test_payload_gateway_site_adapter_reads_source_without_granting_write_access():
+    class ReadAdapter:
+        def __init__(self):
+            self.paths = []
+
+        def get_file(self, path, branch=None):
+            assert branch == "preview"
+            self.paths.append(path)
+            return "sha-1", f"source:{path}".encode()
+
+        def list_files(self, branch=None):
+            assert branch == "preview"
+            return ["src/app/(frontend)/styles.css"]
+
+    payload = object()
+    reader = ReadAdapter()
+    adapter = PayloadGatewaySiteAdapter(
+        {"site": {"content_path": "content.json", "payload": {"enabled": True}}},
+        payload_client=payload,
+        read_adapter=reader,
+    )
+
+    assert adapter.get_file("content.json", branch="preview") == (None, None)
+    assert adapter.get_file("src/app/(frontend)/styles.css", branch="preview") == (
+        "sha-1",
+        b"source:src/app/(frontend)/styles.css",
+    )
+    assert reader.paths == ["src/app/(frontend)/styles.css"]
+    assert adapter.list_files(branch="preview") == ["src/app/(frontend)/styles.css"]
+    with pytest.raises(AdapterError, match="file commits are disabled"):
+        adapter.commit_file("src/app/(frontend)/styles.css", b"new", "no write")
 
 
 def test_shared_api_scopes_jobs_to_the_token_selected_tenant(tmp_path):
@@ -892,4 +986,67 @@ def test_shared_api_approves_a_design_draft_through_the_design_adapter(tmp_path)
     assert response.json()["published"]["commit_sha"] == "published-sha"
     assert memory.list_publishes(limit=10)[0]["commit_sha"] == "published-sha"
     assert memory.recent_actions(limit=10)[0]["kind"] == "approve"
+    memory.close()
+
+
+def test_shared_api_publishes_and_rolls_back_preview_changes_through_the_workspace(tmp_path):
+    class Adapter:
+        def ensure_branch(self, branch):
+            assert branch == "preview"
+            return {"branch": branch}
+
+        def restore_snapshot(self, commit_sha, branch, message):
+            assert commit_sha == "target-sha"
+            assert branch == "preview"
+            return {"committed": True, "commit_sha": "rollback-preview", "parent_sha": "head-sha"}
+
+        def merge_preview(self, config, message):
+            assert config["site"]["preview_branch"] == "preview"
+            return {"merged": True, "commit_sha": "rollback-publish", "parent_sha": "current-sha", "path": "preview->main"}
+
+        def reset_preview_branch(self, branch):
+            return {"reset": True, "branch": branch}
+
+    memory = Memory(tmp_path / "atelier-rollback" / "memory.db")
+    first = memory.log_publish("First", "site", "target-sha")
+    newer = memory.log_publish("Newer", "site", "newer-sha")
+    pending = memory.save_draft(
+        "Website update",
+        "preview",
+        kind="merge",
+        meta={"summary": "Website update"},
+    )
+    tenant = AtelierTenant(
+        tenant_id="atelier-rollback",
+        config={"site": {"preview_branch": "preview"}},
+        memory=memory,
+        runtime=None,
+        context={"llm": object(), "design_adapter": Adapter()},
+        api_token="rollback-token",
+    )
+    registry = AtelierTenantRegistry({tenant.tenant_id: tenant})
+    app = FastAPI()
+    register_atelier_routes(
+        app,
+        config={},
+        env={},
+        service=AtelierChatService(registry=registry),
+        registry=registry,
+        prefix="/v1/atelier",
+    )
+
+    with TestClient(app) as client:
+        headers = {"Authorization": "Bearer rollback-token"}
+        published = client.post(f"/v1/atelier/drafts/{pending}/approve", headers=headers)
+        rollback_draft = client.post(f"/v1/atelier/versions/{first}/restore", headers=headers)
+        rollback_id = rollback_draft.json()["draft_id"]
+        rollback_published = client.post(f"/v1/atelier/drafts/{rollback_id}/approve", headers=headers)
+
+    assert published.status_code == 200
+    assert rollback_draft.status_code == 200
+    assert rollback_published.status_code == 200
+    versions = {item["id"]: item for item in memory.list_publishes(limit=10)}
+    assert versions[first]["reverted_ts"] is None
+    assert versions[newer]["reverted_ts"]
+    assert rollback_published.json()["published"]["commit_sha"] == "rollback-publish"
     memory.close()

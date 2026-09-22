@@ -182,7 +182,7 @@ def test_experience_fidelity_pass_binds_sighted_evidence_and_resumes_session(tmp
                 "condition_coverage": [
                     {
                         "condition_id": condition_id,
-                        "source_location": "src/pages/index.astro",
+                        "source_location": "src/app/page.tsx",
                         "trigger": "bounded scroll",
                         "rendered_state": "visible",
                         "responsive_translation": "Readable at each viewport.",

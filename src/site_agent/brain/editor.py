@@ -1,9 +1,13 @@
-"""editor.py — the admin chat: owner asks, Ada proposes, owner approves.
+"""editor.py — the admin chat: owner asks, Ada implements, owner approves.
 
-She has hands, not scripts: repository tools (read / propose_changes /
-spawn_build) matching writable_patterns, plus read-only senses. Every proposal
-lands on the preview branch first; nothing reaches production without
+She has hands, not scripts: repository tools (read / spawn_build) matching
+writable_patterns, plus read-only senses. Source changes are implemented by
+the builder in an approval-gated preview; nothing reaches production without
 approval.
+
+``propose_changes`` remains as a compatibility fallback for installations
+without the builder. It only records an edit draft and cannot produce the
+compiled preview used by an existing source-backed site.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ from typing import Any
 from ..hands.base import AdapterError, SiteAdapter
 from ..hands.repo_changes import HARD_DENY, normalize_path, writable
 from ..core.design_contracts import DesignRequest
+from .owner_copy import owner_safe_reply as _owner_safe_reply
 from .prompts import configured_site_profile_prompt, inner_life_context
 
 
@@ -74,6 +79,27 @@ def _looks_like_design_request(message: str) -> bool:
     )
     focused = ("typo", "spelling", "change the text", "update the link", "fix the link")
     return any(phrase in text for phrase in broad) and not any(phrase in text for phrase in focused)
+
+
+def _looks_like_source_edit_request(message: str) -> bool:
+    """Recognize a targeted rendered/source change on an existing site.
+
+    This is intentionally narrower than ``_looks_like_design_request``. The
+    operational distinction matters: a source-backed site needs a real build
+    even when the requested change is only one CSS selector.
+    """
+    text = str(message or "").lower()
+    source_terms = (
+        "css", "stylesheet", "style", "styles", "layout", "spacing", "padding", "margin",
+        "heading", "headings", "paragraph", "line break", "line-break", "wrap", "wrapped",
+        "typography", "font", "responsive", "mobile", "desktop", "animation", "motion",
+        "component", "section", "button", "cramped", "break every", "breaking every",
+    )
+    action_terms = (
+        "fix", "adjust", "change", "review", "make", "give", "stop", "remove", "improve",
+        "widen", "narrow", "loosen", "tighten", "prevent", "correct", "update",
+    )
+    return any(term in text for term in source_terms) and any(term in text for term in action_terms)
 
 
 def _content_summary(content: dict[str, Any]) -> str:
@@ -325,7 +351,22 @@ def _editable_fields_result(result: Any, *, action: str) -> str:
     return rendered[:8000] + ("…" if len(rendered) > 8000 else "")
 
 
-def _tools_spec(context: dict[str, Any], *, design_intent: bool = False) -> list[dict[str, Any]]:
+def _tools_spec(
+    context: dict[str, Any],
+    *,
+    design_intent: bool = False,
+    source_edit_intent: bool = False,
+) -> list[dict[str, Any]]:
+    # ``source_edit_intent`` is retained as a compatibility argument for
+    # callers that still pass the old classifier result.  Capability, not
+    # English wording, decides whether a source mutation is a builder job.
+    from ..hands import opencode_runner as _runner
+
+    cfg = context.get("config") if isinstance(context.get("config"), dict) else context
+    source_builder_available = _runner.builder_available(cfg)
+    canonical_design_handoff = design_intent and context.get("design_service") is not None
+    use_existing_builder = source_builder_available and not canonical_design_handoff
+
     def fn(name, desc, props, required=None):
         return {
             "type": "function",
@@ -356,28 +397,35 @@ def _tools_spec(context: dict[str, Any], *, design_intent: bool = False) -> list
            {"query": {"type": "string"}, "limit": {"type": "integer"}}, ["query"]),
         fn("search_business_knowledge", "Find owner-approved business information from the Library.",
            {"query": {"type": "string"}, "limit": {"type": "integer"}}, ["query"]),
-        fn("design_request",
-           "Start the canonical asynchronous design workflow for a new site, redesign, or complete page. "
-           "Return a complete validated intake; do not invent facts or destinations.",
-            {
-                "intent": {"type": "string", "enum": ["initial_site", "redesign", "derived_page"]},
-                "intake": {"type": "object"},
-                "owner_summary": {"type": "string"},
-                "target": {
-                    "type": "object",
-                    "description": "The selected post-intake workspace target, when supplied in context.",
-                    "additionalProperties": True,
-                },
-            }, ["intent", "intake", "owner_summary"]),
-        fn("propose_changes",
-            "Stage one or more file operations as a proposal the owner must approve. "
+    ]
+    if not source_builder_available or canonical_design_handoff:
+        tools.extend([
+            fn("design_request",
+               "Start the canonical asynchronous design workflow for a new site, redesign, or complete page. "
+               "Return a complete validated intake; do not invent facts or destinations.",
+                {
+                    "intent": {"type": "string", "enum": ["initial_site", "redesign", "derived_page"]},
+                    "intake": {"type": "object"},
+                    "owner_summary": {"type": "string"},
+                    "target": {
+                        "type": "object",
+                        "description": "The selected post-intake workspace target, when supplied in context.",
+                        "additionalProperties": True,
+                    },
+                }, ["intent", "intake", "owner_summary"]),
+        ])
+    if not source_builder_available and not canonical_design_handoff:
+        tools.append(fn(
+            "propose_changes",
+            "Compatibility fallback: stage one or more file operations as a proposal the owner must approve. "
+            "This records an edit draft but does not build a rendered preview. "
             "ops entries: {op:'edit',path,find(unique exact snippet),replace} | "
             "{op:'write',path,content(full file)} | {op:'delete',path} | "
             "{op:'set_field',field(dotted into content.json),value}",
             {"summary": {"type": "string"},
              "ops": {"type": "array", "items": {"type": "object"}}},
             ["summary", "ops"]),
-    ]
+        )
     if _payload_gateway(context) is not None:
         payload = _payload_gateway(context)
         contract = getattr(payload, "contract", None)
@@ -520,18 +568,14 @@ def _tools_spec(context: dict[str, Any], *, design_intent: bool = False) -> list
                  ["global"],
              ),
          ])
-    from ..hands import opencode_runner as _runner
-
-    cfg = context.get("config") if isinstance(context.get("config"), dict) else context
-    if _runner.builder_available(cfg) and not (
-        design_intent and context.get("design_service") is not None
-    ):
+    if use_existing_builder:
         tools.append(fn(
             "spawn_build",
-            "Open an autonomous coding session on the repository when the request "
-            "benefits from free-form implementation (a new page, a redesign, a "
-            "motion system). You decide when it is the right tool; focused edits "
-            "can equally go through propose_changes. The builder's tools:\n" +
+            "Open an autonomous coding session on the existing repository for every "
+            "source, style, layout, responsive, or visual change — including a "
+            "one-line focused fix. The builder reads the current files, implements "
+            "the change in an isolated preview, and returns an approval-gated merge "
+            "draft. Do not use a proposal-only tool for source changes. The builder's tools:\n" +
             _runner.BUILDER_TOOLSET,
             {"brief": {"type": "string"}}, ["brief"]),
         )
@@ -540,14 +584,27 @@ def _tools_spec(context: dict[str, Any], *, design_intent: bool = False) -> list
 
 SYSTEM_NOTE_TOOLS = (
     "\n\nYou operate the site repository through your tools. Sandbox: writable paths are %%WRITABLE%%. "
-    "Every change goes to a preview branch first and ships only when the owner approves. "
+    "Every implementation goes to an approval-gated preview first and ships only when the owner approves. "
     "You are the creative lead: the owner expects high-end, distinctive design, not a template "
     "or typical CMS look, and you have full coding capability through the builder for that. "
-    "For a broad or creative request (a new page, a redesign, a motion system), brief the "
-    "builder with spawn_build — it inspects the repository itself and implements, and its "
-    "toolset is listed in the tool description. Use propose_changes for focused edits. "
+    "For an existing source-backed site, use spawn_build for every source, style, layout, "
+    "responsive, or visual change — even a focused one-line fix. It inspects the repository, "
+    "implements the change, and creates the rendered preview/approval draft. Do not use the "
+    "legacy proposal-only path for source changes. The typed design handoff is only for a "
+    "site without an existing source workspace. "
     "Read tools exist to inform your answer; once you have what you need, act. "
     "Do not re-read what you already saw."
+    "\n\nOWNER-FACING COMMUNICATION (important): "
+    "The owner is not technical. Never expose repository, branch, worktree, GitHub, API, "
+    "credential, sandbox, prompt, model, or tooling details in the visible reply unless the "
+    "owner explicitly asks for a technical diagnosis. Do not claim that files failed to open "
+    "unless a read/list tool call in this turn actually returned an error. If you are only "
+    "offering initial ideas, say plainly that they are ideas based on the brief, that nothing "
+    "has changed or been previewed, and that you will verify the current page before building. "
+    "If a real inspection or build is blocked, explain the owner-facing consequence and next "
+    "step without naming the internal failure: for example, 'I couldn't verify the current "
+    "page yet, so I haven't made a preview. I'll verify it first, then continue.' Never turn "
+    "a transient tool failure into a claim about the site's files."
 )
 
 
@@ -601,8 +658,13 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
             if contains and contains in text:
                 idx = max(0, text.find(contains) - 400)
                 window = text[idx:idx + 3600]
-                out = (f"[{path} around '{contains}']\n" + window +
-                       "\n\n[use propose_changes edit with an exact unique snippet from this region]")
+                from ..hands import opencode_runner as _runner
+                next_step = (
+                    "use spawn_build with a concise implementation brief"
+                    if _runner.builder_available(context.get("config") or {})
+                    else "use propose_changes edit with an exact unique snippet"
+                )
+                out = f"[{path} around '{contains}']\n{window}\n\n[{next_step}]"
             elif contains:
                 out = f"'{contains}' not found in {path} ({len(text)} chars). Head of file:\n" + text[:3600]
             elif len(text) > 3600:
@@ -794,9 +856,20 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
             return f"REFUSED: {exc}"
         say(f"proposal #{proposal_id} ready")
         context["_last_proposal_id"] = proposal_id
+        context["_last_change"] = {
+            "status": "stored_only",
+            "draft_id": proposal_id,
+            "changed_paths": sorted({str(item.get("path") or "") for item in ops}),
+            "preview": None,
+        }
         context["_last_action_succeeded"] = True
         lines = "\n".join(f"[{o['op']}] {o['path']}" for o in ops)
-        return f"Proposal #{proposal_id} staged. Ops:\n{lines}\nReview the preview, then approve or decline it."
+        return (
+            f"Technical edit draft #{proposal_id} recorded.\n"
+            "No rendered preview was created by this compatibility path, and no source change is ready for review. "
+            "Use the implementation build workflow before asking the owner to review a result.\n"
+            f"Operations recorded: {lines}"
+        )
     if name == "spawn_build":
         from ..hands import opencode_runner as runner
         brief = str(args.get("brief", "")).strip()
@@ -809,6 +882,9 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(f"Builder failed: {exc}") from exc
         context["_last_merge_draft_id"] = outcome.get("merge_draft_id")
+        context["_last_preview"] = outcome.get("preview")
+        context["_last_change"] = outcome.get("change")
+        context["_last_changed"] = outcome.get("changed")
         context["_last_action_succeeded"] = True
         return (outcome.get("reply") or "Builder finished.")[:4000]
     if name == "design_request":
@@ -952,6 +1028,9 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
         context["_workspace_language"] = workspace_language
     context.pop("_last_proposal_id", None)
     context.pop("_last_merge_draft_id", None)
+    context.pop("_last_preview", None)
+    context.pop("_last_change", None)
+    context.pop("_last_changed", None)
     context.pop("_last_action_succeeded", None)
     context.pop("_design_request", None)
     context.pop("_read_cache", None)
@@ -961,9 +1040,18 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
     max_steps = _max_work_steps(context)
     for hop in range(max_steps):
         design_intent = _looks_like_design_request(message)
+        tool_spec = _tools_spec(
+            context,
+            design_intent=design_intent,
+        )
+        offered_tools = {
+            str(item.get("function", {}).get("name") or "")
+            for item in tool_spec
+            if isinstance(item, dict)
+        }
         resp = llm.chat_tools(
             convo,
-            _tools_spec(context, design_intent=design_intent),
+            tool_spec,
             temperature=0.4,
         )
         calls = resp.get("tool_calls") or []
@@ -979,9 +1067,14 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
             reply = (resp.get("content") or "").strip()
             if not reply:
                 raise RuntimeError("Connection issue, try again.")
-            return {"reply": reply,
-                    "proposal_id": context.get("_last_proposal_id"),
-                    "merge_draft_id": context.get("_last_merge_draft_id")}
+            return {
+                "reply": _owner_safe_reply(reply),
+                "proposal_id": context.get("_last_proposal_id"),
+                "merge_draft_id": context.get("_last_merge_draft_id"),
+                "preview": context.get("_last_preview"),
+                "change": context.get("_last_change"),
+                "changed": context.get("_last_changed"),
+            }
         side_effect_calls = [c for c in calls if c["function"]["name"] in SIDE_EFFECTS]
         if side_effect_calls and len(calls) != 1:
             error = "REFUSED: send exactly one mutating tool call in a model turn; read-only calls may be batched."
@@ -996,19 +1089,31 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
                               "content": "REFUSED: tool arguments were not valid JSON."})
                 continue
             name = call["function"]["name"]
+            if name not in offered_tools:
+                result = f"REFUSED: tool '{name}' is not available for this request. Use one of the tools offered in this turn."
+                convo.append({"role": "tool", "tool_call_id": call["id"], "content": result})
+                continue
             result = _execute_tool(context, adapter, name, args, say)
             convo.append({"role": "tool", "tool_call_id": call["id"], "content": result[:4000]})
             if name == "design_request" and context.get("_design_request"):
                 return {
-                    "reply": result,
+                    "reply": _owner_safe_reply(result),
                     "proposal_id": context.get("_last_proposal_id"),
                     "merge_draft_id": context.get("_last_merge_draft_id"),
+                    "preview": context.get("_last_preview"),
+                    "change": context.get("_last_change"),
+                    "changed": context.get("_last_changed"),
                     "design_request": context["_design_request"],
                 }
             if name in SIDE_EFFECTS and context.get("_last_action_succeeded"):
-                return {"reply": result,
-                        "proposal_id": context.get("_last_proposal_id"),
-                        "merge_draft_id": context.get("_last_merge_draft_id")}
+                return {
+                    "reply": _owner_safe_reply(result),
+                    "proposal_id": context.get("_last_proposal_id"),
+                    "merge_draft_id": context.get("_last_merge_draft_id"),
+                    "preview": context.get("_last_preview"),
+                    "change": context.get("_last_change"),
+                    "changed": context.get("_last_changed"),
+                }
     raise RuntimeError("Connection issue, try again.")
 
 

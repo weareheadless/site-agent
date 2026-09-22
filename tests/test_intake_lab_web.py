@@ -131,7 +131,7 @@ class _PagesService(_Service):
         return Path("/tmp/candidate"), self.run["candidate_sha"]
 
     def preview_profile(self, run_id):
-        return "astro_react"
+        return "next_react"
 
 
 class _PageCache:
@@ -186,7 +186,7 @@ class _LiveIncubationService(_IncubationService):
         return Path("/tmp/live"), "l" * 40
 
     def design_preview_profile(self, incubation_id, run_id):
-        return "astro_react"
+        return "next_react"
 
 
 class _LivePageCache:

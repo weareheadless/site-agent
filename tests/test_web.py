@@ -1269,29 +1269,38 @@ def test_chat_rejects_unknown_fields_gracefully(runtime):
     assert "can't propose" in body["reply"]
 
 
-def test_chat_with_builder_enabled_still_uses_cheap_tier_for_tweaks(runtime):
-    """Even with the builder configured, a small change routes through the
-    tool-loop (propose_changes) — it must NOT trigger the heavy git-syncing
-    builder, which used to make a 2px tweak cost as much as a redesign."""
+def test_chat_with_builder_enabled_routes_source_tweak_to_builder(runtime, monkeypatch):
+    """Existing-site source changes use the reviewable builder workflow even
+    when the requested visual tweak is small; they must not create a
+    proposal-only draft."""
     memory, config, adapter, context, client = runtime
     config["builder"] = {"enabled": True}
     config["site"]["clone_path"] = "/tmp/nonexistent-clone"
 
+    from site_agent.hands import opencode_runner as runner
+
+    monkeypatch.setattr(
+        runner,
+        "stage_build",
+        lambda ctx, brief, progress=None: {
+            "reply": "Preview preparation started.",
+            "merge_draft_id": 42,
+            "changed": True,
+            "preview": {"status": "building", "mode": "compiled_preview"},
+            "change": {"status": "candidate_created", "draft_id": 42},
+        },
+    )
     context["llm"] = FakeLLM([json.dumps({
-        "reply": "Staged.",
-        "action": {"type": "propose_changes", "summary": "margin tweak",
-                   "ops": [{"op": "edit", "path": "styles.css",
-                            "find": ".footer { padding: 4px; }",
-                            "replace": ".footer { padding: 6px 0; }"}]},
+        "reply": "Handing this to the implementation builder.",
+        "action": {"type": "spawn_build", "brief": "Add 2px to the footer margin."},
     })])
     context["persona_prompt"] = "You are Ada."
     _login(client)
     adapter.files["styles.css"] = ".footer { padding: 4px; }"
     body = chat_and_wait(client, "add 2px to the footer margin")
-    assert body["proposal_id"] > 0
-    assert body.get("merge_draft_id") is None
-    drafts = client.get("/api/drafts").json()["drafts"]
-    assert all(d["kind"] == "edit" for d in drafts)
+    assert body["proposal_id"] is None
+    assert body["merge_draft_id"] == 42
+    assert body["preview"]["status"] == "building"
 
 
 def test_chat_json_spawn_build_runs_staged_builder(runtime, monkeypatch):

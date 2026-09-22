@@ -272,6 +272,20 @@ def test_batch_commits_once_per_file_and_validates_all_before_writing(tmp_path):
     assert adapter.commits == []
 
 
+def test_preview_styles_reads_the_preview_branch_without_running_a_build(tmp_path):
+    adapter = GithubDouble(SOURCE)
+    path = "src/app/(frontend)/styles.css"
+    adapter.files["preview"][path] = b".nav-dropdown { display: flex; align-items: stretch; }\n"
+    service, calls = _service(tmp_path, adapter, {"version": 1, "fields": []})
+
+    result = service.preview_styles()
+
+    assert result["path"] == path
+    assert result["branch"] == "preview"
+    assert result["content"].startswith(".nav-dropdown")
+    assert calls == []
+
+
 class BridgeSourceEditor:
     def inventory(self, body):
         return {"branch": body.get("branch", "main"), "inventory": {"fields": []}}
@@ -281,6 +295,15 @@ class BridgeSourceEditor:
             assert isinstance(body["edits"], list)
             return {"ok": True, "batch": True, "files": []}
         raise SourceConflictError("source changed since inventory")
+
+    def preview_styles(self):
+        return {
+            "path": "src/app/(frontend)/styles.css",
+            "branch": "preview",
+            "sha": "blob-preview-styles",
+            "source_hash": "hash-preview-styles",
+            "content": ".nav-dropdown { display: flex; }",
+        }
 
 
 class BridgeSourceDeployment:
@@ -329,12 +352,19 @@ def test_source_routes_require_auth_and_validate_edit_requests():
             headers={"Authorization": "Bearer atelier-secret"},
             json={"field": {}, "value": "new"},
         )
+        styles = client.get(
+            "/api/atelier/source/preview/styles",
+            headers={"Authorization": "Bearer atelier-secret"},
+        )
 
     assert inventory.status_code == 200
     assert inventory.json()["branch"] == "main"
     assert batch.status_code == 200
     assert batch.json()["batch"] is True
     assert conflict.status_code == 409
+    assert styles.status_code == 200
+    assert styles.json()["branch"] == "preview"
+    assert "display: flex" in styles.json()["content"]
 
 
 def test_source_preview_routes_require_auth_and_return_job_status():

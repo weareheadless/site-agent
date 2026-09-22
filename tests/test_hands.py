@@ -74,6 +74,26 @@ def test_get_content_parses_json(monkeypatch):
     assert adapter.get_content() == {"hero": "hi"}
 
 
+def test_local_missing_source_file_returns_empty_blob(monkeypatch, tmp_path):
+    adapter = get_adapter("github_static", _config())
+    monkeypatch.setattr(adapter, "_local_checkout", lambda: tmp_path)
+    monkeypatch.setattr(
+        adapter,
+        "_local_remote_ref",
+        lambda branch: "refs/remotes/origin/preview",
+    )
+
+    def missing_file(args, cwd, **kwargs):
+        raise AdapterError(
+            "github git transport: fatal: path 'content.json' does not exist in "
+            "'refs/remotes/origin/preview'"
+        )
+
+    monkeypatch.setattr(adapter, "_git", missing_file)
+
+    assert adapter._local_get_file("content.json", "preview") == (None, None)
+
+
 def test_cloudflare_pages_inherits_commit_and_reports_unconfigured_status():
     adapter = get_adapter("cloudflare_pages", _config("cloudflare_pages", cloudflare={"account_id": "", "project_name": "", "mode": "git"}))
     assert isinstance(adapter, github_static.GithubStatic)

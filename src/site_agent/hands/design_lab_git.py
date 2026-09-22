@@ -15,6 +15,8 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 from collections.abc import Mapping
 
+from ..credentials import github_ssh_command
+
 
 class DesignLabGitError(RuntimeError):
     """A local design-lab Git operation failed."""
@@ -32,9 +34,12 @@ _BLOCKED_EXACT = {
     "GITHUB_TOKEN", "GH_TOKEN", "CLOUDFLARE_API_TOKEN", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY",
     "SITE_AGENT_ADMIN_PASSWORD", "CRAWLSEO_SERVICE_TOKEN", "SITE_AGENT_VISION_API_KEY",
 }
-
-
-def design_lab_environment(source: Mapping[str, str] | None = None, *, model_env_name: str = "") -> dict[str, str]:
+def design_lab_environment(
+    source: Mapping[str, str] | None = None,
+    *,
+    model_env_name: str = "",
+    git_ssh_command: str = "",
+) -> dict[str, str]:
     """Return a minimal child environment with only the selected model secret."""
     source = os.environ if source is None else source
     result = {key: str(source[key]) for key in _SAFE_ENV_KEYS if key in source and str(source[key])}
@@ -47,6 +52,15 @@ def design_lab_environment(source: Mapping[str, str] | None = None, *, model_env
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_ASKPASS": os.devnull,
     })
+    configured_ssh = str(git_ssh_command or source.get("GIT_SSH_COMMAND") or "").strip()
+    if configured_ssh:
+        if any(character in configured_ssh for character in "\r\n") or len(configured_ssh) > 500:
+            raise DesignLabGitError("git_ssh_command is invalid")
+        result["GIT_SSH_COMMAND"] = configured_ssh
+    else:
+        resolved = github_ssh_command({}, source)
+        if resolved:
+            result["GIT_SSH_COMMAND"] = resolved
     return result
 
 
@@ -89,7 +103,22 @@ def _canonical_remote(value: str) -> str:
         return str(Path(unquote(urlsplit(raw).path)).expanduser().resolve()).rstrip("/")
     if raw.startswith("/"):
         return str(Path(raw).expanduser().resolve()).rstrip("/")
+    if raw.startswith("git@github.com:"):
+        return "github.com/" + raw.removeprefix("git@github.com:").removesuffix(".git").lower()
+    parsed = urlsplit(raw)
+    if parsed.hostname and parsed.hostname.lower() == "github.com":
+        return "github.com/" + parsed.path.lstrip("/").removesuffix(".git").lower()
     return raw.removesuffix(".git").lower()
+
+
+def _authenticated_remote(remote: str, env: Mapping[str, str]) -> str:
+    """Use the host's configured SSH identity for GitHub private repositories."""
+    if not str(env.get("GIT_SSH_COMMAND") or "").strip():
+        return remote
+    parsed = urlsplit(str(remote))
+    if parsed.scheme == "https" and (parsed.hostname or "").lower() == "github.com" and parsed.path:
+        return f"git@github.com:{parsed.path.lstrip('/')}"
+    return remote
 
 
 def clone_source(
@@ -105,12 +134,15 @@ def clone_source(
     if not _BRANCH.fullmatch(branch) or ".." in Path(branch).parts:
         raise DesignLabGitError("design-lab branch is invalid")
     child_env = design_lab_environment(env)
+    transport = _authenticated_remote(remote, child_env)
     root = Path(destination).expanduser().resolve()
     if root.exists():
         if (root / ".git").exists():
             current = _run(root, ("remote", "get-url", "origin"), env=child_env).strip()
             if _canonical_remote(current) != _canonical_remote(remote):
                 raise DesignLabGitError("existing design-lab clone points at a different repository")
+            if _canonical_remote(current) == _canonical_remote(transport) and current != transport:
+                _run(root, ("remote", "set-url", "origin", transport), env=child_env)
             if _run(root, ("status", "--porcelain"), env=child_env).strip():
                 raise DesignLabGitError("existing design-lab clone is dirty")
             _run(root, ("fetch", "--no-tags", "origin", f"+refs/heads/{branch}:refs/remotes/origin/{branch}"), env=child_env)
@@ -121,7 +153,7 @@ def clone_source(
     root.parent.mkdir(parents=True, exist_ok=True)
     try:
         process = subprocess.run(
-            ["git", "clone", "--no-tags", "--single-branch", "--branch", branch, remote, str(root)],
+            ["git", "clone", "--no-tags", "--single-branch", "--branch", branch, transport, str(root)],
             capture_output=True,
             text=True,
             timeout=900,

@@ -44,8 +44,8 @@ from ..brain.design_brief import assess_intake, compile_brief
 from ..brain.design_guidance import DesignSkillSet, load_design_skills
 from ..brain.page_strategy import native_homepage_request
 from ..hands.site_build import (
-    ASTRO_REACT_PROFILE,
-    ASTRO_REACT_TOOLCHAIN_DEPENDENCIES,
+    NEXT_REACT_PROFILE,
+    NEXT_REACT_TOOLCHAIN_DEPENDENCIES,
     PELICAN_BASELINE_PROFILE,
     build_site,
 )
@@ -164,6 +164,25 @@ class DesignService:
         self.skill_set = skill_set
         self.media_service = media_service
         self.output_artifact_store = output_artifact_store
+
+    def _configured_build_profile(self) -> str:
+        """Return the one canonical profile for Ada design runs."""
+        engine = self.config.get("design_engine") or {}
+        profile = str(engine.get("build_profile") or "").strip().lower()
+        if profile:
+            if profile not in {NEXT_REACT_PROFILE.name, PELICAN_BASELINE_PROFILE.name}:
+                raise DesignServiceError(
+                    "design_engine.build_profile must be next_react or pelican_baseline"
+                )
+            return profile
+        # Bare service instances and pre-profile tenant records are common in
+        # durable recovery paths. They now default to the canonical Next
+        # profile, while an explicitly frozen legacy output directory keeps
+        # its Pelican baseline for backward-compatible review.
+        quality = engine.get("quality") or {}
+        if str(quality.get("output_dir") or "").strip().lower() == PELICAN_BASELINE_PROFILE.output_dir:
+            return PELICAN_BASELINE_PROFILE.name
+        return NEXT_REACT_PROFILE.name
 
     def _record_design_artifact(
         self,
@@ -579,7 +598,9 @@ class DesignService:
             or (self.config.get("env") or {}).get("llm_api_key")
             or ""
         ).strip()
+        build_profile = self._configured_build_profile()
         execution_profile = {
+            "build_profile": build_profile,
             "model": model,
             "provider": provider,
             "repair_attempts": int(design_engine.get("repair_attempts", 0)),
@@ -604,6 +625,7 @@ class DesignService:
                 "mode": run["mode"],
                 "candidate_ref": run.get("candidate_ref") or "",
                 "publishable": bool(run.get("publishable")),
+                "build_profile": build_profile,
                 "push_mode": "none" if run["mode"] == "local_experiment" else str(design_engine.get("push_mode") or "none"),
             },
         }
@@ -620,12 +642,16 @@ class DesignService:
                     ),
                 ]
             quality_identity = {
-                "output_dir": str(quality_config.get("output_dir") or "output"),
+                "build_profile": build_profile,
+                "output_dir": str(quality_config.get("output_dir") or NEXT_REACT_PROFILE.output_dir),
                 "required_pages": list(quality_config.get("required_pages") or intake.site.get("required_pages") or ()),
                 "required_content": list(configured_content or ()),
                 "contact_destination_unavailable": intake.conversion.get("not_available") is True
                 and not str(intake.conversion.get("contact_destination") or "").strip(),
-                "allowed_patterns": list(quality_config.get("allowed_patterns") or site.get("writable_patterns") or ()),
+                "allowed_patterns": list(
+                    quality_config.get("allowed_patterns")
+                    or (NEXT_REACT_PROFILE.writable_patterns if build_profile == NEXT_REACT_PROFILE.name else site.get("writable_patterns") or ())
+                ),
                 "allowed_hard_denied_paths": list(quality_config.get("allowed_hard_denied_paths") or ()),
                 "prohibited_paths": list(quality_config.get("prohibited_paths") or ()),
                 "browser_required": bool(quality_config.get("browser", quality_config.get("browser_required", False))),
@@ -731,6 +757,7 @@ class DesignService:
             "unknowns": raw_unknowns,
             "prohibited_claims": [item for item in raw_prohibited if str(item).strip()],
             "capabilities": raw_capabilities,
+            "build_profile": build_profile,
             "execution_profile": execution_profile,
             **dict(context_extra or {}),
             "asset_visual_evidence": [item.to_dict() for item in asset_visual_evidence],
@@ -903,7 +930,7 @@ class DesignService:
             planning["build_profile"] = parent_profile
         planning["build_request"] = request.to_dict()
         # Persist the inherited profile before resolving the target. The target
-        # owns the Astro allowlist for local repairs, so resolving it against
+        # owns the Next allowlist for local repairs, so resolving it against
         # the pre-profile child would incorrectly fall back to Pelican paths.
         self.memory.update_design_run(child_id, planning_json=planning)
         target = self.build_target_for_run(child_id)
@@ -1160,15 +1187,9 @@ class DesignService:
         quality = engine.get("quality") or {}
         allowed = quality.get("allowed_patterns") or engine.get("allowed_paths") or site.get("writable_patterns") or ()
         operation_kind = run.get("operation_kind") or "initial_build"
-        astro_local_surface = (
-            run["mode"] == "local_experiment"
-            and (
-                operation_kind == "initial_build"
-                or self.build_profile_for_run(run_id) == ASTRO_REACT_PROFILE.name
-            )
-        )
-        if astro_local_surface:
-            allowed = ASTRO_REACT_PROFILE.writable_patterns
+        build_profile = self.build_profile_for_run(run_id)
+        if build_profile == NEXT_REACT_PROFILE.name:
+            allowed = NEXT_REACT_PROFILE.writable_patterns
         push_mode = "none" if run["mode"] == "local_experiment" else str(engine.get("push_mode") or "none")
         return BuildTarget.from_dict({
             "mode": run["mode"],
@@ -1180,6 +1201,7 @@ class DesignService:
             "publishable": bool(run["publishable"]),
             "allowed_paths": list(allowed),
             "operation_kind": run.get("operation_kind") or "initial_build",
+            "build_profile": build_profile,
         })
 
     def build_profile_for_run(self, run_id: str) -> str:
@@ -1188,16 +1210,35 @@ class DesignService:
         planning = run.get("planning_json") if isinstance(run.get("planning_json"), Mapping) else {}
         profile = str((planning or {}).get("build_profile") or "").strip()
         if profile:
+            if profile not in {NEXT_REACT_PROFILE.name, PELICAN_BASELINE_PROFILE.name}:
+                raise DesignServiceError(f"unsupported design build profile: {profile}")
             return profile
         frozen_target = (planning or {}).get("build_target") if isinstance(planning, Mapping) else None
         if isinstance(frozen_target, Mapping):
+            frozen_profile = str(frozen_target.get("build_profile") or "").strip().lower()
+            if frozen_profile in {NEXT_REACT_PROFILE.name, PELICAN_BASELINE_PROFILE.name}:
+                return frozen_profile
+            if frozen_profile:
+                raise DesignServiceError(f"unsupported design build profile: {frozen_profile}")
+            if "build_profile" in frozen_target:
+                # An explicitly empty profile is the durable marker used by
+                # legacy customer runs. Do not let a later context snapshot
+                # silently reinterpret that run as a Next build.
+                return ""
             frozen_allowed = tuple(str(item) for item in (frozen_target.get("allowed_paths") or ()))
-            if frozen_allowed == ASTRO_REACT_PROFILE.writable_patterns:
-                return ASTRO_REACT_PROFILE.name
+            if frozen_allowed == NEXT_REACT_PROFILE.writable_patterns:
+                return NEXT_REACT_PROFILE.name
         snapshot = run.get("context_snapshot")
         if isinstance(snapshot, Mapping):
+            profile = str(snapshot.get("build_profile") or "").strip()
+            if profile:
+                if profile not in {NEXT_REACT_PROFILE.name, PELICAN_BASELINE_PROFILE.name}:
+                    raise DesignServiceError(f"unsupported design build profile: {profile}")
+                return profile
             profile = str((snapshot.get("execution_profile") or {}).get("build_profile") or "").strip()
             if profile:
+                if profile not in {NEXT_REACT_PROFILE.name, PELICAN_BASELINE_PROFILE.name}:
+                    raise DesignServiceError(f"unsupported design build profile: {profile}")
                 return profile
             # Runs created before the explicit profile field was introduced
             # still carry the frozen quality output directory. Use that durable
@@ -1206,13 +1247,17 @@ class DesignService:
             output_dir = str((quality or {}).get("output_dir") or "").strip().lower() if isinstance(quality, Mapping) else ""
             if output_dir == PELICAN_BASELINE_PROFILE.output_dir:
                 return PELICAN_BASELINE_PROFILE.name
-            if output_dir == ASTRO_REACT_PROFILE.output_dir:
-                return ASTRO_REACT_PROFILE.name
+            if output_dir == NEXT_REACT_PROFILE.output_dir:
+                return NEXT_REACT_PROFILE.name
         if run.get("mode") == "local_experiment" and (run.get("operation_kind") or "initial_build") == "initial_build":
-            return ASTRO_REACT_PROFILE.name
+            return self._configured_build_profile()
         parent_id = str(run.get("parent_run_id") or "").strip()
         if parent_id and parent_id != run_id:
             return self.build_profile_for_run(parent_id)
+        # Older customer-facing runs predate the explicit profile field. An
+        # empty result deliberately keeps preview and quality recovery on the
+        # legacy Pelican/source-build path; new runs freeze their profile in
+        # the context snapshot before they reach this fallback.
         return ""
 
     def quality_policy_for_run(self, run_id: str) -> QualityPolicy:
@@ -1234,11 +1279,11 @@ class DesignService:
         initial_surface = operation_kind == "initial_build"
         technical_repair = operation_kind == "technical_repair"
         visual_refinement = operation_kind == "visual_refinement"
-        astro_local_surface = (
+        next_surface = (
             run.get("mode") == "local_experiment"
-            and self.build_profile_for_run(run_id) == ASTRO_REACT_PROFILE.name
+            and self.build_profile_for_run(run_id) == NEXT_REACT_PROFILE.name
         )
-        if astro_local_surface:
+        if next_surface:
             # A visual refinement of an initial homepage remains homepage
             # scoped. A visual refinement of a technical repair, however,
             # inherits the repair's complete route inventory so its browser
@@ -1258,7 +1303,7 @@ class DesignService:
                     str(raw_request.get("mode") or "") == "initial_homepage"
                     and not technical_repair
                 )
-            if astro_local_surface and not technical_repair and not visual_refinement:
+            if next_surface and not technical_repair and not visual_refinement:
                 initial_surface = True
             if initial_surface and raw_request.get("page_path"):
                 required_pages = (_public_page_path(raw_request.get("page_path")),)
@@ -1298,14 +1343,14 @@ class DesignService:
                 )
             if run.get("design_manifest_path"):
                 policy = replace(policy, manifest_path=str(run["design_manifest_path"]))
-            if astro_local_surface:
+            if next_surface:
                 approved = {
                     str(item.get("package") or item.get("name") or "").strip(): dict(item)
                     for item in policy.approved_capabilities
                     if isinstance(item, Mapping)
                     and str(item.get("package") or item.get("name") or "").strip()
                 }
-                for item in ASTRO_REACT_TOOLCHAIN_DEPENDENCIES:
+                for item in NEXT_REACT_TOOLCHAIN_DEPENDENCIES:
                     package = str(item["package"])
                     existing = approved.get(package, {})
                     merged = dict(existing)
@@ -1313,9 +1358,9 @@ class DesignService:
                     approved[package] = merged
                 policy = replace(
                     policy,
-                    output_dir=ASTRO_REACT_PROFILE.output_dir,
-                    allowed_patterns=ASTRO_REACT_PROFILE.writable_patterns,
-                    prohibited_paths=tuple(dict.fromkeys((*policy.prohibited_paths, *ASTRO_REACT_PROFILE.prohibited_paths))),
+                    output_dir=NEXT_REACT_PROFILE.output_dir,
+                    allowed_patterns=NEXT_REACT_PROFILE.writable_patterns,
+                    prohibited_paths=tuple(dict.fromkeys((*policy.prohibited_paths, *NEXT_REACT_PROFILE.prohibited_paths))),
                     allowed_hard_denied_paths=tuple(dict.fromkeys((*policy.allowed_hard_denied_paths, "package.json"))),
                     approved_capabilities=tuple(approved.values()),
                     build_command=None,
@@ -1598,8 +1643,9 @@ class DesignService:
         planning = dict((self.memory.get_design_run(run_id) or {}).get("planning_json") or {})
         planning["build_request"] = request.to_dict()
         planning["build_target"] = target.to_dict()
+        planning["build_profile"] = target.build_profile
         if run["mode"] == "local_experiment" and target.operation_kind == "initial_build":
-            planning["build_profile"] = ASTRO_REACT_PROFILE.name
+            planning["build_profile"] = self._configured_build_profile()
         elif target.operation_kind == "visual_refinement":
             inherited_profile = self.build_profile_for_run(str(run.get("parent_run_id") or "")) if run.get("parent_run_id") else ""
             if inherited_profile:
@@ -2408,7 +2454,7 @@ class DesignService:
             "visual_refinement": critique.to_dict(),
         })
         # Persist the parent's frozen build profile before resolving the child
-        # target. This lets local Astro refinements inherit the initial
+        # target. This lets local Next refinements inherit the initial
         # candidate's allowlist instead of falling back to the generic site
         # patterns while the child is still in planning.
         self.memory.update_design_run(child_id, planning_json=planning_data)
@@ -2513,14 +2559,14 @@ class DesignService:
             build_runner = None
             if (
                 run.get("mode") == "local_experiment"
-                and self.build_profile_for_run(run_id) == ASTRO_REACT_PROFILE.name
+                and self.build_profile_for_run(run_id) == NEXT_REACT_PROFILE.name
             ):
                 npm_cache = Path(str(self.config.get("data_dir") or ".")).expanduser().resolve() / "npm-cache"
 
                 def build_runner(workspace: Path):
                     return build_site(
                         workspace,
-                        ASTRO_REACT_PROFILE,
+                        NEXT_REACT_PROFILE,
                         npm_cache=npm_cache,
                         env=build_env,
                         timeout_seconds=effective_policy.build_timeout_seconds,
@@ -2543,7 +2589,7 @@ class DesignService:
             output_artifact_publisher = None
             output_store = self.output_artifact_store
             if output_store is not None and callable(getattr(output_store, "publish", None)):
-                output_profile = self.build_profile_for_run(run_id)
+                output_profile = self.build_profile_for_run(run_id) or PELICAN_BASELINE_PROFILE.name
 
                 def output_artifact_publisher(output_dir: Path) -> Mapping[str, Any]:
                     published = dict(output_store.publish(

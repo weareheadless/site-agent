@@ -19,9 +19,23 @@ import time
 from typing import Any
 
 from .design_contracts import DesignRequest
+from ..brain.owner_copy import owner_message_without_unstarted_build
 
 def _job_worker_id() -> str:
     return f"{time.time_ns()}-{threading.get_ident()}"
+
+
+def _owner_action_started(result: dict[str, Any]) -> bool:
+    """Return whether this job actually queued an owner-visible operation.
+
+    An intake advisor's ``ui_action`` is only a model suggestion; it is not
+    evidence that a build or preview happened. Only concrete handoffs and
+    follow-up build results count here.
+    """
+    if result.get("merge_draft_id") or result.get("design_run_id"):
+        return True
+    followup = result.get("build_followup")
+    return isinstance(followup, dict) and followup.get("modification_status") == "started"
 
 
 def _reconcile_owner_action(context: dict[str, Any], job_id: int, *, succeeded: bool) -> None:
@@ -121,6 +135,25 @@ def run_job(context: dict[str, Any], job: dict[str, Any], worker: str,
     message = job["message"]
     conv_id = job["conversation_id"]
     started = time.monotonic()
+    from ..config import timing_enabled
+
+    timings_on = timing_enabled(context.get("config") or {}, context.get("env"))
+
+    def record_job_timing(*, succeeded: bool) -> None:
+        if not timings_on or not hasattr(memory, "record_timing"):
+            return
+        try:
+            memory.record_timing(
+                "chat_job",
+                int(round((time.monotonic() - started) * 1000)),
+                phase=str(job.get("operation_kind") or "owner_chat"),
+                success=succeeded,
+                job_id=int(job_id),
+                conversation_id=int(conv_id),
+                metadata={"status": "done" if succeeded else "error"},
+            )
+        except Exception:  # noqa: BLE001 - observability must not break jobs
+            pass
 
     def progress(text: str) -> None:
         memory.append_chat_job_step(job_id, worker, text)
@@ -209,8 +242,18 @@ def run_job(context: dict[str, Any], job: dict[str, Any], worker: str,
             from ..hands import opencode_runner as runner
 
             outcome = runner.stage_build(context, result["build_brief"], progress)
-            result["reply"] = outcome["reply"]
-            result["merge_draft_id"] = outcome["merge_draft_id"]
+            result.update({
+                "reply": outcome.get("reply"),
+                "merge_draft_id": outcome.get("merge_draft_id"),
+                "preview": outcome.get("preview"),
+                "change": outcome.get("change"),
+                "changed": outcome.get("changed"),
+            })
+        if isinstance(result.get("reply"), str):
+            result["reply"] = owner_message_without_unstarted_build(
+                result["reply"],
+                action_started=_owner_action_started(result),
+            )
         if result.get("error"):
             raise RuntimeError(str(result.get("reply") or "chat job failed")[:300])
 
@@ -224,10 +267,12 @@ def run_job(context: dict[str, Any], job: dict[str, Any], worker: str,
 
         if not memory.complete_chat_job(job_id, worker, result):
             raise RuntimeError("chat job ownership was lost before completion")
+        record_job_timing(succeeded=True)
         _reconcile_owner_action(context, job_id, succeeded=True)
         return result
     except Exception as exc:  # noqa: BLE001 — a failing job must not kill the loop
         memory.fail_chat_job(job_id, worker, str(exc)[:300])
+        record_job_timing(succeeded=False)
         _reconcile_owner_action(context, job_id, succeeded=False)
         return {"error": str(exc)[:300]}
 

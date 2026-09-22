@@ -56,42 +56,49 @@ class _NativeBuilder:
 
     def build_design(self, request, target, progress=None):
         root = Path(target.clone_path)
-        (root / "src/pages").mkdir(parents=True, exist_ok=True)
+        (root / "src/app").mkdir(parents=True, exist_ok=True)
         (root / "design").mkdir(parents=True, exist_ok=True)
         (root / "package.json").write_text(json.dumps({
             "name": "native-candidate",
             "private": True,
             "type": "module",
-            "scripts": {"check": "astro check", "build": "astro build"},
+            "scripts": {"typecheck": "tsc --noEmit", "lint": "eslint .", "build": "next build"},
             "dependencies": {
-                "@astrojs/check": "0.9.10",
-                "@astrojs/react": "4.4.2",
                 "@gsap/react": "2.1.2",
-                "@types/node": "22.20.1",
-                "@types/react": "19.2.18",
-                "@types/react-dom": "19.2.5",
-                "astro": "5.18.2",
+                "@opennextjs/cloudflare": "1.20.6",
+                "@payloadcms/db-d1-sqlite": "3.88.0",
+                "@payloadcms/next": "3.88.0",
+                "@payloadcms/richtext-lexical": "3.88.0",
+                "@payloadcms/storage-r2": "3.88.0",
+                "@payloadcms/translations": "3.88.0",
+                "@payloadcms/ui": "3.88.0",
+                "cross-env": "7.0.3",
+                "dotenv": "16.6.1",
+                "graphql": "16.11.0",
                 "gsap": "3.12.5",
-                "react": "19.2.8",
-                "react-dom": "19.2.8",
-                "typescript": "5.9.3",
+                "next": "16.3.4",
+                "payload": "3.88.0",
+                "react": "19.2.6",
+                "react-dom": "19.2.6",
+            },
+            "devDependencies": {
+                "@eslint/eslintrc": "3.3.1",
+                "@types/node": "22.19.9",
+                "@types/react": "19.2.14",
+                "@types/react-dom": "19.2.3",
+                "eslint": "9.16.0",
+                "eslint-config-next": "16.3.4",
+                "prettier": "3.6.2",
+                "tsx": "4.22.4",
+                "typescript": "5.7.3",
+                "wrangler": "4.130.0",
             },
         }, sort_keys=True), encoding="utf-8")
-        (root / "astro.config.mjs").write_text("export default {};\n", encoding="utf-8")
+        (root / "next.config.mjs").write_text("export default { output: 'export' };\n", encoding="utf-8")
+        (root / "eslint.config.mjs").write_text("export default [];\n", encoding="utf-8")
         (root / "tsconfig.json").write_text("{}\n", encoding="utf-8")
-        locked = {
-            "@astrojs/check": "0.9.10",
-            "@astrojs/react": "4.4.2",
-            "@gsap/react": "2.1.2",
-            "@types/node": "22.20.1",
-            "@types/react": "19.2.18",
-            "@types/react-dom": "19.2.5",
-            "astro": "5.18.2",
-            "gsap": "3.12.5",
-            "react": "19.2.8",
-            "react-dom": "19.2.8",
-            "typescript": "5.9.3",
-        }
+        package = json.loads((root / "package.json").read_text(encoding="utf-8"))
+        locked = {**package["dependencies"], **package["devDependencies"]}
         (root / "package-lock.json").write_text(
             json.dumps({
                 "name": "native-candidate",
@@ -104,13 +111,13 @@ class _NativeBuilder:
             }),
             encoding="utf-8",
         )
-        (root / "src/pages/index.astro").write_text(
-            "<html lang=\"en\"><body><h1>A considered service</h1><p>A clear first step.</p></body></html>\n",
+        (root / "src/app/page.tsx").write_text(
+            "export default function HomePage() { return <main><h1>A considered service</h1><p>A clear first step.</p></main> }\n",
             encoding="utf-8",
         )
         manifest = DesignManifest.from_dict({
             "schema_version": 1,
-            "source_homepage_path": "src/pages/index.astro",
+            "source_homepage_path": "src/app/page.tsx",
             "design_direction_id": "native-test",
             "intake_hash": request.site_intake_hash,
             "tokens": {},
@@ -138,7 +145,7 @@ class _NativeBuilder:
             "candidate_sha": candidate_sha,
             "candidate_ref": target.candidate_ref,
             "diff_summary": "native source authored",
-            "changed_paths": ["package.json", "package-lock.json", "astro.config.mjs", "tsconfig.json", "src/pages/index.astro", "design/ada-design-manifest.json"],
+            "changed_paths": ["package.json", "package-lock.json", "next.config.mjs", "eslint.config.mjs", "tsconfig.json", "src/app/page.tsx", "design/ada-design-manifest.json"],
             "manifest_path": "design/ada-design-manifest.json",
             "manifest_hash": canonical_hash(manifest.to_dict()),
             "opencode_session_id": "native-test-session",

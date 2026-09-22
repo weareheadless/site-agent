@@ -574,17 +574,26 @@ class PayloadMediaService:
 
 @register
 class PayloadGatewaySiteAdapter(SiteAdapter):
-    """No-file adapter used by the shared API's chat worker.
+    """Payload-backed adapter used by the shared API's chat worker.
 
     Ada's Payload content tools use ``PayloadGatewayClient`` directly. The
-    editor still expects a ``SiteAdapter`` for its common read context, so this
-    deliberately empty adapter prevents accidental GitHub/file mutations.
+    editor still expects a ``SiteAdapter`` for its common read context. When a
+    source adapter is supplied, repository reads are allowed through that
+    adapter while file writes remain disabled here; Payload mutations must use
+    the narrow gateway tools instead.
     """
 
     name = "payload_gateway"
 
-    def __init__(self, config: dict[str, Any] | None = None, *, payload_client: PayloadGatewayClient | None = None):
+    def __init__(
+        self,
+        config: dict[str, Any] | None = None,
+        *,
+        payload_client: PayloadGatewayClient | None = None,
+        read_adapter: Any | None = None,
+    ):
         super().__init__(config)
+        self.read_adapter = read_adapter
         if payload_client is not None:
             self.payload_client = payload_client
             return
@@ -626,8 +635,28 @@ class PayloadGatewaySiteAdapter(SiteAdapter):
             }
         return {"payload_documents": collections, "payload_globals": globals}
 
-    def get_file(self, path: str, branch: str | None = None) -> tuple[None, None]:
-        return None, None
+    def get_file(self, path: str, branch: str | None = None) -> tuple[str | None, bytes | None]:
+        requested = str(path or "").lstrip("/")
+        payload_content_path = str(self.site.get("content_path") or "content.json").lstrip("/")
+        if requested == payload_content_path:
+            # This document belongs to Payload, not the source repository.
+            # Let get_content() use the gateway contract instead of asking Git
+            # for a path that is expected not to exist on either branch.
+            return None, None
+        if self.read_adapter is None:
+            return None, None
+        try:
+            return self.read_adapter.get_file(requested, branch=branch)
+        except TypeError:
+            return self.read_adapter.get_file(requested)
+
+    def list_files(self, branch: str | None = None) -> list[str]:
+        if self.read_adapter is None:
+            raise AttributeError("repository listing is unavailable")
+        try:
+            return list(self.read_adapter.list_files(branch=branch))
+        except TypeError:
+            return list(self.read_adapter.list_files())
 
     def commit_file(self, path: str, data: bytes, message: str, branch: str | None = None) -> dict[str, Any]:
         raise AdapterError("Payload content is gateway-backed; file commits are disabled")

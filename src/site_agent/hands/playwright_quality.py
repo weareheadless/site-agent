@@ -1135,7 +1135,7 @@ class PlaywrightQualityAdapter:
                         continue
                     frame.wait_for_selector("body", state="attached", timeout=500)
                     frame.wait_for_load_state("domcontentloaded", timeout=500)
-                    # Astro/React islands (and equivalent client runtimes) can
+                    # Next/React client boundaries (and equivalent runtimes) can
                     # hydrate after the document load event.  The owner surface
                     # is intentionally sandboxed, so probing a form or control
                     # before its delegated listeners exist produces a false

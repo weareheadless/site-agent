@@ -130,7 +130,18 @@ class QualityPolicy:
             raise ValueError("design_engine.quality must be an object")
         site = config.get("site") or {}
         blog = config.get("blog") or {}
-        command = quality.get("build_command", blog.get("build_command", cls.build_command))
+        build_profile = str(engine.get("build_profile") or "").strip().lower()
+        if build_profile == "next_react":
+            from .site_build import NEXT_REACT_PROFILE
+
+            default_output_dir = NEXT_REACT_PROFILE.output_dir
+            default_allowed_patterns = NEXT_REACT_PROFILE.writable_patterns
+            default_build_command = None
+        else:
+            default_output_dir = "output"
+            default_allowed_patterns = site.get("writable_patterns") or ()
+            default_build_command = blog.get("build_command", cls.build_command)
+        command = quality.get("build_command", default_build_command)
         if isinstance(command, (list, tuple)):
             command = tuple(str(item) for item in command)
         elif command is not None and not isinstance(command, str):
@@ -185,10 +196,10 @@ class QualityPolicy:
         if max_rendered_asset_height_viewport_ratio <= 0 or max_empty_scroll_viewport_ratio <= 0:
             raise ValueError("design_engine.quality geometry ratios must be positive")
         return cls(
-            output_dir=str(quality.get("output_dir") or "output"),
+            output_dir=str(quality.get("output_dir") or default_output_dir),
             required_pages=tuple(str(item) for item in pages if str(item).strip()),
             required_content=tuple(str(item) for item in content if str(item).strip()),
-            allowed_patterns=tuple(str(item) for item in (quality.get("allowed_patterns") or site.get("writable_patterns") or ())),
+            allowed_patterns=tuple(str(item) for item in (quality.get("allowed_patterns") or default_allowed_patterns or ())),
             prohibited_paths=tuple(str(item) for item in (quality.get("prohibited_paths") or ())),
             build_command=command,
             build_timeout_seconds=int(quality.get("build_timeout_seconds", cls.build_timeout_seconds)),
@@ -838,7 +849,7 @@ def _dependency_findings(repo: Path, base_sha: str, candidate_sha: str, policy: 
 
 
 _NATIVE_SOURCE_SUFFIXES = frozenset({
-    ".astro", ".css", ".js", ".jsx", ".mjs", ".ts", ".tsx", ".html", ".htm",
+    ".css", ".js", ".jsx", ".mjs", ".ts", ".tsx", ".html", ".htm",
 })
 _IMPORT_RE = re.compile(
     r"(?:\bimport\s+(?:[^;\n]+?\s+from\s+)?|\bimport\s*\(|\brequire\s*\()\s*[\"']([^\"']+)[\"']",
@@ -874,7 +885,7 @@ _FONT_FACE_RE = re.compile(r"@font-face\s*\{(?P<body>[^}]*)\}", re.IGNORECASE | 
 _FONT_URL_RE = re.compile(r"url\(\s*(['\"]?)(?P<url>[^'\")]+)\1\s*\)", re.IGNORECASE)
 
 # These are deliberately implementation-specific fingerprints of the old
-# internal scaffold, not generic Astro/React conventions.  They are only used
+# internal scaffold, not generic Next/React conventions.  They are only used
 # to detect accidental reuse; the gate never suggests a replacement design.
 _INTERNAL_SCAFFOLD_MARKERS: tuple[frozenset[str], ...] = (
     frozenset({"siteheader", "responsivemenu", "motioninteraction"}),
@@ -894,7 +905,10 @@ def _native_source_files(repo: Path, changed: set[str]) -> list[str]:
     return sorted(
         path for path in changed
         if Path(path).suffix.lower() in _NATIVE_SOURCE_SUFFIXES
-        and not any(part in {".git", ".opencode", "node_modules", "dist", "output"} for part in Path(path).parts)
+        and not any(
+            part in {".git", ".opencode", "node_modules", ".next", ".open-next", "out", "dist", "output"}
+            for part in Path(path).parts
+        )
     )
 
 
@@ -979,7 +993,7 @@ def _native_source_findings(
         ):
             react_source_files.append(relative)
         for specifier in imports:
-            if specifier.startswith((".", "/", "#", "~", "@/", "astro:", "node:")):
+            if specifier.startswith((".", "/", "#", "~", "@/", "node:")):
                 continue
             if specifier not in declared:
                 findings.append(_finding(
@@ -1091,7 +1105,10 @@ def _font_findings(
     changed_font_paths = sorted(
         path for path in changed
         if Path(path).suffix.lower() == ".woff2"
-        and not any(part in {".git", ".opencode", "node_modules", "dist", "output"} for part in Path(path).parts)
+        and not any(
+            part in {".git", ".opencode", "node_modules", ".next", ".open-next", "out", "dist", "output"}
+            for part in Path(path).parts
+        )
     )
     # A repair is allowed to remove an authored font asset.  Git reports a
     # deleted asset as changed, but it must not be inspected as though the
@@ -1114,7 +1131,7 @@ def _font_findings(
             relative = safe_relative_path(raw.get("path") or raw.get("destination"), "approved_font_files.path")
         except Exception:
             continue
-        # Font provisions are copied into Astro's public boundary. Accept the
+        # Font provisions are copied into Next's public boundary. Accept the
         # shorter ``fonts/name.woff2`` spelling in older instance config, but
         # compare it using the committed candidate path.
         if not relative.startswith("public/"):
@@ -2680,9 +2697,9 @@ def run_quality_gates(
         # than against whatever happens to be in the persistent clone.
         if base_sha != candidate_sha:
             # The container's system temporary directory is mounted noexec.
-            # Astro's npm bin shims are executable files, so checking a
+            # Next's npm bin shims are executable files, so checking a
             # committed candidate out under /tmp makes `npm run check` fail
-            # with a misleading "astro: Permission denied". Keep the
+            # with a misleading "next: Permission denied". Keep the
             # immutable quality worktree beside the repository instead; the
             # design-lab workspace is on the executable application volume.
             temporary_workspace = Path(tempfile.mkdtemp(prefix="ada-quality-", dir=str(root.parent)))

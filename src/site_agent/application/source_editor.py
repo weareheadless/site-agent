@@ -37,6 +37,8 @@ class SourceConflictError(SourceEditorError):
 _BRANCH = re.compile(r"^[A-Za-z0-9._/-]+$")
 _ALLOWED_KINDS = {"literal", "jsx-attribute", "jsx-text"}
 _ALLOWED_TYPES = {"text", "string", "richtext", "image", "link"}
+_PREVIEW_STYLES_PATH = "src/app/(frontend)/styles.css"
+_PREVIEW_STYLES_MAX_BYTES = 512 * 1024
 _SAFE_ENV_KEYS = {
     "HOME",
     "LANG",
@@ -276,6 +278,27 @@ class SourceEditorService:
             "sha": str(blob_sha or ""),
             "source_hash": hashlib.sha256(data).hexdigest(),
             "bytes": data,
+        }
+
+    def preview_styles(self) -> dict[str, Any]:
+        """Read the staged frontend stylesheet without building the site."""
+        preview_branch = self._preview_branch()
+        if not preview_branch:
+            raise SourceEditorError("source preview branch is not configured")
+        source = self.read_source(_PREVIEW_STYLES_PATH, branch=preview_branch)
+        data = source["bytes"]
+        if not isinstance(data, bytes) or len(data) > _PREVIEW_STYLES_MAX_BYTES:
+            raise SourceEditorError("preview stylesheet is too large")
+        try:
+            content = data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise SourceEditorError("preview stylesheet is not valid UTF-8") from exc
+        return {
+            "path": source["path"],
+            "branch": source["branch"],
+            "sha": source["sha"],
+            "source_hash": source["source_hash"],
+            "content": content,
         }
 
     def _inventory_script(self, root: Path) -> Path:

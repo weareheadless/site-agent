@@ -134,54 +134,80 @@ This page is a placeholder for the primary customer action.
     return root
 
 
-_ASTRO_VERSION = "5.18.2"
-_ASTRO_REACT_VERSION = "4.4.2"
+_NEXT_VERSION = "16.3.4"
 _GSAP_REACT_VERSION = "2.1.2"
-_REACT_VERSION = "19.2.8"
-_REACT_DOM_VERSION = "19.2.8"
+_REACT_VERSION = "19.2.6"
+_REACT_DOM_VERSION = "19.2.6"
 _GSAP_VERSION = "3.12.5"
-_CHECK_VERSION = "0.9.10"
-_TYPES_NODE_VERSION = "22.20.1"
-_TYPES_REACT_VERSION = "19.2.18"
-_TYPES_REACT_DOM_VERSION = "19.2.5"
-_TYPESCRIPT_VERSION = "5.9.3"
+_TYPES_NODE_VERSION = "22.19.9"
+_TYPES_REACT_VERSION = "19.2.14"
+_TYPES_REACT_DOM_VERSION = "19.2.3"
+_TYPESCRIPT_VERSION = "5.7.3"
+_PAYLOAD_VERSION = "3.88.0"
+_OPENNEXT_VERSION = "1.20.6"
+_WRANGLER_VERSION = "4.130.0"
+_ESLINT_VERSION = "9.16.0"
+_ESLINT_CONFIG_NEXT_VERSION = "16.3.4"
+_TYPESX_VERSION = "4.22.4"
+_PRETTIER_VERSION = "3.6.2"
+_CROSS_ENV_VERSION = "7.0.3"
+_DOTENV_VERSION = "16.6.1"
+_GRAPHQL_VERSION = "16.11.0"
 
 
 def _package_manifest(name: str) -> dict[str, object]:
-    """Return exact direct toolchain dependencies, with no visual defaults."""
+    """Return exact Next/React/Payload dependencies, with no visual defaults."""
     return {
         "name": f"ada-{name.lower().replace(' ', '-')}-site" if name else "ada-site",
         "private": True,
         "type": "module",
         "scripts": {
-            "check": "astro check",
-            "build": "astro build",
-            "preview": "astro preview",
+            "typecheck": "tsc --noEmit",
+            "lint": "eslint .",
+            "build": "next build",
+            "dev": "next dev",
+            "start": "next start",
         },
         "dependencies": {
-            "@astrojs/react": _ASTRO_REACT_VERSION,
             "@gsap/react": _GSAP_REACT_VERSION,
-            "astro": _ASTRO_VERSION,
+            "@opennextjs/cloudflare": _OPENNEXT_VERSION,
+            "@payloadcms/db-d1-sqlite": _PAYLOAD_VERSION,
+            "@payloadcms/next": _PAYLOAD_VERSION,
+            "@payloadcms/richtext-lexical": _PAYLOAD_VERSION,
+            "@payloadcms/storage-r2": _PAYLOAD_VERSION,
+            "@payloadcms/translations": _PAYLOAD_VERSION,
+            "@payloadcms/ui": _PAYLOAD_VERSION,
+            "cross-env": _CROSS_ENV_VERSION,
+            "dotenv": _DOTENV_VERSION,
+            "graphql": _GRAPHQL_VERSION,
             "gsap": _GSAP_VERSION,
+            "next": _NEXT_VERSION,
+            "payload": _PAYLOAD_VERSION,
             "react": _REACT_VERSION,
             "react-dom": _REACT_DOM_VERSION,
         },
         "devDependencies": {
-            "@astrojs/check": _CHECK_VERSION,
             "@types/node": _TYPES_NODE_VERSION,
             "@types/react": _TYPES_REACT_VERSION,
             "@types/react-dom": _TYPES_REACT_DOM_VERSION,
+            "@eslint/eslintrc": "3.3.1",
+            "eslint": _ESLINT_VERSION,
+            "eslint-config-next": _ESLINT_CONFIG_NEXT_VERSION,
+            "prettier": _PRETTIER_VERSION,
+            "tsx": _TYPESX_VERSION,
             "typescript": _TYPESCRIPT_VERSION,
+            "wrangler": _WRANGLER_VERSION,
         },
     }
 
 
 def initialize_toolchain_workspace(directory: str | Path, name: str = "") -> Path:
-    """Create a blank Astro/React workspace for a new design experiment.
+    """Create a blank Next/React/Payload workspace for a new design experiment.
 
     This is intentionally not a site template: it creates only package/config
-    metadata and empty source directories.  The first page, styles, copy,
-    imagery, fonts, components, and motion are authored by the isolated model.
+    metadata, a technical App Router entrypoint, and empty source directories.
+    The first page, styles, copy, imagery, fonts, components, and motion are
+    authored by the isolated model.
     """
     root = Path(directory).expanduser().resolve()
     if root.exists() and any(root.iterdir()):
@@ -189,38 +215,81 @@ def initialize_toolchain_workspace(directory: str | Path, name: str = "") -> Pat
     root.mkdir(parents=True, exist_ok=True)
 
     _write(root, "package.json", json.dumps(_package_manifest(str(name or "")), indent=2) + "\n")
-    _write(root, "astro.config.mjs", """import { defineConfig } from 'astro/config';
-import react from '@astrojs/react';
+    _write(root, "next.config.mjs", """/** @type {import('next').NextConfig} */
+const nextConfig = {
+  output: 'export',
+};
 
-export default defineConfig({
-  integrations: [react()],
-});
+export default nextConfig;
 """)
     _write(root, "tsconfig.json", """{
-  "extends": "astro/tsconfigs/strict",
   "compilerOptions": {
-    "allowJs": true,
-    "checkJs": true,
-    "jsx": "react-jsx",
-    "jsxImportSource": "react"
-  }
+    "target": "ES2017",
+    "lib": ["dom", "dom.iterable", "esnext"],
+    "skipLibCheck": true,
+    "strict": true,
+    "noEmit": true,
+    "esModuleInterop": true,
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "jsx": "preserve",
+    "incremental": true,
+    "plugins": [{"name": "next"}]
+  },
+  "include": ["next-env.d.ts", ".next/types/**/*.ts", "src/**/*.ts", "src/**/*.tsx"],
+  "exclude": ["node_modules"]
 }
 """)
+    _write(root, "next-env.d.ts", """/// <reference types="next" />
+/// <reference types="next/image-types/global" />
+
+// NOTE: This file should not be edited
+""")
+    _write(root, "eslint.config.mjs", """import { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { FlatCompat } from '@eslint/eslintrc';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+const compat = new FlatCompat({ baseDirectory: __dirname });
+
+export default [...compat.extends('next/core-web-vitals', 'next/typescript')];
+""")
     _write(root, ".gitignore", """node_modules/
-dist/
-.astro/
+.next/
+out/
+.open-next/
 .opencode/
 .agent-home/
 """)
     for relative in (
-        "src/pages/.gitkeep",
+        "src/app/layout.tsx",
+        "src/app/page.tsx",
         "src/components/.gitkeep",
         "src/styles/.gitkeep",
         "public/.gitkeep",
         "design/.gitkeep",
     ):
         _write(root, relative, "")
-    _write(root, "src/env.d.ts", "/// <reference types=\"astro/client\" />\n")
+    _write(root, "src/app/layout.tsx", """import type { ReactNode } from 'react';
+
+export default function RootLayout({ children }: { children: ReactNode }) {
+  return <html lang="en"><body>{children}</body></html>;
+}
+""")
+    _write(root, "src/app/page.tsx", """export default function HomePage() {
+  return null;
+}
+""")
+    _write(root, "payload.config.ts", """import { buildConfig } from 'payload';
+
+export default buildConfig({
+  secret: process.env.PAYLOAD_SECRET || 'local-development-secret',
+  collections: [],
+});
+""")
     return root
 
 

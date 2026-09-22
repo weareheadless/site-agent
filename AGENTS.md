@@ -167,9 +167,38 @@ The Atelier frontend is a separate production repository at
 documented in that repository's `AGENTS.md`; do not assume a local site-agent
 change is deployed merely because backend tests pass.
 
+### Host credential source of truth
+
+The non-secret GitHub/Cloudflare wiring is defined once in
+`/SOCIAL/configs/host-credentials.yaml`. The package defaults load that file
+through `credentials.profile_file`, so the shared Atelier API and every tenant
+inherit the same host profile. Do not copy `credentials.github` or
+`credentials.cloudflare` blocks into tenant configs unless an intentionally
+isolated deployment is being created.
+
+The profile only names protected host resources:
+
+- `/ATELIER/.env` — GitHub API token
+- `/ATELIER/atelier-harmonie-cloudflare.env` — Wrangler API token and account ID
+- `/home/admin/.ssh/github_weareheadless_ed25519` — GitHub SSH identity
+
+`site_agent.credentials` is the only resolver for these profiles. It loads
+protected env files for trusted adapters and deployment subprocesses, while
+process environment values remain authoritative. Credential readiness must be
+checked through the resolved profile, not by rediscovering keys or tokens per
+website. A safe Cloudflare connection check is:
+
+```bash
+set -a; . /ATELIER/atelier-harmonie-cloudflare.env; set +a
+npx wrangler whoami
+npx wrangler deployments list --name atelier-harmonie
+```
+
+Never print, paste, commit, or pass credential values to Ada/model prompts.
+
 - Backend/API changes: validate here, then restart `site-agent-api.service`.
 - Frontend/Payload changes: validate and push the Atelier GitHub repository
-  with `/ATELIER/atelier-github_ed25519`, then deploy the existing
+  with `/home/admin/.ssh/github_weareheadless_ed25519`, then deploy the existing
   `atelier-harmonie` Worker with the scoped Cloudflare environment file.
 - Do not commit `/ATELIER` credential files, the Atelier memory database, or
   generated Worker/build output.

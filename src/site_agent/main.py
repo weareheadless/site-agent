@@ -24,6 +24,7 @@ from .config import (
     resolve_secret,
     validate_intake_config,
 )
+from .credentials import cloudflare_api_token, credential_environment, credential_status
 from .core.jobs import register_builtin
 from .core.memory import Memory
 from .core.reflect import effective_persona
@@ -80,9 +81,20 @@ def _cmd_check(args: argparse.Namespace) -> int:
     print("config sources:")
     for source in sources:
         print(f"  - {source}")
-    env_state = resolve_env(config)
-    missing = [name for name, info in env_state.items() if not info["set"]]
+    resolved_env = credential_environment(config)
+    env_state = resolve_env(config, resolved_env)
+    credentials_state = credential_status(config, resolved_env)
+    profile_backed = {
+        "github_token": bool(credentials_state.get("github", {}).get("api_token_configured")),
+        "cloudflare_api_token": bool(credentials_state.get("cloudflare", {}).get("api_token_configured")),
+    }
+    missing = [
+        name
+        for name, info in env_state.items()
+        if not info["set"] and not profile_backed.get(name, False)
+    ]
     print(f"env: set={[n for n in env_state if env_state[n]['set']]} missing={missing}")
+    print(yaml.safe_dump({"credentials": credentials_state}, sort_keys=False).rstrip())
     print(yaml.safe_dump(mask_secrets(config), sort_keys=False))
     return 0
 
@@ -100,8 +112,8 @@ def _cmd_provision_r2(args: argparse.Namespace) -> int:
     config_path = Path(args.config or "config.yaml")
     config, _ = load(config_path)
     bootstrap_env_path = Path(args.bootstrap_env_file or ".env")
-    bootstrap_env = load_env_file(bootstrap_env_path, dict(os.environ))
-    token = resolve_secret(config, "cloudflare_api_token", bootstrap_env)
+    bootstrap_env = credential_environment(config, load_env_file(bootstrap_env_path, dict(os.environ)))
+    token = cloudflare_api_token(config, bootstrap_env) or resolve_secret(config, "cloudflare_api_token", bootstrap_env)
     if not token:
         raise ConfigError("Cloudflare API token is not set for R2 provisioning")
     bucket = args.bucket or f"helloada-{args.instance}-media"
@@ -822,14 +834,14 @@ def _cmd_api(args: argparse.Namespace) -> int:
     """Serve the shared tenant-aware Ada API without a customer admin process."""
     import uvicorn
 
-    from .application.atelier import AtelierTenantRegistry
-    from .web.atelier import create_atelier_api_app
+    from .application.workspace import TenantRegistry
+    from .web.workspace import create_workspace_api_app
 
     raw_env = dict(os.environ)
     config, _ = load(args.config, raw_env)
-    registry = AtelierTenantRegistry.from_config(config, raw_env)
-    api = config.get("atelier_api") or {}
-    app = create_atelier_api_app(registry, prefix=str(api.get("prefix") or "/v1/atelier"))
+    registry = TenantRegistry.from_config(config, raw_env)
+    api = config.get("workspace_api") or config.get("atelier_api") or {}
+    app = create_workspace_api_app(registry, prefix=str(api.get("prefix") or "/v1/atelier"))
     host = str(api.get("host") or "127.0.0.1")
     port = int(api.get("port") or 3014)
     print(f"[site-agent] shared Ada API on http://{host}:{port}")
@@ -882,7 +894,7 @@ def main(argv: list[str] | None = None) -> int:
     intake_lab_parser.add_argument("--port", type=int, default=3012, help="loopback server port")
     design_lab = sub.add_parser("design-lab", help="run the disposable local design lab")
     design_lab_sub = design_lab.add_subparsers(dest="design_lab_command")
-    generate_parser = design_lab_sub.add_parser("generate", parents=[common], help="generate and retain a local Astro/React candidate")
+    generate_parser = design_lab_sub.add_parser("generate", parents=[common], help="generate and retain a local Next/React/Payload candidate")
     generate_parser.add_argument("--intake", required=True, help="sanitized design-intake JSON")
     generate_parser.add_argument("--workspace", required=True, help="disposable retained design-lab workspace")
     generate_parser.add_argument("--env-file", help="optional environment file for model access")

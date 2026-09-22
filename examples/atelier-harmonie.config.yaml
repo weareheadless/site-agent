@@ -1,6 +1,9 @@
 instance_name: atelier-harmonie
 data_dir: /SOCIAL/configs/atelier-harmonie/data
 
+# Host-owned GitHub/Cloudflare wiring is inherited from the canonical profile
+# configured by the host; do not copy secrets or duplicate the mapping here.
+
 activation:
   enabled: false
 
@@ -36,7 +39,6 @@ site:
 
 env:
   payload_gateway_token: ATELIER_HARMONIE_TOKEN
-  github_token: GITHUB_PERSONAL_ACCESS_TOKEN
   vision_api_key: SITE_AGENT_LLM_API_KEY
 
 persona:
@@ -92,6 +94,7 @@ atelier_intake:
 # response must otherwise fall back to a generic question.
 design_engine:
   enabled: true
+  build_profile: next_react
   production_candidate: true
   orchestration: creative
   provider: openrouter

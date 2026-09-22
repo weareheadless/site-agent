@@ -33,6 +33,7 @@ import urllib.request
 from typing import Any
 
 from ..config import resolve_secret as secret
+from ..credentials import cloudflare_env_names, credential_environment
 from .base import AdapterError, register
 from .github_static import GithubStatic
 
@@ -58,7 +59,10 @@ class CloudflarePages(GithubStatic):
     def __init__(self, config: dict[str, Any]):
         super().__init__(config)
         cf = self.site.get("cloudflare") or {}
-        self.account_id = str(cf.get("account_id", "")).strip()
+        self.env = credential_environment(config)
+        token_name, account_name = cloudflare_env_names(config)
+        self.token = str(self.env.get(token_name) or "").strip()
+        self.account_id = str(cf.get("account_id") or self.env.get(account_name) or "").strip()
         self.project = str(cf.get("project_name", "")).strip()
         self.mode = str(cf.get("mode", "git")).strip()
 
@@ -76,7 +80,9 @@ class CloudflarePages(GithubStatic):
 
     def status(self) -> dict[str, Any]:
         base: dict[str, Any] = {"adapter": self.name, "mode": self.mode}
-        token = secret(self.root, "cloudflare_api_token")
+        # Keep the adapter-level resolver as a compatibility seam for existing
+        # integrations/tests, while the profile-backed token is the normal path.
+        token = secret(self.root, "cloudflare_api_token") or self.token
         if not (self.account_id and self.project and token):
             return {**base, "deployment": "unconfigured"}
         url = (

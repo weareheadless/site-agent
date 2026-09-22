@@ -504,7 +504,7 @@ def build_intake_lab_build_environment(
         if user_tool_bin.is_dir() and user_tool_bin != runtime_bin.resolve():
             # Intake Lab may be launched by a service with a minimal PATH. Keep
             # the host's user-local Node/npm toolchain available for the
-            # approved Astro build instead of silently falling back to an older
+            # approved Next build instead of silently falling back to an older
             # system Node binary.
             tool_paths.append(str(user_tool_bin))
         result["PATH"] = os.pathsep.join(

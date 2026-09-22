@@ -3,7 +3,7 @@
 instance_name: site-agent-api
 data_dir: /SOCIAL/site-agent-api
 
-atelier_api:
+workspace_api:
   enabled: true
   host: 127.0.0.1
   port: 3014

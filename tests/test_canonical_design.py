@@ -20,7 +20,7 @@ from site_agent.core.design_contracts import (
 from site_agent.core.memory import Memory
 from site_agent.core.chat_jobs import run_job
 from site_agent.hands import opencode_runner as runner
-from site_agent.hands.site_build import ASTRO_REACT_PROFILE
+from site_agent.hands.site_build import NEXT_REACT_PROFILE
 
 
 def _intake() -> SiteIntake:
@@ -135,7 +135,7 @@ def test_context_capture_preserves_non_secret_builder_settings(tmp_path):
     service = DesignService(memory, config={
         "site": {"repository": "owner/site"},
         "builder": {"output_tokens": 8192},
-        "design_engine": {"max_tokens": 4096},
+        "design_engine": {"build_profile": "next_react", "max_tokens": 4096},
     })
     run = service.create_run(_intake(), run_id="builder-settings-run", base_sha="a" * 40)
 
@@ -167,6 +167,7 @@ def test_local_experiment_uses_configured_design_provider(tmp_path):
         "site": {"repository": "owner/site"},
         "llm": {"model": "openrouter/fallback", "base_url": "https://openrouter.ai/api/v1"},
         "design_engine": {
+            "build_profile": "next_react",
             "model": "deepseek-ai/DeepSeek-V4-Flash",
             "provider": "entrim",
             "base_url": "https://api.entrim.ai/v1",
@@ -352,10 +353,10 @@ def test_typed_prompt_names_the_frozen_snapshot_and_native_creative_process():
     assert "Do not inspect admin surfaces" in prompt
 
 
-def test_astro_target_prompt_keeps_legacy_source_out_of_native_authoring():
+def test_next_target_prompt_keeps_legacy_source_out_of_native_authoring():
     request = PageBuildRequest.from_dict({
         "schema_version": 1,
-        "run_id": "astro-native-prompt",
+        "run_id": "next-native-prompt",
         "mode": "initial_homepage",
         "base_sha": "a" * 40,
         "page_path": "index.html",
@@ -365,21 +366,22 @@ def test_astro_target_prompt_keeps_legacy_source_out_of_native_authoring():
     target = BuildTarget.from_dict({
         "mode": "local_experiment",
         "base_sha": "a" * 40,
-        "candidate_ref": "refs/ada-design-lab/astro-native-prompt",
+        "candidate_ref": "refs/ada-design-lab/next-native-prompt",
         "push_mode": "none",
         "publishable": False,
         "clone_path": "/tmp/design-clone",
-        "allowed_paths": list(ASTRO_REACT_PROFILE.writable_patterns),
+        "allowed_paths": list(NEXT_REACT_PROFILE.writable_patterns),
+        "build_profile": "next_react",
     })
 
     prompt = runner._design_prompt(request, target)
 
-    assert "NATIVE ASTRO/REACT TOOLCHAIN CONTRACT" in prompt
+    assert "NATIVE NEXT/REACT/PAYLOAD TOOLCHAIN CONTRACT" in prompt
     assert "Do not execute build.sh" in prompt
     assert "root index.html" in prompt
     assert "public/images/ada-media/" in prompt
-    assert "src/pages/index.astro" in prompt
-    assert "@astrojs/react@4.4.2" in prompt
+    assert "src/app/page.tsx" in prompt
+    assert "next@16.3.4" in prompt
     assert "Do not use ranges or newer versions" in prompt
 
 
@@ -594,7 +596,7 @@ def test_technical_repair_prompt_preserves_native_implementation():
 
     assert "technical repair of the parent candidate" in prompt
     assert "RETAINED IMPLEMENTATION PRESERVATION CONTRACT" in prompt
-    assert "React source or Astro React integration" in prompt
+    assert "React source or Next React integration" in prompt
     assert "approved GSAP runtime usage" in prompt
     assert "animation/timeline/trigger/listener teardown path" in prompt
     assert "Never replace a React/GSAP component with CSS-only markup" in prompt

@@ -1,4 +1,4 @@
-"""Explicit local build profiles for baseline and Astro/React sites."""
+"""Explicit local build profiles for legacy static and Next/React sites."""
 
 from __future__ import annotations
 
@@ -24,12 +24,17 @@ class SiteBuildProfile:
     name: str
     source_kind: str
     install_command: tuple[str, ...]
-    check_command: tuple[str, ...]
+    check_commands: tuple[tuple[str, ...], ...]
     build_command: tuple[str, ...]
     output_dir: str
     route_manifest: str = ""
     writable_patterns: tuple[str, ...] = ()
     prohibited_paths: tuple[str, ...] = ()
+
+    @property
+    def check_command(self) -> tuple[str, ...]:
+        """Compatibility view for callers that only support one check."""
+        return self.check_commands[0] if self.check_commands else ()
 
 
 @dataclass(frozen=True)
@@ -175,126 +180,219 @@ PELICAN_BASELINE_PROFILE = SiteBuildProfile(
     name="pelican_baseline",
     source_kind="pelican",
     install_command=(),
-    check_command=(),
+    check_commands=(),
     build_command=("bash", "build.sh"),
     output_dir="output",
     writable_patterns=("content/**", "themes/**", "pelicanconf.py", "build.sh"),
     prohibited_paths=(".env", ".github", "output"),
 )
 
-ASTRO_REACT_PROFILE = SiteBuildProfile(
-    name="astro_react",
-    source_kind="astro_react",
+NEXT_REACT_PROFILE = SiteBuildProfile(
+    name="next_react",
+    source_kind="next_react_payload",
     # New source-authored workspaces intentionally start without a lockfile.
     # Direct dependencies are exact in the host-owned toolchain baseline and
-    # npm is run without scripts/networked application code. Existing
-    # repositories with a lockfile still receive npm's normal reproducible
-    # install behavior.
+    # npm is run without lifecycle scripts. Existing repositories with a
+    # lockfile still receive npm's normal reproducible install behavior.
     install_command=("npm", "install", "--ignore-scripts", "--no-audit", "--no-fund"),
-    check_command=("npm", "run", "check"),
+    check_commands=(("npm", "run", "typecheck"), ("npm", "run", "lint")),
     build_command=("npm", "run", "build"),
-    output_dir="dist",
+    output_dir="out",
     route_manifest="design/ada-route-manifest.json",
-    writable_patterns=(".gitignore", "package.json", "package-lock.json", "astro.config.mjs", "tsconfig.json", "src/**", "public/**", "design/**", "test/**"),
-    prohibited_paths=(".env", ".github", "node_modules", "dist"),
+    writable_patterns=(
+        ".gitignore", "package.json", "package-lock.json",
+        "next.config.mjs", "next.config.js", "next.config.ts", "next-env.d.ts", "tsconfig.json",
+        "eslint.config.mjs",
+        "payload.config.ts", "open-next.config.ts", "wrangler.jsonc",
+        "src/**", "public/**", "design/**", "scripts/**", "test/**", "tests/**",
+    ),
+    prohibited_paths=(".env", ".github", "node_modules", ".next", ".open-next", "out"),
 )
 
 # The scaffold owns these build-time dependencies; generated design content does
 # not. Keep the catalog exact so the dependency gate can verify the copied manifest.
-ASTRO_REACT_TOOLCHAIN_DEPENDENCIES: tuple[dict[str, str], ...] = (
-    {"package": "@astrojs/check", "version": "0.9.10"},
-    {"package": "@astrojs/react", "version": "4.4.2"},
+NEXT_REACT_TOOLCHAIN_DEPENDENCIES: tuple[dict[str, str], ...] = (
+    {"package": "@eslint/eslintrc", "version": "3.3.1"},
     {"package": "@gsap/react", "version": "2.1.2"},
-    {"package": "@types/node", "version": "22.20.1"},
-    {"package": "@types/react", "version": "19.2.18"},
-    {"package": "@types/react-dom", "version": "19.2.5"},
+    {"package": "@opennextjs/cloudflare", "version": "1.20.6"},
+    {"package": "@payloadcms/db-d1-sqlite", "version": "3.88.0"},
+    {"package": "@payloadcms/next", "version": "3.88.0"},
+    {"package": "@payloadcms/richtext-lexical", "version": "3.88.0"},
+    {"package": "@payloadcms/storage-r2", "version": "3.88.0"},
+    {"package": "@payloadcms/translations", "version": "3.88.0"},
+    {"package": "@payloadcms/ui", "version": "3.88.0"},
+    {"package": "@types/node", "version": "22.19.9"},
+    {"package": "@types/react", "version": "19.2.14"},
+    {"package": "@types/react-dom", "version": "19.2.3"},
+    {"package": "cross-env", "version": "7.0.3"},
+    {"package": "dotenv", "version": "16.6.1"},
+    {"package": "eslint", "version": "9.16.0"},
+    {"package": "eslint-config-next", "version": "16.3.4"},
+    {"package": "graphql", "version": "16.11.0"},
     {"package": "gsap", "version": "3.12.5"},
-    {"package": "astro", "version": "5.18.2"},
-    {"package": "react", "version": "19.2.8"},
-    {"package": "react-dom", "version": "19.2.8"},
-    {"package": "typescript", "version": "5.9.3"},
+    {"package": "next", "version": "16.3.4"},
+    {"package": "payload", "version": "3.88.0"},
+    {"package": "prettier", "version": "3.6.2"},
+    {"package": "react", "version": "19.2.6"},
+    {"package": "react-dom", "version": "19.2.6"},
+    {"package": "tsx", "version": "4.22.4"},
+    {"package": "typescript", "version": "5.7.3"},
+    {"package": "wrangler", "version": "4.130.0"},
 )
+
+
+_NEXT_RUNTIME_DEPENDENCIES = frozenset({
+    "@gsap/react", "@opennextjs/cloudflare", "@payloadcms/db-d1-sqlite", "@payloadcms/next",
+    "@payloadcms/richtext-lexical", "@payloadcms/storage-r2", "@payloadcms/translations",
+    "@payloadcms/ui", "cross-env", "dotenv", "graphql", "gsap", "next", "payload", "react", "react-dom",
+})
+
+
+def _next_manifest(name: str) -> dict[str, Any]:
+    runtime = {
+        item["package"]: item["version"]
+        for item in NEXT_REACT_TOOLCHAIN_DEPENDENCIES
+        if item["package"] in _NEXT_RUNTIME_DEPENDENCIES
+    }
+    development = {
+        item["package"]: item["version"]
+        for item in NEXT_REACT_TOOLCHAIN_DEPENDENCIES
+        if item["package"] not in runtime
+    }
+    return {
+        "name": f"ada-{name.lower().replace(' ', '-')}-site" if name else "ada-site",
+        "private": True,
+        "type": "module",
+        "scripts": {
+            "typecheck": "tsc --noEmit",
+            "lint": "eslint .",
+            "build": "next build",
+            "dev": "next dev",
+            "start": "next start",
+        },
+        "dependencies": runtime,
+        "devDependencies": development,
+    }
 
 
 def prepare_native_workspace(root: str | Path, profile: SiteBuildProfile) -> tuple[str, ...]:
     """Create only the host-owned technical baseline for a native workspace.
 
     Intake Lab can start from the legacy neutral scaffold, which intentionally
-    has no framework source.  Native Astro authoring still needs an exact
-    manifest and framework entrypoint before the model can inspect or run the
-    approved toolchain.  These files contain no visual scaffold; the model owns
-    every page, component, style, and interaction written afterward.
+    has no framework source. Native Next authoring still needs an exact
+    manifest and App Router entrypoint before the model can inspect or run the
+    approved toolchain. These files are technical only; Ada owns the page,
+    components, copy, imagery, fonts, and motion written afterward.
     """
     workspace = Path(root).expanduser().resolve()
-    if profile.name != ASTRO_REACT_PROFILE.name:
+    if profile.name != NEXT_REACT_PROFILE.name:
         return ()
     created: list[str] = []
 
     manifest_path = workspace / "package.json"
     if not manifest_path.exists():
-        runtime = {
-            item["package"]: item["version"]
-            for item in ASTRO_REACT_TOOLCHAIN_DEPENDENCIES
-            if item["package"] in {"@astrojs/react", "@gsap/react", "astro", "gsap", "react", "react-dom"}
-        }
-        development = {
-            item["package"]: item["version"]
-            for item in ASTRO_REACT_TOOLCHAIN_DEPENDENCIES
-            if item["package"] not in runtime
-        }
-        manifest_path.write_text(
-            json.dumps({
-                "name": "ada-native-design",
-                "private": True,
-                "type": "module",
-                "scripts": {
-                    "check": "astro check",
-                    "build": "astro build",
-                    "dev": "astro dev",
-                    "preview": "astro preview",
-                },
-                "dependencies": runtime,
-                "devDependencies": development,
-            }, indent=2) + "\n",
-            encoding="utf-8",
-        )
+        manifest_path.write_text(json.dumps(_next_manifest("native-design"), indent=2) + "\n", encoding="utf-8")
         created.append("package.json")
 
-    config_path = workspace / "astro.config.mjs"
+    config_path = workspace / "next.config.mjs"
     if not config_path.exists():
         config_path.write_text(
-            "import { defineConfig } from 'astro/config';\n"
-            "import react from '@astrojs/react';\n\n"
-            "export default defineConfig({ integrations: [react()] });\n",
+            "/** @type {import('next').NextConfig} */\n"
+            "const nextConfig = { output: 'export' };\n\n"
+            "export default nextConfig;\n",
             encoding="utf-8",
         )
-        created.append("astro.config.mjs")
+        created.append("next.config.mjs")
 
     tsconfig_path = workspace / "tsconfig.json"
     if not tsconfig_path.exists():
         tsconfig_path.write_text(
             json.dumps({
-                "extends": "astro/tsconfigs/strict",
                 "compilerOptions": {
-                    "allowJs": True,
-                    "checkJs": True,
-                    "jsx": "react-jsx",
-                    "jsxImportSource": "react",
+                    "target": "ES2017",
+                    "lib": ["dom", "dom.iterable", "esnext"],
+                    "skipLibCheck": True,
+                    "strict": True,
+                    "noEmit": True,
+                    "esModuleInterop": True,
+                    "module": "esnext",
+                    "moduleResolution": "bundler",
+                    "resolveJsonModule": True,
+                    "isolatedModules": True,
+                    "jsx": "preserve",
+                    "incremental": True,
+                    "plugins": [{"name": "next"}],
                 },
+                "include": ["next-env.d.ts", ".next/types/**/*.ts", "src/**/*.ts", "src/**/*.tsx"],
+                "exclude": ["node_modules"],
             }, indent=2) + "\n",
             encoding="utf-8",
         )
         created.append("tsconfig.json")
 
+    next_env_path = workspace / "next-env.d.ts"
+    if not next_env_path.exists():
+        next_env_path.write_text(
+            "/// <reference types=\"next\" />\n"
+            "/// <reference types=\"next/image-types/global\" />\n\n"
+            "// NOTE: This file should not be edited\n",
+            encoding="utf-8",
+        )
+        created.append("next-env.d.ts")
+
+    eslint_path = workspace / "eslint.config.mjs"
+    if not eslint_path.exists():
+        eslint_path.write_text(
+            "import { dirname } from 'node:path'\n"
+            "import { fileURLToPath } from 'node:url'\n"
+            "import { FlatCompat } from '@eslint/eslintrc'\n\n"
+            "const __filename = fileURLToPath(import.meta.url)\n"
+            "const __dirname = dirname(__filename)\n"
+            "const compat = new FlatCompat({ baseDirectory: __dirname })\n\n"
+            "export default [...compat.extends('next/core-web-vitals', 'next/typescript')]\n",
+            encoding="utf-8",
+        )
+        created.append("eslint.config.mjs")
+
+    layout_path = workspace / "src" / "app" / "layout.tsx"
+    if not layout_path.exists():
+        layout_path.parent.mkdir(parents=True, exist_ok=True)
+        layout_path.write_text(
+            "import type { ReactNode } from 'react'\n\n"
+            "export default function RootLayout({ children }: { children: ReactNode }) {\n"
+            "  return <html lang=\"en\"><body>{children}</body></html>\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        created.append("src/app/layout.tsx")
+
+    page_path = workspace / "src" / "app" / "page.tsx"
+    if not page_path.exists():
+        page_path.parent.mkdir(parents=True, exist_ok=True)
+        page_path.write_text("export default function HomePage() {\n  return null\n}\n", encoding="utf-8")
+        created.append("src/app/page.tsx")
+
+    payload_path = workspace / "payload.config.ts"
+    if not payload_path.exists():
+        payload_path.write_text(
+            "import { buildConfig } from 'payload'\n\n"
+            "export default buildConfig({\n"
+            "  secret: process.env.PAYLOAD_SECRET || 'local-development-secret',\n"
+            "  collections: [],\n"
+            "})\n",
+            encoding="utf-8",
+        )
+        created.append("payload.config.ts")
+
     gitignore_path = workspace / ".gitignore"
     if not gitignore_path.exists():
-        gitignore_path.write_text("node_modules/\ndist/\n.astro/\n.opencode/tweak-map.json\n", encoding="utf-8")
+        gitignore_path.write_text("node_modules/\n.next/\nout/\n.open-next/\n.opencode/tweak-map.json\n", encoding="utf-8")
         created.append(".gitignore")
     return tuple(created)
 
 _EXACT_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
 
-PROFILES = {profile.name: profile for profile in (PELICAN_BASELINE_PROFILE, ASTRO_REACT_PROFILE)}
+PROFILES = {profile.name: profile for profile in (PELICAN_BASELINE_PROFILE, NEXT_REACT_PROFILE)}
 
 
 def get_build_profile(name: str) -> SiteBuildProfile:
@@ -342,23 +440,23 @@ def _command_env(npm_cache: Path | None, env: Mapping[str, str] | None) -> dict[
     return result
 
 
-def _validate_astro_manifest(root: Path, *, require_lockfile: bool = False) -> tuple[str, ...]:
+def _validate_next_manifest(root: Path, *, require_lockfile: bool = False) -> tuple[str, ...]:
     """Validate the native workspace's direct dependencies before npm runs."""
     manifest_path = root / "package.json"
     if not manifest_path.is_file() or manifest_path.is_symlink():
-        raise SiteBuildError("Astro/React workspace is missing a regular package.json")
+        raise SiteBuildError("Next/React workspace is missing a regular package.json")
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise SiteBuildError(f"Astro/React package.json is invalid: {exc}") from exc
+        raise SiteBuildError(f"Next/React package.json is invalid: {exc}") from exc
     if not isinstance(manifest, Mapping):
-        raise SiteBuildError("Astro/React package.json must be an object")
-    approved = {str(item["package"]): str(item["version"]) for item in ASTRO_REACT_TOOLCHAIN_DEPENDENCIES}
+        raise SiteBuildError("Next/React package.json must be an object")
+    approved = {str(item["package"]): str(item["version"]) for item in NEXT_REACT_TOOLCHAIN_DEPENDENCIES}
     declared: dict[str, str] = {}
     for section in ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies"):
         values = manifest.get(section) or {}
         if not isinstance(values, Mapping):
-            raise SiteBuildError(f"Astro/React package.json {section} must be an object")
+            raise SiteBuildError(f"Next/React package.json {section} must be an object")
         for name, version in values.items():
             name = str(name).strip()
             version = str(version).strip()
@@ -371,19 +469,19 @@ def _validate_astro_manifest(root: Path, *, require_lockfile: bool = False) -> t
     if require_lockfile:
         lockfile = root / "package-lock.json"
         if not lockfile.is_file() or lockfile.is_symlink():
-            raise SiteBuildError("Astro/React workspace is missing a regular package-lock.json")
+            raise SiteBuildError("Next/React workspace is missing a regular package-lock.json")
         try:
             lock = json.loads(lockfile.read_text(encoding="utf-8"))
             packages = lock.get("packages") if isinstance(lock, Mapping) else None
         except (OSError, json.JSONDecodeError) as exc:
-            raise SiteBuildError(f"Astro/React package-lock.json is invalid: {exc}") from exc
+            raise SiteBuildError(f"Next/React package-lock.json is invalid: {exc}") from exc
         if not isinstance(packages, Mapping):
-            raise SiteBuildError("Astro/React package-lock.json has no packages map")
+            raise SiteBuildError("Next/React package-lock.json has no packages map")
         for name, expected in declared.items():
             entry = packages.get(f"node_modules/{name}")
             locked = entry.get("version") if isinstance(entry, Mapping) else None
             if locked != expected:
-                raise SiteBuildError(f"Astro/React lockfile does not pin {name}@{expected}")
+                raise SiteBuildError(f"Next/React lockfile does not pin {name}@{expected}")
     return tuple(sorted(declared))
 
 
@@ -435,7 +533,7 @@ def _stage_executable_workspace(source: Path) -> Path:
                 ignore=lambda _path, names: {
                     name
                     for name in names
-                    if name in {".git", ".opencode", ".agent-home", ".astro", "dist", "node_modules"}
+                    if name in {".git", ".opencode", ".agent-home", ".next", ".open-next", "out", "dist", "node_modules"}
                 },
             )
             return staged
@@ -463,10 +561,14 @@ def build_site(
         staged_workspace = _stage_executable_workspace(workspace)
         execution_root = staged_workspace
     output = _safe_output(execution_root, profile.output_dir)
-    if profile.name == ASTRO_REACT_PROFILE.name:
-        _validate_astro_manifest(execution_root, require_lockfile=True)
+    if profile.name == NEXT_REACT_PROFILE.name:
+        _validate_next_manifest(execution_root, require_lockfile=True)
     evidence: list[dict[str, Any]] = []
-    commands = tuple(command for command in (profile.install_command, profile.check_command, profile.build_command) if command)
+    commands = tuple(
+        command
+        for command in (profile.install_command, *profile.check_commands, profile.build_command)
+        if command
+    )
     command_env = _command_env(Path(npm_cache) if npm_cache is not None else None, env)
     try:
         for command in commands:
@@ -519,16 +621,16 @@ def prepare_site_toolchain(
     """Install the host-approved toolchain before the coding model runs.
 
     This is deliberately separate from ``build_site``: a source-authoring
-    model needs Astro, React, and GSAP available while it implements and
+    model needs Next, React, Payload, and GSAP available while it implements and
     renders the site, but installation must remain a host operation. The
     package manifest is the only input; no shell command is read from it.
     """
     workspace = Path(root).expanduser().resolve()
-    if profile.name != ASTRO_REACT_PROFILE.name or not (workspace / "package.json").is_file():
+    if profile.name != NEXT_REACT_PROFILE.name or not (workspace / "package.json").is_file():
         return ()
     if (workspace / "package.json").is_symlink():
         raise SiteBuildError("package.json must be a regular file")
-    _validate_astro_manifest(workspace)
+    _validate_next_manifest(workspace)
     command_env = _command_env(Path(npm_cache) if npm_cache is not None else None, env)
     command = list(profile.install_command)
     try:
@@ -545,7 +647,7 @@ def prepare_site_toolchain(
     if result.returncode:
         detail = (result.stderr or result.stdout or "toolchain installation failed").strip()
         raise SiteBuildError(detail[:1_000])
-    _validate_astro_manifest(workspace, require_lockfile=True)
+    _validate_next_manifest(workspace, require_lockfile=True)
     provisioned = []
     lockfile = workspace / "package-lock.json"
     if lockfile.is_file() and not lockfile.is_symlink():
@@ -569,7 +671,8 @@ def copy_build_output(root: str | Path, profile: SiteBuildProfile, destination: 
 
 
 __all__ = [
-    "ASTRO_REACT_PROFILE",
+    "NEXT_REACT_PROFILE",
+    "NEXT_REACT_TOOLCHAIN_DEPENDENCIES",
     "PELICAN_BASELINE_PROFILE",
     "PROFILES",
     "SiteBuildError",

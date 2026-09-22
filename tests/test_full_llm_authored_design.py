@@ -36,17 +36,20 @@ def test_new_site_workspace_contains_toolchain_only(tmp_path):
     root = initialize_toolchain_workspace(tmp_path / "site", "North Star Studio")
 
     package = json.loads((root / "package.json").read_text(encoding="utf-8"))
-    assert package["dependencies"]["astro"]
+    assert package["dependencies"]["next"]
+    assert package["dependencies"]["payload"]
     assert package["dependencies"]["react"]
     assert package["dependencies"]["gsap"]
     assert package["dependencies"]["@gsap/react"]
-    assert (root / "astro.config.mjs").is_file()
+    assert (root / "next.config.mjs").is_file()
+    assert (root / "payload.config.ts").is_file()
+    assert (root / "eslint.config.mjs").is_file()
     assert (root / "tsconfig.json").is_file()
 
     # A new build must begin without a page, layout, stylesheet, copy, image,
     # section vocabulary, or other visual decision supplied by the host.
     assert not (root / "index.html").exists()
-    assert not (root / "src/pages/index.astro").exists()
+    assert (root / "src/app/page.tsx").is_file()
     assert not (root / "styles.css").exists()
     assert not (root / "content").exists()
     assert not (root / "themes").exists()

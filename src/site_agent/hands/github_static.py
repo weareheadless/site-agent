@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import resolve_secret
+from ..credentials import credential_environment, github_api_token, github_remote, github_ssh_command
 from .base import AdapterError, SiteAdapter, register
 
 API = "https://api.github.com"
@@ -59,8 +60,8 @@ class GithubStatic(SiteAdapter):
 
     def __init__(self, config: dict[str, Any], env: dict[str, str] | None = None):
         super().__init__(config)
-        self.env = dict(env or {})
-        self.token = secret(config, "github_token", self.env)
+        self.env = credential_environment(config, env)
+        self.token = github_api_token(config, self.env) or secret(config, "github_token", self.env)
         self.repo = str(self.site.get("repository", "")).strip().strip("/")
         self.branch = str(self.site.get("branch", "main"))
         self.content_path = str(self.site.get("content_path", "content.json"))
@@ -77,9 +78,8 @@ class GithubStatic(SiteAdapter):
         env = dict(os.environ)
         env.update(self.env)
         command = str(self.site.get("git_ssh_command") or "").strip()
-        key = Path("/ATELIER/atelier-github_ed25519")
-        if not command and key.is_file():
-            command = f"ssh -i {key} -o IdentitiesOnly=yes"
+        if not command:
+            command = github_ssh_command(self.root, self.env)
         if command:
             env["GIT_SSH_COMMAND"] = command
         return env
@@ -119,6 +119,10 @@ class GithubStatic(SiteAdapter):
         checkout = self._local_checkout()
         if checkout is None:
             raise AdapterError("github: local source checkout is not configured")
+        current = self._git(["remote", "get-url", "origin"], checkout).stdout.decode().strip()
+        transport = github_remote(current, self.root, self.env)
+        if transport and transport != current:
+            self._git(["remote", "set-url", "origin", transport], checkout)
         ref = self._branch_ref(branch)
         self._git(["fetch", "--no-tags", "origin", f"+{branch}:{ref}"], checkout)
         return ref
@@ -148,7 +152,16 @@ class GithubStatic(SiteAdapter):
             data = self._git(["show", spec], checkout).stdout
             return sha, data
         except AdapterError as exc:
-            if "needed a single revision" in str(exc) or "exists on disk" in str(exc):
+            # A Payload-backed site legitimately has no content.json in the
+            # source repository; content is served by the gateway instead.
+            # Missing source paths must therefore behave like the API's 404
+            # result rather than aborting the entire owner-chat job.
+            detail = str(exc).lower()
+            if (
+                "needed a single revision" in detail
+                or "exists on disk" in detail
+                or "does not exist in" in detail
+            ):
                 return None, None
             raise
 
@@ -256,6 +269,8 @@ class GithubStatic(SiteAdapter):
 
     def get_file(self, path: str, branch: str | None = None) -> tuple[str | None, bytes | None]:
         target_branch = branch or self.branch
+        if self._local_checkout() is not None:
+            return self._local_get_file(path, target_branch)
         if self._api_unavailable:
             return self._local_get_file(path, target_branch)
         ref = urllib.parse.quote(target_branch)
@@ -274,6 +289,8 @@ class GithubStatic(SiteAdapter):
 
     def ensure_branch(self, name: str) -> dict[str, Any]:
         """Create a branch pointing at the current head of the working branch."""
+        if self._local_checkout() is not None:
+            return self._local_ensure_branch(name)
         if self._api_unavailable:
             return self._local_ensure_branch(name)
         try:
@@ -307,6 +324,11 @@ class GithubStatic(SiteAdapter):
     def get_branch_head(self, name: str | None = None) -> str | None:
         """Return the immutable commit currently pointed at by a branch."""
         branch = name or self.branch
+        # A configured checkout is the connected GitHub source of truth for
+        # the deployment path. Prefer its SSH-backed remote over the Contents
+        # API so a PAT is not required merely to read a branch head.
+        if self._local_checkout() is not None:
+            return self._local_branch_head(branch)
         if self._api_unavailable:
             return self._local_branch_head(branch)
         try:
@@ -341,6 +363,8 @@ class GithubStatic(SiteAdapter):
         expected_sha: str | None = None,
     ) -> dict[str, Any]:
         target_branch = branch or self.branch
+        if self._local_checkout() is not None:
+            return self._local_commit_file(path, data, message, target_branch, expected_sha)
         if self._api_unavailable:
             return self._local_commit_file(path, data, message, target_branch, expected_sha)
         payload: dict[str, Any] = {
@@ -443,14 +467,80 @@ class GithubStatic(SiteAdapter):
                 return {"reset": False, "branch": target, "reason": "missing"}
             raise
 
+    def _merge_preview_via_git(self, message: str) -> dict[str, Any]:
+        """Merge and push through the configured SSH transport when the API token
+        cannot access the private repository.
+
+        The host already has an owner-scoped deploy key for GitHub. Keeping this
+        fallback here preserves the explicit approval boundary without requiring
+        a second credential or silently mutating the checked-out worktree.
+        """
+        checkout = self._local_checkout()
+        if checkout is None:
+            raise AdapterError("github: local source checkout is not configured")
+
+        worktree = Path(tempfile.mkdtemp(prefix="site-agent-merge-"))
+        added = False
+        try:
+            self._git(
+                [
+                    "fetch",
+                    "--no-tags",
+                    "origin",
+                    f"+{self.branch}:refs/remotes/origin/{self.branch}",
+                    "+preview:refs/remotes/origin/preview",
+                ],
+                checkout,
+            )
+            base_ref = self._branch_ref(self.branch)
+            preview_ref = self._branch_ref("preview")
+            base_sha = self._git(["rev-parse", base_ref], checkout).stdout.decode().strip()
+            preview_sha = self._git(["rev-parse", preview_ref], checkout).stdout.decode().strip()
+            self._git(["worktree", "add", "--detach", str(worktree), base_sha], checkout)
+            added = True
+            self._git(["config", "user.name", "site-agent"], worktree)
+            self._git(["config", "user.email", "site-agent@local"], worktree)
+            self._git(["merge", "--no-ff", "--no-edit", preview_sha, "-m", message[:200]], worktree)
+            commit_sha = self._git(["rev-parse", "HEAD"], worktree).stdout.decode().strip()
+            parents = self._git(["show", "-s", "--format=%P", "HEAD"], worktree).stdout.decode().split()
+            self._git(["push", "origin", f"{commit_sha}:refs/heads/{self.branch}"], worktree)
+            return {
+                "merged": True,
+                "path": "preview->" + self.branch,
+                "commit_sha": commit_sha,
+                "parent_sha": parents[0] if parents else base_sha,
+                "candidate_sha": preview_sha,
+                "transport": "ssh_git",
+            }
+        except AdapterError:
+            if added:
+                try:
+                    self._git(["merge", "--abort"], worktree)
+                except AdapterError:
+                    pass
+            raise
+        finally:
+            if added:
+                try:
+                    self._git(["worktree", "remove", "--force", str(worktree)], checkout)
+                except AdapterError:
+                    shutil.rmtree(worktree, ignore_errors=True)
+            else:
+                shutil.rmtree(worktree, ignore_errors=True)
+
     def merge_preview(self, config: dict[str, Any], message: str) -> dict[str, Any]:
         """Owner approved: merge the preview branch into the production branch."""
-        status, body = _request(
-            "POST",
-            f"{API}/repos/{self.repo}/merges",
-            token=self.token,
-            payload={"base": self.branch, "head": "preview", "commit_message": message[:200]},
-        )
+        try:
+            status, body = _request(
+                "POST",
+                f"{API}/repos/{self.repo}/merges",
+                token=self.token,
+                payload={"base": self.branch, "head": "preview", "commit_message": message[:200]},
+            )
+        except AdapterError as exc:
+            if " 404" not in str(exc):
+                raise
+            return self._merge_preview_via_git(message)
         if status not in (200, 201):
             return {"merged": False, "status": status}
         parents = body.get("parents") or []
@@ -505,6 +595,8 @@ class GithubStatic(SiteAdapter):
 
     def list_files(self, branch: str | None = None) -> list[str]:
         ref = branch or self.branch
+        if self._local_checkout() is not None:
+            return self._local_list_files(ref)
         if self._api_unavailable:
             return self._local_list_files(ref)
         try:

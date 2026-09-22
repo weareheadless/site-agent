@@ -2,7 +2,8 @@ import json
 
 import pytest
 
-from site_agent.brain.editor import _max_work_steps, handle_message
+from site_agent.brain.editor import _max_work_steps, _owner_safe_reply, handle_message
+from site_agent.brain.owner_copy import owner_safe_failure
 from site_agent.core.memory import Memory
 
 
@@ -29,6 +30,34 @@ def test_max_work_steps_has_safe_default_and_cap():
     assert _max_work_steps({"config": {"llm": {"max_work_steps": 16}}}) == 16
     assert _max_work_steps({"config": {"llm": {"max_work_steps": 999}}}) == 24
     assert _max_work_steps({"config": {"llm": {"max_work_steps": "bad"}}}) == 8
+
+
+def test_owner_safe_reply_replaces_internal_tooling_failure_story():
+    reply = (
+        "One transparency note: the repo files wouldn't open for me just now "
+        "(a tooling hiccup on my side), so I described the page from memory."
+    )
+    safe = _owner_safe_reply(reply)
+    assert "repo" not in safe.lower()
+    assert "tooling" not in safe.lower()
+    assert "initial ideas" in safe
+    assert "nothing has been changed" in safe
+
+
+def test_owner_safe_failure_is_actionable_without_leaking_transport_details():
+    message = owner_safe_failure(
+        "github git transport: fatal: repository not found"
+    )
+    assert message == (
+        "I couldn't reach the site's source files for this check. "
+        "Nothing was changed. Please try again."
+    )
+    assert "github" not in message.lower()
+
+
+def test_owner_safe_reply_leaves_normal_owner_update_unchanged():
+    reply = "The preview is ready. Review the updated homepage when you're ready."
+    assert _owner_safe_reply(reply) == reply
 
 
 def _tc(name, **args):
@@ -85,7 +114,8 @@ def test_tool_loop_reads_then_proposes(env):
                        "add space under the Oceanic Vibes logo in the footer",
                        progress=steps.append)
 
-    assert r["reply"].startswith("Proposal #")
+    assert r["reply"].startswith("Technical edit draft #")
+    assert "No rendered preview was created" in r["reply"]
     assert r["proposal_id"] > 0
     drafts = env[0].list_drafts()
     assert drafts[0]["meta"]["ops"][0]["replace"].startswith(".footer { padding: 28px")
@@ -123,6 +153,105 @@ def test_tools_spec_respects_writable_patterns(env):
     from site_agent.brain.editor import _tools_spec
     spec = json.dumps(_tools_spec(env[1]))
     assert "propose_changes" in spec
+
+
+def test_existing_source_site_routes_focused_visual_edits_to_builder(env, monkeypatch):
+    from site_agent.brain.editor import _looks_like_source_edit_request, _tools_spec
+    from site_agent.hands import opencode_runner as runner
+    from site_agent.hands.base import SiteAdapter
+
+    memory, config, context = env
+    config["builder"] = {"enabled": True}
+    config["site"]["clone_path"] = "/tmp/existing-site"
+
+    request = "Review the homepage headings and paragraphs; give them room so they stop breaking every few words."
+    assert _looks_like_source_edit_request(request)
+    names = {
+        item["function"]["name"]
+        for item in _tools_spec(context, source_edit_intent=True)
+    }
+    assert "spawn_build" in names
+    assert "propose_changes" not in names
+    assert "design_request" not in names
+    capability_names = {
+        item["function"]["name"]
+        for item in _tools_spec(context)
+    }
+    assert "spawn_build" in capability_names
+    assert "propose_changes" not in capability_names
+    assert "design_request" not in capability_names
+
+    class Adapter(SiteAdapter):
+        name = "t"
+        site = {"content_path": "content.json"}
+
+        def get_content(self):
+            return {}
+
+        def get_file(self, path, branch=None):
+            return (None, None)
+
+        def commit_file(self, path, data, message, branch=None):
+            return {}
+
+    monkeypatch.setattr(
+        runner,
+        "stage_build",
+        lambda ctx, brief, progress=None: {
+            "reply": "Preview ready.",
+            "merge_draft_id": 31,
+            "changed": True,
+        },
+    )
+    llm = FakeToolsLLM([
+        {"content": None, "tool_calls": _tc("spawn_build", brief=request)},
+    ])
+    result = handle_message({**context, "llm": llm}, Adapter(), request)
+
+    assert result["merge_draft_id"] == 31
+    assert result["proposal_id"] is None
+    routed_names = {item["function"]["name"] for item in llm.calls[0]["tools"]}
+    assert "spawn_build" in routed_names
+    assert "propose_changes" not in routed_names
+
+
+def test_unoffered_mutation_tool_cannot_create_a_draft_on_source_sites(env):
+    from site_agent.hands.base import SiteAdapter
+
+    memory, config, context = env
+    config["builder"] = {"enabled": True}
+    config["site"]["clone_path"] = "/tmp/existing-site"
+
+    class Adapter(SiteAdapter):
+        name = "t"
+        site = {"content_path": "content.json"}
+
+        def get_content(self):
+            return {}
+
+        def get_file(self, path, branch=None):
+            return ("sha", b".footer { padding: 4px; }")
+
+        def commit_file(self, path, data, message, branch=None):
+            raise AssertionError("the unavailable proposal tool must not execute")
+
+    llm = FakeToolsLLM([
+        {"content": None, "tool_calls": _tc(
+            "propose_changes",
+            summary="footer spacing",
+            ops=[{"op": "edit", "path": "styles.css", "find": "padding: 4px", "replace": "padding: 28px"}],
+        )},
+        {"content": "I need to use the implementation workflow for this source change.", "tool_calls": None},
+    ])
+    result = handle_message(
+        {**context, "llm": llm},
+        Adapter(),
+        "fix the footer styles so there is more spacing",
+    )
+
+    assert result["proposal_id"] is None
+    assert "implementation workflow" in result["reply"]
+    assert memory.list_drafts() == []
 
 
 def test_payload_tool_schema_uses_the_gateway_contract(env):

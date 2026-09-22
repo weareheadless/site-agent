@@ -3,8 +3,24 @@ instance_name: default
 data_dir: data
 poll_seconds: 300
 
+# Keep detailed timing data off by default. The shared API can enable this once
+# for all tenants through its global config, or an operator can override it with
+# SITE_AGENT_TIMING_ENABLED=true/false without changing application code.
+observability:
+  timing_enabled: false
+
+# Host-owned platform connections. These are paths and environment-variable
+# names only; secret values stay outside tenant configuration and are loaded by
+# the trusted parent/deployment process.
+credentials:
+  # The host profile is the single source of truth for GitHub/Cloudflare
+  # wiring. Tenant configs may override this only for an intentional isolated
+  # deployment.
+  profile_file: /SOCIAL/configs/host-credentials.yaml
+
 design_engine:
   enabled: false
+  build_profile: next_react
   intake_schema_version: 1
   manifest_path: design/ada-design-manifest.json
   provider: openrouter
@@ -255,11 +271,11 @@ admin:
 
 publish_mode: ask_first
 
-atelier_api:
+workspace_api:
   enabled: false
   host: 127.0.0.1
   port: 3014
-  prefix: /v1/atelier
+  prefix: /v1/workspace
   tenants: {}
 
 env:

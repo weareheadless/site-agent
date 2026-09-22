@@ -10,7 +10,7 @@ from site_agent.core.design_contracts import BuildTarget, DesignContextSnapshot,
 from site_agent.core.memory import Memory
 from site_agent.hands import opencode_runner as runner
 from site_agent.hands.builder import BuilderError, OperationRoutingBuilder
-from site_agent.hands.site_build import ASTRO_REACT_PROFILE, SiteBuildResult
+from site_agent.hands.site_build import NEXT_REACT_PROFILE, SiteBuildResult
 from tests.test_design_contracts import _experience_plan
 
 
@@ -109,7 +109,7 @@ def test_primary_implementation_local_self_check_returns_host_build_evidence(tmp
     report = runner._run_local_design_self_check(
         {
             "design_engine": {
-                "build_profile": "astro_react",
+                "build_profile": "next_react",
                 "quality": {"build_timeout_seconds": 37},
             },
             "builder": {"provider_timeout_seconds": 900},
@@ -124,7 +124,7 @@ def test_primary_implementation_local_self_check_returns_host_build_evidence(tmp
     assert report["route_inventory"] == ["index.html"]
     assert observed == {
         "root": tmp_path,
-        "profile": "astro_react",
+        "profile": "next_react",
         "npm_cache": tmp_path / "npm-cache",
         "timeout_seconds": 37,
     }
@@ -143,14 +143,14 @@ def test_primary_implementation_local_self_check_rejects_failed_build(tmp_path, 
 
     with pytest.raises(runner.RunnerError, match="mandatory local design self-check failed"):
         runner._run_local_design_self_check(
-            {"design_engine": {"build_profile": "astro_react"}},
+            {"design_engine": {"build_profile": "next_react"}},
             {"env": {}},
             tmp_path,
             tmp_path / "npm-cache",
         )
 
 
-def test_native_astro_finalization_accepts_the_host_approved_package_manifest(tmp_path):
+def test_native_next_finalization_accepts_the_host_approved_package_manifest(tmp_path):
     clone, _ = _clone(tmp_path)
     (clone / "package.json").write_text('{"name":"baseline"}\n')
     _git(clone, "add", "package.json")
@@ -158,9 +158,9 @@ def test_native_astro_finalization_accepts_the_host_approved_package_manifest(tm
     base_sha = _git(clone, "rev-parse", "HEAD").stdout.strip()
 
     (clone / "package.json").write_text('{"name":"candidate"}\n')
-    source = clone / "src" / "pages"
+    source = clone / "src" / "app"
     source.mkdir(parents=True)
-    (source / "index.astro").write_text("<h1>Candidate</h1>\n")
+    (source / "page.tsx").write_text("export default function Page() { return <h1>Candidate</h1> }\n")
 
     request = PageBuildRequest.from_dict({
         "schema_version": 1,
@@ -179,7 +179,8 @@ def test_native_astro_finalization_accepts_the_host_approved_package_manifest(tm
         "push_mode": "none",
         "publishable": False,
         "clone_path": str(clone),
-        "allowed_paths": list(ASTRO_REACT_PROFILE.writable_patterns),
+        "allowed_paths": list(NEXT_REACT_PROFILE.writable_patterns),
+        "build_profile": "next_react",
     })
     memory = Memory(tmp_path / "data" / "memory.db")
     config = {
@@ -1334,13 +1335,13 @@ def test_model_manifest_is_replaced_by_host_manifest(tmp_path, monkeypatch):
     memory.close()
 
 
-def test_host_manifest_maps_astro_homepage_output_to_source_file(tmp_path):
-    worktree = tmp_path / "astro"
-    (worktree / "src" / "pages").mkdir(parents=True)
-    (worktree / "src" / "pages" / "index.astro").write_text("<html></html>")
+def test_host_manifest_maps_next_homepage_output_to_source_file(tmp_path):
+    worktree = tmp_path / "next"
+    (worktree / "src" / "app").mkdir(parents=True)
+    (worktree / "src" / "app" / "page.tsx").write_text("export default function Page() { return <main /> }")
     request = PageBuildRequest.from_dict({
         "schema_version": 1,
-        "run_id": "astro-manifest",
+        "run_id": "next-manifest",
         "mode": "visual_refinement",
         "base_sha": "a" * 40,
         "page_path": "index.html",
@@ -1351,12 +1352,13 @@ def test_host_manifest_maps_astro_homepage_output_to_source_file(tmp_path):
     target = BuildTarget.from_dict({
         "mode": "local_experiment",
         "base_sha": "a" * 40,
-        "candidate_ref": "refs/ada-design-lab/astro-manifest",
+        "candidate_ref": "refs/ada-design-lab/next-manifest",
         "push_mode": "none",
         "publishable": False,
         "clone_path": str(worktree),
-        "allowed_paths": ["src/**", "design/**"],
+        "allowed_paths": list(NEXT_REACT_PROFILE.writable_patterns),
         "operation_kind": "visual_refinement",
+        "build_profile": "next_react",
     })
 
     _, _, manifest = runner._write_host_design_manifest(
@@ -1365,10 +1367,10 @@ def test_host_manifest_maps_astro_homepage_output_to_source_file(tmp_path):
         request,
         target,
         "a" * 40,
-        {"src/pages/index.astro"},
+        {"src/app/page.tsx"},
     )
 
-    assert manifest["source_homepage_path"] == "src/pages/index.astro"
+    assert manifest["source_homepage_path"] == "src/app/page.tsx"
 
 
 def test_operation_router_uses_native_builder_for_every_design_operation():

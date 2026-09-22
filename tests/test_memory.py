@@ -30,10 +30,32 @@ def test_fresh_db_creates_current_schema(tmp_path):
     }
     assert {
         "kv", "observations", "actions", "drafts", "metrics_snapshots", "llm_costs",
+        "timing_events",
         "owner_actions", "artifacts", "approval_requests", "provider_receipts",
         "seo_site_reports", "article_ideas",
     } <= tables
     mem.close()
+
+
+def test_timing_events_roundtrip_without_exposing_prompt_data(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    memory.record_timing(
+        "llm.request",
+        1234,
+        phase="chat_tools",
+        success=True,
+        job_id=7,
+        conversation_id=3,
+        metadata={"attempts": 1, "model": "test-model"},
+    )
+
+    events = memory.list_timing_events(operation="llm.request")
+    assert events[0]["duration_ms"] == 1234
+    assert events[0]["phase"] == "chat_tools"
+    assert events[0]["job_id"] == 7
+    assert events[0]["metadata"] == {"attempts": 1, "model": "test-model"}
+    assert "prompt" not in events[0]["metadata"]
+    memory.close()
 
 
 def test_media_assets_and_chat_attachments_persist(tmp_path):

@@ -81,6 +81,38 @@ def test_conversational_turn_is_durable_and_message_bound(tmp_path):
     memory.close()
 
 
+def test_chat_job_downgrades_completion_claim_when_no_build_started(tmp_path):
+    memory = Memory(tmp_path / "intake.db")
+
+    class _OverconfidentAdvisor:
+        def advise(self, draft, history, owner_message, *, assets=(), knowledge_briefing=()):
+            return IntakeTurnResult(
+                schema_version=1,
+                assistant_message="Done — the preview is ready.",
+                suggested_readiness="collecting",
+            )
+
+    service = DesignIntakeService(memory, default_intake=_intake(), advisor=_OverconfidentAdvisor())
+    session = service.create_session()
+    queued = service.send_message(session["session_id"], "Give me a few directions.")
+    job = memory.claim_chat_job("status-worker")
+
+    result = run_job(
+        {
+            "memory": memory,
+            "design_intake_service": service,
+            "config": {},
+            "llm": object(),
+        },
+        job,
+        "status-worker",
+    )
+
+    assert "To be clear, I haven't built or previewed this yet." in result["reply"]
+    assert memory.get_chat_job(queued["job_id"])["status"] == "done"
+    memory.close()
+
+
 def test_malformed_scalar_field_update_does_not_break_intake_turn():
     turn = IntakeTurnResult.from_dict({
         "schema_version": 1,
@@ -1010,6 +1042,55 @@ def test_intake_advisor_can_use_a_separate_chat_model():
         "max_retries": 0,
         "model": "fast-chat",
     }]
+
+
+def test_intake_advisor_hides_internal_read_failure_and_does_not_claim_a_build():
+    class _LLM:
+        def chat(self, messages, **kwargs):
+            return json.dumps({
+                "schema_version": 1,
+                "assistant_message": (
+                    "One transparency note: the repo files wouldn't open for me just now "
+                    "(a tooling hiccup on my side), so I'll re-check the exact markup before building."
+                ),
+                "field_updates": [],
+                "assumption_updates": [],
+                "deferred_updates": [],
+                "contradictions": [],
+                "suggested_readiness": "collecting",
+            })
+
+    from site_agent.brain.design_intake import LLMDesignIntakeAdvisor
+
+    result = LLMDesignIntakeAdvisor(_LLM(), {}).advise(
+        DesignIntakeDraft.empty(), [], "I want a more distinctive homepage."
+    )
+
+    assert "repo" not in result.assistant_message.lower()
+    assert "tooling" not in result.assistant_message.lower()
+    assert "nothing has been changed" in result.assistant_message
+
+
+def test_intake_advisor_does_not_promise_unstarted_builds():
+    class _LLM:
+        def chat(self, messages, **kwargs):
+            return json.dumps({
+                "schema_version": 1,
+                "assistant_message": "I can build this on a preview when you choose a direction.",
+                "field_updates": [],
+                "assumption_updates": [],
+                "deferred_updates": [],
+                "contradictions": [],
+                "suggested_readiness": "collecting",
+            })
+
+    from site_agent.brain.design_intake import LLMDesignIntakeAdvisor
+
+    result = LLMDesignIntakeAdvisor(_LLM(), {}).advise(
+        DesignIntakeDraft.empty(), [], "Give me some homepage directions."
+    )
+
+    assert "I haven't built or previewed this yet" in result.assistant_message
 
 
 def test_intake_advisor_skips_entrim_thinking_knob_on_openrouter_client():

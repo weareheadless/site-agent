@@ -555,7 +555,7 @@ def test_experience_fidelity_report_requires_complete_condition_coverage():
             "condition_coverage": [
                 {
                     "condition_id": condition_id,
-                    "source_location": "src/pages/index.astro",
+                    "source_location": "src/app/page.tsx",
                     "trigger": "pointer-enter",
                     "rendered_state": "completed",
                     "responsive_translation": "The state remains readable on narrow screens.",

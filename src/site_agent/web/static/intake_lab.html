@@ -385,7 +385,7 @@
           const result = await api(idPath(`/chat/jobs/${encodeURIComponent(state.jobId)}`));
           state.job = result.job || result;
           renderPhase();
-          if (["done", "error"].includes(state.job.status)) { state.jobId = null; if (state.job.status === "error") note("#composer-note", state.job.error || "Ada's turn needs attention.", true); await refresh(); }
+          if (["done", "error"].includes(state.job.status)) { state.jobId = null; if (state.job.status === "error") note("#composer-note", state.job.owner_error || "Ada's turn needs attention.", true); await refresh(); }
         } catch (error) { note("#composer-note", error.message, true); }
       }
 

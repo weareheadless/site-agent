@@ -1875,6 +1875,7 @@ class DesignContextSnapshot:
     unknowns: tuple[str, ...] = ()
     prohibited_claims: tuple[str, ...] = ()
     capabilities: tuple[dict[str, Any], ...] = ()
+    build_profile: str = ""
     execution_profile: dict[str, Any] = field(default_factory=dict)
     design_skill_set: DesignSkillReceipt | None = None
     extra: dict[str, Any] = field(default_factory=dict)
@@ -1905,8 +1906,11 @@ class DesignContextSnapshot:
             "owner_request", "conversation", "effective_persona", "self_model", "approved_persona_notes",
             "memories", "research", "business_knowledge", "attachments", "site_facts", "source_repository",
             "base_sha", "site_digest", "route_inventory", "current_content", "asset_inventory", "measured_design",
-            "workspace_target", "asset_visual_evidence", "verified_facts", "unknowns", "prohibited_claims", "capabilities", "execution_profile", "design_skill_set",
+            "workspace_target", "asset_visual_evidence", "verified_facts", "unknowns", "prohibited_claims", "capabilities", "build_profile", "execution_profile", "design_skill_set",
         }
+        build_profile = _text(value.get("build_profile"), "build_profile", required=False, maximum=80).lower()
+        if build_profile and build_profile not in {"next_react", "pelican_baseline"}:
+            raise ContractError("build_profile must be next_react or pelican_baseline")
         result = cls(
             schema_version=version,
             captured_at=_text(value.get("captured_at"), "captured_at", maximum=100),
@@ -1941,6 +1945,7 @@ class DesignContextSnapshot:
             unknowns=texts("unknowns"),
             prohibited_claims=texts("prohibited_claims"),
             capabilities=objects("capabilities"),
+            build_profile=build_profile,
             execution_profile=_optional_object(value.get("execution_profile"), "execution_profile"),
             design_skill_set=(
                 None
@@ -1983,6 +1988,8 @@ class DesignContextSnapshot:
             "capabilities": copy.deepcopy(list(self.capabilities)),
             "execution_profile": copy.deepcopy(self.execution_profile),
         }
+        if self.build_profile:
+            result["build_profile"] = self.build_profile
         if self.design_skill_set is not None:
             result["design_skill_set"] = self.design_skill_set.to_dict()
         if self.workspace_target:
@@ -2365,6 +2372,7 @@ class BuildTarget:
     clone_path: str = ""
     allowed_paths: tuple[str, ...] = ()
     operation_kind: str = DesignOperationKind.INITIAL_BUILD.value
+    build_profile: str = ""
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> "BuildTarget":
@@ -2387,6 +2395,9 @@ class BuildTarget:
         allowed_paths = tuple(safe_relative_path(item, f"allowed_paths[{index}]") for index, item in enumerate(paths))
         repository = _text(value.get("repository"), "repository", required=False, maximum=300)
         clone_path = _text(value.get("clone_path"), "clone_path", required=False, maximum=1_000)
+        build_profile = _text(value.get("build_profile"), "build_profile", required=False, maximum=80).lower()
+        if build_profile and build_profile not in {"next_react", "pelican_baseline"}:
+            raise ContractError("build_profile must be next_react or pelican_baseline")
         return cls(
             mode=mode,
             base_sha=_hash(value.get("base_sha"), "base_sha", _SHA1_RE),
@@ -2399,6 +2410,7 @@ class BuildTarget:
             operation_kind=validate_design_operation_kind(
                 value.get("operation_kind", DesignOperationKind.INITIAL_BUILD.value)
             ),
+            build_profile=build_profile,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -2412,6 +2424,7 @@ class BuildTarget:
             "clone_path": self.clone_path,
             "allowed_paths": list(self.allowed_paths),
             "operation_kind": self.operation_kind,
+            "build_profile": self.build_profile,
         }
 
 

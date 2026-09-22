@@ -22,7 +22,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 
 from ..application.actions import ActionServiceError, OwnerActionService
-from ..application.atelier import AtelierChatService
+from ..application.workspace import ChatService
 from ..application.approvals import ApprovalService, ApprovalServiceError, StaleApproval
 from ..application.conversations import ConversationBusy, ConversationNotFound, ConversationService, ConversationServiceError
 from ..application.designs import DesignRunNotFound, DesignService, DesignServiceError
@@ -38,6 +38,7 @@ from ..application.social_posts import (
 from ..brain import editor as brain_editor
 from ..brain.self_model import current_self
 from ..config import resolve_secret
+from ..credentials import credential_environment
 from ..core.contracts import ActionState, ApprovalStatus
 from ..core.design_contracts import DesignRunStatus
 from ..core.reflect import approve_reflection, effective_persona
@@ -46,7 +47,7 @@ from ..hands.base import AdapterError, DesignMergeAdapter, MergeAdapter, Preview
 from ..hands.cicero import CiceroClientError
 from ..hands.site_build import SiteOutputArtifactStore
 from .journal import setup_job, status as journal_status
-from .atelier import register_atelier_routes
+from .workspace import register_workspace_routes
 from .preview import PreviewAccess, PreviewBuildCache, rewrite_preview_css, rewrite_preview_html, rewrite_preview_js
 
 SESSION_TTL = 12 * 3600
@@ -146,7 +147,7 @@ def _design_preview_ref(run: dict[str, Any], variant: str = "deepseek") -> tuple
 
 
 def _design_build_profile(design_service: Any, run: dict[str, Any], variant: str) -> str:
-    """Resolve the candidate profile without assigning Astro to an old baseline."""
+    """Resolve the candidate profile without assigning Next to an old baseline."""
     if variant == "original" and str(run.get("operation_kind") or "initial_build") == "initial_build":
         return ""
     resolver = getattr(design_service, "build_profile_for_run", None)
@@ -237,8 +238,8 @@ def _admin_theme(config: dict[str, Any]) -> dict[str, Any]:
 def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> FastAPI:
     import os
 
-    env = os.environ if env is None else env
     config = context["config"]
+    env = credential_environment(config, os.environ if env is None else env)
     memory: Any = context["memory"]
     home_service = context.get("home_service") or HomeService(memory)
     owner_action_service = context.get("owner_action_service") or OwnerActionService(memory)
@@ -380,11 +381,11 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
         redoc_url=None,
         lifespan=lifespan,
     )
-    register_atelier_routes(
+    register_workspace_routes(
         app,
         config=config,
         env=env,
-        service=context.get("atelier_service") or AtelierChatService(
+        service=context.get("workspace_service") or context.get("atelier_service") or ChatService(
             memory,
             context.get("llm"),
             config=config,

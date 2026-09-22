@@ -91,7 +91,9 @@ class LivePreviewStore:
     build leaves the previous snapshot available.
     """
 
-    _SKIP_DIRECTORIES = {".git", ".opencode", "node_modules", "dist", "build", ".astro"}
+    _SKIP_DIRECTORIES = {
+        ".git", ".opencode", "node_modules", ".next", ".open-next", "out", "dist", "build", ".astro",
+    }
 
     def __init__(self, root: str | Path, *, retention: int = 4) -> None:
         self.root = Path(root).expanduser().resolve()
@@ -403,7 +405,7 @@ def rewrite_preview_js(data: bytes, access_token: str = "", preview_variant: str
 
     A module's relative ``import`` does not inherit the query string from the
     module that imported it.  Without rewriting these specifiers, the first
-    Astro bundle can load with a token while its React/runtime dependencies
+    Next bundle can load with a token while its React/runtime dependencies
     request the same preview path without one and receive a CORS-looking 403.
     """
     if not access_token:

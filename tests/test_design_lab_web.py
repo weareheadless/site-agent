@@ -12,12 +12,12 @@ def test_design_lab_comparison_server_is_read_only_and_mounts_artifacts(tmp_path
     for variant in ("baseline", "candidate"):
         artifact = tmp_path / "artifacts" / run_id / variant
         artifact.mkdir(parents=True)
-        (artifact / "_astro").mkdir()
+        (artifact / "_next").mkdir()
         (artifact / "images").mkdir()
-        (artifact / "_astro" / "app.css").write_text("body { color: red; }")
+        (artifact / "_next" / "app.css").write_text("body { color: red; }")
         (artifact / "images" / "hero.svg").write_text("<svg xmlns='http://www.w3.org/2000/svg'/>")
         (artifact / "index.html").write_text(
-            f'<link rel="stylesheet" href="/_astro/app.css"><img src="/images/hero.svg"><a href="/articles.html">{variant}</a><a href="/">Home</a><astro-island component-url="/_astro/client.js" renderer-url="/_astro/renderer.js"></astro-island>'
+            f'<link rel="stylesheet" href="/_next/app.css"><img src="/images/hero.svg"><a href="/articles.html">{variant}</a><a href="/">Home</a><script src="/_next/client.js"></script><script src="/_next/renderer.js"></script>'
         )
     result = {
         "run_id": run_id,
@@ -45,12 +45,12 @@ def test_design_lab_comparison_server_is_read_only_and_mounts_artifacts(tmp_path
     assert response.json()["pages"][0]["path"] == "index.html"
     artifact_response = client.get(f"/artifacts/{run_id}/candidate/index.html")
     assert artifact_response.status_code == 200
-    assert f"/artifacts/{run_id}/candidate/_astro/app.css" in artifact_response.text
+    assert f"/artifacts/{run_id}/candidate/_next/app.css" in artifact_response.text
     assert f"/artifacts/{run_id}/candidate/images/hero.svg" in artifact_response.text
     assert f"/artifacts/{run_id}/candidate/articles.html" in artifact_response.text
     assert f"/artifacts/{run_id}/candidate/index.html" in artifact_response.text
-    assert f"/artifacts/{run_id}/candidate/_astro/client.js" in artifact_response.text
-    assert f"/artifacts/{run_id}/candidate/_astro/renderer.js" in artifact_response.text
-    assert client.get(f"/artifacts/{run_id}/candidate/_astro/app.css").status_code == 200
+    assert f"/artifacts/{run_id}/candidate/_next/client.js" in artifact_response.text
+    assert f"/artifacts/{run_id}/candidate/_next/renderer.js" in artifact_response.text
+    assert client.get(f"/artifacts/{run_id}/candidate/_next/app.css").status_code == 200
     assert client.get(f"/artifacts/{run_id}/candidate/images/hero.svg").status_code == 200
     assert client.get(f"/artifacts/{run_id}/candidate/%2e%2e/baseline/index.html").status_code in {400, 404}

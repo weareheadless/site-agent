@@ -18,8 +18,8 @@ from site_agent.core.memory import Memory
 from site_agent.hands.design_quality import QualityPolicy
 from site_agent.hands.builder import BuilderError
 from site_agent.hands.site_build import (
-    ASTRO_REACT_PROFILE,
-    ASTRO_REACT_TOOLCHAIN_DEPENDENCIES,
+    NEXT_REACT_PROFILE,
+    NEXT_REACT_TOOLCHAIN_DEPENDENCIES,
     PELICAN_BASELINE_PROFILE,
     SiteOutputArtifactStore,
 )
@@ -193,7 +193,7 @@ def test_prepare_initial_request_persists_assessment_without_selecting_visual_di
     memory.close()
 
 
-def test_local_initial_build_uses_astro_target_and_quality_profile(tmp_path):
+def test_local_initial_build_uses_next_target_and_quality_profile(tmp_path):
     memory = Memory(tmp_path / "service.db")
     service = DesignService(
         memory,
@@ -206,7 +206,7 @@ def test_local_initial_build_uses_astro_target_and_quality_profile(tmp_path):
         _intake(),
         experiment_root=tmp_path / "lab" / "clone",
         base_sha="a" * 40,
-        run_id="local-astro",
+        run_id="local-next",
     )
 
     request = service.prepare_initial_request(run["run_id"])
@@ -218,23 +218,23 @@ def test_local_initial_build_uses_astro_target_and_quality_profile(tmp_path):
     assert target.mode == "local_experiment"
     assert target.push_mode == "none"
     assert target.publishable is False
-    assert target.allowed_paths == ASTRO_REACT_PROFILE.writable_patterns
-    assert policy.output_dir == ASTRO_REACT_PROFILE.output_dir
+    assert target.allowed_paths == NEXT_REACT_PROFILE.writable_patterns
+    assert policy.output_dir == NEXT_REACT_PROFILE.output_dir
     assert policy.required_pages == ("home.html",)
-    assert policy.allowed_patterns == ASTRO_REACT_PROFILE.writable_patterns
+    assert policy.allowed_patterns == NEXT_REACT_PROFILE.writable_patterns
     assert "package.json" in policy.allowed_hard_denied_paths
     assert {
         (item.get("package"), item.get("version"))
         for item in policy.approved_capabilities
     } >= {
         (item["package"], item["version"])
-        for item in ASTRO_REACT_TOOLCHAIN_DEPENDENCIES
+        for item in NEXT_REACT_TOOLCHAIN_DEPENDENCIES
     }
     assert policy.build_command is None
     memory.close()
 
 
-def test_local_astro_quality_policy_preserves_frontend_capability_details(tmp_path):
+def test_local_next_quality_policy_preserves_frontend_capability_details(tmp_path):
     memory = Memory(tmp_path / "service.db")
     service = DesignService(
         memory,
@@ -250,7 +250,7 @@ def test_local_astro_quality_policy_preserves_frontend_capability_details(tmp_pa
         _intake(),
         experiment_root=tmp_path / "lab" / "clone",
         base_sha="a" * 40,
-        run_id="local-astro-capabilities",
+        run_id="local-next-capabilities",
     )
     service.prepare_initial_request(run["run_id"])
 
@@ -276,16 +276,16 @@ def test_local_technical_repair_quality_policy_covers_all_frozen_routes(tmp_path
     parent = service.create_run(
         _intake(),
         mode="local_experiment",
-        run_id="local-astro-parent",
+        run_id="local-next-parent",
         base_sha="a" * 40,
     )
     memory.update_design_run(parent["run_id"], candidate_sha="a" * 40)
     child = service.create_run(
         _intake(),
         mode="local_experiment",
-        run_id="local-astro-repair",
+        run_id="local-next-repair",
         base_sha="b" * 40,
-        candidate_ref="refs/ada-design-lab/local-astro-repair",
+        candidate_ref="refs/ada-design-lab/local-next-repair",
         parent_run_id=parent["run_id"],
         operation_kind="technical_repair",
         source_candidate_sha="a" * 40,
@@ -305,14 +305,14 @@ def test_local_technical_repair_quality_policy_covers_all_frozen_routes(tmp_path
     })
     memory.update_design_run(
         child["run_id"],
-        planning_json={"build_profile": "astro_react", "build_request": request.to_dict()},
+        planning_json={"build_profile": "next_react", "build_request": request.to_dict()},
     )
 
     policy = service.quality_policy_for_run(child["run_id"])
 
     assert policy.required_pages == ("index.html", "articles.html")
-    assert policy.output_dir == ASTRO_REACT_PROFILE.output_dir
-    assert policy.allowed_patterns == ASTRO_REACT_PROFILE.writable_patterns
+    assert policy.output_dir == NEXT_REACT_PROFILE.output_dir
+    assert policy.allowed_patterns == NEXT_REACT_PROFILE.writable_patterns
     memory.close()
 
 
@@ -328,14 +328,14 @@ def test_local_visual_refinement_of_technical_repair_covers_all_frozen_routes(tm
     parent = service.create_run(
         _intake(),
         mode="local_experiment",
-        run_id="local-astro-technical-parent",
+        run_id="local-next-technical-parent",
         base_sha="a" * 40,
         operation_kind="technical_repair",
     )
     memory.update_design_run(parent["run_id"], candidate_sha="a" * 40)
     request = PageBuildRequest.from_dict({
         "schema_version": 1,
-        "run_id": "local-astro-visual-child",
+        "run_id": "local-next-visual-child",
         "mode": "visual_refinement",
         "base_sha": "b" * 40,
         "page_path": "index.html",
@@ -346,23 +346,23 @@ def test_local_visual_refinement_of_technical_repair_covers_all_frozen_routes(tm
     child = service.create_run(
         _intake(),
         mode="local_experiment",
-        run_id="local-astro-visual-child",
+        run_id="local-next-visual-child",
         base_sha="b" * 40,
-        candidate_ref="refs/ada-design-lab/local-astro-visual-child",
+        candidate_ref="refs/ada-design-lab/local-next-visual-child",
         parent_run_id=parent["run_id"],
         operation_kind="visual_refinement",
         source_candidate_sha="a" * 40,
     )
     memory.update_design_run(
         child["run_id"],
-        planning_json={"build_profile": "astro_react", "build_request": request.to_dict()},
+        planning_json={"build_profile": "next_react", "build_request": request.to_dict()},
     )
 
     policy = service.quality_policy_for_run(child["run_id"])
 
     assert policy.required_pages == ("home", "about", "contact")
-    assert policy.output_dir == ASTRO_REACT_PROFILE.output_dir
-    assert policy.allowed_patterns == ASTRO_REACT_PROFILE.writable_patterns
+    assert policy.output_dir == NEXT_REACT_PROFILE.output_dir
+    assert policy.allowed_patterns == NEXT_REACT_PROFILE.writable_patterns
     memory.close()
 
 
@@ -384,7 +384,7 @@ def test_technical_repair_child_preserves_parent_candidate_and_workspace(tmp_pat
     memory.update_design_run(
         parent["run_id"],
         candidate_sha="b" * 40,
-        planning_json={"build_profile": "astro_react"},
+        planning_json={"build_profile": "next_react"},
         quality_report_json={
             "visual_critique": {
                 "state": "repair",
@@ -412,7 +412,7 @@ def test_technical_repair_child_preserves_parent_candidate_and_workspace(tmp_pat
         {"screenshot_path": "/tmp/parent.png"},
     ]
     assert child["target"]["operation_kind"] == "technical_repair"
-    assert child["target"]["allowed_paths"] == list(ASTRO_REACT_PROFILE.writable_patterns)
+    assert child["target"]["allowed_paths"] == list(NEXT_REACT_PROFILE.writable_patterns)
     assert service.quality_policy_for_run(child["run"]["run_id"]).required_pages == (
         "home", "about", "contact"
     )
@@ -622,7 +622,7 @@ def test_quality_validation_rejects_evidence_bound_to_a_different_plan_hash(tmp_
     memory.close()
 
 
-def test_local_visual_refinement_reuses_astro_target_and_quality_profile(tmp_path):
+def test_local_visual_refinement_reuses_next_target_and_quality_profile(tmp_path):
     memory = Memory(tmp_path / "service.db")
     service = DesignService(
         memory,
@@ -635,7 +635,7 @@ def test_local_visual_refinement_reuses_astro_target_and_quality_profile(tmp_pat
         _intake(),
         experiment_root=tmp_path / "lab" / "clone",
         base_sha="a" * 40,
-        run_id="local-astro-parent",
+        run_id="local-next-parent",
     )
     service.prepare_initial_request(parent["run_id"])
     service.build_target_for_run(parent["run_id"])
@@ -656,26 +656,26 @@ def test_local_visual_refinement_reuses_astro_target_and_quality_profile(tmp_pat
         quality_report_json={"state": "passed", "visual_critique": critique.to_dict()},
     )
 
-    child = service.create_visual_refinement_run(parent["run_id"], critique, run_id="local-astro-refined")
+    child = service.create_visual_refinement_run(parent["run_id"], critique, run_id="local-next-refined")
     child_run = child["run"]
     target = service.build_target_for_run(child_run["run_id"])
     policy = service.quality_policy_for_run(child_run["run_id"])
 
-    assert target.allowed_paths == ASTRO_REACT_PROFILE.writable_patterns
-    assert policy.output_dir == ASTRO_REACT_PROFILE.output_dir
-    assert policy.allowed_patterns == ASTRO_REACT_PROFILE.writable_patterns
+    assert target.allowed_paths == NEXT_REACT_PROFILE.writable_patterns
+    assert policy.output_dir == NEXT_REACT_PROFILE.output_dir
+    assert policy.allowed_patterns == NEXT_REACT_PROFILE.writable_patterns
     assert "package.json" in policy.allowed_hard_denied_paths
     assert {
         (item.get("package"), item.get("version"))
         for item in policy.approved_capabilities
     } >= {
         (item["package"], item["version"])
-        for item in ASTRO_REACT_TOOLCHAIN_DEPENDENCIES
+        for item in NEXT_REACT_TOOLCHAIN_DEPENDENCIES
     }
     memory.transition_design_run(child_run["run_id"], "failed")
-    retried = service.create_visual_refinement_run(parent["run_id"], critique, run_id="local-astro-retried")
+    retried = service.create_visual_refinement_run(parent["run_id"], critique, run_id="local-next-retried")
     assert retried["run"]["parent_run_id"] == parent["run_id"]
-    assert retried["target"]["allowed_paths"] == list(ASTRO_REACT_PROFILE.writable_patterns)
+    assert retried["target"]["allowed_paths"] == list(NEXT_REACT_PROFILE.writable_patterns)
     memory.close()
 
 

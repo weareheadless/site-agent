@@ -206,7 +206,7 @@ class Client:
     ):
         import os
 
-        from ..config import resolve_secret
+        from ..config import resolve_secret, timing_enabled
 
         cfg = config.get("llm") or {}
         self.base_url = str(cfg.get("base_url", "https://openrouter.ai/api/v1")).rstrip("/")
@@ -222,6 +222,7 @@ class Client:
         self.daily_budget_usd = None if budget is None else float(budget)
         self.api_key = resolve_secret(config, "llm_api_key", os.environ if env is None else env)
         self.memory = memory
+        self.timing_enabled = timing_enabled(config, env)
 
     @staticmethod
     def _retryable(exc: LLMError) -> bool:
@@ -245,16 +246,39 @@ class Client:
         payload: dict[str, Any],
         timeout: float,
         retry_limit: int,
+        *,
+        operation: str = "chat",
     ) -> dict[str, Any]:
         attempt = 0
-        while True:
-            try:
-                return _http_post(url, headers, payload, timeout)
-            except LLMError as exc:
-                if not self._retryable(exc) or attempt >= retry_limit:
-                    raise
+        started = time.monotonic()
+        succeeded = False
+        try:
+            while True:
                 attempt += 1
-                time.sleep(min(2 ** attempt, 8))
+                try:
+                    response = _http_post(url, headers, payload, timeout)
+                    succeeded = True
+                    return response
+                except LLMError as exc:
+                    if not self._retryable(exc) or attempt > retry_limit:
+                        raise
+                    time.sleep(min(2 ** attempt, 8))
+        finally:
+            if self.timing_enabled and self.memory is not None and hasattr(self.memory, "record_timing"):
+                try:
+                    self.memory.record_timing(
+                        "llm.request",
+                        int(round((time.monotonic() - started) * 1000)),
+                        phase=operation,
+                        success=succeeded,
+                        metadata={
+                            "attempts": attempt,
+                            "timeout_seconds": timeout,
+                            "model": self.model,
+                        },
+                    )
+                except Exception:  # noqa: BLE001 - observability must not break chat
+                    pass
 
     def _check_budget(self) -> None:
         if self.daily_budget_usd is None or self.memory is None:
@@ -319,7 +343,14 @@ class Client:
         url = f"{self.base_url}/chat/completions"
         request_timeout = self.timeout if timeout_seconds is None else max(float(timeout_seconds), 0.1)
         retry_limit = self.max_retries if max_retries is None else max(int(max_retries), 0)
-        response = self._post_with_retries(url, headers, payload, request_timeout, retry_limit)
+        response = self._post_with_retries(
+            url,
+            headers,
+            payload,
+            request_timeout,
+            retry_limit,
+            operation="chat_tools",
+        )
         message = (response.get("choices") or [{}])[0].get("message", {})
         usage = response.get("usage") or {}
         if self.memory is not None:
@@ -383,7 +414,12 @@ class Client:
         request_timeout = self.timeout if timeout_seconds is None else max(float(timeout_seconds), 0.1)
         retry_limit = self.max_retries if max_retries is None else max(int(max_retries), 0)
         response = self._post_with_retries(
-            url, headers, payload, request_timeout, retry_limit
+            url,
+            headers,
+            payload,
+            request_timeout,
+            retry_limit,
+            operation="chat",
         )
         try:
             content = response["choices"][0]["message"].get("content")

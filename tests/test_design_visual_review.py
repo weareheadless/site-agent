@@ -145,7 +145,7 @@ def test_visual_review_receives_grounding_and_approved_source_images(monkeypatch
             "screenshot_hash": "candidate",
         }],
         review_evidence={
-            "source_inventory": {"changed_source_files": ["src/pages/index.astro"]},
+            "source_inventory": {"changed_source_files": ["src/app/page.tsx"]},
             "runtime": {"motion": {"status": "passed"}},
         },
         source_images=[

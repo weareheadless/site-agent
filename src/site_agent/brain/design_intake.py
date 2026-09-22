@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from typing import Any, Protocol
 
 from .design_guidance import DesignSkillSet, load_design_skills
@@ -13,6 +14,7 @@ from ..core.design_intake_contracts import (
     IntakeTurnResult,
     allowed_intake_field_paths,
 )
+from .owner_copy import owner_message_without_unstarted_build, owner_safe_reply
 
 
 class DesignIntakeAdvisorError(RuntimeError):
@@ -232,9 +234,21 @@ Two jobs every turn:
      confirmed by the owner (colors, typography, structure, tone)
 
 2. CONVERSATION: answer the owner naturally and continue the conversation.
-   The JSON object is your structured record; the visible reply is the
-   conversation. The owner's language, tone, and business context come from
-   the conversation itself.
+    The JSON object is your structured record; the visible reply is the
+    conversation. The owner's language, tone, and business context come from
+    the conversation itself.
+
+  Owner-facing status:
+  - Speak to a non-technical owner. Never mention repositories, files, branches,
+    GitHub, tools, credentials, sandboxes, prompts, models, or tooling hiccups.
+  - The visible reply must describe only what happened in this turn. If `ui_action`
+    is omitted, these are ideas or an intake conversation only: do not say that
+    you will build, re-check markup, or show a preview. Say plainly that nothing
+    has changed yet and that the owner can choose a direction before asking for a
+    build.
+  - Only promise a preview when `ui_action` actually requests `start_build` or
+    `open_preview`. Never describe an internal failure as a problem with the
+    owner's site.
 
  Language continuity:
  - """ + language_preference + """
@@ -523,7 +537,16 @@ class LLMDesignIntakeAdvisor:
                     turn = _plain_text_turn(raw)
                 except DesignIntakeAdvisorError:
                     raise DesignIntakeAdvisorError(str(exc)[:500]) from exc
-        return turn
+        return replace(
+            turn,
+            assistant_message=owner_message_without_unstarted_build(
+                turn.assistant_message,
+                # A model-proposed UI action is not an executed build or
+                # preview. The application may reject it, and this advisor
+                # call itself never makes the owner-visible change.
+                action_started=False,
+            ),
+        )
 
     def request_owner_assets(
         self,
@@ -564,7 +587,7 @@ class LLMDesignIntakeAdvisor:
             chat_options["model"] = model
         self.last_call_count += 1
         try:
-            return str(self.llm.chat(messages, **chat_options) or "").strip()
+            return owner_safe_reply(str(self.llm.chat(messages, **chat_options) or "").strip())
         except Exception:
             return ""
 

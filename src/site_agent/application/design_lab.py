@@ -1,4 +1,4 @@
-"""Disposable, local-only orchestration for Astro/React design experiments."""
+"""Disposable, local-only orchestration for Next/React/Payload design experiments."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ from ..core.design_contracts import (
     canonical_json,
 )
 from ..core.memory import Memory
+from ..credentials import github_ssh_command
 from ..hands.design_lab_git import (
     add_worktree,
     baseline_sha,
@@ -33,7 +34,7 @@ from ..hands.design_lab_git import (
 from ..hands.builder import NativeOpenCodeBuilder
 from ..hands.design_quality import QualityPolicy, run_quality_gates
 from ..hands.site_build import (
-    ASTRO_REACT_PROFILE,
+    NEXT_REACT_PROFILE,
     PELICAN_BASELINE_PROFILE,
     SiteBuildResult,
     SiteOutputArtifactStore,
@@ -148,7 +149,7 @@ def _advance(memory: Memory, run_id: str, status: DesignRunStatus, message: str)
 
 
 def _site_digest(root: Path) -> dict[str, Any]:
-    ignored = {".git", "output", "dist", "node_modules", ".astro"}
+    ignored = {".git", "output", "out", ".next", ".open-next", "dist", "node_modules"}
     digest = hashlib.sha256()
     files = 0
     for path in sorted(root.rglob("*"), key=lambda item: str(item.relative_to(root))):
@@ -317,6 +318,7 @@ class DesignLabService:
         lab_env = design_lab_environment(
             self.env,
             model_env_name=str((self.config.get("env") or {}).get("llm_api_key") or ""),
+            git_ssh_command=github_ssh_command(self.config, self.env),
         )
         live_paths = _config_live_paths(self.config)
         live_before = {str(path): path_sentinel(path) for path in live_paths}
@@ -341,6 +343,13 @@ class DesignLabService:
         try:
             site = self.config.get("site") or {}
             repository = str(site.get("repository") or "").strip()
+            local_source = _resolve_path(site.get("clone_path"))
+            if local_source is not None and (local_source / ".git").exists():
+                # A configured checkout is the authoritative local source for
+                # the lab. Do not turn a private repository into an anonymous
+                # HTTPS fetch merely because a public repository slug is also
+                # present in the tenant config.
+                repository = str(local_source)
             branch = str(site.get("branch") or "main").strip()
             if not repository:
                 raise DesignLabError("site.repository is required for design-lab")
@@ -357,7 +366,10 @@ class DesignLabService:
             quality_config.setdefault("manifest_path", "design/ada-design-manifest.json")
             quality_config.setdefault("native_source_required", True)
             quality_config.setdefault("originality_required", True)
-            quality_config["allowed_patterns"] = list(ASTRO_REACT_PROFILE.writable_patterns)
+            local_engine["build_profile"] = str(local_engine.get("build_profile") or NEXT_REACT_PROFILE.name).strip()
+            if local_engine["build_profile"] != NEXT_REACT_PROFILE.name:
+                raise DesignLabError("design_engine.build_profile must be next_react")
+            quality_config["allowed_patterns"] = list(NEXT_REACT_PROFILE.writable_patterns)
             quality_config.setdefault("required_pages", list(intake.site.get("required_pages") or ("index.html",)))
             local_engine["quality"] = quality_config
             local_config["design_engine"] = local_engine
@@ -404,13 +416,13 @@ class DesignLabService:
 
             # Keep the old comparison surface, but make its baseline profile
             # follow the source's actual toolchain.  Legacy Pelican repositories
-            # still compare with Pelican; Astro repositories compare with Astro.
+            # still compare with Pelican; canonical design candidates use Next.
             worktrees.mkdir(parents=True, exist_ok=True)
             baseline_tree = add_worktree(source, worktrees / "baseline", base_sha, env=lab_env)
             baseline_profile_name = str(quality_config.get("baseline_profile") or "").strip()
             if not baseline_profile_name:
                 baseline_profile_name = (
-                    ASTRO_REACT_PROFILE.name
+                    NEXT_REACT_PROFILE.name
                     if (baseline_tree / "package.json").is_file()
                     else PELICAN_BASELINE_PROFILE.name
                 )
@@ -444,14 +456,14 @@ class DesignLabService:
             candidate_tree = add_worktree(source, worktrees / "candidate", candidate_sha, env=lab_env)
             candidate_build = build_site(
                 candidate_tree,
-                ASTRO_REACT_PROFILE,
+                NEXT_REACT_PROFILE,
                 npm_cache=npm_cache,
                 env=lab_env,
                 timeout_seconds=self.timeout_seconds,
             )
             _write_json(reports / "candidate-build.json", candidate_build.to_dict())
             if candidate_build.ok:
-                copy_build_output(candidate_tree, ASTRO_REACT_PROFILE, artifacts / "candidate")
+                copy_build_output(candidate_tree, NEXT_REACT_PROFILE, artifacts / "candidate")
                 for relative in ("design/ada-design-manifest.json", "design/ada-route-manifest.json"):
                     source_file = candidate_tree / relative
                     target_file = artifacts / "candidate" / relative

@@ -17,6 +17,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from ..application.design_intake import DesignIntakeServiceError
 from ..application.incubations import IncubationApplicationService, IncubationServiceError
 from ..application.intake_lab import IntakeLabError, IntakeLabService
+from ..brain.owner_copy import owner_safe_failure
 from ..hands.local_media import LocalMediaStore
 from .preview import (
     PreviewAccess,
@@ -1122,6 +1123,7 @@ def create_app(
                 "steps": job.get("steps") or [],
                 "result": job.get("result"),
                 "error": job.get("error"),
+                "owner_error": owner_safe_failure(job.get("error") or "") if job.get("status") == "error" else None,
                 "session_id": job.get("intake_session_id"),
                 "message_id": job.get("message_id"),
             }}
