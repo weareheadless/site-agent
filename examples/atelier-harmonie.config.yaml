@@ -89,6 +89,20 @@ atelier_intake:
     max_items_per_source: 15
     max_passes_before_owner_turn: 1
 
+# Reader-led article research is the default pipeline. The primary research
+# locale drives the article language and market; article_research does not have
+# to restate them.
+seo:
+  research:
+    languages:
+      - code: fr
+        markets: [FR]
+        primary: true
+    existing_locales: [fr]
+  article_research:
+    enabled: true
+    timezone: Europe/Paris
+
 # The intake contract is JSON and DeepSeek may spend part of its completion
 # budget on reasoning. Keep enough room for the closing delimiters; a truncated
 # response must otherwise fall back to a generic question.

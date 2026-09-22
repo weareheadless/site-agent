@@ -502,6 +502,28 @@ def validate_research_config(config: dict[str, Any]) -> None:
                 raise ConfigError(f"seo.research.{field_name}[{index}].markets contains an invalid country")
 
 
+def primary_research_locale(config: dict[str, Any]) -> tuple[str, str]:
+    """Return the (language, market) implied by the primary seo.research locale.
+
+    The reader-led article pipeline follows this locale unless it sets its own,
+    so an always-on pipeline speaks the site's language instead of assuming
+    English. Returns empty strings when no research locale is configured.
+    """
+    research = ((config.get("seo") or {}).get("research") or {})
+    languages = research.get("languages") if isinstance(research, dict) else None
+    primary: dict[str, Any] | None = None
+    if isinstance(languages, list):
+        primary = next((item for item in languages if isinstance(item, dict) and item.get("primary")), None)
+        if primary is None:
+            primary = next((item for item in languages if isinstance(item, dict)), None)
+    if not isinstance(primary, dict):
+        return "", ""
+    code = str(primary.get("code") or "").strip().lower()
+    markets = primary.get("markets") if isinstance(primary.get("markets"), list) else []
+    market = str(markets[0]).strip().upper() if markets else ""
+    return code, market
+
+
 def validate_seo_workflow_config(config: dict[str, Any]) -> None:
     """Validate the small, separate monthly-report and article-research controls."""
     seo = config.get("seo") or {}
@@ -528,9 +550,14 @@ def validate_seo_workflow_config(config: dict[str, Any]) -> None:
         except (ZoneInfoNotFoundError, ValueError):
             raise ConfigError("seo.article_research.timezone must be a valid IANA timezone")
         language = str(article_research.get("language") or "").strip().lower()
+        market = str(article_research.get("market") or "").strip().upper()
+        if not language or not market:
+            # Empty values follow the primary research locale; require one.
+            derived_language, derived_market = primary_research_locale(config)
+            language = language or derived_language
+            market = market or derived_market
         if not re.fullmatch(r"[a-z]{2,3}(?:-[a-z]{2,4})?", language):
             raise ConfigError("seo.article_research.language is invalid")
-        market = str(article_research.get("market") or "").strip().upper()
         if not re.fullmatch(r"[A-Z]{2}", market):
             raise ConfigError("seo.article_research.market is invalid")
 

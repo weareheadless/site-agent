@@ -157,12 +157,17 @@ def _article(context: dict[str, Any]) -> None:
         context["memory"].record_action("article", "journal is not enabled")
         return
     article_research = ((context.get("config", {}).get("seo") or {}).get("article_research") or {})
-    if article_research.get("enabled"):
-        if context.get("crawlseo_service"):
-            _with_persona(context, brain_article_research.select_and_request, "editorial")
-        else:
-            context["memory"].record_action("article_research", "skipped: CrawlSEO provider is unavailable")
+    if article_research.get("enabled") and context.get("crawlseo_service"):
+        _with_persona(context, brain_article_research.select_and_request, "editorial")
         return
+    if article_research.get("enabled"):
+        # Reader-led research is the default pipeline, but a missing provider
+        # must not silently stop article output: fall back to one editorial
+        # draft and leave a visible reason for the owner.
+        context["memory"].record_action(
+            "article_research",
+            "skipped: CrawlSEO provider is unavailable; wrote one editorial draft instead",
+        )
     draft_id = _with_persona(context, brain_article.draft_article, "editorial")
     if isinstance(draft_id, int):
         _mirror_article_draft_to_atelier(context, draft_id)
@@ -337,8 +342,18 @@ def register_atelier_jobs(scheduler: Scheduler, config: dict[str, Any], context:
         scheduler.job("digest", schedule.get("digest", {"every": "weekly", "weekday": "monday", "at": "08:00"}), lambda: _digest(context))
     if context.get("llm") and (has_sources or bool(settings.get("learning_enabled", False))):
         scheduler.job("learn", schedule.get("learn", {"every": "weekly", "weekday": "monday", "at": "08:20"}), lambda: _with_persona(context, brain_digest.learn, "research"))
-    if context.get("llm") and bool((config.get("atelier_editorial") or {}).get("enabled", False)):
+    article_research_enabled = bool(((config.get("seo") or {}).get("article_research") or {}).get("enabled", False))
+    if context.get("llm") and (bool((config.get("atelier_editorial") or {}).get("enabled", False)) or article_research_enabled):
         scheduler.job("article", schedule.get("article", {"every": "weekly", "weekday": "tuesday", "at": "09:00"}), lambda: _article(context))
+    if context.get("llm") and article_research_enabled and context.get("crawlseo_service"):
+        # Selection and reconciliation are two stages of one paid flow: the
+        # weekly article job requests the overview, this daily job adopts the
+        # result, requests one SERP, and drafts.
+        scheduler.job(
+            "article_research_cycle",
+            schedule.get("article_research_cycle", {"every": "daily", "at": "13:30"}),
+            lambda: _article_research_cycle(context),
+        )
     intake = context.get("atelier_intake")
     if intake is not None and bool(getattr(intake, "research_enabled", False)):
         scheduler.job(

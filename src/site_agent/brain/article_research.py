@@ -14,6 +14,7 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+from ..config import primary_research_locale
 from ..core.llm import extract_json
 from . import article as brain_article
 
@@ -23,8 +24,20 @@ _DECISIONS = {"keep", "reframe", "editorial_despite_low_demand"}
 
 
 def _settings(config: Mapping[str, Any]) -> dict[str, Any]:
-    settings = ((config.get("seo") or {}).get("article_research") or {})
-    return dict(settings) if isinstance(settings, Mapping) else {}
+    seo = config.get("seo") if isinstance(config, Mapping) else {}
+    seo = seo if isinstance(seo, Mapping) else {}
+    raw = seo.get("article_research") or {}
+    settings = dict(raw) if isinstance(raw, Mapping) else {}
+    # Follow the instance's primary research locale unless the pipeline is
+    # overridden explicitly. This keeps the always-on article pipeline in the
+    # site's own language instead of silently assuming English.
+    if not str(settings.get("language") or "").strip() or not str(settings.get("market") or "").strip():
+        derived_language, derived_market = primary_research_locale(dict(config))
+        if derived_language and not str(settings.get("language") or "").strip():
+            settings["language"] = derived_language
+        if derived_market and not str(settings.get("market") or "").strip():
+            settings["market"] = derived_market
+    return settings
 
 
 def _cycle_key(config: Mapping[str, Any], now: datetime.datetime | None = None) -> str:

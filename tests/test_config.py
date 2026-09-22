@@ -26,7 +26,20 @@ def test_defaults_load_without_instance_file():
     assert config["design_engine"]["orchestration"] == "legacy"
     assert config["dream"]["residue_count"] == 0
     assert config["self_model"]["enabled"] is True
+    # Reader-led article research is the always-on default article pipeline.
+    assert config["seo"]["article_research"]["enabled"] is True
     assert sources[0] is not None
+
+
+def test_article_research_enabled_by_default_inherits_primary_locale(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump({
+        "seo": {"research": {"languages": [{"code": "fr", "markets": ["FR"], "primary": True}]}},
+    }))
+    config, _ = load(config_path=path, env={})
+    assert config["seo"]["article_research"]["enabled"] is True
+    from site_agent.config import primary_research_locale
+    assert primary_research_locale(config) == ("fr", "FR")
 
 
 def test_instance_config_overrides_nested_defaults(tmp_path):

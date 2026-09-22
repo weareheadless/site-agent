@@ -155,10 +155,15 @@ seo:
     timezone: UTC
     max_crawl_pages: 200
   article_research:
-    enabled: false
+    # Reader-led article research is the default article pipeline. It is always
+    # registered; when the CrawlSEO provider is unavailable the article job
+    # degrades to a single editorial draft instead of producing nothing.
+    # language/market are intentionally empty: they follow the primary
+    # seo.research locale so the pipeline speaks the site's language.
+    enabled: true
     timezone: UTC
-    language: en
-    market: US
+    language: ""
+    market: ""
 
 site:
   adapter: github_static

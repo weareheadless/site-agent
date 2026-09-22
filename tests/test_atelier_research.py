@@ -134,3 +134,47 @@ def test_atelier_scheduler_registers_research_recovery_for_enabled_intake(tmp_pa
         assert "research_recovery" in [name for name, _spec, _fn in scheduler.jobs]
     finally:
         memory.close()
+
+
+def test_atelier_scheduler_registers_article_research_reconciliation(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    scheduler = Scheduler(memory, tmp_path / "scheduler.lock")
+    config = {
+        "atelier_scheduler": {"enabled": True},
+        "seo": {"article_research": {"enabled": True}},
+    }
+    try:
+        register_atelier_jobs(
+            scheduler,
+            config,
+            {"config": config, "memory": memory, "llm": object(), "crawlseo_service": object()},
+        )
+
+        names = [name for name, _spec, _fn in scheduler.jobs]
+        # The weekly job selects and requests; the daily job adopts the result.
+        assert "article" in names
+        assert "article_research_cycle" in names
+    finally:
+        memory.close()
+
+
+def test_atelier_scheduler_omits_research_cycle_without_provider(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    scheduler = Scheduler(memory, tmp_path / "scheduler.lock")
+    config = {
+        "atelier_scheduler": {"enabled": True},
+        "atelier_editorial": {"enabled": True},
+        "seo": {"article_research": {"enabled": True}},
+    }
+    try:
+        register_atelier_jobs(
+            scheduler,
+            config,
+            {"config": config, "memory": memory, "llm": object()},
+        )
+
+        names = [name for name, _spec, _fn in scheduler.jobs]
+        assert "article" in names
+        assert "article_research_cycle" not in names
+    finally:
+        memory.close()

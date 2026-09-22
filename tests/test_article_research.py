@@ -117,6 +117,28 @@ def _idea(memory, cycle="article:2026-W30", hash_value="idea-hash",
     return memory.update_article_idea(idea["id"], **fields)
 
 
+def test_article_research_follows_primary_research_locale():
+    settings = article_research._settings({
+        "seo": {
+            "research": {"languages": [{"code": "fr", "markets": ["FR"], "primary": True}]},
+            "article_research": {"enabled": True},
+        }
+    })
+    assert settings["language"] == "fr"
+    assert settings["market"] == "FR"
+
+
+def test_article_research_explicit_locale_overrides_primary_research_locale():
+    settings = article_research._settings({
+        "seo": {
+            "research": {"languages": [{"code": "fr", "markets": ["FR"], "primary": True}]},
+            "article_research": {"enabled": True, "language": "en", "market": "US"},
+        }
+    })
+    assert settings["language"] == "en"
+    assert settings["market"] == "US"
+
+
 def test_candidate_queries_are_reduced_and_duplicate_collisions_rejected():
     assert article_research._candidate_queries([
         "reader question basics",
@@ -194,6 +216,62 @@ def test_research_note_must_ground_an_editorial_alternative_in_a_candidate_query
     note = article_research._note(__import__("json").dumps(justified), DEFAULT_IDEA)
     assert note["selected_query"] == "a better wording the provider did not measure"
     assert note["selected_from_query"] == DEFAULT_IDEA["candidate_queries"][0]
+
+
+def test_article_job_requests_research_when_provider_present(tmp_path, monkeypatch):
+    from site_agent.core import jobs
+
+    memory = Memory(tmp_path / "memory.db")
+    memory.kv_set("journal_enabled", True)
+    called = {"research": False, "draft": False}
+
+    def fake_select(_context):
+        called["research"] = True
+
+    def fake_draft(_context, *_args, **_kwargs):
+        called["draft"] = True
+        return 7
+
+    monkeypatch.setattr(jobs.brain_article_research, "select_and_request", fake_select)
+    monkeypatch.setattr(jobs.brain_article, "draft_article", fake_draft)
+    context = {
+        "config": {"seo": {"article_research": {"enabled": True}}},
+        "memory": memory,
+        "llm": object(),
+        "crawlseo_service": object(),
+    }
+    try:
+        jobs._article(context)
+        assert called["research"] is True
+        assert called["draft"] is False
+    finally:
+        memory.close()
+
+
+def test_article_job_falls_back_to_editorial_draft_without_research_provider(tmp_path, monkeypatch):
+    from site_agent.core import jobs
+
+    memory = Memory(tmp_path / "memory.db")
+    memory.kv_set("journal_enabled", True)
+    drafted = {"called": False}
+
+    def fake_draft(_context, *_args, **_kwargs):
+        drafted["called"] = True
+        return 7
+
+    monkeypatch.setattr(jobs.brain_article, "draft_article", fake_draft)
+    context = {
+        "config": {"seo": {"article_research": {"enabled": True}}},
+        "memory": memory,
+        "llm": object(),
+    }
+    try:
+        jobs._article(context)
+        assert drafted["called"] is True
+        details = [row["detail"] for row in memory.recent_actions(limit=5) if row["kind"] == "article_research"]
+        assert any("editorial draft instead" in detail for detail in details)
+    finally:
+        memory.close()
 
 
 def test_rejection_records_raw_candidate_and_reason(tmp_path):
