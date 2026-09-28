@@ -134,7 +134,10 @@ def _idea_prompt(context: Mapping[str, Any]) -> list[dict[str, str]]:
                 "idea (include the relevant destination or market in queries where it matters). Each query must be "
                 "one phrase: do not use semicolons, commas, pipes, or newline-separated alternatives. Make the "
                 "queries reflect different ways a reader might express the same decision, including the reader's "
-                "own vocabulary and the field's professional vocabulary when those differ."
+                "own vocabulary and the field's professional vocabulary when those differ. Include at least two "
+                "short head terms of one to three words alongside the longer reader questions: very long natural-"
+                "language phrases are often absent from keyword databases, and demand must be measurable rather "
+                "than assumed."
             ),
         },
         {
