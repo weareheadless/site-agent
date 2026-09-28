@@ -216,24 +216,38 @@ class GooglePlatformClient:
 
     # -- Search Console ---------------------------------------------------
 
-    def verification_token(self, domain: str) -> str:
+    def verification_token(
+        self,
+        identifier: str,
+        *,
+        method: str = "DNS_TXT",
+        site_type: str = "INET_DOMAIN",
+    ) -> str:
+        """Request a verification token for a domain (DNS) or URL (META/FILE)."""
         status, payload = self._request(
             f"{SITE_VERIFICATION}/token",
             scopes=(SITEVERIFICATION_SCOPE,),
             method="POST",
-            body={"site": {"type": "INET_DOMAIN", "identifier": domain}, "verificationMethod": "DNS_TXT"},
+            body={"site": {"type": site_type, "identifier": identifier}, "verificationMethod": method},
         )
         token = str(payload.get("token") or "")
         if status != 200 or not token:
             raise GooglePlatformError(_partial_error(payload))
         return token
 
-    def verify_domain(self, domain: str) -> bool:
+    def verify_domain(
+        self,
+        identifier: str,
+        *,
+        method: str = "DNS_TXT",
+        site_type: str = "INET_DOMAIN",
+    ) -> bool:
+        """Ask Google to verify ownership using the method already prepared."""
         status, payload = self._request(
-            f"{SITE_VERIFICATION}/webResource?verificationMethod=DNS_TXT",
+            f"{SITE_VERIFICATION}/webResource?verificationMethod={urllib.parse.quote(method)}",
             scopes=(SITEVERIFICATION_SCOPE,),
             method="POST",
-            body={"site": {"type": "INET_DOMAIN", "identifier": domain}},
+            body={"site": {"type": site_type, "identifier": identifier}},
         )
         if status == 200:
             return True

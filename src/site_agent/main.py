@@ -108,6 +108,18 @@ def _cmd_provision_seo(args: argparse.Namespace) -> int:
     if not service.platform_available:
         print("[site-agent] platform Google/CrawlSEO wiring is not configured in this host profile", file=sys.stderr)
         return 1
+    if args.verify_only:
+        identifier = args.site_url or f"https://{args.domain}/"
+        try:
+            receipt = service.verify_gsc(
+                identifier=identifier,
+                property_url=args.gsc_property or identifier,
+            )
+        except (SeoProvisioningError, ValueError) as exc:
+            print(f"[site-agent] Search Console verification failed: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(receipt, indent=2, ensure_ascii=False, default=str))
+        return 0
     try:
         receipt = service.provision(
             tenant_id=args.tenant,
@@ -120,6 +132,7 @@ def _cmd_provision_seo(args: argparse.Namespace) -> int:
             time_zone=args.time_zone,
             currency_code=args.currency,
             verify_gsc=not args.no_verify_gsc,
+            verification_method=args.verification_method,
             domain_verification_method=args.domain_verification_method,
             ensure_host_resolves=args.ensure_host,
             idempotency_key=args.idempotency_key or "",
@@ -933,7 +946,11 @@ def main(argv: list[str] | None = None) -> int:
     seo_parser.add_argument("--ga4-property-id", default="", help="reuse an existing GA4 property instead of creating one")
     seo_parser.add_argument("--time-zone", default="UTC")
     seo_parser.add_argument("--currency", default="EUR")
-    seo_parser.add_argument("--no-verify-gsc", action="store_true", help="skip DNS verification and property creation")
+    seo_parser.add_argument("--no-verify-gsc", action="store_true", help="skip verification and property creation")
+    seo_parser.add_argument("--verification-method", choices=("dns_txt", "meta"), default="dns_txt",
+                            help="dns_txt for zones we control, meta for pages we serve (workers.dev)")
+    seo_parser.add_argument("--verify-only", action="store_true",
+                            help="complete a deferred meta verification; does not touch GA4 or CrawlSEO")
     seo_parser.add_argument("--domain-verification-method", default="verified_gsc")
     seo_parser.add_argument("--ensure-host", action="store_true", help="add a proxied placeholder A record when the host does not resolve")
     seo_parser.add_argument("--idempotency-key", default="", help="stable credential key; defaults to site-agent:<tenant>:v1")

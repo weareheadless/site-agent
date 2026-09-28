@@ -129,6 +129,28 @@ class SeoProvisioningService:
 
     # -- the provisioning call -------------------------------------------
 
+    def verify_gsc(
+        self,
+        *,
+        identifier: str,
+        property_url: str,
+        method: str = "META",
+        site_type: str = "SITE",
+    ) -> dict[str, Any]:
+        """Complete a deferred Search Console verification.
+
+        Used after the site has rendered a previously issued meta tag; safe to
+        re-run because verification is idempotent.
+        """
+        self.google_client().verify_domain(identifier, method=method, site_type=site_type)
+        self.google_client().add_search_console_site(property_url)
+        return {
+            "identifier": identifier,
+            "property": property_url,
+            "method": method,
+            "verified_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+        }
+
     def provision(
         self,
         *,
@@ -142,6 +164,7 @@ class SeoProvisioningService:
         time_zone: str = "UTC",
         currency_code: str = "EUR",
         verify_gsc: bool = True,
+        verification_method: str = "dns_txt",
         domain_verification_method: str = "verified_gsc",
         ensure_host_resolves: bool = False,
         idempotency_key: str = "",
@@ -183,24 +206,49 @@ class SeoProvisioningService:
         receipt["ga4_stream_created"] = bool(stream.get("created"))
 
         # 2. Search Console ------------------------------------------------
-        property_url = gsc_property or f"sc-domain:{clean_domain}"
+        if verification_method == "meta":
+            # Platform-hosted pages (e.g. a workers.dev site) cannot be
+            # DNS-verified; the meta tag we control the <head> for is the
+            # portable path. The property is the URL, not the domain.
+            identifier = str(site_url or f"https://{clean_domain}/")
+            if not identifier.startswith(("http://", "https://")):
+                identifier = f"https://{identifier}"
+            property_url = gsc_property or identifier
+        else:
+            identifier = clean_domain
+            property_url = gsc_property or f"sc-domain:{clean_domain}"
         receipt["gsc_property"] = property_url
+        receipt["gsc_verification_method"] = verification_method
         if verify_gsc:
-            dns = self.dns_client()
-            if ensure_host_resolves:
-                zone = clean_domain.split(".", 1)[1] if clean_domain.count(".") >= 1 else clean_domain
+            if verification_method == "meta":
+                tag = self.google_client().verification_token(identifier, method="META", site_type="SITE")
+                receipt["gsc_meta_tag"] = tag
+                receipt["gsc_meta_identifier"] = identifier
                 try:
-                    zone_id = dns.zone_id(zone)
-                    dns.ensure_public_host(zone_id, clean_domain)
-                except CloudflareDNSError:
-                    pass
-            token = self.google_client().verification_token(clean_domain)
-            zone_id = dns.zone_id(clean_domain.split(".", 1)[1] if clean_domain.count(".") >= 1 else clean_domain)
-            dns.upsert_txt(zone_id, clean_domain, token)
-            self.google_client().verify_domain(clean_domain)
-            self.google_client().add_search_console_site(property_url)
-            receipt["gsc_verified"] = True
-            receipt["gsc_verified_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+                    self.google_client().verify_domain(identifier, method="META", site_type="SITE")
+                except GooglePlatformError:
+                    receipt["gsc_verified"] = False
+                    receipt["gsc_pending"] = "the meta tag is not live on the site yet"
+                else:
+                    self.google_client().add_search_console_site(property_url)
+                    receipt["gsc_verified"] = True
+                    receipt["gsc_verified_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+            else:
+                dns = self.dns_client()
+                if ensure_host_resolves:
+                    zone = clean_domain.split(".", 1)[1] if clean_domain.count(".") >= 1 else clean_domain
+                    try:
+                        zone_id = dns.zone_id(zone)
+                        dns.ensure_public_host(zone_id, clean_domain)
+                    except CloudflareDNSError:
+                        pass
+                token = self.google_client().verification_token(clean_domain)
+                zone_id = dns.zone_id(clean_domain.split(".", 1)[1] if clean_domain.count(".") >= 1 else clean_domain)
+                dns.upsert_txt(zone_id, clean_domain, token)
+                self.google_client().verify_domain(clean_domain)
+                self.google_client().add_search_console_site(property_url)
+                receipt["gsc_verified"] = True
+                receipt["gsc_verified_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
 
         # 3. CrawlSEO project ---------------------------------------------
         google_profile = self._google_profile()
