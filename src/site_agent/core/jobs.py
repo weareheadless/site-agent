@@ -34,6 +34,7 @@ from ..brain import report as brain_report
 from ..brain import self_model as brain_self_model
 from ..brain import social as brain_social
 from ..brain import seo as brain_seo
+from ..brain import seo_insights as brain_seo_insights
 from ..brain import seo_outcomes as brain_seo_outcomes
 from ..brain import monthly_seo_report as brain_monthly_seo_report
 from ..senses import collect
@@ -60,6 +61,7 @@ _JOB_DEFAULTS: dict[str, str | int | dict[str, Any]] = {
     "compact": {"every": 7, "weekday": "sunday", "at": "04:00"},
     "health_check": {"every": "daily", "at": "12:00"},
     "seo_snapshot": {"every": "daily", "at": "11:30"},
+    "seo_insight": {"every": 7, "weekday": "monday", "at": "08:45"},
     "reindex_memory": {"every": "daily", "at": "03:30"},
     "strategist": {"every": 7, "weekday": "sunday", "at": "18:00"},
     "backup": {"every": 7, "weekday": "sunday", "at": "03:00"},
@@ -276,6 +278,17 @@ def _digest(context: dict[str, Any]) -> None:
     memory.record_action("digest", detail)
 
 
+def _seo_insight(context: dict[str, Any]) -> None:
+    """Write one owner-facing synthesis from the tenant's own SEO evidence."""
+    config = context.get("config") or {}
+    enabled = bool((config.get("seo") or {}).get("enabled") or (config.get("ga") or {}).get("enabled"))
+    if not enabled:
+        return
+    from ..brain.seo_insights import generate as generate_seo_insight
+
+    _with_persona(context, generate_seo_insight, "editorial")
+
+
 def _ga_snapshot(context: dict[str, Any]) -> None:
     from ..senses import ga as ga_sense
 
@@ -345,6 +358,13 @@ def register_atelier_jobs(scheduler: Scheduler, config: dict[str, Any], context:
     article_research_enabled = bool(((config.get("seo") or {}).get("article_research") or {}).get("enabled", False))
     if context.get("llm") and (bool((config.get("atelier_editorial") or {}).get("enabled", False)) or article_research_enabled):
         scheduler.job("article", schedule.get("article", {"every": "weekly", "weekday": "tuesday", "at": "09:00"}), lambda: _article(context))
+    seo_enabled = bool(((config.get("seo") or {}).get("enabled") or (config.get("ga") or {}).get("enabled")))
+    if context.get("llm") and seo_enabled:
+        scheduler.job(
+            "seo_insight",
+            schedule.get("seo_insight", {"every": 7, "weekday": "monday", "at": "08:45"}),
+            lambda: _seo_insight(context),
+        )
     if context.get("llm") and article_research_enabled and context.get("crawlseo_service"):
         # Selection and reconciliation are two stages of one paid flow: the
         # weekly article job requests the overview, this daily job adopts the
@@ -424,6 +444,8 @@ def register_builtin(scheduler: Scheduler, config: dict[str, Any], context: dict
         scheduler.job("compact", _spec(config, "compact"), lambda: maintenance.compact_memory(context))
     scheduler.job("ga_snapshot", _spec(config, "ga_snapshot"), lambda: _ga_snapshot(context))
     scheduler.job("seo_snapshot", _spec(config, "seo_snapshot"), lambda: _seo_snapshot(context))
+    if context.get("llm"):
+        scheduler.job("seo_insight", _spec(config, "seo_insight"), lambda: _seo_insight(context))
     research_config = ((config.get("seo") or {}).get("research") or {})
     site_report_config = ((config.get("seo") or {}).get("site_report") or {})
     article_research_config = ((config.get("seo") or {}).get("article_research") or {})

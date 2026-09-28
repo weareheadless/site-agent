@@ -71,7 +71,7 @@ from .incubation_contracts import (
     ResearchSource,
 )
 
-SCHEMA_VERSION = 40
+SCHEMA_VERSION = 41
 
 MIGRATIONS: dict[int, list[str]] = {
     1: [
@@ -967,6 +967,24 @@ MIGRATIONS: dict[int, list[str]] = {
         )""",
         "CREATE INDEX IF NOT EXISTS idx_timing_events_operation_ts ON timing_events (operation, ts)",
         "CREATE INDEX IF NOT EXISTS idx_timing_events_job ON timing_events (job_id, ts)",
+    ],
+    41: [
+        """CREATE TABLE IF NOT EXISTS seo_insights (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            period TEXT NOT NULL,
+            created_ts TEXT NOT NULL,
+            headline TEXT NOT NULL DEFAULT '',
+            summary_md TEXT NOT NULL DEFAULT '',
+            opportunities_json TEXT NOT NULL DEFAULT '[]',
+            watchouts_json TEXT NOT NULL DEFAULT '[]',
+            next_action TEXT NOT NULL DEFAULT '',
+            focus_keyword TEXT NOT NULL DEFAULT '',
+            metrics_json TEXT NOT NULL DEFAULT '{}',
+            evidence_json TEXT NOT NULL DEFAULT '[]',
+            provider TEXT NOT NULL DEFAULT 'ada',
+            model TEXT NOT NULL DEFAULT ''
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_seo_insights_period_created ON seo_insights (period, created_ts)",
     ],
 }
 
@@ -4432,6 +4450,77 @@ class Memory:
             }
             for row in rows
         ]
+
+    @_locked
+    def save_seo_insight(
+        self,
+        *,
+        period: str,
+        headline: str = "",
+        summary_md: str = "",
+        opportunities: list[Any] | None = None,
+        watchouts: list[Any] | None = None,
+        next_action: str = "",
+        focus_keyword: str = "",
+        metrics: Mapping[str, Any] | None = None,
+        evidence: list[Any] | None = None,
+        provider: str = "ada",
+        model: str = "",
+    ) -> int:
+        """Persist one owner-facing SEO synthesis for a period."""
+        with self.conn:
+            cursor = self.conn.execute(
+                """
+                INSERT INTO seo_insights (
+                    period, created_ts, headline, summary_md, opportunities_json,
+                    watchouts_json, next_action, focus_keyword, metrics_json,
+                    evidence_json, provider, model
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(period)[:40],
+                    _now(),
+                    str(headline)[:300],
+                    str(summary_md)[:8000],
+                    json.dumps(list(opportunities or []), default=str)[:60000],
+                    json.dumps(list(watchouts or []), default=str)[:20000],
+                    str(next_action)[:1000],
+                    str(focus_keyword)[:200],
+                    json.dumps(dict(metrics or {}), default=str)[:20000],
+                    json.dumps(list(evidence or []), default=str)[:20000],
+                    str(provider)[:40],
+                    str(model)[:120],
+                ),
+            )
+        return int(cursor.lastrowid or 0)
+
+    @staticmethod
+    def _seo_insight_row(row: sqlite3.Row) -> dict[str, Any]:
+        record = dict(row)
+        for column, key in (
+            ("opportunities_json", "opportunities"),
+            ("watchouts_json", "watchouts"),
+            ("metrics_json", "metrics"),
+            ("evidence_json", "evidence"),
+        ):
+            raw = record.pop(column, None)
+            try:
+                record[key] = json.loads(raw) if raw else ([] if key != "metrics" else {})
+            except (json.JSONDecodeError, TypeError):
+                record[key] = [] if key != "metrics" else {}
+        return record
+
+    @_locked
+    def latest_seo_insight(self) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT * FROM seo_insights ORDER BY created_ts DESC, id DESC LIMIT 1").fetchone()
+        return self._seo_insight_row(row) if row is not None else None
+
+    @_locked
+    def list_seo_insights(self, limit: int = 12) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT * FROM seo_insights ORDER BY created_ts DESC, id DESC LIMIT ?", (max(1, int(limit)),)
+        ).fetchall()
+        return [self._seo_insight_row(row) for row in rows]
 
     @_locked
     def get_seo_research_request(self, period: str, package_version: str = "standard-v1") -> dict[str, Any] | None:

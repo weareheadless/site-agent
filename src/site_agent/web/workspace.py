@@ -210,6 +210,14 @@ def register_workspace_routes(
         except AtelierBridgeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.get(f"{prefix}/seo/insights")
+    def atelier_seo_insights(request: Request, limit: int = 12):
+        tenant = require_service(request)
+        try:
+            return service.seo_insights(limit=limit, tenant=tenant)
+        except AtelierBridgeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.post(f"{prefix}/drafts/{{draft_id}}/approve")
     def atelier_approve_draft(draft_id: int, request: Request):
         tenant = require_service(request)

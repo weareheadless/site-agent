@@ -1217,6 +1217,16 @@ class ChatService:
             raise AtelierBridgeError(str(exc)[:500]) from exc
         return {"run": self._public_design_run(run, include_evidence=True)}
 
+    def seo_insights(self, *, limit: int = 12, tenant: AtelierTenant | None = None) -> dict[str, Any]:
+        """Owner-facing SEO synthesis, newest first, scoped to one tenant."""
+        memory, _llm, tenant_id = self._scope(tenant)
+        bounded = max(1, min(int(limit), 50))
+        return {
+            "tenant": tenant_id,
+            "latest": memory.latest_seo_insight(),
+            "insights": memory.list_seo_insights(limit=bounded),
+        }
+
     def approve_draft(self, draft_id: Any, *, tenant: AtelierTenant | None = None) -> dict[str, Any]:
         # A retried HTTP request must observe the first approval's durable
         # receipt rather than perform the same merge twice.

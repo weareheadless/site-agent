@@ -102,6 +102,7 @@ def _idea_prompt(context: Mapping[str, Any]) -> list[dict[str, str]]:
     audience_questions = memory.kv_get("audience_questions", [])
     if not isinstance(audience_questions, list):
         audience_questions = []
+    latest_insight = memory.latest_seo_insight() or {}
     payload = {
         "audience": audience,
         "target_language": language,
@@ -111,6 +112,19 @@ def _idea_prompt(context: Mapping[str, Any]) -> list[dict[str, str]]:
         "themes": memory.kv_get("themes", [])[:8],
         "gsc_top_pages": _snapshot(memory, "gsc"),
         "ga4_top_pages": _snapshot(memory, "ga4"),
+        # Ada's own most recent synthesis: the same view the owner sees.
+        "seo_insight": {
+            "headline": str(latest_insight.get("headline") or "")[:300],
+            "next_action": str(latest_insight.get("next_action") or "")[:600],
+            "focus_keyword": str(latest_insight.get("focus_keyword") or "")[:200],
+            "opportunities": [
+                str((item or {}).get("title") or "")[:200]
+                for item in (latest_insight.get("opportunities") or [])
+                if isinstance(item, Mapping)
+            ][:4],
+        }
+        if latest_insight
+        else {},
         "prior_paid_research_notes": prior,
         "previous_articles": past,
         "editorial_context": str(memory_context(memory))[:2500],
@@ -129,7 +143,9 @@ def _idea_prompt(context: Mapping[str, Any]) -> list[dict[str, str]]:
                 "and what the owner can credibly clarify. Analyze the supplied market context too: alternatives, "
                 "price sensitivity, timing, regulation, competitive conventions, and the factors that change the "
                 "reader's decision. If the market evidence is missing, name that gap instead of inferring it. Do not invent expertise; use supplied owner knowledge, "
-                "approved evidence, or name the gap for owner review. Avoid duplicates. Return JSON only. "
+                "approved evidence, or name the gap for owner review. When a seo_insight is supplied it is your own "
+                "most recent synthesis for the owner: let it inform the choice, but do not simply restate it and do not "
+                "let it override a concrete reader need. Avoid duplicates. Return JSON only. "
                 "candidate_queries must be 5 to 10 concise Google queries that could surface local intent for this "
                 "idea (include the relevant destination or market in queries where it matters). Each query must be "
                 "one phrase: do not use semicolons, commas, pipes, or newline-separated alternatives. Make the "
