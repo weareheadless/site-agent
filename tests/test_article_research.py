@@ -542,3 +542,21 @@ def test_reconcile_serp_failure_does_not_draft(tmp_path, monkeypatch):
         assert "DATAFORSEO_TASK_ERROR" in saved["error"]
     finally:
         memory.close()
+
+def test_idea_summary_is_bounded_and_prioritises_the_reader_question():
+    long_idea = {
+        "reader_question": "Q" * 900,
+        "thesis": "T" * 900,
+        "reader_situation": "S" * 900,
+        "market_context": "M" * 900,
+        "expert_angle": "E" * 900,
+    }
+    summary = article_research._idea_summary(long_idea)
+    assert 0 < len(summary) <= 1800
+    assert summary.startswith("Reader question:")
+    assert "Thesis:" in summary
+    assert "Expert angle:" not in summary
+
+
+def test_idea_summary_skips_missing_fields():
+    assert article_research._idea_summary({"reader_question": "How do I choose?", "thesis": ""}) == "Reader question: How do I choose?"

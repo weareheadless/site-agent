@@ -291,19 +291,41 @@ def _duplicate(idea: Mapping[str, Any], memory: Any) -> bool:
     return False
 
 
+def _idea_summary(idea: Mapping[str, Any], *, limit: int = 1800) -> str:
+    """Compose a bounded provider summary, most useful evidence first.
+
+    The provider caps this field, so it is trimmed by priority rather than
+    truncated mid-sentence: the reader question and thesis carry the meaning.
+    """
+    parts = (
+        ("Reader question", idea.get("reader_question")),
+        ("Thesis", idea.get("thesis")),
+        ("Situation", idea.get("reader_situation")),
+        ("Market context", idea.get("market_context")),
+        ("Expert angle", idea.get("expert_angle")),
+    )
+    composed = ""
+    for label, value in parts:
+        chunk = " ".join(str(value or "").split())
+        if not chunk:
+            continue
+        prefix = f"{composed} " if composed else ""
+        room = limit - len(prefix) - len(label) - 2
+        if room <= 40:
+            break
+        composed = f"{prefix}{label}: {chunk[:room]}".strip()
+        if len(composed) >= limit:
+            break
+    return composed[:limit]
+
+
 def _request_selected_idea(context: Mapping[str, Any], row: Mapping[str, Any], idea: Mapping[str, Any]) -> None:
     memory = context["memory"]
     service = context["crawlseo_service"]
     try:
         response = service.request_article_keyword_research(
             idea_key=str(row["cycle_key"]),
-            idea_summary=(
-                f"Reader question: {idea['reader_question']} "
-                f"Situation: {idea['reader_situation']} "
-                f"Market context: {idea['market_context']} "
-                f"Expert angle: {idea['expert_angle']} "
-                f"Thesis: {idea['thesis']}"
-            ),
+            idea_summary=_idea_summary(idea),
             queries=list(idea.get("candidate_queries") or []),
             language=str(idea["language"]),
             country=str(idea["market"]),
