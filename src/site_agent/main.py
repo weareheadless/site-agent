@@ -99,6 +99,47 @@ def _cmd_check(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_provision_seo(args: argparse.Namespace) -> int:
+    """Provision GA4, Search Console, and a CrawlSEO project for one tenant."""
+    from .application.seo_provisioning import SeoProvisioningError, SeoProvisioningService, write_token_env
+
+    config, _sources = load(args.config)
+    service = SeoProvisioningService(config)
+    if not service.platform_available:
+        print("[site-agent] platform Google/CrawlSEO wiring is not configured in this host profile", file=sys.stderr)
+        return 1
+    try:
+        receipt = service.provision(
+            tenant_id=args.tenant,
+            domain=args.domain,
+            project_name=args.project_name or args.tenant,
+            organization_id=args.organization or "helloada",
+            site_url=args.site_url or "",
+            gsc_property=args.gsc_property or "",
+            ga4_property_id=args.ga4_property_id or "",
+            time_zone=args.time_zone,
+            currency_code=args.currency,
+            verify_gsc=not args.no_verify_gsc,
+            domain_verification_method=args.domain_verification_method,
+            ensure_host_resolves=args.ensure_host,
+            idempotency_key=args.idempotency_key or "",
+        )
+    except (SeoProvisioningError, ValueError) as exc:
+        print(f"[site-agent] SEO provisioning failed: {exc}", file=sys.stderr)
+        return 1
+    token = receipt.pop("credential_token", "")
+    if token:
+        directory = Path(args.persist_token_dir).expanduser() if args.persist_token_dir else (
+            Path(args.config).expanduser().resolve().parent if args.config else Path.cwd()
+        )
+        path = write_token_env(directory, receipt["token_env"], token)
+        receipt["token_file"] = str(path)
+    else:
+        receipt["token_file"] = ""
+    print(json.dumps(receipt, indent=2, ensure_ascii=False, default=str))
+    return 0
+
+
 def _cmd_init_site(args: argparse.Namespace) -> int:
     root = initialize_site(args.directory, args.name, args.url)
     print(f"initialized Pelican site: {root}")
@@ -878,6 +919,25 @@ def main(argv: list[str] | None = None) -> int:
     r2_parser.add_argument("--token-name", help="Cloudflare R2 token display name")
     r2_parser.add_argument("--env-file", help="instance env file; defaults beside config.yaml")
     r2_parser.add_argument("--bootstrap-env-file", help="global provisioning env file; defaults to .env in the current directory")
+    seo_parser = sub.add_parser(
+        "provision-seo",
+        parents=[common],
+        help="provision GA4, Search Console, and a CrawlSEO project for one tenant",
+    )
+    seo_parser.add_argument("--tenant", required=True, help="tenant slug; also the CrawlSEO external project id")
+    seo_parser.add_argument("--domain", required=True, help="bare domain to verify and track")
+    seo_parser.add_argument("--project-name", default="", help="display name for the GA4 property and project")
+    seo_parser.add_argument("--organization", default="helloada", help="external organization id")
+    seo_parser.add_argument("--site-url", default="", help="public site URL for the GA4 web stream")
+    seo_parser.add_argument("--gsc-property", default="", help="Search Console property; defaults to sc-domain:<domain>")
+    seo_parser.add_argument("--ga4-property-id", default="", help="reuse an existing GA4 property instead of creating one")
+    seo_parser.add_argument("--time-zone", default="UTC")
+    seo_parser.add_argument("--currency", default="EUR")
+    seo_parser.add_argument("--no-verify-gsc", action="store_true", help="skip DNS verification and property creation")
+    seo_parser.add_argument("--domain-verification-method", default="verified_gsc")
+    seo_parser.add_argument("--ensure-host", action="store_true", help="add a proxied placeholder A record when the host does not resolve")
+    seo_parser.add_argument("--idempotency-key", default="", help="stable credential key; defaults to site-agent:<tenant>:v1")
+    seo_parser.add_argument("--persist-token-dir", default="", help="directory for the 0600 crawlseo.env token file")
     experiment_parser = sub.add_parser("design-experiment", parents=[common], help="run a local-only immutable design experiment")
     experiment_parser.add_argument("--intake", required=True, help="sanitized design-intake JSON")
     experiment_parser.add_argument("--data-dir", required=True, help="dedicated experiment data directory")
@@ -921,7 +981,7 @@ def main(argv: list[str] | None = None) -> int:
     if getattr(args, "config", None) is None:
         args.config = None
     handlers = {"check": _cmd_check, "once": _cmd_once, "run": _cmd_run, "serve": _cmd_serve, "api": _cmd_api,
-                "init-site": _cmd_init_site, "provision-r2": _cmd_provision_r2,
+                "init-site": _cmd_init_site, "provision-r2": _cmd_provision_r2, "provision-seo": _cmd_provision_seo,
                 "design-experiment": _cmd_design_experiment, "intake-lab": _cmd_intake_lab}
     if args.command == "design-lab":
         handlers = {

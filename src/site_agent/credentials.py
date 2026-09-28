@@ -101,7 +101,7 @@ def credential_environment(
     root_file = str(profiles.get("env_file") or "").strip()
     if root_file:
         paths.append(root_file)
-    for name in ("github", "cloudflare"):
+    for name in ("github", "cloudflare", "cloudflare_dns", "crawlseo"):
         path = str(credential_profile(config, name).get("env_file") or "").strip()
         if path:
             paths.append(path)
