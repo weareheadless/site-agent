@@ -75,6 +75,26 @@ class CloudflareDNSClient:
             raise CloudflareDNSError(f"zone not found: {name}")
         return str(results[0].get("id") or "")
 
+    def zone_id_for_hostname(self, hostname: str) -> str:
+        """Resolve the authoritative Cloudflare zone for a hostname.
+
+        Looking up ``example.com`` by taking everything after the first dot
+        breaks apexes such as ``example.com`` (it produces ``com``) and nested
+        delegated zones. Try the most specific candidate first and let
+        Cloudflare identify the zone we actually control.
+        """
+        value = str(hostname or "").strip().lower().rstrip(".")
+        labels = [part for part in value.split(".") if part]
+        if len(labels) < 2:
+            return self.zone_id(value)
+        for index in range(0, len(labels) - 1):
+            candidate = ".".join(labels[index:])
+            try:
+                return self.zone_id(candidate)
+            except CloudflareDNSError:
+                continue
+        raise CloudflareDNSError(f"zone not found: {value}")
+
     def records(self, zone_id: str, *, record_type: str = "", name: str = "") -> list[dict[str, Any]]:
         query = [f"per_page=100"]
         if record_type:

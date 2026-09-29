@@ -23,6 +23,7 @@ import datetime
 import re
 import time
 import unicodedata
+from collections.abc import Mapping
 from typing import Any
 
 from ..brain import article as brain_article
@@ -175,6 +176,53 @@ def _article(context: dict[str, Any]) -> None:
         _mirror_article_draft_to_atelier(context, draft_id)
 
 
+def _mirror_article_drafts(context: dict[str, Any]) -> None:
+    """Mirror every research-produced article draft, not only the legacy path."""
+    memory = context["memory"]
+    for draft in memory.list_drafts(limit=100):
+        if draft.get("kind") != "article":
+            continue
+        try:
+            _mirror_article_draft_to_atelier(context, int(draft["id"]))
+        except (TypeError, ValueError):
+            continue
+
+
+def _mirror_keyword_research(context: dict[str, Any]) -> None:
+    """Keep the complete paid-research trail beside the owner-facing insight."""
+    payload = context.get("payload_gateway")
+    if payload is None:
+        return
+    memory = context["memory"]
+    tenant_id = context.get("atelier_tenant_id") or context["config"].get("instance_name")
+    for idea in memory.list_article_ideas(limit=100):
+        idea_data = idea.get("idea_json") if isinstance(idea.get("idea_json"), Mapping) else {}
+        note = idea.get("research_note_json") if isinstance(idea.get("research_note_json"), Mapping) else {}
+        try:
+            payload.upsert_seo_record(
+                "keyword_research",
+                {
+                    "sourceId": f"article-idea:{tenant_id}:{idea.get('id')}",
+                    "tenant_id": tenant_id,
+                    "idea_key": idea.get("cycle_key") or idea.get("idea_hash") or str(idea.get("id") or ""),
+                    "working_title": idea_data.get("working_title") or "",
+                    "status": idea.get("status") or "unknown",
+                    "selected_keyword": note.get("selected_query") or "",
+                    "language": idea_data.get("language") or "",
+                    "country": idea_data.get("market") or "",
+                    "requested_at": idea.get("created_ts"),
+                    "completed_at": idea.get("researched_ts"),
+                    "result": idea.get("research_result_json") or {},
+                    "serp_evidence": note.get("serp_evidence") or {},
+                    "draft_id": idea.get("draft_id"),
+                    "cost_micros": idea.get("research_cost_micros"),
+                    "error": idea.get("error") or "",
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - local research remains usable for retry
+            memory.record_action("article_research", f"Payload keyword mirror deferred: {str(exc)[:180]}")
+
+
 def _article_slug(title: str, draft_id: int) -> str:
     normalized = unicodedata.normalize("NFKD", str(title or ""))
     normalized = normalized.encode("ascii", "ignore").decode("ascii").lower()
@@ -227,6 +275,19 @@ def _mirror_article_draft_to_atelier(context: dict[str, Any], draft_id: int) -> 
         "modifiedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         "author": str((context.get("config", {}).get("persona") or {}).get("name") or "Ada"),
     }
+    seo_meta = meta if isinstance((meta := draft.get("meta")), Mapping) else {}
+    research_note = seo_meta.get("research_note") if isinstance(seo_meta.get("research_note"), Mapping) else {}
+    primary_keyword = str(
+        seo_meta.get("primary_keyword")
+        or research_note.get("selected_query")
+        or ""
+    ).strip()[:200]
+    if primary_keyword:
+        post["seo"] = {
+            "focusKeyword": primary_keyword,
+            "title": title[:300],
+            "description": plain[:320],
+        }
     try:
         existing = next(
             (item for item in payload.list("posts", draft=True, limit=100) if str(item.get("sourceId") or "") == source_id),
@@ -286,7 +347,18 @@ def _seo_insight(context: dict[str, Any]) -> None:
         return
     from ..brain.seo_insights import generate as generate_seo_insight
 
-    _with_persona(context, generate_seo_insight, "editorial")
+    insight_id = _with_persona(context, generate_seo_insight, "editorial")
+    payload = context.get("payload_gateway")
+    if payload is not None and isinstance(insight_id, int):
+        insight = context["memory"].latest_seo_insight()
+        if insight:
+            try:
+                payload.upsert_seo_record(
+                    "insight",
+                    {**insight, "tenant_id": context.get("atelier_tenant_id") or context["config"].get("instance_name")},
+                )
+            except Exception as exc:  # noqa: BLE001 - local insight remains authoritative for retry
+                context["memory"].record_action("seo_insight", f"Payload mirror deferred: {str(exc)[:240]}")
 
 
 def _ga_snapshot(context: dict[str, Any]) -> None:
@@ -301,6 +373,22 @@ def _ga_snapshot(context: dict[str, Any]) -> None:
     else:
         summary = ga_sense.weekly_summary(config)
     memory.snapshot_metrics("ga4", summary)
+    payload = context.get("payload_gateway")
+    if payload is not None:
+        tenant_id = context.get("atelier_tenant_id") or context["config"].get("instance_name")
+        captured_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+        period = str(summary.get("period") or summary.get("period_days") or captured_at[:10]) if isinstance(summary, Mapping) else captured_at[:10]
+        payload.upsert_seo_record(
+            "snapshot",
+            {
+                "sourceId": f"snapshot:{tenant_id}:ga4:{captured_at[:10]}",
+                "source": "ga4",
+                "period": period,
+                "captured_at": captured_at,
+                "data": summary,
+                "tenant_id": tenant_id,
+            },
+        )
 
 
 def _seo_snapshot(context: dict[str, Any]) -> None:
@@ -315,6 +403,45 @@ def _seo_snapshot(context: dict[str, Any]) -> None:
     else:
         summary = seo_sense.summary(config)
     memory.snapshot_metrics("gsc", summary)
+    payload = context.get("payload_gateway")
+    if payload is not None:
+        tenant_id = context.get("atelier_tenant_id") or context["config"].get("instance_name")
+        captured_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+        period = str(summary.get("period") or summary.get("period_days") or captured_at[:10]) if isinstance(summary, Mapping) else captured_at[:10]
+        payload.upsert_seo_record(
+            "snapshot",
+            {
+                "sourceId": f"snapshot:{tenant_id}:gsc:{captured_at[:10]}",
+                "source": "gsc",
+                "period": period,
+                "captured_at": captured_at,
+                "data": summary,
+                "tenant_id": tenant_id,
+            },
+        )
+
+
+def _seo_provisioning(context: dict[str, Any]) -> None:
+    """Retry the automatic tenant bootstrap and attach a newly issued client."""
+    from ..application.seo_bootstrap import auto_provision_seo
+
+    tenant_id = str(context.get("atelier_tenant_id") or context["config"].get("instance_name") or "")
+    state, env = auto_provision_seo(
+        context["config"],
+        tenant_id=tenant_id,
+        memory=context["memory"],
+        env=context.get("env"),
+    )
+    runtime = context.get("runtime")
+    if runtime is not None and state.get("state") == "ready":
+        service = runtime.refresh_crawlseo(env)
+        context["env"] = env
+        context["crawlseo_client"] = runtime.crawlseo_client
+        context["crawlseo_service"] = service
+    context["seo_provisioning_state"] = state
+    payload = context.get("payload_gateway")
+    if payload is not None and state:
+        payload.upsert_seo_record("integration", state)
 
 
 def _strategist(context: dict[str, Any]) -> None:
@@ -335,6 +462,8 @@ def _article_research_cycle(context: dict[str, Any]) -> None:
     # Reconciliation culminates in a reader-facing article, so it needs the
     # complete editorial/business context as well as the research evidence.
     _with_persona(context, brain_article_research.reconcile, "article_research")
+    _mirror_article_drafts(context)
+    _mirror_keyword_research(context)
 
 
 def register_atelier_jobs(scheduler: Scheduler, config: dict[str, Any], context: dict[str, Any]) -> None:
@@ -356,9 +485,28 @@ def register_atelier_jobs(scheduler: Scheduler, config: dict[str, Any], context:
     if context.get("llm") and (has_sources or bool(settings.get("learning_enabled", False))):
         scheduler.job("learn", schedule.get("learn", {"every": "weekly", "weekday": "monday", "at": "08:20"}), lambda: _with_persona(context, brain_digest.learn, "research"))
     article_research_enabled = bool(((config.get("seo") or {}).get("article_research") or {}).get("enabled", False))
+    seo_config = config.get("seo") if isinstance(config.get("seo"), dict) else {}
+    provisioning = seo_config.get("provisioning") if isinstance(seo_config, dict) else {}
+    seo_enabled = bool(seo_config.get("enabled") or (config.get("ga") or {}).get("enabled"))
+    if isinstance(provisioning, dict) and bool(provisioning.get("auto", False)):
+        scheduler.job(
+            "seo_provisioning",
+            schedule.get("seo_provisioning", {"every": "6h"}),
+            lambda: _seo_provisioning(context),
+        )
+    if seo_enabled:
+        scheduler.job(
+            "ga_snapshot",
+            schedule.get("ga_snapshot", {"every": "daily", "at": "11:00"}),
+            lambda: _ga_snapshot(context),
+        )
+        scheduler.job(
+            "seo_snapshot",
+            schedule.get("seo_snapshot", {"every": "daily", "at": "11:30"}),
+            lambda: _seo_snapshot(context),
+        )
     if context.get("llm") and (bool((config.get("atelier_editorial") or {}).get("enabled", False)) or article_research_enabled):
         scheduler.job("article", schedule.get("article", {"every": "weekly", "weekday": "tuesday", "at": "09:00"}), lambda: _article(context))
-    seo_enabled = bool(((config.get("seo") or {}).get("enabled") or (config.get("ga") or {}).get("enabled")))
     if context.get("llm") and seo_enabled:
         scheduler.job(
             "seo_insight",

@@ -273,26 +273,46 @@ class TenantRegistry:
                 seen_tokens.add(api_token)
 
                 memory = Memory(data_dir / "memory.db")
+                from .seo_bootstrap import auto_provision_seo, load_tenant_environment
+
+                tenant_env = load_tenant_environment(tenant_config, env)
+                seo_state: dict[str, Any] = {}
+                if isinstance(tenant_config.get("seo"), Mapping):
+                    try:
+                        seo_state, tenant_env = auto_provision_seo(
+                            tenant_config,
+                            tenant_id=tenant_id,
+                            memory=memory,
+                            env=tenant_env,
+                        )
+                    except Exception as exc:  # noqa: BLE001 - bootstrap is retried by the scheduler
+                        memory.kv_set(
+                            "seo_provisioning_state",
+                            {"state": "error", "error": str(exc)[:500]},
+                        )
+                        seo_state = memory.kv_get("seo_provisioning_state", {}) or {}
                 scheduler = Scheduler(memory, lock_path=data_dir / "scheduler.lock")
                 from ..core.llm import Client
 
-                llm = Client(tenant_config, memory, env=dict(env))
+                llm = Client(tenant_config, memory, env=dict(tenant_env))
                 runtime = Runtime(
                     tenant_config,
                     memory,
                     scheduler,
                     llm,
                     effective_persona(tenant_config, memory),
+                    env=dict(tenant_env),
                 )
                 context = runtime.context()
                 from ..hands.payload_gateway import PayloadGatewayClient
 
-                payload_client = PayloadGatewayClient.from_config(tenant_config, dict(env))
+                payload_client = PayloadGatewayClient.from_config(tenant_config, dict(tenant_env))
                 journey = _journey_for_config(tenant_config)
                 context.update({
                     "payload_gateway": payload_client,
                     "atelier_tenant_id": tenant_id,
                     "atelier_journey": journey,
+                    "seo_provisioning_state": seo_state,
                 })
                 from .source_editor import SourceEditorService
                 from .source_deployment import SourceDeploymentService

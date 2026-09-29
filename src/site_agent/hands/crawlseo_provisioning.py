@@ -2,7 +2,8 @@
 
 Ada calls this once per tenant. The endpoint returns a project-scoped service
 credential (``cseo_...``) the first time only, so the caller must persist it
-immediately; a repeat call with the same idempotency key returns no token.
+immediately. A recovery retry may explicitly rotate the existing credential
+when the caller has no local copy of the token.
 """
 
 from __future__ import annotations

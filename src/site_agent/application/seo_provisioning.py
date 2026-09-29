@@ -120,6 +120,15 @@ class SeoProvisioningService:
     def crawlseo_mcp_url(self) -> str:
         return str(credential_profile(self.config, "crawlseo").get("mcp_url") or "").strip()
 
+    @staticmethod
+    def _zone_id_for_hostname(dns: CloudflareDNSClient, hostname: str) -> str:
+        resolver = getattr(dns, "zone_id_for_hostname", None)
+        if callable(resolver):
+            return str(resolver(hostname))
+        # Compatibility seam for small test doubles and older adapters.
+        labels = str(hostname).strip().rstrip(".").split(".")
+        return str(dns.zone_id(".".join(labels[-2:]) if len(labels) > 1 else labels[0]))
+
     @property
     def platform_available(self) -> bool:
         """True when the host has both the Google and CrawlSEO wiring."""
@@ -168,6 +177,7 @@ class SeoProvisioningService:
         domain_verification_method: str = "verified_gsc",
         ensure_host_resolves: bool = False,
         idempotency_key: str = "",
+        recover_service_credential: bool = False,
     ) -> dict[str, Any]:
         clean_domain = str(domain or "").strip().lower().rstrip(".")
         if not clean_domain or "/" in clean_domain:
@@ -206,14 +216,17 @@ class SeoProvisioningService:
         receipt["ga4_stream_created"] = bool(stream.get("created"))
 
         # 2. Search Console ------------------------------------------------
+        verification_method = str(verification_method or "dns_txt").strip().lower()
+        if verification_method not in {"meta", "dns_txt"}:
+            raise SeoProvisioningError("verification_method must be meta or dns_txt")
         if verification_method == "meta":
             # Platform-hosted pages (e.g. a workers.dev site) cannot be
             # DNS-verified; the meta tag we control the <head> for is the
             # portable path. The property is the URL, not the domain.
-            identifier = str(site_url or f"https://{clean_domain}/")
+            identifier = str(site_url or f"https://{clean_domain}/").strip().rstrip("/")
             if not identifier.startswith(("http://", "https://")):
                 identifier = f"https://{identifier}"
-            property_url = gsc_property or identifier
+            property_url = str(gsc_property or site_url or identifier).strip()
         else:
             identifier = clean_domain
             property_url = gsc_property or f"sc-domain:{clean_domain}"
@@ -236,19 +249,27 @@ class SeoProvisioningService:
             else:
                 dns = self.dns_client()
                 if ensure_host_resolves:
-                    zone = clean_domain.split(".", 1)[1] if clean_domain.count(".") >= 1 else clean_domain
+                    zone = clean_domain
                     try:
-                        zone_id = dns.zone_id(zone)
+                        zone_id = self._zone_id_for_hostname(dns, zone)
                         dns.ensure_public_host(zone_id, clean_domain)
                     except CloudflareDNSError:
                         pass
                 token = self.google_client().verification_token(clean_domain)
-                zone_id = dns.zone_id(clean_domain.split(".", 1)[1] if clean_domain.count(".") >= 1 else clean_domain)
+                zone_id = self._zone_id_for_hostname(dns, clean_domain)
                 dns.upsert_txt(zone_id, clean_domain, token)
                 self.google_client().verify_domain(clean_domain)
                 self.google_client().add_search_console_site(property_url)
                 receipt["gsc_verified"] = True
                 receipt["gsc_verified_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+
+        # Do not create a CrawlSEO project or queue doomed Google jobs while a
+        # platform-hosted Worker is still waiting for its verification tag. The
+        # bootstrapper installs the tag and calls this method again.
+        if verify_gsc and receipt.get("gsc_verified") is False:
+            receipt["provisioning_state"] = "awaiting_gsc_verification"
+            receipt["crawlseo_pending"] = True
+            return receipt
 
         # 3. CrawlSEO project ---------------------------------------------
         google_profile = self._google_profile()
@@ -269,6 +290,7 @@ class SeoProvisioningService:
                 "ga4PropertyId": str(receipt["ga4_property_id"]),
                 "serviceAccountCredentials": credentials_document,
                 "serviceCredentialIdempotencyKey": idempotency_key or f"site-agent:{project_id}:v1",
+                "reissueCredential": bool(recover_service_credential),
                 "domainVerificationMethod": domain_verification_method,
             }
         )
@@ -284,6 +306,7 @@ class SeoProvisioningService:
         token = response.get("credential_token")
         receipt["credential_token"] = str(token) if token else ""
         receipt["credential_issued"] = bool(token)
+        receipt["provisioning_state"] = "ready"
         return receipt
 
 

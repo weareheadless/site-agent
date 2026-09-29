@@ -23,7 +23,7 @@ from .application.social_posts import SocialPostService
 from .core.memory import Memory
 from .core.scheduler import Scheduler
 from .hands.cicero import CiceroClient, configured as cicero_configured
-from .hands.crawlseo import CrawlSEOClient, configured as crawlseo_configured
+from .hands.crawlseo import CrawlSEOClient, CrawlSEOConfigurationError, configured as crawlseo_configured
 from .hands.site_build import SiteOutputArtifactStore
 
 
@@ -49,6 +49,7 @@ class Runtime:
     business_knowledge_service: Any | None = None
     design_service: DesignService | None = None
     customer_context_service: CustomerContextService | None = None
+    env: dict[str, str] | None = None
 
     def __post_init__(self) -> None:
         if self.home_service is None:
@@ -56,7 +57,12 @@ class Runtime:
         if self.owner_action_service is None:
             object.__setattr__(self, "owner_action_service", OwnerActionService(self.memory))
         if self.crawlseo_client is None and self.crawlseo_service is None and crawlseo_configured(self.config):
-            object.__setattr__(self, "crawlseo_client", CrawlSEOClient.from_config(self.config))
+            try:
+                object.__setattr__(self, "crawlseo_client", CrawlSEOClient.from_config(self.config, self.env))
+            except CrawlSEOConfigurationError:
+                provisioning = (self.config.get("seo") or {}).get("provisioning") or {}
+                if not bool(isinstance(provisioning, dict) and provisioning.get("auto")):
+                    raise
         if self.crawlseo_service is None and self.crawlseo_client is not None:
             object.__setattr__(self, "crawlseo_service", CrawlSEOApplicationService(self.crawlseo_client))
         if self.capability_registry is None:
@@ -145,6 +151,23 @@ class Runtime:
         if self.crawlseo_client is not None:
             self.crawlseo_client.close()
 
+    def refresh_crawlseo(self, env: dict[str, str] | None = None) -> CrawlSEOApplicationService | None:
+        """Attach a newly provisioned project without restarting the tenant.
+
+        Automatic bootstrap may issue the project credential after this Runtime
+        was constructed. Replacing the optional client here keeps recovery
+        idempotent and makes the provider available to the next scheduler tick.
+        """
+        if env is not None:
+            object.__setattr__(self, "env", dict(env))
+        if self.crawlseo_client is not None:
+            self.crawlseo_client.close()
+        client = CrawlSEOClient.from_config(self.config, self.env)
+        object.__setattr__(self, "crawlseo_client", client)
+        service = CrawlSEOApplicationService(client) if client is not None else None
+        object.__setattr__(self, "crawlseo_service", service)
+        return service
+
     def context(self) -> dict[str, Any]:
         """Compatibility context for modules not yet migrated to ``Runtime``."""
         persona = self.persona_prompt
@@ -175,4 +198,5 @@ class Runtime:
             "design_service": self.design_service,
             "customer_context_service": self.customer_context_service,
             "runtime": self,
+            "env": self.env,
         }

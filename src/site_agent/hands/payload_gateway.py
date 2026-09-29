@@ -351,6 +351,29 @@ class PayloadGatewayClient(EditableFieldGatewayMixin):
             payload={"operation": "publish", "global": slug},
         ).get("global") or {}
 
+    def upsert_seo_record(self, resource: str, data: Mapping[str, Any]) -> dict[str, Any]:
+        """Persist provider data in the tenant's Payload SEO data surface.
+
+        SEO records are intentionally outside the editable content contract:
+        they are written by Ada's authenticated service token and read by the
+        owner-facing Payload view. Provider credentials never enter this
+        payload; the bridge rejects/omits them on the other side.
+        """
+        resource = str(resource or "").strip().lower()
+        if resource not in {"integration", "snapshot", "insight", "keyword_research"}:
+            raise PayloadGatewayError("unsupported SEO resource")
+        if not isinstance(data, Mapping) or not data:
+            raise PayloadGatewayError("SEO record data must be a non-empty object")
+        response = self._request(
+            "POST",
+            self._gateway_path("seo/data"),
+            payload={"operation": "upsert", "resource": resource, "data": dict(data)},
+        )
+        document = response.get("document")
+        if not isinstance(document, dict):
+            raise PayloadGatewayError("Payload SEO gateway returned no document")
+        return document
+
     @staticmethod
     def _media_data(data: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(data, Mapping):
