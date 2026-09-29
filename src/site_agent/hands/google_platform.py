@@ -16,13 +16,17 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 ANALYTICS_ADMIN = "https://analyticsadmin.googleapis.com/v1beta"
+ANALYTICS_ADMIN_ALPHA = "https://analyticsadmin.googleapis.com/v1alpha"
+ANALYTICS_DATA = "https://analyticsdata.googleapis.com/v1beta"
 SITE_VERIFICATION = "https://www.googleapis.com/siteVerification/v1"
 WEBMASTERS = "https://www.googleapis.com/webmasters/v3"
 USER_AGENT = "site-agent/0.1 (+https://helloada.app)"
 
 ANALYTICS_EDIT = "https://www.googleapis.com/auth/analytics.edit"
 ANALYTICS_READONLY = "https://www.googleapis.com/auth/analytics.readonly"
+ANALYTICS_MANAGE_USERS = "https://www.googleapis.com/auth/analytics.manage.users"
 WEBMASTERS_SCOPE = "https://www.googleapis.com/auth/webmasters"
+WEBMASTERS_READONLY = "https://www.googleapis.com/auth/webmasters.readonly"
 SITEVERIFICATION_SCOPE = "https://www.googleapis.com/auth/siteverification"
 
 
@@ -239,6 +243,89 @@ class GooglePlatformClient:
             "created": True,
         }
 
+    # -- analytics data and access ----------------------------------------
+
+    @staticmethod
+    def _property_path(property_id: str) -> str:
+        value = str(property_id or "").strip().replace("properties/", "")
+        if not value:
+            raise GooglePlatformError("GA4 property id is missing")
+        return urllib.parse.quote(value, safe="")
+
+    def run_analytics_report(self, property_id: str, body: Mapping[str, Any]) -> dict[str, Any]:
+        """Run a read-only GA4 Data API report for one provisioned property."""
+        status, payload = self._request(
+            f"{ANALYTICS_DATA}/properties/{self._property_path(property_id)}:runReport",
+            scopes=(ANALYTICS_READONLY,),
+            method="POST",
+            body=body,
+        )
+        if status != 200:
+            raise GooglePlatformError(_partial_error(payload))
+        return payload
+
+    def run_search_console_report(self, site_url: str, body: Mapping[str, Any]) -> dict[str, Any]:
+        """Run a read-only Search Analytics query for one provisioned URL property."""
+        site = str(site_url or "").strip()
+        if not site:
+            raise GooglePlatformError("Search Console property is missing")
+        encoded = urllib.parse.quote(site, safe="")
+        status, payload = self._request(
+            f"{WEBMASTERS}/sites/{encoded}/searchAnalytics/query",
+            scopes=(WEBMASTERS_READONLY,),
+            method="POST",
+            body=body,
+        )
+        if status != 200:
+            raise GooglePlatformError(_partial_error(payload))
+        return payload
+
+    def list_ga4_access_bindings(self, property_id: str) -> list[dict[str, Any]]:
+        """List direct GA4 property access grants."""
+        status, payload = self._request(
+            f"{ANALYTICS_ADMIN_ALPHA}/properties/{self._property_path(property_id)}/accessBindings?pageSize=100",
+            scopes=(ANALYTICS_MANAGE_USERS,),
+        )
+        if status != 200:
+            raise GooglePlatformError(_partial_error(payload))
+        return [dict(item) for item in (payload.get("accessBindings") or []) if isinstance(item, Mapping)]
+
+    def grant_ga4_access(self, property_id: str, email: str, role: str = "viewer") -> dict[str, Any]:
+        """Grant a bounded, non-administrative GA4 role to one user."""
+        roles = {
+            "viewer": "predefinedRoles/viewer",
+            "analyst": "predefinedRoles/analyst",
+        }
+        selected_role = roles.get(str(role or "").strip().lower())
+        address = str(email or "").strip().lower()
+        if selected_role is None:
+            raise GooglePlatformError("GA4 access role must be viewer or analyst")
+        if "@" not in address or len(address) > 254:
+            raise GooglePlatformError("a valid Google account email is required")
+        status, payload = self._request(
+            f"{ANALYTICS_ADMIN_ALPHA}/properties/{self._property_path(property_id)}/accessBindings",
+            scopes=(ANALYTICS_MANAGE_USERS,),
+            method="POST",
+            body={"user": address, "roles": [selected_role]},
+        )
+        if status not in (200, 201):
+            raise GooglePlatformError(_partial_error(payload))
+        return payload
+
+    def delete_ga4_access_binding(self, binding_name: str) -> bool:
+        """Remove one direct GA4 access binding."""
+        name = str(binding_name or "").strip()
+        if not name.startswith("properties/") or "/accessBindings/" not in name:
+            raise GooglePlatformError("invalid GA4 access binding")
+        status, payload = self._request(
+            f"{ANALYTICS_ADMIN_ALPHA}/{urllib.parse.quote(name, safe='/')}",
+            scopes=(ANALYTICS_MANAGE_USERS,),
+            method="DELETE",
+        )
+        if status not in (200, 204):
+            raise GooglePlatformError(_partial_error(payload))
+        return True
+
     # -- Search Console ---------------------------------------------------
 
     def verification_token(
@@ -304,6 +391,7 @@ class GooglePlatformClient:
 
 __all__ = [
     "ANALYTICS_EDIT",
+    "ANALYTICS_MANAGE_USERS",
     "ANALYTICS_READONLY",
     "SITEVERIFICATION_SCOPE",
     "WEBMASTERS_SCOPE",

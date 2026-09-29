@@ -18,8 +18,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import Response
 
+from ..application.analytics import AnalyticsError, GoogleAnalyticsService
 from ..application.workspace import BridgeError, ChatService, SourceConflict, Tenant, TenantRegistry
 from ..config import resolve_secret
+from ..hands.google_platform import GooglePlatformError
 
 # Local compatibility aliases keep the existing handler names readable while
 # the public service and route modules use generic workspace terminology.
@@ -71,6 +73,33 @@ def register_workspace_routes(
         if not supplied or not hmac.compare_digest(supplied.encode(), expected.encode()):
             raise HTTPException(status_code=401, detail="Atelier service authentication required")
         return None
+
+    def analytics_for(tenant: Tenant | None) -> GoogleAnalyticsService:
+        if tenant is None:
+            raise HTTPException(status_code=503, detail="tenant analytics are unavailable")
+        google = tenant.context.get("google_platform")
+        if google is None:
+            raise HTTPException(status_code=503, detail="Google analytics is not configured for this tenant")
+        state = tenant.context.get("seo_provisioning_state") or tenant.memory.kv_get("seo_provisioning_state", {})
+        return GoogleAnalyticsService(tenant.config, google, state)
+
+    def ga_property_id(tenant: Tenant | None) -> str:
+        if tenant is None:
+            raise HTTPException(status_code=503, detail="tenant analytics are unavailable")
+        state = tenant.context.get("seo_provisioning_state") or tenant.memory.kv_get("seo_provisioning_state", {})
+        property_id = str((state or {}).get("ga4_property_id") or ((tenant.config.get("ga") or {}).get("property_id") or "")).strip()
+        if not property_id:
+            raise HTTPException(status_code=503, detail="GA4 property is not configured for this tenant")
+        return property_id
+
+    def access_binding_view(binding: dict[str, Any]) -> dict[str, Any]:
+        roles = [str(role).rsplit("/", 1)[-1] for role in (binding.get("roles") or [])]
+        return {
+            "name": str(binding.get("name") or ""),
+            "user": str(binding.get("user") or ""),
+            "group": str(binding.get("group") or ""),
+            "roles": roles,
+        }
 
     @app.post(f"{prefix}/chat")
     async def atelier_chat(request: Request):
@@ -217,6 +246,102 @@ def register_workspace_routes(
             return service.seo_insights(limit=limit, tenant=tenant)
         except AtelierBridgeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get(f"{prefix}/seo/analytics")
+    def atelier_seo_analytics(request: Request, days: int = 28):
+        tenant = require_service(request)
+        try:
+            return analytics_for(tenant).report(days=days)
+        except AnalyticsError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except GooglePlatformError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.get(f"{prefix}/seo/access")
+    def atelier_seo_access(request: Request):
+        tenant = require_service(request)
+        google = tenant.context.get("google_platform") if tenant is not None else None
+        property_id = ga_property_id(tenant)
+        if google is None:
+            raise HTTPException(status_code=503, detail="Google analytics is not configured for this tenant")
+        try:
+            bindings = google.list_ga4_access_bindings(property_id)
+        except GooglePlatformError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        state = tenant.context.get("seo_provisioning_state") or tenant.memory.kv_get("seo_provisioning_state", {})
+        return {
+            "entity": {
+                "siteUrl": str((state or {}).get("site_url") or ((tenant.config.get("seo") or {}).get("site_url") or "")),
+                "gscProperty": str((state or {}).get("gsc_property") or ""),
+                "ga4PropertyId": property_id,
+            },
+            "ga4": {"available": True, "bindings": [access_binding_view(item) for item in bindings]},
+            "gsc": {
+                "available": False,
+                "reason": "Search Console does not expose user-permission management through its public API. The platform service account remains the automation owner.",
+            },
+        }
+
+    @app.post(f"{prefix}/seo/access")
+    async def atelier_seo_access_grant(request: Request):
+        tenant = require_service(request)
+        google = tenant.context.get("google_platform") if tenant is not None else None
+        property_id = ga_property_id(tenant)
+        if google is None:
+            raise HTTPException(status_code=503, detail="Google analytics is not configured for this tenant")
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - normalize malformed bridge input
+            raise HTTPException(status_code=400, detail="invalid json")
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="request body must be an object")
+        email = str(body.get("email") or "").strip().lower()
+        role = str(body.get("role") or "viewer").strip().lower()
+        try:
+            binding = google.grant_ga4_access(property_id, email, role)
+        except GooglePlatformError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if tenant is not None:
+            tenant.memory.record_action("analytics_access", f"GA4 {role} access granted to {email}")
+        return {
+            "ga4": access_binding_view(binding),
+            "gsc": {
+                "available": False,
+                "reason": "Search Console access still needs to be granted from Search Console itself.",
+            },
+        }
+
+    @app.post(f"{prefix}/seo/access/revoke")
+    async def atelier_seo_access_revoke(request: Request):
+        tenant = require_service(request)
+        google = tenant.context.get("google_platform") if tenant is not None else None
+        property_id = ga_property_id(tenant)
+        if google is None:
+            raise HTTPException(status_code=503, detail="Google analytics is not configured for this tenant")
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - normalize malformed bridge input
+            raise HTTPException(status_code=400, detail="invalid json")
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="request body must be an object")
+        binding_name = str(body.get("name") or "").strip()
+        expected_prefix = f"properties/{property_id}/accessBindings/"
+        if not binding_name.startswith(expected_prefix):
+            raise HTTPException(status_code=400, detail="access binding does not belong to this tenant")
+        try:
+            bindings = google.list_ga4_access_bindings(property_id)
+            binding = next((item for item in bindings if str(item.get("name") or "") == binding_name), None)
+            if binding is None:
+                raise HTTPException(status_code=404, detail="access binding not found")
+            roles = {str(role).rsplit("/", 1)[-1] for role in (binding.get("roles") or [])}
+            if not roles or not roles.issubset({"viewer", "analyst"}):
+                raise HTTPException(status_code=409, detail="administrator access cannot be revoked from this workspace")
+            google.delete_ga4_access_binding(binding_name)
+        except GooglePlatformError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        if tenant is not None:
+            tenant.memory.record_action("analytics_access", f"GA4 access revoked for {binding.get('user') or binding.get('group') or binding_name}")
+        return {"revoked": True, "name": binding_name}
 
     @app.post(f"{prefix}/drafts/{{draft_id}}/approve")
     def atelier_approve_draft(draft_id: int, request: Request):

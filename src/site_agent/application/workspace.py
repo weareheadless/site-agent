@@ -306,6 +306,14 @@ class TenantRegistry:
                 context = runtime.context()
                 from ..hands.payload_gateway import PayloadGatewayClient
 
+                google_platform = None
+                try:
+                    from .seo_provisioning import SeoProvisioningService
+
+                    google_platform = SeoProvisioningService(tenant_config, tenant_env).google_client()
+                except Exception as exc:  # noqa: BLE001 - analytics reports surface provider availability to the owner
+                    memory.record_action("analytics", f"Google analytics client unavailable: {str(exc)[:180]}")
+
                 payload_client = PayloadGatewayClient.from_config(tenant_config, dict(tenant_env))
                 journey = _journey_for_config(tenant_config)
                 context.update({
@@ -313,6 +321,7 @@ class TenantRegistry:
                     "atelier_tenant_id": tenant_id,
                     "atelier_journey": journey,
                     "seo_provisioning_state": seo_state,
+                    "google_platform": google_platform,
                 })
                 from .source_editor import SourceEditorService
                 from .source_deployment import SourceDeploymentService
