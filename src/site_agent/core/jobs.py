@@ -350,15 +350,28 @@ def _seo_insight(context: dict[str, Any]) -> None:
     insight_id = _with_persona(context, generate_seo_insight, "editorial")
     payload = context.get("payload_gateway")
     if payload is not None and isinstance(insight_id, int):
-        insight = context["memory"].latest_seo_insight()
-        if insight:
-            try:
-                payload.upsert_seo_record(
-                    "insight",
-                    {**insight, "tenant_id": context.get("atelier_tenant_id") or context["config"].get("instance_name")},
-                )
-            except Exception as exc:  # noqa: BLE001 - local insight remains authoritative for retry
-                context["memory"].record_action("seo_insight", f"Payload mirror deferred: {str(exc)[:240]}")
+        _mirror_seo_insights(context, limit=1)
+
+
+def _mirror_seo_insights(context: dict[str, Any], *, limit: int = 12) -> None:
+    """Backfill local insight history into Payload after a bridge deploy."""
+    payload = context.get("payload_gateway")
+    if payload is None:
+        return
+    memory = context["memory"]
+    tenant_id = context.get("atelier_tenant_id") or context["config"].get("instance_name")
+    for insight in memory.list_seo_insights(limit=limit):
+        try:
+            payload.upsert_seo_record(
+                "insight",
+                {
+                    "sourceId": f"insight:{tenant_id}:{insight.get('id')}",
+                    **insight,
+                    "tenant_id": tenant_id,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - local insight remains authoritative for retry
+            memory.record_action("seo_insight", f"Payload mirror deferred: {str(exc)[:240]}")
 
 
 def _ga_snapshot(context: dict[str, Any]) -> None:
@@ -389,6 +402,7 @@ def _ga_snapshot(context: dict[str, Any]) -> None:
                 "tenant_id": tenant_id,
             },
         )
+        _mirror_integration_sync(context, captured_at)
 
 
 def _seo_snapshot(context: dict[str, Any]) -> None:
@@ -419,6 +433,20 @@ def _seo_snapshot(context: dict[str, Any]) -> None:
                 "tenant_id": tenant_id,
             },
         )
+        _mirror_integration_sync(context, captured_at)
+
+
+def _mirror_integration_sync(context: dict[str, Any], captured_at: str) -> None:
+    payload = context.get("payload_gateway")
+    if payload is None:
+        return
+    state = context.get("seo_provisioning_state") or context["memory"].kv_get("seo_provisioning_state", {})
+    if not isinstance(state, Mapping):
+        return
+    payload.upsert_seo_record(
+        "integration",
+        {**dict(state), "last_sync_at": captured_at, "tenant_id": context.get("atelier_tenant_id") or context["config"].get("instance_name")},
+    )
 
 
 def _seo_provisioning(context: dict[str, Any]) -> None:
@@ -494,6 +522,10 @@ def register_atelier_jobs(scheduler: Scheduler, config: dict[str, Any], context:
             schedule.get("seo_provisioning", {"every": "6h"}),
             lambda: _seo_provisioning(context),
         )
+    if context.get("payload_gateway") is not None:
+        _mirror_seo_insights(context)
+        _mirror_article_drafts(context)
+        _mirror_keyword_research(context)
     if seo_enabled:
         scheduler.job(
             "ga_snapshot",
@@ -510,7 +542,7 @@ def register_atelier_jobs(scheduler: Scheduler, config: dict[str, Any], context:
     if context.get("llm") and seo_enabled:
         scheduler.job(
             "seo_insight",
-            schedule.get("seo_insight", {"every": 7, "weekday": "monday", "at": "08:45"}),
+            schedule.get("seo_insight", {"every": 7}),
             lambda: _seo_insight(context),
         )
     if context.get("llm") and article_research_enabled and context.get("crawlseo_service"):

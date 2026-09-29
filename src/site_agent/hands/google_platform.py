@@ -1,9 +1,9 @@
 """Platform-managed Google provisioning: GA4 properties and Search Console.
 
-Ada owns one Google service account and uses it to create per-tenant analytics
-properties and to verify Search Console ownership through the Site Verification
-API. Tenants never receive this credential; the bot only ever sees the
-resulting property ids.
+The platform owns one Google service account and uses it to create or reconcile
+per-tenant analytics properties and to verify Search Console ownership through
+the Site Verification API. Tenants never receive this credential; the service
+only exposes the resulting property ids and status.
 """
 
 from __future__ import annotations
@@ -175,6 +175,31 @@ class GooglePlatformClient:
             "display_name": display_name,
             "created": True,
         }
+
+    def ensure_property_display_name(self, property_id: str, display_name: str) -> str:
+        """Reconcile an existing property's label with the tenant site name."""
+        property_id = str(property_id or "").strip().replace("properties/", "")
+        wanted = str(display_name or "").strip()[:128]
+        if not property_id or not wanted:
+            raise GooglePlatformError("GA4 property id and display name are required")
+        status, payload = self._request(
+            f"{ANALYTICS_ADMIN}/properties/{urllib.parse.quote(property_id, safe='')}",
+            scopes=(ANALYTICS_READONLY,),
+        )
+        if status != 200:
+            raise GooglePlatformError(_partial_error(payload))
+        current = str(payload.get("displayName") or "").strip()
+        if current.casefold() == wanted.casefold():
+            return current or wanted
+        status, payload = self._request(
+            f"{ANALYTICS_ADMIN}/properties/{urllib.parse.quote(property_id, safe='')}?updateMask=displayName",
+            scopes=(ANALYTICS_EDIT,),
+            method="PATCH",
+            body={"displayName": wanted},
+        )
+        if status != 200:
+            raise GooglePlatformError(_partial_error(payload))
+        return str(payload.get("displayName") or wanted)
 
     def ensure_web_stream(self, property_id: str, site_url: str, *, display_name: str | None = None) -> dict[str, Any]:
         """Return the property's web stream, creating one when absent."""

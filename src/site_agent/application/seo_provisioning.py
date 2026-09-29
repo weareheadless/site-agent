@@ -190,6 +190,8 @@ class SeoProvisioningService:
         receipt: dict[str, Any] = {
             "tenant_id": project_id,
             "domain": clean_domain,
+            "site_url": str(site_url or f"https://{clean_domain}/").strip(),
+            "project_name": str(project_name or "").strip()[:200],
             "token_env": token_env,
             "provisioned_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         }
@@ -212,6 +214,9 @@ class SeoProvisioningService:
             site_url or f"https://{clean_domain}",
             display_name=project_name,
         )
+        rename = getattr(self.google_client(), "ensure_property_display_name", None)
+        if callable(rename):
+            receipt["ga4_display_name"] = rename(receipt["ga4_property_id"], project_name)
         receipt["ga4_measurement_id"] = stream.get("measurement_id")
         receipt["ga4_stream_created"] = bool(stream.get("created"))
 
