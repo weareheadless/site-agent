@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@weareheadless/helloada-payload-admin": "https://github.com/weareheadless/site-agent/releases/download/payload-admin-v0.1.1/weareheadless-helloada-payload-admin-0.1.1.tgz",
+    "@weareheadless/helloada-payload-admin": "https://github.com/weareheadless/site-agent/releases/download/payload-admin-v0.1.2/weareheadless-helloada-payload-admin-0.1.2.tgz",
     "@opennextjs/cloudflare": "1.20.6",
     "@payloadcms/db-d1-sqlite": "3.88.0",
     "@payloadcms/next": "3.88.0",

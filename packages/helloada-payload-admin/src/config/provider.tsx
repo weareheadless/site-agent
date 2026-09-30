@@ -2,13 +2,13 @@
 
 import { createContext, useContext, type ReactNode } from 'react'
 
-import { setHelloAdaSite, type HelloAdaSiteConfig } from './site'
+import { getHelloAdaSite, setHelloAdaSite, type HelloAdaSiteConfig } from './site'
 
-const HelloAdaSiteContext = createContext<HelloAdaSiteConfig | null>(null)
+const HelloAdaSiteContext = createContext<HelloAdaSiteConfig>(getHelloAdaSite())
 
 export function HelloAdaSiteProvider({ config, children }: { config: HelloAdaSiteConfig; children: ReactNode }) {
   setHelloAdaSite(config)
   return <HelloAdaSiteContext.Provider value={config}>{children}</HelloAdaSiteContext.Provider>
 }
 
-export const useHelloAdaSite = () => useContext(HelloAdaSiteContext) || undefined
+export const useHelloAdaSite = () => useContext(HelloAdaSiteContext)
