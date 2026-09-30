@@ -636,6 +636,68 @@ class TenantRegistry:
                 raise
         return tenant
 
+    def reload_tenant(
+        self,
+        tenant_id: str,
+        config_path: str,
+        *,
+        api_token: str,
+        api_token_env: str | None = None,
+        env: Mapping[str, str] | None = None,
+    ) -> Tenant:
+        """Rebuild one tenant after bootstrap changes its runtime config.
+
+        Runtime registration normally happens before a website has a remote
+        source. Bootstrap later adds GitHub/Payload/Worker settings to the same
+        config file; replacing only the in-memory config would leave the old
+        adapter graph alive. This method performs the same isolated construction
+        as startup without restarting the shared API process.
+        """
+        normalized = str(tenant_id or "").strip().lower()
+        if not _SAFE_NAME.fullmatch(normalized):
+            raise ConfigError(f"tenant id is invalid: {normalized or '(empty)'}")
+        if not str(api_token or "").strip():
+            raise ConfigError(f"tenant {normalized} requires an api token")
+        token_env = str(
+            api_token_env or f"PROVISIONED_{normalized.replace('-', '_').upper()}_TOKEN"
+        ).strip()
+        if not _SAFE_ENV.fullmatch(token_env):
+            raise ConfigError(f"tenant {normalized} api_token_env is invalid")
+        merged_env = dict(self._env)
+        if env:
+            merged_env.update(env)
+        merged_env[token_env] = api_token
+        proxy = {
+            "credentials": dict(self._shared_credentials),
+            "observability": dict(self._shared_observability),
+            "workspace_api": {
+                "enabled": True,
+                "provisioned_root": str(
+                    Path(config_path).expanduser().resolve().parent.parent / ".registration-proxy"
+                ),
+                "tenants": {normalized: {"config_path": str(config_path), "api_token_env": token_env}},
+            },
+        }
+        temporary = TenantRegistry.from_config(proxy, merged_env)
+        try:
+            replacement = temporary.tenants[normalized]
+        except Exception:
+            temporary.close()
+            raise
+        temporary.tenants.clear()
+        previous = self.tenants.get(normalized)
+        if previous is not None:
+            self._stop_tenant(previous)
+        self.tenants[normalized] = replacement
+        if self._started:
+            try:
+                self._start_tenant(replacement)
+            except Exception:
+                self.tenants.pop(normalized, None)
+                self._stop_tenant(replacement)
+                raise
+        return replacement
+
     @staticmethod
     def _start_scheduler(tenant: Tenant) -> None:
         """Start the reusable reading/editorial loop for an opted-in tenant."""

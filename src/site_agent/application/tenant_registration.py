@@ -1,4 +1,4 @@
-"""Server-only, local provisioning of a HelloAda website tenant.
+"""Server-only, local registration of a HelloAda website tenant.
 
 Registering a website in HelloAda creates a real site-agent tenant on the local
 filesystem: a tenant config, a dedicated memory database, a runtime api token,
@@ -6,11 +6,9 @@ and a durable entry in the provisioned-tenant registry.  The tenant is then
 built and started through the exact same path used for host-declared tenants, so
 a provisioned website behaves identically to a configured one.
 
-This module never calls Cloudflare, GitHub, or any other external service.  It
-does create a remote-free, host-owned source scaffold so the typed design build
-has an immutable baseline immediately.  Real infrastructure provisioning,
-custom domains, and the launch gate remain a later, separately-authorized step
-per the HelloAda implementation plan.
+This module intentionally stops before provider mutations. The companion
+``application.bootstrap`` saga owns the separately retryable GitHub/Cloudflare/
+Payload bootstrap after this local identity and token boundary exists.
 """
 
 from __future__ import annotations
@@ -406,6 +404,10 @@ def _new_site_config(
         "site": {
             **_neutral_site_overrides(site_dir),
             "website_present": False,
+        },
+        "blog": {
+            "engine": "payload",
+            "journal_enabled": False,
         },
         "design_engine": _neutral_design_overrides(),
         "builder": _neutral_builder_overrides(),

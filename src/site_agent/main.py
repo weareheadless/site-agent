@@ -889,6 +889,7 @@ def _cmd_api(args: argparse.Namespace) -> int:
     import uvicorn
 
     from .application.tenant_registration import TenantRegistrationService
+    from .application.bootstrap import WebsiteBootstrapService
     from .application.workspace import TenantRegistry
     from .web.workspace import create_workspace_api_app
 
@@ -896,12 +897,14 @@ def _cmd_api(args: argparse.Namespace) -> int:
     config, _ = load(args.config, raw_env)
     registry = TenantRegistry.from_config(config, raw_env)
     registration = TenantRegistrationService(config, raw_env, registry=registry)
+    bootstrap = WebsiteBootstrapService(config, raw_env, registration=registration, registry=registry)
     api = config.get("workspace_api") or {}
     app = create_workspace_api_app(
         registry,
         prefix=str(api.get("prefix") or "/v1/workspace"),
         control_token=raw_env.get("HELLOADA_CONTROL_PLANE_TOKEN"),
         registration=registration,
+        bootstrap=bootstrap,
     )
     host = str(api.get("host") or "127.0.0.1")
     port = int(api.get("port") or 3014)
@@ -909,6 +912,7 @@ def _cmd_api(args: argparse.Namespace) -> int:
     try:
         uvicorn.run(app, host=host, port=port, log_level="warning")
     finally:
+        bootstrap.close()
         registry.close()
     return 0
 
@@ -928,7 +932,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("run", parents=[common], help="run the scheduler loop (long-lived)")
     sub.add_parser("serve", parents=[common], help="run admin web server (Phase 4)")
     sub.add_parser("api", parents=[common], help="run the shared tenant-aware Ada API")
-    init_parser = sub.add_parser("init-site", help="create the standard Pelican starting point in an empty site directory")
+    init_parser = sub.add_parser("init-site", help="create the legacy Pelican starting point in an empty site directory")
     init_parser.add_argument("--directory", required=True, help="empty customer website directory")
     init_parser.add_argument("--name", default="New Website", help="customer website name")
     init_parser.add_argument("--url", default="", help="public website URL")

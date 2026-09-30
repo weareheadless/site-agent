@@ -19,7 +19,7 @@ def test_defaults_load_without_instance_file():
     config, sources = load(env={})
     assert config["instance_name"] == "default"
     assert config["site"]["adapter"] == "github_static"
-    assert config["blog"]["engine"] == "pelican"
+    assert config["blog"]["engine"] == "payload"
     assert config["llm"]["base_url"] == "https://openrouter.ai/api/v1"
     assert config["llm"]["model"] == "deepseek/deepseek-v4-flash-0731"
     assert config["builder"]["model"] == "openrouter/deepseek/deepseek-v4.1-flash"

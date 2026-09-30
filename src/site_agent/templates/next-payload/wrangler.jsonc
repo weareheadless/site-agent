@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "main": ".open-next/worker.js",
+  "name": "helloada-template",
+  "compatibility_date": "2025-08-15",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": { "directory": ".open-next/assets", "binding": "ASSETS" },
+  "vars": {
+    "SITE_AGENT_URL": "__SITE_AGENT_URL__",
+    "NEXT_PUBLIC_SITE_URL": "__WORKER_URL__",
+    "ATELIER_TENANT_ID": "__TENANT_ID__",
+    "HELLOADA_SITE_NAME": "__SITE_NAME__"
+  },
+  "d1_databases": [
+    {
+      "binding": "D1",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_name": "helloada-template"
+    }
+  ],
+  "r2_buckets": [
+    { "binding": "R2", "bucket_name": "helloada-template-media" }
+  ]
+}

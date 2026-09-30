@@ -20,6 +20,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
 from ..application.analytics import AnalyticsError, GoogleAnalyticsService
+from ..application.bootstrap import BootstrapError, WebsiteBootstrapService
 from ..application.tenant_registration import TenantRegistrationError, TenantRegistrationService
 from ..application.workspace import BridgeError, ChatService, SourceConflict, Tenant, TenantRegistry
 from ..config import resolve_secret
@@ -45,6 +46,7 @@ def register_workspace_routes(
     control_prefix: str | None = None,
     control_token: str | None = None,
     registration: TenantRegistrationService | None = None,
+    bootstrap: WebsiteBootstrapService | None = None,
 ) -> None:
     """Register the smallest trusted bridge needed by an owner workspace.
 
@@ -803,6 +805,37 @@ def register_workspace_routes(
             except TenantRegistrationError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+        @app.post(f"{control_prefix}/{{website_id}}/bootstrap")
+        async def control_plane_bootstrap(website_id: str, request: Request):
+            require_control_plane(request)
+            if registration is None or bootstrap is None:
+                raise HTTPException(status_code=503, detail="website bootstrap is unavailable")
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            if not isinstance(body, dict):
+                raise HTTPException(status_code=400, detail="request body must be an object")
+            try:
+                result = bootstrap.start(
+                    website_id,
+                    display_name=str(body.get("display_name") or "").strip(),
+                )
+            except (BootstrapError, TenantRegistrationError) as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            status_code = 200 if result.get("status") == "done" else 202
+            return JSONResponse(result, status_code=status_code)
+
+        @app.get(f"{control_prefix}/{{website_id}}/bootstrap")
+        def control_plane_bootstrap_status(website_id: str, request: Request):
+            require_control_plane(request)
+            if registry is None or bootstrap is None or registry.for_tenant_id(website_id) is None:
+                raise HTTPException(status_code=404, detail="website was not found")
+            try:
+                return bootstrap.status(website_id)
+            except BootstrapError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+
         @app.post(f"{control_prefix}/{{website_id}}/chat")
         async def control_plane_chat(website_id: str, request: Request):
             tenant = require_control_tenant(request, website_id)
@@ -891,6 +924,14 @@ def register_workspace_routes(
             except BridgeError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+        @app.get(f"{control_prefix}/{{website_id}}/history")
+        def control_plane_history(website_id: str, request: Request, limit: int = 50):
+            tenant = require_control_tenant(request, website_id)
+            try:
+                return service.history(limit=limit, tenant=tenant)
+            except BridgeError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
         @app.post(f"{control_prefix}/{{website_id}}/design/runs/{{run_id}}/retry")
         async def control_plane_design_retry(website_id: str, run_id: str, request: Request):
             tenant = require_control_tenant(request, website_id)
@@ -905,6 +946,22 @@ def register_workspace_routes(
             except BridgeError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+        @app.post(f"{control_prefix}/{{website_id}}/versions/{{version_id}}/restore")
+        def control_plane_restore_version(website_id: str, version_id: int, request: Request):
+            tenant = require_control_tenant(request, website_id)
+            try:
+                return service.restore_version(version_id, tenant=tenant)
+            except BridgeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        @app.post(f"{control_prefix}/{{website_id}}/drafts/{{draft_id}}/approve")
+        def control_plane_approve_draft(website_id: str, draft_id: int, request: Request):
+            tenant = require_control_tenant(request, website_id)
+            try:
+                return service.approve_draft(draft_id, tenant=tenant)
+            except BridgeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+
 
 def create_workspace_api_app(
     registry: TenantRegistry,
@@ -912,6 +969,7 @@ def create_workspace_api_app(
     prefix: str = "/v1/workspace",
     control_token: str | None = None,
     registration: TenantRegistrationService | None = None,
+    bootstrap: WebsiteBootstrapService | None = None,
 ) -> FastAPI:
     """Create the single shared, tenant-aware API process."""
 
@@ -939,6 +997,7 @@ def create_workspace_api_app(
         control_prefix="/v1/control-plane/websites",
         control_token=control_token,
         registration=registration,
+        bootstrap=bootstrap,
     )
     return app
 

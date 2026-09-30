@@ -239,12 +239,12 @@ providers:
     max_response_bytes: 2097152
 
 blog:
-  # New instances use Pelican. Existing instances should pin legacy explicitly
-  # until their repository has a Pelican config and theme.
-  engine: pelican
+  # Payload is the canonical CMS for new sites. Pelican remains available only
+  # when an existing instance explicitly sets blog.engine: pelican.
+  engine: payload
   articles_dir: content/articles
   site_url: ""
-  build_command: "pelican content -o output -s pelicanconf.py"
+  build_command: ""
   journal_enabled: false
 
 llm:
@@ -282,6 +282,17 @@ admin:
               # ok, warn, bad, radius, font_body, font_display, fonts_url, logo
 
 publish_mode: ask_first
+
+bootstrap:
+  enabled: true
+  github_owner: weareheadless
+  repository_private: true
+  resource_prefix: helloada
+  site_agent_url: https://api.helloada.app/v1
+  template_path: ""
+  worker_url_template: "https://{worker_name}.workers.dev"
+  d1_location: ""
+  r2_location: ""
 
 workspace_api:
   enabled: false

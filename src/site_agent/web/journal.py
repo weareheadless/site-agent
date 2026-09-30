@@ -49,6 +49,9 @@ def status(config: dict[str, Any], memory: Any) -> dict[str, Any]:
         error = error or "Ada finished with a missing journal design draft."
     steps = job.get("steps") or [] if job else []
     return {
+        # Minimal legacy callers may construct an unmerged config. The package
+        # defaults now explicitly provide ``payload``; this fallback preserves
+        # their old journal behavior without changing new tenant defaults.
         "pelican": str(blog.get("engine", "pelican")).lower() == "pelican",
         "enabled": enabled,
         "setup_requested": requested,

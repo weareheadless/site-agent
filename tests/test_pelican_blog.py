@@ -33,8 +33,9 @@ def test_pelican_document_normalizes_title_and_removes_duplicate_leading_heading
     assert "Read this first." in payload
 
 
-def test_pelican_engine_is_default_in_merged_config_and_legacy_can_be_explicit():
+def test_pelican_engine_is_opt_in_and_payload_is_not_pelican():
     assert enabled({}) is False
+    assert enabled({"blog": {"engine": "payload"}}) is False
     assert enabled({"blog": {"engine": "legacy"}}) is False
     assert enabled({"blog": {"engine": "pelican"}}) is True
 

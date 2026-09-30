@@ -23,7 +23,7 @@ site-agent = "site_agent.main:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-site_agent = ["defaults.yaml", "intake-ada.yaml", "skills/*.md", "web/static/*.html", "web/static/vendor/*.js"]
+site_agent = ["defaults.yaml", "intake-ada.yaml", "skills/*.md", "web/static/*.html", "web/static/vendor/*.js", "templates/next-payload/**/*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
