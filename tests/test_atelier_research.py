@@ -1,4 +1,4 @@
-from site_agent.application.atelier_intake import AtelierIntakeCoordinator
+from site_agent.application.intake_coordinator import IntakeCoordinator
 from site_agent.core.design_contracts import SiteIntake
 from site_agent.core.design_intake_contracts import DesignIntakeDraft
 from site_agent.core.jobs import register_atelier_jobs
@@ -39,7 +39,7 @@ def _ready_draft() -> DesignIntakeDraft:
 def test_research_recovery_retries_latest_ready_revision_once(tmp_path):
     memory = Memory(tmp_path / "memory.db")
     llm = _RecoveryLLM()
-    coordinator = AtelierIntakeCoordinator(
+    coordinator = IntakeCoordinator(
         memory,
         config={"atelier_intake": {"research": {"enabled": True}}},
         llm=llm,
@@ -67,7 +67,7 @@ def test_research_recovery_retries_latest_ready_revision_once(tmp_path):
 
 def test_research_status_keeps_insights_linked_to_public_sources(tmp_path):
     memory = Memory(tmp_path / "memory.db")
-    coordinator = AtelierIntakeCoordinator(memory, config={}, llm=None)
+    coordinator = IntakeCoordinator(memory, config={}, llm=None)
     coordinator.research_service.projection = lambda: {
         "requests": [{
             "request_id": "research_123",
@@ -111,7 +111,7 @@ def test_research_status_keeps_insights_linked_to_public_sources(tmp_path):
 
 def test_atelier_scheduler_registers_research_recovery_for_enabled_intake(tmp_path):
     memory = Memory(tmp_path / "memory.db")
-    coordinator = AtelierIntakeCoordinator(memory, config={}, llm=None)
+    coordinator = IntakeCoordinator(memory, config={}, llm=None)
     scheduler = Scheduler(memory, tmp_path / "scheduler.lock")
     try:
         register_atelier_jobs(
@@ -127,7 +127,7 @@ def test_atelier_scheduler_registers_research_recovery_for_enabled_intake(tmp_pa
                 },
                 "memory": memory,
                 "llm": object(),
-                "atelier_intake": coordinator,
+                "intake_coordinator": coordinator,
             },
         )
 

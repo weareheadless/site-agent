@@ -45,6 +45,7 @@ from .design_contracts import (
     validate_design_phase,
     validate_design_phase_status,
 )
+from .design_operation_contracts import DesignOperation, OperationStatus
 from .design_intake_contracts import (
     DESIGN_INTAKE_SCHEMA_VERSION,
     DesignIntakeDraft,
@@ -71,7 +72,9 @@ from .incubation_contracts import (
     ResearchSource,
 )
 
-SCHEMA_VERSION = 41
+_OPERATION_FIELD_UNSET = object()
+
+SCHEMA_VERSION = 42
 
 MIGRATIONS: dict[int, list[str]] = {
     1: [
@@ -986,6 +989,29 @@ MIGRATIONS: dict[int, list[str]] = {
         )""",
         "CREATE INDEX IF NOT EXISTS idx_seo_insights_period_created ON seo_insights (period, created_ts)",
     ],
+    42: [
+        """CREATE TABLE IF NOT EXISTS design_operations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            website_id TEXT NOT NULL,
+            tool TEXT NOT NULL,
+            origin TEXT NOT NULL,
+            status TEXT NOT NULL,
+            input_hash TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            source_action_id INTEGER,
+            conversation_id INTEGER,
+            revision_id TEXT,
+            reason TEXT,
+            payload TEXT NOT NULL DEFAULT '{}',
+            outcome TEXT NOT NULL DEFAULT '{}',
+            error_code TEXT,
+            created_ts TEXT NOT NULL,
+            updated_ts TEXT NOT NULL
+        )""",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_design_operations_idempotency ON design_operations (website_id, idempotency_key)",
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_design_operations_source_action ON design_operations (website_id, source_action_id) WHERE source_action_id IS NOT NULL",
+        "CREATE INDEX IF NOT EXISTS idx_design_operations_status ON design_operations (website_id, status, id)",
+    ],
 }
 
 
@@ -1267,6 +1293,128 @@ class Memory:
             draft_id=draft_id if draft_id is not None else action.draft_id,
             updated_ts=updated_ts,
         )
+
+    @_locked
+    def create_operation(self, operation: DesignOperation) -> DesignOperation:
+        """Persist one owner-visible operation and return its database id."""
+        if operation.operation_id is not None:
+            raise ContractError("new operation must not already have an id")
+        record = operation.to_record()
+        with self.conn:
+            cur = self.conn.execute(
+                "INSERT INTO design_operations "
+                "(website_id, tool, origin, status, input_hash, idempotency_key, source_action_id, "
+                "conversation_id, revision_id, reason, payload, outcome, error_code, created_ts, updated_ts) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    record["website_id"], record["tool"], record["origin"], record["status"],
+                    record["input_hash"], record["idempotency_key"], record["source_action_id"],
+                    record["conversation_id"], record["revision_id"], record["reason"],
+                    record["payload"], record["outcome"], record["error_code"],
+                    record["created_ts"], record["updated_ts"],
+                ),
+            )
+        return replace(operation, operation_id=cur.lastrowid)
+
+    @_locked
+    def get_operation(self, operation_id: int) -> DesignOperation | None:
+        row = self.conn.execute(
+            "SELECT * FROM design_operations WHERE id = ?",
+            (operation_id,),
+        ).fetchone()
+        return DesignOperation.from_record(dict(row)) if row else None
+
+    @_locked
+    def find_operation_by_idempotency(
+        self,
+        website_id: str,
+        idempotency_key: str,
+    ) -> DesignOperation | None:
+        row = self.conn.execute(
+            "SELECT * FROM design_operations WHERE website_id = ? AND idempotency_key = ?",
+            (website_id, idempotency_key),
+        ).fetchone()
+        return DesignOperation.from_record(dict(row)) if row else None
+
+    @_locked
+    def find_operation_by_source_action(
+        self,
+        website_id: str,
+        source_action_id: int,
+    ) -> DesignOperation | None:
+        row = self.conn.execute(
+            "SELECT * FROM design_operations WHERE website_id = ? AND source_action_id = ?",
+            (website_id, source_action_id),
+        ).fetchone()
+        return DesignOperation.from_record(dict(row)) if row else None
+
+    @_locked
+    def list_operations(
+        self,
+        *,
+        website_id: str,
+        status: OperationStatus | str | None = None,
+        limit: int = 100,
+    ) -> list[DesignOperation]:
+        bounded = max(1, min(int(limit), 500))
+        query = "SELECT * FROM design_operations WHERE website_id = ?"
+        params: list[Any] = [website_id]
+        if status is not None:
+            try:
+                normalized_status = OperationStatus(status).value
+            except (TypeError, ValueError) as exc:
+                raise ContractError("operation status is invalid") from exc
+            query += " AND status = ?"
+            params.append(normalized_status)
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(bounded)
+        return [
+            DesignOperation.from_record(dict(row))
+            for row in self.conn.execute(query, params)
+        ]
+
+    @_locked
+    def transition_operation(
+        self,
+        operation_id: int,
+        status: OperationStatus | str,
+        *,
+        expected_status: OperationStatus | str | None = None,
+        reason: str | None | object = _OPERATION_FIELD_UNSET,
+        revision_id: str | None | object = _OPERATION_FIELD_UNSET,
+        payload: dict[str, Any] | None | object = _OPERATION_FIELD_UNSET,
+        outcome: dict[str, Any] | None | object = _OPERATION_FIELD_UNSET,
+        error_code: str | None | object = _OPERATION_FIELD_UNSET,
+    ) -> DesignOperation | None:
+        current = self.get_operation(operation_id)
+        if current is None:
+            return None
+        if expected_status is not None and current.status != OperationStatus(expected_status):
+            raise ContractError("operation status is stale")
+        target = OperationStatus(status)
+        changes: dict[str, Any] = {}
+        if reason is not _OPERATION_FIELD_UNSET:
+            changes["reason"] = reason
+        if revision_id is not _OPERATION_FIELD_UNSET:
+            changes["revision_id"] = revision_id
+        if payload is not _OPERATION_FIELD_UNSET:
+            changes["payload"] = payload
+        if outcome is not _OPERATION_FIELD_UNSET:
+            changes["outcome"] = outcome
+        if error_code is not _OPERATION_FIELD_UNSET:
+            changes["error_code"] = error_code
+        next_operation = current.with_transition(target, **changes)
+        record = next_operation.to_record()
+        with self.conn:
+            self.conn.execute(
+                "UPDATE design_operations SET status = ?, revision_id = ?, reason = ?, payload = ?, outcome = ?, "
+                "error_code = ?, updated_ts = ? WHERE id = ?",
+                (
+                    record["status"], record["revision_id"], record["reason"], record["payload"],
+                    record["outcome"], record["error_code"], record["updated_ts"], operation_id,
+                ),
+            )
+        return next_operation
 
     @_locked
     def create_artifact(self, artifact: Artifact) -> Artifact:

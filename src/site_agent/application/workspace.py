@@ -23,8 +23,8 @@ from urllib.parse import urlsplit
 
 import yaml
 
-from ..config import ConfigError, deep_merge, load
-from .atelier_intake import AtelierIntakeCoordinator
+from ..config import ConfigError, deep_merge, intake_settings, load
+from .intake_coordinator import IntakeCoordinator
 from ..core.memory import Memory
 from ..core.reflect import effective_persona
 from ..core.scheduler import Scheduler
@@ -94,7 +94,7 @@ def _journey_for_config(config: Mapping[str, Any]) -> Journey:
         observed_settings = business.get("observed_site_settings") if isinstance(business.get("observed_site_settings"), Mapping) else {}
         website_present = bool(payload.get("enabled") or observed_settings.get("website_url"))
 
-    intake = config.get("atelier_intake") if isinstance(config.get("atelier_intake"), Mapping) else {}
+    intake = intake_settings(config)
     if "incubation_needed" in journey:
         incubation_needed = bool(journey.get("incubation_needed"))
     elif "incubation_needed" in intake:
@@ -135,6 +135,24 @@ class DesignBuildHandoff:
         executor = self.context.get("design_executor")
         if service is None or executor is None:
             raise AtelierBridgeError("the full design build service is unavailable")
+        # Runtime composition owns the tenant config.  Keep a recovered
+        # DesignService instance from an older process/config snapshot from
+        # losing the newly provisioned local clone before resolving its base
+        # SHA.  This is intentionally one-way and only repairs the missing
+        # clone path; it never overwrites a configured customer target.
+        runtime_config = self.context.get("config")
+        service_config = getattr(service, "config", None)
+        runtime_site = runtime_config.get("site") if isinstance(runtime_config, Mapping) else {}
+        service_site = service_config.get("site") if isinstance(service_config, Mapping) else {}
+        if (
+            isinstance(runtime_site, Mapping)
+            and str(runtime_site.get("clone_path") or "").strip()
+            and not str(service_site.get("clone_path") or "").strip()
+        ):
+            service.config = {
+                **dict(service_config or {}),
+                "site": {**dict(service_site or {}), **dict(runtime_site)},
+            }
         site_intake = SiteIntake.from_dict(dict(intake))
         base_sha = service.resolve_base_sha()
         run = service.create_run(
@@ -178,7 +196,7 @@ class Tenant:
     api_token: str
     executor: Any = None
     design_executor: Any = None
-    intake_coordinator: AtelierIntakeCoordinator | None = None
+    intake_coordinator: IntakeCoordinator | None = None
     scheduler_thread: threading.Thread | None = None
     scheduler_stop: threading.Event | None = None
 
@@ -186,8 +204,18 @@ class Tenant:
 class TenantRegistry:
     """Load and own all tenants served by one shared API process."""
 
-    def __init__(self, tenants: Mapping[str, AtelierTenant]) -> None:
+    def __init__(
+        self,
+        tenants: Mapping[str, AtelierTenant],
+        *,
+        env: Mapping[str, str] | None = None,
+        shared_credentials: Mapping[str, Any] | None = None,
+        shared_observability: Mapping[str, Any] | None = None,
+    ) -> None:
         self.tenants = dict(tenants)
+        self._env = dict(env or {})
+        self._shared_credentials = dict(shared_credentials or {})
+        self._shared_observability = dict(shared_observability or {})
         self._started = False
 
     @classmethod
@@ -199,8 +227,17 @@ class TenantRegistry:
         if not isinstance(section, Mapping) or not bool(section.get("enabled", False)):
             raise ConfigError("workspace_api.enabled must be true for the shared workspace API")
         declared = section.get("tenants") or {}
-        if not isinstance(declared, Mapping) or not declared:
-            raise ConfigError("workspace_api.tenants must contain at least one tenant")
+        if not isinstance(declared, Mapping):
+            raise ConfigError("workspace_api.tenants must be an object")
+        # Runtime-registered tenants (HelloAda website creations) are persisted
+        # separately and reloaded here so the API process can restart without
+        # losing a provisioned workspace.  Their token values live in per-tenant
+        # env files next to the tenant registry, never in a config file.
+        from .tenant_registration import load_provisioned_tenants
+
+        provisioned_declared, provisioned_env = load_provisioned_tenants(config, env)
+        declared = {**dict(declared), **provisioned_declared}
+        env = {**dict(env), **provisioned_env}
 
         tenants: dict[str, AtelierTenant] = {}
         seen_data_dirs: set[Path] = set()
@@ -323,11 +360,34 @@ class TenantRegistry:
                     "seo_provisioning_state": seo_state,
                     "google_platform": google_platform,
                 })
+                from .design_operations import DesignOperationService
+
+                # The operation service is tenant-scoped and provider-neutral;
+                # both HelloAda and the full workspace use this same instance.
+                context["design_operations"] = DesignOperationService(
+                    memory,
+                    website_id=tenant_id,
+                )
                 from .source_editor import SourceEditorService
                 from .source_deployment import SourceDeploymentService
+                from ..hands.base import get_adapter
 
-                context["source_editor"] = SourceEditorService(tenant_config, dict(env))
-                context["source_deployment"] = SourceDeploymentService(tenant_config, dict(env), memory=memory)
+                site_config = tenant_config.get("site") or {}
+                site_adapter_name = str(site_config.get("adapter") or "github_static").strip()
+                context["source_editor"] = SourceEditorService(
+                    tenant_config,
+                    dict(env),
+                    adapter=get_adapter(site_adapter_name, tenant_config),
+                )
+                # A neutral scaffold is deliberately host-local.  Do not create
+                # the GitHub/Cloudflare deployment lane for it; approval merges
+                # the reviewed SHA into the local main branch and stops there
+                # until the separately-authorized infrastructure saga exists.
+                context["source_deployment"] = (
+                    None
+                    if site_adapter_name == "neutral_scaffold"
+                    else SourceDeploymentService(tenant_config, dict(env), memory=memory)
+                )
                 if payload_client is not None:
                     from ..hands.payload_gateway import PayloadMediaService
 
@@ -339,7 +399,6 @@ class TenantRegistry:
                     context["media_analyzer"] = VisionClient(tenant_config, env=dict(env), memory=memory)
                 design_engine = tenant_config.get("design_engine") or {}
                 builder_config = tenant_config.get("builder") or {}
-                site_config = tenant_config.get("site") or {}
                 if (
                     isinstance(design_engine, Mapping)
                     and bool(design_engine.get("enabled"))
@@ -377,35 +436,31 @@ class TenantRegistry:
 
                         context["browser_quality_factory"] = browser_factory
                 if bool(isinstance(design_engine, Mapping) and design_engine.get("production_candidate")):
-                    from ..hands.github_static import GithubStatic
-
                     try:
-                        design_adapter = GithubStatic(tenant_config, dict(env))
+                        design_adapter = get_adapter(site_adapter_name, tenant_config)
                         design_adapter.validate()
                     except Exception as exc:  # noqa: BLE001 — fail closed when approval cannot be safe
                         raise ConfigError(f"Atelier design approval adapter is unavailable: {exc}") from exc
                     context["design_adapter"] = design_adapter
-                intake_settings = tenant_config.get("atelier_intake") or {}
-                if not isinstance(intake_settings, Mapping):
-                    intake_settings = {}
-                intake_enabled = bool(intake_settings.get("enabled", False)) or journey.incubation_needed
+                intake_options = intake_settings(tenant_config)
+                intake_enabled = bool(intake_options.get("enabled", False)) or journey.incubation_needed
                 if not journey.website_present and not journey.incubation_needed:
                     # New-site tenants still need the typed full-intake front
-                    # door even when they do not carry the Atelier incubation
-                    # block in their config.
-                    intake_settings = dict(intake_settings)
-                    intake_settings["enabled"] = True
-                    intake_settings["database_only"] = False
-                    research_settings = intake_settings.get("research")
-                    research_settings = dict(research_settings) if isinstance(research_settings, Mapping) else {}
-                    research_settings["enabled"] = False
-                    intake_settings["research"] = research_settings
+                    # door even when they do not carry the incubation block in
+                    # their config.
+                    intake_options = dict(intake_options)
+                    intake_options["enabled"] = True
+                    intake_options["database_only"] = False
+                    research_options = intake_options.get("research")
+                    research_options = dict(research_options) if isinstance(research_options, Mapping) else {}
+                    research_options["enabled"] = False
+                    intake_options["research"] = research_options
                     tenant_config = dict(tenant_config)
-                    tenant_config["atelier_intake"] = intake_settings
+                    tenant_config["intake"] = intake_options
                     intake_enabled = True
                 intake_coordinator = None
                 if intake_enabled:
-                    intake_coordinator = AtelierIntakeCoordinator(
+                    intake_coordinator = IntakeCoordinator(
                         memory,
                         config=tenant_config,
                         llm=context.get("llm"),
@@ -413,9 +468,16 @@ class TenantRegistry:
                         payload_client=payload_client,
                     )
                     context.update({
-                        "atelier_intake": intake_coordinator,
+                        "intake_coordinator": intake_coordinator,
                         "design_intake_service": intake_coordinator.intake_service,
                     })
+                    from .design_direction import DesignDirectionService
+
+                    context["design_direction"] = DesignDirectionService(
+                        memory,
+                        intake_coordinator.intake_service,
+                        context["design_operations"],
+                    )
                 tenants[tenant_id] = AtelierTenant(
                     tenant_id=tenant_id,
                     config=tenant_config,
@@ -430,7 +492,12 @@ class TenantRegistry:
                 tenant.runtime.close()
                 tenant.memory.close()
             raise
-        return cls(tenants)
+        return cls(
+            tenants,
+            env=dict(env),
+            shared_credentials=shared_credentials,
+            shared_observability=shared_observability,
+        )
 
     def for_token(self, token: str) -> AtelierTenant | None:
         supplied = str(token or "")
@@ -441,56 +508,137 @@ class TenantRegistry:
                 return tenant
         return None
 
+    def for_tenant_id(self, tenant_id: str) -> AtelierTenant | None:
+        """Resolve a tenant by id for the server-only HelloAda control plane."""
+        normalized = str(tenant_id or "").strip().lower()
+        if not normalized:
+            return None
+        return self.tenants.get(normalized)
+
     def start(self) -> None:
         if self._started:
             return
-        from ..application.design_jobs import DesignJobExecutor
-        from ..core.chat_jobs import ChatJobExecutor
-        from ..hands.payload_gateway import PayloadGatewaySiteAdapter
-
         started: list[AtelierTenant] = []
         try:
             for tenant in self.tenants.values():
-                tenant.runtime.start()
-                tenant.memory.interrupt_running_chat_jobs()
-                tenant.memory.interrupt_running_design_runs()
-                if tenant.intake_coordinator is not None:
-                    tenant.intake_coordinator.start()
-                self._start_scheduler(tenant)
-                tenant.design_executor = DesignJobExecutor(
-                    tenant.context,
-                    tenant.context["design_service"],
-                )
-                tenant.context["design_executor"] = tenant.design_executor
-                journey = self._tenant_journey(tenant)
-                if journey is not None and not journey.website_present:
-                    intake_service = tenant.context.get("design_intake_service")
-                    if intake_service is not None:
-                        handoff = AtelierDesignBuildHandoff(tenant.context)
-                        intake_service.lab_service = handoff
-                        tenant.context["design_intake_build_service"] = handoff
-                tenant.design_executor.start()
-                tenant.executor = ChatJobExecutor(
-                    tenant.context,
-                    adapter_factory=lambda tenant=tenant: (
-                        PayloadGatewaySiteAdapter(
-                            tenant.config,
-                            payload_client=tenant.context.get("payload_gateway"),
-                            read_adapter=getattr(
-                                tenant.context.get("source_editor"), "adapter", None
-                            ),
-                        )
-                        if tenant.context.get("payload_gateway") is not None
-                        else self._site_adapter(tenant)
-                    ),
-                )
-                tenant.executor.start()
+                self._start_tenant(tenant)
                 started.append(tenant)
         except Exception:
             for tenant in reversed(started):
                 self._stop_tenant(tenant)
             raise
         self._started = True
+
+    def _start_tenant(self, tenant: AtelierTenant) -> None:
+        """Start every runtime dependency for a single tenant."""
+        from ..application.design_jobs import DesignJobExecutor
+        from ..core.chat_jobs import ChatJobExecutor
+        from ..hands.payload_gateway import PayloadGatewaySiteAdapter
+
+        tenant.runtime.start()
+        tenant.memory.interrupt_running_chat_jobs()
+        tenant.memory.interrupt_running_design_runs()
+        if tenant.intake_coordinator is not None:
+            tenant.intake_coordinator.start()
+        self._start_scheduler(tenant)
+        tenant.design_executor = DesignJobExecutor(
+            tenant.context,
+            tenant.context["design_service"],
+        )
+        tenant.context["design_executor"] = tenant.design_executor
+        journey = self._tenant_journey(tenant)
+        if journey is not None and not journey.website_present:
+            intake_service = tenant.context.get("design_intake_service")
+            if intake_service is not None:
+                handoff = AtelierDesignBuildHandoff(tenant.context)
+                intake_service.lab_service = handoff
+                tenant.context["design_intake_build_service"] = handoff
+        tenant.design_executor.start()
+        tenant.executor = ChatJobExecutor(
+            tenant.context,
+            adapter_factory=lambda tenant=tenant: (
+                PayloadGatewaySiteAdapter(
+                    tenant.config,
+                    payload_client=tenant.context.get("payload_gateway"),
+                    read_adapter=getattr(
+                        tenant.context.get("source_editor"), "adapter", None
+                    ),
+                )
+                if tenant.context.get("payload_gateway") is not None
+                else self._site_adapter(tenant)
+            ),
+        )
+        tenant.executor.start()
+
+    def register_tenant(
+        self,
+        tenant_id: str,
+        config_path: str,
+        *,
+        api_token: str,
+        api_token_env: str | None = None,
+        env: Mapping[str, str] | None = None,
+        start: bool = True,
+    ) -> AtelierTenant:
+        """Build, register, and optionally start one runtime-registered tenant.
+
+        The tenant is constructed through the exact same path used at API
+        startup (``from_config``), so a provisioned website behaves identically
+        to a tenant declared in the host config.  The call is idempotent: a
+        tenant already registered under the same id is returned as-is.
+        """
+        normalized = str(tenant_id or "").strip().lower()
+        if not _SAFE_NAME.fullmatch(normalized):
+            raise ConfigError(f"tenant id is invalid: {normalized or '(empty)'}")
+        existing = self.tenants.get(normalized)
+        if existing is not None:
+            return existing
+        if not str(api_token or "").strip():
+            raise ConfigError(f"tenant {normalized} requires an api token")
+        merged_env = dict(self._env)
+        if env:
+            merged_env.update(env)
+        token_env = str(
+            api_token_env or f"PROVISIONED_{normalized.replace('-', '_').upper()}_TOKEN"
+        ).strip()
+        if not _SAFE_ENV.fullmatch(token_env):
+            raise ConfigError(f"tenant {normalized} api_token_env is invalid")
+        merged_env[token_env] = api_token
+        spec = {"config_path": str(config_path), "api_token_env": token_env}
+
+        proxy = {
+            "credentials": dict(self._shared_credentials),
+            "observability": dict(self._shared_observability),
+            "workspace_api": {
+                "enabled": True,
+                "provisioned_root": str(
+                    Path(config_path).expanduser().resolve().parent.parent / ".registration-proxy"
+                ),
+                "tenants": {normalized: spec},
+            },
+        }
+        temporary = TenantRegistry.from_config(proxy, merged_env)
+        try:
+            tenant = temporary.tenants[normalized]
+        except Exception:
+            temporary.close()
+            raise
+        data_dir = Path(str(tenant.config.get("data_dir") or "")).expanduser().resolve()
+        for other in self.tenants.values():
+            other_dir = Path(str(other.config.get("data_dir") or "")).expanduser().resolve()
+            if other_dir == data_dir:
+                temporary.close()
+                raise ConfigError(f"tenant data_dir is already in use: {data_dir}")
+        temporary.tenants.clear()
+        self.tenants[normalized] = tenant
+        if self._started and start:
+            try:
+                self._start_tenant(tenant)
+            except Exception:
+                self.tenants.pop(normalized, None)
+                self._stop_tenant(tenant)
+                raise
+        return tenant
 
     @staticmethod
     def _start_scheduler(tenant: AtelierTenant) -> None:
@@ -609,6 +757,217 @@ class ChatService:
             return tenant.memory, tenant.context.get("llm"), tenant.tenant_id
         self._require_llm(self.llm)
         return self.memory, self.llm, "legacy"
+
+    def design_operations(self, *, tenant: AtelierTenant | None = None):
+        """Return the tenant-scoped shared owner-operation service."""
+        if self.registry is not None:
+            if tenant is None or tenant.tenant_id not in self.registry.tenants:
+                raise AtelierBridgeError("tenant is not authorized")
+            service = tenant.context.get("design_operations")
+            if service is None:
+                raise AtelierBridgeError("design operations are unavailable")
+            return service
+        if self.memory is None:
+            raise AtelierBridgeError("design operations are unavailable")
+        from .design_operations import DesignOperationService
+
+        return DesignOperationService(self.memory, website_id="legacy")
+
+    def recommendations(self, *, limit: int = 50, tenant: AtelierTenant | None = None) -> dict[str, Any]:
+        return {
+            "recommendations": self.design_operations(tenant=tenant).list_recommendations(limit=limit),
+        }
+
+    def propose_direction(
+        self,
+        body: Mapping[str, Any],
+        *,
+        tenant: AtelierTenant | None = None,
+    ) -> dict[str, Any]:
+        """Run the read-only direction step and wait with a build recommendation."""
+        if tenant is None or tenant.context.get("intake_coordinator") is None:
+            raise AtelierBridgeError("Atelier intake is not enabled")
+        direction = tenant.context.get("design_direction")
+        if direction is None:
+            raise AtelierBridgeError("design direction is unavailable")
+        conversation_id = body.get("conversation_id")
+        if conversation_id is not None:
+            try:
+                conversation_id = int(conversation_id)
+            except (TypeError, ValueError) as exc:
+                raise AtelierBridgeError("conversation_id must be an integer") from exc
+        coordinator = tenant.context["intake_coordinator"]
+        status = coordinator.status(conversation_id)
+        if not status.get("confirmed"):
+            raise AtelierBridgeError("the working brief must be accepted before proposing a direction")
+        confirmed_revision = body.get("confirmed_revision") or status.get("confirmed_revision")
+        try:
+            confirmed_revision = int(confirmed_revision)
+        except (TypeError, ValueError) as exc:
+            raise AtelierBridgeError("confirmed_revision must be an integer") from exc
+        try:
+            return direction.propose(
+                str(status.get("session_id") or ""),
+                confirmed_revision=confirmed_revision,
+                conversation_id=conversation_id,
+            )
+        except Exception as exc:  # noqa: BLE001 - normalize the application boundary
+            raise AtelierBridgeError(str(exc)[:500]) from exc
+
+    def accept_recommendation(
+        self,
+        action_id: int,
+        body: Mapping[str, Any] | None = None,
+        *,
+        tenant: AtelierTenant | None = None,
+    ) -> dict[str, Any]:
+        body = dict(body or {})
+        current_state = body.get("current_state")
+        if current_state is not None and not isinstance(current_state, Mapping):
+            raise AtelierBridgeError("current_state must be an object")
+        conversation_id = body.get("conversation_id")
+        if conversation_id is not None:
+            try:
+                conversation_id = int(conversation_id)
+            except (TypeError, ValueError) as exc:
+                raise AtelierBridgeError("conversation_id must be an integer") from exc
+        try:
+            operation_service = self.design_operations(tenant=tenant)
+            if current_state is None and tenant is not None:
+                action = operation_service.recommendation(action_id)
+                bound = action.payload.get("bound_state") if isinstance(action.payload, Mapping) else {}
+                bound = bound if isinstance(bound, Mapping) else {}
+                coordinator = tenant.context.get("intake_coordinator")
+                if coordinator is not None and "intake_revision" in bound:
+                    intake_status = coordinator.status(conversation_id or action.conversation_id)
+                    # The server knows the current confirmed revision; the
+                    # browser should not have to copy a hidden hash into an
+                    # approval request.  Direction hashes remain bound to the
+                    # recommendation and are checked by the operation gate.
+                    current_state = {
+                        "intake_revision": intake_status.get("confirmed_revision"),
+                    }
+                    if "direction_hash" in bound:
+                        current_state["direction_hash"] = bound.get("direction_hash")
+            operation = operation_service.accept(
+                action_id,
+                current_state=current_state,
+                conversation_id=conversation_id,
+            )
+            operation = self._execute_operation(operation, tenant=tenant)
+            action = operation_service.recommendation(action_id)
+            return {
+                "recommendation": operation_service.recommendation_view(action),
+                "operation": operation.to_dict(),
+            }
+        except Exception as exc:  # noqa: BLE001 - normalize service errors at the bridge boundary
+            raise AtelierBridgeError(str(exc)[:500]) from exc
+
+    def _execute_operation(self, operation, *, tenant: AtelierTenant | None = None):
+        """Execute the first real tool while keeping operation state durable.
+
+        Direction is completed by ``DesignDirectionService``. The initial build
+        remains an asynchronous design job, so this method only reserves the
+        existing intake build and records the resulting run as the operation
+        outcome; it does not duplicate the design executor.
+        """
+        if operation.tool != "design.build" or tenant is None:
+            return operation
+        intake_service = tenant.context.get("design_intake_service")
+        coordinator = tenant.context.get("intake_coordinator")
+        if intake_service is None or coordinator is None:
+            return operation
+        if operation.status.value == "done":
+            return operation
+        if operation.status.value != "queued":
+            return operation
+        operation_service = self.design_operations(tenant=tenant)
+        scope = operation.payload.get("scope") if isinstance(operation.payload, Mapping) else {}
+        scope = scope if isinstance(scope, Mapping) else {}
+        session_id = str(scope.get("session_id") or "").strip()
+        if not session_id:
+            return operation_service.fail(
+                operation.id or 0,
+                error_code="missing_intake_session",
+                reason="design.build requires an intake session",
+            )
+        try:
+            running = operation_service.start(operation.id or 0)
+            try:
+                retry_count = int(operation.payload.get("retry_count") or 0)
+            except (AttributeError, TypeError, ValueError):
+                retry_count = 0
+            build = intake_service.build(
+                session_id,
+                confirmed_revision=int(scope.get("confirmed_revision") or 0),
+                owner_request=str(scope.get("owner_request") or "Start the homepage design from the approved direction."),
+                idempotency_key=f"design-operation:{operation.id}:{retry_count}",
+                force_new=retry_count > 0,
+                context_extra={
+                    "operation_id": operation.id,
+                    "approved_direction_hash": str(scope.get("direction_hash") or ""),
+                    "direction_artifact_id": scope.get("direction_artifact_id"),
+                    "page": str(scope.get("page") or "index.html"),
+                },
+            )
+            run = build.get("run") if isinstance(build, Mapping) else None
+            run_id = str(run.get("run_id") or "") if isinstance(run, Mapping) else ""
+            return operation_service.complete(
+                running.id or 0,
+                outcome={
+                    "run": self._public_design_run(run) if isinstance(run, Mapping) else None,
+                    "build_pending": bool(build.get("build_pending")) if isinstance(build, Mapping) else False,
+                },
+                revision_id=run_id or None,
+            )
+        except Exception as exc:  # noqa: BLE001 - retain failure and expose a bounded message
+            try:
+                return operation_service.fail(
+                    operation.id or 0,
+                    error_code="design_build_submission_failed",
+                    reason=str(exc)[:500],
+                )
+            except Exception:
+                raise
+
+    def dismiss_recommendation(
+        self,
+        action_id: int,
+        *,
+        tenant: AtelierTenant | None = None,
+    ) -> dict[str, Any]:
+        try:
+            operation_service = self.design_operations(tenant=tenant)
+            action = operation_service.dismiss(action_id)
+            return {"recommendation": operation_service.recommendation_view(action)}
+        except Exception as exc:  # noqa: BLE001 - normalize service errors at the bridge boundary
+            raise AtelierBridgeError(str(exc)[:500]) from exc
+
+    def operations(
+        self,
+        *,
+        limit: int = 50,
+        status: str | None = None,
+        tenant: AtelierTenant | None = None,
+    ) -> dict[str, Any]:
+        try:
+            return {
+                "operations": [
+                    operation.to_dict()
+                    for operation in self.design_operations(tenant=tenant).list(
+                        status=status,
+                        limit=limit,
+                    )
+                ],
+            }
+        except Exception as exc:  # noqa: BLE001 - normalize service errors at the bridge boundary
+            raise AtelierBridgeError(str(exc)[:500]) from exc
+
+    def operation(self, operation_id: int, *, tenant: AtelierTenant | None = None) -> dict[str, Any]:
+        try:
+            return self.design_operations(tenant=tenant).get(operation_id).to_dict()
+        except Exception as exc:  # noqa: BLE001 - normalize service errors at the bridge boundary
+            raise AtelierBridgeError(str(exc)[:500]) from exc
 
     def _merge_adapter(self, tenant: AtelierTenant | None) -> Any:
         """Resolve the existing tenant-scoped Git-backed publish adapter."""
@@ -757,7 +1116,7 @@ class ChatService:
                 raise AtelierBridgeError("conversation_id must be an integer") from exc
 
         if tenant is not None:
-            intake = tenant.context.get("atelier_intake")
+            intake = tenant.context.get("intake_coordinator")
             if intake is not None and intake.needs_intake(conversation_id):
                 try:
                     intake_kwargs = {
@@ -836,12 +1195,12 @@ class ChatService:
                 raise AtelierBridgeError("conversation_id must be an integer") from exc
 
         journey = self._journey(tenant)
-        intake_enabled = bool(tenant is not None and tenant.context.get("atelier_intake") is not None)
+        intake_enabled = bool(tenant is not None and tenant.context.get("intake_coordinator") is not None)
         needs_intake = False
         intake_status: dict[str, Any] = {}
         if intake_enabled:
             try:
-                coordinator = tenant.context["atelier_intake"]
+                coordinator = tenant.context["intake_coordinator"]
                 intake_status = coordinator.status(normalized_id)
                 needs_intake = not bool(intake_status.get("confirmed"))
             except Exception as exc:  # noqa: BLE001 — keep status errors bounded
@@ -884,9 +1243,9 @@ class ChatService:
     ) -> dict[str, Any]:
         """Accept intake without starting a design run."""
         _memory, _llm, _tenant_id = self._scope(tenant)
-        if tenant is None or tenant.context.get("atelier_intake") is None:
+        if tenant is None or tenant.context.get("intake_coordinator") is None:
             raise AtelierBridgeError("Atelier intake is not enabled")
-        coordinator = tenant.context["atelier_intake"]
+        coordinator = tenant.context["intake_coordinator"]
         conversation_id = body.get("conversation_id")
         if conversation_id is not None:
             try:
@@ -923,12 +1282,24 @@ class ChatService:
     ) -> dict[str, Any]:
         """Start the first page only through an explicit post-intake action."""
         _memory, _llm, _tenant_id = self._scope(tenant)
-        if tenant is None or tenant.context.get("atelier_intake") is None:
+        if tenant is None or tenant.context.get("intake_coordinator") is None:
             raise AtelierBridgeError("Atelier intake is not enabled")
         journey = self._journey(tenant)
         if journey is not None and journey.website_present:
             raise AtelierBridgeError("an existing website needs an explicit page target")
-        coordinator = tenant.context["atelier_intake"]
+        # Real tenants have the shared operation spine. The compatibility
+        # fallback below remains for the legacy single-instance test adapter;
+        # it is not used by TenantRegistry-created websites.
+        if tenant.context.get("design_operations") is not None:
+            recommendation_id = body.get("recommendation_id")
+            if recommendation_id is None:
+                raise AtelierBridgeError("direction_not_approved: propose and approve a design direction first")
+            try:
+                recommendation_id = int(recommendation_id)
+            except (TypeError, ValueError) as exc:
+                raise AtelierBridgeError("recommendation_id must be an integer") from exc
+            return self.accept_recommendation(recommendation_id, body, tenant=tenant)
+        coordinator = tenant.context["intake_coordinator"]
         intake_service = tenant.context.get("design_intake_service")
         if intake_service is None or getattr(intake_service, "lab_service", None) is None:
             raise AtelierBridgeError("the full design build service is unavailable")
@@ -1234,6 +1605,93 @@ class ChatService:
         except Exception as exc:  # noqa: BLE001 — normalize service-specific errors
             raise AtelierBridgeError(str(exc)[:500]) from exc
         return {"run": self._public_design_run(run, include_evidence=True)}
+
+    def retry_design_run(
+        self,
+        run_id: str,
+        body: Mapping[str, Any] | None = None,
+        *,
+        tenant: AtelierTenant | None = None,
+    ) -> dict[str, Any]:
+        """Regenerate a failed native candidate from the same confirmed intake.
+
+        A failed provider/build turn must not be repaired by mutating its
+        immutable run. Instead, reserve a fresh intake build with the same
+        confirmed revision and preserve the approved direction binding.
+        """
+        memory, _llm, _tenant_id = self._scope(tenant)
+        if tenant is None:
+            raise AtelierBridgeError("tenant-scoped design retry is unavailable")
+        safe_run_id = str(run_id or "").strip()
+        source_run = memory.get_design_run(safe_run_id)
+        if source_run is None:
+            raise AtelierBridgeError("no such design run")
+        if str(source_run.get("status") or "") not in {"failed", "incomplete", "interrupted"}:
+            raise AtelierBridgeError("only failed design runs can be retried")
+        if source_run.get("candidate_sha"):
+            raise AtelierBridgeError("a retained candidate must be revalidated or repaired, not retried")
+
+        intake_service = tenant.context.get("design_intake_service")
+        coordinator = tenant.context.get("intake_coordinator")
+        if intake_service is None or coordinator is None:
+            raise AtelierBridgeError("the full design build service is unavailable")
+        session_id = str(source_run.get("intake_session_id") or "").strip()
+        if not session_id:
+            raise AtelierBridgeError("failed design run is not bound to an intake session")
+
+        request_body = dict(body or {})
+        intake_status = coordinator.status(source_run.get("conversation_id"))
+        confirmed_revision = request_body.get("confirmed_revision")
+        if confirmed_revision is None:
+            confirmed_revision = (
+                intake_status.get("confirmed_revision")
+                or intake_status.get("confirmed_revision_id")
+                or source_run.get("intake_revision_id")
+            )
+        try:
+            confirmed_revision = int(confirmed_revision)
+        except (TypeError, ValueError) as exc:
+            raise AtelierBridgeError("confirmed_revision is invalid") from exc
+        try:
+            intake_service.confirmed_intake(session_id, revision=confirmed_revision)
+        except Exception as exc:  # noqa: BLE001 - keep the retry boundary bounded
+            raise AtelierBridgeError(str(exc)[:500]) from exc
+
+        snapshot = source_run.get("context_snapshot")
+        snapshot = snapshot if isinstance(snapshot, Mapping) else {}
+        context_extra = {
+            "operation": "design_retry",
+            "page": str(request_body.get("page") or snapshot.get("page") or "index.html"),
+            "retry_source_run_id": safe_run_id,
+            "approved_direction_hash": str(snapshot.get("approved_direction_hash") or ""),
+            "direction_artifact_id": snapshot.get("direction_artifact_id"),
+        }
+        retry_key = str(request_body.get("idempotency_key") or f"design-retry:{safe_run_id}").strip()
+        owner_request = str(
+            request_body.get("owner_request")
+            or source_run.get("owner_request")
+            or "Start the homepage design from the approved direction."
+        ).strip()
+        try:
+            build = intake_service.build(
+                session_id,
+                confirmed_revision=confirmed_revision,
+                owner_request=owner_request,
+                idempotency_key=retry_key,
+                force_new=True,
+                context_extra=context_extra,
+            )
+        except Exception as exc:  # noqa: BLE001 - normalize the bridge boundary
+            raise AtelierBridgeError(str(exc)[:500]) from exc
+        retry_run = build.get("run") if isinstance(build, Mapping) else None
+        if not isinstance(retry_run, Mapping):
+            raise AtelierBridgeError("design retry did not return a run")
+        return {
+            "source_run_id": safe_run_id,
+            "idempotency_key": str(build.get("idempotency_key") or retry_key),
+            "recovered": bool(build.get("recovered")),
+            "run": self._public_design_run(retry_run),
+        }
 
     def create_design_review(self, run_id: str, *, tenant: AtelierTenant | None = None) -> dict[str, Any]:
         """Link a passed candidate to the owner approval lane."""
@@ -1818,6 +2276,7 @@ class ChatService:
             "candidate_sha": str(run.get("candidate_sha") or ""),
             "candidate_ref": str(run.get("candidate_ref") or ""),
             "draft_id": run.get("draft_id"),
+            "error": str(run.get("error") or "")[:1_000],
             "quality_report_hash": str(run.get("quality_report_hash") or ""),
             "design_manifest_path": str(run.get("design_manifest_path") or ""),
             "target": snapshot.get("workspace_target") if isinstance(snapshot, Mapping) else None,

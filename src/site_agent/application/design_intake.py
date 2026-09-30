@@ -17,6 +17,7 @@ from ..brain.design_intake import (
     UnavailableDesignIntakeAdvisor,
 )
 from ..brain.design_guidance import DesignSkillSet
+from ..config import intake_settings
 from ..core.contracts import ContractError, safe_payload, utc_now
 from ..core.design_contracts import DesignRunStatus, SiteIntake, canonical_hash, canonical_json
 from ..core.design_intake_contracts import (
@@ -229,11 +230,7 @@ class DesignIntakeService:
         self.activity_service = activity_service
         self.genesis_service = genesis_service
         self.on_revision_saved = on_revision_saved
-        database_only = bool(
-            (self.config.get("atelier_intake") or {}).get("database_only", False)
-            if isinstance(self.config.get("atelier_intake"), Mapping)
-            else False
-        )
+        database_only = bool(intake_settings(self.config).get("database_only", False))
         self.database_only = database_only
         self.website_present = _website_present_from_config(self.config)
         if advisor is not None:
@@ -1153,6 +1150,16 @@ class DesignIntakeService:
                 result[key] = confirmed[key]
         result["confirmation_idempotency_key"] = token
         return {"session": result, "confirmed": True}
+
+    def confirmed_intake(self, session_id: str, *, revision: int | None = None) -> SiteIntake:
+        """Return the immutable, owner-confirmed intake used by gated tools."""
+        session = self._row(session_id)
+        if session.get("status") != IntakeSessionState.CONFIRMED.value:
+            raise DesignIntakeServiceError("intake must be confirmed before this operation")
+        confirmed_revision = int(session.get("confirmed_revision") or 0)
+        if revision is not None and int(revision) != confirmed_revision:
+            raise DesignIntakeServiceError("confirmed intake revision is stale")
+        return self._confirmed_intake(session)
 
     def build(
         self,

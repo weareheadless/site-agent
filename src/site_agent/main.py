@@ -888,14 +888,21 @@ def _cmd_api(args: argparse.Namespace) -> int:
     """Serve the shared tenant-aware Ada API without a customer admin process."""
     import uvicorn
 
+    from .application.tenant_registration import TenantRegistrationService
     from .application.workspace import TenantRegistry
     from .web.workspace import create_workspace_api_app
 
     raw_env = dict(os.environ)
     config, _ = load(args.config, raw_env)
     registry = TenantRegistry.from_config(config, raw_env)
+    registration = TenantRegistrationService(config, raw_env, registry=registry)
     api = config.get("workspace_api") or config.get("atelier_api") or {}
-    app = create_workspace_api_app(registry, prefix=str(api.get("prefix") or "/v1/atelier"))
+    app = create_workspace_api_app(
+        registry,
+        prefix=str(api.get("prefix") or "/v1/atelier"),
+        control_token=raw_env.get("HELLOADA_CONTROL_PLANE_TOKEN"),
+        registration=registration,
+    )
     host = str(api.get("host") or "127.0.0.1")
     port = int(api.get("port") or 3014)
     print(f"[site-agent] shared Ada API on http://{host}:{port}")

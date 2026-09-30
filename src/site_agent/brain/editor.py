@@ -988,7 +988,7 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
             "\n\nExplicit workspace language setting: " + workspace_language
             + ". Write the owner-facing reply in this language unless the owner explicitly requests a translation."
         )
-    intake = context.get("atelier_intake")
+    intake = context.get("intake_coordinator")
     if intake is not None and callable(getattr(intake, "context_prompt", None)):
         try:
             intake_context = intake.context_prompt()

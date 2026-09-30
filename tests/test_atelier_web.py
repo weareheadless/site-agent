@@ -12,7 +12,7 @@ from site_agent.application.atelier import (
     AtelierTenantRegistry,
     _journey_for_config,
 )
-from site_agent.application.atelier_intake import AtelierIntakeCoordinator
+from site_agent.application.intake_coordinator import IntakeCoordinator
 from site_agent.core.memory import Memory
 from site_agent.core.design_contracts import SiteIntake
 from site_agent.core.design_intake_contracts import DesignIntakeDraft
@@ -147,7 +147,7 @@ def test_existing_site_snapshot_reads_selected_page_and_navigation(tmp_path):
             return {"items": [{"label": "Menu", "path": "/menu"}]}
 
     memory = Memory(tmp_path / "memory.db")
-    coordinator = AtelierIntakeCoordinator(
+    coordinator = IntakeCoordinator(
         memory,
         config={"atelier_intake": {"database_only": True}},
         llm=None,
@@ -270,7 +270,7 @@ def test_atelier_bridge_exposes_bounded_activity_history(tmp_path):
 
 def test_atelier_intake_requires_explicit_owner_acceptance(tmp_path):
     memory = Memory(tmp_path / "memory.db")
-    intake = AtelierIntakeCoordinator(
+    intake = IntakeCoordinator(
         memory,
         config={"atelier_intake": {"database_only": True, "research": {"enabled": False}}},
         llm=object(),
@@ -503,7 +503,7 @@ def test_shared_api_routes_new_tenant_conversations_through_database_intake(tmp_
             self.tenant_id = "atelier-intake"
             self.api_token = "intake-token"
             self.memory = Memory(tmp_path / "atelier-intake" / "memory.db")
-            self.context = {"llm": object(), "atelier_intake": Intake()}
+            self.context = {"llm": object(), "intake_coordinator": Intake()}
 
     tenant = Tenant()
 
@@ -539,7 +539,7 @@ def test_shared_api_routes_new_tenant_conversations_through_database_intake(tmp_
         "intake_session_id": "intake-test",
         "mode": "intake",
     }
-    assert tenant.context["atelier_intake"].calls == [
+    assert tenant.context["intake_coordinator"].calls == [
         ("needs", None),
         ("send", "Je veux créer une page", None, "turn-1"),
     ]
@@ -565,7 +565,7 @@ def test_shared_api_stamps_existing_site_journey_into_intake_context(tmp_path):
             self.memory = Memory(tmp_path / "atelier-existing" / "memory.db")
             self.context = {
                 "llm": object(),
-                "atelier_intake": Intake(),
+                "intake_coordinator": Intake(),
                 "atelier_journey": AtelierJourney(website_present=True, incubation_needed=True),
             }
 
@@ -599,7 +599,7 @@ def test_shared_api_stamps_existing_site_journey_into_intake_context(tmp_path):
     assert response.status_code == 200
     assert response.json()["phase"] == "incubation"
     assert response.json()["website_present"] is True
-    assert tenant.context["atelier_intake"].contexts == [{
+    assert tenant.context["intake_coordinator"].contexts == [{
         "website_present": True,
         "incubation_needed": True,
         "journey": "incubation",
@@ -822,7 +822,7 @@ def test_no_site_confirmation_requires_an_explicit_first_page_action(tmp_path):
         runtime=None,
         context={
             "llm": object(),
-            "atelier_intake": Intake(),
+            "intake_coordinator": Intake(),
             "design_intake_service": DesignIntake(),
             "atelier_journey": AtelierJourney(website_present=False, incubation_needed=False),
         },

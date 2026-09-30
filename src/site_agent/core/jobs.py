@@ -554,7 +554,7 @@ def register_atelier_jobs(scheduler: Scheduler, config: dict[str, Any], context:
             schedule.get("article_research_cycle", {"every": "daily", "at": "13:30"}),
             lambda: _article_research_cycle(context),
         )
-    intake = context.get("atelier_intake")
+    intake = context.get("intake_coordinator")
     if intake is not None and bool(getattr(intake, "research_enabled", False)):
         scheduler.job(
             "research_recovery",

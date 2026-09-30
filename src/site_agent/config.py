@@ -5,6 +5,7 @@ import math
 import os
 import fnmatch
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from importlib.resources import files
@@ -500,6 +501,22 @@ def validate_research_config(config: dict[str, Any]) -> None:
                 or any(not isinstance(market, str) or not re.fullmatch(r"[A-Z]{2}", market.strip().upper()) for market in markets)
             ):
                 raise ConfigError(f"seo.research.{field_name}[{index}].markets contains an invalid country")
+
+
+def intake_settings(config: Mapping[str, Any]) -> dict[str, Any]:
+    """Return the tenant intake settings block.
+
+    ``intake`` is the canonical key for new tenants.  ``atelier_intake`` was the
+    original single-customer name and remains accepted so already-deployed
+    tenant configs keep working; an explicitly-set legacy key wins over the
+    canonical defaults so a customer's own intent is never overridden by a
+    package default.
+    """
+    legacy = config.get("atelier_intake")
+    if isinstance(legacy, Mapping):
+        return dict(legacy)
+    current = config.get("intake")
+    return dict(current) if isinstance(current, Mapping) else {}
 
 
 def primary_research_locale(config: dict[str, Any]) -> tuple[str, str]:

@@ -1,10 +1,14 @@
-"""Tenant-scoped intake and research for an Atelier conversation.
+"""Tenant-scoped intake coordinator shared by HelloAda and the full workspace.
 
 An existing Payload website uses this coordinator for an incubation/research
 conversation and deliberately stays out of the design/build pipeline until the
-owner accepts the working brief.  A tenant without a website can use the same
-typed intake contract as its full-intake front door; the normal workspace/build
-handoff remains a separate explicit transition.
+owner accepts the working brief.  A tenant without a website (a HelloAda
+project) uses the same typed intake contract as its full-intake front door; the
+normal workspace/build handoff remains a separate explicit transition.
+
+The name is intentionally product-neutral.  ``Atelier`` is one customer of the
+older single-tenant integration and is kept only as a legacy config key
+compatibility seam.
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ from ..core.design_intake_contracts import (
 )
 from ..core.incubation_contracts import ResearchTrigger
 from ..core.memory import Memory
+from ..config import intake_settings
 from .customer_genesis import CustomerGenesisService
 from .design_intake import DesignIntakeService
 from .incubation_activity import IncubationActivityService
@@ -44,8 +49,8 @@ def _present(value: Any) -> bool:
     return True
 
 
-class AtelierIntakeCoordinator:
-    """Route an Atelier owner through intake until the working brief is ready."""
+class IntakeCoordinator:
+    """Route a tenant owner through intake until the working brief is ready."""
 
     def __init__(
         self,
@@ -59,7 +64,7 @@ class AtelierIntakeCoordinator:
         self.memory = memory
         self.config = dict(config)
         self.payload_client = payload_client
-        settings = self.config.get("atelier_intake") or {}
+        settings = intake_settings(self.config)
         self.settings = dict(settings) if isinstance(settings, Mapping) else {}
         research_config = self.settings.get("research") or {}
         self.research_config = dict(research_config) if isinstance(research_config, Mapping) else {}
@@ -558,4 +563,4 @@ class AtelierIntakeCoordinator:
         }
 
 
-__all__ = ["AtelierIntakeCoordinator"]
+__all__ = ["IntakeCoordinator"]

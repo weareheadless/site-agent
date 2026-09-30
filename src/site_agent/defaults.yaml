@@ -28,6 +28,13 @@ design_engine:
   base_url: ""
   api_key_env: ""
   orchestration: legacy
+  # Intake turns need enough room for the typed JSON contract. Keep this
+  # separate from the much larger visual-builder budget so a newly registered
+  # HelloAda tenant does not truncate its first advisor response at 1200 tokens.
+  intake_advisor:
+    timeout_seconds: 90
+    max_retries: 1
+    max_tokens: 4096
   specialist_timeout_seconds: 600
   repair_attempts: 0
   max_tokens: 8192
@@ -64,7 +71,7 @@ persona:
 # the editor prompt will refuse to invent missing business facts.
 customer_profile: {}
 
-atelier_intake:
+intake:
   enabled: false
   database_only: true
   research:
@@ -281,6 +288,7 @@ workspace_api:
   host: 127.0.0.1
   port: 3014
   prefix: /v1/workspace
+  provisioned_root: ""  # local runtime-registered tenant workspaces
   tenants: {}
 
 env:

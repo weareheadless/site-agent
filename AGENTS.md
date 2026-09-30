@@ -160,6 +160,33 @@ If the repository has no Git history, stop before creating an initial commit:
 recover the original remote/history or obtain approval to create an imported
 baseline.
 
+## Source-control and deployment connection
+
+Use `/SOCIAL/configs/host-credentials.yaml` as the non-secret source of truth
+for GitHub and Cloudflare connection wiring. It contains protected-file paths,
+environment-variable names, and the GitHub SSH identity path; it never contains
+credential values. Resolve credentials through `site_agent.credentials` or the
+protected environment files at runtime. Never copy tokens, account secrets, or
+credential-file contents into this repository, `AGENTS.md`, prompts, logs, or
+commits.
+
+Before pushing code:
+
+1. Confirm the intended repository URL and branch explicitly. This checkout
+   currently has no Git remote, so never infer a destination from a tenant's
+   website repository.
+2. Inspect `git status`, `git diff`, and `git log --oneline -10`.
+3. Run the relevant tests and compile checks.
+4. Commit only source, tests, and safe documentation; exclude `.env` files,
+   databases, generated output, and deployment credentials.
+5. Push the reviewed commit over the configured GitHub SSH identity and report
+   the commit and remote branch.
+
+For Cloudflare checks, load the protected environment selected by the host
+credential profile and use a read-only identity command such as `wrangler
+whoami` before any deployment. Deployment remains a separate, explicit action
+from a Git push.
+
 ## Atelier POC Deployment Handoff
 
 The Atelier frontend is a separate production repository at

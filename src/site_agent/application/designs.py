@@ -54,6 +54,10 @@ from ..hands.site_build import (
 class DesignServiceError(ValueError):
     """A design workflow cannot be safely created or transitioned."""
 
+    def __init__(self, message: str, *, result: Mapping[str, Any] | None = None) -> None:
+        super().__init__(message)
+        self.result = dict(result or {})
+
 
 class DesignRunNotFound(DesignServiceError):
     pass
@@ -1279,10 +1283,12 @@ class DesignService:
         initial_surface = operation_kind == "initial_build"
         technical_repair = operation_kind == "technical_repair"
         visual_refinement = operation_kind == "visual_refinement"
-        next_surface = (
-            run.get("mode") == "local_experiment"
-            and self.build_profile_for_run(run_id) == NEXT_REACT_PROFILE.name
-        )
+        # The profile is authoritative for both local experiments and
+        # production candidates.  Production candidates need the same
+        # host-approved Next/React capability catalog and source allowlist;
+        # restricting this to local experiments makes native-source review
+        # reject the very packages the host provisioned for the build.
+        next_surface = self.build_profile_for_run(run_id) == NEXT_REACT_PROFILE.name
         if next_surface:
             # A visual refinement of an initial homepage remains homepage
             # scoped. A visual refinement of a technical repair, however,
@@ -1878,7 +1884,7 @@ class DesignService:
                 pass
             if isinstance(exc, DesignServiceError):
                 raise
-            raise DesignServiceError(str(exc)) from exc
+            raise DesignServiceError(str(exc), result=partial) from exc
 
     def _advance(self, run_id: str, status: DesignRunStatus, message: str) -> None:
         result = self.memory.transition_design_run(run_id, status.value)
@@ -2557,10 +2563,11 @@ class DesignService:
         try:
             effective_policy = policy or self.quality_policy_for_run(run_id)
             build_runner = None
-            if (
-                run.get("mode") == "local_experiment"
-                and self.build_profile_for_run(run_id) == NEXT_REACT_PROFILE.name
-            ):
+            if self.build_profile_for_run(run_id) == NEXT_REACT_PROFILE.name:
+                # Next/React output is generated rather than committed.  Run
+                # the same host-owned build for production candidates as for
+                # local experiments so output/content/browser gates inspect
+                # the actual immutable candidate instead of an empty `out/`.
                 npm_cache = Path(str(self.config.get("data_dir") or ".")).expanduser().resolve() / "npm-cache"
 
                 def build_runner(workspace: Path):
@@ -2700,13 +2707,18 @@ class DesignService:
                     content_hash=canonical_hash(screenshot_evidence),
                     preview_data={"candidate_sha": run["candidate_sha"], "screenshots": screenshot_evidence},
                 )
-            self.memory.update_design_run(
-                run_id,
-                quality_report_json=report_data,
-                quality_report_hash=quality_hash,
-                build_artifact_id=build_artifact_id,
-                screenshot_artifact_id=screenshot_artifact_id,
-            )
+            evidence_updates = {
+                "quality_report_json": report_data,
+                "quality_report_hash": quality_hash,
+                "build_artifact_id": build_artifact_id,
+                "screenshot_artifact_id": screenshot_artifact_id,
+            }
+            if validated_report.state == "passed":
+                # Revalidation can recover a retained candidate from
+                # needs_repair/incomplete; do not leave the old failure text
+                # attached to a now-passing review record.
+                evidence_updates["error"] = ""
+            self.memory.update_design_run(run_id, **evidence_updates)
             if validated_report.state == "passed":
                 operation_kind = str(run.get("operation_kind") or "initial_build").strip()
                 wants_self_review = (

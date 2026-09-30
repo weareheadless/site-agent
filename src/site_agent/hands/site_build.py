@@ -187,6 +187,28 @@ PELICAN_BASELINE_PROFILE = SiteBuildProfile(
     prohibited_paths=(".env", ".github", "output"),
 )
 
+# These trees are either produced by the framework/toolchain or belong to the
+# host's authoring session. They are never candidate source and must not be
+# traversed by the host lint step, even when a customer-provided flat config
+# forgets to ignore them.
+NEXT_REACT_LINT_IGNORE_PATTERNS: tuple[str, ...] = (
+    ".next/**",
+    ".open-next/**",
+    "out/**",
+    "dist/**",
+    "build/**",
+    "coverage/**",
+    "node_modules/**",
+    ".opencode/**",
+    ".agent-home/**",
+    "*.tsbuildinfo",
+)
+_NEXT_REACT_LINT_IGNORE_ARGS = tuple(
+    argument
+    for pattern in NEXT_REACT_LINT_IGNORE_PATTERNS
+    for argument in ("--ignore-pattern", pattern)
+)
+
 NEXT_REACT_PROFILE = SiteBuildProfile(
     name="next_react",
     source_kind="next_react_payload",
@@ -195,7 +217,16 @@ NEXT_REACT_PROFILE = SiteBuildProfile(
     # npm is run without lifecycle scripts. Existing repositories with a
     # lockfile still receive npm's normal reproducible install behavior.
     install_command=("npm", "install", "--ignore-scripts", "--no-audit", "--no-fund"),
-    check_commands=(("npm", "run", "typecheck"), ("npm", "run", "lint")),
+    check_commands=(
+        ("npm", "run", "typecheck"),
+        (
+            # Lint only the authored Next source boundary. Running the
+            # customer script as ``eslint .`` lets stale framework output or
+            # an unrelated generated tree become part of the candidate check.
+            "npm", "exec", "--", "eslint", "src",
+            *_NEXT_REACT_LINT_IGNORE_ARGS,
+        ),
+    ),
     build_command=("npm", "run", "build"),
     output_dir="out",
     route_manifest="design/ada-route-manifest.json",
@@ -239,6 +270,12 @@ NEXT_REACT_TOOLCHAIN_DEPENDENCIES: tuple[dict[str, str], ...] = (
     {"package": "typescript", "version": "5.7.3"},
     {"package": "wrangler", "version": "4.130.0"},
 )
+
+# TypeScript's incremental checker writes this beside tsconfig.json even when
+# the project does not declare an incremental build.  It is a host build
+# artifact, not authored site content, so it must never leak into the
+# candidate repository allowlist.
+NEXT_REACT_BUILD_TRANSIENT_FILES: tuple[str, ...] = ("tsconfig.tsbuildinfo",)
 
 
 _NEXT_RUNTIME_DEPENDENCIES = frozenset({
@@ -349,7 +386,12 @@ def prepare_native_workspace(root: str | Path, profile: SiteBuildProfile) -> tup
             "const __filename = fileURLToPath(import.meta.url)\n"
             "const __dirname = dirname(__filename)\n"
             "const compat = new FlatCompat({ baseDirectory: __dirname })\n\n"
-            "export default [...compat.extends('next/core-web-vitals', 'next/typescript')]\n",
+            "export default [\n"
+            "  { ignores: ["
+            + ", ".join(repr(pattern) for pattern in NEXT_REACT_LINT_IGNORE_PATTERNS)
+            + "] },\n"
+            "  ...compat.extends('next/core-web-vitals', 'next/typescript'),\n"
+            "]\n",
             encoding="utf-8",
         )
         created.append("eslint.config.mjs")
@@ -386,7 +428,11 @@ def prepare_native_workspace(root: str | Path, profile: SiteBuildProfile) -> tup
 
     gitignore_path = workspace / ".gitignore"
     if not gitignore_path.exists():
-        gitignore_path.write_text("node_modules/\n.next/\nout/\n.open-next/\n.opencode/tweak-map.json\n", encoding="utf-8")
+        gitignore_path.write_text(
+            "node_modules/\n.next/\n.open-next/\nout/\ndist/\nbuild/\ncoverage/\n"
+            ".opencode/tweak-map.json\n",
+            encoding="utf-8",
+        )
         created.append(".gitignore")
     return tuple(created)
 
@@ -563,6 +609,14 @@ def build_site(
     output = _safe_output(execution_root, profile.output_dir)
     if profile.name == NEXT_REACT_PROFILE.name:
         _validate_next_manifest(execution_root, require_lockfile=True)
+    transient_snapshots: dict[Path, bytes | None] = {}
+    if profile.name == NEXT_REACT_PROFILE.name:
+        for relative_path in NEXT_REACT_BUILD_TRANSIENT_FILES:
+            transient_path = execution_root / relative_path
+            if transient_path.is_file() and not transient_path.is_symlink():
+                transient_snapshots[transient_path] = transient_path.read_bytes()
+            else:
+                transient_snapshots[transient_path] = None
     evidence: list[dict[str, Any]] = []
     commands = tuple(
         command
@@ -606,6 +660,14 @@ def build_site(
             shutil.copytree(output, retained_output, symlinks=True)
         return SiteBuildResult(profile.name, True, profile.output_dir, tuple(evidence), route_inventory(workspace, profile.output_dir))
     finally:
+        for transient_path, original in transient_snapshots.items():
+            if original is None:
+                try:
+                    transient_path.unlink()
+                except FileNotFoundError:
+                    pass
+            else:
+                transient_path.write_bytes(original)
         if staged_workspace is not None:
             shutil.rmtree(staged_workspace, ignore_errors=True)
 
@@ -672,6 +734,7 @@ def copy_build_output(root: str | Path, profile: SiteBuildProfile, destination: 
 
 __all__ = [
     "NEXT_REACT_PROFILE",
+    "NEXT_REACT_BUILD_TRANSIENT_FILES",
     "NEXT_REACT_TOOLCHAIN_DEPENDENCIES",
     "PELICAN_BASELINE_PROFILE",
     "PROFILES",

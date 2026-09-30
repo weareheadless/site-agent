@@ -17,6 +17,18 @@ def test_next_react_build_profile_is_explicit_and_safe():
     assert "npm" in " ".join(NEXT_REACT_PROFILE.build_command)
 
 
+def test_next_react_lint_excludes_generated_and_host_trees():
+    lint_command = NEXT_REACT_PROFILE.check_commands[1]
+    ignored = {
+        lint_command[index + 1]
+        for index, value in enumerate(lint_command[:-1])
+        if value == "--ignore-pattern"
+    }
+
+    assert ignored == set(site_build.NEXT_REACT_LINT_IGNORE_PATTERNS)
+    assert lint_command[:5] == ("npm", "exec", "--", "eslint", "src")
+
+
 def test_prepare_native_workspace_bootstraps_only_technical_next_files(tmp_path):
     workspace = tmp_path / "site"
     workspace.mkdir()
@@ -33,6 +45,9 @@ def test_prepare_native_workspace_bootstraps_only_technical_next_files(tmp_path)
         item["package"]: item["version"] for item in NEXT_REACT_TOOLCHAIN_DEPENDENCIES
     }
     assert (workspace / "src" / "app" / "page.tsx").is_file()
+    eslint_config = (workspace / "eslint.config.mjs").read_text(encoding="utf-8")
+    assert "'.open-next/**'" in eslint_config
+    assert "'dist/**'" in eslint_config
     assert prepare_native_workspace(workspace, NEXT_REACT_PROFILE) == ()
 
 
@@ -43,6 +58,7 @@ def test_build_site_runs_profile_commands_in_workspace(tmp_path, monkeypatch):
     def fake_run(command, **kwargs):
         calls.append((command, kwargs))
         (Path(kwargs["cwd"]) / "out").mkdir(exist_ok=True)
+        (Path(kwargs["cwd"]) / "tsconfig.tsbuildinfo").write_text("generated", encoding="utf-8")
 
         class Result:
             returncode = 0
@@ -79,6 +95,45 @@ def test_build_site_runs_profile_commands_in_workspace(tmp_path, monkeypatch):
         list(NEXT_REACT_PROFILE.build_command),
     ]
     assert calls[0][1]["env"]["npm_config_cache"] == str(tmp_path / "cache")
+    assert not (workspace / "tsconfig.tsbuildinfo").exists()
+
+
+def test_build_site_restores_preexisting_next_build_transient(tmp_path, monkeypatch):
+    monkeypatch.setattr(site_build, "_is_noexec_mount", lambda _path: False)
+
+    def fake_run(_command, **kwargs):
+        workspace = Path(kwargs["cwd"])
+        (workspace / "out").mkdir(exist_ok=True)
+        (workspace / "tsconfig.tsbuildinfo").write_text("generated", encoding="utf-8")
+
+        class Result:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return Result()
+
+    monkeypatch.setattr("site_agent.hands.site_build.subprocess.run", fake_run)
+    workspace = initialize_toolchain_workspace(tmp_path / "site", "Native Site")
+    package = json.loads((workspace / "package.json").read_text(encoding="utf-8"))
+    declared = {**package["dependencies"], **package["devDependencies"]}
+    (workspace / "package-lock.json").write_text(json.dumps({
+        "name": package["name"],
+        "version": "0.0.0",
+        "lockfileVersion": 3,
+        "requires": True,
+        "packages": {
+            "": {"name": package["name"], "version": "0.0.0"},
+            **{f"node_modules/{name}": {"version": version} for name, version in declared.items()},
+        },
+    }), encoding="utf-8")
+    transient = workspace / "tsconfig.tsbuildinfo"
+    transient.write_text("original", encoding="utf-8")
+
+    result = build_site(workspace, NEXT_REACT_PROFILE)
+
+    assert result.ok is True
+    assert transient.read_text(encoding="utf-8") == "original"
 
 
 def test_build_site_stages_noexec_workspace_on_an_executable_mount(tmp_path, monkeypatch):

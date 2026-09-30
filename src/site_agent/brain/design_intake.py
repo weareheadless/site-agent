@@ -8,6 +8,7 @@ from dataclasses import replace
 from typing import Any, Protocol
 
 from .design_guidance import DesignSkillSet, load_design_skills
+from ..config import intake_settings
 from ..core.design_contracts import canonical_json
 from ..core.design_intake_contracts import (
     DesignIntakeDraft,
@@ -441,11 +442,7 @@ class LLMDesignIntakeAdvisor:
         self.database_only = (
             bool(database_only)
             if database_only is not None
-            else bool(
-                (self.config.get("atelier_intake") or {}).get("database_only", False)
-                if isinstance(self.config.get("atelier_intake"), Mapping)
-                else False
-            )
+            else bool(intake_settings(self.config).get("database_only", False))
         )
         self.website_present = _config_website_present(self.config) if website_present is None else bool(website_present)
         self.skill_set = skill_set or load_design_skills()

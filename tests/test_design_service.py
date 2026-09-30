@@ -971,6 +971,7 @@ def test_validate_run_persists_output_identity_before_owner_surface_inspection(t
         candidate_sha="b" * 40,
         candidate_ref=run["candidate_ref"],
         planning_json={"build_profile": PELICAN_BASELINE_PROFILE.name},
+        error="stale quality-gate failure",
     )
     for status in ("assessing_intake", "planning", "building", "candidate_ready", "validating"):
         memory.transition_design_run(run["run_id"], status)
@@ -1012,7 +1013,9 @@ def test_validate_run_persists_output_identity_before_owner_surface_inspection(t
     )
 
     assert report.state == "passed"
-    assert memory.get_design_run(run["run_id"])["output_artifact_id"] == browser.bound["artifact_id"]
+    stored = memory.get_design_run(run["run_id"])
+    assert stored["output_artifact_id"] == browser.bound["artifact_id"]
+    assert stored["error"] == ""
     memory.close()
 
 

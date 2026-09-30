@@ -987,7 +987,14 @@ def _design_prompt(
                "a scene transition. Do not add candidate-authored state or completion claims; the host "
               "compares rendered geometry, style, visibility, and text before and after bounded probes. Never use "
               "external asset URLs or claim behavior that the implementation does not actually execute. These attributes "
-              "are host selectors, not a substitute for the locked plan.\n\n"
+               "are host selectors, not a substitute for the locked plan.\n\n"
+               "SEMANTIC CONTENT ROOT (required for quality evidence): keep the public page copy in a real semantic "
+               "content root such as <main> (with the header outside it when appropriate), rather than only a generic "
+               "wrapper. Do not put critical page copy outside that root or hide it before the host's resting-state probe. "
+               "For reduced-motion journey conditions, mark a visible readable or interactive element whose rendered state "
+               "is actually observed in both no-preference and reduced-motion probes; never put the only condition marker "
+               "on a zero-size or decorative underline/icon. If the transition is an underline or other decoration, mark "
+               "the visible action label or action wrapper as the condition target and leave the decoration unmarked.\n\n"
               "JOURNEY MARKER RUNTIME CONTRACT (non-negotiable): every data-ada-journey-condition marker must be the "
               "exact DOM node whose own computed style, geometry, or content changes during that condition. Apply the "
               "runtime transition to the marked node itself; do not mark a static ancestor while only a descendant moves, "
@@ -1908,8 +1915,18 @@ def _run_local_design_self_check(
         raise RunnerError(f"mandatory local design self-check failed: {str(exc)[:1_000]}") from exc
     report = result.to_dict()
     if not result.ok:
+        failed_commands = [
+            item for item in result.commands
+            if isinstance(item, Mapping) and item.get("status") != "passed"
+        ]
+        detail = ""
+        if failed_commands:
+            failed = failed_commands[-1]
+            command = " ".join(str(part) for part in (failed.get("command") or ()))
+            output = str(failed.get("stderr") or failed.get("stdout") or failed.get("error") or "").strip()
+            detail = f" ({command or 'build step'}: {output[-1_500:]})"
         raise RunnerError(
-            "mandatory local design self-check failed",
+            "mandatory local design self-check failed" + detail,
             result={"local_check": report},
         )
     if progress:

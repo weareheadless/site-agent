@@ -136,12 +136,12 @@ def test_primary_implementation_local_self_check_rejects_failed_build(tmp_path, 
             profile=profile.name,
             ok=False,
             output_dir=profile.output_dir,
-            commands=({"command": ["test"], "status": "failed"},),
+            commands=({"command": ["test"], "status": "failed", "stderr": "compiler exploded"},),
         )
 
     monkeypatch.setattr("site_agent.hands.site_build.build_site", fake_build)
 
-    with pytest.raises(runner.RunnerError, match="mandatory local design self-check failed"):
+    with pytest.raises(runner.RunnerError, match="mandatory local design self-check failed.*compiler exploded"):
         runner._run_local_design_self_check(
             {"design_engine": {"build_profile": "next_react"}},
             {"env": {}},

@@ -441,7 +441,11 @@ def _page_metrics(page: Any, viewport: Mapping[str, int]) -> dict[str, Any]:
              layout_shifts: layoutShifts,
              signature_behaviors: signatureBehaviors,
              journey_conditions: journeyConditions,
-             critical_content_visible: Boolean(document.querySelector('main') && document.querySelector('main').innerText.trim()),
+             // `main` is preferred for landmark-quality checks, but a valid
+             // authored page can use a different semantic root. Temporal
+             // evidence must not call its visible content incomplete merely
+             // because the candidate chose `div`/`article` as its root.
+             critical_content_visible: Boolean((document.querySelector('main') || document.body) && (document.querySelector('main') || document.body).innerText.trim()),
             text_wrap_failures: textWrapFailures
            };
         })()
@@ -783,7 +787,7 @@ def _observable_snapshot(page: Any) -> dict[str, Any]:
           return {
             nodes,
             signature_behaviors: signature,
-            critical_content_visible: Boolean(document.querySelector('main') && document.querySelector('main').innerText.trim()),
+             critical_content_visible: Boolean((document.querySelector('main') || document.body) && (document.querySelector('main') || document.body).innerText.trim()),
           };
         })()
         """,
