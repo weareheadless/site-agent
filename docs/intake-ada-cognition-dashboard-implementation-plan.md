@@ -153,7 +153,7 @@ grouped into the existing constellation channels:
 | OBSERVING | qwen asset analysis, latest owner message | "Ada observe le logo : ocres, quiétude artisanale. palette #D97A35" |
 | REASONING | intake job `steps`, `creative_insights`, field provenance notes | "Un doute : le site visera-t-il surtout les particuliers ?", "Elle déduit de la réponse que la galerie aura le rôle principal" |
 | RESEARCHING | research requests/jobs/sources/findings | "Elle écoute r/Tapisserie — 3 sujets à explorer", "Source maison-tapissier.com/feed candidate, en attente de confiance" |
-| INCUBATING | genesis creative_identity / business_world, novel insights | "Elle retient : chaleur, fait-main, 'l'atelier comme un lieu'", "Tension notée : étendre B2B sans perdre les particuliers" |
+| INCUBATING | genesis creative_identity / business_world, novel insights | "Elle retient : chaleur, fait-main, 'l'espace comme un lieu'", "Tension notée : étendre B2B sans perdre les particuliers" |
 | DESIGNING | run pipeline labels + phases, build steps | "Elle dessine la page d'accueil : hero chêne, rubrique métier, CTA unique" |
 
 Renderer: a deterministic, rule-based sentence builder (no LLM per line) mapping
@@ -317,7 +317,7 @@ Output contract (strict JSON):
 "Ada relit la commande et ses sources, déduit — potentiel B2B décorateurs/hôtels
 non exploité" (OBSERVING/REASONING) → "Ada consulte Pipeworx : segment luminaires
 upcyclés, 3 sources retenues" (RESEARCHING, with `pipeworx://` citation) →
-"Ada incube : l'atelier comme lieu + engagement durable = axe de positionnement"
+"Ada incube : l'espace comme lieu + engagement durable = axe de positionnement"
 (INCUBATING). Each line is a persisted, typed deduction, not a log.
 
 ### D6. Feeding back into the conversation and design

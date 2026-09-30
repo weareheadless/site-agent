@@ -4,9 +4,8 @@ The public API is one process and one ingress.  Customer state is not shared:
 each tenant has its own config file, Payload credential, SQLite memory database,
 Runtime, and job executor.  The bearer token selects the tenant before any
 conversation or job id is looked up.
-The original integration was named Atelier because it was first deployed for
-one customer.  Keep the customer-specific configuration and Payload adapter at
-the edge; this module is the reusable multi-tenant bridge.
+ Customer-specific configuration and Payload adapters stay at the edge; this
+ module is the reusable multi-tenant bridge.
 """
 
 from __future__ import annotations
@@ -134,7 +133,7 @@ class DesignBuildHandoff:
         service = self.context.get("design_service")
         executor = self.context.get("design_executor")
         if service is None or executor is None:
-            raise AtelierBridgeError("the full design build service is unavailable")
+            raise BridgeError("the full design build service is unavailable")
         # Runtime composition owns the tenant config.  Keep a recovered
         # DesignService instance from an older process/config snapshot from
         # losing the newly provisioned local clone before resolving its base
@@ -206,7 +205,7 @@ class TenantRegistry:
 
     def __init__(
         self,
-        tenants: Mapping[str, AtelierTenant],
+        tenants: Mapping[str, Tenant],
         *,
         env: Mapping[str, str] | None = None,
         shared_credentials: Mapping[str, Any] | None = None,
@@ -220,10 +219,7 @@ class TenantRegistry:
 
     @classmethod
     def from_config(cls, config: Mapping[str, Any], env: Mapping[str, str]) -> "TenantRegistry":
-        # ``atelier_api`` is the legacy name used by the first customer
-        # deployment.  New hosts should use ``workspace_api``; accepting the
-        # old key keeps existing deployments and copied tenant configs safe.
-        section = config.get("workspace_api") or config.get("atelier_api") or {}
+        section = config.get("workspace_api") or {}
         if not isinstance(section, Mapping) or not bool(section.get("enabled", False)):
             raise ConfigError("workspace_api.enabled must be true for the shared workspace API")
         declared = section.get("tenants") or {}
@@ -239,7 +235,7 @@ class TenantRegistry:
         declared = {**dict(declared), **provisioned_declared}
         env = {**dict(env), **provisioned_env}
 
-        tenants: dict[str, AtelierTenant] = {}
+        tenants: dict[str, Tenant] = {}
         seen_data_dirs: set[Path] = set()
         seen_tokens: set[str] = set()
         # Keep the reusable host profile valid in both shapes: the shared API
@@ -259,7 +255,7 @@ class TenantRegistry:
 
                 config_path = Path(str(raw_spec.get("config_path") or "")).expanduser()
                 if not config_path.is_file():
-                    raise ConfigError(f"Atelier tenant config not found: {config_path}")
+                    raise ConfigError(f"tenant config not found: {config_path}")
                 tenant_config, _ = load(config_path, dict(env))
                 raw_tenant_config = yaml.safe_load(config_path.read_text()) or {}
                 raw_tenant_credentials = (
@@ -290,23 +286,23 @@ class TenantRegistry:
 
                 data_dir = Path(str(tenant_config.get("data_dir") or "")).expanduser().resolve()
                 if not str(data_dir) or data_dir == Path("/"):
-                    raise ConfigError(f"Atelier tenant {tenant_id} needs a dedicated data_dir")
+                    raise ConfigError(f"tenant {tenant_id} needs a dedicated data_dir")
                 if data_dir in seen_data_dirs:
-                    raise ConfigError(f"Atelier tenant data_dir is shared: {data_dir}")
+                    raise ConfigError(f"tenant data_dir is shared: {data_dir}")
                 seen_data_dirs.add(data_dir)
                 tenant_config["data_dir"] = str(data_dir)
 
                 token_env = str(
                     raw_spec.get("api_token_env")
-                    or f"ATELIER_{tenant_id.replace('-', '_').upper()}_TOKEN"
+                    or f"TENANT_{tenant_id.replace('-', '_').upper()}_TOKEN"
                 ).strip()
                 if not _SAFE_ENV.fullmatch(token_env):
-                    raise ConfigError(f"Atelier tenant {tenant_id} api_token_env is invalid")
+                    raise ConfigError(f"tenant {tenant_id} api_token_env is invalid")
                 api_token = str(env.get(token_env) or "")
                 if not api_token:
-                    raise ConfigError(f"Atelier tenant {tenant_id} is missing {token_env}")
+                    raise ConfigError(f"tenant {tenant_id} is missing {token_env}")
                 if api_token in seen_tokens:
-                    raise ConfigError("Atelier API tenant tokens must be unique")
+                    raise ConfigError("tenant API tokens must be unique")
                 seen_tokens.add(api_token)
 
                 memory = Memory(data_dir / "memory.db")
@@ -355,8 +351,8 @@ class TenantRegistry:
                 journey = _journey_for_config(tenant_config)
                 context.update({
                     "payload_gateway": payload_client,
-                    "atelier_tenant_id": tenant_id,
-                    "atelier_journey": journey,
+                    "tenant_id": tenant_id,
+                    "journey": journey,
                     "seo_provisioning_state": seo_state,
                     "google_platform": google_platform,
                 })
@@ -440,7 +436,7 @@ class TenantRegistry:
                         design_adapter = get_adapter(site_adapter_name, tenant_config)
                         design_adapter.validate()
                     except Exception as exc:  # noqa: BLE001 — fail closed when approval cannot be safe
-                        raise ConfigError(f"Atelier design approval adapter is unavailable: {exc}") from exc
+                        raise ConfigError(f"design approval adapter is unavailable: {exc}") from exc
                     context["design_adapter"] = design_adapter
                 intake_options = intake_settings(tenant_config)
                 intake_enabled = bool(intake_options.get("enabled", False)) or journey.incubation_needed
@@ -478,7 +474,7 @@ class TenantRegistry:
                         intake_coordinator.intake_service,
                         context["design_operations"],
                     )
-                tenants[tenant_id] = AtelierTenant(
+                tenants[tenant_id] = Tenant(
                     tenant_id=tenant_id,
                     config=tenant_config,
                     memory=memory,
@@ -499,7 +495,7 @@ class TenantRegistry:
             shared_observability=shared_observability,
         )
 
-    def for_token(self, token: str) -> AtelierTenant | None:
+    def for_token(self, token: str) -> Tenant | None:
         supplied = str(token or "")
         if not supplied:
             return None
@@ -508,7 +504,7 @@ class TenantRegistry:
                 return tenant
         return None
 
-    def for_tenant_id(self, tenant_id: str) -> AtelierTenant | None:
+    def for_tenant_id(self, tenant_id: str) -> Tenant | None:
         """Resolve a tenant by id for the server-only HelloAda control plane."""
         normalized = str(tenant_id or "").strip().lower()
         if not normalized:
@@ -518,7 +514,7 @@ class TenantRegistry:
     def start(self) -> None:
         if self._started:
             return
-        started: list[AtelierTenant] = []
+        started: list[Tenant] = []
         try:
             for tenant in self.tenants.values():
                 self._start_tenant(tenant)
@@ -529,7 +525,7 @@ class TenantRegistry:
             raise
         self._started = True
 
-    def _start_tenant(self, tenant: AtelierTenant) -> None:
+    def _start_tenant(self, tenant: Tenant) -> None:
         """Start every runtime dependency for a single tenant."""
         from ..application.design_jobs import DesignJobExecutor
         from ..core.chat_jobs import ChatJobExecutor
@@ -550,7 +546,7 @@ class TenantRegistry:
         if journey is not None and not journey.website_present:
             intake_service = tenant.context.get("design_intake_service")
             if intake_service is not None:
-                handoff = AtelierDesignBuildHandoff(tenant.context)
+                handoff = DesignBuildHandoff(tenant.context)
                 intake_service.lab_service = handoff
                 tenant.context["design_intake_build_service"] = handoff
         tenant.design_executor.start()
@@ -579,7 +575,7 @@ class TenantRegistry:
         api_token_env: str | None = None,
         env: Mapping[str, str] | None = None,
         start: bool = True,
-    ) -> AtelierTenant:
+    ) -> Tenant:
         """Build, register, and optionally start one runtime-registered tenant.
 
         The tenant is constructed through the exact same path used at API
@@ -641,14 +637,14 @@ class TenantRegistry:
         return tenant
 
     @staticmethod
-    def _start_scheduler(tenant: AtelierTenant) -> None:
+    def _start_scheduler(tenant: Tenant) -> None:
         """Start the reusable reading/editorial loop for an opted-in tenant."""
-        settings = tenant.config.get("atelier_scheduler") or {}
+        settings = tenant.config.get("scheduler") or {}
         if not isinstance(settings, Mapping) or not bool(settings.get("enabled", False)):
             return
-        from ..core.jobs import register_atelier_jobs
+        from ..core.jobs import register_jobs
 
-        register_atelier_jobs(tenant.runtime.scheduler, tenant.config, tenant.context)
+        register_jobs(tenant.runtime.scheduler, tenant.config, tenant.context)
         if not tenant.runtime.scheduler.jobs:
             return
         stop_event = threading.Event()
@@ -675,7 +671,7 @@ class TenantRegistry:
         tenant.scheduler_thread.start()
 
     @staticmethod
-    def _site_adapter(tenant: AtelierTenant) -> Any:
+    def _site_adapter(tenant: Tenant) -> Any:
         """Use the configured normal site adapter for a new-site tenant."""
         from ..hands.base import get_adapter
 
@@ -684,11 +680,11 @@ class TenantRegistry:
         return get_adapter(name, tenant.config)
 
     @staticmethod
-    def _tenant_journey(tenant: AtelierTenant) -> AtelierJourney | None:
-        value = tenant.context.get("atelier_journey")
-        return value if isinstance(value, AtelierJourney) else None
+    def _tenant_journey(tenant: Tenant) -> Journey | None:
+        value = tenant.context.get("journey")
+        return value if isinstance(value, Journey) else None
 
-    def _stop_tenant(self, tenant: AtelierTenant) -> None:
+    def _stop_tenant(self, tenant: Tenant) -> None:
         if tenant.scheduler_stop is not None:
             tenant.scheduler_stop.set()
         if tenant.scheduler_thread is not None:
@@ -727,7 +723,7 @@ class ChatService:
         memory: Any | None = None,
         llm: Any | None = None,
         *,
-        registry: AtelierTenantRegistry | None = None,
+        registry: TenantRegistry | None = None,
         config: Mapping[str, Any] | None = None,
         env: Mapping[str, str] | None = None,
         source_editor: Any | None = None,
@@ -747,33 +743,33 @@ class ChatService:
     @staticmethod
     def _require_llm(llm: Any) -> None:
         if llm is None or (hasattr(llm, "api_key") and not llm.api_key):
-            raise AtelierBridgeError("LLM not configured")
+            raise BridgeError("LLM not configured")
 
-    def _scope(self, tenant: AtelierTenant | None) -> tuple[Any, Any, str]:
+    def _scope(self, tenant: Tenant | None) -> tuple[Any, Any, str]:
         if self.registry is not None:
             if tenant is None or tenant.tenant_id not in self.registry.tenants:
-                raise AtelierBridgeError("tenant is not authorized")
+                raise BridgeError("tenant is not authorized")
             self._require_llm(tenant.context.get("llm"))
             return tenant.memory, tenant.context.get("llm"), tenant.tenant_id
         self._require_llm(self.llm)
         return self.memory, self.llm, "legacy"
 
-    def design_operations(self, *, tenant: AtelierTenant | None = None):
+    def design_operations(self, *, tenant: Tenant | None = None):
         """Return the tenant-scoped shared owner-operation service."""
         if self.registry is not None:
             if tenant is None or tenant.tenant_id not in self.registry.tenants:
-                raise AtelierBridgeError("tenant is not authorized")
+                raise BridgeError("tenant is not authorized")
             service = tenant.context.get("design_operations")
             if service is None:
-                raise AtelierBridgeError("design operations are unavailable")
+                raise BridgeError("design operations are unavailable")
             return service
         if self.memory is None:
-            raise AtelierBridgeError("design operations are unavailable")
+            raise BridgeError("design operations are unavailable")
         from .design_operations import DesignOperationService
 
         return DesignOperationService(self.memory, website_id="legacy")
 
-    def recommendations(self, *, limit: int = 50, tenant: AtelierTenant | None = None) -> dict[str, Any]:
+    def recommendations(self, *, limit: int = 50, tenant: Tenant | None = None) -> dict[str, Any]:
         return {
             "recommendations": self.design_operations(tenant=tenant).list_recommendations(limit=limit),
         }
@@ -782,29 +778,29 @@ class ChatService:
         self,
         body: Mapping[str, Any],
         *,
-        tenant: AtelierTenant | None = None,
+        tenant: Tenant | None = None,
     ) -> dict[str, Any]:
         """Run the read-only direction step and wait with a build recommendation."""
         if tenant is None or tenant.context.get("intake_coordinator") is None:
-            raise AtelierBridgeError("Atelier intake is not enabled")
+            raise BridgeError("tenant intake is not enabled")
         direction = tenant.context.get("design_direction")
         if direction is None:
-            raise AtelierBridgeError("design direction is unavailable")
+            raise BridgeError("design direction is unavailable")
         conversation_id = body.get("conversation_id")
         if conversation_id is not None:
             try:
                 conversation_id = int(conversation_id)
             except (TypeError, ValueError) as exc:
-                raise AtelierBridgeError("conversation_id must be an integer") from exc
+                raise BridgeError("conversation_id must be an integer") from exc
         coordinator = tenant.context["intake_coordinator"]
         status = coordinator.status(conversation_id)
         if not status.get("confirmed"):
-            raise AtelierBridgeError("the working brief must be accepted before proposing a direction")
+            raise BridgeError("the working brief must be accepted before proposing a direction")
         confirmed_revision = body.get("confirmed_revision") or status.get("confirmed_revision")
         try:
             confirmed_revision = int(confirmed_revision)
         except (TypeError, ValueError) as exc:
-            raise AtelierBridgeError("confirmed_revision must be an integer") from exc
+            raise BridgeError("confirmed_revision must be an integer") from exc
         try:
             return direction.propose(
                 str(status.get("session_id") or ""),
@@ -812,25 +808,25 @@ class ChatService:
                 conversation_id=conversation_id,
             )
         except Exception as exc:  # noqa: BLE001 - normalize the application boundary
-            raise AtelierBridgeError(str(exc)[:500]) from exc
+            raise BridgeError(str(exc)[:500]) from exc
 
     def accept_recommendation(
         self,
         action_id: int,
         body: Mapping[str, Any] | None = None,
         *,
-        tenant: AtelierTenant | None = None,
+        tenant: Tenant | None = None,
     ) -> dict[str, Any]:
         body = dict(body or {})
         current_state = body.get("current_state")
         if current_state is not None and not isinstance(current_state, Mapping):
-            raise AtelierBridgeError("current_state must be an object")
+            raise BridgeError("current_state must be an object")
         conversation_id = body.get("conversation_id")
         if conversation_id is not None:
             try:
                 conversation_id = int(conversation_id)
             except (TypeError, ValueError) as exc:
-                raise AtelierBridgeError("conversation_id must be an integer") from exc
+                raise BridgeError("conversation_id must be an integer") from exc
         try:
             operation_service = self.design_operations(tenant=tenant)
             if current_state is None and tenant is not None:
@@ -861,9 +857,9 @@ class ChatService:
                 "operation": operation.to_dict(),
             }
         except Exception as exc:  # noqa: BLE001 - normalize service errors at the bridge boundary
-            raise AtelierBridgeError(str(exc)[:500]) from exc
+            raise BridgeError(str(exc)[:500]) from exc
 
-    def _execute_operation(self, operation, *, tenant: AtelierTenant | None = None):
+    def _execute_operation(self, operation, *, tenant: Tenant | None = None):
         """Execute the first real tool while keeping operation state durable.
 
         Direction is completed by ``DesignDirectionService``. The initial build
@@ -934,21 +930,21 @@ class ChatService:
         self,
         action_id: int,
         *,
-        tenant: AtelierTenant | None = None,
+        tenant: Tenant | None = None,
     ) -> dict[str, Any]:
         try:
             operation_service = self.design_operations(tenant=tenant)
             action = operation_service.dismiss(action_id)
             return {"recommendation": operation_service.recommendation_view(action)}
         except Exception as exc:  # noqa: BLE001 - normalize service errors at the bridge boundary
-            raise AtelierBridgeError(str(exc)[:500]) from exc
+            raise BridgeError(str(exc)[:500]) from exc
 
     def operations(
         self,
         *,
         limit: int = 50,
         status: str | None = None,
-        tenant: AtelierTenant | None = None,
+        tenant: Tenant | None = None,
     ) -> dict[str, Any]:
         try:
             return {
@@ -961,15 +957,15 @@ class ChatService:
                 ],
             }
         except Exception as exc:  # noqa: BLE001 - normalize service errors at the bridge boundary
-            raise AtelierBridgeError(str(exc)[:500]) from exc
+            raise BridgeError(str(exc)[:500]) from exc
 
-    def operation(self, operation_id: int, *, tenant: AtelierTenant | None = None) -> dict[str, Any]:
+    def operation(self, operation_id: int, *, tenant: Tenant | None = None) -> dict[str, Any]:
         try:
             return self.design_operations(tenant=tenant).get(operation_id).to_dict()
         except Exception as exc:  # noqa: BLE001 - normalize service errors at the bridge boundary
-            raise AtelierBridgeError(str(exc)[:500]) from exc
+            raise BridgeError(str(exc)[:500]) from exc
 
-    def _merge_adapter(self, tenant: AtelierTenant | None) -> Any:
+    def _merge_adapter(self, tenant: Tenant | None) -> Any:
         """Resolve the existing tenant-scoped Git-backed publish adapter."""
         if tenant is not None:
             for context_key in ("design_adapter", "source_deployment", "source_editor"):
@@ -995,7 +991,7 @@ class ChatService:
                 if adapter is not None:
                     return adapter
             if not self.config:
-                raise AtelierBridgeError("Atelier publish adapter is not configured")
+                raise BridgeError("tenant publish adapter is not configured")
             site = self.config.get("site") if isinstance(self.config.get("site"), Mapping) else {}
             config = self.config
 
@@ -1007,24 +1003,24 @@ class ChatService:
         self,
         draft: Mapping[str, Any],
         adapter: Any,
-        tenant: AtelierTenant | None,
+        tenant: Tenant | None,
     ) -> None:
         """Refuse approval unless the owner can be tied to one verified SHA."""
         meta = draft.get("meta") if isinstance(draft.get("meta"), Mapping) else {}
         expected = str(meta.get("head_sha") or "").strip().lower()
         if not re.fullmatch(r"[0-9a-f]{40}", expected):
-            raise AtelierBridgeError("this draft has no immutable candidate revision; create a new preview")
+            raise BridgeError("this draft has no immutable candidate revision; create a new preview")
 
         branch = str(meta.get("head") or ((tenant.config.get("site") if tenant else self.config.get("site")) or {}).get("preview_branch") or "preview")
         get_head = getattr(adapter, "get_branch_head", None)
         if not callable(get_head):
-            raise AtelierBridgeError("the preview revision cannot be verified")
+            raise BridgeError("the preview revision cannot be verified")
         try:
             actual = str(get_head(branch) or "").strip().lower()
         except Exception as exc:  # noqa: BLE001 - keep approval bounded
-            raise AtelierBridgeError("the preview revision could not be read") from exc
+            raise BridgeError("the preview revision could not be read") from exc
         if actual != expected:
-            raise AtelierBridgeError("the preview changed after review; create a fresh preview before approving")
+            raise BridgeError("the preview changed after review; create a fresh preview before approving")
 
         base_branch = str(meta.get("base") or ((tenant.config.get("site") if tenant else self.config.get("site")) or {}).get("branch") or "main")
         expected_base = str(meta.get("base_sha") or "").strip().lower()
@@ -1032,9 +1028,9 @@ class ChatService:
             try:
                 actual_base = str(get_head(base_branch) or "").strip().lower()
             except Exception as exc:  # noqa: BLE001
-                raise AtelierBridgeError("the production base revision could not be read") from exc
+                raise BridgeError("the production base revision could not be read") from exc
             if actual_base != expected_base:
-                raise AtelierBridgeError("the production site changed after this preview; create a fresh candidate")
+                raise BridgeError("the production site changed after this preview; create a fresh candidate")
 
         preview = meta.get("preview") if isinstance(meta.get("preview"), Mapping) else {}
         if preview.get("requires_build"):
@@ -1042,24 +1038,24 @@ class ChatService:
             deployer = tenant.context.get("source_deployment") if tenant is not None else self.source_deployment
             status = getattr(deployer, "status", None)
             if not job_id or not callable(status):
-                raise AtelierBridgeError("the compiled preview is not ready for review")
+                raise BridgeError("the compiled preview is not ready for review")
             try:
                 receipt = status(job_id)
             except Exception as exc:  # noqa: BLE001
-                raise AtelierBridgeError("the compiled preview status could not be read") from exc
+                raise BridgeError("the compiled preview status could not be read") from exc
             if receipt.get("status") != "ready" or str(receipt.get("commit") or "").lower() != expected:
-                raise AtelierBridgeError("the compiled preview is not ready for this candidate")
+                raise BridgeError("the compiled preview is not ready for this candidate")
         elif preview.get("status") != "ready":
-            raise AtelierBridgeError("the website preview is not ready for review")
+            raise BridgeError("the website preview is not ready for review")
 
     @staticmethod
     def _attachment_rows(value: Any) -> list[dict[str, int]]:
         if value is None:
             return []
         if not isinstance(value, list):
-            raise AtelierBridgeError("attachments must be a list")
+            raise BridgeError("attachments must be a list")
         if len(value) > 12:
-            raise AtelierBridgeError("choose up to 12 images")
+            raise BridgeError("choose up to 12 images")
         rows: list[dict[str, int]] = []
         seen: set[int] = set()
         for position, raw in enumerate(value):
@@ -1067,33 +1063,33 @@ class ChatService:
             try:
                 asset_id = int(raw_id)
             except (TypeError, ValueError) as exc:
-                raise AtelierBridgeError("attachment ID is invalid") from exc
+                raise BridgeError("attachment ID is invalid") from exc
             if asset_id < 1 or asset_id in seen:
-                raise AtelierBridgeError("attachments must contain unique positive IDs")
+                raise BridgeError("attachments must contain unique positive IDs")
             seen.add(asset_id)
             rows.append({"asset_id": asset_id, "position": position})
         return rows
 
     @staticmethod
-    def _journey(tenant: AtelierTenant | None) -> AtelierJourney | None:
-        value = tenant.context.get("atelier_journey") if tenant is not None else None
-        return value if isinstance(value, AtelierJourney) else None
+    def _journey(tenant: Tenant | None) -> Journey | None:
+        value = tenant.context.get("journey") if tenant is not None else None
+        return value if isinstance(value, Journey) else None
 
     @classmethod
-    def _intake_mode(cls, tenant: AtelierTenant | None) -> str:
+    def _intake_mode(cls, tenant: Tenant | None) -> str:
         journey = cls._journey(tenant)
         return journey.initial_phase if journey is not None else "intake"
 
-    def enqueue(self, body: Mapping[str, Any], *, tenant: AtelierTenant | None = None) -> dict[str, Any]:
+    def enqueue(self, body: Mapping[str, Any], *, tenant: Tenant | None = None) -> dict[str, Any]:
         memory, _llm, tenant_id = self._scope(tenant)
         message = str(body.get("message") or "").strip()
         attachments = self._attachment_rows(body.get("attachments"))
         owner_context = body.get("context")
         owner_context = dict(owner_context) if isinstance(owner_context, Mapping) else {}
         if not message and not attachments:
-            raise AtelierBridgeError("empty message")
+            raise BridgeError("empty message")
         if len(message) > 8000:
-            raise AtelierBridgeError("message too long")
+            raise BridgeError("message too long")
         if not message:
             message = "Please review the attached images."
 
@@ -1113,7 +1109,7 @@ class ChatService:
             try:
                 conversation_id = int(conversation_id)
             except (TypeError, ValueError) as exc:
-                raise AtelierBridgeError("conversation_id must be an integer") from exc
+                raise BridgeError("conversation_id must be an integer") from exc
 
         if tenant is not None:
             intake = tenant.context.get("intake_coordinator")
@@ -1129,7 +1125,7 @@ class ChatService:
                         intake_kwargs["owner_context"] = owner_context
                     result = intake.send_message(message, **intake_kwargs)
                 except Exception as exc:  # noqa: BLE001 — keep bridge errors bounded
-                    raise AtelierBridgeError(str(exc)[:500]) from exc
+                    raise BridgeError(str(exc)[:500]) from exc
                 response = {
                     "job_id": int(result["job_id"]),
                     "conversation_id": int(result["conversation_id"]),
@@ -1155,12 +1151,12 @@ class ChatService:
             context["journey"] = "workspace"
         media_service = tenant.context.get("media_service") if tenant is not None else None
         if attachments and media_service is None:
-            raise AtelierBridgeError("image attachments are unavailable")
+            raise BridgeError("image attachments are unavailable")
         if attachments and media_service is not None:
             try:
                 media_service.resolve_attachments([item["asset_id"] for item in attachments])
             except Exception as exc:  # noqa: BLE001 — normalize provider-specific errors
-                raise AtelierBridgeError(str(exc)[:500]) from exc
+                raise BridgeError(str(exc)[:500]) from exc
         job_id = memory.enqueue_chat_job(
             conversation_id,
             self._contextual_message(message, context),
@@ -1179,7 +1175,7 @@ class ChatService:
             })
         return response
 
-    def status(self, conversation_id: Any = None, *, tenant: AtelierTenant | None = None) -> dict[str, Any]:
+    def status(self, conversation_id: Any = None, *, tenant: Tenant | None = None) -> dict[str, Any]:
         """Return the tenant-scoped chat phase without starting website work.
 
         Intake owns the phase decision.  The browser may use this to keep the
@@ -1192,7 +1188,7 @@ class ChatService:
             try:
                 normalized_id = int(conversation_id)
             except (TypeError, ValueError) as exc:
-                raise AtelierBridgeError("conversation_id must be an integer") from exc
+                raise BridgeError("conversation_id must be an integer") from exc
 
         journey = self._journey(tenant)
         intake_enabled = bool(tenant is not None and tenant.context.get("intake_coordinator") is not None)
@@ -1204,7 +1200,7 @@ class ChatService:
                 intake_status = coordinator.status(normalized_id)
                 needs_intake = not bool(intake_status.get("confirmed"))
             except Exception as exc:  # noqa: BLE001 — keep status errors bounded
-                raise AtelierBridgeError(str(exc)[:500]) from exc
+                raise BridgeError(str(exc)[:500]) from exc
         if journey is None:
             mode = "intake" if needs_intake else "workspace"
         elif needs_intake:
@@ -1239,29 +1235,29 @@ class ChatService:
         self,
         body: Mapping[str, Any],
         *,
-        tenant: AtelierTenant | None = None,
+        tenant: Tenant | None = None,
     ) -> dict[str, Any]:
         """Accept intake without starting a design run."""
         _memory, _llm, _tenant_id = self._scope(tenant)
         if tenant is None or tenant.context.get("intake_coordinator") is None:
-            raise AtelierBridgeError("Atelier intake is not enabled")
+            raise BridgeError("tenant intake is not enabled")
         coordinator = tenant.context["intake_coordinator"]
         conversation_id = body.get("conversation_id")
         if conversation_id is not None:
             try:
                 conversation_id = int(conversation_id)
             except (TypeError, ValueError) as exc:
-                raise AtelierBridgeError("conversation_id must be an integer") from exc
+                raise BridgeError("conversation_id must be an integer") from exc
         try:
             revision = int(body.get("revision"))
         except (TypeError, ValueError) as exc:
-            raise AtelierBridgeError("revision must be an integer") from exc
+                raise BridgeError("revision must be an integer") from exc
         draft_hash = str(body.get("draft_hash") or "").strip().lower()
         confirmation_text = str(body.get("confirmation_text") or "Accept this working brief").strip()
         if not draft_hash:
-            raise AtelierBridgeError("draft_hash is required")
+                raise BridgeError("draft_hash is required")
         if not confirmation_text or len(confirmation_text) > 2_000:
-            raise AtelierBridgeError("confirmation_text is invalid")
+                raise BridgeError("confirmation_text is invalid")
         try:
             result = coordinator.confirm(
                 conversation_id,
@@ -1272,52 +1268,52 @@ class ChatService:
             )
             return result
         except Exception as exc:  # noqa: BLE001 — keep bridge errors bounded
-            raise AtelierBridgeError(str(exc)[:500]) from exc
+            raise BridgeError(str(exc)[:500]) from exc
 
     def start_first_page(
         self,
         body: Mapping[str, Any],
         *,
-        tenant: AtelierTenant | None = None,
+        tenant: Tenant | None = None,
     ) -> dict[str, Any]:
         """Start the first page only through an explicit post-intake action."""
         _memory, _llm, _tenant_id = self._scope(tenant)
         if tenant is None or tenant.context.get("intake_coordinator") is None:
-            raise AtelierBridgeError("Atelier intake is not enabled")
+            raise BridgeError("tenant intake is not enabled")
         journey = self._journey(tenant)
         if journey is not None and journey.website_present:
-            raise AtelierBridgeError("an existing website needs an explicit page target")
+            raise BridgeError("an existing website needs an explicit page target")
         # Real tenants have the shared operation spine. The compatibility
         # fallback below remains for the legacy single-instance test adapter;
         # it is not used by TenantRegistry-created websites.
         if tenant.context.get("design_operations") is not None:
             recommendation_id = body.get("recommendation_id")
             if recommendation_id is None:
-                raise AtelierBridgeError("direction_not_approved: propose and approve a design direction first")
+                raise BridgeError("direction_not_approved: propose and approve a design direction first")
             try:
                 recommendation_id = int(recommendation_id)
             except (TypeError, ValueError) as exc:
-                raise AtelierBridgeError("recommendation_id must be an integer") from exc
+                raise BridgeError("recommendation_id must be an integer") from exc
             return self.accept_recommendation(recommendation_id, body, tenant=tenant)
         coordinator = tenant.context["intake_coordinator"]
         intake_service = tenant.context.get("design_intake_service")
         if intake_service is None or getattr(intake_service, "lab_service", None) is None:
-            raise AtelierBridgeError("the full design build service is unavailable")
+            raise BridgeError("the full design build service is unavailable")
         conversation_id = body.get("conversation_id")
         if conversation_id is not None:
             try:
                 conversation_id = int(conversation_id)
             except (TypeError, ValueError) as exc:
-                raise AtelierBridgeError("conversation_id must be an integer") from exc
+                raise BridgeError("conversation_id must be an integer") from exc
         status = coordinator.status(conversation_id)
         if not status.get("confirmed"):
-            raise AtelierBridgeError("the working brief must be accepted before starting a page")
+            raise BridgeError("the working brief must be accepted before starting a page")
         session_id = str(status.get("session_id") or "")
         confirmed_revision = body.get("confirmed_revision") or status.get("confirmed_revision_id") or status.get("confirmed_revision")
         try:
             confirmed_revision = int(confirmed_revision)
         except (TypeError, ValueError) as exc:
-            raise AtelierBridgeError("confirmed_revision must be an integer") from exc
+            raise BridgeError("confirmed_revision must be an integer") from exc
         try:
             build = intake_service.build(
                 session_id,
@@ -1327,7 +1323,7 @@ class ChatService:
                 context_extra={"operation": "first_page_design", "page": "index.html"},
             )
         except Exception as exc:  # noqa: BLE001 — normalize bridge errors
-            raise AtelierBridgeError(str(exc)[:500]) from exc
+            raise BridgeError(str(exc)[:500]) from exc
         response = {
             key: build[key]
             for key in ("idempotency_key", "build_pending", "idempotent", "recovered")
@@ -1342,7 +1338,7 @@ class ChatService:
         *,
         include_archived: bool = False,
         limit: int = 50,
-        tenant: AtelierTenant | None = None,
+        tenant: Tenant | None = None,
     ) -> dict[str, Any]:
         """List durable conversations for the token-selected tenant."""
         memory, _llm, _tenant_id = self._scope(tenant)
@@ -1355,13 +1351,13 @@ class ChatService:
             "conversations": service.list(include_archived=bool(include_archived), limit=bounded_limit),
         }
 
-    def conversation(self, conversation_id: Any, *, tenant: AtelierTenant | None = None) -> dict[str, Any]:
+    def conversation(self, conversation_id: Any, *, tenant: Tenant | None = None) -> dict[str, Any]:
         """Return one durable conversation and its messages for the tenant."""
         memory, _llm, _tenant_id = self._scope(tenant)
         try:
             normalized_id = int(conversation_id)
         except (TypeError, ValueError) as exc:
-            raise AtelierBridgeError("conversation_id must be an integer") from exc
+            raise BridgeError("conversation_id must be an integer") from exc
         from .conversations import ConversationNotFound, ConversationService
 
         media_service = tenant.context.get("media_service") if tenant is not None else None
@@ -1369,9 +1365,9 @@ class ChatService:
         try:
             return service.get(normalized_id)
         except ConversationNotFound as exc:
-            raise AtelierBridgeError(str(exc)) from exc
+            raise BridgeError(str(exc)) from exc
 
-    def history(self, *, limit: int = 50, tenant: AtelierTenant | None = None) -> dict[str, Any]:
+    def history(self, *, limit: int = 50, tenant: Tenant | None = None) -> dict[str, Any]:
         """Return a bounded, tenant-scoped activity index without raw context."""
         memory, _llm, tenant_id = self._scope(tenant)
         bounded_limit = max(1, min(int(limit), 100))
@@ -1510,7 +1506,7 @@ class ChatService:
         return candidates[0] if candidates else None
 
     @staticmethod
-    def _public_worktree(tenant: AtelierTenant | None, config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    def _public_worktree(tenant: Tenant | None, config: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """Expose only the owner-useful local-change summary, never host paths."""
         try:
             from ..hands.opencode_runner import worktree_status
@@ -1534,7 +1530,7 @@ class ChatService:
             "error": str(state.get("error") or "")[:300],
         }
 
-    def _public_source_preview(self, tenant: AtelierTenant | None) -> dict[str, Any]:
+    def _public_source_preview(self, tenant: Tenant | None) -> dict[str, Any]:
         """Return the latest source-preview job without command output or paths."""
         deployer = None
         if tenant is not None:
@@ -1559,23 +1555,23 @@ class ChatService:
             if key in latest
         } | ({"error": "The latest preview check could not be completed."} if latest.get("status") == "failed" else {})
 
-    def worktree(self, *, tenant: AtelierTenant | None = None) -> dict[str, Any]:
+    def worktree(self, *, tenant: Tenant | None = None) -> dict[str, Any]:
         """Return the tenant's local source-change summary."""
         self._scope(tenant)
         return {"worktree": self._public_worktree(tenant, self.config)}
 
-    def discard_worktree(self, *, tenant: AtelierTenant | None = None) -> dict[str, Any]:
+    def discard_worktree(self, *, tenant: Tenant | None = None) -> dict[str, Any]:
         """Discard only uncommitted local clone files for this tenant."""
         memory, _llm, _tenant_id = self._scope(tenant)
         config = tenant.config if tenant is not None else self.config
         if memory.list_active_chat_jobs(limit=1):
-            raise AtelierBridgeError("cannot discard local work while Ada is working")
+            raise BridgeError("cannot discard local work while Ada is working")
         from ..hands.opencode_runner import RunnerError, discard_worktree
 
         try:
             state = discard_worktree(dict(config))
         except RunnerError as exc:
-            raise AtelierBridgeError(str(exc)[:500]) from exc
+            raise BridgeError(str(exc)[:500]) from exc
         memory.record_action("worktree", "discarded uncommitted local site work")
         return {"ok": True, "worktree": self._public_worktree(tenant, config)}
 
@@ -1585,25 +1581,25 @@ class ChatService:
         status: str | None = None,
         mode: str | None = None,
         limit: int = 50,
-        tenant: AtelierTenant | None = None,
+        tenant: Tenant | None = None,
     ) -> dict[str, Any]:
         """List reviewable design runs without exposing mutable context snapshots."""
         _memory, _llm, _tenant_id = self._scope(tenant)
         if tenant is None or tenant.context.get("design_service") is None:
-            raise AtelierBridgeError("Atelier design service is not enabled")
+            raise BridgeError("tenant design service is not enabled")
         bounded_limit = max(1, min(int(limit), 100))
         service = tenant.context["design_service"]
         return {"runs": [self._public_design_run(item) for item in service.list_runs(status=status, mode=mode, limit=bounded_limit)]}
 
-    def design_run(self, run_id: str, *, tenant: AtelierTenant | None = None) -> dict[str, Any]:
+    def design_run(self, run_id: str, *, tenant: Tenant | None = None) -> dict[str, Any]:
         """Return one design run and its quality evidence for owner review."""
         _memory, _llm, _tenant_id = self._scope(tenant)
         if tenant is None or tenant.context.get("design_service") is None:
-            raise AtelierBridgeError("Atelier design service is not enabled")
+            raise BridgeError("tenant design service is not enabled")
         try:
             run = tenant.context["design_service"].get_run(str(run_id))
         except Exception as exc:  # noqa: BLE001 — normalize service-specific errors
-            raise AtelierBridgeError(str(exc)[:500]) from exc
+            raise BridgeError(str(exc)[:500]) from exc
         return {"run": self._public_design_run(run, include_evidence=True)}
 
     def retry_design_run(
@@ -1611,7 +1607,7 @@ class ChatService:
         run_id: str,
         body: Mapping[str, Any] | None = None,
         *,
-        tenant: AtelierTenant | None = None,
+        tenant: Tenant | None = None,
     ) -> dict[str, Any]:
         """Regenerate a failed native candidate from the same confirmed intake.
 
@@ -1621,23 +1617,23 @@ class ChatService:
         """
         memory, _llm, _tenant_id = self._scope(tenant)
         if tenant is None:
-            raise AtelierBridgeError("tenant-scoped design retry is unavailable")
+            raise BridgeError("tenant-scoped design retry is unavailable")
         safe_run_id = str(run_id or "").strip()
         source_run = memory.get_design_run(safe_run_id)
         if source_run is None:
-            raise AtelierBridgeError("no such design run")
+            raise BridgeError("no such design run")
         if str(source_run.get("status") or "") not in {"failed", "incomplete", "interrupted"}:
-            raise AtelierBridgeError("only failed design runs can be retried")
+            raise BridgeError("only failed design runs can be retried")
         if source_run.get("candidate_sha"):
-            raise AtelierBridgeError("a retained candidate must be revalidated or repaired, not retried")
+            raise BridgeError("a retained candidate must be revalidated or repaired, not retried")
 
         intake_service = tenant.context.get("design_intake_service")
         coordinator = tenant.context.get("intake_coordinator")
         if intake_service is None or coordinator is None:
-            raise AtelierBridgeError("the full design build service is unavailable")
+            raise BridgeError("the full design build service is unavailable")
         session_id = str(source_run.get("intake_session_id") or "").strip()
         if not session_id:
-            raise AtelierBridgeError("failed design run is not bound to an intake session")
+            raise BridgeError("failed design run is not bound to an intake session")
 
         request_body = dict(body or {})
         intake_status = coordinator.status(source_run.get("conversation_id"))
@@ -1651,11 +1647,11 @@ class ChatService:
         try:
             confirmed_revision = int(confirmed_revision)
         except (TypeError, ValueError) as exc:
-            raise AtelierBridgeError("confirmed_revision is invalid") from exc
+            raise BridgeError("confirmed_revision is invalid") from exc
         try:
             intake_service.confirmed_intake(session_id, revision=confirmed_revision)
         except Exception as exc:  # noqa: BLE001 - keep the retry boundary bounded
-            raise AtelierBridgeError(str(exc)[:500]) from exc
+            raise BridgeError(str(exc)[:500]) from exc
 
         snapshot = source_run.get("context_snapshot")
         snapshot = snapshot if isinstance(snapshot, Mapping) else {}
@@ -1682,10 +1678,10 @@ class ChatService:
                 context_extra=context_extra,
             )
         except Exception as exc:  # noqa: BLE001 - normalize the bridge boundary
-            raise AtelierBridgeError(str(exc)[:500]) from exc
+            raise BridgeError(str(exc)[:500]) from exc
         retry_run = build.get("run") if isinstance(build, Mapping) else None
         if not isinstance(retry_run, Mapping):
-            raise AtelierBridgeError("design retry did not return a run")
+            raise BridgeError("design retry did not return a run")
         return {
             "source_run_id": safe_run_id,
             "idempotency_key": str(build.get("idempotency_key") or retry_key),
@@ -1693,18 +1689,18 @@ class ChatService:
             "run": self._public_design_run(retry_run),
         }
 
-    def create_design_review(self, run_id: str, *, tenant: AtelierTenant | None = None) -> dict[str, Any]:
+    def create_design_review(self, run_id: str, *, tenant: Tenant | None = None) -> dict[str, Any]:
         """Link a passed candidate to the owner approval lane."""
         _memory, _llm, _tenant_id = self._scope(tenant)
         if tenant is None or tenant.context.get("design_service") is None:
-            raise AtelierBridgeError("Atelier design service is not enabled")
+            raise BridgeError("tenant design service is not enabled")
         try:
             run = tenant.context["design_service"].create_review_draft(str(run_id))
         except Exception as exc:  # noqa: BLE001 — normalize service-specific errors
-            raise AtelierBridgeError(str(exc)[:500]) from exc
+            raise BridgeError(str(exc)[:500]) from exc
         return {"run": self._public_design_run(run, include_evidence=True)}
 
-    def seo_insights(self, *, limit: int = 12, tenant: AtelierTenant | None = None) -> dict[str, Any]:
+    def seo_insights(self, *, limit: int = 12, tenant: Tenant | None = None) -> dict[str, Any]:
         """Owner-facing SEO synthesis, newest first, scoped to one tenant."""
         memory, _llm, tenant_id = self._scope(tenant)
         bounded = max(1, min(int(limit), 50))
@@ -1714,13 +1710,13 @@ class ChatService:
             "insights": memory.list_seo_insights(limit=bounded),
         }
 
-    def approve_draft(self, draft_id: Any, *, tenant: AtelierTenant | None = None) -> dict[str, Any]:
+    def approve_draft(self, draft_id: Any, *, tenant: Tenant | None = None) -> dict[str, Any]:
         # A retried HTTP request must observe the first approval's durable
         # receipt rather than perform the same merge twice.
         with self._approval_lock:
             return self._approve_draft(draft_id, tenant=tenant)
 
-    def _approve_draft(self, draft_id: Any, *, tenant: AtelierTenant | None = None) -> dict[str, Any]:
+    def _approve_draft(self, draft_id: Any, *, tenant: Tenant | None = None) -> dict[str, Any]:
         """Publish exactly one pending owner change through its existing lane.
 
         Design candidates use the immutable design service. Legacy/source merge
@@ -1733,7 +1729,7 @@ class ChatService:
         try:
             normalized_id = int(draft_id)
         except (TypeError, ValueError) as exc:
-            raise AtelierBridgeError("draft_id must be an integer") from exc
+            raise BridgeError("draft_id must be an integer") from exc
 
         draft = next((item for item in memory.list_drafts(limit=500) if int(item["id"]) == normalized_id), None)
         # The immutable design service owns its draft/run lifecycle. Keep the
@@ -1742,7 +1738,7 @@ class ChatService:
         if draft is None and tenant is not None and tenant.context.get("design_service") is not None:
             draft = {"id": normalized_id, "title": f"Design candidate {normalized_id}", "kind": "design", "status": "pending", "meta": {}}
         if draft is None:
-            raise AtelierBridgeError("no such draft")
+            raise BridgeError("no such draft")
         if draft.get("status") != "pending":
             deployer = tenant.context.get("source_deployment") if tenant else self.source_deployment
             lookup = getattr(deployer, "for_draft", None)
@@ -1750,13 +1746,13 @@ class ChatService:
             if receipt and draft.get("status") in {"publishing", "publish_failed", "live"}:
                 return {"ok": receipt.get("status") != "failed", "draft_id": normalized_id,
                         "status": draft["status"], "deployment": receipt, "idempotent": True}
-            raise AtelierBridgeError(f"draft already {draft.get('status')}")
+            raise BridgeError(f"draft already {draft.get('status')}")
 
         kind = str(draft.get("kind") or "edit")
         if kind in {"design", "merge", "rollback"}:
             current = self._current_pending_owner_update(memory)
             if current is not None and int(current.get("id") or 0) != normalized_id:
-                raise AtelierBridgeError("only the current website update can be reviewed")
+                raise BridgeError("only the current website update can be reviewed")
         meta = draft.get("meta") if isinstance(draft.get("meta"), Mapping) else {}
         published: Mapping[str, Any] | None = None
         production_deployment: Mapping[str, Any] | None = None
@@ -1764,12 +1760,12 @@ class ChatService:
 
         if kind == "design":
             if tenant is None or tenant.context.get("design_service") is None:
-                raise AtelierBridgeError("Atelier design service is not enabled")
+                raise BridgeError("tenant design service is not enabled")
             adapter = tenant.context.get("design_adapter")
             from ..hands.base import DesignMergeAdapter
 
             if not isinstance(adapter, DesignMergeAdapter):
-                raise AtelierBridgeError("Atelier design approval adapter is unavailable")
+                raise BridgeError("tenant design approval adapter is unavailable")
             service = tenant.context["design_service"]
             try:
                 result = service.approve_review_draft(
@@ -1782,7 +1778,7 @@ class ChatService:
                     ),
                 )
             except Exception as exc:  # noqa: BLE001 — approval must return a bounded error
-                raise AtelierBridgeError(str(exc)[:500]) from exc
+                raise BridgeError(str(exc)[:500]) from exc
             candidate = result.get("published") if isinstance(result, dict) else {}
             published = candidate if isinstance(candidate, Mapping) else None
             version_type = "design"
@@ -1794,7 +1790,7 @@ class ChatService:
                 commit_sha = str((published or {}).get("commit_sha") or "").strip().lower()
                 if not re.fullmatch(r"[0-9a-f]{40}", commit_sha):
                     memory.update_draft_status(normalized_id, "publish_failed")
-                    raise AtelierBridgeError("design approved but the production commit could not be identified")
+                    raise BridgeError("design approved but the production commit could not be identified")
                 try:
                     memory.update_draft_status(normalized_id, "publishing")
                     production_deployment = start({
@@ -1813,14 +1809,14 @@ class ChatService:
                 except Exception as exc:  # noqa: BLE001 - keep the approval boundary explicit
                     memory.update_draft_status(normalized_id, "publish_failed")
                     memory.record_action("publish_failed", f"#{normalized_id}: {str(exc)[:400]}")
-                    raise AtelierBridgeError(f"design approved but live deployment could not be queued: {str(exc)[:400]}") from exc
+                    raise BridgeError(f"design approved but live deployment could not be queued: {str(exc)[:400]}") from exc
                 result["status"] = {"deployed": "live", "failed": "publish_failed"}.get(production_deployment.get("status"), "publishing")
                 result["deployment"] = dict(production_deployment)
         elif kind in {"merge", "rollback"}:
             adapter = self._merge_adapter(tenant)
             merge = getattr(adapter, "merge_preview", None)
             if not callable(merge):
-                raise AtelierBridgeError("the configured site cannot publish preview changes")
+                raise BridgeError("the configured site cannot publish preview changes")
             config = tenant.config if tenant is not None else self.config
             if kind == "merge" and tenant is not None and tenant.context.get("source_deployment") is not None:
                 self._assert_reviewable_merge_candidate(draft, adapter, tenant)
@@ -1830,10 +1826,10 @@ class ChatService:
                     f"Publish website update: {str(draft.get('title') or normalized_id)[:160]}",
                 )
             except Exception as exc:  # noqa: BLE001 — approval must return a bounded error
-                raise AtelierBridgeError(str(exc)[:500]) from exc
+                raise BridgeError(str(exc)[:500]) from exc
             if not isinstance(candidate, Mapping) or not candidate.get("merged"):
                 reason = candidate.get("reason") if isinstance(candidate, Mapping) else "merge was rejected"
-                raise AtelierBridgeError(str(reason)[:500])
+                raise BridgeError(str(reason)[:500])
             published = candidate
             version_type = "rollback" if kind == "rollback" else "merge"
             summary = str(draft.get("title") or f"{kind}: {normalized_id}")
@@ -1844,7 +1840,7 @@ class ChatService:
                 commit_sha = str(candidate.get("commit_sha") or "").strip().lower()
                 if not re.fullmatch(r"[0-9a-f]{40}", commit_sha):
                     memory.update_draft_status(normalized_id, "publish_failed")
-                    raise AtelierBridgeError("preview merged but the production commit could not be identified")
+                    raise BridgeError("preview merged but the production commit could not be identified")
                 try:
                     memory.update_draft_status(normalized_id, "publishing")
                     production_deployment = start({
@@ -1863,7 +1859,7 @@ class ChatService:
                 except Exception as exc:  # noqa: BLE001 — the merge already happened; retain an explicit failed state
                     memory.update_draft_status(normalized_id, "publish_failed")
                     memory.record_action("publish_failed", f"#{normalized_id}: {str(exc)[:400]}")
-                    raise AtelierBridgeError(f"preview merged but live deployment could not be queued: {str(exc)[:400]}") from exc
+                    raise BridgeError(f"preview merged but live deployment could not be queued: {str(exc)[:400]}") from exc
                 result["status"] = {"deployed": "live", "failed": "publish_failed"}.get(production_deployment.get("status"), "publishing")
                 result["deployment"] = dict(production_deployment)
             else:
@@ -1877,7 +1873,7 @@ class ChatService:
                     pass
         elif kind == "edit":
             if tenant is not None and tenant.context.get("source_deployment") is not None:
-                raise AtelierBridgeError(
+                raise BridgeError(
                     "this is a legacy edit draft without a verified preview; ask Ada to create a fresh implementation preview"
                 )
             adapter = self._merge_adapter(tenant)
@@ -1886,14 +1882,14 @@ class ChatService:
             try:
                 results = brain_editor._apply_ops(adapter, _normalize_edit_ops(meta))
             except Exception as exc:  # noqa: BLE001 — keep provider errors bounded
-                raise AtelierBridgeError(str(exc)[:500]) from exc
+                raise BridgeError(str(exc)[:500]) from exc
             published = results[0] if results and isinstance(results[0], Mapping) else None
             version_type = "edit"
             summary = str(draft.get("title") or f"edit: {normalized_id}")
             commit_message = str((published or {}).get("commit_message") or "")
             memory.update_draft_status(normalized_id, "approved")
         else:
-            raise AtelierBridgeError(f"draft type '{kind}' cannot be published from the workspace")
+            raise BridgeError(f"draft type '{kind}' cannot be published from the workspace")
 
         if published and not production_deployment and (published.get("committed") or published.get("commit_sha")):
             memory.log_publish(
@@ -1913,24 +1909,24 @@ class ChatService:
         result.setdefault("published", dict(published) if published else None)
         return result
 
-    def discard_draft(self, draft_id: Any, *, tenant: AtelierTenant | None = None) -> dict[str, Any]:
+    def discard_draft(self, draft_id: Any, *, tenant: Tenant | None = None) -> dict[str, Any]:
         """Cancel one pending draft and clean its review branch when needed."""
         memory, _llm, _tenant_id = self._scope(tenant)
         try:
             normalized_id = int(draft_id)
         except (TypeError, ValueError) as exc:
-            raise AtelierBridgeError("draft_id must be an integer") from exc
+            raise BridgeError("draft_id must be an integer") from exc
         draft = next((item for item in memory.list_drafts(limit=500) if int(item["id"]) == normalized_id), None)
         if draft is None:
-            raise AtelierBridgeError("no such draft")
+            raise BridgeError("no such draft")
         if draft.get("status") != "pending":
-            raise AtelierBridgeError(f"draft already {draft.get('status')}")
+            raise BridgeError(f"draft already {draft.get('status')}")
 
         kind = str(draft.get("kind") or "")
         if kind in {"design", "merge", "rollback"}:
             current = self._current_pending_owner_update(memory)
             if current is not None and int(current.get("id") or 0) != normalized_id:
-                raise AtelierBridgeError("only the current website update can be reviewed")
+                raise BridgeError("only the current website update can be reviewed")
         if kind in {"merge", "rollback"}:
             other_pending = [
                 item for item in memory.list_drafts(status="pending", limit=500)
@@ -1948,7 +1944,7 @@ class ChatService:
                     try:
                         reset(preview_branch)
                     except Exception as exc:  # noqa: BLE001 — preserve the pending draft if cleanup failed
-                        raise AtelierBridgeError(str(exc)[:500]) from exc
+                        raise BridgeError(str(exc)[:500]) from exc
                 try:
                     from ..hands import tweakmap
 
@@ -1962,27 +1958,27 @@ class ChatService:
                 try:
                     cancel(run_id)
                 except Exception as exc:  # noqa: BLE001 — draft cancellation remains bounded
-                    raise AtelierBridgeError(str(exc)[:500]) from exc
+                    raise BridgeError(str(exc)[:500]) from exc
 
         if not memory.update_draft_status(normalized_id, "discarded"):
-            raise AtelierBridgeError("no such draft")
+            raise BridgeError("no such draft")
         memory.record_action("discard", f"#{normalized_id}")
         return {"ok": True, "draft_id": normalized_id, "status": "discarded"}
 
-    def restore_version(self, version_id: Any, *, tenant: AtelierTenant | None = None) -> dict[str, Any]:
+    def restore_version(self, version_id: Any, *, tenant: Tenant | None = None) -> dict[str, Any]:
         """Create an approval-gated rollback draft; never mutate production directly."""
         memory, _llm, _tenant_id = self._scope(tenant)
         if tenant is None:
-            raise AtelierBridgeError("Atelier tenant is required")
+            raise BridgeError("tenant is required")
         try:
             normalized_id = int(version_id)
         except (TypeError, ValueError) as exc:
-            raise AtelierBridgeError("version_id must be an integer") from exc
+            raise BridgeError("version_id must be an integer") from exc
         version = next((item for item in memory.list_publishes(limit=100) if int(item["id"]) == normalized_id), None)
         if not version or not version.get("commit_sha"):
-            raise AtelierBridgeError("version not found")
+            raise BridgeError("version not found")
         if version.get("reverted_ts"):
-            raise AtelierBridgeError("version has already been rolled back")
+            raise BridgeError("version has already been rolled back")
         for pending in memory.list_drafts(status="pending", limit=500):
             if pending.get("kind") in {"merge", "rollback"}:
                 memory.update_draft_status(int(pending["id"]), "discarded")
@@ -1990,7 +1986,7 @@ class ChatService:
         restore = getattr(adapter, "restore_snapshot", None)
         preview_branch = str((tenant.config.get("site") or {}).get("preview_branch") or "preview").strip()
         if not callable(restore) or not preview_branch:
-            raise AtelierBridgeError("version restore is not configured")
+            raise BridgeError("version restore is not configured")
         try:
             ensure_branch = getattr(adapter, "ensure_branch", None)
             if callable(ensure_branch):
@@ -2001,7 +1997,7 @@ class ChatService:
                 f"Restore website version: {str(version.get('summary') or normalized_id)[:120]}",
             )
         except Exception as exc:  # noqa: BLE001 — keep rollback approval-gated
-            raise AtelierBridgeError(str(exc)[:500]) from exc
+            raise BridgeError(str(exc)[:500]) from exc
         draft_id = memory.save_draft(
             title=f"Restore: {str(version.get('summary') or normalized_id)[:120]}",
             body=f"Restore the website to the published version from {str(version.get('ts') or '')[:10]}.",
@@ -2018,21 +2014,21 @@ class ChatService:
         memory.record_action("rollback_preview", f"version #{normalized_id} -> draft #{draft_id}")
         return {"ok": True, "draft_id": draft_id, "branch": preview_branch, "preview": preview}
 
-    def analyze_media(self, body: Mapping[str, Any], *, tenant: AtelierTenant | None = None) -> dict[str, Any]:
+    def analyze_media(self, body: Mapping[str, Any], *, tenant: Tenant | None = None) -> dict[str, Any]:
         """Analyze one Payload asset and write only the resulting metadata draft."""
         _memory, _llm, _tenant_id = self._scope(tenant)
         if tenant is None:
-            raise AtelierBridgeError("Atelier tenant is required")
+            raise BridgeError("tenant is required")
         payload = tenant.context.get("payload_gateway")
         analyzer = tenant.context.get("media_analyzer")
         if payload is None or analyzer is None:
-            raise AtelierBridgeError("Atelier media analysis is not configured")
+            raise BridgeError("tenant media analysis is not configured")
         media_id = str(body.get("media_id") or body.get("id") or "").strip()
         if not media_id:
-            raise AtelierBridgeError("media_id is required")
+            raise BridgeError("media_id is required")
         focus = str(body.get("focus") or "").strip()
         if len(focus) > 500:
-            raise AtelierBridgeError("focus is too long")
+            raise BridgeError("focus is too long")
         try:
             media = payload.read_media(media_id, identifier_kind="id", draft=True)
             image_url = str(
@@ -2045,7 +2041,7 @@ class ChatService:
                 image_url = f"{payload.base_url}{image_url}"
             parsed = urlsplit(image_url)
             if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-                raise AtelierBridgeError("Payload media does not expose a readable image URL")
+                raise BridgeError("Payload media does not expose a readable image URL")
             analysis_data = analyzer.analyze_images(
                 [image_url],
                 "Analyze this owner-provided image for a design and content library. "
@@ -2072,7 +2068,7 @@ class ChatService:
                 "analysis": analysis,
             })
             return {"media": updated, "analysis": analysis, "draft": True}
-        except AtelierBridgeError:
+        except BridgeError:
             raise
         except Exception as exc:  # noqa: BLE001 — keep provider failures bounded
             try:
@@ -2082,23 +2078,23 @@ class ChatService:
                 })
             except Exception:
                 pass
-            raise AtelierBridgeError(str(exc)[:500]) from exc
+            raise BridgeError(str(exc)[:500]) from exc
 
-    def media(self, *, limit: int = 50, tenant: AtelierTenant | None = None) -> dict[str, Any]:
+    def media(self, *, limit: int = 50, tenant: Tenant | None = None) -> dict[str, Any]:
         """List the tenant's Payload media records for the owner workspace."""
         _memory, _llm, _tenant_id = self._scope(tenant)
         if tenant is None or tenant.context.get("payload_gateway") is None:
-            raise AtelierBridgeError("Payload media is not configured")
+            raise BridgeError("Payload media is not configured")
         bounded_limit = max(1, min(int(limit), 100))
         try:
             return {"media": tenant.context["payload_gateway"].list_media(draft=True, limit=bounded_limit)}
         except Exception as exc:  # noqa: BLE001 — normalize gateway failures
-            raise AtelierBridgeError(str(exc)[:500]) from exc
+            raise BridgeError(str(exc)[:500]) from exc
 
-    def _source_editor(self, tenant: AtelierTenant | None) -> Any:
+    def _source_editor(self, tenant: Tenant | None) -> Any:
         if self.registry is not None:
             if tenant is None or tenant.tenant_id not in self.registry.tenants:
-                raise AtelierBridgeError("tenant is not authorized")
+                raise BridgeError("tenant is not authorized")
             editor = tenant.context.get("source_editor")
             if editor is not None:
                 return editor
@@ -2111,15 +2107,15 @@ class ChatService:
             config = self.config
             env = self.env
         if not config:
-            raise AtelierBridgeError("Atelier source editing is not configured")
+            raise BridgeError("tenant source editing is not configured")
         from .source_editor import SourceEditorService
 
         return SourceEditorService(config, env)
 
-    def _source_deployer(self, tenant: AtelierTenant | None) -> Any:
+    def _source_deployer(self, tenant: Tenant | None) -> Any:
         if self.registry is not None:
             if tenant is None or tenant.tenant_id not in self.registry.tenants:
-                raise AtelierBridgeError("tenant is not authorized")
+                raise BridgeError("tenant is not authorized")
             deployer = tenant.context.get("source_deployment")
             if deployer is not None:
                 return deployer
@@ -2132,7 +2128,7 @@ class ChatService:
             config = self.config
             env = self.env
         if not config:
-            raise AtelierBridgeError("Atelier source deployment is not configured")
+            raise BridgeError("tenant source deployment is not configured")
         from .source_deployment import SourceDeploymentService
 
         return SourceDeploymentService(config, env)
@@ -2141,57 +2137,57 @@ class ChatService:
         self,
         body: Mapping[str, Any] | None = None,
         *,
-        tenant: AtelierTenant | None = None,
+        tenant: Tenant | None = None,
     ) -> dict[str, Any]:
         """Inventory editable source fields for the tenant's selected branch."""
         if body is not None and not isinstance(body, Mapping):
-            raise AtelierBridgeError("source inventory body must be an object")
+            raise BridgeError("source inventory body must be an object")
         from .source_editor import SourceEditorError
 
         try:
             return self._source_editor(tenant).inventory(body or {})
         except SourceEditorError as exc:
-            raise AtelierBridgeError(str(exc)[:500]) from exc
+            raise BridgeError(str(exc)[:500]) from exc
 
     def source_edit(
         self,
         body: Mapping[str, Any],
         *,
-        tenant: AtelierTenant | None = None,
+        tenant: Tenant | None = None,
     ) -> dict[str, Any]:
         """Apply one hash/range-checked source edit to the preview branch."""
         if not isinstance(body, Mapping):
-            raise AtelierBridgeError("source edit body must be an object")
+            raise BridgeError("source edit body must be an object")
         from .source_editor import SourceConflictError, SourceEditorError
 
         try:
             return self._source_editor(tenant).edit(body)
         except SourceConflictError as exc:
-            raise AtelierSourceConflict(str(exc)[:500]) from exc
+            raise SourceConflict(str(exc)[:500]) from exc
         except SourceEditorError as exc:
-            raise AtelierBridgeError(str(exc)[:500]) from exc
+            raise BridgeError(str(exc)[:500]) from exc
 
     def source_preview_start(
         self,
         body: Mapping[str, Any] | None = None,
         *,
-        tenant: AtelierTenant | None = None,
+        tenant: Tenant | None = None,
     ) -> dict[str, Any]:
         """Validate a GitHub draft asynchronously and upload a version preview."""
         if body is not None and not isinstance(body, Mapping):
-            raise AtelierBridgeError("source preview body must be an object")
+            raise BridgeError("source preview body must be an object")
         from .source_deployment import SourceDeploymentError
 
         try:
             return self._source_deployer(tenant).start(body or {})
         except SourceDeploymentError as exc:
-            raise AtelierBridgeError(str(exc)[:500]) from exc
+            raise BridgeError(str(exc)[:500]) from exc
 
     def source_preview_status(
         self,
         job_id: str,
         *,
-        tenant: AtelierTenant | None = None,
+        tenant: Tenant | None = None,
     ) -> dict[str, Any]:
         """Return one source preview build without exposing command secrets."""
         from .source_deployment import SourceDeploymentError
@@ -2199,7 +2195,7 @@ class ChatService:
         try:
             return self._source_deployer(tenant).status(job_id)
         except SourceDeploymentError as exc:
-            raise AtelierBridgeError(str(exc)[:500]) from exc
+            raise BridgeError(str(exc)[:500]) from exc
 
     def source_preview_runtime(
         self,
@@ -2208,7 +2204,7 @@ class ChatService:
         query: str = "",
         headers: Mapping[str, str] | None = None,
         *,
-        tenant: AtelierTenant | None = None,
+        tenant: Tenant | None = None,
     ) -> dict[str, Any]:
         """Proxy an authenticated browser request to one compiled source preview."""
         from .source_deployment import SourceDeploymentError
@@ -2216,13 +2212,13 @@ class ChatService:
         try:
             return self._source_deployer(tenant).runtime(job_id, path, query, headers)
         except SourceDeploymentError as exc:
-            raise AtelierBridgeError(str(exc)[:500]) from exc
+            raise BridgeError(str(exc)[:500]) from exc
 
     def source_preview_latest(
         self,
         branch: str | None = None,
         *,
-        tenant: AtelierTenant | None = None,
+        tenant: Tenant | None = None,
     ) -> dict[str, Any]:
         from .source_deployment import SourceDeploymentError
 
@@ -2230,12 +2226,12 @@ class ChatService:
             deployer = self._source_deployer(tenant)
             return getattr(deployer, "latest_preview", deployer.latest)(branch)
         except SourceDeploymentError as exc:
-            raise AtelierBridgeError(str(exc)[:500]) from exc
+            raise BridgeError(str(exc)[:500]) from exc
 
     def source_preview_styles(
         self,
         *,
-        tenant: AtelierTenant | None = None,
+        tenant: Tenant | None = None,
     ) -> dict[str, Any]:
         """Return the preview branch stylesheet for a no-build CSS overlay."""
         from .source_editor import SourceEditorError
@@ -2243,13 +2239,13 @@ class ChatService:
         try:
             return self._source_editor(tenant).preview_styles()
         except SourceEditorError as exc:
-            raise AtelierBridgeError(str(exc)[:500]) from exc
+            raise BridgeError(str(exc)[:500]) from exc
 
     def source_preview_promote(
         self,
         job_id: str,
         *,
-        tenant: AtelierTenant | None = None,
+        tenant: Tenant | None = None,
     ) -> dict[str, Any]:
         """Deploy one previously validated source preview through the approval boundary."""
         from .source_deployment import SourceDeploymentError
@@ -2257,7 +2253,7 @@ class ChatService:
         try:
             return self._source_deployer(tenant).promote(job_id)
         except SourceDeploymentError as exc:
-            raise AtelierBridgeError(str(exc)[:500]) from exc
+            raise BridgeError(str(exc)[:500]) from exc
 
     @staticmethod
     def _public_design_run(run: Mapping[str, Any], *, include_evidence: bool = False) -> dict[str, Any]:
@@ -2296,15 +2292,15 @@ class ChatService:
             result["planning"] = run.get("planning_json") or {}
         return result
 
-    def job(self, job_id: str, *, tenant: AtelierTenant | None = None) -> dict[str, Any]:
+    def job(self, job_id: str, *, tenant: Tenant | None = None) -> dict[str, Any]:
         memory, _llm, _tenant_id = self._scope(tenant)
         try:
             numeric_id = int(job_id)
         except (TypeError, ValueError) as exc:
-            raise AtelierBridgeError("no such Atelier chat job") from exc
+            raise BridgeError("no such tenant chat job") from exc
         job = memory.get_chat_job(numeric_id)
         if job is None:
-            raise AtelierBridgeError("no such Atelier chat job")
+            raise BridgeError("no such tenant chat job")
         result: dict[str, Any] = {
             "id": job["id"],
             "conversation_id": job["conversation_id"],
@@ -2366,17 +2362,6 @@ class ChatService:
         )
 
 
-# Compatibility aliases.  The implementation above is intentionally generic;
-# the old names remain importable for existing integrations and tests while
-# callers migrate away from the first customer's product name.
-AtelierBridgeError = BridgeError
-AtelierSourceConflict = SourceConflict
-AtelierJourney = Journey
-AtelierDesignBuildHandoff = DesignBuildHandoff
-AtelierTenant = Tenant
-AtelierTenantRegistry = TenantRegistry
-AtelierChatService = ChatService
-
 __all__ = [
     "BridgeError",
     "ChatService",
@@ -2385,11 +2370,4 @@ __all__ = [
     "SourceConflict",
     "Tenant",
     "TenantRegistry",
-    "AtelierBridgeError",
-    "AtelierChatService",
-    "AtelierDesignBuildHandoff",
-    "AtelierJourney",
-    "AtelierSourceConflict",
-    "AtelierTenant",
-    "AtelierTenantRegistry",
 ]

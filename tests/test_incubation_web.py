@@ -166,7 +166,7 @@ def test_incubation_chat_jobs_and_deductions_are_diagnosable_over_http(tmp_path)
 
         intake = SiteIntake.from_dict({
             "schema_version": 1,
-            "business": {"name": "Atelier", "offer_summary": "Vitrail", "primary_services": ["Vitrail"], "location": "Lyon"},
+            "business": {"name": "Workspace", "offer_summary": "Vitrail", "primary_services": ["Vitrail"], "location": "Lyon"},
             "audience": {"primary": "Clients"},
             "conversion": {"primary_action": "Contacter", "not_available": True},
             "brand": {"voice": "Chaleureux"},

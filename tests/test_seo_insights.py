@@ -92,7 +92,7 @@ def test_article_idea_prompt_reuses_the_latest_insight(tmp_path):
         "config": {
             "persona": {"audience": "owners"},
             "seo": {"article_research": {"enabled": True}, "research": {"languages": [{"code": "fr", "markets": ["FR"], "primary": True}]}},
-            "customer_profile": {"business": {"name": "Atelier"}},
+            "customer_profile": {"business": {"name": "Workspace"}},
         },
         "memory": memory,
     }

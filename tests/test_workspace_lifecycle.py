@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from site_agent.application.workspace import AtelierBridgeError, ChatService
+from site_agent.application.workspace import BridgeError, ChatService
 from site_agent.core.memory import Memory
 
 
@@ -30,7 +30,7 @@ def test_stale_owner_update_cannot_be_approved(tmp_path):
         memory.save_draft("Current update", "diff", kind="merge")
         service = ChatService(memory, object())
 
-        with pytest.raises(AtelierBridgeError, match="current website update"):
+        with pytest.raises(BridgeError, match="current website update"):
             service.approve_draft(first)
     finally:
         memory.close()

@@ -75,6 +75,18 @@ class PreviewAccess:
             grant = self._tokens.get(token)
             return bool(grant and grant[0] == scope and grant[1] > now)
 
+    def scope(self, token: str | None) -> PreviewScope | None:
+        """Return a live token scope without widening its capability."""
+        if not token:
+            return None
+        with self._lock:
+            now = time.monotonic()
+            self._prune_locked(now)
+            grant = self._tokens.get(token)
+            if not grant or grant[1] <= now:
+                return None
+            return grant[0]
+
     def _prune_locked(self, now: float) -> None:
         expired = [token for token, (_, expires_at) in self._tokens.items() if expires_at <= now]
         for token in expired:

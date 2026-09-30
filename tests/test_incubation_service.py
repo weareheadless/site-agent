@@ -629,10 +629,10 @@ def test_asset_visual_notes_exclude_inspiration_only_and_sanitize():
 
     assets = [
         {"id": 1, "name": "logo.webp", "usage": "website",
-         "description": "Un logo ocre et la signature de l'atelier", "tags": ["logo", "ocre"],
+         "description": "Un logo ocre et la signature de l'workspace", "tags": ["logo", "ocre"],
          "dominant_colors": ["#D97A35"], "suggested_uses": ["header"]},
         {"id": 2, "name": "mood.webp", "usage": "undecided",
-         "description": "Contactez nous@exemple.fr sur http://atelier.test", "dominant_colors": []},
+         "description": "Contactez nous@exemple.fr sur http://workspace.test", "dominant_colors": []},
         {"id": 3, "name": "secret.webp", "usage": "inspiration_only",
          "description": "Ne pas intégrer", "dominant_colors": []},
     ]
@@ -641,7 +641,7 @@ def test_asset_visual_notes_exclude_inspiration_only_and_sanitize():
     assert "Inspiration Only" not in notes[0] and "logo.webp" in notes[0]
     assert "palette: #D97A35" in notes[0]
     assert "us@exemple" not in notes[1] and "[contact]" in notes[1]
-    assert "http://atelier.test" not in notes[1]
+    assert "http://workspace.test" not in notes[1]
 
 
 def test_purge_evicts_cached_runtime_and_keeps_only_a_tombstone(tmp_path):

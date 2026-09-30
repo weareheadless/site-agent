@@ -151,7 +151,7 @@ def test_incubated_context_roundtrips_visual_reference_notes():
         "novelty_constraints": {},
         "patterns_to_avoid": [],
         "design_skill_set": skills.to_dict(include_content=False),
-        "visual_reference_notes": ["reference logo hero.webp; palette: #D97A35", "reference atelier.webp; tags: wood, warmth"],
+        "visual_reference_notes": ["reference logo hero.webp; palette: #D97A35", "reference workspace.webp; tags: wood, warmth"],
     })
     assert context.visual_reference_notes[0].startswith("reference logo")
     again = IncubatedCreativeContext.from_dict(context.to_dict())

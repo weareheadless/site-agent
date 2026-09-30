@@ -24,7 +24,7 @@ def _config(**overrides):
 def _snapshot():
     return build_infusion_snapshot(
         draft={"fields": {"business": {"offer_summary": "Vitrailliste a Lyon depuis 2007."}}},
-        genesis={"business_world": {"purpose": "Montrer l'atelier"}, "creative_identity": {"principles": ["chaleur"]}},
+        genesis={"business_world": {"purpose": "Montrer l'workspace"}, "creative_identity": {"principles": ["chaleur"]}},
         deductions=[],
         findings=[],
         insights=[],
@@ -299,7 +299,7 @@ def test_chat_job_result_records_duration_ms(tmp_path):
 
             return IntakeTurnResult.from_dict({
                 "assistant_message": "Compris, continue.",
-                "field_updates": [{"path": "business.name", "value": "Atelier", "basis": "owner_statement"}],
+                "field_updates": [{"path": "business.name", "value": "Workspace", "basis": "owner_statement"}],
                 "suggested_readiness": "collecting",
             })
 
@@ -329,7 +329,7 @@ def test_confirm_bump_prevents_revision_collision_on_retry(tmp_path):
         return SiteIntake.from_dict({
             "schema_version": 1,
             "business": {
-                "name": "Atelier Vitrail",
+                "name": "Workspace Vitrail",
                 "offer_summary": "Restaure et vend du vitrail a Lyon.",
                 "primary_services": ["Restauration de vitraux", "Vente"],
                 "location": "Lyon",

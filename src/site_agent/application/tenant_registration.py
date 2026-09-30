@@ -47,7 +47,7 @@ def tenant_token_env(tenant_id: str) -> str:
 
 def provisioned_root(config: Mapping[str, Any]) -> Path:
     """Root directory for runtime-registered tenant workspaces."""
-    section = config.get("workspace_api") or config.get("atelier_api") or {}
+    section = config.get("workspace_api") or {}
     section = section if isinstance(section, Mapping) else {}
     configured = str(section.get("provisioned_root") or "").strip()
     if configured:
@@ -86,7 +86,7 @@ def load_provisioned_tenants(
     extra_env: dict[str, str] = {}
     if not isinstance(raw, Mapping):
         return {}, {}
-    configured_section = config.get("workspace_api") or config.get("atelier_api") or {}
+    configured_section = config.get("workspace_api") or {}
     configured_tenants = configured_section.get("tenants") if isinstance(configured_section, Mapping) else {}
     configured_ids = {
         str(value or "").strip().lower()

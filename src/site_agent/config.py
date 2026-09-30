@@ -504,17 +504,7 @@ def validate_research_config(config: dict[str, Any]) -> None:
 
 
 def intake_settings(config: Mapping[str, Any]) -> dict[str, Any]:
-    """Return the tenant intake settings block.
-
-    ``intake`` is the canonical key for new tenants.  ``atelier_intake`` was the
-    original single-customer name and remains accepted so already-deployed
-    tenant configs keep working; an explicitly-set legacy key wins over the
-    canonical defaults so a customer's own intent is never overridden by a
-    package default.
-    """
-    legacy = config.get("atelier_intake")
-    if isinstance(legacy, Mapping):
-        return dict(legacy)
+    """Return the portable tenant intake settings block."""
     current = config.get("intake")
     return dict(current) if isinstance(current, Mapping) else {}
 

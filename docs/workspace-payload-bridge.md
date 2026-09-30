@@ -1,6 +1,6 @@
-# Atelier Payload bridge
+# Workspace Payload bridge
 
-The Atelier Payload workspace talks to site-agent through a narrow, server-to-
+The Workspace Payload workspace talks to site-agent through a narrow, server-to-
 server API. This bridge is separate from the browser password session and does
 not change Intake Lab authentication or state.
 
@@ -10,20 +10,20 @@ Set the same secret value in both services, using server-only configuration:
 
 ```text
 Payload gateway: SITE_AGENT_URL + PAYLOAD_GATEWAY_TOKEN
-site-agent:     tenant-specific API token (for example ATELIER_HARMONIE_TOKEN)
+site-agent:     tenant-specific API token (for example TENANT_EXAMPLE_TOKEN)
 ```
 
 The shared API is one process behind Nginx. Each tenant has a separate config,
 Payload credential, memory database, and token mapping:
 
 ```yaml
-atelier_api:
+workspace_api:
   enabled: true
-  prefix: /v1/atelier
+  prefix: /v1/workspace
   tenants:
-    atelier-harmonie:
-      config_path: /SOCIAL/configs/atelier-harmonie/config.yaml
-      api_token_env: ATELIER_HARMONIE_TOKEN
+    tenant-example:
+      config_path: /SOCIAL/configs/tenant-example/config.yaml
+      api_token_env: TENANT_EXAMPLE_TOKEN
 ```
 
 Enable the optional Payload client in the tenant configuration:
@@ -32,9 +32,9 @@ Enable the optional Payload client in the tenant configuration:
 site:
   payload:
     enabled: true
-    url: https://atelier-harmonie.weareheadless.workers.dev
-    api_prefix: /api/atelier
-    token_env: ATELIER_HARMONIE_TOKEN
+    url: https://preview.example.test
+    api_prefix: /api/workspace
+    token_env: TENANT_EXAMPLE_TOKEN
     contract:
       # These names and fields belong to the tenant config, not the adapter.
       collections:
@@ -49,7 +49,7 @@ configured globals. It rejects fields outside the configured contracts and does
 not expose arbitrary Payload API access to Ada.
 
 The same client exposes the declarative editable-field contract through
-`GET/POST /api/atelier/editable-fields`. Ada can inspect or validate the
+`GET/POST /api/workspace/editable-fields`. Ada can inspect or validate the
 registered rows, define a stable dotted binding, and update an existing binding
 in a draft. These operations never scan source code or rendered markup and never
 publish. A field definition is intentionally separate from ordinary document
@@ -64,16 +64,16 @@ other business claims. The profile is a bridge for existing sites; a completed
 Intake/customer context remains the canonical source when one exists.
 
 The tenant token is accepted only as `Authorization: Bearer …` on the shared
-`/v1/atelier/*` routes. It is never returned to the browser. The same tenant
+`/v1/workspace/*` routes. It is never returned to the browser. The same tenant
 token is used by site-agent when calling that tenant's Payload content gateway.
 
 ## Database-only intake handoff
 
-An existing Atelier tenant can reuse Intake Lab's typed conversation without
+An existing Workspace tenant can reuse Intake Lab's typed conversation without
 starting the Intake Lab build pipeline:
 
 ```yaml
-atelier_intake:
+intake:
   enabled: true
   database_only: true
   research:
@@ -90,7 +90,7 @@ bounded context.
 
 ## Endpoints
 
-### `POST /v1/atelier/chat`
+### `POST /v1/workspace/chat`
 
 Request:
 
@@ -99,7 +99,7 @@ Request:
   "message": "Change the heading on this page.",
   "conversation_id": 12,
   "context": {
-    "site": "atelier-harmonie",
+    "site": "tenant-example",
     "mode": "workspace",
     "phase": "workspace",
     "scope": "selected_page",
@@ -113,7 +113,7 @@ Request:
       "mode": "workspace",
       "scope": "selected_page",
       "route": {"path": "/shop", "kind": "page", "sourceId": "route-42"},
-      "preview": {"state": "draft", "url": "https://atelier.example/atelier-preview/shop"},
+      "preview": {"state": "draft", "url": "https://workspace.example/workspace-preview/shop"},
       "payload": {"collection": "products", "id": "42", "sourceId": "product-source-id", "slug": "workshop"}
     }
   }
@@ -126,18 +126,18 @@ interpret “this” without receiving a Payload cookie or direct D1 access. The
 shared bridge first checks the tenant's intake phase; intake turns do not
 receive or use the page target for website work.
 
-### `GET /v1/atelier/chat/jobs/{job_id}`
+### `GET /v1/workspace/chat/jobs/{job_id}`
 
 Returns the same reduced job shape used by the existing admin UI: status,
 steps, and the final result or error.
 
-### `GET /v1/atelier/chat/status?conversation_id=12`
+### `GET /v1/workspace/chat/status?conversation_id=12`
 
 Returns the tenant-scoped phase (`intake` or `workspace`) and whether website
 context is enabled for the conversation. The workspace uses this to keep page
 selection and edit affordances dormant until intake has been accepted.
 
-### `GET/POST /api/atelier/global`
+### `GET/POST /api/workspace/global`
 
 The Payload Worker exposes a narrow service-authenticated gateway for the
 shared `navigation` and `siteSettings` globals. Reads support published/draft
@@ -150,14 +150,14 @@ create a second job system.
 
 ### Declarative editable fields
 
-`GET /api/atelier/editable-fields` accepts the same document selectors as the
+`GET /api/workspace/editable-fields` accepts the same document selectors as the
 content gateway:
 
 ```text
 ?collection=pages&sourceId=home&draft=true
 ```
 
-`POST /api/atelier/editable-fields` accepts one of these operations:
+`POST /api/workspace/editable-fields` accepts one of these operations:
 
 - `validate`: check IDs, duplicates, labels, and types without writing;
 - `define`: create or complete one stable field binding in the document draft;
@@ -172,7 +172,7 @@ from JSX or HTML. The frontend emits controls only for rows in this registry.
 ## Source inventory and preview edits
 
 The source bridge is separate from Payload content editing. It reads the
-configured repository through the GitHub static adapter, runs the Atelier
+configured repository through the GitHub static adapter, runs the Workspace
 repository's `scripts/source-inventory.ts`, and commits one checked source
 value or validated batch per file to `site.preview_branch`.
 
@@ -181,23 +181,23 @@ by the inventory command:
 
 ```yaml
 site:
-  clone_path: /ATELIER/atelier-harmonie-headless
+  clone_path: /srv/site-agent/tenant-example-site
   preview_branch: preview
   source_editor:
     inventory_script: scripts/source-inventory.ts
     node_tool: npx --no-install tsx
     prefer_local_checkout: true
   source_deployment:
-    clone_path: /ATELIER/atelier-harmonie-headless
-    worker_name: atelier-harmonie
-    preview_alias_prefix: atelier-draft
-    cloudflare_env_file: /ATELIER/atelier-harmonie-cloudflare.env
+    clone_path: /srv/site-agent/tenant-example-site
+    worker_name: tenant-example
+    preview_alias_prefix: workspace-draft
+    cloudflare_env_file: /srv/site-agent/tenant-example-cloudflare.env
 ```
 
-`GET /v1/atelier/source/inventory?branch=main` or `POST
-/v1/atelier/source/inventory` with an optional `{ "branch": "main" }` body
+`GET /v1/workspace/source/inventory?branch=main` or `POST
+/v1/workspace/source/inventory` with an optional `{ "branch": "main" }` body
 returns the inventory plus its source branch. `POST
-/v1/atelier/source/edit` accepts an inventory field, replacement `value`,
+/v1/workspace/source/edit` accepts an inventory field, replacement `value`,
 `source_hash`, and its `valueStart`/`valueEnd` range. The edit is rejected with
 `409` if the file hash or inventoried range is stale, and only editable text,
 string literals, JSX text, and image URL fields are patched. The same endpoint
@@ -206,16 +206,16 @@ the first write, multiple edits to one file share one commit, and different
 files receive one commit each. No deployment or production-branch merge is
 performed by the edit route.
 
-After a source commit, `POST /v1/atelier/source/preview` accepts its `branch`
+After a source commit, `POST /v1/workspace/source/preview` accepts its `branch`
 and exact GitHub `commit` and returns a job handle. The job runs typecheck,
 lint, a fresh source scan, the Next build, and the OpenNext build in an
 isolated Git worktree. It then uploads the exact build as a Cloudflare Worker
 version with a version-preview alias; production traffic is unchanged. Poll
-`GET /v1/atelier/source/preview/{job_id}` for `preview_url`, `version_id`,
+`GET /v1/workspace/source/preview/{job_id}` for `preview_url`, `version_id`,
 validation checks, or a safe failure. Recent job records are retained in the
 tenant memory database for commit/version traceability.
 
-`POST /v1/atelier/source/preview/{job_id}/deploy` is the explicit promotion
+`POST /v1/workspace/source/preview/{job_id}/deploy` is the explicit promotion
 boundary. It sends the validated version to 100% production traffic only after
 the owner chooses deployment. The Cloudflare API token/account ID remain
 server-only; the browser receives only job status, URLs, and commit/version

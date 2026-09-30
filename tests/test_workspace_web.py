@@ -4,12 +4,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import pytest
 
-from site_agent.application.atelier import (
-    AtelierChatService,
-    AtelierDesignBuildHandoff,
-    AtelierJourney,
-    AtelierTenant,
-    AtelierTenantRegistry,
+from site_agent.application.workspace import (
+    ChatService,
+    DesignBuildHandoff,
+    Journey,
+    Tenant,
+    TenantRegistry,
     _journey_for_config,
 )
 from site_agent.application.intake_coordinator import IntakeCoordinator
@@ -24,35 +24,35 @@ from site_agent.hands.payload_gateway import (
     PayloadMediaService,
 )
 from site_agent.hands.base import ADAPTERS, AdapterError
-from site_agent.web.atelier import register_atelier_routes
+from site_agent.web.workspace import register_workspace_routes
 
 
-def test_atelier_bridge_requires_a_server_token(tmp_path):
+def test_workspace_bridge_requires_a_server_token(tmp_path):
     app = FastAPI()
-    register_atelier_routes(
+    register_workspace_routes(
         app,
         config={},
-        env={"ATELIER_SITE_AGENT_TOKEN": "atelier-secret"},
-        service=AtelierChatService(Memory(tmp_path / "memory.db"), object()),
+        env={"WORKSPACE_SITE_AGENT_TOKEN": "workspace-secret"},
+        service=ChatService(Memory(tmp_path / "memory.db"), object()),
     )
 
     with TestClient(app) as client:
-        assert client.post("/api/atelier/chat", json={"message": "hello"}).status_code == 401
+        assert client.post("/api/workspace/chat", json={"message": "hello"}).status_code == 401
         assert client.post(
-            "/api/atelier/chat",
+            "/api/workspace/chat",
             headers={"Authorization": "Bearer wrong"},
             json={"message": "hello"},
         ).status_code == 401
 
 
-@pytest.mark.parametrize("api_key", ["workspace_api", "atelier_api"])
+@pytest.mark.parametrize("api_key", ["workspace_api"])
 def test_shared_host_credentials_are_inherited_by_tenants(tmp_path, api_key):
     tenant_config = tmp_path / "tenant.yaml"
     tenant_config.write_text(
         f"instance_name: demo\ndata_dir: {tmp_path / 'data'}\n",
         encoding="utf-8",
     )
-    registry = AtelierTenantRegistry.from_config(
+    registry = TenantRegistry.from_config(
         {
             "credentials": {
                 "github": {"ssh_key_path": "/host/github.key"},
@@ -63,12 +63,12 @@ def test_shared_host_credentials_are_inherited_by_tenants(tmp_path, api_key):
                 "tenants": {
                     "demo": {
                         "config_path": str(tenant_config),
-                        "api_token_env": "ATELIER_DEMO_TOKEN",
+                        "api_token_env": "WORKSPACE_DEMO_TOKEN",
                     }
                 },
             },
         },
-        {"ATELIER_DEMO_TOKEN": "bridge-secret", "CF_TOKEN": "cloudflare-secret"},
+        {"WORKSPACE_DEMO_TOKEN": "bridge-secret", "CF_TOKEN": "cloudflare-secret"},
     )
     try:
         credentials = registry.tenants["demo"].config["credentials"]
@@ -78,25 +78,25 @@ def test_shared_host_credentials_are_inherited_by_tenants(tmp_path, api_key):
         registry.close()
 
 
-def test_atelier_bridge_enqueues_contextual_chat(tmp_path):
+def test_workspace_bridge_enqueues_contextual_chat(tmp_path):
     memory = Memory(tmp_path / "memory.db")
     app = FastAPI()
-    service = AtelierChatService(memory, object())
-    register_atelier_routes(
+    service = ChatService(memory, object())
+    register_workspace_routes(
         app,
         config={},
-        env={"ATELIER_SITE_AGENT_TOKEN": "atelier-secret"},
+        env={"WORKSPACE_SITE_AGENT_TOKEN": "workspace-secret"},
         service=service,
     )
 
     with TestClient(app) as client:
         response = client.post(
-            "/api/atelier/chat",
-            headers={"Authorization": "Bearer atelier-secret"},
+            "/api/workspace/chat",
+            headers={"Authorization": "Bearer workspace-secret"},
             json={
                 "message": "Change the heading",
                 "context": {
-                    "site": "atelier-harmonie",
+                    "site": "workspace-harmonie",
                     "route": "/shop",
                     "collection": "products",
                     "document": "product-source-id",
@@ -107,7 +107,7 @@ def test_atelier_bridge_enqueues_contextual_chat(tmp_path):
                         "mode": "workspace",
                         "scope": "page",
                         "route": {"path": "/shop", "kind": "page", "sourceId": "route-42"},
-                        "preview": {"state": "draft", "url": "https://atelier.example/atelier-preview/shop"},
+                        "preview": {"state": "draft", "url": "https://workspace.example/workspace-preview/shop"},
                         "payload": {"collection": "products", "id": "42", "sourceId": "product-source-id"},
                     },
                 },
@@ -117,8 +117,8 @@ def test_atelier_bridge_enqueues_contextual_chat(tmp_path):
         payload = response.json()
         assert payload["job_id"]
         job = client.get(
-            f"/api/atelier/chat/jobs/{payload['job_id']}",
-            headers={"Authorization": "Bearer atelier-secret"},
+            f"/api/workspace/chat/jobs/{payload['job_id']}",
+            headers={"Authorization": "Bearer workspace-secret"},
         )
         assert job.status_code == 200
         stored = memory.get_chat_job(payload["job_id"])
@@ -138,7 +138,7 @@ def test_existing_site_snapshot_reads_selected_page_and_navigation(tmp_path):
             return {
                 "sourceId": "home-source",
                 "slug": "home",
-                "title": "Atelier Harmonie",
+                "title": "Workspace Harmonie",
                 "content": {"heading": "Une maison douce", "body": "Book a consultation."},
             }
 
@@ -149,7 +149,7 @@ def test_existing_site_snapshot_reads_selected_page_and_navigation(tmp_path):
     memory = Memory(tmp_path / "memory.db")
     coordinator = IntakeCoordinator(
         memory,
-        config={"atelier_intake": {"database_only": True}},
+        config={"intake": {"database_only": True}},
         llm=None,
         payload_client=_Payload(),
     )
@@ -160,25 +160,25 @@ def test_existing_site_snapshot_reads_selected_page_and_navigation(tmp_path):
     })
 
     assert snapshot["status"] == "existing_live_website"
-    assert snapshot["page"]["title"] == "Atelier Harmonie"
+    assert snapshot["page"]["title"] == "Workspace Harmonie"
     assert snapshot["navigation"]["items"][0]["label"] == "Menu"
     memory.close()
 
 
-def test_atelier_bridge_reports_workspace_phase_without_intake(tmp_path):
+def test_workspace_bridge_reports_workspace_phase_without_intake(tmp_path):
     memory = Memory(tmp_path / "memory.db")
     app = FastAPI()
-    register_atelier_routes(
+    register_workspace_routes(
         app,
         config={},
-        env={"ATELIER_SITE_AGENT_TOKEN": "atelier-secret"},
-        service=AtelierChatService(memory, object()),
+        env={"WORKSPACE_SITE_AGENT_TOKEN": "workspace-secret"},
+        service=ChatService(memory, object()),
     )
 
     with TestClient(app) as client:
         response = client.get(
-            "/api/atelier/chat/status",
-            headers={"Authorization": "Bearer atelier-secret"},
+            "/api/workspace/chat/status",
+            headers={"Authorization": "Bearer workspace-secret"},
         )
 
     assert response.status_code == 200
@@ -187,22 +187,22 @@ def test_atelier_bridge_reports_workspace_phase_without_intake(tmp_path):
     memory.close()
 
 
-def test_atelier_bridge_reports_active_chat_job_for_resume(tmp_path):
+def test_workspace_bridge_reports_active_chat_job_for_resume(tmp_path):
     memory = Memory(tmp_path / "memory.db")
     conversation_id = memory.create_conversation("A working conversation")
     job_id = memory.enqueue_chat_job(conversation_id, "Keep working in the background")
     app = FastAPI()
-    register_atelier_routes(
+    register_workspace_routes(
         app,
         config={},
-        env={"ATELIER_SITE_AGENT_TOKEN": "atelier-secret"},
-        service=AtelierChatService(memory, object()),
+        env={"WORKSPACE_SITE_AGENT_TOKEN": "workspace-secret"},
+        service=ChatService(memory, object()),
     )
 
     with TestClient(app) as client:
         response = client.get(
-            f"/api/atelier/chat/status?conversation_id={conversation_id}",
-            headers={"Authorization": "Bearer atelier-secret"},
+            f"/api/workspace/chat/status?conversation_id={conversation_id}",
+            headers={"Authorization": "Bearer workspace-secret"},
         )
 
     assert response.status_code == 200
@@ -215,22 +215,22 @@ def test_atelier_bridge_reports_active_chat_job_for_resume(tmp_path):
     memory.close()
 
 
-def test_atelier_bridge_exposes_durable_conversation_history(tmp_path):
+def test_workspace_bridge_exposes_durable_conversation_history(tmp_path):
     memory = Memory(tmp_path / "memory.db")
     conversation_id = memory.create_conversation("A saved conversation")
     memory.add_message(conversation_id, "user", "Keep this history")
     app = FastAPI()
-    register_atelier_routes(
+    register_workspace_routes(
         app,
         config={},
-        env={"ATELIER_SITE_AGENT_TOKEN": "atelier-secret"},
-        service=AtelierChatService(memory, object()),
+        env={"WORKSPACE_SITE_AGENT_TOKEN": "workspace-secret"},
+        service=ChatService(memory, object()),
     )
 
     with TestClient(app) as client:
-        headers = {"Authorization": "Bearer atelier-secret"}
-        listed = client.get("/api/atelier/chat/conversations", headers=headers)
-        detail = client.get(f"/api/atelier/chat/conversations/{conversation_id}", headers=headers)
+        headers = {"Authorization": "Bearer workspace-secret"}
+        listed = client.get("/api/workspace/chat/conversations", headers=headers)
+        detail = client.get(f"/api/workspace/chat/conversations/{conversation_id}", headers=headers)
 
     assert listed.status_code == 200
     assert listed.json()["conversations"][0]["id"] == conversation_id
@@ -239,7 +239,7 @@ def test_atelier_bridge_exposes_durable_conversation_history(tmp_path):
     memory.close()
 
 
-def test_atelier_bridge_exposes_bounded_activity_history(tmp_path):
+def test_workspace_bridge_exposes_bounded_activity_history(tmp_path):
     memory = Memory(tmp_path / "memory.db")
     conversation_id = memory.create_conversation("A saved conversation")
     memory.create_design_run(
@@ -248,17 +248,17 @@ def test_atelier_bridge_exposes_bounded_activity_history(tmp_path):
         intake_json={"business": {"name": "History"}},
     )
     app = FastAPI()
-    register_atelier_routes(
+    register_workspace_routes(
         app,
         config={},
-        env={"ATELIER_SITE_AGENT_TOKEN": "atelier-secret"},
-        service=AtelierChatService(memory, object()),
+        env={"WORKSPACE_SITE_AGENT_TOKEN": "workspace-secret"},
+        service=ChatService(memory, object()),
     )
 
     with TestClient(app) as client:
         response = client.get(
-            "/api/atelier/history?limit=1",
-            headers={"Authorization": "Bearer atelier-secret"},
+            "/api/workspace/history?limit=1",
+            headers={"Authorization": "Bearer workspace-secret"},
         )
 
     assert response.status_code == 200
@@ -268,11 +268,11 @@ def test_atelier_bridge_exposes_bounded_activity_history(tmp_path):
     memory.close()
 
 
-def test_atelier_intake_requires_explicit_owner_acceptance(tmp_path):
+def test_intake_requires_explicit_owner_acceptance(tmp_path):
     memory = Memory(tmp_path / "memory.db")
     intake = IntakeCoordinator(
         memory,
-        config={"atelier_intake": {"database_only": True, "research": {"enabled": False}}},
+        config={"intake": {"database_only": True, "research": {"enabled": False}}},
         llm=object(),
     )
     site_intake = SiteIntake.from_dict({
@@ -295,7 +295,7 @@ def test_atelier_intake_requires_explicit_owner_acceptance(tmp_path):
         revision=session["revision"],
         draft_hash=session["draft_hash"],
         confirmation_text="I accept this working brief.",
-        idempotency_key="accept-atelier-brief",
+        idempotency_key="accept-workspace-brief",
     )
 
     assert before["confirmed"] is False
@@ -311,7 +311,7 @@ def test_payload_gateway_client_is_server_configured_and_schema_bounded():
             "site": {
                 "payload": {
                     "enabled": True,
-                    "url": "https://atelier.example.test",
+                    "url": "https://workspace.example.test",
                     "api_prefix": "/v1/content",
                     "contract": {
                         "collections": {"pages": ["sourceId", "title"]},
@@ -322,10 +322,10 @@ def test_payload_gateway_client_is_server_configured_and_schema_bounded():
             },
             "env": {},
         },
-        {"PAYLOAD_GATEWAY_TOKEN": "atelier-secret"},
+        {"PAYLOAD_GATEWAY_TOKEN": "workspace-secret"},
     )
     assert client is not None
-    assert client.base_url == "https://atelier.example.test"
+    assert client.base_url == "https://workspace.example.test"
     assert client.gateway_prefix == "/v1/content"
 
     with pytest.raises(PayloadGatewayError, match="outside the pages draft contract"):
@@ -336,10 +336,10 @@ def test_payload_gateway_client_is_server_configured_and_schema_bounded():
 
 def test_payload_gateway_client_uses_declarative_editable_field_gateway(monkeypatch):
     client = PayloadGatewayClient(
-        "https://atelier.example.test",
-        "atelier-secret",
+        "https://workspace.example.test",
+        "workspace-secret",
         PayloadContract({"pages": frozenset({"title"})}, {}, frozenset()),
-        gateway_prefix="/api/atelier",
+        gateway_prefix="/api/workspace",
     )
     requests = []
 
@@ -377,7 +377,7 @@ def test_payload_gateway_client_uses_declarative_editable_field_gateway(monkeypa
     )
     client.validate_editable_fields("pages", identifier="home")
 
-    assert requests[0][0:2] == ("GET", "/api/atelier/editable-fields")
+    assert requests[0][0:2] == ("GET", "/api/workspace/editable-fields")
     assert requests[0][2]["sourceId"] == "home"
     assert requests[1][3]["operation"] == "define"
     assert requests[1][3]["key"] == "home.hero.heading"
@@ -444,41 +444,41 @@ def test_shared_api_scopes_jobs_to_the_token_selected_tenant(tmp_path):
 
     class Registry:
         def __init__(self):
-            self.tenants = {"atelier-one": Tenant("atelier-one", "one-token")}
+            self.tenants = {"workspace-one": Tenant("workspace-one", "one-token")}
 
         def for_token(self, token):
             return next((tenant for tenant in self.tenants.values() if tenant.api_token == token), None)
 
     registry = Registry()
     app = FastAPI()
-    service = AtelierChatService(registry=registry)
-    register_atelier_routes(
+    service = ChatService(registry=registry)
+    register_workspace_routes(
         app,
         config={},
         env={},
         service=service,
         registry=registry,
-        prefix="/v1/atelier",
+        prefix="/v1/workspace",
     )
 
     with TestClient(app) as client:
-        denied = client.post("/v1/atelier/chat", json={"message": "hello"})
+        denied = client.post("/v1/workspace/chat", json={"message": "hello"})
         assert denied.status_code == 401
         accepted = client.post(
-            "/v1/atelier/chat",
+            "/v1/workspace/chat",
             headers={"Authorization": "Bearer one-token"},
             json={"message": "hello", "context": {"route": "/"}},
         )
         assert accepted.status_code == 200
         job_id = accepted.json()["job_id"]
         assert client.get(
-            f"/v1/atelier/chat/jobs/{job_id}",
+            f"/v1/workspace/chat/jobs/{job_id}",
             headers={"Authorization": "Bearer one-token"},
         ).status_code == 200
 
-    stored = registry.tenants["atelier-one"].memory.get_chat_job(job_id)
-    assert '"site": "atelier-one"' in stored["message"]
-    registry.tenants["atelier-one"].memory.close()
+    stored = registry.tenants["workspace-one"].memory.get_chat_job(job_id)
+    assert '"site": "workspace-one"' in stored["message"]
+    registry.tenants["workspace-one"].memory.close()
 
 
 def test_shared_api_routes_new_tenant_conversations_through_database_intake(tmp_path):
@@ -500,15 +500,15 @@ def test_shared_api_routes_new_tenant_conversations_through_database_intake(tmp_
 
     class Tenant:
         def __init__(self):
-            self.tenant_id = "atelier-intake"
+            self.tenant_id = "workspace-intake"
             self.api_token = "intake-token"
-            self.memory = Memory(tmp_path / "atelier-intake" / "memory.db")
+            self.memory = Memory(tmp_path / "workspace-intake" / "memory.db")
             self.context = {"llm": object(), "intake_coordinator": Intake()}
 
     tenant = Tenant()
 
     class Registry:
-        tenants = {"atelier-intake": tenant}
+        tenants = {"workspace-intake": tenant}
 
         @staticmethod
         def for_token(token):
@@ -516,18 +516,18 @@ def test_shared_api_routes_new_tenant_conversations_through_database_intake(tmp_
 
     app = FastAPI()
     registry = Registry()
-    register_atelier_routes(
+    register_workspace_routes(
         app,
         config={},
         env={},
-        service=AtelierChatService(registry=registry),
+        service=ChatService(registry=registry),
         registry=registry,
-        prefix="/v1/atelier",
+        prefix="/v1/workspace",
     )
 
     with TestClient(app) as client:
         response = client.post(
-            "/v1/atelier/chat",
+            "/v1/workspace/chat",
             headers={"Authorization": "Bearer intake-token"},
             json={"message": "Je veux créer une page", "idempotency_key": "turn-1"},
         )
@@ -560,19 +560,19 @@ def test_shared_api_stamps_existing_site_journey_into_intake_context(tmp_path):
 
     class Tenant:
         def __init__(self):
-            self.tenant_id = "atelier-existing"
+            self.tenant_id = "workspace-existing"
             self.api_token = "existing-token"
-            self.memory = Memory(tmp_path / "atelier-existing" / "memory.db")
+            self.memory = Memory(tmp_path / "workspace-existing" / "memory.db")
             self.context = {
                 "llm": object(),
                 "intake_coordinator": Intake(),
-                "atelier_journey": AtelierJourney(website_present=True, incubation_needed=True),
+                "journey": Journey(website_present=True, incubation_needed=True),
             }
 
     tenant = Tenant()
 
     class Registry:
-        tenants = {"atelier-existing": tenant}
+        tenants = {"workspace-existing": tenant}
 
         @staticmethod
         def for_token(token):
@@ -580,18 +580,18 @@ def test_shared_api_stamps_existing_site_journey_into_intake_context(tmp_path):
 
     app = FastAPI()
     registry = Registry()
-    register_atelier_routes(
+    register_workspace_routes(
         app,
         config={},
         env={},
-        service=AtelierChatService(registry=registry),
+        service=ChatService(registry=registry),
         registry=registry,
-        prefix="/v1/atelier",
+        prefix="/v1/workspace",
     )
 
     with TestClient(app) as client:
         response = client.post(
-            "/v1/atelier/chat",
+            "/v1/workspace/chat",
             headers={"Authorization": "Bearer existing-token"},
             json={"message": "Continue the research."},
         )
@@ -607,31 +607,31 @@ def test_shared_api_stamps_existing_site_journey_into_intake_context(tmp_path):
     tenant.memory.close()
 
 
-def test_atelier_journey_separates_existing_site_incubation_from_new_site_intake():
+def test_workspace_journey_separates_existing_site_incubation_from_new_site_intake():
     existing = _journey_for_config({
         "site": {"payload": {"enabled": True}},
-        "atelier_intake": {"enabled": True},
+        "intake": {"enabled": True},
     })
     new_site = _journey_for_config({
         "site": {"adapter": "github_static"},
     })
 
-    assert existing == AtelierJourney(website_present=True, incubation_needed=True)
+    assert existing == Journey(website_present=True, incubation_needed=True)
     assert existing.initial_phase == "incubation"
-    assert new_site == AtelierJourney(website_present=False, incubation_needed=False)
+    assert new_site == Journey(website_present=False, incubation_needed=False)
     assert new_site.initial_phase == "intake"
 
     observed_site = _journey_for_config({
         "site": {"adapter": "github_static"},
         "customer_profile": {"business": {"observed_site_settings": {"website_url": "https://example.test"}}},
-        "atelier_intake": {"enabled": True},
+        "intake": {"enabled": True},
     })
     forced_no_site = _journey_for_config({
         "ada_journey": {"website_present": False, "incubation_needed": True},
-        "atelier_intake": {"enabled": True},
+        "intake": {"enabled": True},
     })
-    assert observed_site == AtelierJourney(website_present=True, incubation_needed=True)
-    assert forced_no_site == AtelierJourney(website_present=False, incubation_needed=False)
+    assert observed_site == Journey(website_present=True, incubation_needed=True)
+    assert forced_no_site == Journey(website_present=False, incubation_needed=False)
 
 
 def test_no_site_build_handoff_uses_the_normal_design_worker():
@@ -676,7 +676,7 @@ def test_no_site_build_handoff_uses_the_normal_design_worker():
 
     design = Design()
     executor = Executor()
-    handoff = AtelierDesignBuildHandoff({"design_service": design, "design_executor": executor})
+    handoff = DesignBuildHandoff({"design_service": design, "design_executor": executor})
     intake = SiteIntake.from_dict({
         "schema_version": 1,
         "business": {
@@ -713,33 +713,33 @@ def test_shared_api_persists_conversation_image_attachments(tmp_path):
             assert asset_ids == [7]
             return [{"asset_id": 7, "position": 0}]
 
-    memory = Memory(tmp_path / "atelier-attachments" / "memory.db")
-    tenant = AtelierTenant(
-        tenant_id="atelier-attachments",
+    memory = Memory(tmp_path / "workspace-attachments" / "memory.db")
+    tenant = Tenant(
+        tenant_id="workspace-attachments",
         config={},
         memory=memory,
         runtime=None,
         context={
             "llm": object(),
             "media_service": Media(),
-            "atelier_journey": AtelierJourney(website_present=True, incubation_needed=True),
+            "journey": Journey(website_present=True, incubation_needed=True),
         },
         api_token="attachments-token",
     )
-    registry = AtelierTenantRegistry({tenant.tenant_id: tenant})
+    registry = TenantRegistry({tenant.tenant_id: tenant})
     app = FastAPI()
-    register_atelier_routes(
+    register_workspace_routes(
         app,
         config={},
         env={},
-        service=AtelierChatService(registry=registry),
+        service=ChatService(registry=registry),
         registry=registry,
-        prefix="/v1/atelier",
+        prefix="/v1/workspace",
     )
 
     with TestClient(app) as client:
         response = client.post(
-            "/v1/atelier/chat",
+            "/v1/workspace/chat",
             headers={"Authorization": "Bearer attachments-token"},
             json={"message": "Use this reference", "attachments": [{"asset_id": 7}]},
         )
@@ -755,7 +755,7 @@ def test_shared_api_persists_conversation_image_attachments(tmp_path):
 
 def test_payload_media_service_resolves_chat_attachments():
     class Payload:
-        base_url = "https://atelier.example.test"
+        base_url = "https://workspace.example.test"
 
         def read_media(self, identifier, *, identifier_kind, draft):
             assert identifier == "7"
@@ -777,7 +777,7 @@ def test_payload_media_service_resolves_chat_attachments():
     service = PayloadMediaService(Payload())
     resolved = service.resolve_attachments([7])
     assert resolved[0]["asset_id"] == 7
-    assert resolved[0]["url"] == "https://atelier.example.test/media/lamp.jpg"
+    assert resolved[0]["url"] == "https://workspace.example.test/media/lamp.jpg"
     assert resolved[0]["alt_text"] == "Woven lamp"
     assert resolved[0]["analysis_error"] is None
 
@@ -814,9 +814,9 @@ def test_no_site_confirmation_requires_an_explicit_first_page_action(tmp_path):
             assert kwargs["confirmed_revision"] == 22
             return {"run": {"run_id": "design-first-site", "status": "building"}}
 
-    memory = Memory(tmp_path / "atelier-new-site" / "memory.db")
-    tenant = AtelierTenant(
-        tenant_id="atelier-new-site",
+    memory = Memory(tmp_path / "workspace-new-site" / "memory.db")
+    tenant = Tenant(
+        tenant_id="workspace-new-site",
         config={},
         memory=memory,
         runtime=None,
@@ -824,29 +824,29 @@ def test_no_site_confirmation_requires_an_explicit_first_page_action(tmp_path):
             "llm": object(),
             "intake_coordinator": Intake(),
             "design_intake_service": DesignIntake(),
-            "atelier_journey": AtelierJourney(website_present=False, incubation_needed=False),
+            "journey": Journey(website_present=False, incubation_needed=False),
         },
         api_token="new-site-token",
     )
-    registry = AtelierTenantRegistry({tenant.tenant_id: tenant})
+    registry = TenantRegistry({tenant.tenant_id: tenant})
     app = FastAPI()
-    register_atelier_routes(
+    register_workspace_routes(
         app,
         config={},
         env={},
-        service=AtelierChatService(registry=registry),
+        service=ChatService(registry=registry),
         registry=registry,
-        prefix="/v1/atelier",
+        prefix="/v1/workspace",
     )
 
     with TestClient(app) as client:
         response = client.post(
-            "/v1/atelier/chat/intake/confirm",
+            "/v1/workspace/chat/intake/confirm",
             headers={"Authorization": "Bearer new-site-token"},
             json={"conversation_id": 12, "revision": 2, "draft_hash": "abc"},
         )
         start_response = client.post(
-            "/v1/atelier/chat/design/start",
+            "/v1/workspace/chat/design/start",
             headers={"Authorization": "Bearer new-site-token"},
             json={"conversation_id": 12, "confirmed_revision": 22},
         )
@@ -860,7 +860,7 @@ def test_no_site_confirmation_requires_an_explicit_first_page_action(tmp_path):
 
 def test_shared_api_exposes_media_library_and_analysis(tmp_path):
     class Payload:
-        base_url = "https://atelier.example.test"
+        base_url = "https://workspace.example.test"
 
         def __init__(self):
             self.updated = []
@@ -885,7 +885,7 @@ def test_shared_api_exposes_media_library_and_analysis(tmp_path):
         model = "test-model"
 
         def analyze_images(self, image_urls, instruction):
-            assert image_urls == ["https://atelier.example.test/media/lamp.jpg"]
+            assert image_urls == ["https://workspace.example.test/media/lamp.jpg"]
             assert "grounded observations" in instruction
             return {
                 "schema_version": 1,
@@ -901,32 +901,32 @@ def test_shared_api_exposes_media_library_and_analysis(tmp_path):
                 "proposed_knowledge_markdown": "",
             }
 
-    memory = Memory(tmp_path / "atelier-media" / "memory.db")
+    memory = Memory(tmp_path / "workspace-media" / "memory.db")
     payload = Payload()
-    tenant = AtelierTenant(
-        tenant_id="atelier-media",
+    tenant = Tenant(
+        tenant_id="workspace-media",
         config={},
         memory=memory,
         runtime=None,
         context={"llm": object(), "payload_gateway": payload, "media_analyzer": Analyzer()},
         api_token="media-token",
     )
-    registry = AtelierTenantRegistry({tenant.tenant_id: tenant})
+    registry = TenantRegistry({tenant.tenant_id: tenant})
     app = FastAPI()
-    register_atelier_routes(
+    register_workspace_routes(
         app,
         config={},
         env={},
-        service=AtelierChatService(registry=registry),
+        service=ChatService(registry=registry),
         registry=registry,
-        prefix="/v1/atelier",
+        prefix="/v1/workspace",
     )
 
     with TestClient(app) as client:
         headers = {"Authorization": "Bearer media-token"}
-        listed = client.get("/v1/atelier/media?limit=12", headers=headers)
+        listed = client.get("/v1/workspace/media?limit=12", headers=headers)
         analyzed = client.post(
-            "/v1/atelier/media/analyze",
+            "/v1/workspace/media/analyze",
             headers=headers,
             json={"media_id": "media-1", "focus": "texture"},
         )
@@ -956,29 +956,29 @@ def test_shared_api_approves_a_design_draft_through_the_design_adapter(tmp_path)
             assert message == "Approve design candidate: 7"
             return {"committed": True, "commit_sha": "published-sha", "parent_sha": base_sha, "path": "site"}
 
-    memory = Memory(tmp_path / "atelier-design" / "memory.db")
-    tenant = AtelierTenant(
-        tenant_id="atelier-design",
+    memory = Memory(tmp_path / "workspace-design" / "memory.db")
+    tenant = Tenant(
+        tenant_id="workspace-design",
         config={"site": {"branch": "main"}},
         memory=memory,
         runtime=None,
         context={"llm": object(), "design_service": DesignService(), "design_adapter": Adapter()},
         api_token="design-token",
     )
-    registry = AtelierTenantRegistry({tenant.tenant_id: tenant})
+    registry = TenantRegistry({tenant.tenant_id: tenant})
     app = FastAPI()
-    register_atelier_routes(
+    register_workspace_routes(
         app,
         config={},
         env={},
-        service=AtelierChatService(registry=registry),
+        service=ChatService(registry=registry),
         registry=registry,
-        prefix="/v1/atelier",
+        prefix="/v1/workspace",
     )
 
     with TestClient(app) as client:
         response = client.post(
-            "/v1/atelier/drafts/7/approve",
+            "/v1/workspace/drafts/7/approve",
             headers={"Authorization": "Bearer design-token"},
         )
 
@@ -1007,7 +1007,7 @@ def test_shared_api_publishes_and_rolls_back_preview_changes_through_the_workspa
         def reset_preview_branch(self, branch):
             return {"reset": True, "branch": branch}
 
-    memory = Memory(tmp_path / "atelier-rollback" / "memory.db")
+    memory = Memory(tmp_path / "workspace-rollback" / "memory.db")
     first = memory.log_publish("First", "site", "target-sha")
     newer = memory.log_publish("Newer", "site", "newer-sha")
     pending = memory.save_draft(
@@ -1016,31 +1016,31 @@ def test_shared_api_publishes_and_rolls_back_preview_changes_through_the_workspa
         kind="merge",
         meta={"summary": "Website update"},
     )
-    tenant = AtelierTenant(
-        tenant_id="atelier-rollback",
+    tenant = Tenant(
+        tenant_id="workspace-rollback",
         config={"site": {"preview_branch": "preview"}},
         memory=memory,
         runtime=None,
         context={"llm": object(), "design_adapter": Adapter()},
         api_token="rollback-token",
     )
-    registry = AtelierTenantRegistry({tenant.tenant_id: tenant})
+    registry = TenantRegistry({tenant.tenant_id: tenant})
     app = FastAPI()
-    register_atelier_routes(
+    register_workspace_routes(
         app,
         config={},
         env={},
-        service=AtelierChatService(registry=registry),
+        service=ChatService(registry=registry),
         registry=registry,
-        prefix="/v1/atelier",
+        prefix="/v1/workspace",
     )
 
     with TestClient(app) as client:
         headers = {"Authorization": "Bearer rollback-token"}
-        published = client.post(f"/v1/atelier/drafts/{pending}/approve", headers=headers)
-        rollback_draft = client.post(f"/v1/atelier/versions/{first}/restore", headers=headers)
+        published = client.post(f"/v1/workspace/drafts/{pending}/approve", headers=headers)
+        rollback_draft = client.post(f"/v1/workspace/versions/{first}/restore", headers=headers)
         rollback_id = rollback_draft.json()["draft_id"]
-        rollback_published = client.post(f"/v1/atelier/drafts/{rollback_id}/approve", headers=headers)
+        rollback_published = client.post(f"/v1/workspace/drafts/{rollback_id}/approve", headers=headers)
 
     assert published.status_code == 200
     assert rollback_draft.status_code == 200

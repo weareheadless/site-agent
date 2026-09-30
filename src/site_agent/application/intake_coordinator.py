@@ -6,9 +6,7 @@ owner accepts the working brief.  A tenant without a website (a HelloAda
 project) uses the same typed intake contract as its full-intake front door; the
 normal workspace/build handoff remains a separate explicit transition.
 
-The name is intentionally product-neutral.  ``Atelier`` is one customer of the
-older single-tenant integration and is kept only as a legacy config key
-compatibility seam.
+The coordinator is intentionally product-neutral and is shared by every tenant.
 """
 
 from __future__ import annotations
@@ -113,7 +111,7 @@ class IntakeCoordinator:
     def recover_research_after_restart(self) -> None:
         """Give a tenant one safe retry after a process restart.
 
-        Older Atelier workers could save a revision after the planner had
+        Older workers could save a revision after the planner had
         exhausted its JSON budget. Do not make the owner repeat that turn: one
         ``infusion`` retry is allowed for the latest ready revision, and the
         durable marker prevents a restart loop from spending indefinitely.
@@ -136,7 +134,7 @@ class IntakeCoordinator:
             return
         revision = int(session.get("revision") or 0)
         marker = f"{session_id}:{revision}"
-        if revision < 1 or self.memory.kv_get("atelier_research_recovery_marker") == marker:
+        if revision < 1 or self.memory.kv_get("research_recovery_marker") == marker:
             return
         requests = [
             item for item in self.memory.list_research_requests(limit=500)
@@ -144,7 +142,7 @@ class IntakeCoordinator:
             and item.get("status") in {"queued", "running", "completed"}
         ]
         if requests:
-            self.memory.kv_set("atelier_research_recovery_marker", marker)
+            self.memory.kv_set("research_recovery_marker", marker)
             return
         owner_language = str(
             draft.value("site.language") or "en"
@@ -155,7 +153,7 @@ class IntakeCoordinator:
             owner_language=owner_language,
             trigger=ResearchTrigger.INFUSION.value,
         )
-        self.memory.kv_set("atelier_research_recovery_marker", marker)
+        self.memory.kv_set("research_recovery_marker", marker)
         self.memory.record_action(
             "research_recovery",
             f"replayed revision {revision}: {str(result.get('status') or 'unknown')}",
@@ -459,7 +457,7 @@ class IntakeCoordinator:
             return ""
         unresolved = list(draft.unresolved_core_paths)
         return (
-            "Working Atelier intake context (durable database record; field provenance is authoritative):\n"
+            "Working tenant intake context (durable database record; field provenance is authoritative):\n"
             "Use owner-confirmed values as facts. Treat assumed, recommended, or deferred values as leads to verify, "
             "not as permission to invent. Do not present research findings as owner-confirmed business facts.\n"
             f"Readiness: {draft.readiness}; unresolved core paths: {json.dumps(unresolved, ensure_ascii=False)}\n"

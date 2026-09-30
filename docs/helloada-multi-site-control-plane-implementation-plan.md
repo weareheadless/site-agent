@@ -398,14 +398,14 @@ buttons, a second CMS, a second recommendation system, a neural dashboard.
 
 ### 7.2 WebsiteWorkspace (full)
 
-The existing Payload/Atelier workspace is the only full admin surface. It
+The existing Payload/Workspace workspace is the only full admin surface. It
 exposes the complete tool catalog with the same services and the same
 recommendation/approval records, plus content, media, settings, diagnostics.
 
 Reference files (do not duplicate or fork):
 
-- `/ATELIER/atelier-harmonie-headless/src/components/admin/WebsiteWorkspace.tsx`
-- `/ATELIER/atelier-harmonie-headless/src/components/admin/WebsiteWorkspaceServer.tsx`
+- `/srv/site-agent/tenant-example-site/src/components/admin/WebsiteWorkspace.tsx`
+- `/srv/site-agent/tenant-example-site/src/components/admin/WebsiteWorkspaceServer.tsx`
 
 ### 7.3 No duplicated pipeline logic
 
@@ -661,7 +661,7 @@ Never:
 - expose run/phase/SHA/provider vocabulary to owners;
 - let Ada advance a design stage without an owner action;
 - activate launch integrations before the domain/payment gate;
-- use Atelier production as a test tenant;
+- use Workspace production as a test tenant;
 - commit credentials, databases, caches, screenshots, or build output;
 - claim completion without inspecting the real owner surfaces.
 

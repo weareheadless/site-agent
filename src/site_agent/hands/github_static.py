@@ -211,7 +211,7 @@ class GithubStatic(SiteAdapter):
                 "reason": "file changed since the source edit was read",
             }
 
-        worktree_root = Path(tempfile.mkdtemp(prefix="atelier-github-edit-"))
+        worktree_root = Path(tempfile.mkdtemp(prefix="site-agent-github-edit-"))
         worktree = worktree_root / "repo"
         try:
             ref = self._branch_ref(branch)
@@ -222,8 +222,8 @@ class GithubStatic(SiteAdapter):
             self._git(["add", "--", self._source_path(path)], worktree)
             self._git(
                 [
-                    "-c", "user.name=Atelier source editor",
-                    "-c", "user.email=atelier-source@weareheadless.com",
+                    "-c", "user.name=site-agent source editor",
+                    "-c", "user.email=site-agent-source@localhost",
                     "commit", "-m", message[:200],
                 ],
                 worktree,

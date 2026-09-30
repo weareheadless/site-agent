@@ -85,7 +85,7 @@ intake:
     synthesizer:
       max_tokens: 300
 
-atelier_scheduler:
+scheduler:
   enabled: false
   poll_seconds: 300
   schedule:
@@ -93,7 +93,7 @@ atelier_scheduler:
     learn: {every: weekly, weekday: monday, at: "08:20"}
     article: {every: weekly, weekday: tuesday, at: "09:00"}
 
-atelier_editorial:
+editorial:
   enabled: false
 
 schedule:

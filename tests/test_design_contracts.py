@@ -71,7 +71,7 @@ def test_workspace_target_is_normalized_at_the_design_boundary():
         "mode": "workspace",
         "scope": "selected_page",
         "route": {"path": "/shop", "kind": "page", "sourceId": "route-42"},
-        "preview": {"state": "draft", "url": "https://atelier.example/preview/shop", "revision": 2},
+        "preview": {"state": "draft", "url": "https://workspace.example/preview/shop", "revision": 2},
         "payload": {"collection": "products", "id": "42", "sourceId": "product-42"},
     })
 

@@ -101,9 +101,9 @@ def _config(tmp_path: Path) -> dict:
 
 
 def test_tenant_token_env_is_a_safe_unique_name():
-    assert tenant_token_env("atelier-harmonie") == "CRAWLSEO_TOKEN_ATELIER_HARMONIE"
+    assert tenant_token_env("workspace-harmonie") == "CRAWLSEO_TOKEN_WORKSPACE_HARMONIE"
     with pytest.raises(SeoProvisioningError):
-        tenant_token_env("Atelier Harmonie")
+        tenant_token_env("Workspace Harmonie")
 
 
 def test_write_token_env_is_private(tmp_path):
@@ -118,24 +118,24 @@ def test_provision_runs_the_full_chain(tmp_path):
     service = SeoProvisioningService(_config(tmp_path), {}, google=google, dns=dns, crawlseo=crawlseo)
 
     receipt = service.provision(
-        tenant_id="atelier-harmonie",
-        domain="atelier-harmonie.weareheadless.workers.dev",
-        project_name="Atelier Harmonie",
+        tenant_id="workspace-harmonie",
+        domain="workspace-harmonie.weareheadless.workers.dev",
+        project_name="Workspace Harmonie",
         time_zone="Europe/Paris",
     )
 
     assert receipt["ga4_property_id"] == "555"
     assert receipt["ga4_measurement_id"] == "G-TEST123"
-    assert receipt["gsc_property"] == "sc-domain:atelier-harmonie.weareheadless.workers.dev"
+    assert receipt["gsc_property"] == "sc-domain:workspace-harmonie.weareheadless.workers.dev"
     assert receipt["gsc_verified"] is True
     assert receipt["credential_issued"] is True
-    assert receipt["token_env"] == "CRAWLSEO_TOKEN_ATELIER_HARMONIE"
+    assert receipt["token_env"] == "CRAWLSEO_TOKEN_WORKSPACE_HARMONIE"
 
     # GSC ownership is proven through the DNS TXT token before verification.
-    assert ("upsert_txt", "atelier-harmonie.weareheadless.workers.dev", "google-site-verification=token") in dns.calls
-    assert ("verify_domain", "atelier-harmonie.weareheadless.workers.dev", "DNS_TXT") in google.calls
+    assert ("upsert_txt", "workspace-harmonie.weareheadless.workers.dev", "google-site-verification=token") in dns.calls
+    assert ("verify_domain", "workspace-harmonie.weareheadless.workers.dev", "DNS_TXT") in google.calls
     # The CrawlSEO payload carries the platform service account, never a user token.
-    assert crawlseo.payload["externalProjectId"] == "atelier-harmonie"
+    assert crawlseo.payload["externalProjectId"] == "workspace-harmonie"
     assert crawlseo.payload["ga4PropertyId"] == "555"
     assert crawlseo.payload["gscProperty"] == receipt["gsc_property"]
     assert crawlseo.payload["serviceAccountCredentials"]["client_email"].endswith(".iam.gserviceaccount.com")
@@ -200,19 +200,19 @@ def test_provision_with_meta_verification_returns_the_tag(tmp_path):
     service = SeoProvisioningService(_config(tmp_path), {}, google=google, dns=dns, crawlseo=crawlseo)
 
     receipt = service.provision(
-        tenant_id="atelier-harmonie",
-        domain="atelier-harmonie.weareheadless.workers.dev",
-        project_name="Atelier Harmonie",
-        site_url="https://atelier-harmonie.weareheadless.workers.dev",
+        tenant_id="workspace-harmonie",
+        domain="workspace-harmonie.weareheadless.workers.dev",
+        project_name="Workspace Harmonie",
+        site_url="https://workspace-harmonie.weareheadless.workers.dev",
         verification_method="meta",
     )
 
     assert receipt["gsc_meta_tag"] == "google-site-verification=token"
-    assert receipt["gsc_property"] == "https://atelier-harmonie.weareheadless.workers.dev"
+    assert receipt["gsc_property"] == "https://workspace-harmonie.weareheadless.workers.dev"
     assert receipt["gsc_verified"] is True
     assert receipt["gsc_verification_method"] == "meta"
-    assert ("verify_domain", "https://atelier-harmonie.weareheadless.workers.dev", "META") in google.calls
-    assert crawlseo.payload["gscProperty"] == "https://atelier-harmonie.weareheadless.workers.dev"
+    assert ("verify_domain", "https://workspace-harmonie.weareheadless.workers.dev", "META") in google.calls
+    assert crawlseo.payload["gscProperty"] == "https://workspace-harmonie.weareheadless.workers.dev"
 
 
 def test_meta_verification_defers_when_the_tag_is_not_live_yet(tmp_path):
@@ -220,10 +220,10 @@ def test_meta_verification_defers_when_the_tag_is_not_live_yet(tmp_path):
     service = SeoProvisioningService(_config(tmp_path), {}, google=google, dns=dns, crawlseo=crawlseo)
 
     receipt = service.provision(
-        tenant_id="atelier-harmonie",
-        domain="atelier-harmonie.weareheadless.workers.dev",
-        project_name="Atelier Harmonie",
-        site_url="https://atelier-harmonie.weareheadless.workers.dev",
+        tenant_id="workspace-harmonie",
+        domain="workspace-harmonie.weareheadless.workers.dev",
+        project_name="Workspace Harmonie",
+        site_url="https://workspace-harmonie.weareheadless.workers.dev",
         verification_method="meta",
     )
 
@@ -237,10 +237,10 @@ def test_verify_gsc_completes_a_deferred_verification(tmp_path):
     google = StubGoogle()
     service = SeoProvisioningService(_config(tmp_path), {}, google=google, dns=StubDNS(), crawlseo=StubCrawlSEO())
     receipt = service.verify_gsc(
-        identifier="https://atelier-harmonie.weareheadless.workers.dev",
-        property_url="https://atelier-harmonie.weareheadless.workers.dev",
+        identifier="https://workspace-harmonie.weareheadless.workers.dev",
+        property_url="https://workspace-harmonie.weareheadless.workers.dev",
     )
-    assert receipt["property"] == "https://atelier-harmonie.weareheadless.workers.dev"
+    assert receipt["property"] == "https://workspace-harmonie.weareheadless.workers.dev"
     assert receipt["method"] == "META"
     assert receipt["verified_at"]
-    assert ("add_site", "https://atelier-harmonie.weareheadless.workers.dev") in google.calls
+    assert ("add_site", "https://workspace-harmonie.weareheadless.workers.dev") in google.calls

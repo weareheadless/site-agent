@@ -385,7 +385,7 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
         app,
         config=config,
         env=env,
-        service=context.get("workspace_service") or context.get("atelier_service") or ChatService(
+        service=context.get("workspace_service") or ChatService(
             memory,
             context.get("llm"),
             config=config,

@@ -1,4 +1,4 @@
-"""GitHub-first source inventory and narrow source editing for Atelier.
+"""GitHub-first source inventory and narrow source editing for a tenant.
 
 The service deliberately keeps the repository adapter as the authority for
 reads and commits. A configured local checkout is only used as an inventory
@@ -239,7 +239,7 @@ class SourceEditorService:
             raise SourceEditorError("repository source contains too many files")
         max_bytes = _int_setting(self.settings.get("max_bytes"), 100 * 1024 * 1024, 1, 500 * 1024 * 1024)
 
-        with tempfile.TemporaryDirectory(prefix="atelier-source-") as directory:
+        with tempfile.TemporaryDirectory(prefix="site-agent-source-") as directory:
             root = Path(directory)
             total_bytes = 0
             for raw_path in sorted({str(item) for item in paths}):
@@ -395,7 +395,7 @@ class SourceEditorService:
         return decoded
 
     def inventory(self, request: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        """Run the Atelier repository inventory against one source branch."""
+        """Run the repository inventory against one source branch."""
         body = _mapping(request)
         requested_branch = body.get("branch") or body.get("source_branch")
         preview_branch = self._preview_branch()

@@ -190,48 +190,36 @@ credential profile and use a read-only identity command such as `wrangler
 whoami` before any deployment. Deployment remains a separate, explicit action
 from a Git push.
 
-## Atelier POC Deployment Handoff
+## Tenant deployment handoff
 
-The Atelier frontend is a separate production repository at
-`/ATELIER/atelier-harmonie-headless`. Its GitHub and Cloudflare workflow is
-documented in that repository's `AGENTS.md`; do not assume a local site-agent
-change is deployed merely because backend tests pass.
+Each tenant's frontend or Payload application is a separate repository named by
+its tenant configuration. Its own contributor guide owns the GitHub and
+Cloudflare workflow; a local site-agent change is not deployed merely because
+backend tests pass.
 
 ### Host credential source of truth
 
 The non-secret GitHub/Cloudflare wiring is defined once in
-`/SOCIAL/configs/host-credentials.yaml`. The package defaults load that file
-through `credentials.profile_file`, so the shared Atelier API and every tenant
-inherit the same host profile. Do not copy `credentials.github` or
-`credentials.cloudflare` blocks into tenant configs unless an intentionally
-isolated deployment is being created.
+`/SOCIAL/configs/host-credentials.yaml`. Package defaults load that file through
+`credentials.profile_file`, so every tenant inherits the same host profile. Do
+not copy credential blocks into tenant configs unless an intentionally isolated
+deployment is being created.
 
-The profile only names protected host resources:
-
-- `/ATELIER/.env` — GitHub API token
-- `/ATELIER/atelier-harmonie-cloudflare.env` — Wrangler API token and account ID
-- `/home/admin/.ssh/github_weareheadless_ed25519` — GitHub SSH identity
-
-`site_agent.credentials` is the only resolver for these profiles. It loads
-protected env files for trusted adapters and deployment subprocesses, while
-process environment values remain authoritative. Credential readiness must be
-checked through the resolved profile, not by rediscovering keys or tokens per
-website. A safe Cloudflare connection check is:
+The profile names protected host resources and environment variables without
+storing their values. `site_agent.credentials` is the only resolver for these
+profiles. Check readiness through the resolved profile, never by rediscovering
+keys or tokens per website. A safe Cloudflare check is:
 
 ```bash
-set -a; . /ATELIER/atelier-harmonie-cloudflare.env; set +a
 npx wrangler whoami
-npx wrangler deployments list --name atelier-harmonie
 ```
 
 Never print, paste, commit, or pass credential values to Ada/model prompts.
 
 - Backend/API changes: validate here, then restart `site-agent-api.service`.
-- Frontend/Payload changes: validate and push the Atelier GitHub repository
-  with `/home/admin/.ssh/github_weareheadless_ed25519`, then deploy the existing
-  `atelier-harmonie` Worker with the scoped Cloudflare environment file.
-- Do not commit `/ATELIER` credential files, the Atelier memory database, or
-  generated Worker/build output.
-- Keep `/SOCIAL/site-agent/src/site_agent/intake-ada.yaml` frozen for Atelier
-  POC work. Database-only intake/research must never trigger a design build or
-  production publish.
+- Frontend/Payload changes: validate and push the tenant's configured repository,
+  then deploy only with the tenant's scoped Cloudflare environment.
+- Never commit protected credential files, tenant memory databases, or generated
+  Worker/build output.
+- Keep the packaged intake defaults stable; database-only intake/research must
+  never trigger a design build or production publish.

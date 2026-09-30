@@ -21,7 +21,6 @@ from .config import load_env_file
 
 _DEFAULT_GITHUB_KEYS = (
     Path("/home/admin/.ssh/github_weareheadless_ed25519"),
-    Path("/ATELIER/atelier-github_ed25519"),
 )
 _SAFE_ENV_NAME = "^[A-Za-z_][A-Za-z0-9_]*$"
 

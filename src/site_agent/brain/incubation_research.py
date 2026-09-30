@@ -125,7 +125,7 @@ class LLMIncubationResearchPlanner:
                     max_retries=int(self.config.get("max_retries", 0)),
                     # The planner is a small structured response. Reasoning in
                     # the hidden channel can consume the entire JSON budget and
-                    # was the reason Atelier's first automatic passes ended in
+                    # was the reason the first automatic passes ended in
                     # planner_IncubationResearchPlanningError.
                     enable_thinking=bool(self.config.get("enable_thinking", False)),
                 )

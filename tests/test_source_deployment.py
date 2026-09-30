@@ -16,7 +16,7 @@ def test_revision_marker_is_written_only_to_the_detached_worktree(tmp_path):
     try:
         marker = service._write_revision_marker(tmp_path, "A" * 40)
         assert marker.read_text(encoding="utf-8") == ("a" * 40) + "\n"
-        assert marker.relative_to(tmp_path).as_posix() == "public/atelier-revision.txt"
+        assert marker.relative_to(tmp_path).as_posix() == "public/site-agent-revision.txt"
     finally:
         service.close()
 
@@ -26,7 +26,7 @@ def test_public_revision_verification_requires_the_exact_commit(tmp_path):
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802 - stdlib handler API
-            if self.path.split("?", 1)[0] != "/atelier-revision.txt":
+            if self.path.split("?", 1)[0] != "/site-agent-revision.txt":
                 self.send_response(404)
                 self.end_headers()
                 return
@@ -75,7 +75,7 @@ def test_compiled_preview_rebuilds_exact_commit_after_process_restart(monkeypatc
     monkeypatch.setattr(source_deployment, "ThreadPoolExecutor", Executor)
     memory = Memory(tmp_path / "memory.db")
     memory.kv_set(
-        "atelier_source_preview_jobs",
+        "source_preview_jobs",
         {
             "preview-job": {
                 "id": "preview-job",
@@ -172,8 +172,8 @@ def test_compiled_preview_completion_reconciles_pending_draft(monkeypatch, tmp_p
             "mode": "compiled_preview",
             "branch": branch,
             "commit": commit,
-            "runtime_path": "/api/atelier/source/preview/preview-job/runtime",
-            "preview_url": "/api/atelier/source/preview/preview-job/runtime/",
+            "runtime_path": "/api/workspace/source/preview/preview-job/runtime",
+            "preview_url": "/api/workspace/source/preview/preview-job/runtime/",
             "deployment_mode": "isolated_host_runtime",
         },
     )

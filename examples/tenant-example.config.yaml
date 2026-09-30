@@ -1,5 +1,5 @@
-instance_name: atelier-harmonie
-data_dir: /SOCIAL/configs/atelier-harmonie/data
+instance_name: tenant-example
+data_dir: /srv/site-agent/configs/tenant-example/data
 
 # Host-owned GitHub/Cloudflare wiring is inherited from the canonical profile
 # configured by the host; do not copy secrets or duplicate the mapping here.
@@ -9,11 +9,11 @@ activation:
 
 site:
   adapter: payload_gateway
-  repository: weareheadless/atelier-harmonie-headless
+  repository: your-org/your-site-repository
   branch: main
   preview_branch: preview
-  clone_path: /ATELIER/atelier-harmonie-headless
-  preview_url: https://atelier-harmonie.weareheadless.workers.dev
+  clone_path: /srv/site-agent/sites/tenant-example
+  preview_url: https://preview.example.test
   writable_patterns:
     - src/app/(frontend)/**
     - src/components/**
@@ -22,9 +22,9 @@ site:
     - public/**
   payload:
     enabled: true
-    url: https://atelier-harmonie.weareheadless.workers.dev
-    api_prefix: /api/atelier
-    token_env: ATELIER_HARMONIE_TOKEN
+    url: https://tenant.example.test
+    api_prefix: /api/workspace
+    token_env: TENANT_EXAMPLE_TOKEN
     contract:
       # The gateway client is schema-neutral; each tenant declares the fields
       # its Payload instance permits for draft reads and writes.
@@ -38,13 +38,13 @@ site:
       media_fields: [alt, description, tags, analysisStatus, analysisProvider, analysisModel, analysisVersion, analysisError, analysisUpdatedAt, dominantColors, suggestedUses, qualityNotes, ocrText, proposedKnowledge, sourceKind, analysis]
 
 env:
-  payload_gateway_token: ATELIER_HARMONIE_TOKEN
+  payload_gateway_token: TENANT_EXAMPLE_TOKEN
   vision_api_key: SITE_AGENT_LLM_API_KEY
 
 persona:
   name: Ada
   voice: "Warm, clear, restrained French. Prefer concrete craft language over marketing slogans."
-  audience: "Visitors discovering Atelier Harmonie and professional creative partners."
+  audience: "Visitors discovering the tenant site and professional creative partners."
   directions:
     - "Write in French unless the owner asks for another language."
     - "Treat the profile below as observed migration evidence until the owner confirms it."
@@ -54,12 +54,12 @@ customer_profile:
   source: checked_in_migration_snapshot
   owner_review_required: true
   business:
-    name: Atelier Harmonie
+    name: Example Tenant
     observed_description: "Artisanat d'art autour de la couleur, de la restauration et de la création d'objets qui ont une âme."
     observed_site_settings:
-      business_name: "ATELIER DE L'HARMONIE EI"
+      business_name: "Example Tenant"
       public_description: "Découvrez un univers de créations artisanales : tapisserie de siège, restauration de luminaires, coussins déco... Chaque pièce est unique, faite main avec passion pour un intérieur joyeux et coloré."
-      website_url: https://www.atelier-harmonie.com
+      website_url: https://tenant.example.test
       locality: Saint-Pierre-en-Port
       postal_code: "76540"
       telephone: "0659015744"
@@ -80,7 +80,7 @@ customer_profile:
     - "Audience prioritaire et objectif de conversion de la nouvelle page"
     - "Claims, partenaires, certifications et liens validés par la propriétaire"
 
-atelier_intake:
+intake:
   enabled: true
   database_only: true
   research:

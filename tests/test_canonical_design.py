@@ -740,7 +740,7 @@ def test_chat_job_handoff_queues_one_design_run_without_running_opencode(tmp_pat
                     "mode": "workspace",
                     "scope": "selected_page",
                     "route": {"path": "/shop", "kind": "page", "sourceId": "route-42"},
-                    "preview": {"state": "draft", "url": "https://atelier.example/atelier-preview/shop"},
+                    "preview": {"state": "draft", "url": "https://workspace.example/workspace-preview/shop"},
                     "payload": {"collection": "products", "id": "42", "sourceId": "product-source-id"},
                 },
             },

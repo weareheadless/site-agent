@@ -1,7 +1,7 @@
 from site_agent.application.intake_coordinator import IntakeCoordinator
 from site_agent.core.design_contracts import SiteIntake
 from site_agent.core.design_intake_contracts import DesignIntakeDraft
-from site_agent.core.jobs import register_atelier_jobs
+from site_agent.core.jobs import register_jobs
 from site_agent.core.memory import Memory
 from site_agent.core.scheduler import Scheduler
 
@@ -41,7 +41,7 @@ def test_research_recovery_retries_latest_ready_revision_once(tmp_path):
     llm = _RecoveryLLM()
     coordinator = IntakeCoordinator(
         memory,
-        config={"atelier_intake": {"research": {"enabled": True}}},
+        config={"intake": {"research": {"enabled": True}}},
         llm=llm,
     )
     coordinator.research_executor = _NoopExecutor()
@@ -55,7 +55,7 @@ def test_research_recovery_retries_latest_ready_revision_once(tmp_path):
         assert first[0]["trigger"] == "infusion"
         assert first[0]["status"] == "queued"
         assert llm.calls == 1
-        assert memory.kv_get("atelier_research_recovery_marker") == f"{session['session_id']}:{session['revision']}"
+        assert memory.kv_get("research_recovery_marker") == f"{session['session_id']}:{session['revision']}"
 
         coordinator.recover_research_after_restart()
 
@@ -109,20 +109,20 @@ def test_research_status_keeps_insights_linked_to_public_sources(tmp_path):
         memory.close()
 
 
-def test_atelier_scheduler_registers_research_recovery_for_enabled_intake(tmp_path):
+def test_scheduler_registers_research_recovery_for_enabled_intake(tmp_path):
     memory = Memory(tmp_path / "memory.db")
     coordinator = IntakeCoordinator(memory, config={}, llm=None)
     scheduler = Scheduler(memory, tmp_path / "scheduler.lock")
     try:
-        register_atelier_jobs(
+        register_jobs(
             scheduler,
             {
-                "atelier_scheduler": {"enabled": True},
+                "scheduler": {"enabled": True},
                 "sources": {"rss_feeds": [{"url": "https://example.org/feed.xml"}]},
             },
             {
                 "config": {
-                    "atelier_scheduler": {"enabled": True},
+                    "scheduler": {"enabled": True},
                     "sources": {"rss_feeds": [{"url": "https://example.org/feed.xml"}]},
                 },
                 "memory": memory,
@@ -136,15 +136,15 @@ def test_atelier_scheduler_registers_research_recovery_for_enabled_intake(tmp_pa
         memory.close()
 
 
-def test_atelier_scheduler_registers_article_research_reconciliation(tmp_path):
+def test_scheduler_registers_article_research_reconciliation(tmp_path):
     memory = Memory(tmp_path / "memory.db")
     scheduler = Scheduler(memory, tmp_path / "scheduler.lock")
     config = {
-        "atelier_scheduler": {"enabled": True},
+        "scheduler": {"enabled": True},
         "seo": {"article_research": {"enabled": True}},
     }
     try:
-        register_atelier_jobs(
+        register_jobs(
             scheduler,
             config,
             {"config": config, "memory": memory, "llm": object(), "crawlseo_service": object()},
@@ -158,16 +158,16 @@ def test_atelier_scheduler_registers_article_research_reconciliation(tmp_path):
         memory.close()
 
 
-def test_atelier_scheduler_omits_research_cycle_without_provider(tmp_path):
+def test_scheduler_omits_research_cycle_without_provider(tmp_path):
     memory = Memory(tmp_path / "memory.db")
     scheduler = Scheduler(memory, tmp_path / "scheduler.lock")
     config = {
-        "atelier_scheduler": {"enabled": True},
-        "atelier_editorial": {"enabled": True},
+        "scheduler": {"enabled": True},
+        "editorial": {"enabled": True},
         "seo": {"article_research": {"enabled": True}},
     }
     try:
-        register_atelier_jobs(
+        register_jobs(
             scheduler,
             config,
             {"config": config, "memory": memory, "llm": object()},

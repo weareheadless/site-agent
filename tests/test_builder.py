@@ -638,7 +638,7 @@ def test_ensure_clone_upgrades_https_origin_before_fetching_with_host_ssh(tmp_pa
     config = {
         "credentials": {"profile_file": str(profile)},
         "site": {
-            "repository": "weareheadless/atelier-harmonie-headless",
+            "repository": "weareheadless/workspace-harmonie-headless",
             "clone_path": str(clone),
         },
     }
@@ -647,7 +647,7 @@ def test_ensure_clone_upgrades_https_origin_before_fetching_with_host_ssh(tmp_pa
     def fake_git(_clone, *args, **kwargs):
         calls.append((args, kwargs))
         if args[:2] == ("remote", "get-url"):
-            return "https://github.com/weareheadless/atelier-harmonie-headless.git\n"
+            return "https://github.com/weareheadless/workspace-harmonie-headless.git\n"
         return ""
 
     monkeypatch.setattr(runner, "_git", fake_git)
@@ -655,7 +655,7 @@ def test_ensure_clone_upgrades_https_origin_before_fetching_with_host_ssh(tmp_pa
     assert runner.ensure_clone(config) == clone
     assert any(
         args[:3] == ("remote", "set-url", "origin")
-        and args[3] == "git@github.com:weareheadless/atelier-harmonie-headless.git"
+        and args[3] == "git@github.com:weareheadless/workspace-harmonie-headless.git"
         for args, _ in calls
     )
     fetch = next((item for item in calls if item[0][:2] == ("fetch", "origin")), None)

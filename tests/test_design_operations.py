@@ -11,7 +11,7 @@ from site_agent.application.design_operations import (
     DesignOperationError,
     DesignOperationService,
 )
-from site_agent.application.workspace import AtelierJourney, AtelierTenant, ChatService, TenantRegistry
+from site_agent.application.workspace import Journey, Tenant, ChatService, TenantRegistry
 from site_agent.core.contracts import ActionPriority, ActionState, Artifact, ArtifactKind
 from site_agent.core.memory import Memory
 from site_agent.web.workspace import register_workspace_routes
@@ -280,19 +280,19 @@ def test_workspace_routes_expose_the_same_recommendation_and_operation_records(t
         register_workspace_routes(
             app,
             config={},
-            env={"ATELIER_SITE_AGENT_TOKEN": "workspace-secret"},
+            env={"WORKSPACE_SITE_AGENT_TOKEN": "workspace-secret"},
             service=service,
         )
 
         with TestClient(app) as client:
             headers = {"Authorization": "Bearer workspace-secret"}
-            listed = client.get("/api/atelier/design/recommendations", headers=headers)
+            listed = client.get("/api/workspace/design/recommendations", headers=headers)
             accepted = client.post(
-                f"/api/atelier/design/recommendations/{recommendation.id}/accept",
+                f"/api/workspace/design/recommendations/{recommendation.id}/accept",
                 headers=headers,
                 json={"current_state": {"intake_revision": 3}},
             )
-            operations = client.get("/api/atelier/design/operations", headers=headers)
+            operations = client.get("/api/workspace/design/operations", headers=headers)
 
         assert listed.status_code == 200
         assert listed.json()["recommendations"][0]["recommendation"]["proposed_tool"] == "design.direction"
@@ -355,7 +355,7 @@ def test_accepting_a_build_recommendation_submits_the_existing_async_build(tmp_p
         def close(self):
             pass
 
-    tenant = AtelierTenant(
+    tenant = Tenant(
         tenant_id="site-123",
         config={},
         memory=memory,
@@ -364,7 +364,7 @@ def test_accepting_a_build_recommendation_submits_the_existing_async_build(tmp_p
             "llm": object(),
             "intake_coordinator": Coordinator(),
             "design_intake_service": Intake(),
-            "atelier_journey": AtelierJourney(website_present=False, incubation_needed=False),
+            "journey": Journey(website_present=False, incubation_needed=False),
             "design_operations": DesignOperationService(memory, website_id="site-123"),
         },
         api_token="tenant-secret",
@@ -419,7 +419,7 @@ def test_helloada_control_plane_scopes_requests_by_website_without_tenant_tokens
         def close(self):
             pass
 
-    tenant = AtelierTenant(
+    tenant = Tenant(
         tenant_id="site-123",
         config={},
         memory=memory,
@@ -435,7 +435,7 @@ def test_helloada_control_plane_scopes_requests_by_website_without_tenant_tokens
         env={},
         service=ChatService(registry=registry),
         registry=registry,
-        prefix="/v1/atelier",
+        prefix="/v1/workspace",
         control_prefix="/v1/control-plane/websites",
         control_token="control-secret",
     )

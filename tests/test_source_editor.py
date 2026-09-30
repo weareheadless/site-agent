@@ -8,14 +8,14 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from site_agent.application.atelier import AtelierChatService, AtelierSourceConflict
+from site_agent.application.workspace import ChatService, SourceConflict
 from site_agent.application.source_editor import SourceConflictError, SourceEditorService
-from site_agent.web.atelier import register_atelier_routes
+from site_agent.web.workspace import register_workspace_routes
 
 
 SOURCE = '''const image = "https://old.example/image.jpg";
 export function Hero() {
-  return <h1>Hello atelier</h1>;
+  return <h1>Hello workspace</h1>;
 }
 '''
 
@@ -68,7 +68,7 @@ def _service(tmp_path, adapter, inventory):
 
     config = {
         "site": {
-            "repository": "owner/atelier",
+            "repository": "owner/workspace",
             "branch": "main",
             "preview_branch": "preview",
             "writable_patterns": ["src/components/**"],
@@ -88,8 +88,8 @@ def _field(kind="literal", field_type="image", path="src/components/Hero.tsx"):
         raw = SOURCE[start:end]
         value = "https://old.example/image.jpg"
     else:
-        start = SOURCE.index("Hello atelier")
-        end = start + len("Hello atelier")
+        start = SOURCE.index("Hello workspace")
+        end = start + len("Hello workspace")
         raw = SOURCE[start:end]
         value = raw
     return {
@@ -221,7 +221,7 @@ def test_batch_patches_image_and_jsx_text_with_one_commit_for_the_file(tmp_path)
     result = service.edit({
         "edits": [
             {"field": image, "value": "/media/new-lamp.jpg"},
-            {"field": heading, "value": "Bonjour atelier"},
+            {"field": heading, "value": "Bonjour workspace"},
         ],
     })
 
@@ -231,7 +231,7 @@ def test_batch_patches_image_and_jsx_text_with_one_commit_for_the_file(tmp_path)
     assert len(adapter.commits) == 1
     committed = adapter.commits[0]["data"]
     assert b'const image = "/media/new-lamp.jpg";' in committed
-    assert b">Bonjour atelier</h1>" in committed
+    assert b">Bonjour workspace</h1>" in committed
 
 
 def test_batch_commits_once_per_file_and_validates_all_before_writing(tmp_path):
@@ -322,39 +322,39 @@ class BridgeSourceDeployment:
 
 def test_source_routes_require_auth_and_validate_edit_requests():
     app = FastAPI()
-    service = AtelierChatService(source_editor=BridgeSourceEditor())
-    register_atelier_routes(
+    service = ChatService(source_editor=BridgeSourceEditor())
+    register_workspace_routes(
         app,
         config={},
-        env={"ATELIER_SITE_AGENT_TOKEN": "atelier-secret"},
+        env={"WORKSPACE_SITE_AGENT_TOKEN": "workspace-secret"},
         service=service,
     )
 
     with TestClient(app) as client:
-        assert client.post("/api/atelier/source/inventory", json={}).status_code == 401
+        assert client.post("/api/workspace/source/inventory", json={}).status_code == 401
         assert client.post(
-            "/api/atelier/source/inventory",
-            headers={"Authorization": "Bearer atelier-secret"},
+            "/api/workspace/source/inventory",
+            headers={"Authorization": "Bearer workspace-secret"},
             json=[],
         ).status_code == 400
         inventory = client.post(
-            "/api/atelier/source/inventory",
-            headers={"Authorization": "Bearer atelier-secret"},
+            "/api/workspace/source/inventory",
+            headers={"Authorization": "Bearer workspace-secret"},
             json={"branch": "main"},
         )
         batch = client.post(
-            "/api/atelier/source/edit",
-            headers={"Authorization": "Bearer atelier-secret"},
+            "/api/workspace/source/edit",
+            headers={"Authorization": "Bearer workspace-secret"},
             json={"edits": [{"value": "new"}]},
         )
         conflict = client.post(
-            "/api/atelier/source/edit",
-            headers={"Authorization": "Bearer atelier-secret"},
+            "/api/workspace/source/edit",
+            headers={"Authorization": "Bearer workspace-secret"},
             json={"field": {}, "value": "new"},
         )
         styles = client.get(
-            "/api/atelier/source/preview/styles",
-            headers={"Authorization": "Bearer atelier-secret"},
+            "/api/workspace/source/preview/styles",
+            headers={"Authorization": "Bearer workspace-secret"},
         )
 
     assert inventory.status_code == 200
@@ -369,32 +369,32 @@ def test_source_routes_require_auth_and_validate_edit_requests():
 
 def test_source_preview_routes_require_auth_and_return_job_status():
     app = FastAPI()
-    service = AtelierChatService(source_deployment=BridgeSourceDeployment())
-    register_atelier_routes(
+    service = ChatService(source_deployment=BridgeSourceDeployment())
+    register_workspace_routes(
         app,
         config={},
-        env={"ATELIER_SITE_AGENT_TOKEN": "atelier-secret"},
+        env={"WORKSPACE_SITE_AGENT_TOKEN": "workspace-secret"},
         service=service,
     )
 
     with TestClient(app) as client:
-        assert client.post("/api/atelier/source/preview", json={}).status_code == 401
+        assert client.post("/api/workspace/source/preview", json={}).status_code == 401
         started = client.post(
-            "/api/atelier/source/preview",
-            headers={"Authorization": "Bearer atelier-secret"},
+            "/api/workspace/source/preview",
+            headers={"Authorization": "Bearer workspace-secret"},
             json={"branch": "preview", "commit": "abc"},
         )
         status = client.get(
-            "/api/atelier/source/preview/source-job-1",
-            headers={"Authorization": "Bearer atelier-secret"},
+            "/api/workspace/source/preview/source-job-1",
+            headers={"Authorization": "Bearer workspace-secret"},
         )
         latest = client.get(
-            "/api/atelier/source/preview?branch=preview",
-            headers={"Authorization": "Bearer atelier-secret"},
+            "/api/workspace/source/preview?branch=preview",
+            headers={"Authorization": "Bearer workspace-secret"},
         )
         deployed = client.post(
-            "/api/atelier/source/preview/source-job-1/deploy",
-            headers={"Authorization": "Bearer atelier-secret"},
+            "/api/workspace/source/preview/source-job-1/deploy",
+            headers={"Authorization": "Bearer workspace-secret"},
         )
 
     assert started.status_code == 200

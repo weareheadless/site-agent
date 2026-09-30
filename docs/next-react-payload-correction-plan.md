@@ -5,7 +5,7 @@ Status: proposed architecture correction
 ## Decision
 
 Make **Next.js + React + Payload** the one canonical architecture for Ada-built
-sites and for Atelier.
+sites and for Workspace.
 
 Astro is not a product requirement. It was selected as an implementation
 choice, but it creates a second frontend/runtime path without adding design or
@@ -26,7 +26,7 @@ content contract.
 
 ## Goals
 
-1. Make Atelier a correct reference implementation rather than a Next-specific
+1. Make Workspace a correct reference implementation rather than a Next-specific
    exception.
 2. Make a new site created by Ada from zero use the same Next/React/Payload
    architecture.
@@ -44,7 +44,7 @@ content contract.
 
 ## Non-goals
 
-- Do not migrate Atelier to Astro.
+- Do not migrate Workspace to Astro.
 - Do not support Astro and Next as equal canonical targets in this correction.
 - Do not introduce a second CMS, content store, or field registry.
 - Do not add runtime source scanning, DOM matching, text matching, or image-URL
@@ -68,7 +68,7 @@ Each Ada-built site is a normal Next.js application containing:
 - the site-specific design and content components.
 
 This is intentionally a single deployable application for the first canonical
-architecture. It keeps the existing Atelier operational model intact.
+architecture. It keeps the existing Workspace operational model intact.
 
 ### Ada/site-agent
 
@@ -105,7 +105,7 @@ The current generic implementation remains the basis:
 
 ## Editable-content contract
 
-The existing Atelier decision remains canonical:
+The existing Workspace decision remains canonical:
 
 ```text
 Ada defines a field
@@ -130,7 +130,7 @@ Rules:
 - Public rendering contains no editor controls or privileged metadata.
 - Unknown IDs, duplicate IDs, invalid types, and missing media fail validation.
 
-The existing Atelier field registry, migration, APIs, and `home.ada.test.*`
+The existing Workspace field registry, migration, APIs, and `home.ada.test.*`
 proof section are retained as the reference implementation. The current
 Next-specific component code may later be extracted into a small shared React
 package only if a second site actually requires it; do not create that package
@@ -233,9 +233,9 @@ For a new site, Ada must create at least one proof section containing:
 The candidate is incomplete until those fields are declared, rendered, editable
 in authenticated preview, and validated through the owner-facing review path.
 
-## Atelier treatment
+## Workspace treatment
 
-Atelier stays on its current Next.js foundation.
+Workspace stays on its current Next.js foundation.
 
 Preserve:
 
@@ -248,7 +248,7 @@ Preserve:
 - declarative editable-field schema and APIs;
 - current dirty work and owner review boundaries.
 
-The Atelier changes are limited to:
+The Workspace changes are limited to:
 
 1. Pin `gsap` and `@gsap/react` in the site package manifest.
 2. Add the Next/React build profile and approved dependency contract.
@@ -258,7 +258,7 @@ The Atelier changes are limited to:
 5. Add one owner-approved GSAP proof interaction only after the pipeline can
    build and preview Next correctly.
 
-No Astro frontend migration is part of Atelier completion.
+No Astro frontend migration is part of Workspace completion.
 
 ## Intake and design correction order
 
@@ -267,10 +267,10 @@ frontend/runtime split. Correct the boundaries in this order:
 
 ### Phase 1 — Freeze the current baseline
 
-- Record the current Atelier Next/Payload behavior.
+- Record the current Workspace Next/Payload behavior.
 - Keep the existing POC changes uncommitted unless separately approved.
 - Do not deploy or run remote migrations.
-- Preserve the current Atelier intake configuration while the runtime target is
+- Preserve the current Workspace intake configuration while the runtime target is
   corrected.
 
 ### Phase 2 — Implement the canonical Next profile
@@ -281,9 +281,9 @@ frontend/runtime split. Correct the boundaries in this order:
 - Make absent or invalid profile configuration fail clearly.
 - Add a clean Next/React/Payload scaffold for new sites.
 
-### Phase 3 — Prove the runtime with Atelier
+### Phase 3 — Prove the runtime with Workspace
 
-- Build the current Atelier repository with the Next profile.
+- Build the current Workspace repository with the Next profile.
 - Verify public rendering, admin, API auth, preview auth, media, and forms.
 - Verify editable text, rich text, and images through the field registry.
 - Verify the `home.ada.test.*` section in authenticated preview.
@@ -346,7 +346,7 @@ candidate.
 
 ## Expected result
 
-Atelier becomes the working Next/React/Payload reference site. Ada then uses the
+Workspace becomes the working Next/React/Payload reference site. Ada then uses the
 same architecture to create a new site from zero, with the same Payload
 management, declarative editable fields, AI design pipeline, basic builder
 functionality, GSAP capability, preview, and approval lifecycle.

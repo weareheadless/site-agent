@@ -25,7 +25,7 @@ def make_service(tmp_path, monkeypatch, jobs=None):
     })
     memory.update_draft_status(draft_id, "publishing")
     if jobs:
-        memory.kv_set("atelier_source_preview_jobs", jobs)
+        memory.kv_set("source_preview_jobs", jobs)
     return memory, deployment.SourceDeploymentService({}, memory=memory), draft_id
 
 
@@ -65,7 +65,7 @@ def test_queue_persists_publishing_before_detached_worker_and_deduplicates(tmp_p
     request = {"mode": "production", "branch": "main", "commit": "a" * 40, "draft_id": draft_id}
     queued = service.start(request, allow_production=True)
     assert memory.list_drafts()[0]["status"] == "publishing"
-    assert memory.kv_get("atelier_source_preview_jobs")[queued["id"]]["status"] == "queued"
+    assert memory.kv_get("source_preview_jobs")[queued["id"]]["status"] == "queued"
     assert service.start(request, allow_production=True)["id"] == queued["id"]
     assert len(service._executor.submitted) == 1
     service.close()
@@ -87,7 +87,7 @@ def test_job_audit_not_evicted_after_twenty_newer_jobs(tmp_path, monkeypatch):
     memory, service, _ = make_service(tmp_path, monkeypatch)
     service._jobs = {str(i): job("failed", updated_at=str(i).zfill(3)) | {"id": str(i)} for i in range(25)}
     service._persist()
-    assert len(memory.kv_get("atelier_source_preview_jobs")) == 25
+    assert len(memory.kv_get("source_preview_jobs")) == 25
     service.close()
     memory.close()
 
@@ -102,7 +102,7 @@ def test_verification_identifies_service_instead_of_blocked_python_user_agent(tm
         def read(self): return b"a" * 40
 
     def open_request(request, **kwargs):
-        assert request.get_header("User-agent") == "Atelier-Site-Agent/1.0"
+        assert request.get_header("User-agent") == "site-agent/1.0"
         return Response()
 
     monkeypatch.setattr(deployment.urllib.request, "urlopen", open_request)
@@ -166,7 +166,7 @@ def test_worker_completes_after_request_returns_without_browser_polling(tmp_path
         release.set()
         assert finished.wait(5)
         assert memory.list_drafts()[0]["status"] == "live"
-        assert memory.kv_get("atelier_source_preview_jobs")[queued["id"]]["status"] == "deployed"
+        assert memory.kv_get("source_preview_jobs")[queued["id"]]["status"] == "deployed"
     finally:
         release.set()
         service.close()

@@ -5,33 +5,34 @@ Payload server calls these endpoints with a dedicated bearer token, while the
 existing admin API and Intake Lab routes keep their current authentication and
 behavior.
 The route prefix remains configurable because the first customer still uses
-``/v1/atelier``.  The implementation itself is not customer-specific.
+``/v1/workspace``.  The implementation itself is not customer-specific.
 """
 
 from __future__ import annotations
 
 import hmac
+from pathlib import Path
 from typing import Any
 
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 
 from ..application.analytics import AnalyticsError, GoogleAnalyticsService
 from ..application.tenant_registration import TenantRegistrationError, TenantRegistrationService
 from ..application.workspace import BridgeError, ChatService, SourceConflict, Tenant, TenantRegistry
 from ..config import resolve_secret
 from ..hands.google_platform import GooglePlatformError
-
-# Local compatibility aliases keep the existing handler names readable while
-# the public service and route modules use generic workspace terminology.
-AtelierBridgeError = BridgeError
-AtelierChatService = ChatService
-AtelierSourceConflict = SourceConflict
-AtelierTenant = Tenant
-AtelierTenantRegistry = TenantRegistry
-
+from .design_preview import (
+    DESIGN_PREVIEW_REFS,
+    candidate_is_previewable,
+    list_html_at,
+    output_artifact_root,
+    preview_ref,
+    render_candidate_file,
+)
+from .preview import PreviewAccess, PreviewBuildCache
 
 def register_workspace_routes(
     app: FastAPI,
@@ -40,7 +41,7 @@ def register_workspace_routes(
     env: dict[str, str],
     service: ChatService,
     registry: TenantRegistry | None = None,
-    prefix: str = "/api/atelier",
+    prefix: str = "/api/workspace",
     control_prefix: str | None = None,
     control_token: str | None = None,
     registration: TenantRegistrationService | None = None,
@@ -54,28 +55,30 @@ def register_workspace_routes(
     """
 
     prefix = "/" + prefix.strip("/")
+    preview_access = PreviewAccess()
+    preview_cache = PreviewBuildCache()
 
     def require_service(request: Request) -> Tenant | None:
         authorization = request.headers.get("authorization", "")
         supplied = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
         if registry is not None:
             if not supplied:
-                raise HTTPException(status_code=401, detail="Atelier service authentication required")
+                raise HTTPException(status_code=401, detail="Workspace service authentication required")
             tenant = registry.for_token(supplied)
             if tenant is None:
-                raise HTTPException(status_code=401, detail="Atelier service authentication required")
+                raise HTTPException(status_code=401, detail="Workspace service authentication required")
             return tenant
 
-        expected = env.get("ATELIER_SITE_AGENT_TOKEN", "") or resolve_secret(
+        expected = env.get("WORKSPACE_SITE_AGENT_TOKEN", "") or resolve_secret(
             config,
             "workspace_service_token",
             env,
-        ) or resolve_secret(config, "atelier_service_token", env)
+        )
         if not expected:
-            raise HTTPException(status_code=503, detail="Atelier service token is not configured")
+            raise HTTPException(status_code=503, detail="Workspace service token is not configured")
 
         if not supplied or not hmac.compare_digest(supplied.encode(), expected.encode()):
-            raise HTTPException(status_code=401, detail="Atelier service authentication required")
+            raise HTTPException(status_code=401, detail="Workspace service authentication required")
         return None
 
     def require_control_tenant(request: Request, website_id: str) -> Tenant:
@@ -116,6 +119,45 @@ def register_workspace_routes(
             raise HTTPException(status_code=503, detail="GA4 property is not configured for this tenant")
         return property_id
 
+    def source_preview_response(value: Any) -> Any:
+        """Bind relative preview paths to this API's configured prefix."""
+        if not isinstance(value, dict):
+            return value
+        result = dict(value)
+        canonical = "/api/workspace"
+        for key in ("runtime_path", "preview_url"):
+            raw = result.get(key)
+            if isinstance(raw, str) and raw.startswith(canonical):
+                result[key] = prefix + raw[len(canonical):]
+        return result
+
+    def design_service_for(tenant: Tenant | None):
+        if tenant is None:
+            raise HTTPException(status_code=503, detail="tenant design service is unavailable")
+        service = tenant.context.get("design_service")
+        if service is None:
+            raise HTTPException(status_code=503, detail="tenant design service is unavailable")
+        return service
+
+    def preview_scope(tenant: Tenant, run_id: str, variant: str) -> tuple[str, ...]:
+        return ("design", tenant.tenant_id, str(run_id), str(variant))
+
+    def require_preview_scope(request: Request, run_id: str) -> tuple[Tenant, str, str]:
+        """Resolve a browser-only preview token back to its isolated tenant."""
+        if registry is None:
+            raise HTTPException(status_code=503, detail="tenant registry is unavailable")
+        token = str(request.query_params.get("preview_token") or "").strip()
+        scope = preview_access.scope(token)
+        if not scope or len(scope) != 4 or scope[0] != "design" or scope[2] != str(run_id):
+            raise HTTPException(status_code=401, detail="preview token is invalid or expired")
+        tenant = registry.for_tenant_id(scope[1])
+        if tenant is None:
+            raise HTTPException(status_code=404, detail="tenant was not found")
+        variant = str(request.query_params.get("variant") or scope[3]).strip().lower()
+        if variant != scope[3]:
+            raise HTTPException(status_code=401, detail="preview token does not authorize this variant")
+        return tenant, variant, token
+
     def access_binding_view(binding: dict[str, Any]) -> dict[str, Any]:
         roles = [str(role).rsplit("/", 1)[-1] for role in (binding.get("roles") or [])]
         return {
@@ -126,7 +168,7 @@ def register_workspace_routes(
         }
 
     @app.post(f"{prefix}/chat")
-    async def atelier_chat(request: Request):
+    async def workspace_chat(request: Request):
         tenant = require_service(request)
         try:
             body = await request.json()
@@ -136,22 +178,22 @@ def register_workspace_routes(
             raise HTTPException(status_code=400, detail="request body must be an object")
         try:
             return service.enqueue(body, tenant=tenant)
-        except AtelierBridgeError as exc:
+        except BridgeError as exc:
             status = 413 if str(exc) == "message too long" else 400
             if str(exc) == "LLM not configured":
                 status = 503
             raise HTTPException(status_code=status, detail=str(exc)) from exc
 
     @app.get(f"{prefix}/chat/status")
-    def atelier_chat_status(request: Request, conversation_id: int | None = None):
+    def workspace_chat_status(request: Request, conversation_id: int | None = None):
         tenant = require_service(request)
         try:
             return service.status(conversation_id, tenant=tenant)
-        except AtelierBridgeError as exc:
+        except BridgeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post(f"{prefix}/chat/intake/confirm")
-    async def atelier_intake_confirm(request: Request):
+    async def workspace_intake_confirm(request: Request):
         tenant = require_service(request)
         try:
             body = await request.json()
@@ -161,11 +203,11 @@ def register_workspace_routes(
             raise HTTPException(status_code=400, detail="request body must be an object")
         try:
             return service.confirm_intake(body, tenant=tenant)
-        except AtelierBridgeError as exc:
+        except BridgeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post(f"{prefix}/chat/design/start")
-    async def atelier_design_start(request: Request):
+    async def workspace_design_start(request: Request):
         tenant = require_service(request)
         try:
             body = await request.json()
@@ -175,19 +217,19 @@ def register_workspace_routes(
             raise HTTPException(status_code=400, detail="request body must be an object")
         try:
             return service.start_first_page(body, tenant=tenant)
-        except AtelierBridgeError as exc:
+        except BridgeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get(f"{prefix}/design/recommendations")
-    def atelier_design_recommendations(request: Request, limit: int = 50):
+    def workspace_design_recommendations(request: Request, limit: int = 50):
         tenant = require_service(request)
         try:
             return service.recommendations(limit=limit, tenant=tenant)
-        except AtelierBridgeError as exc:
+        except BridgeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post(f"{prefix}/design/direction")
-    async def atelier_design_direction(request: Request):
+    async def workspace_design_direction(request: Request):
         tenant = require_service(request)
         try:
             body = await request.json()
@@ -197,12 +239,12 @@ def register_workspace_routes(
             raise HTTPException(status_code=400, detail="request body must be an object")
         try:
             return service.propose_direction(body, tenant=tenant)
-        except AtelierBridgeError as exc:
+        except BridgeError as exc:
             status = 409 if "must be accepted" in str(exc).lower() else 400
             raise HTTPException(status_code=status, detail=str(exc)) from exc
 
     @app.post(f"{prefix}/design/recommendations/{{action_id}}/accept")
-    async def atelier_accept_design_recommendation(action_id: int, request: Request):
+    async def workspace_accept_design_recommendation(action_id: int, request: Request):
         tenant = require_service(request)
         try:
             body = await request.json()
@@ -212,76 +254,76 @@ def register_workspace_routes(
             raise HTTPException(status_code=400, detail="request body must be an object")
         try:
             return service.accept_recommendation(action_id, body, tenant=tenant)
-        except AtelierBridgeError as exc:
+        except BridgeError as exc:
             status = 409 if "stale" in str(exc).lower() else 400
             raise HTTPException(status_code=status, detail=str(exc)) from exc
 
     @app.post(f"{prefix}/design/recommendations/{{action_id}}/dismiss")
-    def atelier_dismiss_design_recommendation(action_id: int, request: Request):
+    def workspace_dismiss_design_recommendation(action_id: int, request: Request):
         tenant = require_service(request)
         try:
             return service.dismiss_recommendation(action_id, tenant=tenant)
-        except AtelierBridgeError as exc:
+        except BridgeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.get(f"{prefix}/design/operations")
-    def atelier_design_operations(request: Request, status: str | None = None, limit: int = 50):
+    def workspace_design_operations(request: Request, status: str | None = None, limit: int = 50):
         tenant = require_service(request)
         try:
             return service.operations(status=status, limit=limit, tenant=tenant)
-        except AtelierBridgeError as exc:
+        except BridgeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get(f"{prefix}/design/operations/{{operation_id}}")
-    def atelier_design_operation(operation_id: int, request: Request):
+    def workspace_design_operation(operation_id: int, request: Request):
         tenant = require_service(request)
         try:
             return service.operation(operation_id, tenant=tenant)
-        except AtelierBridgeError as exc:
+        except BridgeError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.get(f"{prefix}/chat/conversations")
-    def atelier_conversations(request: Request, include_archived: bool = False, limit: int = 50):
+    def workspace_conversations(request: Request, include_archived: bool = False, limit: int = 50):
         tenant = require_service(request)
         try:
             return service.conversations(include_archived=include_archived, limit=limit, tenant=tenant)
-        except AtelierBridgeError as exc:
+        except BridgeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get(f"{prefix}/chat/conversations/{{conversation_id}}")
-    def atelier_conversation(conversation_id: str, request: Request):
+    def workspace_conversation(conversation_id: str, request: Request):
         tenant = require_service(request)
         try:
             return service.conversation(conversation_id, tenant=tenant)
-        except AtelierBridgeError as exc:
+        except BridgeError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.get(f"{prefix}/history")
-    def atelier_history(request: Request, limit: int = 50):
+    def workspace_history(request: Request, limit: int = 50):
         tenant = require_service(request)
         try:
             return service.history(limit=limit, tenant=tenant)
-        except AtelierBridgeError as exc:
+        except BridgeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get(f"{prefix}/worktree")
-    def atelier_worktree(request: Request):
+    def workspace_worktree(request: Request):
         tenant = require_service(request)
         try:
             return service.worktree(tenant=tenant)
-        except AtelierBridgeError as exc:
+        except BridgeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post(f"{prefix}/worktree/discard")
-    def atelier_worktree_discard(request: Request):
+    def workspace_worktree_discard(request: Request):
         tenant = require_service(request)
         try:
             return service.discard_worktree(tenant=tenant)
-        except AtelierBridgeError as exc:
+        except BridgeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.get(f"{prefix}/design/runs")
-    def atelier_design_runs(
+    def workspace_design_runs(
         request: Request,
         status: str | None = None,
         mode: str | None = None,
@@ -290,28 +332,148 @@ def register_workspace_routes(
         tenant = require_service(request)
         try:
             return service.design_runs(status=status, mode=mode, limit=limit, tenant=tenant)
-        except AtelierBridgeError as exc:
+        except BridgeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get(f"{prefix}/design/runs/{{run_id}}")
-    def atelier_design_run(run_id: str, request: Request):
+    def workspace_design_run(run_id: str, request: Request):
         tenant = require_service(request)
         try:
             return service.design_run(run_id, tenant=tenant)
-        except AtelierBridgeError as exc:
+        except BridgeError as exc:
             status = 404 if "no such" in str(exc).lower() else 400
             raise HTTPException(status_code=status, detail=str(exc)) from exc
 
+    @app.get(f"{prefix}/design/runs/{{run_id}}/preview-token")
+    def workspace_design_preview_token(
+        run_id: str,
+        request: Request,
+        variant: str = "deepseek",
+    ):
+        """Issue a short-lived browser capability for one retained candidate."""
+        tenant = require_service(request)
+        design_service = design_service_for(tenant)
+        try:
+            run = design_service.get_run(str(run_id))
+        except Exception as exc:  # noqa: BLE001 - normalize service-specific lookup errors
+            raise HTTPException(status_code=404, detail="design run was not found") from exc
+        if not candidate_is_previewable(run):
+            raise HTTPException(status_code=409, detail="design run is not ready for preview")
+        try:
+            selected_variant, selected_sha = preview_ref(run, variant)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        token = preview_access.issue(preview_scope(tenant, run_id, selected_variant))
+        preview_url = str(request.url_for(
+            "workspace_design_preview",
+            run_id=str(run_id),
+            file_path="index.html",
+        ))
+        separator = "&" if "?" in preview_url else "?"
+        preview_url = (
+            f"{preview_url}{separator}preview_token={token}&variant={selected_variant}"
+        )
+        return JSONResponse(
+            {
+                "token": token,
+                "expires_in": preview_access.ttl,
+                "variant": selected_variant,
+                "candidate_sha": selected_sha,
+                "preview_url": preview_url,
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get(f"{prefix}/design/runs/{{run_id}}/pages")
+    def workspace_design_pages(
+        run_id: str,
+        request: Request,
+        variant: str = "deepseek",
+    ):
+        tenant = require_service(request)
+        design_service = design_service_for(tenant)
+        try:
+            run = design_service.get_run(str(run_id))
+        except Exception as exc:  # noqa: BLE001 - normalize service-specific lookup errors
+            raise HTTPException(status_code=404, detail="design run was not found") from exc
+        if not candidate_is_previewable(run):
+            raise HTTPException(status_code=409, detail="design run is not ready for preview")
+        try:
+            selected_variant, selected_sha = preview_ref(run, variant)
+            artifact_root = (
+                output_artifact_root(design_service, run)
+                if selected_variant == "deepseek"
+                else None
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        clone = Path(design_service.clone_path_for_run(str(run_id))).expanduser().resolve()
+        if artifact_root is not None:
+            pages = sorted(
+                str(path.relative_to(artifact_root).as_posix())
+                for path in artifact_root.rglob("*")
+                if path.is_file() and path.suffix.lower() in {".html", ".htm"}
+            )
+        else:
+            if not clone.exists() or not (clone / ".git").exists():
+                raise HTTPException(status_code=404, detail="design candidate clone is unavailable")
+            pages = list_html_at(clone, selected_sha)
+        return {
+            "pages": list(dict.fromkeys(pages)),
+            "variant": selected_variant,
+            "ref": selected_sha,
+            "base_sha": run.get("base_sha"),
+            "candidate_sha": run.get("candidate_sha"),
+        }
+
+    @app.get(
+        f"{prefix}/design/runs/{{run_id}}/preview/{{file_path:path}}",
+        name="workspace_design_preview",
+    )
+    def workspace_design_preview(run_id: str, file_path: str, request: Request):
+        """Serve the exact candidate artifact through a short-lived capability."""
+        tenant, variant, token = require_preview_scope(request, run_id)
+        design_service = design_service_for(tenant)
+        try:
+            run = design_service.get_run(str(run_id))
+        except Exception as exc:  # noqa: BLE001 - do not disclose tenant state
+            raise HTTPException(status_code=404, detail="design run was not found") from exc
+        if not candidate_is_previewable(run):
+            raise HTTPException(status_code=409, detail="design run is not ready for preview")
+        try:
+            content, media_type = render_candidate_file(
+                design_service,
+                run,
+                file_path,
+                variant=variant,
+                access_token=token,
+                preview_root=f"{prefix}/design/runs/{run_id}/preview/",
+                site_url=str(((tenant.config.get("blog") or {}).get("site_url") or "")),
+                preview_cache=preview_cache,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return Response(
+            content=content,
+            media_type=media_type,
+            headers={
+                "Cache-Control": "private, no-store",
+                "X-Preview-Candidate-SHA": str(run.get("candidate_sha") or ""),
+            },
+        )
+
     @app.post(f"{prefix}/design/runs/{{run_id}}/review")
-    def atelier_design_review(run_id: str, request: Request):
+    def workspace_design_review(run_id: str, request: Request):
         tenant = require_service(request)
         try:
             return service.create_design_review(run_id, tenant=tenant)
-        except AtelierBridgeError as exc:
+        except BridgeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post(f"{prefix}/design/runs/{{run_id}}/retry")
-    async def atelier_design_retry(run_id: str, request: Request):
+    async def workspace_design_retry(run_id: str, request: Request):
         tenant = require_service(request)
         try:
             body = await request.json()
@@ -321,11 +483,11 @@ def register_workspace_routes(
             raise HTTPException(status_code=400, detail="request body must be an object")
         try:
             return service.retry_design_run(run_id, body, tenant=tenant)
-        except AtelierBridgeError as exc:
+        except BridgeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.get(f"{prefix}/drafts")
-    def atelier_drafts(request: Request, status: str | None = None, limit: int = 50):
+    def workspace_drafts(request: Request, status: str | None = None, limit: int = 50):
         tenant = require_service(request)
         try:
             history = service.history(limit=limit, tenant=tenant)
@@ -336,19 +498,19 @@ def register_workspace_routes(
                 "drafts": drafts,
                 "current_update": history.get("current_update"),
             }
-        except AtelierBridgeError as exc:
+        except BridgeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get(f"{prefix}/seo/insights")
-    def atelier_seo_insights(request: Request, limit: int = 12):
+    def workspace_seo_insights(request: Request, limit: int = 12):
         tenant = require_service(request)
         try:
             return service.seo_insights(limit=limit, tenant=tenant)
-        except AtelierBridgeError as exc:
+        except BridgeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get(f"{prefix}/seo/analytics")
-    def atelier_seo_analytics(request: Request, days: int = 28):
+    def workspace_seo_analytics(request: Request, days: int = 28):
         tenant = require_service(request)
         try:
             return analytics_for(tenant).report(days=days)
@@ -358,7 +520,7 @@ def register_workspace_routes(
             raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     @app.get(f"{prefix}/seo/access")
-    def atelier_seo_access(request: Request):
+    def workspace_seo_access(request: Request):
         tenant = require_service(request)
         google = tenant.context.get("google_platform") if tenant is not None else None
         property_id = ga_property_id(tenant)
@@ -383,7 +545,7 @@ def register_workspace_routes(
         }
 
     @app.post(f"{prefix}/seo/access")
-    async def atelier_seo_access_grant(request: Request):
+    async def workspace_seo_access_grant(request: Request):
         tenant = require_service(request)
         google = tenant.context.get("google_platform") if tenant is not None else None
         property_id = ga_property_id(tenant)
@@ -412,7 +574,7 @@ def register_workspace_routes(
         }
 
     @app.post(f"{prefix}/seo/access/revoke")
-    async def atelier_seo_access_revoke(request: Request):
+    async def workspace_seo_access_revoke(request: Request):
         tenant = require_service(request)
         google = tenant.context.get("google_platform") if tenant is not None else None
         property_id = ga_property_id(tenant)
@@ -444,31 +606,31 @@ def register_workspace_routes(
         return {"revoked": True, "name": binding_name}
 
     @app.post(f"{prefix}/drafts/{{draft_id}}/approve")
-    def atelier_approve_draft(draft_id: int, request: Request):
+    def workspace_approve_draft(draft_id: int, request: Request):
         tenant = require_service(request)
         try:
             return service.approve_draft(draft_id, tenant=tenant)
-        except AtelierBridgeError as exc:
+        except BridgeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post(f"{prefix}/drafts/{{draft_id}}/discard")
-    def atelier_discard_draft(draft_id: int, request: Request):
+    def workspace_discard_draft(draft_id: int, request: Request):
         tenant = require_service(request)
         try:
             return service.discard_draft(draft_id, tenant=tenant)
-        except AtelierBridgeError as exc:
+        except BridgeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post(f"{prefix}/versions/{{version_id}}/restore")
-    def atelier_restore_version(version_id: int, request: Request):
+    def workspace_restore_version(version_id: int, request: Request):
         tenant = require_service(request)
         try:
             return service.restore_version(version_id, tenant=tenant)
-        except AtelierBridgeError as exc:
+        except BridgeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post(f"{prefix}/media/analyze")
-    async def atelier_analyze_media(request: Request):
+    async def workspace_analyze_media(request: Request):
         tenant = require_service(request)
         try:
             body = await request.json()
@@ -478,28 +640,28 @@ def register_workspace_routes(
             raise HTTPException(status_code=400, detail="request body must be an object")
         try:
             return service.analyze_media(body, tenant=tenant)
-        except AtelierBridgeError as exc:
+        except BridgeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.get(f"{prefix}/media")
-    def atelier_media(request: Request, limit: int = 50):
+    def workspace_media(request: Request, limit: int = 50):
         tenant = require_service(request)
         try:
             return service.media(limit=limit, tenant=tenant)
-        except AtelierBridgeError as exc:
+        except BridgeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get(f"{prefix}/source/inventory")
-    def atelier_source_inventory_get(request: Request, branch: str | None = None):
+    def workspace_source_inventory_get(request: Request, branch: str | None = None):
         tenant = require_service(request)
         try:
             body = {"branch": branch} if branch else {}
             return service.source_inventory(body, tenant=tenant)
-        except AtelierBridgeError as exc:
+        except BridgeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post(f"{prefix}/source/inventory")
-    async def atelier_source_inventory(request: Request):
+    async def workspace_source_inventory(request: Request):
         tenant = require_service(request)
         try:
             body = await request.json()
@@ -509,11 +671,11 @@ def register_workspace_routes(
             raise HTTPException(status_code=400, detail="request body must be an object")
         try:
             return service.source_inventory(body, tenant=tenant)
-        except AtelierBridgeError as exc:
+        except BridgeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post(f"{prefix}/source/edit")
-    async def atelier_source_edit(request: Request):
+    async def workspace_source_edit(request: Request):
         tenant = require_service(request)
         try:
             body = await request.json()
@@ -523,29 +685,29 @@ def register_workspace_routes(
             raise HTTPException(status_code=400, detail="request body must be an object")
         try:
             return service.source_edit(body, tenant=tenant)
-        except AtelierSourceConflict as exc:
+        except SourceConflict as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except AtelierBridgeError as exc:
+        except BridgeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get(f"{prefix}/source/preview/styles")
-    def atelier_source_preview_styles(request: Request):
+    def workspace_source_preview_styles(request: Request):
         tenant = require_service(request)
         try:
             return service.source_preview_styles(tenant=tenant)
-        except AtelierBridgeError as exc:
+        except BridgeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get(f"{prefix}/source/preview")
-    def atelier_source_preview_latest(request: Request, branch: str | None = None):
+    def workspace_source_preview_latest(request: Request, branch: str | None = None):
         tenant = require_service(request)
         try:
-            return service.source_preview_latest(branch, tenant=tenant)
-        except AtelierBridgeError as exc:
+            return source_preview_response(service.source_preview_latest(branch, tenant=tenant))
+        except BridgeError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.post(f"{prefix}/source/preview")
-    async def atelier_source_preview(request: Request):
+    async def workspace_source_preview(request: Request):
         tenant = require_service(request)
         try:
             body = await request.json()
@@ -554,20 +716,20 @@ def register_workspace_routes(
         if not isinstance(body, dict):
             raise HTTPException(status_code=400, detail="request body must be an object")
         try:
-            return service.source_preview_start(body, tenant=tenant)
-        except AtelierBridgeError as exc:
+            return source_preview_response(service.source_preview_start(body, tenant=tenant))
+        except BridgeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get(f"{prefix}/source/preview/{{job_id}}")
-    def atelier_source_preview_status(job_id: str, request: Request):
+    def workspace_source_preview_status(job_id: str, request: Request):
         tenant = require_service(request)
         try:
-            return service.source_preview_status(job_id, tenant=tenant)
-        except AtelierBridgeError as exc:
+            return source_preview_response(service.source_preview_status(job_id, tenant=tenant))
+        except BridgeError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     @app.get(f"{prefix}/source/preview/{{job_id}}/runtime/{{file_path:path}}")
-    def atelier_source_preview_runtime(job_id: str, file_path: str, request: Request):
+    def workspace_source_preview_runtime(job_id: str, file_path: str, request: Request):
         tenant = require_service(request)
         try:
             result = service.source_preview_runtime(
@@ -581,7 +743,7 @@ def register_workspace_routes(
                 },
                 tenant=tenant,
             )
-        except AtelierBridgeError as exc:
+        except BridgeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         return Response(
             content=result.get("body") or b"",
@@ -589,24 +751,24 @@ def register_workspace_routes(
             headers={
                 "Content-Type": str(result.get("content_type") or "application/octet-stream"),
                 "Cache-Control": "private, no-store",
-                "X-Atelier-Preview-Commit": str(result.get("commit") or ""),
+                "X-Workspace-Preview-Commit": str(result.get("commit") or ""),
             },
         )
 
     @app.post(f"{prefix}/source/preview/{{job_id}}/deploy")
-    def atelier_source_preview_deploy(job_id: str, request: Request):
+    def workspace_source_preview_deploy(job_id: str, request: Request):
         tenant = require_service(request)
         try:
             return service.source_preview_promote(job_id, tenant=tenant)
-        except AtelierBridgeError as exc:
+        except BridgeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.get(f"{prefix}/chat/jobs/{{job_id}}")
-    def atelier_chat_job(job_id: str, request: Request):
+    def workspace_chat_job(job_id: str, request: Request):
         tenant = require_service(request)
         try:
             return service.job(job_id, tenant=tenant)
-        except AtelierBridgeError as exc:
+        except BridgeError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     if control_prefix:
@@ -652,7 +814,7 @@ def register_workspace_routes(
                 raise HTTPException(status_code=400, detail="request body must be an object")
             try:
                 return service.enqueue(body, tenant=tenant)
-            except AtelierBridgeError as exc:
+            except BridgeError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         @app.get(f"{control_prefix}/{{website_id}}/chat/status")
@@ -660,7 +822,7 @@ def register_workspace_routes(
             tenant = require_control_tenant(request, website_id)
             try:
                 return service.status(conversation_id, tenant=tenant)
-            except AtelierBridgeError as exc:
+            except BridgeError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         @app.post(f"{control_prefix}/{{website_id}}/intake/confirm")
@@ -674,7 +836,7 @@ def register_workspace_routes(
                 raise HTTPException(status_code=400, detail="request body must be an object")
             try:
                 return service.confirm_intake(body, tenant=tenant)
-            except AtelierBridgeError as exc:
+            except BridgeError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         @app.post(f"{control_prefix}/{{website_id}}/design/direction")
@@ -688,7 +850,7 @@ def register_workspace_routes(
                 raise HTTPException(status_code=400, detail="request body must be an object")
             try:
                 return service.propose_direction(body, tenant=tenant)
-            except AtelierBridgeError as exc:
+            except BridgeError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
 
         @app.get(f"{control_prefix}/{{website_id}}/design/recommendations")
@@ -696,7 +858,7 @@ def register_workspace_routes(
             tenant = require_control_tenant(request, website_id)
             try:
                 return service.recommendations(limit=limit, tenant=tenant)
-            except AtelierBridgeError as exc:
+            except BridgeError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         @app.post(f"{control_prefix}/{{website_id}}/design/recommendations/{{action_id}}/accept")
@@ -710,7 +872,7 @@ def register_workspace_routes(
                 raise HTTPException(status_code=400, detail="request body must be an object")
             try:
                 return service.accept_recommendation(action_id, body, tenant=tenant)
-            except AtelierBridgeError as exc:
+            except BridgeError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
 
         @app.post(f"{control_prefix}/{{website_id}}/design/recommendations/{{action_id}}/dismiss")
@@ -718,7 +880,7 @@ def register_workspace_routes(
             tenant = require_control_tenant(request, website_id)
             try:
                 return service.dismiss_recommendation(action_id, tenant=tenant)
-            except AtelierBridgeError as exc:
+            except BridgeError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
 
         @app.get(f"{control_prefix}/{{website_id}}/design/operations")
@@ -726,7 +888,7 @@ def register_workspace_routes(
             tenant = require_control_tenant(request, website_id)
             try:
                 return service.operations(status=status, limit=limit, tenant=tenant)
-            except AtelierBridgeError as exc:
+            except BridgeError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         @app.post(f"{control_prefix}/{{website_id}}/design/runs/{{run_id}}/retry")
@@ -740,14 +902,14 @@ def register_workspace_routes(
                 raise HTTPException(status_code=400, detail="request body must be an object")
             try:
                 return service.retry_design_run(run_id, body, tenant=tenant)
-            except AtelierBridgeError as exc:
+            except BridgeError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 def create_workspace_api_app(
     registry: TenantRegistry,
     *,
-    prefix: str = "/v1/atelier",
+    prefix: str = "/v1/workspace",
     control_token: str | None = None,
     registration: TenantRegistrationService | None = None,
 ) -> FastAPI:
@@ -781,14 +943,7 @@ def create_workspace_api_app(
     return app
 
 
-# Compatibility names for the original customer integration.  The public route
-# prefix remains configurable, so this does not change `/v1/atelier`.
-register_atelier_routes = register_workspace_routes
-create_atelier_api_app = create_workspace_api_app
-
 __all__ = [
-    "create_atelier_api_app",
     "create_workspace_api_app",
-    "register_atelier_routes",
     "register_workspace_routes",
 ]

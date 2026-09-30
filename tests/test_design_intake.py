@@ -1233,19 +1233,19 @@ def test_intake_advisor_makes_exactly_one_call_per_turn():
     class _ForgetfulLLM:
         def chat(self, messages, **kwargs):
             calls.append(messages)
-            return '{"schema_version": 1, "assistant_message": "Merci ! Je note la restauration de tapisserie et les ateliers.", "field_updates": [{"path": "business.primary_services", "value": ["Restauration de tapisserie", "Ateliers"], "basis": "owner_statement", "note": ""}], "assumption_updates": [], "deferred_updates": [], "contradictions": [], "suggested_readiness": "collecting"}'
+            return '{"schema_version": 1, "assistant_message": "Merci ! Je note la restauration de tapisserie et les workspaces.", "field_updates": [{"path": "business.primary_services", "value": ["Restauration de tapisserie", "Workspaces"], "basis": "owner_statement", "note": ""}], "assumption_updates": [], "deferred_updates": [], "contradictions": [], "suggested_readiness": "collecting"}'
 
     from site_agent.brain.design_intake import LLMDesignIntakeAdvisor
 
     result = LLMDesignIntakeAdvisor(_ForgetfulLLM(), {}).advise(
         DesignIntakeDraft.empty(),
         [],
-        "Je suis tapissiere restauratrice et j'organise des ateliers.",
+        "Je suis tapissiere restauratrice et j'organise des workspaces.",
     )
 
     assert len(calls) == 1
     assert [item.path for item in result.field_updates] == ["business.primary_services"]
-    assert result.assistant_message == "Merci ! Je note la restauration de tapisserie et les ateliers."
+    assert result.assistant_message == "Merci ! Je note la restauration de tapisserie et les workspaces."
 
 
 def test_intake_advisor_makes_exactly_one_call_for_acknowledgements():
@@ -1678,12 +1678,12 @@ def test_existing_site_customer_view_carries_the_owner_visible_page(tmp_path):
         memory,
         config={
             "site": {
-                "payload": {"enabled": True, "url": "https://atelier.example.test"},
+                "payload": {"enabled": True, "url": "https://workspace.example.test"},
             },
             "customer_profile": {
-                "business": {"observed_site_settings": {"website_url": "https://atelier-harmonie.com"}},
+                "business": {"observed_site_settings": {"website_url": "https://workspace-harmonie.com"}},
             },
-            "atelier_intake": {"database_only": True},
+            "intake": {"database_only": True},
         },
     )
     view = json.loads(service._customer_view_json({}, owner_context={
@@ -1694,7 +1694,7 @@ def test_existing_site_customer_view_carries_the_owner_visible_page(tmp_path):
             "mode": "incubation",
             "route": {"path": "/", "kind": "page", "sourceId": "home-source"},
             "site": {
-                "name": "atelier-harmonie",
+                "name": "workspace-harmonie",
                 "routes": [{"path": "/", "kind": "home", "collection": "pages", "sourceId": "home-source"}],
             },
         },
@@ -1730,7 +1730,7 @@ def test_design_intake_advisor_receives_the_authoritative_existing_site_journey(
         memory,
         config={
             "site": {"payload": {"enabled": True}},
-            "atelier_intake": {"enabled": True, "database_only": True},
+            "intake": {"enabled": True, "database_only": True},
             "design_engine": {"intake_advisor": {}},
         },
         llm=_LLM(),

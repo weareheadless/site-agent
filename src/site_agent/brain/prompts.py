@@ -201,7 +201,7 @@ def customer_context_prompt(view: dict[str, Any]) -> str:
 def configured_site_profile_prompt(config: dict[str, Any]) -> str:
     """Render a small tenant bootstrap profile when Intake has not run yet.
 
-    The shared Atelier API is also used for existing sites that were not
+    The shared workspace API is also used for existing sites that were not
     provisioned through Intake Ada.  A profile in the tenant config gives Ada
     a bounded starting point without pretending that missing owner facts are
     known.  It is deliberately labelled as configuration/evidence rather than

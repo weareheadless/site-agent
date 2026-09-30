@@ -147,7 +147,7 @@ def _with_inner_identity(context: dict[str, Any], fn: Any) -> Any:
 
 def _journal_enabled(context: dict[str, Any]) -> bool:
     config = context.get("config", {})
-    editorial = config.get("atelier_editorial") if isinstance(config, dict) else {}
+    editorial = config.get("editorial") if isinstance(config, dict) else {}
     configured = bool(
         (config.get("blog") or {}).get("journal_enabled", False)
         or (isinstance(editorial, dict) and editorial.get("enabled", False))
@@ -173,7 +173,7 @@ def _article(context: dict[str, Any]) -> None:
         )
     draft_id = _with_persona(context, brain_article.draft_article, "editorial")
     if isinstance(draft_id, int):
-        _mirror_article_draft_to_atelier(context, draft_id)
+        _mirror_article_draft_to_workspace(context, draft_id)
 
 
 def _mirror_article_drafts(context: dict[str, Any]) -> None:
@@ -183,7 +183,7 @@ def _mirror_article_drafts(context: dict[str, Any]) -> None:
         if draft.get("kind") != "article":
             continue
         try:
-            _mirror_article_draft_to_atelier(context, int(draft["id"]))
+            _mirror_article_draft_to_workspace(context, int(draft["id"]))
         except (TypeError, ValueError):
             continue
 
@@ -194,7 +194,7 @@ def _mirror_keyword_research(context: dict[str, Any]) -> None:
     if payload is None:
         return
     memory = context["memory"]
-    tenant_id = context.get("atelier_tenant_id") or context["config"].get("instance_name")
+    tenant_id = context.get("tenant_id") or context["config"].get("instance_name")
     for idea in memory.list_article_ideas(limit=100):
         idea_data = idea.get("idea_json") if isinstance(idea.get("idea_json"), Mapping) else {}
         note = idea.get("research_note_json") if isinstance(idea.get("research_note_json"), Mapping) else {}
@@ -243,7 +243,7 @@ def _article_html(markdown_body: str) -> str:
         return f"<p>{str(markdown_body or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')}</p>"
 
 
-def _mirror_article_draft_to_atelier(context: dict[str, Any], draft_id: int) -> None:
+def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -> None:
     """Put the existing Ada article draft into Payload without publishing it."""
     payload = context.get("payload_gateway")
     if payload is None:
@@ -359,7 +359,7 @@ def _mirror_seo_insights(context: dict[str, Any], *, limit: int = 12) -> None:
     if payload is None:
         return
     memory = context["memory"]
-    tenant_id = context.get("atelier_tenant_id") or context["config"].get("instance_name")
+    tenant_id = context.get("tenant_id") or context["config"].get("instance_name")
     for insight in memory.list_seo_insights(limit=limit):
         try:
             payload.upsert_seo_record(
@@ -388,7 +388,7 @@ def _ga_snapshot(context: dict[str, Any]) -> None:
     memory.snapshot_metrics("ga4", summary)
     payload = context.get("payload_gateway")
     if payload is not None:
-        tenant_id = context.get("atelier_tenant_id") or context["config"].get("instance_name")
+        tenant_id = context.get("tenant_id") or context["config"].get("instance_name")
         captured_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
         period = str(summary.get("period") or summary.get("period_days") or captured_at[:10]) if isinstance(summary, Mapping) else captured_at[:10]
         payload.upsert_seo_record(
@@ -419,7 +419,7 @@ def _seo_snapshot(context: dict[str, Any]) -> None:
     memory.snapshot_metrics("gsc", summary)
     payload = context.get("payload_gateway")
     if payload is not None:
-        tenant_id = context.get("atelier_tenant_id") or context["config"].get("instance_name")
+        tenant_id = context.get("tenant_id") or context["config"].get("instance_name")
         captured_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
         period = str(summary.get("period") or summary.get("period_days") or captured_at[:10]) if isinstance(summary, Mapping) else captured_at[:10]
         payload.upsert_seo_record(
@@ -445,7 +445,7 @@ def _mirror_integration_sync(context: dict[str, Any], captured_at: str) -> None:
         return
     payload.upsert_seo_record(
         "integration",
-        {**dict(state), "last_sync_at": captured_at, "tenant_id": context.get("atelier_tenant_id") or context["config"].get("instance_name")},
+        {**dict(state), "last_sync_at": captured_at, "tenant_id": context.get("tenant_id") or context["config"].get("instance_name")},
     )
 
 
@@ -453,7 +453,7 @@ def _seo_provisioning(context: dict[str, Any]) -> None:
     """Retry the automatic tenant bootstrap and attach a newly issued client."""
     from ..application.seo_bootstrap import auto_provision_seo
 
-    tenant_id = str(context.get("atelier_tenant_id") or context["config"].get("instance_name") or "")
+    tenant_id = str(context.get("tenant_id") or context["config"].get("instance_name") or "")
     state, env = auto_provision_seo(
         context["config"],
         tenant_id=tenant_id,
@@ -494,15 +494,15 @@ def _article_research_cycle(context: dict[str, Any]) -> None:
     _mirror_keyword_research(context)
 
 
-def register_atelier_jobs(scheduler: Scheduler, config: dict[str, Any], context: dict[str, Any]) -> None:
+def register_jobs(scheduler: Scheduler, config: dict[str, Any], context: dict[str, Any]) -> None:
     """Register Ada's reusable reading/editorial loop for a shared tenant API.
 
     The normal CLI activation path already calls :func:`register_builtin`. The
-    shared Atelier API deliberately keeps tenant activation separate, so it
+    shared tenant API deliberately keeps tenant activation separate, so it
     uses this small selection of the same digest, learning, and article jobs
     instead of silently dropping Ada's original news loop.
     """
-    settings = config.get("atelier_scheduler") or {}
+    settings = config.get("scheduler") or {}
     if not isinstance(settings, dict) or not bool(settings.get("enabled", False)):
         return
     schedule = settings.get("schedule") if isinstance(settings.get("schedule"), dict) else {}
@@ -537,7 +537,7 @@ def register_atelier_jobs(scheduler: Scheduler, config: dict[str, Any], context:
             schedule.get("seo_snapshot", {"every": "daily", "at": "11:30"}),
             lambda: _seo_snapshot(context),
         )
-    if context.get("llm") and (bool((config.get("atelier_editorial") or {}).get("enabled", False)) or article_research_enabled):
+    if context.get("llm") and (bool((config.get("editorial") or {}).get("enabled", False)) or article_research_enabled):
         scheduler.job("article", schedule.get("article", {"every": "weekly", "weekday": "tuesday", "at": "09:00"}), lambda: _article(context))
     if context.get("llm") and seo_enabled:
         scheduler.job(

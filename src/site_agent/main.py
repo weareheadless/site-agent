@@ -896,10 +896,10 @@ def _cmd_api(args: argparse.Namespace) -> int:
     config, _ = load(args.config, raw_env)
     registry = TenantRegistry.from_config(config, raw_env)
     registration = TenantRegistrationService(config, raw_env, registry=registry)
-    api = config.get("workspace_api") or config.get("atelier_api") or {}
+    api = config.get("workspace_api") or {}
     app = create_workspace_api_app(
         registry,
-        prefix=str(api.get("prefix") or "/v1/atelier"),
+        prefix=str(api.get("prefix") or "/v1/workspace"),
         control_token=raw_env.get("HELLOADA_CONTROL_PLANE_TOKEN"),
         registration=registration,
     )

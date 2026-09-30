@@ -1,4 +1,4 @@
-"""Build an exact GitHub source revision and deploy the single Atelier Worker.
+"""Build an exact GitHub source revision and deploy the configured site.
 
 GitHub is the version ledger for this proof of concept.  This service validates
 the requested commit in an isolated worktree and then deploys that exact
@@ -56,7 +56,7 @@ class SourceDeploymentService:
         self.env = dict(os.environ if env is None else env)
         self.memory = memory
         self.adapter = GithubStatic(self.config, self.env)
-        saved = memory.kv_get("atelier_source_preview_jobs", {}) if memory is not None else {}
+        saved = memory.kv_get("source_preview_jobs", {}) if memory is not None else {}
         self._jobs = dict(saved) if isinstance(saved, Mapping) else {}
         recover: list[tuple[str, str, str, str]] = []
         recovered_keys: set[tuple[str, str]] = set()
@@ -100,7 +100,7 @@ class SourceDeploymentService:
                         "updated_at": _now(),
                     })
         self._lock = threading.RLock()
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="atelier-source-build")
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="site-agent-source-build")
         self._runtimes: dict[str, tuple[subprocess.Popen[str], Path]] = {}
         with self._lock:
             self._recover_production_jobs()
@@ -118,7 +118,7 @@ class SourceDeploymentService:
             key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""),
             reverse=True,
         )
-        self.memory.kv_set("atelier_source_preview_jobs", {str(row.get("id")): row for row in rows if row.get("id")})
+        self.memory.kv_set("source_preview_jobs", {str(row.get("id")): row for row in rows if row.get("id")})
 
     def _recover_production_jobs(self) -> None:
         """Resume known pre-deploy work; reconcile ambiguous writes by GET only.
@@ -294,7 +294,7 @@ class SourceDeploymentService:
     @staticmethod
     def _revision_marker_path(worktree: Path) -> Path:
         """Return the ephemeral public marker used to verify an exact build."""
-        return worktree / "public" / "atelier-revision.txt"
+        return worktree / "public" / "site-agent-revision.txt"
 
     def _write_revision_marker(self, worktree: Path, commit: str) -> Path:
         """Write a deployment-only marker into the detached build worktree.
@@ -318,16 +318,16 @@ class SourceDeploymentService:
             raise SourceDeploymentError(f"{label} URL is not configured for verification")
         timeout = max(30, int(self.settings.get("verification_timeout_seconds") or 180))
         request_timeout = max(3, min(15, int(self.settings.get("verification_request_timeout_seconds") or 10)))
-        marker_url = f"{base}/atelier-revision.txt?atelier_revision_check={expected}"
+        marker_url = f"{base}/site-agent-revision.txt?revision_check={expected}"
         deadline = time.monotonic() + timeout
         last_reason = "no response"
         while time.monotonic() < deadline:
             request = urllib.request.Request(
                 marker_url,
                 headers={
-                    "User-Agent": "Atelier-Site-Agent/1.0",
+                    "User-Agent": "site-agent/1.0",
                     "Cache-Control": "no-cache",
-                    "X-Atelier-Revision-Check": expected,
+                    "X-Site-Agent-Revision-Check": expected,
                 },
                 method="GET",
             )
@@ -367,7 +367,7 @@ class SourceDeploymentService:
         # esbuild) cannot run from a temporary worktree there. Keep the
         # ephemeral checkout beside the configured repository unless a tenant
         # explicitly supplies another executable filesystem.
-        directory = Path(tempfile.mkdtemp(prefix="atelier-source-preview-", dir=str(worktree_root)))
+        directory = Path(tempfile.mkdtemp(prefix="site-agent-source-preview-", dir=str(worktree_root)))
         try:
             self._run(["git", "worktree", "add", "--detach", str(directory), commit], checkout, timeout=120)
         except Exception:
@@ -532,8 +532,8 @@ class SourceDeploymentService:
         return {
             "status": "ready",
             "mode": _COMPILED_PREVIEW,
-            "runtime_path": f"/api/atelier/source/preview/{job['id']}/runtime",
-            "preview_url": f"/api/atelier/source/preview/{job['id']}/runtime/",
+            "runtime_path": f"/api/workspace/source/preview/{job['id']}/runtime",
+            "preview_url": f"/api/workspace/source/preview/{job['id']}/runtime/",
             "deployment_mode": "isolated_host_runtime",
             "runtime_port": port,
             "revision_verification": revision,
