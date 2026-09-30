@@ -179,8 +179,10 @@ Before pushing code:
 3. Run the relevant tests and compile checks.
 4. Commit only source, tests, and safe documentation; exclude `.env` files,
    databases, generated output, and deployment credentials.
-5. Push the reviewed commit over the configured GitHub SSH identity and report
-   the commit and remote branch.
+5. Push the reviewed commit with the credential that has access to the explicit
+   remote (prefer the configured SSH identity; use a protected credential
+   helper for token-only accounts, never a token-bearing URL) and report the
+   commit and remote branch.
 
 For Cloudflare checks, load the protected environment selected by the host
 credential profile and use a read-only identity command such as `wrangler
