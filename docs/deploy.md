@@ -60,9 +60,9 @@ Code lives in `/opt/site-agent`, site instances live in `/SOCIAL/configs/<site>/
 ```bash
 sudo mkdir -p /opt/site-agent && cd /opt/site-agent
 sudo python3 -m venv venv
-sudo venv/bin/pip install git+ssh://git@github.com/<you>/site-agent@v0.1.0
+sudo venv/bin/pip install git+ssh://git@github.com/<you>/site-agent@v0.1.1
 # For a CrawlSEO-backed instance, install the maintained MCP client extra too:
-# sudo venv/bin/pip install 'site-agent[crawlseo]==0.1.0'
+# sudo venv/bin/pip install 'site-agent[crawlseo]==0.1.1'
 # upgrade later = reinstall next tag; rollback = reinstall previous tag
 ```
 

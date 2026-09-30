@@ -1,7 +1,3 @@
-'use client'
-
-import { createContext, useContext, type ReactNode } from 'react'
-
 export type HelloAdaSiteConfig = {
   tenantId: string
   siteName: string
@@ -77,12 +73,3 @@ export const helloAdaPath = (input: string) => {
   const suffix = input.slice('/api/helloada'.length)
   return `${base}${suffix}`
 }
-
-const HelloAdaSiteContext = createContext<HelloAdaSiteConfig>(defaultHelloAdaSite)
-
-export function HelloAdaSiteProvider({ config, children }: { config: HelloAdaSiteConfig; children: ReactNode }) {
-  setHelloAdaSite(config)
-  return <HelloAdaSiteContext.Provider value={config}>{children}</HelloAdaSiteContext.Provider>
-}
-
-export const useHelloAdaSite = () => useContext(HelloAdaSiteContext)

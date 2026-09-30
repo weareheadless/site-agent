@@ -10,7 +10,7 @@ import { EditableRichTextEditor } from './EditableRichTextEditor'
 import { fetchHelloAda } from '../api/fetchHelloAda'
 import { useHelloAdaTranslations } from '../api/useHelloAdaTranslations'
 import { mediaReferenceId, mediaUrl as migrationMediaUrl } from '../lib/media'
-import { useHelloAdaSite } from '../config/site'
+import { useHelloAdaSite } from '../config/provider'
 
 type WorkspaceDocument = {
   id: string

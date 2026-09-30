@@ -10,7 +10,7 @@ import { HELLOADA_LANGUAGES, DEFAULT_LANGUAGE, isHelloAdaLanguage } from '../lib
 import { fetchHelloAda } from '../api/fetchHelloAda'
 import { useHelloAdaTranslations } from '../api/useHelloAdaTranslations'
 import { HelloAdaMark } from './HelloAdaLogo'
-import { useHelloAdaSite } from '../config/site'
+import { useHelloAdaSite } from '../config/provider'
 
 type HelloAdaNavProps = {
   user?: TypedUser | null

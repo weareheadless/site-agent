@@ -1,6 +1,7 @@
 export { fetchHelloAda } from './api/fetchHelloAda'
 export { useHelloAdaTranslations } from './api/useHelloAdaTranslations'
-export { defineHelloAdaSite, getHelloAdaSite, helloAdaPath, HelloAdaSiteProvider, setHelloAdaSite, useHelloAdaSite } from './config/site'
+export { defineHelloAdaSite, getHelloAdaSite, helloAdaPath, setHelloAdaSite } from './config/site'
+export { HelloAdaSiteProvider, useHelloAdaSite } from './config/provider'
 export type { HelloAdaSiteConfig } from './config/site'
 export { EditableRichTextEditor } from './components/EditableRichTextEditor'
 export { HelloAdaChatMessage } from './components/HelloAdaChatMessage'
