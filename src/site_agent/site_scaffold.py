@@ -1,15 +1,18 @@
 """Site bootstrap helpers.
 
-The long-standing ``initialize_site`` API creates the legacy Pelican site used
-by existing customer repositories and the ``init-site`` command.  New
-from-scratch design experiments must use ``initialize_toolchain_workspace``;
-that initializer deliberately contains no visual implementation.
+``initialize_payload_site`` is the canonical new-customer path. The older
+``initialize_site`` helper remains available only for read-only migration
+fixtures until the final Pelican-removal phase is complete.
 """
 
 from __future__ import annotations
 
 import json
+import shutil
+import unicodedata
 from pathlib import Path
+
+from . import __version__
 
 
 def _write(root: Path, relative: str, content: str) -> None:
@@ -131,6 +134,45 @@ This page is a placeholder for the primary customer action.
 {% block content %}<main><article><h1>{{ article.title }}</h1><p class="byline">Written by Ada</p>{{ article.content }}</article></main>{% endblock %}
 """)
     _write(root, "themes/ada/static/css/site.css", """body{margin:0;color:#17313b;background:#f5f8f8;font:16px/1.6 system-ui,sans-serif}main{max-width:760px;margin:48px auto;padding:0 24px}article{background:white;border:1px solid #dce8e8;border-radius:12px;padding:28px;margin:18px 0}a{color:#087f99}.ada-mark{display:block;padding:24px;color:#087f99;font-size:12px;letter-spacing:.12em;text-transform:uppercase}.byline{color:#58727b;font-size:13px}""")
+    return root
+
+
+def initialize_payload_site(directory: str | Path, name: str = "New Website", url: str = "") -> Path:
+    """Materialize the canonical Next/Payload site template for a new tenant."""
+    root = Path(directory).expanduser().resolve()
+    if root.exists() and any(root.iterdir()):
+        raise FileExistsError(f"site directory is not empty: {root}")
+    template = Path(__file__).resolve().parent / "templates" / "next-payload"
+    if not template.is_dir():
+        raise FileNotFoundError(f"canonical Payload template is unavailable: {template}")
+    root.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(template, root, dirs_exist_ok=True)
+    normalized_name = unicodedata.normalize("NFKD", str(name or "new-website")).encode("ascii", "ignore").decode("ascii")
+    tenant_id = "-".join(
+        part
+        for part in "".join(character.lower() if character.isalnum() else "-" for character in normalized_name).split("-")
+        if part
+    )[:63] or "new-website"
+    config_path = root / "src" / "helloada.config.ts"
+    source = config_path.read_text(encoding="utf-8")
+    config_path.write_text(
+        source.replace("'__HELLOADA_TENANT_ID__'", json.dumps(tenant_id))
+        .replace("'__HELLOADA_SITE_NAME__'", json.dumps(str(name or "New Website").strip())),
+        encoding="utf-8",
+    )
+    if url:
+        wrangler = root / "wrangler.jsonc"
+        if wrangler.is_file():
+            source = wrangler.read_text(encoding="utf-8")
+            source = source.replace('"__WORKER_URL__"', json.dumps(str(url).strip().rstrip("/")))
+            wrangler.write_text(source, encoding="utf-8")
+    wrangler = root / "wrangler.jsonc"
+    if wrangler.is_file():
+        source = wrangler.read_text(encoding="utf-8")
+        source = source.replace('"__TENANT_ID__"', json.dumps(tenant_id))
+        source = source.replace('"__SITE_NAME__"', json.dumps(str(name or "New Website").strip()))
+        source = source.replace('"__SITE_AGENT_VERSION__"', json.dumps(__version__))
+        wrangler.write_text(source, encoding="utf-8")
     return root
 
 
@@ -293,4 +335,4 @@ export default buildConfig({
     return root
 
 
-__all__ = ["initialize_site", "initialize_toolchain_workspace"]
+__all__ = ["initialize_payload_site", "initialize_site", "initialize_toolchain_workspace"]

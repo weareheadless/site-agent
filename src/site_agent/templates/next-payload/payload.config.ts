@@ -10,7 +10,11 @@ import { buildConfig } from 'payload'
 
 import { Media } from './src/collections/Media'
 import { Pages } from './src/collections/Pages'
+import { Posts } from './src/collections/Posts'
+import { Products } from './src/collections/Products'
 import { Users } from './src/collections/Users'
+import { Navigation } from './src/globals/Navigation'
+import { SiteSettings } from './src/globals/SiteSettings'
 
 const filename = fileURLToPath(import.meta.url)
 const dirname = path.dirname(filename)
@@ -26,8 +30,42 @@ export const cloudflare =
     : await getCloudflareContext({ async: true })
 
 export default buildConfig({
-  admin: { user: Users.slug },
-  collections: [Users, Pages, Media],
+  admin: {
+    user: Users.slug,
+    theme: 'dark',
+    meta: {
+      titleSuffix: ' — HelloAda',
+      applicationName: 'HelloAda',
+      description: 'A calm control room for shaping, reviewing, and publishing your website with Ada.',
+    },
+    components: {
+      views: {
+        dashboard: {
+          Component: {
+            exportName: 'WebsiteWorkspace',
+            path: '@/components/admin/HelloAdaWorkspace',
+          },
+          exact: true,
+        },
+      },
+      Nav: {
+        exportName: 'HelloAdaNav',
+        path: '@/components/admin/HelloAdaNav',
+      },
+      graphics: {
+        Icon: {
+          exportName: 'HelloAdaIcon',
+          path: '@/components/admin/HelloAdaLogo',
+        },
+        Logo: {
+          exportName: 'HelloAdaLogo',
+          path: '@/components/admin/HelloAdaLogo',
+        },
+      },
+    },
+  },
+  collections: [Users, Pages, Posts, Products, Media],
+  globals: [SiteSettings, Navigation],
   editor: lexicalEditor(),
   secret: process.env.PAYLOAD_SECRET || (isProduction ? '' : 'helloada-local-development-secret'),
   typescript: { outputFile: path.resolve(dirname, 'src/payload-types.ts') },

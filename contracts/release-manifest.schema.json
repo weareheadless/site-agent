@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://helloada.app/contracts/release-manifest.schema.json",
+  "title": "HelloAda platform release manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "site_agent_version",
+    "workspace_api_version",
+    "payload_admin_version",
+    "template_schema_version",
+    "minimum_payload_version",
+    "minimum_node_version",
+    "artifact_url",
+    "artifact_sha256"
+  ],
+  "properties": {
+    "site_agent_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "workspace_api_version": { "type": "string", "pattern": "^v[0-9]+$" },
+    "payload_admin_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "template_schema_version": { "type": "integer", "minimum": 1 },
+    "minimum_payload_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "minimum_node_version": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+){1,2}$" },
+    "artifact_url": { "type": "string", "format": "uri", "pattern": "^https://" },
+    "artifact_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+  }
+}

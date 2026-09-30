@@ -276,10 +276,10 @@ def validate_design_config(config: dict[str, Any]) -> None:
     if not isinstance(engine, dict):
         raise ConfigError("design_engine must be an object")
     profile = str(engine.get("build_profile") or "").strip().lower()
-    if profile and profile not in {"next_react", "pelican_baseline"}:
-        raise ConfigError("design_engine.build_profile must be next_react or pelican_baseline")
-    if engine.get("enabled", False) is True and profile not in {"next_react", "pelican_baseline"}:
-        raise ConfigError("design_engine.build_profile is required when design_engine is enabled")
+    if profile and profile != "next_react":
+        raise ConfigError("design_engine.build_profile must be next_react; legacy site profiles are migration-only")
+    if engine.get("enabled", False) is True and profile != "next_react":
+        raise ConfigError("design_engine.build_profile must be next_react when design_engine is enabled")
     version = engine.get("intake_schema_version", 1)
     if isinstance(version, bool) or not isinstance(version, int) or version != 1:
         raise ConfigError("design_engine.intake_schema_version must be 1")

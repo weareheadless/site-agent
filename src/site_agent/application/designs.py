@@ -174,18 +174,15 @@ class DesignService:
         engine = self.config.get("design_engine") or {}
         profile = str(engine.get("build_profile") or "").strip().lower()
         if profile:
-            if profile not in {NEXT_REACT_PROFILE.name, PELICAN_BASELINE_PROFILE.name}:
+            if profile != NEXT_REACT_PROFILE.name:
                 raise DesignServiceError(
-                    "design_engine.build_profile must be next_react or pelican_baseline"
+                    "design_engine.build_profile must be next_react; legacy site profiles are migration-only"
                 )
             return profile
         # Bare service instances and pre-profile tenant records are common in
-        # durable recovery paths. They now default to the canonical Next
-        # profile, while an explicitly frozen legacy output directory keeps
-        # its Pelican baseline for backward-compatible review.
-        quality = engine.get("quality") or {}
-        if str(quality.get("output_dir") or "").strip().lower() == PELICAN_BASELINE_PROFILE.output_dir:
-            return PELICAN_BASELINE_PROFILE.name
+        # durable recovery paths. New runs always use the canonical Next
+        # profile; historical rows are decoded separately by
+        # ``build_profile_for_run``.
         return NEXT_REACT_PROFILE.name
 
     def _record_design_artifact(

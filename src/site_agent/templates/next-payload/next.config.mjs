@@ -6,6 +6,7 @@ initOpenNextCloudflareForDev()
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   poweredByHeader: false,
+  transpilePackages: ['@weareheadless/helloada-payload-admin'],
   experimental: { cpus: 1 },
   serverExternalPackages: ['jose', 'pg-cloudflare'],
   webpack: (webpackConfig) => {

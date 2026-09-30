@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Portable AI website content manager"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["PyYAML>=6.0", "feedparser>=6.0", "fastapi>=0.110", "uvicorn>=0.29", "pelican>=4.9", "Markdown>=3.4,<4", "Pillow>=10.4", "pillow-heif>=0.18", "PyMuPDF>=1.24", "python-multipart>=0.0.9"]
+dependencies = ["PyYAML>=6.0", "feedparser>=6.0", "fastapi>=0.110", "uvicorn>=0.29", "Markdown>=3.4,<4", "Pillow>=10.4", "pillow-heif>=0.18", "PyMuPDF>=1.24", "python-multipart>=0.0.9"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "httpx>=0.27", "build>=1.2"]

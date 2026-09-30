@@ -31,6 +31,7 @@ from ..credentials import (
     github_api_token,
     github_ssh_command,
 )
+from .. import __version__
 from ..hands.cloudflare_resources import CloudflareResourceProvisioner
 from ..hands.cloudflare_r2 import CloudflareR2Provisioner
 from ..hands.github_provisioning import GitHubRepositoryProvisioner, GitHubRepositoryReceipt
@@ -298,6 +299,7 @@ class WebsiteBootstrapService:
         tenant_dir = config_path.parent
         site_dir = tenant_dir / "site"
         self._materialize_template(site_dir)
+        self._configure_template(site_dir, tenant_id, display_name)
         self._git_init_and_push(site_dir, receipt)
         return {**receipt.to_dict(), "site_dir": str(site_dir), "worker_name": names["worker"]}
 
@@ -352,6 +354,35 @@ class WebsiteBootstrapService:
             shutil.rmtree(site_dir)
         site_dir.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(template, site_dir, dirs_exist_ok=False)
+
+    @staticmethod
+    def _configure_template(site_dir: Path, tenant_id: str, display_name: str) -> None:
+        """Bind only non-secret tenant identity into the copied Payload template.
+
+        The template keeps the shared package and wrappers identical for every
+        customer. This file is the one deliberate per-tenant substitution; it
+        is written before the first customer commit so a generated repository
+        never contains the template sentinels.
+        """
+        path = site_dir / "src" / "helloada.config.ts"
+        try:
+            source = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise BootstrapError("Payload template is missing src/helloada.config.ts") from exc
+        encoded_tenant = json.dumps(str(tenant_id).strip())
+        encoded_name = json.dumps(str(display_name or tenant_id).strip())
+        source = source.replace("'__HELLOADA_TENANT_ID__'", encoded_tenant)
+        source = source.replace("'__HELLOADA_SITE_NAME__'", encoded_name)
+        wrangler = site_dir / "wrangler.jsonc"
+        if wrangler.exists():
+            wrangler_source = wrangler.read_text(encoding="utf-8")
+            wrangler_source = wrangler_source.replace('"__TENANT_ID__"', encoded_tenant)
+            wrangler_source = wrangler_source.replace('"__SITE_NAME__"', encoded_name)
+            wrangler_source = wrangler_source.replace('"__SITE_AGENT_VERSION__"', json.dumps(__version__))
+            wrangler.write_text(wrangler_source, encoding="utf-8")
+        if "__HELLOADA_" in source:
+            raise BootstrapError("Payload template identity placeholders were not fully configured")
+        path.write_text(source, encoding="utf-8")
 
     def _git_env(self) -> dict[str, str]:
         env = credential_environment(self.config, self.env)
@@ -518,7 +549,8 @@ class WebsiteBootstrapService:
             "SITE_AGENT_URL": site_agent_url,
             "NEXT_PUBLIC_SITE_URL": worker_url,
             "HELLOADA_SITE_NAME": display_name or tenant_id,
-            "ATELIER_TENANT_ID": tenant_id,
+            "HELLOADA_TENANT_ID": tenant_id,
+            "HELLOADA_SITE_AGENT_VERSION": __version__,
         })
         document["name"] = names["worker"]
         document["d1_databases"] = [{
@@ -591,7 +623,7 @@ class WebsiteBootstrapService:
         tenant_token = env_values.get(tenant_token_env(tenant_id))
         if not payload_secret or not tenant_token:
             raise BootstrapError("runtime secrets are unavailable")
-        for name, value in (("PAYLOAD_SECRET", payload_secret), ("ATELIER_SITE_AGENT_TOKEN", tenant_token)):
+        for name, value in (("PAYLOAD_SECRET", payload_secret), ("HELLOADA_SITE_AGENT_TOKEN", tenant_token)):
             self._command(site_dir, ["npx", "wrangler", "secret", "put", name, "--config", "wrangler.jsonc"], input_text=value + "\n")
         self._command(site_dir, ["npx", "wrangler", "deploy", "--config", "wrangler.jsonc"], production=True)
         return {"worker_name": worker.get("worker_name"), "worker_url": worker.get("worker_url"), "commit": self._git(site_dir, "rev-parse", "HEAD")}

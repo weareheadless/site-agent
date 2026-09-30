@@ -36,7 +36,7 @@ from .hands.crawlseo import CrawlSEOError
 from .hands.design_experiment import DesignExperimentError
 from .hands.site_build import SiteOutputArtifactStore
 from .runtime import Runtime
-from .site_scaffold import initialize_site
+from .site_scaffold import initialize_payload_site
 
 
 class AdminProcessLock:
@@ -154,9 +154,35 @@ def _cmd_provision_seo(args: argparse.Namespace) -> int:
 
 
 def _cmd_init_site(args: argparse.Namespace) -> int:
-    root = initialize_site(args.directory, args.name, args.url)
-    print(f"initialized Pelican site: {root}")
-    print("created: homepage, about page, contact page, articles collection, Ada theme, and build.sh")
+    root = initialize_payload_site(args.directory, args.name, args.url)
+    print(f"initialized canonical Payload site: {root}")
+    print("created: Next.js/React/Payload customer template with the HelloAda admin package")
+    return 0
+
+
+def _cmd_migrate_site(args: argparse.Namespace) -> int:
+    """Convert legacy Pelican Markdown into a reviewable Payload bundle."""
+    from .migrations.legacy import MigrationError, import_pelican_tree
+
+    try:
+        bundle = import_pelican_tree(args.directory)
+    except MigrationError as exc:
+        print(f"[site-agent] migration error: {exc}", file=sys.stderr)
+        return 2
+    payload = json.dumps(bundle.to_dict(), indent=2, ensure_ascii=False)
+    if args.output:
+        destination = Path(args.output).expanduser()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(payload + "\n", encoding="utf-8")
+        print(f"wrote Payload migration bundle: {destination}")
+    else:
+        print(payload)
+    if bundle.rejected:
+        print(
+            f"[site-agent] migration completed with {len(bundle.rejected)} rejected file(s); review the bundle before import",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 
@@ -860,28 +886,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
-    import uvicorn
-
-    from .web.server import create_app
-
-    config, memory, scheduler, context = _build_runtime(args)
-    lock = AdminProcessLock(data_dir(config) / "admin.lock")
-    if not lock.acquire():
-        print("[site-agent] another admin server is already running", file=sys.stderr)
-        memory.close()
-        return 1
-    app = create_app(context)
-    admin = config.get("admin") or {}
-    print(f"[site-agent] admin UI on http://{admin.get('host', '127.0.0.1')}:{admin.get('port', 3011)}")
-    try:
-        uvicorn.run(app, host=str(admin.get("host", "127.0.0.1")), port=int(admin.get("port", 3011)), log_level="warning")
-    finally:
-        lock.release()
-        runtime = context.get("runtime")
-        if runtime is not None:
-            runtime.close()
-        memory.close()
-    return 0
+    print("[site-agent] the human-facing FastAPI admin is retired; open the customer Payload /admin workspace instead", file=sys.stderr)
+    return 2
 
 
 def _cmd_api(args: argparse.Namespace) -> int:
@@ -930,12 +936,18 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("check", parents=[common], help="print resolved merged config with secrets masked")
     sub.add_parser("once", parents=[common], help="run all due jobs and exit")
     sub.add_parser("run", parents=[common], help="run the scheduler loop (long-lived)")
-    sub.add_parser("serve", parents=[common], help="run admin web server (Phase 4)")
+    sub.add_parser("serve", parents=[common], help="retired legacy admin command; use the customer Payload /admin workspace")
     sub.add_parser("api", parents=[common], help="run the shared tenant-aware Ada API")
-    init_parser = sub.add_parser("init-site", help="create the legacy Pelican starting point in an empty site directory")
+    init_parser = sub.add_parser("init-site", help="create the canonical Next.js/Payload site in an empty site directory")
     init_parser.add_argument("--directory", required=True, help="empty customer website directory")
     init_parser.add_argument("--name", default="New Website", help="customer website name")
     init_parser.add_argument("--url", default="", help="public website URL")
+    migrate_parser = sub.add_parser(
+        "migrate-site",
+        help="inspect legacy Pelican Markdown and produce a reviewable Payload migration bundle",
+    )
+    migrate_parser.add_argument("--directory", required=True, help="legacy customer website directory")
+    migrate_parser.add_argument("--output", help="write JSON to this path instead of stdout")
     r2_parser = sub.add_parser("provision-r2", parents=[common], help="create a private customer-scoped Cloudflare R2 bucket and credential")
     r2_parser.add_argument("--instance", required=True, help="stable lowercase customer instance slug")
     r2_parser.add_argument("--account-id", required=True, help="Cloudflare account ID")
@@ -1009,7 +1021,8 @@ def main(argv: list[str] | None = None) -> int:
     if getattr(args, "config", None) is None:
         args.config = None
     handlers = {"check": _cmd_check, "once": _cmd_once, "run": _cmd_run, "serve": _cmd_serve, "api": _cmd_api,
-                "init-site": _cmd_init_site, "provision-r2": _cmd_provision_r2, "provision-seo": _cmd_provision_seo,
+                "init-site": _cmd_init_site, "migrate-site": _cmd_migrate_site,
+                "provision-r2": _cmd_provision_r2, "provision-seo": _cmd_provision_seo,
                 "design-experiment": _cmd_design_experiment, "intake-lab": _cmd_intake_lab}
     if args.command == "design-lab":
         handlers = {

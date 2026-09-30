@@ -1,4 +1,20 @@
-from site_agent.site_scaffold import initialize_site
+from site_agent.site_scaffold import initialize_payload_site, initialize_site
+
+
+def test_initialize_payload_site_creates_canonical_helloada_template(tmp_path):
+    root = initialize_payload_site(tmp_path / "site", "North Star Studio", "https://north.example")
+
+    assert (root / "payload.config.ts").exists()
+    assert (root / "src/helloada.config.ts").exists()
+    assert (root / "src/app/api/helloada/[...path]/route.ts").exists()
+    assert (root / "src/components/admin/HelloAdaWorkspace.tsx").exists()
+    config = (root / "src/helloada.config.ts").read_text()
+    wrangler = (root / "wrangler.jsonc").read_text()
+    assert 'tenantId: "north-star-studio"' in config
+    assert "__HELLOADA_" not in config
+    assert '"HELLOADA_TENANT_ID": "north-star-studio"' in wrangler
+    assert '"HELLOADA_SITE_NAME": "North Star Studio"' in wrangler
+    assert "__SITE_AGENT_VERSION__" not in wrangler
 
 
 def test_initialize_site_creates_pelican_pages_and_cms(tmp_path):

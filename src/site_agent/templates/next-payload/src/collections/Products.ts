@@ -1,7 +1,7 @@
 import type { CollectionConfig } from 'payload'
 
-export const Pages: CollectionConfig = {
-  slug: 'pages',
+export const Products: CollectionConfig = {
+  slug: 'products',
   versions: { drafts: true, maxPerDoc: 10 },
   admin: { useAsTitle: 'title' },
   fields: [
@@ -11,6 +11,7 @@ export const Pages: CollectionConfig = {
     { name: 'summary', type: 'textarea' },
     { name: 'body', type: 'richText' },
     { name: 'featuredImage', type: 'upload', relationTo: 'media' },
+    { name: 'price', type: 'number' },
     { name: 'published', type: 'checkbox', defaultValue: false },
   ],
 }

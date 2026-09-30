@@ -1,0 +1,9 @@
+{
+  "templateSchema": 2,
+  "workspaceApi": "v1",
+  "payloadAdmin": "0.1.0",
+  "requires": {
+    "node": ">=20.9.0",
+    "payload": ">=3.88.0 <4"
+  }
+}
