@@ -173,8 +173,9 @@ commits.
 Before pushing code:
 
 1. Confirm the intended repository URL and branch explicitly. This checkout
-   currently has no Git remote, so never infer a destination from a tenant's
-   website repository.
+   uses `git@github.com:weareheadless/site-agent.git` with `main` as the
+   upstream branch. Never infer a destination from a tenant's website
+   repository; stop if the remote is absent or differs from that target.
 2. Inspect `git status`, `git diff`, and `git log --oneline -10`.
 3. Run the relevant tests and compile checks.
 4. Commit only source, tests, and safe documentation; exclude `.env` files,
