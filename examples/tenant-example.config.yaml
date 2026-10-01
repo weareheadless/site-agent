@@ -24,7 +24,7 @@ site:
     enabled: true
     url: https://tenant.example.test
     api_prefix: /api/workspace
-    token_env: TENANT_EXAMPLE_TOKEN
+    token_env: PROVISIONED_TENANT_EXAMPLE_TOKEN
     contract:
       # The gateway client is schema-neutral; each tenant declares the fields
       # its Payload instance permits for draft reads and writes.
@@ -38,7 +38,7 @@ site:
       media_fields: [alt, description, tags, analysisStatus, analysisProvider, analysisModel, analysisVersion, analysisError, analysisUpdatedAt, dominantColors, suggestedUses, qualityNotes, ocrText, proposedKnowledge, sourceKind, analysis]
 
 env:
-  payload_gateway_token: TENANT_EXAMPLE_TOKEN
+  payload_gateway_token: PROVISIONED_TENANT_EXAMPLE_TOKEN
   vision_api_key: SITE_AGENT_LLM_API_KEY
 
 persona:

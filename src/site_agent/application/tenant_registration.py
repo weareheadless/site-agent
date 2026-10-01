@@ -31,6 +31,12 @@ from ..hands.design_experiment import DesignExperimentError, initialize_neutral_
 _SAFE_ID = re.compile(r"^[a-z][a-z0-9-]{1,62}$")
 _SAFE_ENV = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+# The edge Worker has one stable secret name. The value is still unique per
+# tenant because the shared API stores it under tenant_token_env(tenant_id).
+# Keeping this boundary explicit prevents a tenant-specific Worker name from
+# drifting away from the generated Payload template.
+WORKER_SITE_AGENT_TOKEN_ENV = "HELLOADA_SITE_AGENT_TOKEN"
+
 _TENANTS_FILE = "tenants.json"
 
 
@@ -466,6 +472,7 @@ def _read_token_env(path: Path, expected_name: str) -> str:
 
 
 __all__ = [
+    "WORKER_SITE_AGENT_TOKEN_ENV",
     "TenantRegistrationError",
     "TenantRegistrationService",
     "load_provisioned_tenants",

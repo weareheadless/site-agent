@@ -11,4 +11,4 @@ workspace_api:
   tenants:
     tenant-example:
       config_path: /srv/site-agent/configs/tenant-example/config.yaml
-      api_token_env: TENANT_EXAMPLE_TOKEN
+      api_token_env: PROVISIONED_TENANT_EXAMPLE_TOKEN

@@ -29,6 +29,7 @@ from ..core.reflect import effective_persona
 from ..core.scheduler import Scheduler
 from ..brain.owner_copy import owner_safe_failure
 from ..runtime import Runtime
+from .tenant_registration import tenant_token_env
 
 
 class BridgeError(ValueError):
@@ -294,10 +295,22 @@ class TenantRegistry:
 
                 token_env = str(
                     raw_spec.get("api_token_env")
-                    or f"TENANT_{tenant_id.replace('-', '_').upper()}_TOKEN"
+                    or tenant_token_env(tenant_id)
                 ).strip()
                 if not _SAFE_ENV.fullmatch(token_env):
                     raise ConfigError(f"tenant {tenant_id} api_token_env is invalid")
+                payload_settings = (
+                    (tenant_config.get("site") or {}).get("payload")
+                    if isinstance(tenant_config.get("site"), Mapping)
+                    else None
+                )
+                if isinstance(payload_settings, Mapping) and bool(payload_settings.get("enabled", False)):
+                    payload_token_env = str(payload_settings.get("token_env") or "PAYLOAD_GATEWAY_TOKEN").strip()
+                    if payload_token_env != token_env:
+                        raise ConfigError(
+                            f"tenant {tenant_id} payload.token_env must match "
+                            f"workspace_api api_token_env ({token_env}); got {payload_token_env}"
+                        )
                 api_token = str(env.get(token_env) or "")
                 if not api_token:
                     raise ConfigError(f"tenant {tenant_id} is missing {token_env}")
@@ -595,7 +608,7 @@ class TenantRegistry:
         if env:
             merged_env.update(env)
         token_env = str(
-            api_token_env or f"PROVISIONED_{normalized.replace('-', '_').upper()}_TOKEN"
+            api_token_env or tenant_token_env(normalized)
         ).strip()
         if not _SAFE_ENV.fullmatch(token_env):
             raise ConfigError(f"tenant {normalized} api_token_env is invalid")
@@ -659,7 +672,7 @@ class TenantRegistry:
         if not str(api_token or "").strip():
             raise ConfigError(f"tenant {normalized} requires an api token")
         token_env = str(
-            api_token_env or f"PROVISIONED_{normalized.replace('-', '_').upper()}_TOKEN"
+            api_token_env or tenant_token_env(normalized)
         ).strip()
         if not _SAFE_ENV.fullmatch(token_env):
             raise ConfigError(f"tenant {normalized} api_token_env is invalid")

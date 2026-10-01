@@ -51,6 +51,7 @@ def test_registration_creates_an_isolated_idempotent_tenant(tmp_path):
         assert first["created"] is True
         assert second["created"] is False
         assert first["tenant_id"] == "new-site"
+        assert first["api_token_env"] == "PROVISIONED_NEW_SITE_TOKEN"
         assert first["schema_version"] > 0
         assert (tmp_path / "websites" / "new-site" / "config.yaml").is_file()
         assert (tmp_path / "websites" / "new-site" / "tenant.env").is_file()

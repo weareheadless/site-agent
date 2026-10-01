@@ -6,12 +6,22 @@ not change Intake Lab authentication or state.
 
 ## Configuration
 
-Set the same secret value in both services, using server-only configuration:
+Every tenant has one canonical token value and one deterministic central env
+name. `tenant_token_env(tenant_id)` produces
+`PROVISIONED_<TENANT_ID>_TOKEN`; the registry and the tenant's Payload gateway
+must use that exact name. The generated Worker always receives the same value
+under the stable edge secret name `HELLOADA_SITE_AGENT_TOKEN`:
 
 ```text
-Payload gateway: SITE_AGENT_URL + PAYLOAD_GATEWAY_TOKEN
-site-agent:     tenant-specific API token (for example TENANT_EXAMPLE_TOKEN)
+Payload gateway: token_env = PROVISIONED_TENANT_EXAMPLE_TOKEN
+site-agent:     api_token_env = PROVISIONED_TENANT_EXAMPLE_TOKEN
+Worker secret:  HELLOADA_SITE_AGENT_TOKEN
 ```
+
+The two names are intentionally different at the process boundary: the
+central API needs a unique env var per tenant, while every generated Worker
+uses one stable secret name. Bootstrap owns this mapping; tenant projects must
+not invent names such as `ATELIER_SITE_AGENT_TOKEN`.
 
 The shared API is one process behind Nginx. Each tenant has a separate config,
 Payload credential, memory database, and token mapping:
@@ -23,7 +33,7 @@ workspace_api:
   tenants:
     tenant-example:
       config_path: /SOCIAL/configs/tenant-example/config.yaml
-      api_token_env: TENANT_EXAMPLE_TOKEN
+      api_token_env: PROVISIONED_TENANT_EXAMPLE_TOKEN
 ```
 
 Enable the optional Payload client in the tenant configuration:
@@ -34,7 +44,7 @@ site:
     enabled: true
     url: https://preview.example.test
     api_prefix: /api/workspace
-    token_env: TENANT_EXAMPLE_TOKEN
+    token_env: PROVISIONED_TENANT_EXAMPLE_TOKEN
     contract:
       # These names and fields belong to the tenant config, not the adapter.
       collections:
@@ -64,8 +74,10 @@ other business claims. The profile is a bridge for existing sites; a completed
 Intake/customer context remains the canonical source when one exists.
 
 The tenant token is accepted only as `Authorization: Bearer …` on the shared
-`/v1/workspace/*` routes. It is never returned to the browser. The same tenant
-token is used by site-agent when calling that tenant's Payload content gateway.
+`/v1/workspace/*` routes. It is never returned to the browser. The registry
+rejects a tenant when `workspace_api.api_token_env` and
+`site.payload.token_env` diverge. The same token value is used by site-agent
+when calling that tenant's Payload content gateway.
 
 ## Database-only intake handoff
 

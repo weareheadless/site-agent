@@ -35,7 +35,12 @@ from .. import __version__
 from ..hands.cloudflare_resources import CloudflareResourceProvisioner
 from ..hands.cloudflare_r2 import CloudflareR2Provisioner
 from ..hands.github_provisioning import GitHubRepositoryProvisioner, GitHubRepositoryReceipt
-from .tenant_registration import TenantRegistrationError, TenantRegistrationService, tenant_token_env
+from .tenant_registration import (
+    WORKER_SITE_AGENT_TOKEN_ENV,
+    TenantRegistrationError,
+    TenantRegistrationService,
+    tenant_token_env,
+)
 
 
 class BootstrapError(RuntimeError):
@@ -623,7 +628,7 @@ class WebsiteBootstrapService:
         tenant_token = env_values.get(tenant_token_env(tenant_id))
         if not payload_secret or not tenant_token:
             raise BootstrapError("runtime secrets are unavailable")
-        for name, value in (("PAYLOAD_SECRET", payload_secret), ("HELLOADA_SITE_AGENT_TOKEN", tenant_token)):
+        for name, value in (("PAYLOAD_SECRET", payload_secret), (WORKER_SITE_AGENT_TOKEN_ENV, tenant_token)):
             self._command(site_dir, ["npx", "wrangler", "secret", "put", name, "--config", "wrangler.jsonc"], input_text=value + "\n")
         self._command(site_dir, ["npx", "wrangler", "deploy", "--config", "wrangler.jsonc"], production=True)
         return {"worker_name": worker.get("worker_name"), "worker_url": worker.get("worker_url"), "commit": self._git(site_dir, "rev-parse", "HEAD")}

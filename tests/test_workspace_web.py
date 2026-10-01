@@ -16,6 +16,7 @@ from site_agent.application.intake_coordinator import IntakeCoordinator
 from site_agent.core.memory import Memory
 from site_agent.core.design_contracts import SiteIntake
 from site_agent.core.design_intake_contracts import DesignIntakeDraft
+from site_agent.config import ConfigError
 from site_agent.hands.payload_gateway import (
     PayloadContract,
     PayloadGatewayClient,
@@ -76,6 +77,40 @@ def test_shared_host_credentials_are_inherited_by_tenants(tmp_path, api_key):
         assert credentials["cloudflare"]["api_token_env"] == "CF_TOKEN"
     finally:
         registry.close()
+
+
+def test_shared_registry_rejects_payload_token_name_drift(tmp_path):
+    tenant_config = tmp_path / "tenant.yaml"
+    tenant_config.write_text(
+        f"""instance_name: demo
+data_dir: {tmp_path / 'data'}
+site:
+  payload:
+    enabled: true
+    url: https://demo.example.test
+    token_env: LEGACY_DEMO_TOKEN
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="payload.token_env must match"):
+        TenantRegistry.from_config(
+            {
+                "workspace_api": {
+                    "enabled": True,
+                    "tenants": {
+                        "demo": {
+                            "config_path": str(tenant_config),
+                            "api_token_env": "PROVISIONED_DEMO_TOKEN",
+                        }
+                    },
+                }
+            },
+            {
+                "PROVISIONED_DEMO_TOKEN": "bridge-secret",
+                "LEGACY_DEMO_TOKEN": "legacy-secret",
+            },
+        )
 
 
 def test_workspace_bridge_enqueues_contextual_chat(tmp_path):

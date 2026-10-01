@@ -17,7 +17,7 @@ Create `/SOCIAL/configs/site-agent-api/.env` with mode `600`. It must contain
 the tenant's API/Payload token and the LLM key, for example:
 
 ```ini
-TENANT_EXAMPLE_TOKEN=replace-with-a-random-tenant-token
+PROVISIONED_TENANT_EXAMPLE_TOKEN=replace-with-a-random-tenant-token
 SITE_AGENT_LLM_API_KEY=server-side-model-key
 ```
 
