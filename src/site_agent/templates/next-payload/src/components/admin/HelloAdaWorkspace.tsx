@@ -1,9 +1,16 @@
-import { HelloAdaSiteProvider, WebsiteWorkspace } from '@weareheadless/helloada-payload-admin'
+import {
+  HelloAdaSiteProvider,
+  WebsiteWorkspaceServer,
+} from '@weareheadless/helloada-payload-admin'
 
 import { helloAdaSite } from '@/helloada.config'
 
-export default function HelloAdaWorkspace() {
-  return <HelloAdaSiteProvider config={helloAdaSite}><WebsiteWorkspace /></HelloAdaSiteProvider>
+export function WebsiteWorkspace() {
+  return (
+    <HelloAdaSiteProvider config={helloAdaSite}>
+      <WebsiteWorkspaceServer />
+    </HelloAdaSiteProvider>
+  )
 }
 
-export { HelloAdaWorkspace }
+export { WebsiteWorkspace as HelloAdaWorkspace }

@@ -1,1 +1,3 @@
-export const importMap: Record<string, never>
+import type { ImportMap } from 'payload'
+
+export declare const importMap: ImportMap
