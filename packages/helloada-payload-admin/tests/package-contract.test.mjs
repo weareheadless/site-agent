@@ -19,5 +19,6 @@ test('shared package has a tenant configuration boundary', async () => {
   const config = await source('src/config/site.tsx')
   assert.match(config, /defineHelloAdaSite/)
   assert.match(config, /workspaceApi/)
+  assert.match(config, /preview/)
   assert.match(config, /tenantId/)
 })

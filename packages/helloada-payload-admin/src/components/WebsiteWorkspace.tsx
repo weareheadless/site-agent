@@ -741,10 +741,10 @@ function ReviewWorkspace() {
   const previewUrl = useMemo(() => {
     if (typeof window === 'undefined') return selectedRoute
     const path = selectedRoute === '/' ? '' : selectedRoute.replace(/^\//, '')
-    const baseUrl = `${window.location.origin}/helloada-preview/${path}`
+    const baseUrl = `${window.location.origin}${site.routes.preview}/${path}`
     if (!previewRevision) return baseUrl
     return `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}helloada_revision=${previewRevision}`
-  }, [previewRevision, selectedRoute])
+  }, [previewRevision, selectedRoute, site.routes.preview])
 
   const handlePreviewLoad = useCallback(() => {
     if (previewPlan?.requires_build) {

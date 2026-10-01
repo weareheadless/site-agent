@@ -5,6 +5,7 @@ import Link from 'next/link'
 
 import { fetchHelloAda } from '../api/fetchHelloAda'
 import { useHelloAdaTranslations } from '../api/useHelloAdaTranslations'
+import { useHelloAdaSite } from '../config/provider'
 
 type ConversationHistoryItem = {
   id: number
@@ -114,6 +115,7 @@ const statusLabel = (value: string, translate: (key: string) => string) => {
 }
 
 export function HelloAdaHistory() {
+  const site = useHelloAdaSite()
   const { language, t } = useHelloAdaTranslations()
   const [history, setHistory] = useState<HistoryResponse>()
   const [loading, setLoading] = useState(true)
@@ -354,7 +356,7 @@ export function HelloAdaHistory() {
                       : t('history.previewBuildIntro')}
               </p>
               {sourcePreview.status === 'ready' && sourcePreview.mode === 'compiled_preview' ? (
-                <Link className="helloada-history-action helloada-history-action-primary" href="/helloada-preview" target="_blank">
+                <Link className="helloada-history-action helloada-history-action-primary" href={site.routes.preview} target="_blank">
                   {t('history.openCompiledPreview')} <span aria-hidden="true">↗</span>
                 </Link>
               ) : null}

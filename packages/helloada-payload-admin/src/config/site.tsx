@@ -6,6 +6,7 @@ export type HelloAdaSiteConfig = {
   routes: {
     workspaceApi: string
     liveSite: string
+    preview: string
   }
   content: {
     primaryCollections: readonly string[]
@@ -23,7 +24,7 @@ const defaultHelloAdaSite: HelloAdaSiteConfig = {
   siteName: 'Your website',
   defaultLocale: 'en',
   locales: ['en'],
-  routes: { workspaceApi: '/api/helloada', liveSite: '/' },
+  routes: { workspaceApi: '/api/helloada', liveSite: '/', preview: '/helloada-preview' },
   content: { primaryCollections: ['pages', 'posts', 'products', 'media'], settingsGlobals: ['siteSettings', 'navigation'] },
   features: { commerce: false, posts: true, social: false },
 }
@@ -52,6 +53,7 @@ export const defineHelloAdaSite = (input: Partial<HelloAdaSiteConfig> & Pick<Hel
       ...input.routes,
       workspaceApi: route(input.routes?.workspaceApi || defaultHelloAdaSite.routes.workspaceApi, defaultHelloAdaSite.routes.workspaceApi),
       liveSite: route(input.routes?.liveSite || defaultHelloAdaSite.routes.liveSite, defaultHelloAdaSite.routes.liveSite),
+      preview: route(input.routes?.preview || defaultHelloAdaSite.routes.preview, defaultHelloAdaSite.routes.preview),
     },
     content: { ...defaultHelloAdaSite.content, ...input.content },
     features: { ...defaultHelloAdaSite.features, ...input.features },
