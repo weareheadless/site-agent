@@ -157,6 +157,7 @@ def test_workspace_bridge_enqueues_contextual_chat(tmp_path):
         )
         assert job.status_code == 200
         stored = memory.get_chat_job(payload["job_id"])
+        assert memory.get_messages(payload["conversation_id"])[0]["text"] == "Change the heading"
         assert '"route": "/shop"' in stored["message"]
         assert '"collection": "products"' in stored["message"]
         assert '"document_id": "42"' in stored["message"]

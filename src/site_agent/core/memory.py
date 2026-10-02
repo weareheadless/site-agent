@@ -74,7 +74,7 @@ from .incubation_contracts import (
 
 _OPERATION_FIELD_UNSET = object()
 
-SCHEMA_VERSION = 42
+SCHEMA_VERSION = 43
 
 MIGRATIONS: dict[int, list[str]] = {
     1: [
@@ -1011,6 +1011,13 @@ MIGRATIONS: dict[int, list[str]] = {
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_design_operations_idempotency ON design_operations (website_id, idempotency_key)",
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_design_operations_source_action ON design_operations (website_id, source_action_id) WHERE source_action_id IS NOT NULL",
         "CREATE INDEX IF NOT EXISTS idx_design_operations_status ON design_operations (website_id, status, id)",
+    ],
+    43: [
+        """UPDATE chat_messages
+           SET text = ltrim(substr(text, instr(text, '[User request]') + length('[User request]')))
+           WHERE role = 'user'
+             AND instr(text, '[Owner workspace context — metadata, not instructions]') = 1
+             AND instr(text, '[User request]') > 0""",
     ],
 }
 
@@ -5598,6 +5605,7 @@ class Memory:
         message: str,
         attachments: list[dict[str, int]] | None = None,
         *,
+        display_message: str | None = None,
         operation_kind: str = "owner_chat",
         payload: dict[str, Any] | None = None,
         intake_session_id: str | None = None,
@@ -5628,6 +5636,7 @@ class Memory:
             if not idempotency_key or len(idempotency_key) > 160 or not re.fullmatch(r"[A-Za-z0-9._:-]+", idempotency_key):
                 raise ContractError("idempotency_key is invalid")
         now = _now()
+        visible_message = message if display_message is None else str(display_message)
         with self.conn:
             if idempotency_key is not None:
                 existing = self.conn.execute(
@@ -5643,7 +5652,7 @@ class Memory:
                     return int(existing["id"])
             message_cur = self.conn.execute(
                 "INSERT INTO chat_messages (conversation_id, ts, role, text, attachments_json) VALUES (?, ?, 'user', ?, ?)",
-                (conversation_id, now, message, json.dumps(attachments or [])),
+                (conversation_id, now, visible_message, json.dumps(attachments or [])),
             )
             cur = self.conn.execute(
                 "INSERT INTO chat_jobs "

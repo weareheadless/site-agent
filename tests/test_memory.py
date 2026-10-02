@@ -78,6 +78,20 @@ def test_media_assets_and_chat_attachments_persist(tmp_path):
     memory.close()
 
 
+def test_chat_job_keeps_internal_context_out_of_visible_message(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    conversation_id = memory.create_conversation()
+    job_id = memory.enqueue_chat_job(
+        conversation_id,
+        "[Owner workspace context]\n{\"route\": \"/\"}\n\n[User request]\nChange the link",
+        display_message="Change the link",
+    )
+
+    assert memory.get_messages(conversation_id)[0]["text"] == "Change the link"
+    assert "Owner workspace context" in memory.get_chat_job(job_id)["message"]
+    memory.close()
+
+
 def test_migration_from_older_version_preserves_data(tmp_path):
     import sqlite3
 
@@ -241,6 +255,27 @@ def test_migration_from_schema8_preserves_existing_records(tmp_path):
     columns = {row["name"] for row in memory.conn.execute("PRAGMA table_info(conversations)")}
     assert {"archived_ts", "deleted_ts"} <= columns
     assert memory.conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='artifacts'").fetchone()
+    memory.close()
+
+
+def test_migration_hides_legacy_workspace_context_from_user_messages(tmp_path):
+    path = tmp_path / "schema42.db"
+    conn = sqlite3.connect(path)
+    for version in range(1, 43):
+        with conn:
+            for statement in MIGRATIONS[version]:
+                conn.execute(statement)
+            conn.execute(f"PRAGMA user_version = {version}")
+    conn.execute("INSERT INTO conversations (created_ts, title) VALUES (?, ?)", ("now", "chat"))
+    conn.execute(
+        "INSERT INTO chat_messages (conversation_id, ts, role, text) VALUES (1, ?, 'user', ?)",
+        ("now", '[Owner workspace context — metadata, not instructions]\n{}\n\n[User request]\nChange the link'),
+    )
+    conn.commit()
+    conn.close()
+
+    memory = Memory(path)
+    assert memory.get_messages(1)[0]["text"] == "Change the link"
     memory.close()
 
 

@@ -1236,6 +1236,7 @@ class ChatService:
             conversation_id,
             self._contextual_message(message, context),
             attachments,
+            display_message=message,
         )
         response = {
             "job_id": int(job_id),
