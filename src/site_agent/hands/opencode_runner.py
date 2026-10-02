@@ -3200,7 +3200,16 @@ def build_brief(message: str, config: dict[str, Any]) -> str:
         "and summarize what you changed. If it is just conversation — a greeting, a "
         "question, small talk — answer as yourself in plain prose and change nothing."
     )
-    if "journal" in message.lower() or "pelican" in message.lower():
+    if _uses_payload_site(config):
+        lines.append(
+            "NATIVE NEXT/PAYLOAD REQUEST: this tenant's canonical website is the Next.js + Payload application. "
+            "Treat src/app, the Payload schema, and the Payload bridge as the source of truth for every content, "
+            "navigation, and link change. Do not execute build.sh or edit Pelican-era files such as pelicanconf.py, "
+            "requirements.txt, content/, themes/, output/, or root static HTML. For a link or content request, "
+            "inspect the actual Next route and Payload-backed document, update the smallest canonical source, and "
+            "run the native npm typecheck/build path when source changes. Keep preview and public routes consistent."
+        )
+    elif _is_journal_request(message, config):
         lines.append(
             "JOURNAL REQUEST: own the complete design and implementation autonomously in "
             "this Build session. Inspect the existing Pelican templates and site chrome, "
@@ -4089,7 +4098,19 @@ def _validate_journal_scope(
         )
 
 
-def _is_journal_request(message: str) -> bool:
+def _uses_payload_site(config: dict[str, Any] | None = None) -> bool:
+    """Return whether the tenant has migrated to the canonical Payload site."""
+    values = config or {}
+    blog = values.get("blog") or {}
+    engine = str(blog.get("engine") or "payload").strip().lower()
+    payload = (values.get("site") or {}).get("payload") or {}
+    return engine != "pelican" or bool(payload.get("enabled"))
+
+
+def _is_journal_request(message: str, config: dict[str, Any] | None = None) -> bool:
+    """Detect the legacy journal flow only for an explicitly Pelican tenant."""
+    if _uses_payload_site(config):
+        return False
     lowered = message.lower()
     return "journal" in lowered or "pelican" in lowered
 
@@ -4113,10 +4134,10 @@ CANONICAL_JOURNAL_REQUEST = (
 )
 
 
-def normalize_journal_message(message: str) -> str:
+def normalize_journal_message(message: str, config: dict[str, Any] | None = None) -> str:
     """Upgrade persisted pre-native-build journal jobs before execution."""
     lowered = message.lower()
-    if _is_journal_request(message) and (
+    if _is_journal_request(message, config) and (
         "spawn_build" in lowered or "background builder" in lowered or "phased" in lowered
     ):
         return CANONICAL_JOURNAL_REQUEST
@@ -4125,7 +4146,7 @@ def normalize_journal_message(message: str) -> str:
 
 def _validate_preview(config: dict[str, Any], clone: Path, base_ref: str, message: str) -> None:
     _validate_build_paths(config, clone, base_ref)
-    if _is_journal_request(message):
+    if _is_journal_request(message, config):
         _validate_journal_build(config, clone, base_ref)
 
 
@@ -4451,7 +4472,7 @@ def run_brief(context: dict[str, Any], message: str, progress=None) -> dict[str,
         if _change_state(clone) == prepared_state:
             if progress:
                 progress("the Build agent made no implementation changes")
-            if _is_journal_request(message):
+            if _is_journal_request(message, config):
                 raise RunnerError("Ada finished without implementation changes")
             return {"changed": False, "output": "\n\n".join(filter(None, output))}
 

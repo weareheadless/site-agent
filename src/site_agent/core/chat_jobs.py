@@ -214,7 +214,9 @@ def run_job(context: dict[str, Any], job: dict[str, Any], worker: str,
             # owns only the preview sandbox and objective validation.
             from ..hands import opencode_runner
             result = opencode_runner.stage_build(
-                context, opencode_runner.normalize_journal_message(message), progress
+                context,
+                opencode_runner.normalize_journal_message(message, context.get("config") or {}),
+                progress,
             )
         else:
             from ..brain import editor as brain_editor

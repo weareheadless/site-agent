@@ -1198,11 +1198,24 @@ def test_build_brief_carries_role_and_leaves_design_to_ada():
 
 
 def test_build_brief_journal_has_bounded_layout_contract():
-    brief = runner.build_brief("set up the Pelican journal", {})
+    brief = runner.build_brief(
+        "set up the Pelican journal",
+        {"blog": {"engine": "pelican"}, "site": {"payload": {"enabled": False}}},
+    )
     assert "JOURNAL REQUEST" in brief
     assert "autonomously" in brief
     assert "phased design" not in brief
     assert "fixed-header" in brief
+
+
+def test_build_brief_payload_journal_uses_native_source_contract():
+    brief = runner.build_brief(
+        "fix the journal link",
+        {"blog": {"engine": "payload"}, "site": {"payload": {"enabled": True}}},
+    )
+    assert "NATIVE NEXT/PAYLOAD REQUEST" in brief
+    assert "JOURNAL REQUEST" not in brief
+    assert "Do not execute build.sh" in brief
 
 
 def test_install_agent_files_does_not_modify_site_files(tmp_path):
