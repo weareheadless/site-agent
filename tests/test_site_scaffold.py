@@ -16,6 +16,18 @@ def test_initialize_payload_site_creates_canonical_helloada_template(tmp_path):
     assert '"HELLOADA_SITE_NAME": "North Star Studio"' in wrangler
     assert "__SITE_AGENT_VERSION__" not in wrangler
 
+    manifest = (root / "template-manifest.json").read_text()
+    posts = (root / "src/collections/Posts.ts").read_text()
+    pages = (root / "src/collections/Pages.ts").read_text()
+    navigation = (root / "src/globals/Navigation.ts").read_text()
+    assert '"contentContract": "payload-first-v1"' in manifest
+    assert "featuredImage" in posts
+    assert "seo" in posts
+    assert "canonicalUrl" in pages
+    assert "footerGroups" in navigation
+    assert (root / "src/app/(frontend)/articles/[slug]/page.tsx").exists()
+    assert (root / "src/app/(frontend)/articles.html/page.tsx").exists()
+
 
 def test_payload_navigation_keeps_server_only_props_out_of_client_boundary(tmp_path):
     root = initialize_payload_site(tmp_path / "site", "North Star Studio", "https://north.example")

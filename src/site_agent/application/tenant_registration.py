@@ -413,7 +413,7 @@ def _new_site_config(
         },
         "blog": {
             "engine": "payload",
-            "journal_enabled": False,
+            "journal_enabled": True,
         },
         "design_engine": _neutral_design_overrides(),
         "builder": _neutral_builder_overrides(),

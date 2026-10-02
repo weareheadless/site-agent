@@ -500,9 +500,16 @@ class WebsiteBootstrapService:
                 "token_env": token_env,
                 "api_prefix": "/api",
                 "contract": {
-                    "collections": {"pages": ["title", "slug", "summary", "body", "published"]},
-                    "globals": {},
-                    "media_fields": ["alt"],
+                    "collections": {
+                        "pages": ["title", "slug", "summary", "body", "featuredImage", "canonicalUrl", "seo", "published"],
+                        "posts": ["title", "slug", "summary", "body", "featuredImage", "gallery", "author", "publishedAt", "modifiedAt", "category", "canonicalUrl", "seo", "published"],
+                        "products": ["title", "slug", "summary", "body", "featuredImage", "price", "published"],
+                    },
+                    "globals": {
+                        "navigation": ["items", "groups", "footer", "footerGroups"],
+                        "siteSettings": ["siteName", "description", "tagline", "logo", "email", "telephone", "facebookUrl", "instagramUrl", "defaultSeoTitle", "defaultSeoDescription", "defaultSocialImage", "address"],
+                    },
+                    "media_fields": ["alt", "description", "tags", "dominantColors", "suggestedUses", "qualityNotes", "analysisStatus", "analysis", "sourceId"],
                 },
             },
             "source_deployment": {
@@ -512,7 +519,7 @@ class WebsiteBootstrapService:
             },
         })
         raw["display_name"] = display_name or raw.get("display_name") or tenant_id
-        raw["blog"] = {**_mapping(raw.get("blog")), "engine": "payload", "journal_enabled": False}
+        raw["blog"] = {**_mapping(raw.get("blog")), "engine": "payload", "journal_enabled": True}
         TenantRegistrationService._replace_config(config_path, raw)
 
         env_path = tenant_dir / "tenant.env"

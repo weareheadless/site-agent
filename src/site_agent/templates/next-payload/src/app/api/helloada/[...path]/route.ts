@@ -33,6 +33,22 @@ const plainText = (value: unknown): string => {
   return node.children.map(plainText).filter(Boolean).join('\n').trim()
 }
 
+const seoValue = (document: Record<string, unknown>) => asObject(document.seo)
+
+const seoUpdate = (document: Record<string, unknown>, name: 'seoTitle' | 'seoDescription', value: string) => {
+  const current = seoValue(document)
+  const image = current.image
+  return {
+    title: name === 'seoTitle' ? value : text(current.title),
+    description: name === 'seoDescription' ? value : text(current.description),
+    ...(image && typeof image === 'object' && !Array.isArray(image)
+      ? { image: asObject(image).id }
+      : image
+        ? { image }
+        : {}),
+  }
+}
+
 const lexicalDocumentFromText = (value: string) => ({
   root: {
     type: 'root',
@@ -143,8 +159,8 @@ const field = ({
   id: `content-field:${collection}:${text(document.id)}:${name}`,
   key: `content-field:${collection}:${text(document.id)}:${name}`,
   label,
-  section: 'Page content',
-  sectionOrder: name === 'title' ? 1 : name === 'summary' ? 2 : 3,
+  section: name.startsWith('seo') ? 'SEO' : 'Page content',
+  sectionOrder: name === 'title' ? 1 : name === 'summary' ? 2 : name === 'body' ? 3 : name === 'seoTitle' ? 1 : 2,
   type,
   sourceType: type,
   editorRole: name === 'title' ? 'heading' : 'paragraph',
@@ -163,10 +179,15 @@ const contentFields = (document: Record<string, unknown>, route: string, collect
   const title = text(document.title)
   const summary = text(document.summary)
   const body = plainText(document.body)
+  const seo = seoValue(document)
+  const seoTitle = text(seo.title)
+  const seoDescription = text(seo.description)
   return [
     title ? field({ collection, document, name: 'title', label: 'Title', type: 'text', value: title, route }) : undefined,
     summary ? field({ collection, document, name: 'summary', label: 'Summary', type: 'text', value: summary, route }) : undefined,
     body ? field({ collection, document, name: 'body', label: 'Body', type: 'richText', value: body, route }) : undefined,
+    seoTitle ? field({ collection, document, name: 'seoTitle', label: 'SEO title', type: 'text', value: seoTitle, route }) : undefined,
+    seoDescription ? field({ collection, document, name: 'seoDescription', label: 'SEO description', type: 'text', value: seoDescription, route }) : undefined,
   ].filter(Boolean)
 }
 
@@ -314,11 +335,22 @@ export async function POST(request: Request, { params }: RouteProps) {
       const id = text(edit.documentId || edit.document_id)
       const name = text(edit.field)
       const newValue = String(edit.newValue ?? edit.new_value ?? edit.value ?? '')
-      if (!id || !/^[A-Za-z][A-Za-z0-9_]*$/.test(name) || !['title', 'summary', 'body'].includes(name)) return errorResponse('content field is not directly editable')
+      if (!id || !/^[A-Za-z][A-Za-z0-9_]*$/.test(name) || !['title', 'summary', 'body', 'seoTitle', 'seoDescription'].includes(name)) return errorResponse('content field is not directly editable')
       const current = await auth.payload.findByID({ collection: collection as CollectionSlug, depth: 1, draft: true, id, overrideAccess: false, req: auth.req, user: auth.user }) as unknown as Record<string, unknown>
-      const expected = name === 'body' ? plainText(current[name]) : text(current[name])
+      const expected = name === 'body'
+        ? plainText(current[name])
+        : name === 'seoTitle'
+          ? text(seoValue(current).title)
+          : name === 'seoDescription'
+            ? text(seoValue(current).description)
+            : text(current[name])
       if (edit.expectedValue !== undefined && String(edit.expectedValue) !== expected) return errorResponse('content field changed before save', 409)
-      await auth.payload.update({ collection: collection as CollectionSlug, data: { [name]: name === 'body' ? lexicalDocumentFromText(newValue) : newValue } as never, draft: true, id, overrideAccess: false, req: auth.req, user: auth.user })
+      const data = name === 'body'
+        ? { body: lexicalDocumentFromText(newValue) }
+        : name === 'seoTitle' || name === 'seoDescription'
+          ? { seo: seoUpdate(current, name, newValue) }
+          : { [name]: newValue }
+      await auth.payload.update({ collection: collection as CollectionSlug, data: data as never, draft: true, id, overrideAccess: false, req: auth.req, user: auth.user })
       updated.push({ collection, documentId: id, fields: 1 })
     }
     return NextResponse.json({ ok: true, updated })

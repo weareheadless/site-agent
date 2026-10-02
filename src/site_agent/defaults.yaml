@@ -245,7 +245,7 @@ blog:
   articles_dir: content/articles
   site_url: ""
   build_command: ""
-  journal_enabled: false
+  journal_enabled: true
 
 llm:
   base_url: https://openrouter.ai/api/v1
