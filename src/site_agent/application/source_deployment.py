@@ -221,15 +221,14 @@ class SourceDeploymentService:
     def _resolved_env(self) -> dict[str, str]:
         return credential_environment(self.config, self.env)
 
-    def _child_env(self) -> dict[str, str]:
+    def _child_env(self, *, production: bool = False) -> dict[str, str]:
         child = self._resolved_env()
-        # Source validation and compiled previews must always use the
-        # production framework mode. Tenant workers intentionally run with a
-        # development NODE_ENV for their interactive loop, but leaking that
-        # value into `next build` makes Next render its generated
-        # `/_global-error` route in an unsupported mode and can abort an
-        # otherwise valid preview.
-        child["NODE_ENV"] = "production"
+        # Tenant workers intentionally run with a development NODE_ENV for
+        # their interactive loop. Only production framework commands should
+        # override it: applying production mode to `npm ci` would omit the
+        # dev tools needed by the validation checks (for example, ESLint).
+        if production:
+            child["NODE_ENV"] = "production"
         node_path = str(self.settings.get("node_path") or "").strip()
         if node_path:
             child["PATH"] = f"{node_path}:{child.get('PATH') or os.environ.get('PATH', '')}"
@@ -383,8 +382,30 @@ class SourceDeploymentService:
             raise
         return directory, local_head
 
-    def _check(self, command: list[str], cwd: Path, name: str, timeout: int, *, parse_json: bool = False) -> dict[str, Any]:
-        result = self._run(command, cwd, timeout=timeout)
+    def _check(
+        self,
+        command: list[str],
+        cwd: Path,
+        name: str,
+        timeout: int,
+        *,
+        parse_json: bool = False,
+        production: bool = False,
+    ) -> dict[str, Any]:
+        try:
+            result = subprocess.run(
+                command,
+                cwd=str(cwd),
+                env=self._child_env(production=production),
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise SourceDeploymentError(f"command failed: {' '.join(command[:4])}: {str(exc)[:300]}") from exc
+        if result.returncode:
+            output = (result.stderr or result.stdout or "command failed").strip()
+            raise SourceDeploymentError(f"{' '.join(command[:4])}: {output[-1_500:]}")
         item: dict[str, Any] = {"name": name, "ok": True}
         output = (result.stdout or result.stderr or "").strip()
         if parse_json:
@@ -506,7 +527,7 @@ class SourceDeploymentService:
             process = subprocess.Popen(
                 command,
                 cwd=str(worktree),
-                env=self._child_env(),
+                env=self._child_env(production=True),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -567,8 +588,8 @@ class SourceDeploymentService:
             checks.append(self._check([npm, "run", "typecheck"], worktree, "typecheck", timeout))
             checks.append(self._check([npm, "run", "lint"], worktree, "lint", timeout))
             checks.append(self._check(self._inventory_command(checkout, worktree), worktree, "source_inventory", timeout, parse_json=True))
-            checks.append(self._check([npm, "run", "build"], worktree, "next_build", timeout))
-            checks.append(self._check(["npx", "--no-install", "opennextjs-cloudflare", "build"], worktree, "open_next_build", timeout))
+            checks.append(self._check([npm, "run", "build"], worktree, "next_build", timeout, production=True))
+            checks.append(self._check(["npx", "--no-install", "opennextjs-cloudflare", "build"], worktree, "open_next_build", timeout, production=True))
 
             if mode == _COMPILED_PREVIEW:
                 runtime = self._start_runtime(job, worktree, local_head)
@@ -595,6 +616,7 @@ class SourceDeploymentService:
                     worktree,
                     "cloudflare_worker_deploy",
                     timeout,
+                    production=True,
                 )
                 with self._lock:
                     job.update(phase="verifying", deployment_completed=True, checks=checks + [deploy], updated_at=_now())

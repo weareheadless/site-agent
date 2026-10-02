@@ -40,7 +40,8 @@ def test_source_deployment_build_environment_forces_production_mode(tmp_path):
         env={"NODE_ENV": "development", "PATH": "/usr/bin:/bin"},
     )
     try:
-        assert service._child_env()["NODE_ENV"] == "production"
+        assert service._child_env()["NODE_ENV"] == "development"
+        assert service._child_env(production=True)["NODE_ENV"] == "production"
     finally:
         service.close()
 
