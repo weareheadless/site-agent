@@ -46,6 +46,26 @@ def test_source_deployment_build_environment_forces_production_mode(tmp_path):
         service.close()
 
 
+def test_source_deployment_prefers_configured_supported_node_runtime(tmp_path):
+    node_bin = tmp_path / "node-bin"
+    node_bin.mkdir()
+    (node_bin / "node").touch()
+    service = source_deployment.SourceDeploymentService(
+        {
+            "site": {
+                "clone_path": str(tmp_path),
+                "preview_branch": "preview",
+                "source_deployment": {"node_path": str(node_bin)},
+            }
+        },
+        env={"NODE_ENV": "development", "PATH": "/usr/bin:/bin"},
+    )
+    try:
+        assert service._child_env()["PATH"].split(source_deployment.os.pathsep)[0] == str(node_bin)
+    finally:
+        service.close()
+
+
 def test_public_revision_verification_requires_the_exact_commit(tmp_path):
     expected = "b" * 40
 

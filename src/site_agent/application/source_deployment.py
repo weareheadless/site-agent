@@ -230,6 +230,13 @@ class SourceDeploymentService:
         if production:
             child["NODE_ENV"] = "production"
         node_path = str(self.settings.get("node_path") or "").strip()
+        if not node_path:
+            # The managed host keeps a supported Node runtime alongside the
+            # service. Prefer it when present so Wrangler/OpenNext does not
+            # silently resolve an older system Node for new tenants.
+            managed_node_path = Path.home() / ".hermes" / "node" / "bin"
+            if (managed_node_path / "node").is_file():
+                node_path = str(managed_node_path)
         if node_path:
             child["PATH"] = f"{node_path}:{child.get('PATH') or os.environ.get('PATH', '')}"
         ssh_command = str(self.settings.get("git_ssh_command") or "").strip()
