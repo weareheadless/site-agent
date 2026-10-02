@@ -85,6 +85,12 @@ realization, autonomous repair, or end-to-end acceptance requirements.
   validation or service code.
 - Plugins and MCP providers must call application services and contracts. They
   must not call route functions or access `Memory.conn` directly.
+- Owner dashboards are functional workspaces: no marketing hero/H1 occupying
+  chat/preview space. Simplification must retain visible Growth, analytics,
+  SEO, research, reports and activity; reveal details progressively.
+- HelloAda connection changes must follow `docs/helloada-connection-contract.md`.
+  Never claim a customer release ready from a public health response or local
+  fixture: verify the correct tenant in an authenticated production session.
 
 ## Module Ownership
 

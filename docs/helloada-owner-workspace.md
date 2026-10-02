@@ -13,6 +13,9 @@ the CMS underneath, not the vocabulary or navigation the owner has to learn.
   dark palette, typography and exact approved logo as helloada.app.
 - Suggestions are editable requests, never automatically submitted jobs.
 - Show progress and real connection status, not simulated activity.
+- No marketing H1/banner. Compact toolbars leave the space to chat and preview.
+- Growth remains first-class: analytics, keyword research, recommendations,
+  schedules, article drafts and reports stay visible with progressive details.
 - Only show publication for a real draft; require a page-naming confirmation.
 - Keep manual page editing, collections, files, settings, account and language
   accessible. Manage reveals these without filling the primary workspace.

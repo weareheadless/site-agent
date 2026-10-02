@@ -1,7 +1,8 @@
 import crypto from 'node:crypto'
+import { helloAdaRuntime } from '@weareheadless/helloada-payload-admin/server'
 
 export function serviceAuthorized(request: Request) {
-  const expected = process.env.HELLOADA_SITE_AGENT_TOKEN || ''
+  const expected = helloAdaRuntime().token
   const supplied = request.headers.get('authorization')?.replace(/^Bearer\s+/i, '') || ''
   if (!expected || !supplied) return false
   const left = Buffer.from(supplied)

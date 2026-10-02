@@ -6,6 +6,7 @@ import { useSearchParams } from 'next/navigation'
 
 import { HelloAdaChatMessage } from './HelloAdaChatMessage'
 import { HelloAdaHistory } from './HelloAdaHistory'
+import { HelloAdaGrowth } from './HelloAdaGrowth'
 import { EditableRichTextEditor } from './EditableRichTextEditor'
 import { fetchHelloAda } from '../api/fetchHelloAda'
 import { useHelloAdaTranslations } from '../api/useHelloAdaTranslations'
@@ -641,10 +642,12 @@ const researchEntriesFrom = (research: IntakeResearchStatus | undefined): BriefE
 export function WebsiteWorkspace() {
   const searchParams = useSearchParams()
   if (searchParams.get('view') === 'history') return <HelloAdaHistory />
+  if (searchParams.get('view') === 'growth') return <HelloAdaGrowth />
   return <ReviewWorkspace />
 }
 
 function ReviewWorkspace() {
+  const searchParams = useSearchParams()
   const { language, t } = useHelloAdaTranslations()
   const site = useHelloAdaSite()
   const [workspace, setWorkspace] = useState<WorkspaceSnapshot>()
@@ -657,6 +660,12 @@ function ReviewWorkspace() {
   const [previewStatus, setPreviewStatus] = useState<PreviewUiStatus>('idle')
   const [previewPlan, setPreviewPlan] = useState<PreviewPlan>()
   const [message, setMessage] = useState('')
+  const preparedAsk = searchParams.get('ask')
+  useEffect(() => {
+    if (!preparedAsk) return
+    setMessage(preparedAsk.slice(0, 8000))
+    setMobilePane('ada')
+  }, [preparedAsk])
   const [conversationId, setConversationId] = useState<number>()
   const [pendingAdaJob, setPendingAdaJob] = useState<PendingAdaJob>()
   const [adaSteps, setAdaSteps] = useState<AdaJobStep[]>([])
@@ -2031,10 +2040,6 @@ function ReviewWorkspace() {
   const currentAdaProgress = adaProgressSteps[adaProgressSteps.length - 1]?.text || t('workspace.thinking')
   return (
     <main className={`helloada-workspace helloada-owner-workspace shows-${mobilePane}`}>
-      <header className="helloada-workspace-intro">
-        <div><p className="helloada-eyebrow">{site.siteName}</p><h1>{t('owner.heading')}</h1></div>
-        <p>{t('owner.promise')}</p>
-      </header>
       {error ? <div className="helloada-alert" role="alert">{error}</div> : null}
       {websitePresent ? <div className="helloada-pane-switch" role="group" aria-label={t('owner.workspace')}>
         <button type="button" id="helloada-ada-tab" aria-controls="helloada-ada-pane" aria-pressed={mobilePane === 'ada'} onClick={() => setMobilePane('ada')}>{t('workspace.askAda')}</button>

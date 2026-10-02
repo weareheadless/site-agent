@@ -43,3 +43,14 @@ test('shared package has a tenant configuration boundary', async () => {
   assert.match(config, /previewRouteForTenant/)
   assert.match(config, /tenantId/)
 })
+
+test('functional dashboard uses the space for work and retains growth access', async () => {
+  const workspace = await source('src/components/WebsiteWorkspace.tsx')
+  assert.doesNotMatch(workspace, /helloada-workspace-intro/)
+  assert.match(workspace, /HelloAdaGrowth/)
+  const nav = await source('src/components/HelloAdaNav.tsx')
+  assert.match(nav, /view=growth/)
+  const growth = await source('src/components/HelloAdaGrowth.tsx')
+  for (const feature of ['\/growth', '\/seo\/analytics', 'weeklyReports', 'monthlyReports', 'articleIdeas', 'dataforseo']) assert.ok(growth.includes(feature), feature)
+  assert.doesNotMatch(growth, /method:\s*['"]POST['"]|\.random\(/)
+})

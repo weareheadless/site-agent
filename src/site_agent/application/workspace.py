@@ -1775,6 +1775,22 @@ class ChatService:
             raise BridgeError(str(exc)[:500]) from exc
         return {"run": self._public_design_run(run, include_evidence=True)}
 
+    def connection(self, *, tenant: Tenant | None = None) -> dict[str, Any]:
+        """Authenticate scope without running intake, jobs, or model requests."""
+        if self.registry is not None and (tenant is None or tenant.tenant_id not in self.registry.tenants):
+            raise BridgeError("tenant is not authorized")
+        llm = tenant.context.get("llm") if tenant else self.llm
+        ready = llm is not None and (not hasattr(llm, "api_key") or bool(llm.api_key))
+        return {"tenant": tenant.tenant_id if tenant else "legacy", "connected": True, "ready": ready}
+
+    def growth(self, *, tenant: Tenant | None = None) -> dict[str, Any]:
+        from .growth import growth_snapshot
+
+        # Existing records remain readable if a model/provider is unavailable.
+        scope = self.connection(tenant=tenant)
+        memory, tenant_id = (tenant.memory if tenant else self.memory), scope["tenant"]
+        return {"tenant": tenant_id, **growth_snapshot(memory, tenant.config if tenant else {}, tenant.context if tenant else {})}
+
     def seo_insights(self, *, limit: int = 12, tenant: Tenant | None = None) -> dict[str, Any]:
         """Owner-facing SEO synthesis, newest first, scoped to one tenant."""
         memory, _llm, tenant_id = self._scope(tenant)

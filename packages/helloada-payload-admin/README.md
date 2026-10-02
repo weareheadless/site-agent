@@ -14,7 +14,7 @@ The package is released as an exact versioned tarball. A customer upgrade is a d
 change followed by a normal site build and review; the package does not silently mutate
 customer repositories or production data.
 
-## Owner experience (0.2)
+## Owner experience (0.3)
 
 The primary workspace mirrors the HelloAda homepage: Ada conversation on the left,
 website review on the right. On smaller screens, Ask Ada and Website switch between
@@ -25,6 +25,15 @@ draft and names the page before an explicit approval.
 Manage opens a keyboard-accessible drawer with content, photos/files, settings,
 account and language. Extra Payload collections are under Advanced options; native
 Payload access controls still apply. Connection status is checked against the API.
+
+There is no marketing banner above the working windows. Growth is a first-class
+owner view for real GA4/GSC metrics, DataForSEO research, Ada recommendations,
+article drafts, reports and schedules. Missing data/setup requirements are
+explicit. Actions prepare requests for discussion; they do not start paid jobs.
+
+Use the separate `@weareheadless/helloada-payload-admin/server` export for
+request-time Worker bindings and authenticated tenant-readiness diagnostics.
+See `docs/helloada-connection-contract.md` in site-agent for the release gate.
 
 `src/brand/helloada-mark.svg` is the exact approved homepage mark, also rendered by
 `HelloAdaMark`. Do not substitute a letter glyph or redraw the geometry.

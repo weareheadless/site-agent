@@ -294,9 +294,7 @@ export function HelloAdaHistory() {
     <main className="helloada-history">
       <header className="helloada-history-header">
         <div>
-          <p className="helloada-eyebrow">{t('history.record')}</p>
-          <h1>{t('history.title')}</h1>
-          <p>{t('history.intro')}</p>
+          <h2>{t('owner.activity')}</h2>
         </div>
         <Link className="helloada-history-return" href="/admin">
           {t('history.return')} <span aria-hidden="true">↗</span>

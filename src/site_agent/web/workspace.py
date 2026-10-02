@@ -503,6 +503,16 @@ def register_workspace_routes(
         except BridgeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.get(f"{prefix}/connection")
+    def workspace_connection(request: Request):
+        tenant = require_service(request)
+        return service.connection(tenant=tenant)
+
+    @app.get(f"{prefix}/growth")
+    def workspace_growth(request: Request):
+        tenant = require_service(request)
+        return service.growth(tenant=tenant)
+
     @app.get(f"{prefix}/seo/insights")
     def workspace_seo_insights(request: Request, limit: int = 12):
         tenant = require_service(request)

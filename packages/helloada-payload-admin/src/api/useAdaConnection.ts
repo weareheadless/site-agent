@@ -14,10 +14,10 @@ export function useAdaConnection() {
       controller = request
       const timeout = window.setTimeout(() => request.abort(), 10000)
       try {
-        const response = await fetchHelloAda('/api/helloada/ada?status=1', { cache: 'no-store', signal: request.signal })
+        const response = await fetchHelloAda('/api/helloada/connection', { cache: 'no-store', signal: request.signal })
         if (!response.ok) throw new Error('unavailable')
-        const body = await response.json() as { phase?: string; mode?: string }
-        if (active && controller === request) setConnection(body.phase || body.mode ? 'connected' : 'unavailable')
+        const body = await response.json() as { connected?: boolean; ready?: boolean }
+        if (active && controller === request) setConnection(body.connected && body.ready ? 'connected' : 'unavailable')
       } catch {
         if (active && controller === request) setConnection('unavailable')
       } finally {

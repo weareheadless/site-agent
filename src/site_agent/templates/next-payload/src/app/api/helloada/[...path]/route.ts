@@ -4,6 +4,8 @@ import type { CollectionSlug } from 'payload'
 
 import { authenticateHelloAdaRequest } from '@/lib/helloada-auth'
 import { fetchHelloAdaUpstream } from '@/lib/helloada-upstream'
+import { helloAdaConnection, helloAdaRuntimeStatus } from '@weareheadless/helloada-payload-admin/server'
+import { helloAdaSite } from '@/helloada.config'
 
 export const dynamic = 'force-dynamic'
 
@@ -229,7 +231,7 @@ const siteSnapshot = async (request: Request, payload: Awaited<ReturnType<typeof
     site: { name: process.env.HELLOADA_SITE_NAME || 'Your website', url: process.env.NEXT_PUBLIC_SITE_URL || new URL(request.url).origin },
     routes: routes.length ? routes : [{ path: '/', kind: 'page', collection: 'pages', sourceId: '' }],
     documents,
-    ada: { configured: Boolean(process.env.SITE_AGENT_URL && process.env.HELLOADA_SITE_AGENT_TOKEN) },
+    ada: { configured: helloAdaRuntimeStatus().configured },
   }
 }
 
@@ -237,6 +239,11 @@ export async function GET(request: Request, { params }: RouteProps) {
   const auth = await authenticateHelloAdaRequest(request)
   if (!auth) return errorResponse('authentication_required', 401)
   const path = `/${(await params).path?.join('/') || ''}`.replace(/\/$/, '') || '/'
+  if (path === '/connection') {
+    const upstream = await fetchHelloAdaUpstream('/api/helloada/connection', request)
+    const result = helloAdaConnection(helloAdaSite.tenantId, upstream ? { status: upstream.status, body: await upstream.json().catch(() => ({})) } : undefined)
+    return NextResponse.json(result.body, { status: result.status, headers: { 'Cache-Control': 'private, no-store' } })
+  }
   if (path === '/workspace') return NextResponse.json(await siteSnapshot(request, auth.payload), { headers: { 'Cache-Control': 'private, no-store' } })
   if (path === '/page-fields' || path === '/page-images') {
     const route = contentRoute(new URL(request.url).searchParams.get('route') || '/')

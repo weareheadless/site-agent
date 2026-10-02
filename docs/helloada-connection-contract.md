@@ -1,0 +1,77 @@
+# HelloAda connection contract and September/October regression
+
+## Failure modes
+
+An admin page loading successfully does **not** prove Ada is connected.
+Atelier returned `ada_unconfigured` even though the active Worker had the
+canonical bindings. Its bridge read only `process.env`, rather than the
+request-time OpenNext Cloudflare context. OceanicVibes additionally had no
+`HELLOADA_SITE_AGENT_TOKEN` binding and was absent from the shared API registry;
+its VPS configuration still described the legacy static-site/media adapter.
+These are separate from the earlier Payload server-props/client-nav failure.
+
+## Required invariant (every tenant)
+
+| Location | Contract |
+| --- | --- |
+| Worker variable | `SITE_AGENT_URL=https://api.helloada.app/v1` |
+| Worker secret | `HELLOADA_SITE_AGENT_TOKEN` (tenant-specific value) |
+| Shared API registry | Tenant ID, existing config path, `api_token_env` |
+| VPS tenant config | `site.payload.token_env` equals that registry name |
+| VPS environment | That variable contains the same value as the Worker secret |
+| Admin site config | `tenantId` equals the authenticated backend tenant |
+
+`PROVISIONED_<NORMALIZED_TENANT>_TOKEN` is the canonical VPS name. The Worker
+name is always `HELLOADA_SITE_AGENT_TOKEN`. These names are intentionally
+different; their **values** must match. Never add fallback token aliases,
+share a token between tenants, or rotate `PAYLOAD_SECRET` to repair Ada.
+
+The shared package's **server-only** `./server` export reads
+`getCloudflareContext().env` at request time. `process.env` is used only when
+there is no Cloudflare context (local Node). An empty Worker binding fails
+closed, even if a process-level stale token exists. Do not import this export
+from a client component or export it from the UI barrel.
+
+## Readiness and release gate
+
+1. Run the shared package connection tests, typecheck and tenant-auth tests.
+2. Validate every tenant registry entry and matching Payload token name before
+   restarting the API. Preserve existing data directories/history. Keep a
+   protected backup of edited operational configuration.
+3. Verify authenticated `GET /v1/workspace/connection` using each tenant's own
+   service token: correct `tenant`, `connected: true`, `ready: true`. This is a
+   credential/configuration readiness check, **not** a paid model request.
+4. Build a clean checkout with the pinned immutable admin release. Inspect the
+   artifact for the connection/Growth routes, UI, and unchanged brand asset.
+5. Deploy the exact artifact, wait for terminal success, reload a fresh
+   authenticated admin document with a release query.
+6. In that real owner session verify same-origin `/connection`, chat status,
+   Growth, website preview and the connected indicator. Confirm unauthenticated
+   connection/Growth requests are rejected. Do not accept a public health page,
+   HTTP 200 login redirect, secret-list metadata, or a local mock as proof.
+
+The owner-authenticated connection response exposes presence booleans,
+binding source, expected tenant and a bounded failure code only. It never
+returns a service token, secret URL, environment dump, or provider credentials.
+`tenant_mismatch`, `runtime_unconfigured`, `backend_unreachable`,
+`backend_rejected`, and `ai_unconfigured` must block a claimed successful
+release. The nav retries periodically with a timeout; no indefinite spinner.
+
+Run the server-side preflight with the protected environment on the host:
+`PYTHONPATH=src .venv/bin/python scripts/check-helloada-connections.py --config /SOCIAL/configs/site-agent-api/config.yaml --env-file /SOCIAL/configs/site-agent-api/.env --api-url https://api.helloada.app/v1`.
+It returns nonzero on missing credentials, a registry/Payload name mismatch,
+rejected authentication or a wrong/unready tenant, without printing secrets.
+
+## Growth behavior
+
+Growth is a read-only tenant projection of actual analytics, insights, research,
+drafts, reports and registered schedules. Missing metrics render as unavailable,
+not zero or demonstration numbers. Setup and planning actions prepare editable
+Ada requests; merely opening Growth never provisions Google accounts, starts
+paid research, changes scheduling, or publishes content. Existing approvals
+continue to govern production changes. A provider being configured is not proof
+that it has collected data; show those states separately.
+
+Tests prevent these known regressions; they cannot guarantee that external
+providers, credentials or deployments will never fail. When readiness fails,
+fix the first failing boundary and preserve the owner's published website.

@@ -1,4 +1,5 @@
 @use 'owner-workspace' as owner;
+@use 'growth' as growth;
 /* HelloAda Payload owner workspace: OLED control room, coral signal, amber activity. */
 
 :root,
@@ -3363,3 +3364,4 @@ textarea:focus-visible {
 }
 
 @include owner.styles;
+@include growth.styles;

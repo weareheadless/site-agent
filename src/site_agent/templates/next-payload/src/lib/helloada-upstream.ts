@@ -1,7 +1,9 @@
+import { helloAdaRuntime } from '@weareheadless/helloada-payload-admin/server'
+
 const UPSTREAM_TIMEOUT_MS = 25_000
 
-const upstreamBase = () => (process.env.SITE_AGENT_URL || '').replace(/\/$/, '')
-const upstreamToken = () => process.env.HELLOADA_SITE_AGENT_TOKEN || ''
+const upstreamBase = () => helloAdaRuntime().url
+const upstreamToken = () => helloAdaRuntime().token
 
 const upstreamPath = (path: string) => {
   const base = upstreamBase()
@@ -11,6 +13,7 @@ const upstreamPath = (path: string) => {
 
 const remapPath = (path: string, method: string, search: string) => {
   const suffix = path.replace(/^\/api\/helloada/, '') || '/'
+  if (method === 'GET' && ['/connection', '/growth', '/seo/analytics', '/seo/insights'].includes(suffix)) return `/workspace${suffix}${search}`
   if (suffix === '/ada' && method === 'POST') return `/workspace/chat${search}`
   if (suffix === '/ada' && method === 'GET') {
     const params = new URLSearchParams(search)

@@ -1,15 +1,17 @@
 {
   "name": "@weareheadless/helloada-payload-admin",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "The shared HelloAda owner workspace for Payload-powered customer websites.",
   "type": "module",
   "license": "UNLICENSED",
   "files": ["src", "README.md"],
   "exports": {
     ".": "./src/index.ts",
+    "./server": "./src/server/runtime-env.ts",
     "./styles/admin.scss": "./src/styles/admin.scss"
   },
   "peerDependencies": {
+    "@opennextjs/cloudflare": "^1.20.6",
     "@payloadcms/richtext-lexical": "^3.88.0",
     "@payloadcms/ui": "^3.88.0",
     "next": ">=15 <17",
@@ -17,6 +19,7 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },
+  "devDependencies": { "typescript": "5.7.3" },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit",

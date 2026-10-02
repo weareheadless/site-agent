@@ -4,7 +4,8 @@ import { getPayload } from 'payload'
 import config from '@payload-config'
 import { serviceAuthorized } from '@/lib/service-auth'
 
-const collection = 'pages' as const
+const collections = ['pages', 'posts', 'products'] as const
+const collectionFor = (value: unknown) => collections.find(item => item === value)
 
 function errorResponse(message: string, status: number) {
   return NextResponse.json({ error: 'content_gateway_error', message }, { status })
@@ -13,16 +14,18 @@ function errorResponse(message: string, status: number) {
 export async function GET(request: Request) {
   if (!serviceAuthorized(request)) return errorResponse('service authentication required', 401)
   const params = new URL(request.url).searchParams
+  const collection = collectionFor(params.get('collection') || 'pages')
+  if (!collection) return errorResponse('unsupported collection', 400)
   const payload = await getPayload({ config })
   const draft = params.get('draft') === 'true'
-  const identifier = params.get('id') || params.get('slug')
+  const identifier = params.get('id') || params.get('sourceId') || params.get('slug')
   if (!identifier) {
     const result = await payload.find({ collection, draft, limit: 100, pagination: false, overrideAccess: true, sort: '-updatedAt' })
     return NextResponse.json({ collection, documents: result.docs }, { headers: { 'Cache-Control': 'no-store' } })
   }
   const result = params.get('id')
     ? await payload.findByID({ collection, id: identifier, draft, overrideAccess: true })
-    : (await payload.find({ collection, where: { slug: { equals: identifier } }, draft, limit: 1, overrideAccess: true })).docs[0]
+    : (await payload.find({ collection, where: { [params.has('sourceId') ? 'sourceId' : 'slug']: { equals: identifier } }, draft, limit: 1, overrideAccess: true })).docs[0]
   if (!result) return errorResponse('document not found', 404)
   return NextResponse.json({ collection, document: result }, { headers: { 'Cache-Control': 'no-store' } })
 }
@@ -36,6 +39,8 @@ export async function POST(request: Request) {
     return errorResponse('invalid json', 400)
   }
   const operation = String(body.operation || '').trim().toLowerCase()
+  const collection = collectionFor(body.collection || 'pages')
+  if (!collection) return errorResponse('unsupported collection', 400)
   const payload = await getPayload({ config })
   try {
     if (operation === 'create') {

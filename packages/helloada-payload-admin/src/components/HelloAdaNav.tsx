@@ -43,6 +43,7 @@ export function HelloAdaNav({ user }: { user?: TypedUser | null }) {
   const primary = collections.filter((item) => site.content.primaryCollections.includes(item.slug))
   const advanced = collections.filter((item) => !site.content.primaryCollections.includes(item.slug))
   const isHistory = pathname === '/admin' && searchParams.get('view') === 'history'
+  const isGrowth = pathname === '/admin' && searchParams.get('view') === 'growth'
   const isActive = (href: string) => pathname.startsWith(href)
   const managing = pathname.startsWith('/admin/collections') || pathname.startsWith('/admin/globals') || pathname.startsWith('/admin/account')
 
@@ -75,7 +76,8 @@ export function HelloAdaNav({ user }: { user?: TypedUser | null }) {
       <span className="helloada-nav-divider" aria-hidden="true" />
       <span className="helloada-nav-site" title={site.siteName}>{site.siteName}</span>
       <div className="helloada-payload-links">
-        <Link className={pathname === '/admin' && !isHistory ? 'is-active' : undefined} href="/admin" aria-current={pathname === '/admin' && !isHistory ? 'page' : undefined}>{t('owner.workspace')}</Link>
+        <Link className={pathname === '/admin' && !isHistory && !isGrowth ? 'is-active' : undefined} href="/admin" aria-current={pathname === '/admin' && !isHistory && !isGrowth ? 'page' : undefined}>{t('owner.workspace')}</Link>
+        <Link className={isGrowth ? 'is-active' : undefined} href="/admin?view=growth" aria-current={isGrowth ? 'page' : undefined}>{t('growth.title')}</Link>
         <Link className={isHistory ? 'is-active' : undefined} href="/admin?view=history" aria-current={isHistory ? 'page' : undefined}>{t('owner.activity')}</Link>
       </div>
       <div className="helloada-payload-actions">
