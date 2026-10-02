@@ -133,3 +133,55 @@ def test_bootstrap_reuses_property_from_a_previous_failed_attempt(monkeypatch, t
 
     assert calls[0]["ga4_property_id"] == "411596330"
     assert state["state"] == "ready"
+
+
+def test_bootstrap_reconciles_a_custom_domain_as_a_new_current_origin(monkeypatch, tmp_path):
+    memory = FakeMemory({
+        "seo_provisioning_state": {
+            "state": "ready",
+            "site_url": "https://workspace-harmonie.workers.dev/",
+            "domain": "workspace-harmonie.workers.dev",
+            "gsc_property": "https://workspace-harmonie.workers.dev/",
+            "gsc_verified": True,
+            "gsc_verified_at": "2026-10-01T00:00:00+00:00",
+            "ga4_property_id": "411596330",
+        }
+    })
+    config = _config(tmp_path)
+    config["site"]["public_url"] = "https://atelier.example/"
+    config["seo"]["site_url"] = "https://atelier.example/"
+    calls = []
+
+    class FakeProvisioning:
+        def __init__(self, config, env):
+            pass
+
+        def provision(self, **kwargs):
+            calls.append(kwargs)
+            return {
+                "tenant_id": "workspace-harmonie",
+                "domain": "atelier.example",
+                "site_url": "https://atelier.example/",
+                "gsc_property": kwargs["gsc_property"],
+                "gsc_verified": True,
+                "gsc_verification_method": "meta",
+                "ga4_property_id": kwargs["ga4_property_id"],
+                "provisioning_state": "ready",
+            }
+
+    monkeypatch.setattr(bootstrap, "SeoProvisioningService", FakeProvisioning)
+    monkeypatch.setattr(bootstrap, "load_tenant_environment", lambda config, env=None: {})
+
+    state, _ = bootstrap.auto_provision_seo(
+        config,
+        tenant_id="workspace-harmonie",
+        memory=memory,
+    )
+
+    assert calls[0]["site_url"] == "https://atelier.example/"
+    assert calls[0]["gsc_property"] == "https://atelier.example/"
+    assert calls[0]["ga4_property_id"] == "411596330"
+    assert state["site_url"] == "https://atelier.example/"
+    assert state["gsc_property"] == "https://atelier.example/"
+    assert state["origin_changed"] is True
+    assert state["origin_history"][0]["site_url"] == "https://workspace-harmonie.workers.dev/"

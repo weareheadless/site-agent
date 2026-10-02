@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 from ..credentials import cloudflare_env_names, credential_environment, credential_profile
 from ..hands.cloudflare_worker import CloudflareWorkerError, CloudflareWorkerSecretsClient
 from ..hands.crawlseo_provisioning import CrawlSEOProvisioningError
+from .site_origin import SiteOriginError, normalize_site_origin, origins_equal
 from .seo_provisioning import SeoProvisioningError, SeoProvisioningService, tenant_token_env, write_token_env
 
 
@@ -32,15 +33,20 @@ def _mapping(value: Any) -> Mapping[str, Any]:
 def _site_url(config: Mapping[str, Any]) -> str:
     site = _mapping(config.get("site"))
     seo = _mapping(config.get("seo"))
-    raw = str(seo.get("site_url") or site.get("preview_url") or "").strip()
+    raw = str(
+        site.get("public_url")
+        or site.get("custom_domain")
+        or seo.get("site_url")
+        or site.get("url")
+        or site.get("preview_url")
+        or ""
+    ).strip()
     if not raw:
         raise SeoProvisioningError("seo.provisioning requires seo.site_url or site.preview_url")
-    if not raw.startswith(("http://", "https://")):
-        raw = f"https://{raw}"
-    parsed = urlsplit(raw)
-    if not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
-        raise SeoProvisioningError("seo.site_url must be a public URL")
-    return raw.rstrip("/") + "/"
+    try:
+        return normalize_site_origin(raw)
+    except SiteOriginError as exc:
+        raise SeoProvisioningError(str(exc)) from exc
 
 
 def _meta_content(value: str) -> str:
@@ -58,12 +64,20 @@ def _safe_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
 def _worker_client(config: Mapping[str, Any], env: Mapping[str, str]) -> CloudflareWorkerSecretsClient:
     profile = credential_profile(config, "cloudflare")
     token_name, account_name = cloudflare_env_names(config)
-    deployment = _mapping(_mapping(config.get("site")).get("source_deployment"))
+    site = _mapping(config.get("site"))
+    deployment = _mapping(site.get("source_deployment"))
     worker_name = str(
         deployment.get("worker_name")
-        or _mapping(_mapping(config.get("site")).get("cloudflare")).get("worker_name")
+        or _mapping(site.get("cloudflare")).get("worker_name")
         or ""
     ).strip()
+    # Older tenant configs did not persist the Worker name. Recover it only
+    # from the platform preview origin; custom domains never determine the
+    # deployment target.
+    if not worker_name:
+        preview_host = str(urlsplit(str(site.get("preview_url") or "")).hostname or "").lower()
+        if preview_host.endswith(".workers.dev"):
+            worker_name = preview_host.split(".", 1)[0]
     token = str(env.get(str(profile.get("api_token_env") or token_name)) or env.get(token_name) or "")
     account = str(env.get(str(profile.get("account_id_env") or account_name)) or env.get(account_name) or "")
     return CloudflareWorkerSecretsClient(token, account, worker_name)
@@ -121,9 +135,17 @@ def auto_provision_seo(
         or tenant_id
     ).strip()[:200]
     method = str(provisioning.get("verification_method") or "meta").strip().lower()
-    gsc_property = str(
+    previous_site_url = str(state.get("site_url") or "").strip()
+    origin_changed = bool(previous_site_url and not origins_equal(previous_site_url, site_url))
+    configured_gsc_property = str(
         provisioning.get("gsc_property")
         or seo.get("gsc_property")
+        or ""
+    ).strip()
+    # A URL-prefix property belongs to the current public origin. Never carry
+    # a previous domain's property into a new-domain verification attempt.
+    gsc_property = site_url if origin_changed else str(
+        configured_gsc_property
         or state.get("gsc_property")
         or site_url
     ).strip()
@@ -140,7 +162,32 @@ def auto_provision_seo(
     recover_service_credential = not bool(str(resolved_env.get(token_env) or "").strip())
 
     service = SeoProvisioningService(config, resolved_env)
-    attempt: dict[str, Any] = {"state": "running", "last_attempt_at": _now(), **_safe_receipt(state)}
+    history = list(state.get("origin_history") or []) if isinstance(state.get("origin_history"), list) else []
+    if origin_changed and previous_site_url:
+        previous_record = {
+            key: state.get(key)
+            for key in ("site_url", "domain", "gsc_property", "gsc_verified", "gsc_verified_at", "provisioning_state")
+            if state.get(key) not in (None, "")
+        }
+        previous_record["retired_at"] = _now()
+        if previous_record and not any(
+            isinstance(item, Mapping) and str(item.get("site_url") or "") == previous_site_url
+            for item in history
+        ):
+            history.append(previous_record)
+    attempt: dict[str, Any] = {
+        **_safe_receipt(state),
+        "state": "running",
+        "last_attempt_at": _now(),
+        "site_url": site_url,
+        "origin_changed": origin_changed,
+        "origin_history": history,
+    }
+    if origin_changed:
+        for key in ("gsc_verified", "gsc_verified_at", "gsc_pending", "gsc_meta_tag", "gsc_meta_identifier", "crawlseo", "crawlseo_pending"):
+            attempt.pop(key, None)
+        attempt["gsc_property"] = site_url
+        attempt["provisioning_state"] = "origin_changed"
     try:
         receipt = service.provision(
             tenant_id=tenant_id,
@@ -161,6 +208,9 @@ def auto_provision_seo(
         # creation is not safely repeatable if the process dies while the
         # Worker secret or the one-time CrawlSEO credential is being written.
         attempt.update(_safe_receipt(receipt))
+        attempt["site_url"] = site_url
+        attempt["origin_changed"] = origin_changed
+        attempt["origin_history"] = history
         if memory is not None:
             memory.kv_set("seo_provisioning_state", attempt)
 
@@ -188,6 +238,9 @@ def auto_provision_seo(
                 recover_service_credential=recover_service_credential,
             )
             attempt.update(_safe_receipt(receipt))
+            attempt["site_url"] = site_url
+            attempt["origin_changed"] = origin_changed
+            attempt["origin_history"] = history
             if memory is not None:
                 memory.kv_set("seo_provisioning_state", attempt)
 
@@ -205,6 +258,9 @@ def auto_provision_seo(
 
         sanitized = _safe_receipt(receipt)
         sanitized.update({
+            "site_url": site_url,
+            "origin_changed": origin_changed,
+            "origin_history": history,
             "state": "ready" if receipt.get("provisioning_state") == "ready" else str(receipt.get("provisioning_state") or "pending"),
             "last_attempt_at": _now(),
             "credential_file": str(_credential_directory(config) / "crawlseo.env"),

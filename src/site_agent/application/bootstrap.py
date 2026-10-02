@@ -493,6 +493,8 @@ class WebsiteBootstrapService:
             "preview_branch": "preview",
             "url": worker_url,
             "preview_url": worker_url,
+            "public_url": worker_url,
+            "custom_domain": "",
             "website_present": True,
             "payload": {
                 "enabled": True,
@@ -514,12 +516,33 @@ class WebsiteBootstrapService:
             },
             "source_deployment": {
                 "clone_path": str(site_dir),
+                "worker_name": names["worker"],
                 "verification_timeout_seconds": 180,
                 "verification_request_timeout_seconds": 10,
             },
         })
         raw["display_name"] = display_name or raw.get("display_name") or tenant_id
         raw["blog"] = {**_mapping(raw.get("blog")), "engine": "payload", "journal_enabled": True}
+        raw["ga"] = {
+            **_mapping(raw.get("ga")),
+            "enabled": True,
+            "source": "crawlseo",
+        }
+        existing_seo = _mapping(raw.get("seo"))
+        existing_provisioning = _mapping(existing_seo.get("provisioning"))
+        raw["seo"] = {
+            **existing_seo,
+            "enabled": True,
+            "source": "crawlseo",
+            "site_url": worker_url,
+            "gsc_property": worker_url,
+            "provisioning": {
+                **existing_provisioning,
+                "auto": True,
+                "verification_method": str(existing_provisioning.get("verification_method") or "meta"),
+                "gsc_property": worker_url,
+            },
+        }
         TenantRegistrationService._replace_config(config_path, raw)
 
         env_path = tenant_dir / "tenant.env"

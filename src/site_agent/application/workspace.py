@@ -30,6 +30,7 @@ from ..core.scheduler import Scheduler
 from ..brain.owner_copy import owner_safe_failure
 from ..runtime import Runtime
 from .tenant_registration import tenant_token_env
+from .site_origin import SiteOriginError, normalize_site_origin, origin_hostname, origins_equal
 
 
 class BridgeError(ValueError):
@@ -194,6 +195,8 @@ class Tenant:
     runtime: Runtime
     context: dict[str, Any]
     api_token: str
+    config_path: str = ""
+    api_token_env: str = ""
     executor: Any = None
     design_executor: Any = None
     intake_coordinator: IntakeCoordinator | None = None
@@ -494,6 +497,8 @@ class TenantRegistry:
                     runtime=runtime,
                     context=context,
                     api_token=api_token,
+                    config_path=str(config_path),
+                    api_token_env=token_env,
                     intake_coordinator=intake_coordinator,
                 )
         except Exception:
@@ -710,6 +715,76 @@ class TenantRegistry:
                 self._stop_tenant(replacement)
                 raise
         return replacement
+
+    def update_site_origin(
+        self,
+        tenant_id: str,
+        public_url: str,
+        *,
+        env: Mapping[str, str] | None = None,
+    ) -> Tenant:
+        """Persist and reconcile a tenant's current public site origin.
+
+        A domain change is a tenant configuration change, not a new tenant and
+        not a provider-specific branch.  The replacement runtime is rebuilt
+        through the same startup path, which re-runs idempotent GA4, GSC, and
+        CrawlSEO reconciliation for the new origin.
+        """
+        normalized = str(tenant_id or "").strip().lower()
+        tenant = self.for_tenant_id(normalized)
+        if tenant is None:
+            raise ConfigError("tenant was not found")
+        try:
+            site_url = normalize_site_origin(public_url, field="public_url")
+        except SiteOriginError as exc:
+            raise ConfigError(str(exc)) from exc
+        config_path = Path(str(tenant.config_path or "")).expanduser().resolve()
+        if not str(tenant.config_path).strip() or not config_path.is_file():
+            raise ConfigError("tenant configuration path is unavailable")
+        try:
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError) as exc:
+            raise ConfigError("tenant configuration is unreadable") from exc
+        if not isinstance(raw, dict):
+            raise ConfigError("tenant configuration root must be an object")
+
+        site = raw.get("site") if isinstance(raw.get("site"), Mapping) else {}
+        site = dict(site)
+        preview_url = str(site.get("preview_url") or "").strip()
+        site["public_url"] = site_url
+        site["url"] = site_url
+        site["custom_domain"] = "" if preview_url and origins_equal(preview_url, site_url) else origin_hostname(site_url)
+        raw["site"] = site
+
+        seo = raw.get("seo") if isinstance(raw.get("seo"), Mapping) else {}
+        seo = dict(seo)
+        seo.update({"enabled": True, "source": "crawlseo", "site_url": site_url, "gsc_property": site_url})
+        provisioning = seo.get("provisioning") if isinstance(seo.get("provisioning"), Mapping) else {}
+        provisioning = dict(provisioning)
+        provisioning.update({"auto": True, "verification_method": str(provisioning.get("verification_method") or "meta")})
+        provisioning["gsc_property"] = site_url
+        seo["provisioning"] = provisioning
+        raw["seo"] = seo
+
+        ga = raw.get("ga") if isinstance(raw.get("ga"), Mapping) else {}
+        ga = dict(ga)
+        ga.update({"enabled": True, "source": "crawlseo"})
+        raw["ga"] = ga
+        from .tenant_registration import TenantRegistrationService
+
+        TenantRegistrationService._replace_config(config_path, raw)
+        values = dict(self._env)
+        if env:
+            values.update(env)
+        token_env = str(tenant.api_token_env or tenant_token_env(normalized)).strip()
+        values[token_env] = tenant.api_token
+        return self.reload_tenant(
+            normalized,
+            str(config_path),
+            api_token=tenant.api_token,
+            api_token_env=token_env,
+            env=values,
+        )
 
     @staticmethod
     def _start_scheduler(tenant: Tenant) -> None:

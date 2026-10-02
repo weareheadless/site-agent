@@ -23,7 +23,7 @@ from ..application.analytics import AnalyticsError, GoogleAnalyticsService
 from ..application.bootstrap import BootstrapError, WebsiteBootstrapService
 from ..application.tenant_registration import TenantRegistrationError, TenantRegistrationService
 from ..application.workspace import BridgeError, ChatService, SourceConflict, Tenant, TenantRegistry
-from ..config import resolve_secret
+from ..config import ConfigError, resolve_secret
 from ..hands.google_platform import GooglePlatformError
 from .design_preview import (
     DESIGN_PREVIEW_REFS,
@@ -814,6 +814,44 @@ def register_workspace_routes(
                 }
             except TenantRegistrationError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        @app.post(f"{control_prefix}/{{website_id}}/site-origin")
+        async def control_plane_update_site_origin(website_id: str, request: Request):
+            """Change one tenant's public origin and reconcile its providers."""
+            require_control_plane(request)
+            if registry is None:
+                raise HTTPException(status_code=503, detail="tenant registry is unavailable")
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            if not isinstance(body, dict):
+                raise HTTPException(status_code=400, detail="request body must be an object")
+            public_url = str(
+                body.get("public_url")
+                or body.get("custom_domain")
+                or body.get("site_url")
+                or ""
+            ).strip()
+            if not public_url:
+                raise HTTPException(status_code=400, detail="public_url is required")
+            try:
+                tenant = registry.update_site_origin(website_id, public_url, env=env)
+            except ConfigError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            state = tenant.context.get("seo_provisioning_state") or tenant.memory.kv_get("seo_provisioning_state", {}) or {}
+            return {
+                "tenant_id": tenant.tenant_id,
+                "public_url": str((tenant.config.get("site") or {}).get("public_url") or ""),
+                "seo": {
+                    "state": state.get("state") or state.get("provisioning_state") or "pending",
+                    "site_url": state.get("site_url"),
+                    "gsc_property": state.get("gsc_property"),
+                    "gsc_verified": bool(state.get("gsc_verified")),
+                    "ga4_property_id": state.get("ga4_property_id"),
+                    "crawlseo_ready": bool(state.get("crawlseo")),
+                },
+            }
 
         @app.post(f"{control_prefix}/{{website_id}}/bootstrap")
         async def control_plane_bootstrap(website_id: str, request: Request):

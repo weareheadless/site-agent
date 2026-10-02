@@ -3,6 +3,7 @@ import json
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+import yaml
 
 from site_agent.application.growth import growth_snapshot
 from site_agent.application.workspace import ChatService, Tenant, TenantRegistry
@@ -74,3 +75,47 @@ def test_migrated_tenant_keeps_its_existing_provider_credential_file(tmp_path):
     env = load_tenant_environment(config, {'PROVISIONED_DEMO_TOKEN': 'canonical-fixture'})
     assert env['CRAWLSEO_SERVICE_TOKEN'] == 'tenant-research-fixture'
     assert env['PROVISIONED_DEMO_TOKEN'] == 'canonical-fixture'
+
+
+def test_site_origin_change_is_persisted_before_runtime_reconciliation(tmp_path):
+    config_path = tmp_path / 'config.yaml'
+    config_path.write_text(yaml.safe_dump({
+        'site': {'preview_url': 'https://demo.workers.dev/'},
+        'seo': {
+            'enabled': True,
+            'site_url': 'https://demo.workers.dev/',
+            'gsc_property': 'https://demo.workers.dev/',
+            'provisioning': {'auto': True, 'gsc_property': 'https://demo.workers.dev/'},
+        },
+        'ga': {'enabled': True},
+    }), encoding='utf-8')
+    tenant = Tenant(
+        tenant_id='demo',
+        config={},
+        memory=None,
+        runtime=None,
+        context={},
+        api_token='demo-token',
+        config_path=str(config_path),
+        api_token_env='CUSTOM_DEMO_TOKEN',
+    )
+    registry = TenantRegistry({'demo': tenant})
+    calls = []
+
+    def reload_tenant(tenant_id, path, **kwargs):
+        calls.append((tenant_id, path, kwargs))
+        return tenant
+
+    registry.reload_tenant = reload_tenant
+    registry.update_site_origin('demo', 'https://www.demo.example')
+
+    updated = yaml.safe_load(config_path.read_text(encoding='utf-8'))
+    assert updated['site']['public_url'] == 'https://www.demo.example/'
+    assert updated['site']['url'] == 'https://www.demo.example/'
+    assert updated['site']['custom_domain'] == 'www.demo.example'
+    assert updated['seo']['site_url'] == 'https://www.demo.example/'
+    assert updated['seo']['gsc_property'] == 'https://www.demo.example/'
+    assert updated['seo']['provisioning']['gsc_property'] == 'https://www.demo.example/'
+    assert calls[0][0] == 'demo'
+    assert calls[0][2]['api_token'] == 'demo-token'
+    assert calls[0][2]['api_token_env'] == 'CUSTOM_DEMO_TOKEN'

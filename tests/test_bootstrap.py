@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from fastapi.testclient import TestClient
 
 from site_agent.application.bootstrap import WebsiteBootstrapService
@@ -98,3 +100,39 @@ def test_bootstrap_status_is_durable_before_worker_starts(tmp_path):
     finally:
         service.close()
         registry.close()
+
+
+def test_bootstrap_configures_generic_seo_provisioning_for_new_sites(tmp_path):
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("site: {}\n", encoding="utf-8")
+    site_dir = tmp_path / "site"
+    site_dir.mkdir()
+    (site_dir / "wrangler.jsonc").write_text(json.dumps({"vars": {}}), encoding="utf-8")
+
+    class Registry:
+        def reload_tenant(self, *args, **kwargs):
+            return None
+
+    service = WebsiteBootstrapService.__new__(WebsiteBootstrapService)
+    service.config = {"bootstrap": {"resource_prefix": "helloada"}}
+    service.env = {}
+    service.registry = Registry()
+
+    service._configure_source(
+        "demo",
+        "Demo",
+        config_path,
+        {"full_name": "weareheadless/helloada-demo", "site_dir": str(site_dir)},
+        {"d1": {"name": "helloada-demo"}},
+    )
+
+    import yaml
+
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert config["site"]["public_url"] == "https://helloada-demo.workers.dev/"
+    assert config["ga"]["enabled"] is True
+    assert config["ga"]["source"] == "crawlseo"
+    assert config["seo"]["enabled"] is True
+    assert config["seo"]["provisioning"]["auto"] is True
+    assert config["seo"]["site_url"] == "https://helloada-demo.workers.dev/"
+    assert config["seo"]["gsc_property"] == "https://helloada-demo.workers.dev/"
