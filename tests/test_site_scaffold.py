@@ -17,6 +17,17 @@ def test_initialize_payload_site_creates_canonical_helloada_template(tmp_path):
     assert "__SITE_AGENT_VERSION__" not in wrangler
 
 
+def test_payload_navigation_keeps_server_only_props_out_of_client_boundary(tmp_path):
+    root = initialize_payload_site(tmp_path / "site", "North Star Studio", "https://north.example")
+    nav = (root / "src/components/admin/HelloAdaNav.tsx").read_text()
+
+    # Payload sends req, payload and i18n (including functions) to server Nav
+    # components. Forwarding the whole object crashes authenticated admin pages.
+    assert "HelloAdaNav({ user }: ComponentProps<typeof SharedNav>)" in nav
+    assert "<SharedNav user={user} />" in nav
+    assert "{..." not in nav
+
+
 def test_initialize_site_creates_pelican_pages_and_cms(tmp_path):
     root = initialize_site(tmp_path / "site", "North Star Studio", "https://north.example")
 
