@@ -79,6 +79,17 @@ def _spec(config: dict[str, Any], name: str) -> str | int | dict[str, Any]:
     return overrides.get(name, _JOB_DEFAULTS[name])
 
 
+def _seo_provisioning_enabled(config: Mapping[str, Any]) -> bool:
+    """Return whether this tenant should receive the default SEO reconciler."""
+    seo = config.get("seo") if isinstance(config.get("seo"), Mapping) else {}
+    provisioning = seo.get("provisioning") if isinstance(seo, Mapping) else {}
+    return bool(
+        seo
+        and seo.get("enabled") is not False
+        and not (isinstance(provisioning, Mapping) and provisioning.get("auto") is False)
+    )
+
+
 def _heartbeat(context: dict[str, Any]) -> None:
     context["memory"].record_observation("self", "heartbeat")
 
@@ -514,17 +525,8 @@ def register_jobs(scheduler: Scheduler, config: dict[str, Any], context: dict[st
         scheduler.job("learn", schedule.get("learn", {"every": "weekly", "weekday": "monday", "at": "08:20"}), lambda: _with_persona(context, brain_digest.learn, "research"))
     article_research_enabled = bool(((config.get("seo") or {}).get("article_research") or {}).get("enabled", False))
     seo_config = config.get("seo") if isinstance(config.get("seo"), dict) else {}
-    provisioning = seo_config.get("provisioning") if isinstance(seo_config, dict) else {}
     seo_enabled = bool(seo_config.get("enabled") or (config.get("ga") or {}).get("enabled"))
-    # Automatic SEO provisioning is a platform default. Keep the explicit
-    # opt-out available, but do not require every future tenant config to
-    # repeat provisioning.auto: true before retries are scheduled.
-    provisioning_enabled = bool(
-        seo_config
-        and seo_config.get("enabled") is not False
-        and not (isinstance(provisioning, dict) and provisioning.get("auto") is False)
-    )
-    if provisioning_enabled:
+    if _seo_provisioning_enabled(config):
         scheduler.job(
             "seo_provisioning",
             schedule.get("seo_provisioning", {"every": "6h"}),
@@ -646,6 +648,8 @@ def register_builtin(scheduler: Scheduler, config: dict[str, Any], context: dict
         scheduler.job("seo_research_cycle", _spec(config, "seo_research_cycle"), lambda: _seo_research_cycle(context))
     if research_config.get("enabled") and not replacement_workflow:
         scheduler.job("seo_outcomes", _spec(config, "seo_outcomes"), lambda: brain_seo_outcomes.run(context))
+    if _seo_provisioning_enabled(config):
+        scheduler.job("seo_provisioning", _spec(config, "seo_provisioning"), lambda: _seo_provisioning(context))
     scheduler.job("reindex_memory", _spec(config, "reindex_memory"), lambda: _reindex_memory(context))
     scheduler.job("backup", _spec(config, "backup"), lambda: maintenance.backup_data(context))
 
