@@ -723,8 +723,10 @@ class SourceDeploymentService:
             })
             preview.pop("error", None)
             title = str(draft.get("title") or "")
-            if title.startswith("Preview preparing:"):
-                title = "Preview ready:" + title[len("Preview preparing:"):]
+            for prefix in ("Preview preparing:", "Preview blocked:"):
+                if title.startswith(prefix):
+                    title = "Preview ready:" + title[len(prefix):]
+                    break
         else:
             preview.update({
                 "status": "blocked",

@@ -177,7 +177,7 @@ def test_production_mode_requires_the_workspace_approval_boundary(tmp_path):
 def test_compiled_preview_completion_reconciles_pending_draft(monkeypatch, tmp_path):
     memory = Memory(tmp_path / "memory.db")
     draft_id = memory.save_draft(
-        "Preview preparing: Homepage spacing",
+        "Preview blocked: Homepage spacing",
         "diff",
         kind="merge",
         meta={
