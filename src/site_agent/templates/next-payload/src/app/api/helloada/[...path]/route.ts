@@ -94,6 +94,12 @@ type EditableQueryOptions = {
   where?: { slug: { equals: string } }
 }
 
+type EditableDocumentsResult = {
+  documents: Record<string, unknown>[]
+  published: number
+  draft: number
+}
+
 const mergeEditableDocuments = (published: unknown[], draft: unknown[]) => {
   const documents = new Map<string, Record<string, unknown>>()
   for (const value of [...published, ...draft]) {
@@ -129,7 +135,11 @@ const findEditableDocuments = async (
     published: published.docs.length,
     draft: draft.docs.length,
   })
-  return mergeEditableDocuments(published.docs, draft.docs)
+  return {
+    documents: mergeEditableDocuments(published.docs, draft.docs),
+    published: published.docs.length,
+    draft: draft.docs.length,
+  }
 }
 
 const findContentDocument = async (
@@ -147,7 +157,7 @@ const findContentDocument = async (
       req,
       where: { slug: { equals: slug } },
     })
-    if (documents[0]) return documents[0]
+    if (documents.documents[0]) return documents.documents[0]
   }
   return undefined
 }
@@ -280,8 +290,12 @@ const imageField = (document: Record<string, unknown>, route: string, collection
 const readEditableDocuments = async (payload: Awaited<ReturnType<typeof getPayload>>) => {
   const results = await Promise.all(editableCollections.map(async (collection) => {
     try {
-      const documents = await findEditableDocuments(payload, collection, { depth: 0, limit: 100, overrideAccess: true })
-      return documents.map((page) => {
+      const result = await findEditableDocuments(payload, collection, { depth: 0, limit: 100, overrideAccess: true })
+      return {
+        collection,
+        published: result.published,
+        draft: result.draft,
+        documents: result.documents.map((page) => {
         const item = page as unknown as Record<string, unknown>
         const slug = text(item.slug)
         return {
@@ -292,7 +306,8 @@ const readEditableDocuments = async (payload: Awaited<ReturnType<typeof getPaylo
           title: text(item.title) || slug || 'Untitled page',
           status: text(item._status) || (item.published ? 'published' : 'draft'),
         }
-      })
+        }),
+      }
     } catch (cause) {
       console.error('helloada_payload_workspace_query_failed', {
         tenant: helloAdaSite.tenantId,
@@ -302,11 +317,15 @@ const readEditableDocuments = async (payload: Awaited<ReturnType<typeof getPaylo
       throw new PayloadWorkspaceQueryError(collection, cause)
     }
   }))
-  return results.flat()
+  return {
+    documents: results.flatMap((result) => result.documents),
+    counts: results.map(({ collection, published, draft }) => ({ collection, published, draft })),
+  }
 }
 
 const siteSnapshot = async (request: Request, payload: Awaited<ReturnType<typeof getPayload>>) => {
-  const documents = await readEditableDocuments(payload)
+  const snapshot = await readEditableDocuments(payload)
+  const documents = snapshot.documents
   const routes = documents.map((document) => ({
     path: !document.slug || document.slug === 'home' || document.slug === 'index' ? '/' : `/${document.slug.replace(/^\/+/, '')}`,
     kind: 'page',
@@ -318,6 +337,7 @@ const siteSnapshot = async (request: Request, payload: Awaited<ReturnType<typeof
     routes,
     documents,
     ada: { configured: helloAdaRuntimeStatus().configured },
+    ...(new URL(request.url).searchParams.has('probe') ? { diagnostics: { payload: snapshot.counts } } : {}),
   }
 }
 
