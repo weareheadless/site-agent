@@ -9,6 +9,16 @@ import urllib.request
 
 from site_agent.config import load, load_env_file
 from site_agent.application.tenant_registration import load_provisioned_tenants, tenant_token_env
+from site_agent.application.seo_bootstrap import load_tenant_environment
+from site_agent.hands.payload_gateway import PayloadGatewayClient
+
+
+def verify_worker(config: dict, env: dict) -> None:
+    """A matching variable name is not proof that Worker/token values match."""
+    client = PayloadGatewayClient.from_config(config, load_tenant_environment(config, env))
+    if client is None:
+        raise ValueError('Payload gateway missing')
+    client.list('pages', limit=1)  # Read-only; never print customer documents.
 
 
 def main() -> int:
@@ -44,7 +54,8 @@ def main() -> int:
                 body = json.load(response)
             if body.get('tenant') != name or body.get('connected') is not True or body.get('ready') is not True:
                 raise ValueError('tenant identity/readiness mismatch')
-            print(json.dumps({'tenant': name, 'connection': 'ready'}))
+            verify_worker(tenant, env)
+            print(json.dumps({'tenant': name, 'connection': 'ready', 'workerRoundTrip': 'authenticated'}))
         except Exception as exc:
             failures += 1
             # No response body, exception text, tokens or environment values.

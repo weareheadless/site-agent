@@ -15,6 +15,11 @@ credential files when migrating; do not solve this by deleting capabilities
 or using another customer's provider token.
 These are separate from the earlier Payload server-props/client-nav failure.
 
+After fixing Atelier's request-time lookup, the authenticated gateway returned
+401 with the VPS tenant token. This proved that the existing Worker secret
+**value** also differed despite the correct binding name. Resynchronize the
+existing canonical tenant token; secret-name presence alone cannot detect this.
+
 ## Required invariant (every tenant)
 
 | Location | Contract |
@@ -66,6 +71,8 @@ Run the server-side preflight with the protected environment on the host:
 `PYTHONPATH=src .venv/bin/python scripts/check-helloada-connections.py --config /SOCIAL/configs/site-agent-api/config.yaml --env-file /SOCIAL/configs/site-agent-api/.env --api-url https://api.helloada.app/v1`.
 It returns nonzero on missing credentials, a registry/Payload name mismatch,
 rejected authentication or a wrong/unready tenant, without printing secrets.
+It also performs a read-only authenticated Worker content request, catching a
+token-value mismatch in the reverse direction without creating a chat job.
 For a scoped customer release add `--tenant atelier-harmonie --tenant oceanicvibes`.
 Other intake/lab tenants are not silently considered deployed customer sites.
 
