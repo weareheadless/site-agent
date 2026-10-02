@@ -16,6 +16,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -413,6 +414,13 @@ class SourceDeploymentService:
                 if resolved != worktree and worktree not in resolved.parents:
                     command.extend(["--root", str(worktree)])
                 return command
+        # The source repo may predate the optional TypeScript inventory tool.
+        # Keep preview validation deterministic by using the host-owned
+        # Payload-aware fallback rather than making every customer repository
+        # carry site-agent's internal tooling.
+        fallback = Path(__file__).with_name("source_inventory.py").resolve()
+        if fallback.is_file():
+            return [sys.executable, str(fallback), "--root", str(worktree)]
         raise SourceDeploymentError("source inventory tooling is not available on the host")
 
     def _preview_port(self) -> int:

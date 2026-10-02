@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import sys
 import threading
 
 import pytest
@@ -17,6 +18,18 @@ def test_revision_marker_is_written_only_to_the_detached_worktree(tmp_path):
         marker = service._write_revision_marker(tmp_path, "A" * 40)
         assert marker.read_text(encoding="utf-8") == ("a" * 40) + "\n"
         assert marker.relative_to(tmp_path).as_posix() == "public/site-agent-revision.txt"
+    finally:
+        service.close()
+
+
+def test_missing_repo_inventory_uses_host_owned_fallback(tmp_path):
+    service = source_deployment.SourceDeploymentService(
+        {"site": {"clone_path": str(tmp_path), "preview_branch": "preview"}},
+    )
+    try:
+        command = service._inventory_command(tmp_path, tmp_path)
+        assert command[:2] == [sys.executable, str(source_deployment.Path(source_deployment.__file__).with_name("source_inventory.py").resolve())]
+        assert command[-2:] == ["--root", str(tmp_path)]
     finally:
         service.close()
 
