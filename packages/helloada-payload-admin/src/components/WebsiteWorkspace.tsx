@@ -11,6 +11,8 @@ import { fetchHelloAda } from '../api/fetchHelloAda'
 import { useHelloAdaTranslations } from '../api/useHelloAdaTranslations'
 import { mediaReferenceId, mediaUrl as migrationMediaUrl } from '../lib/media'
 import { useHelloAdaSite } from '../config/provider'
+import { HelloAdaMark } from './HelloAdaLogo'
+import { WorkspaceIcon } from './WorkspaceIcon'
 
 type WorkspaceDocument = {
   id: string
@@ -649,6 +651,9 @@ function ReviewWorkspace() {
   const [websitePresent, setWebsitePresent] = useState(true)
   const [selectedRoute, setSelectedRoute] = useState('/')
   const [previewViewport, setPreviewViewport] = useState<PreviewViewport>('desktop')
+  const [mobilePane, setMobilePane] = useState<'ada' | 'website'>('ada')
+  const [manualEditing, setManualEditing] = useState(false)
+  const [adaUnavailable, setAdaUnavailable] = useState(false)
   const [previewStatus, setPreviewStatus] = useState<PreviewUiStatus>('idle')
   const [previewPlan, setPreviewPlan] = useState<PreviewPlan>()
   const [message, setMessage] = useState('')
@@ -695,6 +700,7 @@ function ReviewWorkspace() {
   const editorImageInputRef = useRef<HTMLInputElement>(null)
   const fieldImageInputRef = useRef<HTMLInputElement>(null)
   const previewFrameRef = useRef<HTMLIFrameElement>(null)
+  const publishDialogRef = useRef<HTMLDialogElement>(null)
   const editorImageTargetRef = useRef<string | undefined>(undefined)
   const messageInputRef = useRef<HTMLTextAreaElement>(null)
   const chatLogRef = useRef<HTMLDivElement>(null)
@@ -788,7 +794,7 @@ function ReviewWorkspace() {
         url: previewUrl,
         revision: previewRevision,
       },
-      surface: 'The website preview is on the left; the Ada chat panel is on the right.',
+      surface: 'The Ada conversation and the website preview share this workspace. The selected page is visible in the website window.',
       payload: selectedDocument
         ? {
             collection: selectedDocument.collection,
@@ -1129,6 +1135,7 @@ function ReviewWorkspace() {
           } | null
         }
         if (!response.ok) throw new Error(t('error.adaPhase'))
+        setAdaUnavailable(false)
         const phase = body.phase || body.mode
         setAdaPhase(phase === 'intake' || phase === 'incubation' || phase === 'workspace' ? phase : 'workspace')
         if (typeof body.website_present === 'boolean') {
@@ -1157,6 +1164,7 @@ function ReviewWorkspace() {
         // Do not guess that intake is complete. Website context stays dormant
         // until the server proves the explicit acceptance transition.
         setAdaPhase('unknown')
+        setAdaUnavailable(true)
         loadWorkspace(background)
       })
   }, [loadWorkspace, rememberPendingAdaJob, t])
@@ -1974,7 +1982,7 @@ function ReviewWorkspace() {
       ? t('workspace.phaseIntake')
     : adaPhase === 'workspace'
       ? t('workspace.phaseWorkspace')
-      : t('workspace.phaseConnecting')
+      : adaUnavailable ? t('owner.connection.unavailable') : t('workspace.phaseConnecting')
   const phaseNote = adaPhase === 'incubation'
     ? t('workspace.phaseNoteIncubation')
     : adaPhase === 'intake'
@@ -1992,13 +2000,13 @@ function ReviewWorkspace() {
       ? websitePresent
         ? t('workspace.phaseSummaryWorkspace')
         : t('workspace.phaseSummaryNoWebsite')
-      : t('workspace.phaseSummaryConnecting')
+      : adaUnavailable ? t('owner.reconnectNote') : t('workspace.phaseSummaryConnecting')
   const shortcuts = adaPhase === 'intake' || adaPhase === 'incubation'
     ? [[t('workspace.shortClarify'), t('workspace.shortClarifyPrompt')]]
     : [
-        [t('workspace.shortClarify'), t('workspace.shortClarifyPagePrompt')],
-        [t('workspace.shortDraft'), t('workspace.shortDraftPrompt')],
-        [t('workspace.shortStartPage'), t('workspace.shortStartPagePrompt')],
+        [t('owner.improvePage'), t('owner.improvePrompt')],
+        [t('owner.writeUpdate'), t('workspace.shortDraftPrompt')],
+        [t('owner.newPage'), t('workspace.shortStartPagePrompt')],
       ]
   const canAcceptIntake = (adaPhase === 'intake' || adaPhase === 'incubation')
     && intakeStatus?.readiness?.state === 'ready_to_build'
@@ -2022,11 +2030,18 @@ function ReviewWorkspace() {
   })()
   const currentAdaProgress = adaProgressSteps[adaProgressSteps.length - 1]?.text || t('workspace.thinking')
   return (
-    <main className="helloada-workspace">
+    <main className={`helloada-workspace helloada-owner-workspace shows-${mobilePane}`}>
+      <header className="helloada-workspace-intro">
+        <div><p className="helloada-eyebrow">{site.siteName}</p><h1>{t('owner.heading')}</h1></div>
+        <p>{t('owner.promise')}</p>
+      </header>
       {error ? <div className="helloada-alert" role="alert">{error}</div> : null}
-
+      {websitePresent ? <div className="helloada-pane-switch" role="group" aria-label={t('owner.workspace')}>
+        <button type="button" id="helloada-ada-tab" aria-controls="helloada-ada-pane" aria-pressed={mobilePane === 'ada'} onClick={() => setMobilePane('ada')}>{t('workspace.askAda')}</button>
+        <button type="button" id="helloada-website-tab" aria-controls="helloada-website-pane" aria-pressed={mobilePane === 'website'} onClick={() => setMobilePane('website')}>{t('owner.website')}{hasDraft ? <i aria-label={t('owner.readyReview')} /> : null}</button>
+      </div> : null}
        <div className={`helloada-workspace-grid ${websitePresent ? '' : 'is-chat-only'}`}>
-         {websitePresent ? <section className="helloada-review-window" aria-label={t('workspace.websiteReview')}>
+         {websitePresent ? <section id="helloada-website-pane" className="helloada-review-window" aria-label={t('workspace.websiteReview')}>
           <div className="helloada-review-toolbar">
             <div className="helloada-window-dots" aria-hidden="true">
               <span />
@@ -2034,34 +2049,42 @@ function ReviewWorkspace() {
               <span />
             </div>
             <div className="helloada-window-title">
-               <span>{t('workspace.reviewing')}</span>
-              <strong>{currentRouteLabel}</strong>
+              <span>{t('owner.website')}</span>
             </div>
              <div className="helloada-segmented" role="group" aria-label={t('workspace.previewViewport')}>
                <button
                  className={previewViewport === 'mobile' ? 'is-selected' : ''}
                  type="button"
                  onClick={() => setPreviewViewport('mobile')}
+                 aria-label={t('workspace.previewMobile')}
+                 title={t('workspace.previewMobile')}
+                 aria-pressed={previewViewport === 'mobile'}
                >
-                 {t('workspace.previewMobile')}
+                 <WorkspaceIcon name="mobile" size={16} />
                </button>
                <button
                  className={previewViewport === 'tablet' ? 'is-selected' : ''}
                  type="button"
                  onClick={() => setPreviewViewport('tablet')}
+                 aria-label={t('workspace.previewTablet')}
+                 title={t('workspace.previewTablet')}
+                 aria-pressed={previewViewport === 'tablet'}
                >
-                 {t('workspace.previewTablet')}
+                 <WorkspaceIcon name="tablet" size={16} />
                </button>
                <button
                  className={previewViewport === 'desktop' ? 'is-selected' : ''}
                  type="button"
                  onClick={() => setPreviewViewport('desktop')}
+                 aria-label={t('workspace.previewDesktop')}
+                 title={t('workspace.previewDesktop')}
+                 aria-pressed={previewViewport === 'desktop'}
                >
-                 {t('workspace.previewDesktop')}
+                 <WorkspaceIcon name="desktop" size={16} />
                </button>
             </div>
             <label className="helloada-page-control">
-               <span>{t('workspace.visiblePage')}</span>
+               <span className="helloada-sr-only">{t('workspace.visiblePage')}</span>
                   <select aria-label={t('workspace.visiblePage')} value={selectedRoute} disabled={adaPhase === 'intake' || adaPhase === 'unknown'} onChange={(event) => {
                     setPreviewStatus('refreshing')
                     setSelectedRoute(event.target.value)
@@ -2073,13 +2096,12 @@ function ReviewWorkspace() {
                 ))}
               </select>
             </label>
-              {canEditPage ? (
-                <button className="helloada-edit-page" type="button" onClick={() => void openEditor()}>
-                   {t('workspace.editVisiblePage')} <span aria-hidden="true">✦</span>
-               </button>
-              ) : (
-                  <span className="helloada-edit-page is-disabled">{t('workspace.noEditableDraft')}</span>
-               )}
+              {canEditPage ? <details className="helloada-preview-options">
+                <summary aria-label={t('owner.pageOptions')} title={t('owner.pageOptions')}><WorkspaceIcon name="settings" /></summary>
+                <div><button type="button" onClick={() => void openEditor()}>{t('owner.editManually')}</button><label><input type="checkbox" checked={manualEditing} onChange={(event) => setManualEditing(event.target.checked)} />{t('owner.quickEditing')}</label></div>
+              </details> : null}
+            </div>
+            {pendingChangeCount || hasDraft || publishNotice ? <div className="helloada-review-decision" role="status">
                {pendingChangeCount ? (
                  <div className="helloada-draft-actions" aria-label={t('workspace.draftActions')}>
                    <span>{pendingChangeCount} {t('workspace.pendingChanges')}</span>
@@ -2095,14 +2117,14 @@ function ReviewWorkspace() {
                   <button
                    className="helloada-draft-action is-publish"
                    type="button"
-                   onClick={() => void publishDraft()}
+                   onClick={() => publishDialogRef.current?.showModal()}
                    disabled={publishing}
                  >
-                   {publishing ? t('workspace.publishingDraft') : t('workspace.publishDraft')}
+                   {publishing ? t('workspace.publishingDraft') : t('owner.publishChanges')}
                   </button>
                 ) : null}
                 {publishNotice ? <p className="helloada-draft-confirmation" role="status" aria-live="polite">{publishNotice}</p> : null}
-             </div>
+             </div> : null}
 
              <div className={`helloada-preview-frame-shell is-${previewViewport}`}>
                <iframe
@@ -2124,7 +2146,7 @@ function ReviewWorkspace() {
                    <span>{previewStatusMessage}</span>
                  </div>
                ) : null}
-               {activePreviewEditKey && previewEditTargets.some((target) => target.key === activePreviewEditKey) ? (
+               {manualEditing && activePreviewEditKey && previewEditTargets.some((target) => target.key === activePreviewEditKey) ? (
                 <div className="helloada-preview-edit-overlay" role="group" aria-label={t('workspace.quickEditLabel')}>
                   {previewEditTargets.filter((target) => target.key === activePreviewEditKey).map((target) => (
                     <button
@@ -2140,14 +2162,14 @@ function ReviewWorkspace() {
                 </div>
               ) : null}
             </div>
+          <footer className="helloada-preview-footer"><span className={hasDraft ? 'is-draft' : ''}><i aria-hidden="true" />{hasDraft ? t('owner.readyReview') : t('owner.websitePreview')}</span><span>{hasDraft ? t('owner.notLive') : t('owner.previewHint')}</span></footer>
         </section> : null}
 
-         <aside className="helloada-ada-panel" aria-label={t('workspace.adaAssistant')}>
+         <aside id="helloada-ada-pane" className="helloada-ada-panel" aria-label={t('workspace.adaAssistant')}>
            <div className="helloada-panel-header">
-             <div>
-                <p className="helloada-eyebrow">{t('workspace.controlCenter')}</p>
-                <strong>{t('workspace.adaAssistant')}</strong>
-                <span>{t('workspace.contextDirection')}</span>
+             <div className="helloada-assistant-identity">
+                <HelloAdaMark size={32} />
+                <div><strong>Ada</strong><span>{t('owner.assistantRole')}</span></div>
              </div>
              <div className="helloada-panel-header-actions">
                {adaPhase === 'workspace' ? (
@@ -2157,20 +2179,19 @@ function ReviewWorkspace() {
                    onClick={startNewChat}
                    disabled={chatWorking}
                  >
-                   <span aria-hidden="true">+</span> {t('workspace.newChat')}
+                   <WorkspaceIcon name="plus" size={14} /> {t('workspace.newChat')}
                  </button>
                ) : null}
-               <span className={`helloada-status-dot ${workspace?.ada.configured ? 'is-ready' : ''}`} aria-hidden="true" />
              </div>
            </div>
 
           <div className="helloada-chat-context">
              <span>{t('workspace.workingOn')}</span>
             <strong>{currentRouteLabel}</strong>
-             <em>{t('workspace.draft')}</em>
+             {hasBrief ? <button className="helloada-context-button" type="button" aria-expanded={briefOpen} aria-controls="helloada-working-brief" onClick={() => setBriefOpen((current) => !current)}>{t('owner.businessContext')}</button> : null}
           </div>
 
-           <div className={`helloada-phase-bar is-${adaPhase}`} role="status">
+           {adaPhase !== 'workspace' || !websitePresent ? <div className={`helloada-phase-bar is-${adaPhase}`} role="status">
              <span className="helloada-phase-mark" aria-hidden="true" />
              <div className="helloada-phase-copy">
                <strong>{phaseLabel}</strong>
@@ -2178,7 +2199,7 @@ function ReviewWorkspace() {
                <span className="helloada-sr-only">{phaseNote}</span>
              </div>
              <div className="helloada-phase-actions">
-               {hasBrief ? (
+               {hasBrief && adaPhase !== 'workspace' ? (
                  <button
                    className="helloada-phase-action"
                    type="button"
@@ -2199,8 +2220,9 @@ function ReviewWorkspace() {
                    {accepting ? t('workspace.starting') : t('workspace.startFirstPage')}
                  </button>
                ) : null}
+               {adaUnavailable ? <button className="helloada-phase-action" type="button" onClick={() => loadAdaStatus(conversationId)}>{t('owner.retry')}</button> : null}
              </div>
-           </div>
+           </div> : null}
 
            {briefOpen && hasBrief ? (
              <section className="helloada-brief-inspector" id="helloada-working-brief" aria-label={t('workspace.briefTitle')}>
@@ -2254,7 +2276,7 @@ function ReviewWorkspace() {
            ) : null}
 
            <div className="helloada-chat-log" ref={chatLogRef} onScroll={handleChatScroll} aria-live="polite">
-             {!messages.length ? <div className="helloada-chat-empty">{t('workspace.sendBegin')}</div> : null}
+             {!messages.length ? <div className="helloada-owner-welcome"><HelloAdaMark size={54} /><h2>{websitePresent ? t('owner.welcome') : t('owner.welcomeNew')}</h2><p>{websitePresent ? t('owner.welcomeNote') : t('workspace.tellAdaIntake')}</p></div> : null}
             {messages.map((item, index) => (
               <div className={`helloada-chat-message is-${item.role}`} key={`${item.role}-${index}`}>
                  <span>{item.role === 'assistant' ? t('workspace.roleAda') : item.role === 'user' ? t('workspace.roleYou') : t('workspace.roleStudio')}</span>
@@ -2288,14 +2310,14 @@ function ReviewWorkspace() {
                     <i aria-hidden="true"><b /><b /><b /></i>
                   </div>
                    {adaProgressSteps.length > 1 ? (
-                     <div className="helloada-chat-progress" aria-label={t('workspace.progressTitle')}>
+                     <details className="helloada-chat-progress"><summary>{t('owner.seeProgress')}</summary>
                        {adaProgressSteps.map((step, index) => (
                          <span key={`${step.ts || step.text}-${index}`} className={index === adaProgressSteps.length - 1 ? 'is-current' : 'is-complete'}>
                            <b aria-hidden="true">{index === adaProgressSteps.length - 1 ? '•' : '✓'}</b>
                            {step.text}
                          </span>
                        ))}
-                    </div>
+                    </details>
                   ) : null}
                 </div>
               ) : null}
@@ -2310,7 +2332,7 @@ function ReviewWorkspace() {
 
            <div className="helloada-shortcuts" aria-label={t('workspace.quickActions')}>
             {shortcuts.map(([label, prompt]) => (
-              <button key={label} type="button" onClick={() => void sendMessage(prompt)} disabled={chatWorking}>
+              <button key={label} type="button" onClick={() => { setMessage(prompt); setMobilePane('ada'); window.setTimeout(() => messageInputRef.current?.focus(), 0) }} disabled={chatWorking}>
                 {label}
               </button>
             ))}
@@ -2325,7 +2347,7 @@ function ReviewWorkspace() {
                void sendMessage()
              }}
            >
-             <label htmlFor="helloada-ada-message">{t('workspace.askAda')}</label>
+             <label className="helloada-sr-only" htmlFor="helloada-ada-message">{t('workspace.askAda')}</label>
             {pendingAttachments.length ? (
                <div className="helloada-pending-attachments" aria-label={t('workspace.pendingAttachments')}>
                 {pendingAttachments.map((attachment, index) => {
@@ -2362,13 +2384,13 @@ function ReviewWorkspace() {
                 value={message}
                onChange={(event) => setMessage(event.target.value)}
                  onKeyDown={(event) => {
-                   if (event.key === 'Enter' && !event.shiftKey) {
+                   if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing && adaPhase !== 'unknown') {
                      event.preventDefault()
                      void sendMessage()
                    }
                  }}
                   placeholder={adaPhase === 'intake' || adaPhase === 'incubation' ? t('workspace.tellAdaIntake') : t('workspace.describeNextChange')}
-                rows={3}
+                rows={2}
                  disabled={chatWorking}
               />
               <button
@@ -2378,21 +2400,27 @@ function ReviewWorkspace() {
                  disabled={chatWorking || uploadingMedia}
                  aria-label={uploadingMedia ? t('workspace.attachingImage') : t('workspace.attachImages')}
               >
-                <span aria-hidden="true">{uploadingMedia ? '…' : '＋'}</span>
+                {uploadingMedia ? '…' : <WorkspaceIcon name="plus" />}
               </button>
                <button
                  className="helloada-send-button"
                  type="button"
                  onClick={() => void sendMessage()}
-                  disabled={chatWorking || uploadingMedia || (!message.trim() && !pendingAttachments.length)}
+                  disabled={adaPhase === 'unknown' || chatWorking || uploadingMedia || (!message.trim() && !pendingAttachments.length)}
+                  aria-label={t('workspace.send')}
                >
-                  <span>{chatWorking ? t('workspace.working') : t('workspace.send')}</span>
-                <b aria-hidden="true">↗</b>
+                <WorkspaceIcon name="arrow" />
               </button>
             </div>
+            <p className="helloada-composer-note">{t('owner.composerNote')}</p>
           </form>
          </aside>
        </div>
+
+       <dialog ref={publishDialogRef} className="helloada-publish-dialog" aria-labelledby="helloada-publish-title">
+         <HelloAdaMark size={40} /><h2 id="helloada-publish-title">{t('owner.publishTitle')}</h2><p><strong>{currentRouteLabel}</strong> · {site.siteName}</p><p>{t('owner.publishNote')}</p>
+         <div><button type="button" autoFocus onClick={() => publishDialogRef.current?.close()}>{t('owner.keepReviewing')}</button><button type="button" className="is-primary" disabled={!hasDraft || publishing || Boolean(pendingChangeCount)} onClick={() => { publishDialogRef.current?.close(); void publishDraft() }}>{t('owner.publishChanges')}<WorkspaceIcon name="arrow" /></button></div>
+       </dialog>
 
         {fieldEditorEntry && fieldEditorKey ? (
           <div className="helloada-field-popover-backdrop" role="presentation">

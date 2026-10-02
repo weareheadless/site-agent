@@ -13,3 +13,21 @@ tenant-specific `/api/helloada/*` control-plane routes.
 The package is released as an exact versioned tarball. A customer upgrade is a dependency
 change followed by a normal site build and review; the package does not silently mutate
 customer repositories or production data.
+
+## Owner experience (0.2)
+
+The primary workspace mirrors the HelloAda homepage: Ada conversation on the left,
+website review on the right. On smaller screens, Ask Ada and Website switch between
+the same mounted windows. Suggested requests populate the composer for the owner to
+review; they do not start a job automatically. Publishing appears only for a real
+draft and names the page before an explicit approval.
+
+Manage opens a keyboard-accessible drawer with content, photos/files, settings,
+account and language. Extra Payload collections are under Advanced options; native
+Payload access controls still apply. Connection status is checked against the API.
+
+`src/brand/helloada-mark.svg` is the exact approved homepage mark, also rendered by
+`HelloAdaMark`. Do not substitute a letter glyph or redraw the geometry.
+
+Wrap both the dashboard and navigation in `HelloAdaSiteProvider` using the site's
+configuration, so the tenant name and API base remain correct on every admin page.

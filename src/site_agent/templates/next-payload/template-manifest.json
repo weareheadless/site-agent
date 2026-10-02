@@ -1,7 +1,7 @@
 {
   "templateSchema": 2,
   "workspaceApi": "v1",
-  "payloadAdmin": "0.1.4",
+  "payloadAdmin": "0.2.0",
   "workerTokenEnv": "HELLOADA_SITE_AGENT_TOKEN",
   "requires": {
     "node": ">=20.9.0",

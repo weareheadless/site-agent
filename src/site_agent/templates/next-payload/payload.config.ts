@@ -36,6 +36,7 @@ export default buildConfig({
     meta: {
       titleSuffix: ' — HelloAda',
       applicationName: 'HelloAda',
+      icons: { icon: '/brand/helloada-logo.svg' },
       description: 'A calm control room for shaping, reviewing, and publishing your website with Ada.',
     },
     components: {

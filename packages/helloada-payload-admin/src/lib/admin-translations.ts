@@ -1,5 +1,6 @@
 import { DEFAULT_LANGUAGE, isHelloAdaLanguage, type HelloAdaLanguage } from './languages'
 import { adminLocalePacks, type AdminCopy } from './admin-locale-packs'
+import { ownerCopy } from './owner-copy'
 
 const en: AdminCopy = {
   'nav.studioConsole': 'Studio console',
@@ -527,6 +528,7 @@ export const normalizeAdminLanguage = (value?: string): HelloAdaLanguage => {
 
 export const adminText = (key: string, language?: string) => {
   const normalized = normalizeAdminLanguage(language)
+  if (key.startsWith('owner.')) return ownerCopy[normalized]?.[key] || ownerCopy.en[key] || key
   return copies[normalized]?.[key] || en[key] || key
 }
 
