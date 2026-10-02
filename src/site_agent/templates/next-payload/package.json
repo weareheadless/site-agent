@@ -8,7 +8,8 @@
     "dev": "next dev",
     "lint": "eslint src",
     "payload": "payload",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "verify:payload": "cross-env NODE_ENV=production PAYLOAD_CLI=1 PAYLOAD_SECRET=ignore tsx scripts/verify-payload-contract.ts"
   },
   "dependencies": {
     "@weareheadless/helloada-payload-admin": "https://github.com/weareheadless/site-agent/releases/download/payload-admin-v0.4.0/weareheadless-helloada-payload-admin-0.4.0.tgz",
@@ -31,6 +32,7 @@
     "@types/react-dom": "19.2.3",
     "eslint": "9.16.0",
     "eslint-config-next": "16.3.4",
+    "tsx": "4.22.4",
     "typescript": "5.7.3",
     "wrangler": "4.130.0"
   },

@@ -16,6 +16,15 @@ const errorResponse = (message: string, status = 400) => NextResponse.json({ err
 const editableCollections = ['pages', 'posts', 'products'] as const
 type EditableCollection = (typeof editableCollections)[number]
 
+class PayloadWorkspaceQueryError extends Error {
+  constructor(public readonly collection: EditableCollection, cause: unknown) {
+    super(`Payload workspace query failed for collection "${collection}"`, { cause })
+    this.name = 'PayloadWorkspaceQueryError'
+  }
+}
+
+const errorMessage = (cause: unknown) => cause instanceof Error ? cause.message : String(cause)
+
 const isEditableCollection = (value: unknown): value is EditableCollection =>
   editableCollections.includes(String(value || '') as EditableCollection)
 
@@ -222,8 +231,8 @@ const imageField = (document: Record<string, unknown>, route: string, collection
   }]
 }
 
-const siteSnapshot = async (request: Request, payload: Awaited<ReturnType<typeof getPayload>>) => {
-  const documents = (await Promise.all(editableCollections.map(async (collection) => {
+const readEditableDocuments = async (payload: Awaited<ReturnType<typeof getPayload>>) => {
+  const results = await Promise.all(editableCollections.map(async (collection) => {
     try {
       const result = await payload.find({ collection: collection as CollectionSlug, draft: true, limit: 100, pagination: false, overrideAccess: true })
       return result.docs.map((page) => {
@@ -238,10 +247,20 @@ const siteSnapshot = async (request: Request, payload: Awaited<ReturnType<typeof
           status: text(item._status) || (item.published ? 'published' : 'draft'),
         }
       })
-    } catch {
-      return []
+    } catch (cause) {
+      console.error('helloada_payload_workspace_query_failed', {
+        tenant: helloAdaSite.tenantId,
+        collection,
+        error: errorMessage(cause),
+      })
+      throw new PayloadWorkspaceQueryError(collection, cause)
     }
-  }))).flat()
+  }))
+  return results.flat()
+}
+
+const siteSnapshot = async (request: Request, payload: Awaited<ReturnType<typeof getPayload>>) => {
+  const documents = await readEditableDocuments(payload)
   const routes = documents.map((document) => ({
     path: !document.slug || document.slug === 'home' || document.slug === 'index' ? '/' : `/${document.slug.replace(/^\/+/, '')}`,
     kind: 'page',
@@ -250,7 +269,7 @@ const siteSnapshot = async (request: Request, payload: Awaited<ReturnType<typeof
   }))
   return {
     site: { name: process.env.HELLOADA_SITE_NAME || 'Your website', url: process.env.NEXT_PUBLIC_SITE_URL || new URL(request.url).origin },
-    routes: routes.length ? routes : [{ path: '/', kind: 'page', collection: 'pages', sourceId: '' }],
+    routes,
     documents,
     ada: { configured: helloAdaRuntimeStatus().configured },
   }
@@ -265,7 +284,18 @@ export async function GET(request: Request, { params }: RouteProps) {
     const result = helloAdaConnection(helloAdaSite.tenantId, upstream ? { status: upstream.status, body: await upstream.json().catch(() => ({})) } : undefined)
     return NextResponse.json(result.body, { status: result.status, headers: { 'Cache-Control': 'private, no-store' } })
   }
-  if (path === '/workspace') return NextResponse.json(await siteSnapshot(request, auth.payload), { headers: { 'Cache-Control': 'private, no-store' } })
+  if (path === '/workspace') {
+    try {
+      return NextResponse.json(await siteSnapshot(request, auth.payload), { headers: { 'Cache-Control': 'private, no-store' } })
+    } catch (cause) {
+      const collection = cause instanceof PayloadWorkspaceQueryError ? cause.collection : undefined
+      return NextResponse.json({
+        error: 'payload_workspace_unavailable',
+        message: collection ? `Payload collection "${collection}" could not be read.` : 'Payload workspace could not be read.',
+        collection,
+      }, { status: 503, headers: { 'Cache-Control': 'private, no-store' } })
+    }
+  }
   if (path === '/page-fields' || path === '/page-images') {
     const route = contentRoute(new URL(request.url).searchParams.get('route') || '/')
     const document = await findContentDocument(auth.payload, route)
@@ -291,19 +321,20 @@ export async function GET(request: Request, { params }: RouteProps) {
     return NextResponse.json({ media: media.slice((currentPage - 1) * limit, currentPage * limit), page: currentPage, limit, totalDocs: media.length, totalPages, hasNextPage: currentPage < totalPages }, { headers: { 'Cache-Control': 'private, no-store' } })
   }
   if (path === '/content/history') {
-    const versions = (await Promise.all(editableCollections.map(async (collection) => {
-      try {
+    try {
+      const versions = (await Promise.all(editableCollections.map(async (collection) => {
         const result = await auth.payload.findVersions({ collection: collection as CollectionSlug, depth: 0, limit: 40, overrideAccess: false, req: auth.req, sort: '-createdAt' })
         return result.docs.map((item) => {
           const row = item as unknown as Record<string, unknown>
           const version = asObject(row.version)
           return { id: text(row.id), parent: text(row.parent), collection, title: text(version.title) || text(version.slug) || 'Untitled content', slug: text(version.slug), status: text(version._status) || 'unknown', createdAt: text(row.createdAt), updatedAt: text(row.updatedAt), latest: row.latest === true }
         })
-      } catch {
-        return []
-      }
-    }))).flat().sort((left, right) => right.createdAt.localeCompare(left.createdAt))
-    return NextResponse.json({ versions: versions.slice(0, 80) }, { headers: { 'Cache-Control': 'private, no-store' } })
+      }))).flat().sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      return NextResponse.json({ versions: versions.slice(0, 80) }, { headers: { 'Cache-Control': 'private, no-store' } })
+    } catch (cause) {
+      console.error('helloada_payload_history_query_failed', { tenant: helloAdaSite.tenantId, error: errorMessage(cause) })
+      return NextResponse.json({ error: 'payload_history_unavailable', message: 'Payload history could not be read.' }, { status: 503, headers: { 'Cache-Control': 'private, no-store' } })
+    }
   }
   if (path === '/language') {
     const language = request.headers.get('cookie')?.match(/(?:^|;\s*)payload-lng=([^;]+)/i)?.[1] || 'en'
