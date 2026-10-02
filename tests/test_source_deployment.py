@@ -34,6 +34,17 @@ def test_missing_repo_inventory_uses_host_owned_fallback(tmp_path):
         service.close()
 
 
+def test_source_deployment_build_environment_forces_production_mode(tmp_path):
+    service = source_deployment.SourceDeploymentService(
+        {"site": {"clone_path": str(tmp_path), "preview_branch": "preview"}},
+        env={"NODE_ENV": "development", "PATH": "/usr/bin:/bin"},
+    )
+    try:
+        assert service._child_env()["NODE_ENV"] == "production"
+    finally:
+        service.close()
+
+
 def test_public_revision_verification_requires_the_exact_commit(tmp_path):
     expected = "b" * 40
 

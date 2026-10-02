@@ -223,6 +223,13 @@ class SourceDeploymentService:
 
     def _child_env(self) -> dict[str, str]:
         child = self._resolved_env()
+        # Source validation and compiled previews must always use the
+        # production framework mode. Tenant workers intentionally run with a
+        # development NODE_ENV for their interactive loop, but leaking that
+        # value into `next build` makes Next render its generated
+        # `/_global-error` route in an unsupported mode and can abort an
+        # otherwise valid preview.
+        child["NODE_ENV"] = "production"
         node_path = str(self.settings.get("node_path") or "").strip()
         if node_path:
             child["PATH"] = f"{node_path}:{child.get('PATH') or os.environ.get('PATH', '')}"
