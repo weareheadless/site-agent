@@ -469,6 +469,7 @@ class WebsiteBootstrapService:
     ) -> Mapping[str, Any]:
         names = self._names(tenant_id)
         worker_url = self._worker_url(names["worker"])
+        public_origin = worker_url.rstrip("/") + "/"
         tenant_dir = config_path.parent
         site_dir = Path(str(repository.get("site_dir") or tenant_dir / "site")).resolve()
         site_agent_url = str(
@@ -493,7 +494,7 @@ class WebsiteBootstrapService:
             "preview_branch": "preview",
             "url": worker_url,
             "preview_url": worker_url,
-            "public_url": worker_url,
+            "public_url": public_origin,
             "custom_domain": "",
             "website_present": True,
             "payload": {
@@ -534,13 +535,13 @@ class WebsiteBootstrapService:
             **existing_seo,
             "enabled": True,
             "source": "crawlseo",
-            "site_url": worker_url,
-            "gsc_property": worker_url,
+            "site_url": public_origin,
+            "gsc_property": public_origin,
             "provisioning": {
                 **existing_provisioning,
                 "auto": True,
                 "verification_method": str(existing_provisioning.get("verification_method") or "meta"),
-                "gsc_property": worker_url,
+                "gsc_property": public_origin,
             },
         }
         TenantRegistrationService._replace_config(config_path, raw)
