@@ -8,6 +8,7 @@ from site_agent.application.growth import growth_snapshot
 from site_agent.application.workspace import ChatService, Tenant, TenantRegistry
 from site_agent.core.memory import Memory
 from site_agent.web.workspace import register_workspace_routes
+from site_agent.application.seo_bootstrap import load_tenant_environment
 
 
 def test_growth_is_readonly_and_does_not_invent_provider_data(tmp_path):
@@ -64,3 +65,12 @@ def test_connection_and_growth_are_authenticated_and_tenant_isolated(tmp_path):
             assert growth['tenant'] == name
             assert [article['title'] for article in growth['articles']] == [f'{name} article']
             assert 'token' not in json.dumps(connection)
+
+
+def test_migrated_tenant_keeps_its_existing_provider_credential_file(tmp_path):
+    credential_file = tmp_path / 'tenant.env'
+    credential_file.write_text('CRAWLSEO_SERVICE_TOKEN=tenant-research-fixture\nPROVISIONED_DEMO_TOKEN=old-fixture\n')
+    config = {'data_dir': str(tmp_path / 'data'), 'credentials': {'env_file': str(credential_file)}}
+    env = load_tenant_environment(config, {'PROVISIONED_DEMO_TOKEN': 'canonical-fixture'})
+    assert env['CRAWLSEO_SERVICE_TOKEN'] == 'tenant-research-fixture'
+    assert env['PROVISIONED_DEMO_TOKEN'] == 'canonical-fixture'

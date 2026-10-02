@@ -16,12 +16,18 @@ def main() -> int:
     parser.add_argument('--config', required=True, type=Path)
     parser.add_argument('--env-file', type=Path)
     parser.add_argument('--api-url', required=True, help='Shared API base including /v1')
+    parser.add_argument('--tenant', action='append', help='Limit to an explicitly selected deployed customer; repeatable')
     args = parser.parse_args()
     env = load_env_file(args.env_file, dict(os.environ)) if args.env_file else dict(os.environ)
     config, _ = load(args.config, env, validate_integrations=False)
     extra, extra_env = load_provisioned_tenants(config, env)
     env = {**env, **extra_env}
     declared = {**config.get('workspace_api', {}).get('tenants', {}), **extra}
+    if args.tenant:
+        if any(name not in declared for name in args.tenant):
+            print(json.dumps({'connection': 'failed', 'failureType': 'UnknownTenant'}))
+            return 1
+        declared = {name: declared[name] for name in args.tenant}
     failures = 0
     for name, spec in declared.items():
         token_name = spec.get('api_token_env') or tenant_token_env(name)
@@ -33,7 +39,7 @@ def main() -> int:
             token = env.get(token_name)
             if not token:
                 raise ValueError('missing tenant service credential')
-            req = urllib.request.Request(args.api_url.rstrip('/') + '/workspace/connection', headers={'Authorization': 'Bearer ' + token})
+            req = urllib.request.Request(args.api_url.rstrip('/') + '/workspace/connection', headers={'Authorization': 'Bearer ' + token, 'User-Agent': 'site-agent/readiness'})
             with urllib.request.urlopen(req, timeout=25) as response:
                 body = json.load(response)
             if body.get('tenant') != name or body.get('connected') is not True or body.get('ready') is not True:
@@ -42,7 +48,7 @@ def main() -> int:
         except Exception as exc:
             failures += 1
             # No response body, exception text, tokens or environment values.
-            print(json.dumps({'tenant': name, 'connection': 'failed', 'failureType': type(exc).__name__}))
+            print(json.dumps({'tenant': name, 'connection': 'failed', 'failureType': type(exc).__name__, 'httpStatus': getattr(exc, 'code', None)}))
     return 1 if failures or not declared else 0
 
 

@@ -8,6 +8,11 @@ canonical bindings. Its bridge read only `process.env`, rather than the
 request-time OpenNext Cloudflare context. OceanicVibes additionally had no
 `HELLOADA_SITE_AGENT_TOKEN` binding and was absent from the shared API registry;
 its VPS configuration still described the legacy static-site/media adapter.
+Its existing CrawlSEO credential was in the tenant's `.env` file but that file
+was not connected to the shared credential resolver. This made its enabled
+legacy provider abort shared API startup. Preserve and register tenant-owned
+credential files when migrating; do not solve this by deleting capabilities
+or using another customer's provider token.
 These are separate from the earlier Payload server-props/client-nav failure.
 
 ## Required invariant (every tenant)
@@ -61,6 +66,8 @@ Run the server-side preflight with the protected environment on the host:
 `PYTHONPATH=src .venv/bin/python scripts/check-helloada-connections.py --config /SOCIAL/configs/site-agent-api/config.yaml --env-file /SOCIAL/configs/site-agent-api/.env --api-url https://api.helloada.app/v1`.
 It returns nonzero on missing credentials, a registry/Payload name mismatch,
 rejected authentication or a wrong/unready tenant, without printing secrets.
+For a scoped customer release add `--tenant atelier-harmonie --tenant oceanicvibes`.
+Other intake/lab tenants are not silently considered deployed customer sites.
 
 ## Growth behavior
 
