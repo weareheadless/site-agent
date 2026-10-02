@@ -516,7 +516,15 @@ def register_jobs(scheduler: Scheduler, config: dict[str, Any], context: dict[st
     seo_config = config.get("seo") if isinstance(config.get("seo"), dict) else {}
     provisioning = seo_config.get("provisioning") if isinstance(seo_config, dict) else {}
     seo_enabled = bool(seo_config.get("enabled") or (config.get("ga") or {}).get("enabled"))
-    if isinstance(provisioning, dict) and bool(provisioning.get("auto", False)):
+    # Automatic SEO provisioning is a platform default. Keep the explicit
+    # opt-out available, but do not require every future tenant config to
+    # repeat provisioning.auto: true before retries are scheduled.
+    provisioning_enabled = bool(
+        seo_config
+        and seo_config.get("enabled") is not False
+        and not (isinstance(provisioning, dict) and provisioning.get("auto") is False)
+    )
+    if provisioning_enabled:
         scheduler.job(
             "seo_provisioning",
             schedule.get("seo_provisioning", {"every": "6h"}),

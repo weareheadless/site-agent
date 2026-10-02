@@ -125,6 +125,15 @@ def test_builtin_registry_includes_health_check(tmp_path):
     memory.close()
 
 
+def test_builtin_registry_retries_default_seo_provisioning(tmp_path):
+    config = _config(subreddits=[])
+    config["seo"] = {"enabled": True, "site_url": "https://example.test/"}
+    memory, _, scheduler = _runtime(tmp_path, config)
+    names = [name for name, _, _ in scheduler.jobs]
+    assert "seo_provisioning" in names
+    memory.close()
+
+
 def test_builtin_registry_includes_private_inner_life_jobs(tmp_path):
     memory = Memory(tmp_path / "memory.db")
     scheduler = Scheduler(memory, lock_path=tmp_path / "lock", clock=FakeClock())
