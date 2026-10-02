@@ -66,23 +66,25 @@ schedule:
 - `github_static` — site served from a GitHub repo branch (GitHub Pages model). Every change is a commit via the Contents API.
 - `cloudflare_pages` — same commit-based publishing, but the repo is connected to a Cloudflare Pages project (commercial use allowed, unlimited bandwidth). Set `site.cloudflare.account_id` + `project_name` and `CLOUDFLARE_API_TOKEN` to get live deployment status.
 
-## Pelican blog CMS
+## Payload content contract
 
-New generated sites use the Git-backed Pelican blog engine by default:
+New generated sites use the shared Payload content contract by default. Ada
+works through the same API and Payload records that the owner can edit in the
+HelloAda admin, so the public frontend, articles, featured images, SEO fields,
+navigation, and footer stay in sync:
 
 ```yaml
 blog:
-  engine: pelican
-  articles_dir: content/articles
-  site_url: https://example.com/
-  build_command: pelican content -o output -s pelicanconf.py
+  engine: payload
+  collection: posts
+  pages_collection: pages
+  media_collection: media
 ```
 
-The AI owns the site's Pelican theme and templates. Approved article drafts are
-committed as Markdown files with frontmatter; no article index JSON is maintained.
-Pelican generates the archive, categories, feeds, pagination and sitemap during
-the Cloudflare Pages build. Existing instances must explicitly keep
-`blog.engine: legacy` until they are migrated.
+The AI can draft and publish through Payload, while owners retain direct control
+of page content, article content, featured images, SEO metadata, and shared
+navigation. Legacy Git-backed content is migration-only and is not the default
+for new tenants.
 
 ## New site CMS starting point
 
@@ -95,10 +97,11 @@ site-agent init-site \
   --url https://acme.example
 ```
 
-This creates the standard Pelican starting point: Home, About, Contact, the
-Ada-branded blog listing, article templates, an empty article collection, and
-the build dependencies. Ada can then design over a real CMS-ready structure
-instead of an empty repository.
+This creates the standard Next.js/Payload starting point: Home, About, Contact,
+the Ada-branded blog listing, article templates, editable SEO fields, shared
+navigation/footer globals, media relationships, and the build dependencies.
+Ada can then design over a real CMS-ready structure instead of an empty
+repository.
 
 ## Conversational Intake Lab
 
