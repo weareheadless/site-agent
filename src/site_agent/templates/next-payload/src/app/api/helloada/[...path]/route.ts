@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { getPayload } from 'payload'
-import type { CollectionSlug } from 'payload'
+import type { CollectionSlug, PayloadRequest } from 'payload'
 
 import { authenticateHelloAdaRequest } from '@/lib/helloada-auth'
 import { fetchHelloAdaUpstream } from '@/lib/helloada-upstream'
@@ -90,6 +90,7 @@ type EditableQueryOptions = {
   depth: number
   limit: number
   overrideAccess: boolean
+  req?: Partial<PayloadRequest>
   where?: { slug: { equals: string } }
 }
 
@@ -115,6 +116,7 @@ const findEditableDocuments = async (
     limit: options.limit,
     pagination: false as const,
     overrideAccess: options.overrideAccess,
+    ...(options.req ? { req: options.req } : {}),
     ...(options.where ? { where: options.where } : {}),
   }
   const [published, draft] = await Promise.all([
@@ -134,13 +136,15 @@ const findContentDocument = async (
   payload: Awaited<ReturnType<typeof getPayload>>,
   route: string,
   collection: EditableCollection = 'pages',
+  req?: Partial<PayloadRequest>,
 ) => {
   const slugs = contentSlug(route)
   for (const slug of slugs) {
     const documents = await findEditableDocuments(payload, collection, {
       depth: 2,
       limit: 1,
-      overrideAccess: true,
+      overrideAccess: false,
+      req,
       where: { slug: { equals: slug } },
     })
     if (documents[0]) return documents[0]
@@ -340,7 +344,7 @@ export async function GET(request: Request, { params }: RouteProps) {
   }
   if (path === '/page-fields' || path === '/page-images') {
     const route = contentRoute(new URL(request.url).searchParams.get('route') || '/')
-    const document = await findContentDocument(auth.payload, route)
+    const document = await findContentDocument(auth.payload, route, 'pages', auth.req)
     if (!document) return errorResponse('route content not found', 404)
     const collection = 'pages' as const
     const fields = path === '/page-fields' ? contentFields(document, route, collection) : imageField(document, route, collection)
