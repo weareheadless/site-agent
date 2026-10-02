@@ -24,6 +24,13 @@ const isNextBuild = process.env.NEXT_PHASE === 'phase-production-build'
 const isLocalBuild = process.env.PAYLOAD_LOCAL_BUILD === '1'
 const hasCloudflareToken = Boolean(process.env.CLOUDFLARE_API_TOKEN)
 
+// A production Payload CLI command must use Cloudflare's remote bindings.
+// Without this guard, `payload migrate` silently targets Wrangler's local D1
+// database and reports success while production remains on the old schema.
+if (isCLI && isProduction && !hasCloudflareToken && process.env.ALLOW_LOCAL_PAYLOAD_MIGRATION !== '1') {
+  throw new Error('Refusing production Payload CLI without CLOUDFLARE_API_TOKEN; this would target local D1 instead of the tenant database.')
+}
+
 export const cloudflare =
   isCLI || !isProduction || isLocalBuild || isNextBuild
     ? await getCloudflareContextFromWrangler()

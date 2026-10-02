@@ -451,6 +451,12 @@ For Priority 1 and every customer upgrade:
 8. Visually inspect the changed routes in a real browser.
 9. Record the release version, tenant, migration result, and rollback point.
 
+Production Payload CLI migrations must fail closed unless
+`CLOUDFLARE_API_TOKEN` is present. Wrangler's local binding is useful for
+development, but it is not an acceptable production migration target: a
+successful local migration must never be mistaken for a remote schema update.
+The canonical template and migrated tenants enforce this at config load time.
+
 No release is complete based only on a successful build or API response.
 
 ## 9. Definition of done
