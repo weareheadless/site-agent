@@ -74,7 +74,7 @@ from .incubation_contracts import (
 
 _OPERATION_FIELD_UNSET = object()
 
-SCHEMA_VERSION = 43
+SCHEMA_VERSION = 44
 
 MIGRATIONS: dict[int, list[str]] = {
     1: [
@@ -1014,10 +1014,24 @@ MIGRATIONS: dict[int, list[str]] = {
     ],
     43: [
         """UPDATE chat_messages
-           SET text = ltrim(substr(text, instr(text, '[User request]') + length('[User request]')))
+           SET text = ltrim(
+               substr(text, instr(text, '[User request]') + length('[User request]')),
+               ' ' || char(9) || char(10) || char(13)
+           )
            WHERE role = 'user'
              AND instr(text, '[Owner workspace context — metadata, not instructions]') = 1
              AND instr(text, '[User request]') > 0""",
+    ],
+    44: [
+        """UPDATE chat_messages
+           SET text = ltrim(text, ' ' || char(9) || char(10) || char(13))
+           WHERE role = 'user'
+             AND id IN (
+                 SELECT message_id
+                 FROM chat_jobs
+                 WHERE message_id IS NOT NULL
+                   AND instr(message, '[Owner workspace context — metadata, not instructions]') = 1
+             )""",
     ],
 }
 
