@@ -129,12 +129,6 @@ const findEditableDocuments = async (
     payload.find({ ...query, draft: false }),
     payload.find({ ...query, draft: true }),
   ])
-  console.log('helloada_payload_editable_counts', {
-    tenant: helloAdaSite.tenantId,
-    collection,
-    published: published.docs.length,
-    draft: draft.docs.length,
-  })
   return {
     documents: mergeEditableDocuments(published.docs, draft.docs),
     published: published.docs.length,
@@ -317,15 +311,11 @@ const readEditableDocuments = async (payload: Awaited<ReturnType<typeof getPaylo
       throw new PayloadWorkspaceQueryError(collection, cause)
     }
   }))
-  return {
-    documents: results.flatMap((result) => result.documents),
-    counts: results.map(({ collection, published, draft }) => ({ collection, published, draft })),
-  }
+  return results.flatMap((result) => result.documents)
 }
 
 const siteSnapshot = async (request: Request, payload: Awaited<ReturnType<typeof getPayload>>) => {
-  const snapshot = await readEditableDocuments(payload)
-  const documents = snapshot.documents
+  const documents = await readEditableDocuments(payload)
   const routes = documents.map((document) => ({
     path: !document.slug || document.slug === 'home' || document.slug === 'index' ? '/' : `/${document.slug.replace(/^\/+/, '')}`,
     kind: 'page',
@@ -337,7 +327,6 @@ const siteSnapshot = async (request: Request, payload: Awaited<ReturnType<typeof
     routes,
     documents,
     ada: { configured: helloAdaRuntimeStatus().configured },
-    ...(new URL(request.url).searchParams.has('probe') ? { diagnostics: { payload: snapshot.counts } } : {}),
   }
 }
 
