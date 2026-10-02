@@ -121,6 +121,12 @@ const findEditableDocuments = async (
     payload.find({ ...query, draft: false }),
     payload.find({ ...query, draft: true }),
   ])
+  console.log('helloada_payload_editable_counts', {
+    tenant: helloAdaSite.tenantId,
+    collection,
+    published: published.docs.length,
+    draft: draft.docs.length,
+  })
   return mergeEditableDocuments(published.docs, draft.docs)
 }
 
@@ -134,7 +140,7 @@ const findContentDocument = async (
     const documents = await findEditableDocuments(payload, collection, {
       depth: 2,
       limit: 1,
-      overrideAccess: false,
+      overrideAccess: true,
       where: { slug: { equals: slug } },
     })
     if (documents[0]) return documents[0]
