@@ -41,3 +41,5 @@ try {
 } finally {
   await payload.destroy()
 }
+
+process.exit(0)
