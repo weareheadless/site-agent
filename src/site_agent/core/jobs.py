@@ -62,6 +62,7 @@ _JOB_DEFAULTS: dict[str, str | int | dict[str, Any]] = {
     "compact": {"every": 7, "weekday": "sunday", "at": "04:00"},
     "health_check": {"every": "daily", "at": "12:00"},
     "seo_snapshot": {"every": "daily", "at": "11:30"},
+    "seo_provisioning": {"every": "6h"},
     "seo_insight": {"every": 7, "weekday": "monday", "at": "08:45"},
     "reindex_memory": {"every": "daily", "at": "03:30"},
     "strategist": {"every": 7, "weekday": "sunday", "at": "18:00"},
