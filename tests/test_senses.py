@@ -127,6 +127,7 @@ def test_builtin_registry_includes_health_check(tmp_path):
 
 def test_builtin_registry_retries_default_seo_provisioning(tmp_path):
     config = _config(subreddits=[])
+    config["scheduler"] = {"enabled": True}
     config["seo"] = {"enabled": True, "site_url": "https://example.test/"}
     memory, _, scheduler = _runtime(tmp_path, config)
     names = [name for name, _, _ in scheduler.jobs]
