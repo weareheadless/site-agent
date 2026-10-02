@@ -14,6 +14,9 @@ def test_payload_template_fails_closed_on_workspace_query_errors():
     assert 'routes,' in source
     assert "routes.length ? routes : [{ path: '/', kind: 'page'" not in source
     assert 'catch {\n      return []' not in source
+    assert 'const mergeEditableDocuments' in source
+    assert 'payload.find({ ...query, draft: false })' in source
+    assert 'payload.find({ ...query, draft: true })' in source
 
 
 def test_payload_template_has_remote_payload_contract_gate():

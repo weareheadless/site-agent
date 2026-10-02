@@ -14,4 +14,7 @@ retired FastAPI admin.
 version reads for every editable collection plus both shared globals and media.
 It must pass against the tenant's remote D1 database before the Worker is
 deployed; a failed query is a schema/runtime error, never an empty-content
-fallback.
+fallback. The workspace reads both published documents and draft versions,
+merging them by stable document ID so published content remains editable before
+its first draft version exists, while a real draft takes precedence when one is
+present.

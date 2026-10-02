@@ -86,6 +86,44 @@ const contentSlug = (route: string) => {
   return normalized === '/' ? ['home', 'index', ''] : [normalized.slice(1)]
 }
 
+type EditableQueryOptions = {
+  depth: number
+  limit: number
+  overrideAccess: boolean
+  where?: { slug: { equals: string } }
+}
+
+const mergeEditableDocuments = (published: unknown[], draft: unknown[]) => {
+  const documents = new Map<string, Record<string, unknown>>()
+  for (const value of [...published, ...draft]) {
+    const document = value as Record<string, unknown>
+    const key = text(document.id) || text(document.slug)
+    if (!key) throw new Error('Payload editable document has no stable id or slug')
+    documents.set(key, document)
+  }
+  return Array.from(documents.values())
+}
+
+const findEditableDocuments = async (
+  payload: Awaited<ReturnType<typeof getPayload>>,
+  collection: EditableCollection,
+  options: EditableQueryOptions,
+) => {
+  const query = {
+    collection: collection as CollectionSlug,
+    depth: options.depth,
+    limit: options.limit,
+    pagination: false as const,
+    overrideAccess: options.overrideAccess,
+    ...(options.where ? { where: options.where } : {}),
+  }
+  const [published, draft] = await Promise.all([
+    payload.find({ ...query, draft: false }),
+    payload.find({ ...query, draft: true }),
+  ])
+  return mergeEditableDocuments(published.docs, draft.docs)
+}
+
 const findContentDocument = async (
   payload: Awaited<ReturnType<typeof getPayload>>,
   route: string,
@@ -93,15 +131,13 @@ const findContentDocument = async (
 ) => {
   const slugs = contentSlug(route)
   for (const slug of slugs) {
-    const result = await payload.find({
-      collection: collection as CollectionSlug,
-      draft: true,
+    const documents = await findEditableDocuments(payload, collection, {
       depth: 2,
       limit: 1,
       overrideAccess: false,
       where: { slug: { equals: slug } },
     })
-    if (result.docs[0]) return result.docs[0] as unknown as Record<string, unknown>
+    if (documents[0]) return documents[0]
   }
   return undefined
 }
@@ -234,8 +270,8 @@ const imageField = (document: Record<string, unknown>, route: string, collection
 const readEditableDocuments = async (payload: Awaited<ReturnType<typeof getPayload>>) => {
   const results = await Promise.all(editableCollections.map(async (collection) => {
     try {
-      const result = await payload.find({ collection: collection as CollectionSlug, draft: true, limit: 100, pagination: false, overrideAccess: true })
-      return result.docs.map((page) => {
+      const documents = await findEditableDocuments(payload, collection, { depth: 0, limit: 100, overrideAccess: true })
+      return documents.map((page) => {
         const item = page as unknown as Record<string, unknown>
         const slug = text(item.slug)
         return {
