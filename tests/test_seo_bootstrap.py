@@ -185,3 +185,35 @@ def test_bootstrap_reconciles_a_custom_domain_as_a_new_current_origin(monkeypatc
     assert state["gsc_property"] == "https://atelier.example/"
     assert state["origin_changed"] is True
     assert state["origin_history"][0]["site_url"] == "https://workspace-harmonie.workers.dev/"
+
+
+def test_enabled_seo_defaults_to_automatic_provisioning(monkeypatch, tmp_path):
+    config = _config(tmp_path)
+    config["seo"]["provisioning"].pop("auto", None)
+    calls = []
+
+    class FakeProvisioning:
+        def __init__(self, config, env):
+            pass
+
+        def provision(self, **kwargs):
+            calls.append(kwargs)
+            return {
+                "site_url": kwargs["site_url"],
+                "gsc_property": kwargs["gsc_property"],
+                "gsc_verified": True,
+                "ga4_property_id": "properties/123",
+                "provisioning_state": "ready",
+            }
+
+    monkeypatch.setattr(bootstrap, "SeoProvisioningService", FakeProvisioning)
+    monkeypatch.setattr(bootstrap, "load_tenant_environment", lambda config, env=None: {})
+
+    state, _ = bootstrap.auto_provision_seo(
+        config,
+        tenant_id="workspace-harmonie",
+        memory=FakeMemory(),
+    )
+
+    assert calls
+    assert state["state"] == "ready"

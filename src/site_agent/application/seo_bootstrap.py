@@ -123,7 +123,10 @@ def auto_provision_seo(
     resolved_env = load_tenant_environment(config, env)
     existing = memory.kv_get("seo_provisioning_state", {}) if memory is not None else {}
     state = dict(existing) if isinstance(existing, Mapping) else {}
-    if not bool(provisioning.get("auto", False)):
+    # SEO provisioning is the platform default for every enabled public site.
+    # A tenant may explicitly opt out with seo.provisioning.auto: false, but
+    # omission must not silently leave a customer disconnected.
+    if not bool(seo.get("enabled", False)) or provisioning.get("auto") is False:
         return state, resolved_env
 
     site_url = _site_url(config)
