@@ -674,6 +674,12 @@ def test_build_base_ref_stacks_on_pending_merge(tmp_path):
     memory.close()
 
 
+def test_remote_ref_qualifies_short_preview_branches():
+    assert runner._remote_ref("preview") == "refs/heads/preview"
+    assert runner._remote_ref("refs/heads/preview") == "refs/heads/preview"
+    assert runner._remote_ref("refs/ada-design/run-1") == "refs/ada-design/run-1"
+
+
 def test_prepare_preview_builds_on_top_of_unapproved_work(tmp_path, monkeypatch):
     clone = _make_clone(tmp_path)
     config = _builder_config(clone)

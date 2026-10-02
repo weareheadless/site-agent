@@ -753,6 +753,21 @@ def _build_base_ref(memory: Any, config: Mapping[str, Any] | None = None) -> str
     return "origin/main"
 
 
+def _remote_ref(value: str, *, default: str = PREVIEW_BRANCH) -> str:
+    """Return a fully-qualified remote ref for a named preview branch.
+
+    Git accepts short refs for ordinary pushes, but ``--force-with-lease``
+    cannot reliably infer whether a destination such as ``preview`` is a
+    branch, tag, or other ref. Preview branches must always be sent as
+    ``refs/heads/<name>``; already-qualified candidate refs are preserved for
+    isolated design runs.
+    """
+    raw = str(value or default).strip()
+    if not raw:
+        raw = default
+    return raw if raw.startswith("refs/") else f"refs/heads/{raw}"
+
+
 def resolve_commit_sha(clone: Path, ref: str) -> str:
     """Resolve a required ref without falling back to another branch."""
     value = str(ref or "").strip()
@@ -1993,7 +2008,7 @@ def finalize_design_target(
         if progress:
             progress("pushing the production candidate to the preview ref")
         ssh_command = github_ssh_command(config, credential_environment(config))
-        _git(worktree, "push", "--force-with-lease", "origin", f"HEAD:{target.candidate_ref or PREVIEW_BRANCH}",
+        _git(worktree, "push", "--force-with-lease", "origin", f"HEAD:{_remote_ref(target.candidate_ref)}",
              token=_token(config), timeout=180, ssh_command=ssh_command)
     elif target.push_mode == "isolated_remote_ref":
         if progress:
@@ -4424,7 +4439,7 @@ def _finish_builder(context: dict[str, Any], clone: Path, base_ref: str,
     if progress:
         progress("pushing preview branch to GitHub")
     preview_branch = str((config.get("site") or {}).get("preview_branch") or PREVIEW_BRANCH)
-    _git(clone, "push", "--force-with-lease", "origin", f"HEAD:{preview_branch}",
+    _git(clone, "push", "--force-with-lease", "origin", f"HEAD:{_remote_ref(preview_branch)}",
          token=_token(config), timeout=180)
 
     changed_paths = sorted(_changed_paths(clone, "origin/main"))
