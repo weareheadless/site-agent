@@ -781,6 +781,10 @@ def _build_runtime(args: argparse.Namespace):
 
     raw_env = dict(os.environ)
     config, _ = load(args.config, raw_env)
+    # Tenant credentials are intentionally kept in the shared host profile.
+    # Resolve them once after loading the tenant config and pass the resolved
+    # environment to every trusted runtime adapter, including Payload.
+    raw_env = credential_environment(config, raw_env)
     memory = Memory(data_dir(config) / "memory.db")
     llm = Client(config, memory, env=raw_env)
     scheduler = Scheduler(memory, lock_path=data_dir(config) / "scheduler.lock")
@@ -901,6 +905,7 @@ def _cmd_api(args: argparse.Namespace) -> int:
 
     raw_env = dict(os.environ)
     config, _ = load(args.config, raw_env)
+    raw_env = credential_environment(config, raw_env)
     registry = TenantRegistry.from_config(config, raw_env)
     registration = TenantRegistrationService(config, raw_env, registry=registry)
     bootstrap = WebsiteBootstrapService(config, raw_env, registration=registration, registry=registry)

@@ -743,7 +743,13 @@ def load_intake_config(
     validate_credentials_config(merged)
     validate_design_config(merged)
     if validate_integrations:
-        validate_media_config(merged, env)
+        # Integration credentials may live in the host-owned profile rather
+        # than in the tenant process environment. Resolve that profile before
+        # validating optional integrations so a freshly provisioned tenant can
+        # start without copying secrets into its own .env file.
+        from .credentials import credential_environment
+
+        validate_media_config(merged, credential_environment(merged, env))
     return merged, [Path("<package>/intake-ada.yaml"), path] if path else [Path("<package>/intake-ada.yaml")]
 
 
@@ -795,7 +801,13 @@ def load(
     validate_seo_workflow_config(merged)
     validate_credentials_config(merged)
     if validate_integrations:
-        validate_media_config(merged, env)
+        # The long-running tenant worker and the API both use this loader.
+        # Validate against the same shared credential resolution they use at
+        # runtime; otherwise enabling Payload/R2 can make the worker fail on
+        # restart even though the host profile is correctly configured.
+        from .credentials import credential_environment
+
+        validate_media_config(merged, credential_environment(merged, env))
     validate_design_config(merged)
     return merged, sources
 

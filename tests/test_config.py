@@ -107,6 +107,36 @@ def test_enabled_media_accepts_bounded_private_r2_config(tmp_path):
     assert config["site"]["media"]["private"] is True
 
 
+def test_profile_backed_integration_credentials_are_used_during_load(tmp_path):
+    profile = tmp_path / "host-credentials.yaml"
+    profile.write_text(
+        "credentials:\n"
+        "  env_file: " + str(tmp_path / "host.env") + "\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "host.env").write_text(
+        "R2_ACCESS_KEY_ID=profile-access\n"
+        "R2_SECRET_ACCESS_KEY=profile-secret\n",
+        encoding="utf-8",
+    )
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump({
+        "credentials": {"profile_file": str(profile)},
+        "site": {
+            "media": {
+                "enabled": True,
+                "account_id": "a" * 32,
+                "bucket": "hello-media",
+                "private": True,
+            },
+        },
+    }))
+
+    config, _ = load(config_path=path, env={})
+
+    assert config["site"]["media"]["enabled"] is True
+
+
 def test_isolated_load_can_skip_optional_integration_credentials(tmp_path):
     path = tmp_path / "config.yaml"
     path.write_text(yaml.safe_dump({
