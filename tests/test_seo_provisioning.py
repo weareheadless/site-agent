@@ -208,11 +208,12 @@ def test_provision_with_meta_verification_returns_the_tag(tmp_path):
     )
 
     assert receipt["gsc_meta_tag"] == "google-site-verification=token"
-    assert receipt["gsc_property"] == "https://workspace-harmonie.weareheadless.workers.dev"
+    assert receipt["gsc_property"] == "https://workspace-harmonie.weareheadless.workers.dev/"
+    assert receipt["gsc_meta_identifier"] == "https://workspace-harmonie.weareheadless.workers.dev/"
     assert receipt["gsc_verified"] is True
     assert receipt["gsc_verification_method"] == "meta"
-    assert ("verify_domain", "https://workspace-harmonie.weareheadless.workers.dev", "META") in google.calls
-    assert crawlseo.payload["gscProperty"] == "https://workspace-harmonie.weareheadless.workers.dev"
+    assert ("verify_domain", "https://workspace-harmonie.weareheadless.workers.dev/", "META") in google.calls
+    assert crawlseo.payload["gscProperty"] == "https://workspace-harmonie.weareheadless.workers.dev/"
 
 
 def test_meta_verification_defers_when_the_tag_is_not_live_yet(tmp_path):
@@ -240,7 +241,8 @@ def test_verify_gsc_completes_a_deferred_verification(tmp_path):
         identifier="https://workspace-harmonie.weareheadless.workers.dev",
         property_url="https://workspace-harmonie.weareheadless.workers.dev",
     )
-    assert receipt["property"] == "https://workspace-harmonie.weareheadless.workers.dev"
+    assert receipt["identifier"] == "https://workspace-harmonie.weareheadless.workers.dev/"
+    assert receipt["property"] == "https://workspace-harmonie.weareheadless.workers.dev/"
     assert receipt["method"] == "META"
     assert receipt["verified_at"]
-    assert ("add_site", "https://workspace-harmonie.weareheadless.workers.dev") in google.calls
+    assert ("add_site", "https://workspace-harmonie.weareheadless.workers.dev/") in google.calls

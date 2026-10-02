@@ -50,6 +50,31 @@ def test_google_analytics_report_returns_provider_sections() -> None:
     assert result["errors"] == {}
 
 
+def test_google_analytics_report_supports_long_history_without_truncating_daily_trends() -> None:
+    calls: list[dict[str, Any]] = []
+
+    class RecordingGoogle(FakeGoogle):
+        def run_analytics_report(self, property_id: str, body: dict[str, Any]) -> dict[str, Any]:
+            calls.append({"provider": "ga4", "property_id": property_id, "body": body})
+            return super().run_analytics_report(property_id, body)
+
+        def run_search_console_report(self, site_url: str, body: dict[str, Any]) -> dict[str, Any]:
+            calls.append({"provider": "gsc", "site_url": site_url, "body": body})
+            return super().run_search_console_report(site_url, body)
+
+    result = GoogleAnalyticsService(
+        {"seo": {"site_url": "https://example.test/"}, "ga": {"property_id": "123"}},
+        RecordingGoogle(),
+        {"site_url": "https://example.test/", "gsc_property": "https://example.test/", "ga4_property_id": "123"},
+    ).report(540)
+
+    assert result["window"]["days"] == 540
+    ga_trend = next(item for item in calls if item["provider"] == "ga4" and item["body"].get("dimensions") == [{"name": "date"}])
+    gsc_trend = next(item for item in calls if item["provider"] == "gsc" and item["body"].get("dimensions") == ["date"])
+    assert ga_trend["body"]["limit"] == 547
+    assert gsc_trend["body"]["rowLimit"] == 547
+
+
 def test_google_analytics_report_keeps_partial_provider_errors() -> None:
     class BrokenGoogle(FakeGoogle):
         def run_search_console_report(self, _site_url: str, body: dict[str, Any]) -> dict[str, Any]:

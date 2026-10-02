@@ -117,7 +117,10 @@ class GoogleAnalyticsService:
 
     @staticmethod
     def _window(days: int) -> dict[str, str | int]:
-        bounded = max(7, min(int(days), 90))
+        # Google Search Console exposes up to roughly 16 months of Search
+        # Analytics history. Keep the owner workspace within that window and
+        # let the UI request the same long-range history for GA4.
+        bounded = max(7, min(int(days), 540))
         end = datetime.date.today() - datetime.timedelta(days=1)
         start = end - datetime.timedelta(days=bounded - 1)
         previous_end = start - datetime.timedelta(days=1)
@@ -194,6 +197,8 @@ class GoogleAnalyticsService:
         ga4: dict[str, Any] = {"available": bool(property_id), "overview": {}, "trend": [], "channels": [], "pages": [], "events": [], "devices": [], "countries": []}
         gsc: dict[str, Any] = {"available": bool(property_url), "overview": {}, "trend": [], "queries": [], "pages": [], "devices": [], "countries": []}
 
+        trend_limit = max(100, min(int(window["days"]) + 7, 600))
+
         if property_id:
             current = self._attempt(
                 errors,
@@ -211,7 +216,7 @@ class GoogleAnalyticsService:
             ga4["trend"] = self._attempt(
                 errors,
                 "ga4.trend",
-                lambda: self._ga_report(property_id, start=str(window["startDate"]), end=str(window["endDate"]), metrics=("sessions", "activeUsers", "screenPageViews"), dimensions=("date",), limit=100),
+                lambda: self._ga_report(property_id, start=str(window["startDate"]), end=str(window["endDate"]), metrics=("sessions", "activeUsers", "screenPageViews"), dimensions=("date",), limit=trend_limit),
                 [],
             )
             ga4["channels"] = self._attempt(
@@ -262,7 +267,7 @@ class GoogleAnalyticsService:
             gsc["trend"] = self._attempt(
                 errors,
                 "gsc.trend",
-                lambda: self._gsc_report(property_url, start=str(window["startDate"]), end=str(window["endDate"]), dimensions=("date",), limit=100),
+                lambda: self._gsc_report(property_url, start=str(window["startDate"]), end=str(window["endDate"]), dimensions=("date",), limit=trend_limit),
                 [],
             )
             for key, dimension in (("queries", "query"), ("pages", "page"), ("devices", "device"), ("countries", "country")):

@@ -33,6 +33,23 @@ class SeoProvisioningError(RuntimeError):
     """A safe, customer-readable provisioning failure."""
 
 
+def _url_prefix_property(value: str) -> str:
+    """Return a canonical URL-prefix property identifier.
+
+    Google's Site Verification API treats the URL-prefix identifier as an
+    exact string.  In particular, ``https://example.test`` and
+    ``https://example.test/`` can produce different verification tokens.  All
+    platform-hosted sites are origin properties, so keep one canonical form
+    everywhere: an HTTPS origin with a trailing slash.
+    """
+    candidate = str(value or "").strip()
+    if not candidate:
+        return ""
+    if not candidate.lower().startswith(("http://", "https://")):
+        candidate = f"https://{candidate}"
+    return f"{candidate.rstrip('/')}/"
+
+
 def tenant_token_env(tenant_id: str) -> str:
     """A per-tenant environment variable name for the CrawlSEO token."""
     name = str(tenant_id or "").strip().lower()
@@ -151,11 +168,21 @@ class SeoProvisioningService:
         Used after the site has rendered a previously issued meta tag; safe to
         re-run because verification is idempotent.
         """
-        self.google_client().verify_domain(identifier, method=method, site_type=site_type)
-        self.google_client().add_search_console_site(property_url)
+        canonical_identifier = (
+            _url_prefix_property(identifier)
+            if str(method).upper() == "META" and str(site_type).upper() == "SITE"
+            else str(identifier).strip()
+        )
+        canonical_property = (
+            _url_prefix_property(property_url)
+            if str(method).upper() == "META" and str(site_type).upper() == "SITE"
+            else str(property_url).strip()
+        )
+        self.google_client().verify_domain(canonical_identifier, method=method, site_type=site_type)
+        self.google_client().add_search_console_site(canonical_property)
         return {
-            "identifier": identifier,
-            "property": property_url,
+            "identifier": canonical_identifier,
+            "property": canonical_property,
             "method": method,
             "verified_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         }
@@ -228,10 +255,8 @@ class SeoProvisioningService:
             # Platform-hosted pages (e.g. a workers.dev site) cannot be
             # DNS-verified; the meta tag we control the <head> for is the
             # portable path. The property is the URL, not the domain.
-            identifier = str(site_url or f"https://{clean_domain}/").strip().rstrip("/")
-            if not identifier.startswith(("http://", "https://")):
-                identifier = f"https://{identifier}"
-            property_url = str(gsc_property or site_url or identifier).strip()
+            identifier = _url_prefix_property(site_url or f"https://{clean_domain}/")
+            property_url = _url_prefix_property(gsc_property or site_url or identifier)
         else:
             identifier = clean_domain
             property_url = gsc_property or f"sc-domain:{clean_domain}"

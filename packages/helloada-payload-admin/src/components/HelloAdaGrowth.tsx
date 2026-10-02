@@ -47,6 +47,13 @@ type Provider = {
 };
 type Analytics = {
   capturedAt?: string;
+  entity?: {
+    siteUrl?: string;
+    gscProperty?: string;
+    ga4PropertyId?: string;
+    ga4MeasurementId?: string;
+    displayName?: string;
+  };
   ga4?: Provider;
   gsc?: Provider;
   errors?: Record<string, string>;
@@ -127,15 +134,17 @@ export function HelloAdaGrowth() {
     rows,
     columns,
     empty = t("growth.noData"),
+    className = "",
   }: {
     rows?: Row[];
     columns: Array<[string, string]>;
     empty?: string;
+    className?: string;
   }) =>
     !rows?.length ? (
       <Empty>{empty}</Empty>
     ) : (
-      <div className="helloada-growth-table-scroll">
+      <div className={`helloada-growth-table-scroll ${className}`.trim()}>
         <table>
           <thead>
             <tr>
@@ -198,6 +207,145 @@ export function HelloAdaGrowth() {
       })}
     </div>
   );
+  const ProviderDetail = ({
+    id,
+    provider,
+  }: {
+    id: "ga4" | "gsc";
+    provider?: Provider;
+  }) => {
+    const isGa4 = id === "ga4";
+    const current = provider?.overview?.current;
+    const metrics: Array<[string, string]> = isGa4
+      ? [
+          ["activeUsers", t("growth.visitors")],
+          ["sessions", t("growth.sessions")],
+          ["screenPageViews", t("growth.views")],
+          ["engagementRate", t("growth.engagement")],
+        ]
+      : [
+          ["clicks", t("growth.clicks")],
+          ["impressions", t("growth.impressions")],
+          ["ctr", t("growth.ctr")],
+          ["position", t("growth.position")],
+        ];
+    const value = (key: string) => {
+      const raw = current?.[key];
+      return key === "engagementRate" || key === "ctr"
+        ? typeof raw === "number"
+          ? `${(raw * 100).toFixed(1)}%`
+          : "—"
+        : format(raw);
+    };
+    const breakdowns: Array<{
+      key: "pages" | "channels" | "events" | "devices" | "countries" | "queries";
+      title: string;
+      columns: Array<[string, string]>;
+    }> = isGa4
+      ? [
+          {
+            key: "pages",
+            title: t("growth.pages"),
+            columns: [
+              ["landingPagePlusQueryString", t("growth.pages")],
+              ["sessions", t("growth.sessions")],
+              ["screenPageViews", t("growth.views")],
+            ],
+          },
+          {
+            key: "channels",
+            title: t("growth.channels"),
+            columns: [
+              ["sessionDefaultChannelGroup", t("growth.channels")],
+              ["sessions", t("growth.sessions")],
+              ["activeUsers", t("growth.visitors")],
+            ],
+          },
+          {
+            key: "events",
+            title: t("growth.events"),
+            columns: [["eventName", t("growth.events")], ["eventCount", t("growth.count")]],
+          },
+          {
+            key: "devices",
+            title: t("growth.devices"),
+            columns: [["deviceCategory", t("growth.devices")], ["sessions", t("growth.sessions")], ["activeUsers", t("growth.visitors")]],
+          },
+          {
+            key: "countries",
+            title: t("growth.countries"),
+            columns: [["country", t("growth.countries")], ["sessions", t("growth.sessions")], ["activeUsers", t("growth.visitors")]],
+          },
+        ]
+      : [
+          {
+            key: "queries",
+            title: t("growth.queries"),
+            columns: [["key", t("growth.keyword")], ["clicks", t("growth.clicks")], ["impressions", t("growth.impressions")], ["position", t("growth.position")]],
+          },
+          {
+            key: "pages",
+            title: t("growth.pages"),
+            columns: [["key", t("growth.pages")], ["clicks", t("growth.clicks")], ["impressions", t("growth.impressions")], ["position", t("growth.position")]],
+          },
+          {
+            key: "devices",
+            title: t("growth.devices"),
+            columns: [["key", t("growth.devices")], ["clicks", t("growth.clicks")], ["impressions", t("growth.impressions")]],
+          },
+          {
+            key: "countries",
+            title: t("growth.countries"),
+            columns: [["key", t("growth.countries")], ["clicks", t("growth.clicks")], ["impressions", t("growth.impressions")]],
+          },
+        ];
+    const property = isGa4
+      ? analytics?.entity?.ga4PropertyId
+      : analytics?.entity?.gscProperty;
+    return (
+      <section className="helloada-growth-card helloada-growth-provider">
+        <header className="helloada-growth-provider-header">
+          <div>
+            <span className="helloada-growth-eyebrow">{t(`growth.${id}`)}</span>
+            <h2>{t(isGa4 ? "growth.ga4History" : "growth.gscHistory")}</h2>
+          </div>
+          {property ? <small>{property}</small> : null}
+        </header>
+        <div className="helloada-growth-provider-metrics">
+          {metrics.map(([key, title]) => (
+            <article key={key}>
+              <span>{title}</span>
+              <strong>{loading && !analytics ? "…" : value(key)}</strong>
+            </article>
+          ))}
+        </div>
+        <section className="helloada-growth-history-block">
+          <header>
+            <h3>{t("growth.history")}</h3>
+            <small>{t("growth.historyNote")}</small>
+          </header>
+          <Table
+            className="is-history"
+            rows={provider?.trend}
+            columns={isGa4
+              ? [["date", t("growth.date")], ["activeUsers", t("growth.visitors")], ["sessions", t("growth.sessions")], ["screenPageViews", t("growth.views")]]
+              : [["key", t("growth.date")], ["clicks", t("growth.clicks")], ["impressions", t("growth.impressions")], ["ctr", t("growth.ctr")], ["position", t("growth.position")]]}
+          />
+        </section>
+        <div className="helloada-growth-breakdown-grid">
+          {breakdowns.map((breakdown) => (
+            <section className="helloada-growth-breakdown" key={breakdown.key}>
+              <header><h3>{breakdown.title}</h3></header>
+              <Table
+                rows={provider?.[breakdown.key] as Row[] | undefined}
+                columns={breakdown.columns}
+              />
+            </section>
+          ))}
+        </div>
+      </section>
+    );
+  };
   const Records = ({
     title,
     rows,
@@ -253,7 +401,7 @@ export function HelloAdaGrowth() {
           role="group"
           aria-label={t("growth.title")}
         >
-          {["overview", "search", "content", "connections"].map((view) => (
+          {["overview", "analytics", "search", "content", "connections"].map((view) => (
             <button
               key={view}
               type="button"
@@ -270,7 +418,7 @@ export function HelloAdaGrowth() {
             value={days}
             onChange={(event) => setDays(Number(event.target.value))}
           >
-            {[7, 28, 90].map((value) => (
+            {[28, 90, 180, 365, 540].map((value) => (
               <option key={value} value={value}>
                 {value} {t("growth.days")}
               </option>
@@ -389,6 +537,25 @@ export function HelloAdaGrowth() {
             </section>
           </div>
           <Sources />
+        </>
+      ) : null}
+      {tab === "analytics" ? (
+        <>
+          <div className="helloada-growth-analytics-intro">
+            <div>
+              <span className="helloada-growth-eyebrow">{t("growth.analytics")}</span>
+              <p>{t("growth.analyticsIntro")}</p>
+            </div>
+            <Link href={ask(t("growth.analyticsPrompt"))}>
+              {t("growth.interpretWithAda")}
+              <WorkspaceIcon name="arrow" size={16} />
+            </Link>
+          </div>
+          {errors.analytics ? <ErrorNotice /> : null}
+          <div className="helloada-growth-provider-grid">
+            <ProviderDetail id="ga4" provider={analytics?.ga4} />
+            <ProviderDetail id="gsc" provider={analytics?.gsc} />
+          </div>
         </>
       ) : null}
       {tab === "search" ? (
