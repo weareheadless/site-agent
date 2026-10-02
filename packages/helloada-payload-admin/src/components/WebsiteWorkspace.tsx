@@ -7,6 +7,7 @@ import { useSearchParams } from 'next/navigation'
 import { HelloAdaChatMessage } from './HelloAdaChatMessage'
 import { HelloAdaHistory } from './HelloAdaHistory'
 import { HelloAdaGrowth } from './HelloAdaGrowth'
+import { HelloAdaGallery } from './HelloAdaGallery'
 import { EditableRichTextEditor } from './EditableRichTextEditor'
 import { fetchHelloAda } from '../api/fetchHelloAda'
 import { useHelloAdaTranslations } from '../api/useHelloAdaTranslations'
@@ -643,6 +644,7 @@ export function WebsiteWorkspace() {
   const searchParams = useSearchParams()
   if (searchParams.get('view') === 'history') return <HelloAdaHistory />
   if (searchParams.get('view') === 'growth') return <HelloAdaGrowth />
+  if (searchParams.get('view') === 'gallery') return <HelloAdaGallery />
   return <ReviewWorkspace />
 }
 
@@ -661,6 +663,9 @@ function ReviewWorkspace() {
   const [previewPlan, setPreviewPlan] = useState<PreviewPlan>()
   const [message, setMessage] = useState('')
   const preparedAsk = searchParams.get('ask')
+  const selectedAssetId = searchParams.get('asset_id') || ''
+  const selectedAssetUrl = searchParams.get('asset_url') || ''
+  const selectedAssetName = searchParams.get('asset_name') || ''
   useEffect(() => {
     if (!preparedAsk) return
     setMessage(preparedAsk.slice(0, 8000))
@@ -692,6 +697,8 @@ function ReviewWorkspace() {
   const [editorMediaLoading, setEditorMediaLoading] = useState(false)
   const [editorMediaHasNext, setEditorMediaHasNext] = useState(false)
   const [editorMediaSearch, setEditorMediaSearch] = useState('')
+  const [chatGalleryOpen, setChatGalleryOpen] = useState(false)
+  const [chatGallerySearch, setChatGallerySearch] = useState('')
   const [imagePickerKey, setImagePickerKey] = useState<string>()
   const [editorError, setEditorError] = useState('')
   const [editorNotice, setEditorNotice] = useState('')
@@ -716,6 +723,7 @@ function ReviewWorkspace() {
   const pendingChangesRef = useRef<Record<string, EditablePageEntry>>({})
   const activePreviewEditKeyRef = useRef<string | undefined>(undefined)
   const activePreviewElementRef = useRef<Element | undefined>(undefined)
+  const importedAssetRef = useRef<string | undefined>(undefined)
   const selectedRouteRef = useRef(selectedRoute)
   const userNearBottomRef = useRef(true)
   const lastMessageCountRef = useRef(0)
@@ -1031,6 +1039,27 @@ function ReviewWorkspace() {
     })
     setImagePickerKey(undefined)
   }, [editorMedia, updateEditorEntry])
+
+  const chooseChatMedia = useCallback((media: EditableMedia) => {
+    const attachment: ChatAttachment = {
+      asset_id: media.id,
+      sourceId: media.sourceId || null,
+      name: media.filename || media.alt || `Image ${media.id}`,
+      alt_text: media.alt || media.filename || undefined,
+      url: publicMediaUrl(media) || null,
+      thumbnail_url: publicMediaUrl(media) || null,
+    }
+    setPendingAttachments((current) => {
+      if (current.some((item) => String(item.asset_id) === String(attachment.asset_id))) {
+        return current.filter((item) => String(item.asset_id) !== String(attachment.asset_id))
+      }
+      if (current.length >= 12) {
+        setError(t('error.attachLimit'))
+        return current
+      }
+      return [...current, attachment]
+    })
+  }, [t])
 
   const uploadEditorImage = useCallback(async (file: File, key: string) => {
     setEditorError('')
@@ -1370,12 +1399,27 @@ function ReviewWorkspace() {
   }, [closeEditor, editorOpen, fieldEditorKey])
 
   useEffect(() => {
-    if (!editorOpen && !fieldEditorKey) return
+    if (!editorOpen && !fieldEditorKey && !chatGalleryOpen) return
     const timer = window.setTimeout(() => {
-      void loadEditorMedia(1, false, editorMediaSearch)
-    }, editorMediaSearch ? 240 : 0)
+      void loadEditorMedia(1, false, chatGalleryOpen ? chatGallerySearch : editorMediaSearch)
+    }, (chatGalleryOpen ? chatGallerySearch : editorMediaSearch) ? 240 : 0)
     return () => window.clearTimeout(timer)
-  }, [editorMediaSearch, editorOpen, fieldEditorKey, loadEditorMedia])
+  }, [chatGalleryOpen, chatGallerySearch, editorMediaSearch, editorOpen, fieldEditorKey, loadEditorMedia])
+
+  useEffect(() => {
+    if (!selectedAssetId || importedAssetRef.current === selectedAssetId) return
+    importedAssetRef.current = selectedAssetId
+    const attachment: ChatAttachment = {
+      asset_id: selectedAssetId,
+      name: selectedAssetName || t('workspace.image'),
+      alt_text: selectedAssetName || undefined,
+      url: selectedAssetUrl || null,
+      thumbnail_url: selectedAssetUrl || null,
+    }
+    setPendingAttachments((current) => current.some((item) => String(item.asset_id) === selectedAssetId) ? current : [...current, attachment])
+    setMobilePane('ada')
+    window.setTimeout(() => messageInputRef.current?.focus(), 0)
+  }, [selectedAssetId, selectedAssetName, selectedAssetUrl, t])
 
   const handleChatScroll = useCallback(() => {
     const element = chatLogRef.current
@@ -2105,31 +2149,31 @@ function ReviewWorkspace() {
                 <summary aria-label={t('owner.pageOptions')} title={t('owner.pageOptions')}><WorkspaceIcon name="settings" /></summary>
                 <div><button type="button" onClick={() => void openEditor()}>{t('owner.editManually')}</button><label><input type="checkbox" checked={manualEditing} onChange={(event) => setManualEditing(event.target.checked)} />{t('owner.quickEditing')}</label></div>
               </details> : null}
-            </div>
-            {pendingChangeCount || hasDraft || publishNotice ? <div className="helloada-review-decision" role="status">
-               {pendingChangeCount ? (
-                 <div className="helloada-draft-actions" aria-label={t('workspace.draftActions')}>
-                   <span>{pendingChangeCount} {t('workspace.pendingChanges')}</span>
-                   <button type="button" onClick={() => void updateDraft()} disabled={pendingSaving}>
-                     {pendingSaving ? t('workspace.updatingDraft') : t('workspace.updateDraft')}
-                   </button>
-                   <button type="button" className="is-quiet" onClick={cancelPendingChanges} disabled={pendingSaving}>
-                     {t('workspace.cancelChanges')}
-                   </button>
-                 </div>
-               ) : null}
+              {pendingChangeCount || hasDraft || publishNotice ? <div className="helloada-review-decision" role="status">
+                {pendingChangeCount ? (
+                  <div className="helloada-draft-actions" aria-label={t('workspace.draftActions')}>
+                    <span>{pendingChangeCount} {t('workspace.pendingChanges')}</span>
+                    <button type="button" onClick={() => void updateDraft()} disabled={pendingSaving}>
+                      {pendingSaving ? t('workspace.updatingDraft') : t('workspace.updateDraft')}
+                    </button>
+                    <button type="button" className="is-quiet" onClick={cancelPendingChanges} disabled={pendingSaving}>
+                      {t('workspace.cancelChanges')}
+                    </button>
+                  </div>
+                ) : null}
                 {hasDraft && !pendingChangeCount ? (
                   <button
-                   className="helloada-draft-action is-publish"
-                   type="button"
-                   onClick={() => publishDialogRef.current?.showModal()}
-                   disabled={publishing}
-                 >
-                   {publishing ? t('workspace.publishingDraft') : t('owner.publishChanges')}
+                    className="helloada-draft-action is-publish"
+                    type="button"
+                    onClick={() => publishDialogRef.current?.showModal()}
+                    disabled={publishing}
+                  >
+                    {publishing ? t('workspace.publishingDraft') : t('owner.publishChanges')}
                   </button>
                 ) : null}
                 {publishNotice ? <p className="helloada-draft-confirmation" role="status" aria-live="polite">{publishNotice}</p> : null}
-             </div> : null}
+              </div> : null}
+            </div>
 
              <div className={`helloada-preview-frame-shell is-${previewViewport}`}>
                <iframe
@@ -2151,9 +2195,9 @@ function ReviewWorkspace() {
                    <span>{previewStatusMessage}</span>
                  </div>
                ) : null}
-               {manualEditing && activePreviewEditKey && previewEditTargets.some((target) => target.key === activePreviewEditKey) ? (
+               {activePreviewEditKey && previewEditTargets.some((target) => target.key === activePreviewEditKey && (manualEditing || target.type === 'image')) ? (
                 <div className="helloada-preview-edit-overlay" role="group" aria-label={t('workspace.quickEditLabel')}>
-                  {previewEditTargets.filter((target) => target.key === activePreviewEditKey).map((target) => (
+                  {previewEditTargets.filter((target) => target.key === activePreviewEditKey && (manualEditing || target.type === 'image')).map((target) => (
                     <button
                       key={target.key}
                       type="button"
@@ -2257,7 +2301,7 @@ function ReviewWorkspace() {
                    </section>
                  ))}
                </div>
-               <form
+          <form
                  className="helloada-brief-correction"
                  onSubmit={(event) => {
                    event.preventDefault()
@@ -2401,9 +2445,10 @@ function ReviewWorkspace() {
               <button
                 className="helloada-attach-button"
                 type="button"
-                onClick={() => fileInputRef.current?.click()}
+                onClick={() => setChatGalleryOpen((current) => !current)}
                  disabled={chatWorking || uploadingMedia}
-                 aria-label={uploadingMedia ? t('workspace.attachingImage') : t('workspace.attachImages')}
+                 aria-label={uploadingMedia ? t('workspace.attachingImage') : t('workspace.pageGalleryBrowse')}
+                 aria-expanded={chatGalleryOpen}
               >
                 {uploadingMedia ? '…' : <WorkspaceIcon name="plus" />}
               </button>
@@ -2416,6 +2461,32 @@ function ReviewWorkspace() {
                >
                 <WorkspaceIcon name="arrow" />
               </button>
+              {chatGalleryOpen ? (
+                <div className="helloada-chat-gallery" role="dialog" aria-label={t('owner.galleryTitle')}>
+                  <div className="helloada-chat-gallery-header">
+                    <div><strong>{t('owner.galleryTitle')}</strong><span>{t('owner.galleryIntro')}</span></div>
+                    <button type="button" onClick={() => setChatGalleryOpen(false)} aria-label={t('workspace.pageClose')}>×</button>
+                  </div>
+                  <div className="helloada-chat-gallery-tools">
+                    <input type="search" value={chatGallerySearch} onChange={(event) => setChatGallerySearch(event.target.value)} placeholder={t('workspace.pageGallerySearchPlaceholder')} />
+                    <button type="button" onClick={() => fileInputRef.current?.click()} disabled={uploadingMedia}>{t('workspace.pageUploadImage')}</button>
+                  </div>
+                  <div className="helloada-chat-gallery-grid">
+                    {editorMedia.map((media) => {
+                      const selected = pendingAttachments.some((item) => String(item.asset_id) === String(media.id))
+                      const source = publicMediaUrl(media)
+                      return (
+                        <button type="button" key={String(media.id)} className={selected ? 'is-selected' : ''} aria-pressed={selected} onClick={() => chooseChatMedia(media)}>
+                          {source ? <Image src={source} alt={media.alt || media.filename || t('workspace.image')} width={92} height={70} unoptimized /> : <span>{t('workspace.pageGalleryUnavailable')}</span>}
+                          <small>{media.alt || media.filename || `#${media.id}`}</small>
+                        </button>
+                      )
+                    })}
+                  </div>
+                  {!editorMedia.length && !editorMediaLoading ? <p>{t('workspace.pageGalleryNoMatch')}</p> : null}
+                  {editorMediaLoading ? <p>{t('workspace.pageGalleryLoading')}</p> : null}
+                </div>
+              ) : null}
             </div>
             <p className="helloada-composer-note">{t('owner.composerNote')}</p>
           </form>
