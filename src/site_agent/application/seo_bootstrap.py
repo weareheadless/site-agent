@@ -126,7 +126,7 @@ def auto_provision_seo(
     # SEO provisioning is the platform default for every enabled public site.
     # A tenant may explicitly opt out with seo.provisioning.auto: false, but
     # omission must not silently leave a customer disconnected.
-    if not bool(seo.get("enabled", False)) or provisioning.get("auto") is False:
+    if seo.get("enabled") is False or provisioning.get("auto") is False:
         return state, resolved_env
 
     site_url = _site_url(config)
