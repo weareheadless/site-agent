@@ -215,16 +215,32 @@ class GooglePlatformClient:
             raise GooglePlatformError(_partial_error(payload))
         streams = [dict(item) for item in (payload.get("dataStreams") or []) if isinstance(item, Mapping)]
         wanted = str(site_url or "").strip().rstrip("/")
+        wanted_key = self._stream_origin_key(wanted)
+        web_streams: list[dict[str, Any]] = []
         for stream in streams:
             if str(stream.get("type") or "") != "WEB_DATA_STREAM":
                 continue
+            web_streams.append(stream)
             default_uri = str(((stream.get("webStreamData") or {}) if isinstance(stream.get("webStreamData"), Mapping) else {}).get("defaultUri") or "").rstrip("/")
             if default_uri == wanted:
-                return {
-                    "data_stream_id": str(stream.get("name") or "").split("/")[-1],
-                    "measurement_id": (stream.get("webStreamData") or {}).get("measurementId"),
-                    "created": False,
-                }
+                return self._web_stream_receipt(stream)
+
+        # GA4 rejects a second web stream when the existing stream represents
+        # the same tenant origin through its www/apex alias. Reuse that stream
+        # so a domain normalization difference never turns a safe retry into a
+        # duplicate-resource failure.
+        for stream in web_streams:
+            default_uri = str(((stream.get("webStreamData") or {}) if isinstance(stream.get("webStreamData"), Mapping) else {}).get("defaultUri") or "").rstrip("/")
+            if wanted_key and wanted_key == self._stream_origin_key(default_uri):
+                return self._web_stream_receipt(stream)
+
+        # A platform-managed property is expected to have one web stream. If
+        # an older bootstrap created it before the origin was normalized, keep
+        # the existing measurement ID rather than creating a second stream.
+        # Refuse only when the property has multiple unrelated web streams and
+        # none can be identified safely.
+        if len(web_streams) == 1:
+            return self._web_stream_receipt(web_streams[0])
         status, payload = self._request(
             f"{ANALYTICS_ADMIN}/properties/{property_id}/dataStreams",
             scopes=(ANALYTICS_EDIT,),
@@ -237,10 +253,29 @@ class GooglePlatformClient:
         )
         if status not in (200, 201):
             raise GooglePlatformError(_partial_error(payload))
+        return {**self._web_stream_receipt(payload), "created": True}
+
+    @staticmethod
+    def _stream_origin_key(value: str) -> tuple[str, str, int | None] | None:
+        """Normalize GA4 stream origins, including the apex/www alias."""
+        parsed = urllib.parse.urlsplit(str(value or "").strip())
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return None
+        hostname = parsed.hostname.lower().rstrip(".")
+        if hostname.startswith("www."):
+            hostname = hostname[4:]
+        port = parsed.port
+        if (parsed.scheme, port) in (("http", 80), ("https", 443)):
+            port = None
+        return parsed.scheme, hostname, port
+
+    @staticmethod
+    def _web_stream_receipt(stream: Mapping[str, Any]) -> dict[str, Any]:
+        web_data = stream.get("webStreamData") if isinstance(stream.get("webStreamData"), Mapping) else {}
         return {
-            "data_stream_id": str(payload.get("name") or "").split("/")[-1],
-            "measurement_id": (payload.get("webStreamData") or {}).get("measurementId"),
-            "created": True,
+            "data_stream_id": str(stream.get("name") or "").split("/")[-1],
+            "measurement_id": web_data.get("measurementId"),
+            "created": False,
         }
 
     # -- analytics data and access ----------------------------------------
