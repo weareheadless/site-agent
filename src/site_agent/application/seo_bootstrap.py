@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import datetime
 import os
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -51,6 +52,10 @@ def _site_url(config: Mapping[str, Any]) -> str:
 
 def _meta_content(value: str) -> str:
     value = str(value or "").strip()
+    if value.lower().startswith("<meta"):
+        match = re.search(r"\bcontent\s*=\s*([\"'])(.*?)\1", value, flags=re.IGNORECASE | re.DOTALL)
+        if match:
+            return match.group(2).strip()
     return value.split("=", 1)[1].strip() if value.lower().startswith("google-site-verification=") else value
 
 

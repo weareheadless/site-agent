@@ -41,6 +41,11 @@ def _config(tmp_path: Path):
     }
 
 
+def test_meta_content_extracts_token_from_google_html_tag():
+    assert bootstrap._meta_content('<meta name="google-site-verification" content="meta-token" />') == "meta-token"
+    assert bootstrap._meta_content("google-site-verification=meta-token") == "meta-token"
+
+
 def test_bootstrap_installs_verification_and_runtime_secrets(monkeypatch, tmp_path):
     memory = FakeMemory()
     worker = FakeWorker()
