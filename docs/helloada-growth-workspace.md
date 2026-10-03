@@ -88,3 +88,30 @@ content mutations. Inspect compiled scripts/styles, deploy those artifacts and
 verify an authenticated fresh production session for the correct tenant.
 Exercise analytics source/range/dimension, search, research, health, content,
 connections, responsive layout and the preserved chat/preview surface.
+
+### Verified release: 2026-10-02
+
+- Shared package `0.6.1`, code commit `9dc34e1`; GitHub release workflow succeeded.
+  The new-site template uses the same immutable asset.
+- Atelier commit `c6002a2`, Worker `f7e5d3e4-7536-4bd1-9dce-2edd25f216b7`.
+  Oceanic commit `1cd71d5`, Worker `3dbf2b01-09be-42eb-919e-63cd7d980d4e`.
+  Both versions were confirmed at 100% traffic after deployment.
+- Clean builds, typechecks and compiled-asset inspections passed. Both customers
+  have identical package integrity, approved logo hash and shared CSS asset
+  `a2f1b345f4b61fe5.css`. Canonical customer source/dependencies were synchronized.
+- Authenticated, cache-busted live documents verified correct tenant, Ada
+  connection, real GA4/GSC data, 28/90-day ranges, search/pagination, keyboard
+  chart interaction, keyword detail, crawl issues, content and connections.
+  Chat and the actual website preview remain accessible. No chat was sent and
+  no paid research, content change or publication was triggered by testing.
+- Shared package: 12 tests passed. Focused backend tests: 20 passed; final
+  evidence/template check: 5 passed. Full backend suite: 1055 passed, one
+  pre-existing frozen Pelican-profile test failed; the same failure was reproduced
+  on the untouched baseline. Wheel contents were smoke-checked.
+- A 390px responsive check confirmed stacked Growth cards. The existing owner
+  toolbar still causes approximately 14px horizontal overflow at that width;
+  this is a known small-screen limitation, not a fully passed mobile audit.
+
+One thorough shared UI test is sufficient for its layout and interactions.
+Each tenant still needs a deployment/authentication/data-routing smoke check:
+independent Worker bindings, proxy routes and credentials are not shared UI code.
