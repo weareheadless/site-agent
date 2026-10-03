@@ -78,7 +78,8 @@ def cloudflare_deployment(customer: dict[str, Any], env: dict[str, str]) -> dict
 def check_health(url: str, tenant: str, version: str, sha: str) -> dict[str, Any]:
     separator = "&" if "?" in url else "?"
     request = urllib.request.Request(url + separator + urllib.parse.urlencode({"release": sha}),
-                                     headers={"Accept": "application/json", "Cache-Control": "no-cache"})
+                                     headers={"Accept": "application/json", "Cache-Control": "no-cache",
+                                              "User-Agent": "HelloAda-Release/1.0"})
     with urllib.request.urlopen(request, timeout=25) as response:
         body = json.load(response)
     if body.get("ok") is not True or body.get("tenant") != tenant:

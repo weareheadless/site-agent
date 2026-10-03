@@ -1,3 +1,4 @@
+import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -18,7 +19,13 @@ import { SiteSettings } from './src/globals/SiteSettings'
 
 const filename = fileURLToPath(import.meta.url)
 const dirname = path.dirname(filename)
-const isCLI = process.env.PAYLOAD_CLI === '1' || process.argv.some((value) => value.includes('payload'))
+const isCLI = process.env.PAYLOAD_CLI === '1' || process.argv.some((value) => {
+  try {
+    return fs.realpathSync(value).endsWith(path.join('payload', 'bin.js'))
+  } catch {
+    return false
+  }
+})
 const isProduction = process.env.NODE_ENV === 'production'
 const isNextBuild = process.env.NEXT_PHASE === 'phase-production-build'
 const isLocalBuild = process.env.PAYLOAD_LOCAL_BUILD === '1'
