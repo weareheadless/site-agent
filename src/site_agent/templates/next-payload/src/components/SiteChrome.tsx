@@ -9,12 +9,12 @@ export default async function SiteChrome({ children }: { children: ReactNode }) 
   const [navigation, settings] = await Promise.all([getNavigation(), getSiteSettings()])
   const items = navigationItems(navigation.items)
   const footer = navigationItems(navigation.footer)
-  const siteName = String(settings.siteName || 'Your website')
+  const siteName = String(settings.siteName || '')
 
   return (
     <>
       <header className="site-header">
-        <Link href="/" className="site-brand">{siteName}</Link>
+        {siteName ? <Link href="/" className="site-brand">{siteName}</Link> : null}
         <nav aria-label="Primary navigation">
           {items.map((item: { label: string; href: string; external: boolean }) => item.external ? (
             <a key={`${item.label}-${item.href}`} href={item.href} target="_blank" rel="noreferrer">{item.label}</a>
@@ -26,7 +26,7 @@ export default async function SiteChrome({ children }: { children: ReactNode }) 
       {children}
       <footer className="site-footer">
         <div>
-          <strong>{siteName}</strong>
+          {siteName ? <strong>{siteName}</strong> : null}
           {settings.tagline ? <p>{settings.tagline}</p> : null}
           {settings.description ? <p>{settings.description}</p> : null}
         </div>

@@ -13,7 +13,7 @@ const routeSlug = (segments: string[] | undefined) => segments?.join('/') || 'ho
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { slug } = await params
   const [page, settings] = await Promise.all([getPageBySlug(routeSlug(slug)), getSiteSettings()])
-  if (!page && routeSlug(slug) !== 'home') return {}
+  if (!page) return {}
   const seo = seoFor(page, settings)
   return {
     title: seo.title,
@@ -27,6 +27,6 @@ export default async function PageRoute({ params }: Props) {
   const { slug } = await params
   const route = routeSlug(slug)
   const [page, settings] = await Promise.all([getPageBySlug(route), getSiteSettings()])
-  if (!page && route !== 'home') notFound()
+  if (!page && process.env.PAYLOAD_LOCAL_BUILD !== '1' && process.env.NEXT_PHASE !== 'phase-production-build') notFound()
   return <PublicDocument document={page} settings={settings} kind="page" />
 }

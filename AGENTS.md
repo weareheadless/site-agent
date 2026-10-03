@@ -97,6 +97,16 @@ For growth orchestration, SEO/AEO, goals and owner review, follow
 evidence, candidate, approval and outcome path; do not introduce silent
 degradation or independent customer-specific workflows.
 
+For shared Payload content and owner review, follow
+`docs/helloada-shared-content-and-owner-review-status.md` and the canonical
+`packages/helloada-payload-core` contract. `site-agent` owns the schema, field
+bindings, admin and default scaffold; customer sites own only tenant data and
+their frontend composition. Never add a local schema/reader/bridge copy or let
+Ada mutate schemas, migrations, admin, auth, package pins or runtime configuration.
+Save and publish exact Payload document revisions separately. The Growth write
+receipt/guard is not a substitute for proving atomic compare-and-swap against
+every possible concurrent Payload writer.
+
 ## Module Ownership
 
 - `config.py`: config loading, validation, secret resolution.

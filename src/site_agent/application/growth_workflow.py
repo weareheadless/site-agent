@@ -419,7 +419,10 @@ def _inventory(context: Mapping[str, Any]) -> list[dict[str, Any]]:
     if payload is None:
         raise RuntimeError("The canonical Payload content gateway is unavailable")
     inventory = []
-    for collection in payload.contract.collections:
+    # Taxonomy is part of the shared schema, but categories are not public pages.
+    for collection in ("pages", "posts", "products"):
+        if collection not in payload.contract.collections:
+            continue
         for document in payload.list(collection, draft=False, limit=100):
             if not document.get("id"):
                 raise ValueError("A canonical document has no identity")

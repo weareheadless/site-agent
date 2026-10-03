@@ -6,11 +6,15 @@ import { renderToStaticMarkup } from 'react-dom/server'
 
 import { authenticateHelloAdaRequest } from '@/lib/helloada-auth'
 import { fetchHelloAdaUpstream } from '@/lib/helloada-upstream'
+import {
+  applyHelloAdaBindingEdits,
+  helloAdaContentBindings,
+} from '@weareheadless/helloada-payload-core/bindings'
+import type { HelloAdaBindingEdit } from '@weareheadless/helloada-payload-core/bindings'
 import { helloAdaConnection, helloAdaRuntimeStatus } from '@weareheadless/helloada-payload-admin/server'
 import { helloAdaSite } from '@/helloada.config'
 import PublicDocument from '@/components/PublicDocument'
 import {
-  activeOperation,
   asObject as growthObject,
   candidateRow,
   claimOperation,
@@ -19,9 +23,12 @@ import {
   ensureGrowthTables,
   failOperation,
   hashJson,
+  operationByKey,
   operationContext,
   operationResult,
+  prepareOperation,
   projectDocument,
+  reconcileOperation,
   saveCandidate,
   tenantId,
 } from '@/lib/growth-contract'
@@ -51,50 +58,7 @@ const asObject = (value: unknown): Record<string, unknown> =>
   value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 
 const text = (value: unknown) => String(value ?? '').trim()
-
-const plainText = (value: unknown): string => {
-  if (typeof value === 'string') return value.trim()
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return ''
-  const node = value as Record<string, unknown>
-  if (node.root && typeof node.root === 'object') return plainText(node.root)
-  if (typeof node.text === 'string') return node.text
-  if (!Array.isArray(node.children)) return ''
-  return node.children.map(plainText).filter(Boolean).join('\n').trim()
-}
-
-const seoValue = (document: Record<string, unknown>) => asObject(document.seo)
-
-const seoUpdate = (document: Record<string, unknown>, name: 'seoTitle' | 'seoDescription', value: string) => {
-  const current = seoValue(document)
-  const image = current.image
-  return {
-    title: name === 'seoTitle' ? value : text(current.title),
-    description: name === 'seoDescription' ? value : text(current.description),
-    ...(image && typeof image === 'object' && !Array.isArray(image)
-      ? { image: asObject(image).id }
-      : image
-        ? { image }
-        : {}),
-  }
-}
-
-const lexicalDocumentFromText = (value: string) => ({
-  root: {
-    type: 'root',
-    children: value.split(/\r?\n/).map((line) => ({
-      type: 'paragraph',
-      children: line ? [{ detail: 0, format: 0, mode: 'normal', style: '', text: line, type: 'text', version: 1 }] : [],
-      direction: null,
-      format: '',
-      indent: 0,
-      version: 1,
-    })),
-    direction: null,
-    format: '',
-    indent: 0,
-    version: 1,
-  },
-})
+const frontendGitSha = () => text(process.env.HELLOADA_RELEASE_SHA)
 
 const contentRoute = (value: string) => {
   const route = value.trim() || '/'
@@ -275,98 +239,31 @@ const withoutPayloadMetadata = (value: Record<string, unknown>) => {
   return result
 }
 
-const field = ({
-  collection,
-  document,
-  name,
-  label,
-  type,
-  value,
-  route,
-}: {
-  collection: EditableCollection
-  document: Record<string, unknown>
-  name: string
-  label: string
-  type: 'text' | 'richText'
-  value: string
-  route: string
-}) => ({
-  id: `content-field:${collection}:${text(document.id)}:${name}`,
-  key: `content-field:${collection}:${text(document.id)}:${name}`,
-  label,
-  section: name.startsWith('seo') ? 'SEO' : 'Page content',
-  sectionOrder: name === 'title' ? 1 : name === 'summary' ? 2 : name === 'body' ? 3 : name === 'seoTitle' ? 1 : 2,
-  type,
-  sourceType: type,
-  editorRole: name === 'title' ? 'heading' : 'paragraph',
-  editorVisible: true,
-  editable: true,
-  status: 'editable',
-  kind: 'content',
-  value,
-  text: value,
-  route,
-  routes: [route],
-  contentEdit: { collection, documentId: text(document.id), field: name, expectedValue: value },
-})
-
-const contentFields = (document: Record<string, unknown>, route: string, collection: EditableCollection) => {
-  const title = text(document.title)
-  const summary = text(document.summary)
-  const body = plainText(document.body)
-  const seo = seoValue(document)
-  const seoTitle = text(seo.title)
-  const seoDescription = text(seo.description)
-  return [
-    title ? field({ collection, document, name: 'title', label: 'Title', type: 'text', value: title, route }) : undefined,
-    summary ? field({ collection, document, name: 'summary', label: 'Summary', type: 'text', value: summary, route }) : undefined,
-    body ? field({ collection, document, name: 'body', label: 'Body', type: 'richText', value: body, route }) : undefined,
-    seoTitle ? field({ collection, document, name: 'seoTitle', label: 'SEO title', type: 'text', value: seoTitle, route }) : undefined,
-    seoDescription ? field({ collection, document, name: 'seoDescription', label: 'SEO description', type: 'text', value: seoDescription, route }) : undefined,
-  ].filter(Boolean)
-}
-
-const imageField = (document: Record<string, unknown>, route: string, collection: EditableCollection) => {
-  const image = document.featuredImage
-  if (!image) return []
-  const media = mediaObject(image)
-  if (!media.url && !media.id) return []
-  return [{
-    id: `content-image:${collection}:${text(document.id)}:featuredImage`,
-    key: `content-image:${collection}:${text(document.id)}:featuredImage`,
-    label: 'Featured image',
-    section: 'Images',
-    sectionOrder: 1,
-    type: 'image',
-    sourceType: 'image',
-    editorRole: 'image',
-    editorVisible: true,
-    editable: true,
-    status: 'editable',
-    kind: 'content',
-    value: text(media.sourceId || media.id),
-    image: media,
-    route,
-    routes: [route],
-    contentEdit: {
-      collection,
-      documentId: text(document.id),
-      field: 'featuredImage',
-      expectedValue: text(media.sourceId || media.id),
-    },
-  }]
-}
+const contentFields = (document: Record<string, unknown>, route: string, collection: EditableCollection) =>
+  helloAdaContentBindings(document, collection, route)
 
 const readEditableDocuments = async (payload: Awaited<ReturnType<typeof getPayload>>) => {
   const results = await Promise.all(editableCollections.map(async (collection) => {
     try {
-      const result = await findEditableDocuments(payload, collection, { depth: 0, limit: 100, overrideAccess: true })
+      const readAll = async (draft: boolean) => {
+        const documents: Record<string, unknown>[] = []
+        let page = 1
+        while (true) {
+          const result = await payload.find({ collection: collection as CollectionSlug, depth: 0, limit: 100, page, draft, overrideAccess: true })
+          documents.push(...(result.docs as unknown as Record<string, unknown>[]))
+          if (!result.hasNextPage) return documents
+          const nextPage = Number(result.nextPage)
+          if (!Number.isSafeInteger(nextPage) || nextPage <= page) throw new Error(`Payload ${collection} pagination did not advance`)
+          page = nextPage
+        }
+      }
+      const [published, draft] = await Promise.all([readAll(false), readAll(true)])
+      const documents = mergeEditableDocuments(published, draft)
       return {
         collection,
-        published: result.published,
-        draft: result.draft,
-        documents: result.documents.map((page) => {
+        published: published.length,
+        draft: draft.length,
+        documents: await Promise.all(documents.map(async (page) => {
         const item = page as unknown as Record<string, unknown>
         const slug = text(item.slug)
         return {
@@ -376,8 +273,9 @@ const readEditableDocuments = async (payload: Awaited<ReturnType<typeof getPaylo
           slug,
           title: text(item.title) || slug || 'Untitled page',
           status: text(item._status) || (item.published ? 'published' : 'draft'),
+          draftHash: await hashJson(withoutPayloadMetadata(item)),
         }
-        }),
+        })),
       }
     } catch (cause) {
       console.error('helloada_payload_workspace_query_failed', {
@@ -394,8 +292,10 @@ const readEditableDocuments = async (payload: Awaited<ReturnType<typeof getPaylo
 const siteSnapshot = async (request: Request, payload: Awaited<ReturnType<typeof getPayload>>) => {
   const documents = await readEditableDocuments(payload)
   const routes = documents.map((document) => ({
-    path: !document.slug || document.slug === 'home' || document.slug === 'index' ? '/' : `/${document.slug.replace(/^\/+/, '')}`,
-    kind: 'page',
+    path: document.collection === 'posts'
+      ? `/articles/${document.slug.replace(/^\/+/, '')}`
+      : !document.slug || document.slug === 'home' || document.slug === 'index' ? '/' : `/${document.slug.replace(/^\/+/, '')}`,
+    kind: document.collection === 'posts' ? 'post' : 'page',
     collection: document.collection,
     sourceId: document.sourceId,
   }))
@@ -441,12 +341,18 @@ export async function GET(request: Request, { params }: RouteProps) {
     if (!candidate) return errorResponse('Growth candidate not found', 404)
     return NextResponse.json({ packageHash, state: candidate.state, result: operationResult(candidate) }, { headers: { 'Cache-Control': 'private, no-store' } })
   }
-  if (path === '/page-fields' || path === '/page-images') {
-    const route = contentRoute(new URL(request.url).searchParams.get('route') || '/')
-    const document = await findContentDocument(auth.payload, route, 'pages', auth.req)
+  if (path === '/page-fields') {
+    const query = new URL(request.url).searchParams
+    const route = contentRoute(query.get('route') || '/')
+    const rawCollection = query.get('collection') || 'pages'
+    if (!isEditableCollection(rawCollection)) return errorResponse('content collection is invalid')
+    const collection = rawCollection
+    const documentId = text(query.get('documentId'))
+    const document = documentId
+      ? await auth.payload.findByID({ collection: collection as CollectionSlug, depth: 2, draft: true, id: documentId, overrideAccess: false, req: auth.req, user: auth.user }) as unknown as Record<string, unknown>
+      : await findContentDocument(auth.payload, route, collection, auth.req)
     if (!document) return errorResponse('route content not found', 404)
-    const collection = 'pages' as const
-    const fields = path === '/page-fields' ? contentFields(document, route, collection) : imageField(document, route, collection)
+    const fields = contentFields(document, route, collection)
     return NextResponse.json({ route, fields, count: fields.length }, { headers: { 'Cache-Control': 'private, no-store' } })
   }
   if (path === '/media-library') {
@@ -589,53 +495,103 @@ export async function POST(request: Request, { params }: RouteProps) {
   }
   if (path === '/page-fields') {
     const body = asObject(await request.json().catch(() => ({})))
-    const edits = Array.isArray(body.edits) ? body.edits : []
-    if (!edits.length) return errorResponse('edits must contain at least one item')
-    const updated: Array<{ collection: string; documentId: string; fields: number }> = []
-    for (const value of edits) {
-      const edit = asObject(value)
-      const collection = documentCollection(edit)
-      const id = text(edit.documentId || edit.document_id)
-      const name = text(edit.field)
-      const newValue = String(edit.newValue ?? edit.new_value ?? edit.value ?? '')
-      if (!id || !/^[A-Za-z][A-Za-z0-9_]*$/.test(name) || !['title', 'summary', 'body', 'seoTitle', 'seoDescription'].includes(name)) return errorResponse('content field is not directly editable')
-      const current = await auth.payload.findByID({ collection: collection as CollectionSlug, depth: 1, draft: true, id, overrideAccess: false, req: auth.req, user: auth.user }) as unknown as Record<string, unknown>
-      const expected = name === 'body'
-        ? plainText(current[name])
-        : name === 'seoTitle'
-          ? text(seoValue(current).title)
-          : name === 'seoDescription'
-            ? text(seoValue(current).description)
-            : text(current[name])
-      if (edit.expectedValue !== undefined && String(edit.expectedValue) !== expected) return errorResponse('content field changed before save', 409)
-      const data = name === 'body'
-        ? { body: lexicalDocumentFromText(newValue) }
-        : name === 'seoTitle' || name === 'seoDescription'
-          ? { seo: seoUpdate(current, name, newValue) }
-          : { [name]: newValue }
+    if (new TextEncoder().encode(JSON.stringify(body)).byteLength > 500_000) return errorResponse('content edit is too large', 413)
+    const collection = documentCollection(body)
+    const id = text(body.documentId || body.document_id)
+    const expectedDraftHash = text(body.expectedDraftHash)
+    const edits = Array.isArray(body.edits) ? body.edits.map((edit) => asObject(edit) as unknown as HelloAdaBindingEdit) : []
+    if (!id || !expectedDraftHash || !edits.length || edits.length > 100) return errorResponse('one document, its current draft hash, and 1–100 edits are required')
+    if (!tenantId()) return errorResponse('tenant operation identity is not configured', 503)
+    if (process.env.NODE_ENV === 'production' && !frontendGitSha()) return errorResponse('deployed frontend revision is not configured', 503)
+    if (edits.some((edit) => edit.collection !== collection || edit.documentId !== id)) return errorResponse('all content edits must target the same selected document')
+
+    const documentKey = `${collection}:${id}`
+    const packageHash = await hashJson({ action: 'owner-content-edit', tenant: tenantId(), documentKey, baseHash: expectedDraftHash, edits })
+    const operationKey = `owner-edit:${tenantId()}:${documentKey}:${packageHash}`
+    const previous = await operationByKey(operationKey)
+    const previousResult = operationResult(previous)
+    if (previous?.state === 'completed' && previousResult) {
+      return NextResponse.json(previousResult, { headers: { 'Cache-Control': 'private, no-store' } })
+    }
+    if (previous) {
+      const latest = await auth.payload.findByID({ collection: collection as CollectionSlug, depth: 0, draft: true, id, overrideAccess: false, req: auth.req, user: auth.user }) as unknown as Record<string, unknown>
+      if (previousResult?.targetHash && await hashJson(withoutPayloadMetadata(latest)) === previousResult.targetHash) {
+        const result = { ok: true, updated: [{ collection, documentId: id }], draftHash: String(previousResult.targetHash), reconciled: true }
+        await reconcileOperation(operationKey, result)
+        return NextResponse.json(result, { headers: { 'Cache-Control': 'private, no-store' } })
+      }
+      return errorResponse('The previous save has an unresolved receipt. Reload the page; it will not be replayed automatically.', 409)
+    }
+
+    const current = await auth.payload.findByID({ collection: collection as CollectionSlug, depth: 0, draft: true, id, overrideAccess: false, req: auth.req, user: auth.user }) as unknown as Record<string, unknown>
+    const currentDocument = withoutPayloadMetadata(current)
+    const baseHash = await hashJson(currentDocument)
+    if (baseHash !== expectedDraftHash) return errorResponse('The page changed since it was loaded. Reload it before saving.', 409)
+
+    const checkedEdits: HelloAdaBindingEdit[] = []
+    for (const edit of edits) {
+      const imageValue = edit.field === 'featuredImage' || edit.field === 'seoImage' || edit.property === 'image'
+      if (imageValue && edit.newValue !== '' && edit.newValue !== null) {
+        const mediaId = String(edit.newValue).replace(/^payload:/, '')
+        if (!mediaId || mediaId.length > 160) return errorResponse('Choose an image from the media library')
+        let media: Record<string, unknown>
+        try {
+          media = await auth.payload.findByID({ collection: 'media', id: mediaId, depth: 0, overrideAccess: false, req: auth.req, user: auth.user }) as unknown as Record<string, unknown>
+        } catch (cause) {
+          console.error('helloada_owner_media_resolution_failed', { tenant: tenantId(), mediaId, error: errorMessage(cause) })
+          return errorResponse('That image is no longer available. Reload the gallery and choose it again.', 409)
+        }
+        checkedEdits.push({ ...edit, newValue: media.id })
+      } else {
+        checkedEdits.push(edit)
+      }
+    }
+
+    let nextDocument: Record<string, unknown>
+    try {
+      nextDocument = applyHelloAdaBindingEdits(currentDocument, checkedEdits) as Record<string, unknown>
+    } catch (cause) {
+      return errorResponse(errorMessage(cause), 409)
+    }
+    const writableFields = ['title', 'summary', 'body', 'seo', 'canonicalUrl', 'featuredImage', 'sections']
+    const data = Object.fromEntries(writableFields
+      .filter((field) => stableJson(currentDocument[field]) !== stableJson(nextDocument[field]))
+      .map((field) => [field, nextDocument[field]]))
+    if (!Object.keys(data).length) return NextResponse.json({ ok: true, updated: [], draftHash: baseHash })
+
+    const targetHash = await hashJson(withoutPayloadMetadata(nextDocument))
+    const claimed = await claimOperation(operationKey, documentKey, packageHash)
+    if (!claimed.row) return errorResponse('Another change to this page is still settling. Reload before trying again.', 409)
+    const saved = operationResult(claimed.row)
+    if (!claimed.inserted) {
+      if (claimed.row.state === 'completed' && saved) return NextResponse.json(saved, { headers: { 'Cache-Control': 'private, no-store' } })
+      if (saved?.targetHash === targetHash) {
+        const latest = await auth.payload.findByID({ collection: collection as CollectionSlug, depth: 0, draft: true, id, overrideAccess: false, req: auth.req, user: auth.user }) as unknown as Record<string, unknown>
+        if (await hashJson(withoutPayloadMetadata(latest)) === targetHash) {
+          const result = { ok: true, updated: [{ collection, documentId: id, fields: Object.keys(data).length }], draftHash: targetHash, frontendGitSha: frontendGitSha() || null, editedBy: text(auth.user.id), reconciled: true }
+          await reconcileOperation(operationKey, result)
+          return NextResponse.json(result, { headers: { 'Cache-Control': 'private, no-store' } })
+        }
+      }
+      return errorResponse('The previous save has an unresolved receipt. Reload the page; it will not be replayed automatically.', 409)
+    }
+
+    const intent = { ok: false, state: 'writing', collection, documentId: id, baseHash, targetHash, frontendGitSha: frontendGitSha() || null }
+    try {
+      await prepareOperation(operationKey, intent)
+      operationContext(auth.req as { context?: Record<string, unknown> }, operationKey)
       await auth.payload.update({ collection: collection as CollectionSlug, data: data as never, draft: true, id, overrideAccess: false, req: auth.req, user: auth.user })
-      updated.push({ collection, documentId: id, fields: 1 })
+      const latest = await auth.payload.findByID({ collection: collection as CollectionSlug, depth: 0, draft: true, id, overrideAccess: false, req: auth.req, user: auth.user }) as unknown as Record<string, unknown>
+      const draftHash = await hashJson(withoutPayloadMetadata(latest))
+      if (draftHash !== targetHash) throw new Error('Payload saved a different draft than the exact content edit')
+      const result = { ok: true, updated: [{ collection, documentId: id, fields: Object.keys(data).length }], draftHash, frontendGitSha: frontendGitSha() || null, editedBy: text(auth.user.id) }
+      await completeOperation(operationKey, result)
+      return NextResponse.json(result, { headers: { 'Cache-Control': 'private, no-store' } })
+    } catch (cause) {
+      await failOperation(operationKey, { ...intent, error: errorMessage(cause) })
+      console.error('helloada_owner_content_save_uncertain', { tenant: tenantId(), collection, documentId: id, operationKey, error: errorMessage(cause) })
+      return errorResponse('The draft save could not be verified. Your live website was not published; reload the page to reconcile the draft before trying again.', 409)
     }
-    return NextResponse.json({ ok: true, updated })
-  }
-  if (path === '/page-images') {
-    const body = asObject(await request.json().catch(() => ({})))
-    const edits = Array.isArray(body.edits) ? body.edits : []
-    if (!edits.length) return errorResponse('edits must contain at least one item')
-    for (const value of edits) {
-      const edit = asObject(value)
-      const collection = documentCollection(edit)
-      const id = text(edit.documentId || edit.document_id)
-      const newValue = text(edit.newValue || edit.new_value || edit.value).replace(/^payload:/, '')
-      if (!id || text(edit.field) !== 'featuredImage') return errorResponse('image field is not directly editable')
-      const current = await auth.payload.findByID({ collection: collection as CollectionSlug, depth: 1, draft: true, id, overrideAccess: false, req: auth.req, user: auth.user }) as unknown as Record<string, unknown>
-      const currentImage = mediaObject(current.featuredImage)
-      const expected = text(currentImage.sourceId || currentImage.id)
-      if (edit.expectedValue !== undefined && String(edit.expectedValue) !== expected) return errorResponse('image field changed before save', 409)
-      if (newValue) await auth.payload.findByID({ collection: 'media', id: newValue, depth: 0, overrideAccess: false, req: auth.req, user: auth.user })
-      await auth.payload.update({ collection: collection as CollectionSlug, data: { featuredImage: newValue || null } as never, draft: true, id, overrideAccess: false, req: auth.req, user: auth.user })
-    }
-    return NextResponse.json({ ok: true })
   }
   if (path === '/media/upload') {
     const form = await request.formData().catch(() => undefined)
@@ -656,17 +612,67 @@ export async function POST(request: Request, { params }: RouteProps) {
   if (path === '/publish') {
     const body = asObject(await request.json().catch(() => ({})))
     const documents = Array.isArray(body.documents) ? body.documents : []
-    const published: Array<{ collection: string; documentId: string }> = []
-    for (const value of documents) {
-      const item = asObject(value)
-      const collection = documentCollection(item)
-      const id = text(item.documentId || item.document_id)
-      if (!id) return errorResponse('publish document id is required')
-      const draft = await auth.payload.findByID({ collection: collection as CollectionSlug, depth: 0, draft: true, id, overrideAccess: false, req: auth.req, user: auth.user }) as unknown as Record<string, unknown>
-      await auth.payload.update({ collection: collection as CollectionSlug, data: withoutPayloadMetadata(draft) as never, draft: false, id, overrideAccess: false, req: auth.req, user: auth.user })
-      published.push({ collection, documentId: id })
+    if (documents.length !== 1) return errorResponse('Publish exactly one reviewed Payload document at a time')
+    const item = asObject(documents[0])
+    const collection = documentCollection(item)
+    const id = text(item.documentId || item.document_id)
+    const expectedDraftHash = text(item.expectedDraftHash)
+    if (!id || !expectedDraftHash) return errorResponse('The reviewed document ID and draft hash are required')
+    if (!tenantId()) return errorResponse('tenant operation identity is not configured', 503)
+    if (process.env.NODE_ENV === 'production' && !frontendGitSha()) return errorResponse('deployed frontend revision is not configured', 503)
+    const documentKey = `${collection}:${id}`
+    const packageHash = await hashJson({ action: 'owner-publish', tenant: tenantId(), documentKey, draftHash: expectedDraftHash })
+    const operationKey = `owner-publish:${tenantId()}:${documentKey}:${packageHash}`
+    const previous = await operationByKey(operationKey)
+    const previousResult = operationResult(previous)
+    if (previous?.state === 'completed' && previousResult) {
+      return NextResponse.json(previousResult, { headers: { 'Cache-Control': 'private, no-store' } })
     }
-    return NextResponse.json({ ok: true, published })
+    if (previous) {
+      const published = await auth.payload.findByID({ collection: collection as CollectionSlug, depth: 0, draft: false, id, overrideAccess: false, req: auth.req, user: auth.user }).catch(() => undefined) as unknown as Record<string, unknown> | undefined
+      if (previousResult?.targetHash && published && await hashJson(withoutPayloadMetadata(published)) === previousResult.targetHash) {
+        const result = { ok: true, published: [{ collection, documentId: id }], draftHash: expectedDraftHash, frontendGitSha: frontendGitSha() || null, approvedBy: text(auth.user.id), reconciled: true }
+        await reconcileOperation(operationKey, result)
+        return NextResponse.json(result, { headers: { 'Cache-Control': 'private, no-store' } })
+      }
+      return errorResponse('The previous publication has an unresolved receipt. It will not be replayed automatically.', 409)
+    }
+    const draft = await auth.payload.findByID({ collection: collection as CollectionSlug, depth: 0, draft: true, id, overrideAccess: false, req: auth.req, user: auth.user }) as unknown as Record<string, unknown>
+    const draftData = withoutPayloadMetadata(draft)
+    const draftHash = await hashJson(draftData)
+    if (draftHash !== expectedDraftHash) return errorResponse('The draft changed after review. Reload it and review the current version before publishing.', 409)
+
+    const claimed = await claimOperation(operationKey, documentKey, packageHash)
+    if (!claimed.row) return errorResponse('Another change to this page is still settling. Reload before trying again.', 409)
+    const saved = operationResult(claimed.row)
+    if (!claimed.inserted) {
+      if (claimed.row.state === 'completed' && saved) return NextResponse.json(saved, { headers: { 'Cache-Control': 'private, no-store' } })
+      if (saved?.targetHash === draftHash) {
+        const published = await auth.payload.findByID({ collection: collection as CollectionSlug, depth: 0, draft: false, id, overrideAccess: false, req: auth.req, user: auth.user }).catch(() => undefined) as unknown as Record<string, unknown> | undefined
+        if (published && await hashJson(withoutPayloadMetadata(published)) === draftHash) {
+          const result = { ok: true, published: [{ collection, documentId: id }], draftHash, frontendGitSha: frontendGitSha() || null, approvedBy: text(auth.user.id), reconciled: true }
+          await reconcileOperation(operationKey, result)
+          return NextResponse.json(result, { headers: { 'Cache-Control': 'private, no-store' } })
+        }
+      }
+      return errorResponse('The previous publication has an unresolved receipt. It will not be replayed automatically.', 409)
+    }
+
+    const intent = { ok: false, state: 'writing', collection, documentId: id, targetHash: draftHash, frontendGitSha: frontendGitSha() || null, approvedBy: text(auth.user.id) }
+    try {
+      await prepareOperation(operationKey, intent)
+      operationContext(auth.req as { context?: Record<string, unknown> }, operationKey)
+      await auth.payload.update({ collection: collection as CollectionSlug, data: draftData as never, draft: false, id, overrideAccess: false, req: auth.req, user: auth.user })
+      const published = await auth.payload.findByID({ collection: collection as CollectionSlug, depth: 0, draft: false, id, overrideAccess: false, req: auth.req, user: auth.user }) as unknown as Record<string, unknown>
+      if (await hashJson(withoutPayloadMetadata(published)) !== draftHash) throw new Error('The published document does not match the exact reviewed draft')
+      const result = { ok: true, published: [{ collection, documentId: id }], draftHash, frontendGitSha: frontendGitSha() || null, approvedBy: text(auth.user.id) }
+      await completeOperation(operationKey, result)
+      return NextResponse.json(result, { headers: { 'Cache-Control': 'private, no-store' } })
+    } catch (cause) {
+      await failOperation(operationKey, { ...intent, error: errorMessage(cause) })
+      console.error('helloada_owner_publish_uncertain', { tenant: tenantId(), collection, documentId: id, operationKey, error: errorMessage(cause) })
+      return errorResponse('Publication could not be verified. Reload and check the current live page before taking another action.', 409)
+    }
   }
   if (path === '/content/discard') {
     const body = asObject(await request.json().catch(() => ({})))

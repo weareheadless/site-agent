@@ -348,6 +348,12 @@ def _request_selected_idea(context: Mapping[str, Any], row: Mapping[str, Any], i
     idempotency_key = f"article-research:{row['idea_hash']}:v1"
     reservation_id = str(row.get("keyword_budget_reservation_id") or "").strip()
     try:
+        idea_summary = _idea_summary(idea)
+        if not idea_summary:
+            error = "Article research cannot run until Ada has a reader question or thesis to research."
+            memory.update_article_idea(int(row["id"]), status="failed", error=error)
+            memory.record_action("article_research", f"idea #{row['id']}: rejected before paid request because its research summary was empty")
+            return
         if reservation_id:
             reservation = memory.get_growth_budget_reservation(reservation_id)
             if reservation and str(reservation.get("status")) == "released":
@@ -360,7 +366,7 @@ def _request_selected_idea(context: Mapping[str, Any], row: Mapping[str, Any], i
             row = memory.update_article_idea(int(row["id"]), keyword_budget_reservation_id=reservation_id) or row
         response = service.request_article_keyword_research(
             idea_key=str(row["cycle_key"]),
-            idea_summary=_idea_summary(idea),
+            idea_summary=idea_summary,
             queries=list(idea.get("candidate_queries") or []),
             language=str(idea["language"]),
             country=str(idea["market"]),

@@ -112,7 +112,20 @@ contract; the VPS performs the same validation before execution.
 - Read the receipt and failed stage before changing source. Never use an old
   build, a different credential file, a fallback route or an automatic rollback
   to turn a failed gate into a success.
-- A shared admin package release requires version-pin updates and queue entries
-  for every selected consumer. Publishing a package alone cannot redeploy them.
+- Shared admin and core package releases require exact version-pin updates and
+  queue entries for every selected consumer. Publishing a package alone cannot
+  redeploy them.
+- A version in `payload-customers.json` is only a requirement, not proof that
+  its immutable release asset exists. Verify the exact tarball URLs/integrity
+  and a clean `npm ci`/build before queuing any consumer.
+- Ordinary Worker releases never generate or apply Payload migrations. A schema
+  migration requires its own reviewed tenant/database identity, deterministic
+  artifact, protected backup and restoration rehearsal, dry-run evidence and
+  recorded cutover. Never aim `payload migrate` at whichever binding is active.
+- The current new-site `application/bootstrap.py` still contains a direct
+  `wrangler deploy`/automatic Payload migration path. Until it is replaced by an
+  exact release-queue request plus an approved initial migration artifact,
+  new-site bootstrap is not a production release path. A public health response
+  does not waive this stop.
 - Source, artifact, deployment and authenticated browser verification are
   separately recorded. Report only what those records prove.

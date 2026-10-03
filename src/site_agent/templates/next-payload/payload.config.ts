@@ -8,14 +8,10 @@ import { r2Storage } from '@payloadcms/storage-r2'
 import { lexicalEditor } from '@payloadcms/richtext-lexical'
 import type { GetPlatformProxyOptions } from 'wrangler'
 import { buildConfig } from 'payload'
+import { createHelloAdaSchema } from '@weareheadless/helloada-payload-core/schema'
 
-import { Media } from './src/collections/Media'
-import { Pages } from './src/collections/Pages'
-import { Posts } from './src/collections/Posts'
-import { Products } from './src/collections/Products'
-import { Users } from './src/collections/Users'
-import { Navigation } from './src/globals/Navigation'
-import { SiteSettings } from './src/globals/SiteSettings'
+import { assertNativeWriteAllowed } from './src/lib/growth-contract'
+import { helloAdaSite } from './src/helloada.config'
 
 const filename = fileURLToPath(import.meta.url)
 const dirname = path.dirname(filename)
@@ -30,6 +26,7 @@ const isProduction = process.env.NODE_ENV === 'production'
 const isNextBuild = process.env.NEXT_PHASE === 'phase-production-build'
 const isLocalBuild = process.env.PAYLOAD_LOCAL_BUILD === '1'
 const hasCloudflareToken = Boolean(process.env.CLOUDFLARE_API_TOKEN)
+const schema = createHelloAdaSchema(assertNativeWriteAllowed)
 
 // A production Payload CLI command must use Cloudflare's remote bindings.
 // Without this guard, `payload migrate` silently targets Wrangler's local D1
@@ -45,7 +42,7 @@ export const cloudflare =
 
 export default buildConfig({
   admin: {
-    user: Users.slug,
+    user: 'users',
     theme: 'dark',
     meta: {
       titleSuffix: ' — HelloAda',
@@ -79,8 +76,13 @@ export default buildConfig({
       },
     },
   },
-  collections: [Users, Pages, Posts, Products, Media],
-  globals: [SiteSettings, Navigation],
+  collections: schema.collections,
+  globals: schema.globals,
+  localization: {
+    locales: helloAdaSite.locales,
+    defaultLocale: helloAdaSite.defaultLocale,
+    fallback: false,
+  },
   editor: lexicalEditor(),
   secret: process.env.PAYLOAD_SECRET || (isProduction ? '' : 'helloada-local-development-secret'),
   typescript: { outputFile: path.resolve(dirname, 'src/payload-types.ts') },

@@ -789,9 +789,10 @@ textarea:focus-visible {
 }
 
 .helloada-history-wide {
+  grid-column: 1 / -1;
   width: 100%;
-  max-width: 1400px;
-  margin: 24px auto 0;
+  max-width: none;
+  margin: 0;
 }
 
 .helloada-history-local-summary {
@@ -849,6 +850,69 @@ textarea:focus-visible {
   box-shadow: 0 22px 60px rgba(0, 0, 0, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.045);
 }
 
+.helloada-history-execution {
+  --helloada-panel: #fffaf5;
+  --helloada-inset: #fff;
+  --helloada-ink: #261b18;
+  --helloada-muted: #73645f;
+  --helloada-dim: #95857e;
+  --helloada-soft-line: rgba(73, 43, 35, 0.15);
+  --helloada-cyan: #e76c52;
+  position: relative;
+  overflow: hidden;
+  border-color: rgba(231, 108, 82, 0.35);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(255, 189, 117, 0.2), transparent 15rem),
+    linear-gradient(145deg, #fffaf5, #f5eee8);
+  box-shadow: 0 24px 70px rgba(70, 38, 25, 0.1), inset 0 1px 0 #fff;
+}
+
+.helloada-history-execution::before {
+  position: absolute;
+  z-index: 0;
+  inset: 5px;
+  border: 1px solid rgba(231, 108, 82, 0.1);
+  border-radius: 14px;
+  content: "";
+  pointer-events: none;
+}
+
+.helloada-history-execution > * {
+  position: relative;
+  z-index: 1;
+}
+
+.helloada-history-execution .helloada-history-section-heading > span {
+  border-color: rgba(231, 108, 82, 0.3);
+  color: #a94835;
+  background: rgba(231, 108, 82, 0.1);
+}
+
+.helloada-history-log {
+  position: relative;
+}
+
+.helloada-history-log::before {
+  position: absolute;
+  top: 15px;
+  bottom: 15px;
+  left: 23px;
+  width: 1px;
+  background: linear-gradient(rgba(231, 108, 82, 0.45), rgba(231, 108, 82, 0.08));
+  content: "";
+}
+
+.helloada-history-execution .helloada-history-item {
+  border-color: rgba(73, 43, 35, 0.1);
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 3px 12px rgba(77, 42, 30, 0.04);
+}
+
+.helloada-history-execution .helloada-history-item-mark {
+  color: #a94835;
+  background: #ffebe3;
+}
+
 .helloada-history-section-heading {
   display: flex;
   align-items: start;
@@ -881,6 +945,37 @@ textarea:focus-visible {
 .helloada-history-list {
   display: grid;
   gap: 7px;
+}
+
+.helloada-history-provenance {
+  margin: 12px 0;
+  padding: 9px 11px;
+  border-left: 2px solid #e76c52;
+  border-radius: 0 8px 8px 0;
+  color: var(--helloada-muted);
+  background: rgba(231, 108, 82, 0.07);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.helloada-history-execution-detail {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  color: var(--helloada-muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.helloada-history-execution-detail > p {
+  margin: 0;
+}
+
+.helloada-history-execution-detail ul {
+  display: grid;
+  gap: 4px;
+  margin: 6px 0 0;
+  padding-left: 18px;
 }
 
 .helloada-history-item {

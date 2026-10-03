@@ -9,7 +9,7 @@ initOpenNextCloudflareForDev({ remoteBindings: false })
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   poweredByHeader: false,
-  transpilePackages: ['@weareheadless/helloada-payload-admin'],
+  transpilePackages: ['@weareheadless/helloada-payload-admin', '@weareheadless/helloada-payload-core'],
   experimental: { cpus: 1 },
   serverExternalPackages: ['jose', 'pg-cloudflare'],
   webpack: (webpackConfig) => {

@@ -21,6 +21,19 @@
   }
   .helloada-growth-task-shell { padding: 5px; border-radius: 22px; background: #e7ebef; box-shadow: inset 0 1px rgba(255,255,255,.8), 0 12px 38px rgba(18,28,42,.045); margin-bottom: 26px; }
   .helloada-growth-task-core { background: #fff; color: #222c39; border-radius: 18px; padding: 22px 24px 12px; }
+  .helloada-growth-task-layout { display: grid; grid-template-columns: minmax(0, 1fr) 248px; align-items: start; gap: 24px; }
+  .helloada-growth-task-main { min-width: 0; }
+  .helloada-growth-recent { position: sticky; top: 16px; padding: 14px 0 12px 18px; border-left: 1px solid #e3e7eb; }
+  .helloada-growth-recent-heading { display: flex; align-items: center; gap: 9px; padding-bottom: 10px; }
+  .helloada-growth-recent-heading > span { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 8px; background: #fff0e9; color: #b43e26; font-size: 14px; font-weight: 700; }
+  .helloada-growth-recent h3 { margin: 0; color: #283647; font-size: 13px; font-weight: 650; }
+  .helloada-growth-recent ul { list-style: none; margin: 0; padding: 0; }
+  .helloada-growth-recent li { padding: 12px 0; border-top: 1px solid #edf0f2; }
+  .helloada-growth-recent li strong, .helloada-growth-recent li small { display: block; }
+  .helloada-growth-recent li strong { color: #253341; font-size: 12px; line-height: 1.45; }
+  .helloada-growth-recent li small { margin-top: 4px; color: #65717d; font-size: 11px; }
+  .helloada-growth-recent li p, .helloada-growth-recent-empty { margin: 5px 0 0; color: #525f6d; font-size: 11px; line-height: 1.5; }
+  .helloada-growth-recent > a { display: inline-block; margin-top: 12px; font-size: 12px; font-weight: 600; }
   .helloada-growth-task-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
   .helloada-growth-task-core small { color: #626d7a; }
   .helloada-growth-task-goal { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; padding: 16px 0; font-size: 12px; color: #68727f; }
@@ -30,7 +43,7 @@
   .helloada-growth button.helloada-growth-primary:hover:not(:disabled) { background: #ac3d28; color: #fff; }
   .helloada-growth-task-filters { display: flex; gap: 6px; overflow: auto; padding: 8px 0 16px; }
   .helloada-growth-task-filters button { white-space: nowrap; background: #f2f4f6; color: #66717f; border-color: transparent; border-radius: 9px; min-height: 36px; }
-  .helloada-growth-task-filters button[aria-pressed=true] { background: #253341; color: #fff; }
+  .helloada-growth-task-filters button[aria-pressed=true] { background: #c4492f; color: #fff; border-color: #c4492f; box-shadow: 0 2px 6px rgba(145,47,25,.15); }
   .helloada-growth-task-filters button span { margin-left: 8px; opacity: .75; font-size: 11px; }
   .helloada-growth-task-list { list-style: none; margin: 0; padding: 0; }
   .helloada-growth-task { border-top: 1px solid rgba(52,66,83,.075); }
@@ -46,13 +59,29 @@
   .helloada-growth-task-badge { font-size: 11px; padding: 4px 9px; border-radius: 6px; background: #f0f3f6; color: #566474; white-space: nowrap; }
   .helloada-growth-task-badge.is-needs_you { background: #fff0e9; color: #ba462b; }
   .helloada-growth-task-badge.is-completed { background: #eaf6f1; color: #20735f; }
+  .helloada-growth-task-badge.is-paused { background: #f2f3f5; color: #515c68; }
   .helloada-growth-task-detail { padding: 0 28px 22px; max-width: 960px; }
   .helloada-growth-task-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding-top: 12px; }
+  .helloada-growth-task-preview { display: inline-flex; width: fit-content; align-items: center; gap: 6px; margin: 4px 0 8px; color: #a83f35; font-weight: 650; text-decoration: underline; text-underline-offset: 3px; }
   .helloada-growth-task-actions button:not(.helloada-growth-primary) { background: #f1f4f6; color: #384858; border: 0; }
   .helloada-growth-task-diff { margin: 16px 0; }
   .helloada-growth-task-diff dt { font-weight: 600; margin-top: 12px; }
   .helloada-growth-task-diff dd { margin: 6px 0; }
   .helloada-growth-task-diff pre { white-space: pre-wrap; word-break: break-word; font: inherit; padding: 10px 14px; background: #f4f6f8; border-radius: 8px; margin: 4px 0 10px; }
+  .helloada-growth-task-route { color: #465565; font-size: 12px; }
+  .helloada-growth-task-route code { display: inline-block; padding: 3px 8px; border-radius: 6px; background: #f2f4f6; color: #253341; }
+  .helloada-growth-task-evidence { margin: 14px 0; padding: 12px 14px; border: 1px solid #e5e9ed; border-radius: 10px; color: #344253; }
+  .helloada-growth-task-evidence summary { cursor: pointer; font-weight: 600; }
+  .helloada-growth-task-evidence ul { margin: 8px 0 0; padding-left: 20px; }
+  .helloada-growth-settings-proposal { margin: 14px 0; padding: 16px; border: 1px solid #f1d6cd; border-radius: 12px; background: #fffaf8; }
+  .helloada-growth-settings-proposal > p { color: #7b4638; font-size: 13px; }
+  .helloada-growth-settings-proposal h3 { margin: 14px 0 8px; color: #364454; font-size: 13px; }
+  .helloada-growth-settings-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+  .helloada-growth-settings-columns > div { padding: 12px; border: 1px solid #e7e9ec; border-radius: 9px; background: #fff; }
+  .helloada-growth-settings-columns > div:last-child { border-color: #f0c8bc; box-shadow: inset 3px 0 #c4492f; }
+  .helloada-growth-settings-columns strong { color: #303d4a; font-size: 12px; }
+  .helloada-growth-settings-columns ul { margin: 8px 0 0; padding-left: 18px; color: #465565; }
+  .helloada-growth-settings-columns li + li { margin-top: 6px; }
   .helloada-growth-task-block { padding: 10px 14px; background: #fff4ed; color: #a3442b; border-radius: 8px; }
   .helloada-growth-task-brief { font-size: 13px; margin: 0 0 12px; }
   .helloada-growth-task-brief summary { cursor: pointer; color: #576574; }
@@ -62,10 +91,13 @@
   .helloada-growth-task-outcomes small { display: block; margin-top: 4px; color: #566474; }
   @media (max-width: 650px) {
     .helloada-growth-task-core { padding: 16px 14px 10px; }
+    .helloada-growth-task-layout { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+    .helloada-growth-recent { position: static; padding: 14px 0 0; border-left: 0; border-top: 1px solid #e3e7eb; }
     .helloada-growth-task-header { align-items: flex-start; flex-wrap: wrap; }
     .helloada-growth-task-label small { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
     .helloada-growth-task-badge { max-width: 100px; white-space: normal; text-align: center; }
     .helloada-growth-task-detail { padding: 0 4px 18px; }
+    .helloada-growth-settings-columns { grid-template-columns: minmax(0, 1fr); }
   }
   .helloada-growth h3 {
     margin: 0 0 14px;

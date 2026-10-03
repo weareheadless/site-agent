@@ -503,14 +503,16 @@ class WebsiteBootstrapService:
                 "token_env": token_env,
                 "api_prefix": "/api",
                 "contract": {
+                    "version": "helloada-content-v1",
                     "collections": {
                         "pages": ["sourceId", "title", "slug", "summary", "body", "sections", "featuredImage", "canonicalUrl", "seo", "published"],
                         "posts": ["sourceId", "title", "slug", "summary", "body", "featuredImage", "gallery", "author", "publishedAt", "modifiedAt", "category", "canonicalUrl", "seo", "published"],
-                        "products": ["sourceId", "title", "slug", "summary", "body", "featuredImage", "price", "published"],
+                        "products": ["sourceId", "title", "slug", "summary", "body", "featuredImage", "price", "category", "published"],
+                        "productCategories": ["sourceId", "title", "slug", "description", "featuredImage", "published"],
                     },
                     "globals": {
                         "navigation": ["items", "groups", "footer", "footerGroups"],
-                        "siteSettings": ["siteName", "description", "tagline", "logo", "email", "telephone", "facebookUrl", "instagramUrl", "defaultSeoTitle", "defaultSeoDescription", "defaultSocialImage", "address"],
+                        "siteSettings": ["siteName", "description", "tagline", "logo", "email", "telephone", "facebookUrl", "instagramUrl", "defaultSeoTitle", "defaultSeoDescription", "defaultSocialImage", "journalTitle", "journalDescription", "address"],
                     },
                     "media_fields": ["alt", "description", "tags", "dominantColors", "suggestedUses", "qualityNotes", "analysisStatus", "analysis", "sourceId"],
                 },
@@ -588,6 +590,10 @@ class WebsiteBootstrapService:
             "HELLOADA_SITE_NAME": display_name or tenant_id,
             "HELLOADA_TENANT_ID": tenant_id,
             "HELLOADA_SITE_AGENT_VERSION": __version__,
+            "HELLOADA_TEMPLATE_SCHEMA": "4",
+            "HELLOADA_PAYLOAD_ADMIN_VERSION": "0.8.6",
+            "HELLOADA_PAYLOAD_CORE_VERSION": "0.1.0",
+            "HELLOADA_CONTENT_CONTRACT_VERSION": "helloada-content-v1",
         })
         document["name"] = names["worker"]
         document["d1_databases"] = [{

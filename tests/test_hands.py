@@ -139,8 +139,11 @@ def test_cloudflare_direct_mode_rejected_until_phase4():
         adapter.validate()
 
 
-def test_restore_snapshot_creates_one_atomic_commit_from_target_tree(monkeypatch):
+def test_frontend_restore_overlays_only_owned_paths_onto_current_platform(monkeypatch):
     calls = []
+    marker = __import__("base64").b64encode(
+        b'{"contract":"helloada-content-v1","coreVersion":"0.1.0"}'
+    ).decode()
 
     def fake_request(method, url, token=None, payload=None, timeout=30):
         calls.append((method, url, payload))
@@ -152,13 +155,22 @@ def test_restore_snapshot_creates_one_atomic_commit_from_target_tree(monkeypatch
             return 200, {"commit": {"tree": {"sha": "current-tree"}}}
         if method == "GET" and "/git/trees/target-tree" in url:
             return 200, {"tree": [
-                {"path": "index.html", "mode": "100644", "type": "blob", "sha": "old-index"},
+                {"path": "helloada-content-contract.json", "mode": "100644", "type": "blob", "sha": "contract"},
+                {"path": "src/components/site/Hero.tsx", "mode": "100644", "type": "blob", "sha": "old-hero"},
+                {"path": "src/app/(frontend)/site.css", "mode": "100644", "type": "blob", "sha": "old-css"},
+                {"path": "src/lib/content.ts", "mode": "100644", "type": "blob", "sha": "old-reader"},
             ]}
         if method == "GET" and "/git/trees/current-tree" in url:
             return 200, {"tree": [
-                {"path": "index.html", "mode": "100644", "type": "blob", "sha": "new-index"},
-                {"path": "new.css", "mode": "100644", "type": "blob", "sha": "new-css"},
+                {"path": "helloada-content-contract.json", "mode": "100644", "type": "blob", "sha": "contract"},
+                {"path": "src/components/site/Hero.tsx", "mode": "100644", "type": "blob", "sha": "new-hero"},
+                {"path": "src/components/site/NewCard.tsx", "mode": "100644", "type": "blob", "sha": "new-card"},
+                {"path": "src/app/(frontend)/site.css", "mode": "100644", "type": "blob", "sha": "new-css"},
+                {"path": "src/lib/content.ts", "mode": "100644", "type": "blob", "sha": "current-reader"},
+                {"path": "src/collections/Pages.ts", "mode": "100644", "type": "blob", "sha": "current-schema"},
             ]}
+        if method == "GET" and "/contents/helloada-content-contract.json?ref=target" in url:
+            return 200, {"content": marker, "encoding": "base64"}
         if method == "POST" and "/git/trees" in url:
             return 201, {"sha": "rollback-tree"}
         if method == "POST" and "/git/commits" in url:
@@ -169,14 +181,39 @@ def test_restore_snapshot_creates_one_atomic_commit_from_target_tree(monkeypatch
 
     monkeypatch.setattr(github_static, "_request", fake_request)
     adapter = get_adapter("github_static", _config())
-    result = adapter.restore_snapshot("target", "preview", "Restore version")
+    result = adapter.restore_frontend_paths("target", "preview", "Restore version")
 
     assert result["committed"] is True
+    assert result["scope"] == "frontend_only"
     tree_call = next(call for call in calls if call[0] == "POST" and "/git/trees" in call[1])
     entries = tree_call[2]["tree"]
-    assert {entry["path"] for entry in entries} == {"index.html", "new.css"}
-    assert next(entry for entry in entries if entry["path"] == "index.html")["sha"] == "old-index"
-    assert next(entry for entry in entries if entry["path"] == "new.css")["sha"] is None
+    assert {entry["path"] for entry in entries} == {
+        "src/app/(frontend)/site.css", "src/components/site/Hero.tsx", "src/components/site/NewCard.tsx",
+    }
+    assert next(entry for entry in entries if entry["path"] == "src/components/site/Hero.tsx")["sha"] == "old-hero"
+    assert next(entry for entry in entries if entry["path"] == "src/app/(frontend)/site.css")["sha"] == "old-css"
+    assert next(entry for entry in entries if entry["path"] == "src/components/site/NewCard.tsx")["sha"] is None
+    assert all("src/lib/content.ts" != entry["path"] and "src/collections/Pages.ts" != entry["path"] for entry in entries)
+
+
+def test_frontend_restore_rejects_versions_before_shared_content_contract(monkeypatch):
+    def fake_request(method, url, token=None, payload=None, timeout=30):
+        if method == "GET" and "/commits/target" in url:
+            return 200, {"commit": {"tree": {"sha": "target-tree"}}}
+        if method == "GET" and "/git/ref/heads/main" in url:
+            return 200, {"object": {"sha": "current-sha"}}
+        if method == "GET" and "/commits/current-sha" in url:
+            return 200, {"commit": {"tree": {"sha": "current-tree"}}}
+        if method == "GET" and "/git/trees/target-tree" in url:
+            return 200, {"tree": [{"path": "index.html", "mode": "100644", "type": "blob", "sha": "old"}]}
+        if method == "GET" and "/git/trees/current-tree" in url:
+            return 200, {"tree": [{"path": "src/components/site/Hero.tsx", "mode": "100644", "type": "blob", "sha": "new"}]}
+        raise AssertionError((method, url, payload))
+
+    monkeypatch.setattr(github_static, "_request", fake_request)
+    adapter = get_adapter("github_static", _config())
+    with pytest.raises(AdapterError, match="predates the supported shared-content rollback baseline"):
+        adapter.restore_frontend_paths("target", "preview", "Restore version")
 
 
 def test_merge_design_candidate_refuses_stale_production_head(monkeypatch):

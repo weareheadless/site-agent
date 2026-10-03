@@ -1,0 +1,25 @@
+{
+  "name": "@weareheadless/helloada-payload-core",
+  "version": "0.1.0",
+  "description": "Shared tenant-isolated Payload schema and content readers for HelloAda sites.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "files": ["src", "README.md"],
+  "exports": {
+    "./bindings": "./src/bindings/index.ts",
+    "./schema": "./src/schema/index.ts",
+    "./server": "./src/server.ts"
+  },
+  "peerDependencies": {
+    "payload": "^3.88.0"
+  },
+  "devDependencies": {
+    "payload": "3.88.0",
+    "typescript": "5.7.3"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/*.test.mjs",
+    "pack": "npm pack"
+  }
+}

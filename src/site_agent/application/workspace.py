@@ -11,6 +11,7 @@ conversation or job id is looked up.
 from __future__ import annotations
 
 import hmac
+import hashlib
 import json
 import re
 import datetime
@@ -1129,7 +1130,7 @@ class ChatService:
                 candidate = tenant.context.get(context_key)
                 if candidate is not None and any(
                     callable(getattr(candidate, capability, None))
-                    for capability in ("merge_preview", "restore_snapshot", "reset_preview_branch")
+                    for capability in ("merge_preview", "restore_frontend_paths", "reset_preview_branch")
                 ):
                     return candidate
                 adapter = getattr(candidate, "adapter", None) if candidate is not None else None
@@ -1141,7 +1142,7 @@ class ChatService:
             for candidate in (self.source_deployment, self.source_editor):
                 if candidate is not None and any(
                     callable(getattr(candidate, capability, None))
-                    for capability in ("merge_preview", "restore_snapshot", "reset_preview_branch")
+                    for capability in ("merge_preview", "restore_frontend_paths", "reset_preview_branch")
                 ):
                     return candidate
                 adapter = getattr(candidate, "adapter", None) if candidate is not None else None
@@ -1648,6 +1649,87 @@ class ChatService:
             for item in memory.list_publishes(limit=bounded_limit)
         ]
 
+        # Informational SEO reports are distinct from editable website drafts.
+        # Keep the index small and owner-safe; report bodies are fetched on demand.
+        seo_reports = [
+            {
+                "id": int(item["id"]),
+                "period": str(item.get("period") or ""),
+                "status": str(item.get("status") or "unknown"),
+                "summary": str(item.get("summary") or "")[:500],
+                "created_ts": item.get("created_ts"),
+                "updated_ts": item.get("updated_ts"),
+                "completed_ts": item.get("completed_ts"),
+            }
+            for item in memory.list_seo_site_reports(limit=bounded_limit)
+            if item.get("status") == "completed" and item.get("artifact_id")
+        ]
+
+        # The right rail is an achievement log, not a live-task monitor. Never
+        # serialize run detail/error/provider payload into this owner surface.
+        execution_log = [
+            {
+                "id": f"seo-report:{item['id']}",
+                "kind": "seo_report",
+                "period": item["period"],
+                "status": "completed",
+                "completed_ts": item.get("completed_ts"),
+                "report": {"source": "seo", "id": item["id"]},
+            }
+            for item in seo_reports
+        ]
+        for item in drafts:
+            if item.get("kind") != "report":
+                continue
+            execution_log.append({
+                "id": f"draft-report:{item['id']}",
+                "kind": "report",
+                "title": str(item.get("title") or "Report")[:240],
+                "status": "completed",
+                "created_ts": item.get("created_ts"),
+                "completed_ts": item.get("updated_ts") or item.get("created_ts"),
+                "report": {"source": "draft", "id": item["id"]},
+            })
+        for item in memory.list_growth_runs(limit=bounded_limit):
+            status = str(item.get("status") or "")
+            if status not in {"complete", "failed", "blocked", "uncertain"}:
+                continue
+            execution_log.append({
+                "id": f"growth-run:{item.get('run_id') or ''}",
+                "kind": "growth_cycle",
+                "trigger": str(item.get("trigger") or "scheduled"),
+                "status": "completed" if status == "complete" else "needs_repair",
+                "created_ts": item.get("created_ts"),
+                "completed_ts": item.get("completed_ts") or item.get("updated_ts"),
+                "detail_id": str(item.get("run_id") or ""),
+                "failure_kind": "growth_cycle" if status != "complete" else None,
+            })
+        for item in memory.list_article_ideas(limit=bounded_limit):
+            if item.get("status") not in {"failed", "blocked", "uncertain"}:
+                continue
+            idea = item.get("idea_json") if isinstance(item.get("idea_json"), Mapping) else {}
+            execution_log.append({
+                "id": f"article-research:{item.get('id')}",
+                "kind": "article_research",
+                "title": str(idea.get("working_title") or "Article research")[:240],
+                "status": "needs_repair",
+                "completed_ts": item.get("updated_ts") or item.get("created_ts"),
+                "failure_kind": "article_research",
+            })
+        for item in memory.list_seo_site_reports(limit=bounded_limit):
+            if item.get("status") not in {"failed", "waiting"}:
+                continue
+            execution_log.append({
+                "id": f"seo-report:{item['id']}",
+                "kind": "seo_report",
+                "period": str(item.get("period") or ""),
+                "status": "waiting_for_data" if item.get("status") == "waiting" else "needs_repair",
+                "completed_ts": item.get("updated_ts") or item.get("created_ts"),
+                "failure_kind": "seo_report" if item.get("status") == "failed" else None,
+            })
+        execution_log.sort(key=lambda row: str(row.get("completed_ts") or row.get("created_ts") or ""), reverse=True)
+        execution_log = execution_log[:min(bounded_limit, 12)]
+
         worktree = self._public_worktree(tenant, self.config)
         source_preview = self._public_source_preview(tenant)
 
@@ -1658,9 +1740,120 @@ class ChatService:
             "drafts": drafts,
             "current_update": current_update,
             "publishes": publishes,
-            "actions": memory.recent_actions(limit=bounded_limit),
+            "seo_reports": seo_reports,
+            "execution_log": execution_log,
             "worktree": worktree,
             "source_preview": source_preview,
+        }
+
+    def activity_detail(self, draft_id: Any, *, tenant: Tenant | None = None) -> dict[str, Any]:
+        """Return one scoped informational report body, never an approval action."""
+        memory, _llm, _tenant_id = self._scope(tenant)
+        try:
+            normalized_id = int(draft_id)
+        except (TypeError, ValueError) as exc:
+            raise BridgeError("report not found") from exc
+        draft = next((row for row in memory.list_drafts(limit=None) if int(row.get("id") or 0) == normalized_id), None)
+        if draft is None or str(draft.get("kind") or "") not in {"report", "seo_report"}:
+            raise BridgeError("report not found")
+        body = str(draft.get("body") or "")
+        if len(body.encode("utf-8")) > 120_000:
+            raise BridgeError("this report is too large to display in one response")
+        return {
+            "id": normalized_id,
+            "title": str(draft.get("title") or "Report"),
+            "kind": str(draft.get("kind") or "report"),
+            "status": str(draft.get("status") or "unknown"),
+            "created_ts": draft.get("created_ts"),
+            "body": body,
+        }
+
+    def activity_seo_report_detail(self, report_id: Any, *, tenant: Tenant | None = None) -> dict[str, Any]:
+        """Return one completed monthly SEO report and concise evidence provenance."""
+        memory, _llm, _tenant_id = self._scope(tenant)
+        try:
+            normalized_id = int(report_id)
+        except (TypeError, ValueError) as exc:
+            raise BridgeError("report not found") from exc
+        report = memory.get_seo_site_report(normalized_id)
+        if report is None or report.get("status") != "completed" or not report.get("artifact_id"):
+            raise BridgeError("report not found")
+        from ..core.contracts import ArtifactKind
+
+        artifact = memory.get_artifact(int(report["artifact_id"]))
+        if artifact is None or artifact.kind is not ArtifactKind.SEO_REPORT:
+            raise BridgeError("report not found")
+        body = str(artifact.preview_data.get("body") or "")
+        if len(body.encode("utf-8")) > 120_000:
+            raise BridgeError("this report is too large to display in one response")
+        evidence = report.get("evidence_json") if isinstance(report.get("evidence_json"), Mapping) else {}
+        article_research = evidence.get("article_research")
+        return {
+            "id": normalized_id,
+            "title": artifact.title,
+            "period": str(report.get("period") or ""),
+            "status": "completed",
+            "completed_ts": report.get("completed_ts"),
+            "body": body,
+            "provenance": {
+                "evidence_hash": str(report.get("evidence_hash") or ""),
+                "site_evidence_included": isinstance(evidence.get("site"), Mapping),
+                "article_research_count": len(article_research) if isinstance(article_research, list) else 0,
+            },
+        }
+
+    def activity_execution_detail(self, run_id: Any, *, tenant: Tenant | None = None) -> dict[str, Any]:
+        """Return a bounded owner summary for one persisted scheduled Growth run."""
+        memory, _llm, _tenant_id = self._scope(tenant)
+        normalized_id = str(run_id or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9._:-]{1,120}", normalized_id):
+            raise BridgeError("execution not found")
+        run = memory.get_growth_run(normalized_id)
+        if run is None:
+            raise BridgeError("execution not found")
+        detail = run.get("detail") if isinstance(run.get("detail"), Mapping) else {}
+        assessment = detail.get("assessment") if isinstance(detail.get("assessment"), Mapping) else {}
+        status = str(run.get("status") or "unknown")
+        if status == "complete" and str(assessment.get("summary") or "").strip():
+            summary = str(assessment["summary"])[:3000]
+            summary_key = None
+        elif status == "complete" and run.get("trigger") == "monthly":
+            summary = ""
+            summary_key = "monthly"
+        elif status == "complete" and run.get("trigger") == "daily":
+            summary = ""
+            summary_key = "daily"
+        elif status == "complete":
+            summary = ""
+            summary_key = "evidence"
+        else:
+            summary = ""
+            summary_key = "needs_repair"
+        sources = detail.get("material", {}).get("sources", []) if isinstance(detail.get("material"), Mapping) else []
+        if not isinstance(sources, list):
+            sources = detail.get("sources", []) if isinstance(detail.get("sources"), list) else []
+        public_sources = [
+            {"id": str(item.get("id") or "")[:80], "state": str(item.get("state") or "unknown")[:40],
+             "observed_at": item.get("observedAt")}
+            for item in sources[:20] if isinstance(item, Mapping)
+        ]
+        related = [
+            {"id": row.get("id"), "title": str(row.get("title") or "")[:240], "state": str(row.get("state") or "")[:40]}
+            for row in memory.list_strategy_initiatives(limit=100)
+            if row.get("growth_run_id") == normalized_id
+        ][:20]
+        return {
+            "id": normalized_id,
+            "trigger": str(run.get("trigger") or "scheduled"),
+            "status": "completed" if status == "complete" else "needs_repair",
+            "created_ts": run.get("created_ts"),
+            "completed_ts": run.get("completed_ts") or run.get("updated_ts"),
+            "summary": summary,
+            "summary_key": summary_key,
+            "evidence_sources": public_sources,
+            "decision_count": len(related),
+            "decisions": related,
+            "website_changes_published": False,
         }
 
     @staticmethod
@@ -1960,6 +2153,8 @@ class ChatService:
             draft = {"id": normalized_id, "title": f"Design candidate {normalized_id}", "kind": "design", "status": "pending", "meta": {}}
         if draft is None:
             raise BridgeError("no such draft")
+        if draft.get("kind") == "reflection" and draft.get("status") == "approved":
+            return {"ok": True, "draft_id": normalized_id, "status": "applied", "idempotent": True}
         self._assert_review_package(draft, review_package_hash)
         if draft.get("status") != "pending":
             deployer = tenant.context.get("source_deployment") if tenant else self.source_deployment
@@ -2036,17 +2231,38 @@ class ChatService:
                 result["deployment"] = dict(production_deployment)
         elif kind in {"merge", "rollback"}:
             adapter = self._merge_adapter(tenant)
-            merge = getattr(adapter, "merge_preview", None)
-            if not callable(merge):
-                raise BridgeError("the configured site cannot publish preview changes")
             config = tenant.config if tenant is not None else self.config
+            if kind == "rollback":
+                preview_state = meta.get("preview") if isinstance(meta.get("preview"), Mapping) else {}
+                if (
+                    meta.get("scope") != "frontend_only"
+                    or meta.get("contract") != "helloada-content-v1"
+                    or preview_state.get("status") != "ready"
+                    or bool(preview_state.get("requires_build"))
+                ):
+                    raise BridgeError("the frontend restoration preview is not validated and ready")
+                candidate_sha = str(meta.get("candidate_sha") or "").strip().lower()
+                base_sha = str(meta.get("base_sha") or "").strip().lower()
+                if not re.fullmatch(r"[0-9a-f]{40}", candidate_sha) or not re.fullmatch(r"[0-9a-f]{40}", base_sha):
+                    raise BridgeError("the frontend restoration is missing its exact source revisions")
+                merge = getattr(adapter, "merge_design_candidate", None)
+            else:
+                merge = getattr(adapter, "merge_preview", None)
+            if not callable(merge):
+                raise BridgeError("the configured site cannot publish the exact website candidate")
             if kind == "merge" and tenant is not None and tenant.context.get("source_deployment") is not None:
                 self._assert_reviewable_merge_candidate(draft, adapter, tenant)
             try:
-                candidate = merge(
-                    config,
-                    f"Publish website update: {str(draft.get('title') or normalized_id)[:160]}",
-                )
+                if kind == "rollback":
+                    candidate = merge(
+                        config, candidate_sha, base_sha,
+                        f"Restore frontend version: {str(draft.get('title') or normalized_id)[:160]}",
+                    )
+                else:
+                    candidate = merge(
+                        config,
+                        f"Publish website update: {str(draft.get('title') or normalized_id)[:160]}",
+                    )
             except Exception as exc:  # noqa: BLE001 — approval must return a bounded error
                 raise BridgeError(str(exc)[:500]) from exc
             if not isinstance(candidate, Mapping) or not candidate.get("merged"):
@@ -2161,6 +2377,13 @@ class ChatService:
             summary = str(draft.get("title") or f"content: {normalized_id}")
             commit_message = ""
             result["status"] = "published"
+        elif kind == "reflection":
+            from ..core.reflect import approve_reflection
+
+            if not approve_reflection(memory, normalized_id, str(review_package_hash or "")):
+                raise BridgeError("Ada's writing guidance changed since this proposal was prepared; ask Ada to prepare a current comparison")
+            result["status"] = "applied"
+            memory.record_action("settings_apply", f"#{normalized_id} [ada_writing_guidance]")
         elif kind == "article":
             if tenant is None:
                 raise BridgeError("Payload article approval requires a tenant")
@@ -2238,10 +2461,11 @@ class ChatService:
                 version_type=version_type,
                 commit_message=commit_message,
             )
-        memory.record_action(
-            "publish_queued" if production_deployment else "approve",
-            f"#{normalized_id} [{kind}] {draft.get('title') or ''}".strip(),
-        )
+        if kind != "reflection":
+            memory.record_action(
+                "publish_queued" if production_deployment else "approve",
+                f"#{normalized_id} [{kind}] {draft.get('title') or ''}".strip(),
+            )
         result.setdefault("published", dict(published) if published else None)
         return result
 
@@ -2316,11 +2540,18 @@ class ChatService:
             raise BridgeError("version not found")
         if version.get("reverted_ts"):
             raise BridgeError("version has already been rolled back")
-        for pending in memory.list_drafts(status="pending", limit=500):
-            if pending.get("kind") in {"merge", "rollback"}:
-                memory.update_draft_status(int(pending["id"]), "discarded")
+        pending_code_reviews = [
+            item for item in memory.list_drafts(status="pending", limit=500)
+            if item.get("kind") in {"design", "merge", "rollback"}
+        ]
+        if pending_code_reviews:
+            raise BridgeError("resolve the current website review before preparing a code restoration")
+        deployer = tenant.context.get("source_deployment")
+        start_preview = getattr(deployer, "start", None)
+        if not callable(start_preview):
+            raise BridgeError("the frontend restoration preview builder is not configured")
         adapter = self._merge_adapter(tenant)
-        restore = getattr(adapter, "restore_snapshot", None)
+        restore = getattr(adapter, "restore_frontend_paths", None)
         preview_branch = str((tenant.config.get("site") or {}).get("preview_branch") or "preview").strip()
         if not callable(restore) or not preview_branch:
             raise BridgeError("version restore is not configured")
@@ -2331,25 +2562,56 @@ class ChatService:
             preview = restore(
                 str(version["commit_sha"]),
                 preview_branch,
-                f"Restore website version: {str(version.get('summary') or normalized_id)[:120]}",
+                f"Restore frontend version: {str(version.get('summary') or normalized_id)[:120]}",
             )
+            candidate_sha = str(preview.get("commit_sha") or "").strip().lower()
+            base_sha = str(preview.get("parent_sha") or "").strip().lower()
+            if not re.fullmatch(r"[0-9a-f]{40}", candidate_sha) or not re.fullmatch(r"[0-9a-f]{40}", base_sha):
+                raise BridgeError("frontend restoration did not return exact source revisions")
         except Exception as exc:  # noqa: BLE001 — keep rollback approval-gated
+            if isinstance(exc, BridgeError):
+                raise
             raise BridgeError(str(exc)[:500]) from exc
+        summary = str(version.get("summary") or normalized_id)[:120]
+        review_payload = {
+            "scope": "frontend_only",
+            "contract": "helloada-content-v1",
+            "target_sha": str(version["commit_sha"]),
+            "candidate_sha": candidate_sha,
+            "base_sha": base_sha,
+        }
+        review_hash = "sha256:" + hashlib.sha256(
+            json.dumps(review_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
         draft_id = memory.save_draft(
-            title=f"Restore: {str(version.get('summary') or normalized_id)[:120]}",
-            body=f"Restore the website to the published version from {str(version.get('ts') or '')[:10]}.",
+            title=f"Restore website design: {summary}",
+            body=("Restore only the website's frontend design from "
+                  f"{str(version.get('ts') or '')[:10]}. Current content, images, settings, Payload schema and admin stay unchanged."),
             kind="rollback",
             meta={
-                "target_sha": version["commit_sha"],
+                **review_payload,
+                "review_package_hash": review_hash,
                 "target_publish_id": normalized_id,
-                "head_sha": preview.get("parent_sha", "") if isinstance(preview, Mapping) else "",
+                "head_sha": base_sha,
                 "head": preview_branch,
                 "base": (tenant.config.get("site") or {}).get("branch", "main"),
-                "summary": version.get("summary") or "",
+                "summary": summary,
+                "preview": {"status": "building", "requires_build": True, "head_sha": candidate_sha},
             },
         )
+        try:
+            preview_job = start_preview({
+                "branch": preview_branch,
+                "commit": candidate_sha,
+                "mode": "compiled_preview",
+                "draft_id": draft_id,
+            })
+        except Exception as exc:  # noqa: BLE001 — a failed validation must not create a reviewable decision
+            memory.update_draft_status(draft_id, "publish_failed")
+            memory.record_action("rollback_preview_failed", f"version #{normalized_id}: {str(exc)[:300]}")
+            raise BridgeError(f"frontend restoration preview could not be started: {str(exc)[:400]}") from exc
         memory.record_action("rollback_preview", f"version #{normalized_id} -> draft #{draft_id}")
-        return {"ok": True, "draft_id": draft_id, "branch": preview_branch, "preview": preview}
+        return {"ok": True, "draft_id": draft_id, "branch": preview_branch, "preview": preview_job}
 
     def analyze_media(self, body: Mapping[str, Any], *, tenant: Tenant | None = None) -> dict[str, Any]:
         """Analyze one Payload asset and write only the resulting metadata draft."""

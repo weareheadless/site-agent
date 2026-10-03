@@ -111,13 +111,26 @@ class _NativeBuilder:
             }),
             encoding="utf-8",
         )
-        (root / "src/app/page.tsx").write_text(
-            "export default function HomePage() { return <main><h1>A considered service</h1><p>A clear first step.</p></main> }\n",
+        homepage = root / "src/components/site/homepage.tsx"
+        homepage.parent.mkdir(parents=True, exist_ok=True)
+        homepage.write_text(
+            "export function HomepageContent() { return <main><h1>A considered service</h1><p>A clear first step.</p></main> }\n",
             encoding="utf-8",
         )
+        # The host-owned toolchain and Next entrypoint are not Ada-authored
+        # candidate files; this test double retains only the tenant component.
+        for relative in (
+            "package.json", "package-lock.json", "next.config.mjs",
+            "eslint.config.mjs", "tsconfig.json", "src/app/page.tsx",
+        ):
+            (root / relative).unlink(missing_ok=True)
+        try:
+            (root / "src/app").rmdir()
+        except OSError:
+            pass
         manifest = DesignManifest.from_dict({
             "schema_version": 1,
-            "source_homepage_path": "src/app/page.tsx",
+            "source_homepage_path": "src/components/site/homepage.tsx",
             "design_direction_id": "native-test",
             "intake_hash": request.site_intake_hash,
             "tokens": {},
@@ -145,7 +158,7 @@ class _NativeBuilder:
             "candidate_sha": candidate_sha,
             "candidate_ref": target.candidate_ref,
             "diff_summary": "native source authored",
-            "changed_paths": ["package.json", "package-lock.json", "next.config.mjs", "eslint.config.mjs", "tsconfig.json", "src/app/page.tsx", "design/ada-design-manifest.json"],
+            "changed_paths": ["src/components/site/homepage.tsx", "design/ada-design-manifest.json"],
             "manifest_path": "design/ada-design-manifest.json",
             "manifest_hash": canonical_hash(manifest.to_dict()),
             "opencode_session_id": "native-test-session",

@@ -72,6 +72,13 @@ export const candidateRow = async (packageHash: string) => {
   return result ? asObject(result) : undefined
 }
 
+export const operationByKey = async (operationKey: string) => {
+  const db = await database()
+  const row = await db.prepare('SELECT * FROM helloada_growth_operations WHERE operation_key = ?1')
+    .bind(operationKey).first()
+  return row ? asObject(row) : undefined
+}
+
 export const saveCandidate = async (packageData: JsonObject, packageHash: string, result: JsonObject) => {
   const timestamp = now()
   const db = await database()
@@ -119,6 +126,23 @@ export const completeOperation = async (operationKey: string, result: JsonObject
   await db.prepare(`UPDATE helloada_growth_operations
     SET state = 'completed', result_json = ?1, updated_at = ?2 WHERE operation_key = ?3 AND state = 'writing'`)
     .bind(stableJson(result), now(), operationKey).run()
+}
+
+/** Settle an interrupted receipt only after the destination state is verified. */
+export const reconcileOperation = async (operationKey: string, result: JsonObject) => {
+  const db = await database()
+  await db.prepare(`UPDATE helloada_growth_operations
+    SET state = 'completed', result_json = ?1, updated_at = ?2
+    WHERE operation_key = ?3 AND state IN ('writing', 'uncertain')`)
+    .bind(stableJson(result), now(), operationKey).run()
+}
+
+/** Persist the exact desired document hash before invoking a Payload write. */
+export const prepareOperation = async (operationKey: string, intent: JsonObject) => {
+  const db = await database()
+  await db.prepare(`UPDATE helloada_growth_operations
+    SET result_json = ?1, updated_at = ?2 WHERE operation_key = ?3 AND state = 'writing'`)
+    .bind(stableJson(intent), now(), operationKey).run()
 }
 
 export const failOperation = async (operationKey: string, result: JsonObject) => {

@@ -1,103 +1,102 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 
 import { fetchHelloAda } from '../api/fetchHelloAda'
 import { useHelloAdaTranslations } from '../api/useHelloAdaTranslations'
-import { useHelloAdaSite } from '../config/provider'
+import { HelloAdaChatMessage } from './HelloAdaChatMessage'
 
-type ConversationHistoryItem = {
-  id: number
-  title: string
-  created_ts?: string | null
-  archived_ts?: string | null
-}
-
-type DesignHistoryItem = {
-  run_id: string
-  status: string
-  mode: string
-  owner_request: string
-  conversation_id?: number | null
-  created_ts?: string | null
-  updated_ts?: string | null
-  publishable: boolean
-  target?: { mode?: string; scope?: string; path?: string | null } | null
-  candidate_sha?: string
-  draft_id?: number | null
-}
-
-type DraftHistoryItem = {
+type DraftItem = {
   id: number
   title: string
   kind: string
   status: string
   created_ts?: string | null
   updated_ts?: string | null
-  meta?: { run_id?: string; candidate_sha?: string; target_sha?: string; summary?: string; head_sha?: string; preview?: { requires_build?: boolean } }
 }
 
-type PublishHistoryItem = {
+type PublishItem = {
   id: number
   ts?: string | null
   summary: string
-  path: string
   commit_sha: string
   version_type: string
   reverted_ts?: string | null
 }
 
-type WorktreeHistory = {
-  available?: boolean
-  dirty?: boolean
-  branch?: string
-  file_count?: number
-  files?: Array<{ status?: string; path?: string }>
-  error?: string
+type DesignItem = {
+  run_id: string
+  status: string
+  owner_request: string
+  created_ts?: string | null
+  updated_ts?: string | null
+  target?: { path?: string | null } | null
 }
 
-type SourcePreviewHistory = {
-  id?: string
+type SourcePreview = {
   status?: string
   mode?: string
-  branch?: string
-  commit?: string
   created_at?: string
   updated_at?: string
-  preview_url?: string
-  runtime_path?: string
-  deployment_mode?: string
   error?: string
 }
 
-type ContentDraftHistoryItem = {
-  id: string
-  collection: string
-  title: string
-  slug?: string
-  updatedAt?: string
-}
-
-type ContentVersionHistoryItem = {
-  id: string
-  parent: string
-  collection: string
-  title: string
-  slug?: string
+type SeoReportItem = {
+  id: number
+  period: string
   status: string
-  createdAt?: string
-  latest?: boolean
+  summary?: string
+  created_ts?: string | null
+  completed_ts?: string | null
 }
 
-type HistoryResponse = {
-  conversations?: ConversationHistoryItem[]
-  design_runs?: DesignHistoryItem[]
-  drafts?: DraftHistoryItem[]
-  publishes?: PublishHistoryItem[]
-  worktree?: WorktreeHistory
-  source_preview?: SourcePreviewHistory
+type ExecutionItem = {
+  id: string
+  kind: 'growth_cycle' | 'seo_report' | 'report' | 'article_research'
+  trigger?: string
+  period?: string
+  status: string
+  title?: string
+  created_ts?: string | null
+  completed_ts?: string | null
+  detail_id?: string
+  report?: { source: 'draft' | 'seo'; id: number }
+}
+
+type ActivityData = {
+  drafts?: DraftItem[]
+  publishes?: PublishItem[]
+  design_runs?: DesignItem[]
+  seo_reports?: SeoReportItem[]
+  execution_log?: ExecutionItem[]
+  source_preview?: SourcePreview
   message?: string
+}
+
+type ReportDetail = {
+  body?: string
+  message?: string
+  provenance?: { evidence_hash?: string; site_evidence_included?: boolean; article_research_count?: number }
+}
+type ExecutionDetail = {
+  summary?: string
+  summary_key?: string | null
+  status?: string
+  evidence_sources?: Array<{ id: string; state: string; observed_at?: string | null }>
+  decisions?: Array<{ id: number; title: string; state: string }>
+  message?: string
+}
+type TimelineEvent = {
+  id: string
+  date?: string | null
+  title: string
+  kind: string
+  status?: string
+  summary?: string
+  report?: { source: 'draft' | 'seo'; id: number }
+  executionId?: string
+  commit?: string
 }
 
 const dateLabel = (value: string | null | undefined, locale: string, fallback: string) => {
@@ -107,497 +106,261 @@ const dateLabel = (value: string | null | undefined, locale: string, fallback: s
   return new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(parsed)
 }
 
-const statusLabel = (value: string, translate: (key: string) => string) => {
-  const normalized = value.replace(/_/g, ' ')
+const labelFor = (value: string, translate: (key: string) => string) => {
   const key = `history.status.${value}`
   const translated = translate(key)
-  return translated === key ? normalized.replace(/\b\w/g, (letter) => letter.toUpperCase()) : translated
+  return translated === key ? value.replace(/_/g, ' ') : translated
 }
 
+const isCodeVersion = (value: string) => ['design', 'merge', 'rollback', 'edit'].includes(value)
+const isReport = (value: string) => ['report', 'seo_report'].includes(value)
+const isTerminal = (value: string) => ['live', 'published', 'approved', 'discarded', 'rejected', 'failed', 'publish_failed', 'cancelled', 'superseded'].includes(value)
+
 export function HelloAdaHistory() {
-  const site = useHelloAdaSite()
   const { language, t } = useHelloAdaTranslations()
-  const [history, setHistory] = useState<HistoryResponse>()
+  const [data, setData] = useState<ActivityData>()
+  const [reportBodies, setReportBodies] = useState<Record<string, ReportDetail>>({})
+  const [executionDetails, setExecutionDetails] = useState<Record<string, ExecutionDetail>>({})
   const [loading, setLoading] = useState(true)
+  const [busyId, setBusyId] = useState<number | string>()
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
-  const [workingId, setWorkingId] = useState<string>()
-  const [contentDrafts, setContentDrafts] = useState<ContentDraftHistoryItem[]>([])
-  const [contentVersions, setContentVersions] = useState<ContentVersionHistoryItem[]>([])
 
-  const loadHistory = useCallback(async (signal?: AbortSignal) => {
-    const [response, workspaceResponse, contentHistoryResponse] = await Promise.all([
-      fetchHelloAda('/api/helloada/history?limit=50', { cache: 'no-store', signal }),
-      fetchHelloAda('/api/helloada/workspace', { cache: 'no-store', signal }),
-      fetchHelloAda('/api/helloada/content/history', { cache: 'no-store', signal }),
-    ])
-    const body = (await response.json()) as HistoryResponse
+  const load = useCallback(async (signal?: AbortSignal) => {
+    const response = await fetchHelloAda('/api/helloada/history?limit=100', { cache: 'no-store', signal })
+    const body = (await response.json()) as ActivityData
     if (!response.ok) throw new Error(body.message || t('error.historyLoad'))
-    setHistory(body)
-    if (workspaceResponse.ok) {
-      const workspace = (await workspaceResponse.json()) as {
-        documents?: Array<Partial<ContentDraftHistoryItem> & { status?: string }>
-      }
-      setContentDrafts((workspace.documents || [])
-        .filter((document) => document.status === 'draft' && document.id && document.collection)
-        .map((document) => ({
-          id: String(document.id),
-          collection: String(document.collection),
-          title: String(document.title || document.slug || t('history.untitledContent')),
-          ...(document.slug ? { slug: String(document.slug) } : {}),
-          ...(document.updatedAt ? { updatedAt: String(document.updatedAt) } : {}),
-        })))
-    }
-    if (contentHistoryResponse.ok) {
-      const contentHistory = (await contentHistoryResponse.json()) as { versions?: ContentVersionHistoryItem[] }
-      setContentVersions((contentHistory.versions || []).filter((version) => version.id && version.collection && version.parent))
-    }
+    setData(body)
   }, [t])
 
   useEffect(() => {
     const controller = new AbortController()
-    const timer = window.setTimeout(() => {
-      void loadHistory(controller.signal)
-        .catch((cause) => {
-          if (controller.signal.aborted) return
-          setError(cause instanceof Error ? cause.message : t('error.historyLoad'))
-        })
-        .finally(() => {
-          if (!controller.signal.aborted) setLoading(false)
-        })
-    }, 0)
-    return () => {
-      window.clearTimeout(timer)
-      controller.abort()
+    void load(controller.signal)
+      .catch((cause) => {
+        if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : t('error.historyLoad'))
+      })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false) })
+    return () => controller.abort()
+  }, [load, t])
+
+  const versions = useMemo(
+    () => (data?.publishes || []).filter((item) => isCodeVersion(item.version_type)),
+    [data?.publishes],
+  )
+
+  const events = useMemo(() => {
+    const rows: TimelineEvent[] = []
+    for (const item of data?.publishes || []) {
+      if (!isCodeVersion(item.version_type)) continue
+      rows.push({ id: `publish:${item.id}`, date: item.ts, title: item.summary || t('history.publishedVersion'),
+        kind: item.version_type, status: item.reverted_ts ? 'superseded' : 'published', commit: item.commit_sha })
     }
-  }, [loadHistory, t])
-
-  useEffect(() => {
-    if (!history?.source_preview?.status || !['queued', 'running'].includes(history.source_preview.status)) return
-    const timer = window.setInterval(() => {
-      void loadHistory()
-    }, 4_000)
-    return () => window.clearInterval(timer)
-  }, [history?.source_preview?.status, loadHistory])
-
-  const actOnDraft = async (draftId: number, action: 'approve' | 'discard') => {
-    const key = `${action}-${draftId}`
-    setWorkingId(key)
-    setError('')
-    setNotice('')
-    try {
-      const response = await fetchHelloAda(`/api/helloada/drafts/${draftId}/${action}`, { method: 'POST' })
-      const body = (await response.json()) as { message?: string; status?: string; deployment?: { status?: string }; published?: { commit_sha?: string } }
-      if (!response.ok) throw new Error(body.message || t('error.draftAction'))
-      if (action === 'approve') {
-        setNotice(body.status === 'publishing' || body.deployment?.status === 'queued'
-          ? t('history.publishQueued')
-          : t('history.publishedConfirmation'))
+    for (const item of data?.drafts || []) {
+      if (isReport(item.kind)) {
+        rows.push({ id: `report:${item.id}`, date: item.updated_ts || item.created_ts, title: item.title,
+          kind: 'report', status: item.status, report: { source: 'draft', id: item.id } })
+      } else if (isTerminal(item.status) && !['design', 'merge', 'rollback', 'reflection'].includes(item.kind)) {
+        rows.push({ id: `decision:${item.id}`, date: item.updated_ts || item.created_ts, title: item.title,
+          kind: item.kind, status: item.status })
       }
-      await loadHistory()
+    }
+    for (const item of data?.seo_reports || []) {
+      rows.push({ id: `seo-report:${item.id}`, date: item.completed_ts || item.created_ts,
+        title: `${t('history.monthlySeoReport')} · ${item.period}`, kind: 'report', status: item.status,
+        report: { source: 'seo', id: item.id }, summary: item.summary })
+    }
+    for (const item of data?.execution_log || []) {
+      if (item.kind === 'growth_cycle' && item.detail_id) {
+        rows.push({ id: `execution:${item.detail_id}`, date: item.completed_ts || item.created_ts,
+          title: t(`history.cycle.${item.trigger || 'scheduled'}`), kind: 'execution', status: item.status,
+          executionId: item.detail_id })
+      } else if (item.kind === 'article_research' && item.status === 'needs_repair') {
+        rows.push({ id: item.id, date: item.completed_ts, title: item.title || t('history.articleResearch'),
+          kind: 'execution', status: item.status, summary: t('history.executionIssueNote') })
+      }
+    }
+    for (const item of data?.design_runs || []) {
+      if (!isTerminal(item.status)) continue
+      rows.push({ id: `design:${item.run_id}`, date: item.updated_ts || item.created_ts,
+        title: item.target?.path || item.owner_request || t('history.untitledRun'), kind: 'design', status: item.status })
+    }
+    const preview = data?.source_preview
+    if (preview?.status && isTerminal(preview.status)) {
+      rows.push({ id: `preview:${preview.updated_at || preview.created_at || preview.status}`,
+        date: preview.updated_at || preview.created_at, title: t('history.previewBuild'), kind: 'execution',
+        status: preview.status, summary: preview.error })
+    }
+    return rows.sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+  }, [data?.drafts, data?.publishes, data?.design_runs, data?.seo_reports, data?.execution_log, data?.source_preview, t])
+
+  const loadReport = async (report: { source: 'draft' | 'seo'; id: number }) => {
+    const key = `${report.source}:${report.id}`
+    if (reportBodies[key] !== undefined) return
+    setBusyId(key)
+    setError('')
+    try {
+      const endpoint = report.source === 'seo' ? 'seo-reports' : 'drafts'
+      const response = await fetchHelloAda(`/api/helloada/history/${endpoint}/${report.id}`, { cache: 'no-store' })
+      const body = (await response.json()) as ReportDetail
+      if (!response.ok) throw new Error(body.message || t('error.historyLoad'))
+      setReportBodies((current) => ({ ...current, [key]: { ...body, body: String(body.body || '') } }))
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t('error.draftAction'))
+      setError(cause instanceof Error ? cause.message : t('error.historyLoad'))
     } finally {
-      setWorkingId(undefined)
+      setBusyId(undefined)
     }
   }
 
-  const restoreVersion = async (versionId: number) => {
-    setWorkingId(`restore-${versionId}`)
+  const loadExecution = async (runId: string) => {
+    if (executionDetails[runId] !== undefined) return
+    setBusyId(`execution:${runId}`)
     setError('')
     try {
-      const response = await fetchHelloAda(`/api/helloada/versions/${versionId}/restore`, { method: 'POST' })
+      const response = await fetchHelloAda(`/api/helloada/history/executions/${encodeURIComponent(runId)}`, { cache: 'no-store' })
+      const body = (await response.json()) as ExecutionDetail
+      if (!response.ok) throw new Error(body.message || t('error.historyLoad'))
+      setExecutionDetails((current) => ({ ...current, [runId]: body }))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : t('error.historyLoad'))
+    } finally {
+      setBusyId(undefined)
+    }
+  }
+
+  const reportBody = (report: { source: 'draft' | 'seo'; id: number }) => {
+    const key = `${report.source}:${report.id}`
+    const detail = reportBodies[key]
+    if (!detail) return null
+    return <>
+      {report.source === 'seo' ? <p className="helloada-history-provenance">
+        {t('history.evidenceSources')}: {detail.provenance?.site_evidence_included ? t('history.siteEvidence') : t('history.siteEvidenceMissing')} · {t('history.articleResearch')}: {detail.provenance?.article_research_count ?? 0}
+        {detail.provenance?.evidence_hash ? ` · ${t('history.evidenceRef')} ${detail.provenance.evidence_hash.slice(0, 12)}` : ''}
+      </p> : null}
+      <HelloAdaChatMessage text={detail.body || ''} />
+    </>
+  }
+
+  const executionBody = (runId: string) => {
+    const detail = executionDetails[runId]
+    if (!detail) return null
+    const summary = detail.summary || (detail.summary_key ? t(`history.executionSummary.${detail.summary_key}`) : '')
+    return <div className="helloada-history-execution-detail">
+      {summary ? <p>{summary}</p> : null}
+      {detail.evidence_sources?.length ? <p className="helloada-history-provenance">
+        {t('history.evidenceSources')}: {detail.evidence_sources.map((source) => `${source.id} · ${t(`growth.state_${source.state}`)}`).join(' · ')}
+      </p> : null}
+      {detail.decisions?.length ? <div><strong>{t('history.relatedDecisions')}</strong><ul>
+        {detail.decisions.map((decision) => <li key={decision.id}>{decision.title}</li>)}
+      </ul></div> : null}
+      {detail.status === 'needs_repair' ? <p className="helloada-history-provenance">{t('history.executionIssueNote')}</p> : null}
+    </div>
+  }
+
+  const prepareRestore = async (version: PublishItem) => {
+    if (busyId || version.reverted_ts) return
+    if (!window.confirm(t('history.restoreFrontendConfirm'))) return
+    setBusyId(version.id)
+    setError('')
+    setNotice('')
+    try {
+      const response = await fetchHelloAda(`/api/helloada/versions/${version.id}/restore`, { method: 'POST' })
       const body = (await response.json()) as { message?: string }
       if (!response.ok) throw new Error(body.message || t('error.rollback'))
-      await loadHistory()
+      setNotice(t('history.restoreQueued'))
+      await load()
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t('error.rollback'))
     } finally {
-      setWorkingId(undefined)
+      setBusyId(undefined)
     }
   }
-
-  const discardWorktree = async () => {
-    if (!window.confirm(t('history.discardLocalConfirm'))) return
-    setWorkingId('discard-worktree')
-    setError('')
-    try {
-      const response = await fetchHelloAda('/api/helloada/worktree/discard', { method: 'POST' })
-      const body = (await response.json()) as { message?: string }
-      if (!response.ok) throw new Error(body.message || t('error.worktreeDiscard'))
-      await loadHistory()
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t('error.worktreeDiscard'))
-    } finally {
-      setWorkingId(undefined)
-    }
-  }
-
-  const actOnContentDraft = async (draft: ContentDraftHistoryItem, action: 'publish' | 'discard') => {
-    const key = `content-${action}-${draft.collection}-${draft.id}`
-    setWorkingId(key)
-    setError('')
-    setNotice('')
-    try {
-      const endpoint = action === 'publish' ? '/api/helloada/publish' : '/api/helloada/content/discard'
-      const body = action === 'publish'
-        ? { documents: [{ collection: draft.collection, documentId: draft.id }] }
-        : { collection: draft.collection, documentId: draft.id }
-      const response = await fetchHelloAda(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      })
-      const result = (await response.json()) as { message?: string }
-      if (!response.ok) throw new Error(result.message || t('error.contentDraftAction'))
-      if (action === 'publish') setNotice(t('history.contentPublishedConfirmation'))
-      await loadHistory()
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t('error.contentDraftAction'))
-    } finally {
-      setWorkingId(undefined)
-    }
-  }
-
-  const restoreContentVersion = async (version: ContentVersionHistoryItem) => {
-    if (!window.confirm(t('history.restoreContentConfirm'))) return
-    const key = `content-restore-${version.id}`
-    setWorkingId(key)
-    setError('')
-    setNotice('')
-    try {
-      const response = await fetchHelloAda('/api/helloada/content/history', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ collection: version.collection, versionId: version.id }),
-      })
-      const result = (await response.json()) as { message?: string }
-      if (!response.ok) throw new Error(result.message || t('error.contentVersionRestore'))
-      await loadHistory()
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t('error.contentVersionRestore'))
-    } finally {
-      setWorkingId(undefined)
-    }
-  }
-
-  const conversations = history?.conversations || []
-  const designRuns = history?.design_runs || []
-  const drafts = history?.drafts || []
-  const pendingDrafts = drafts.filter((item) => item.status === 'pending')
-  const resolvedDrafts = drafts.filter((item) => item.status !== 'pending')
-  const publishes = history?.publishes || []
-  const worktree = history?.worktree
-  const sourcePreview = history?.source_preview
 
   return (
     <main className="helloada-history">
       <header className="helloada-history-header">
-        <div>
-          <h2>{t('owner.activity')}</h2>
-        </div>
-        <Link className="helloada-history-return" href="/admin">
-          {t('history.return')} <span aria-hidden="true">↗</span>
-        </Link>
+        <div><p className="helloada-title-kicker">{t('history.record')}</p><h2>{t('owner.activity')}</h2></div>
+        <Link className="helloada-history-return" href="/admin">{t('history.return')} <span aria-hidden="true">↗</span></Link>
       </header>
-
       {error ? <div className="helloada-alert" role="alert">{error}</div> : null}
       {notice ? <div className="helloada-notice" role="status" aria-live="polite">{notice}</div> : null}
-      {loading ? (
-        <div className="helloada-history-empty">{t('history.loading')}</div>
-      ) : (
-        <>
-          {worktree?.dirty ? (
-            <section className="helloada-history-section helloada-history-wide" aria-labelledby="helloada-local-changes-heading">
-              <div className="helloada-history-section-heading">
-                <div>
-                  <p className="helloada-title-kicker">{t('history.needsAttention')}</p>
-                  <h2 id="helloada-local-changes-heading">{t('history.localChanges')}</h2>
-                </div>
-                <span>{worktree.file_count || worktree.files?.length || 0}</span>
-              </div>
-              <div className="helloada-history-local-summary">
-                <p>{t('history.localChangesIntro')}</p>
-                <ul>
-                  {(worktree.files || []).slice(0, 8).map((file) => (
-                    <li key={`${file.status}-${file.path}`}><code>{file.status}</code> {file.path}</li>
-                  ))}
-                </ul>
-                <button
-                  className="helloada-history-action"
-                  type="button"
-                  disabled={Boolean(workingId)}
-                  onClick={() => void discardWorktree()}
-                >
-                  {workingId === 'discard-worktree' ? t('history.discarding') : t('history.cancelLocalChanges')}
-                </button>
-              </div>
-            </section>
-          ) : null}
-
-          {sourcePreview?.status && ['queued', 'running', 'ready', 'failed', 'deployed'].includes(sourcePreview.status) ? (
-            <section className="helloada-history-section helloada-history-wide" aria-labelledby="helloada-preview-build-heading">
-              <div className="helloada-history-section-heading">
-                <div>
-                  <p className="helloada-title-kicker">{sourcePreview.mode === 'production' ? t('history.productionRecord') : t('history.previewBuild')}</p>
-                  <h2 id="helloada-preview-build-heading">{statusLabel(sourcePreview.status, t)}</h2>
-                </div>
-                <span aria-label={statusLabel(sourcePreview.status, t)}>•</span>
-              </div>
-              <p className="helloada-history-preview-note">
-                {sourcePreview.status === 'failed'
-                  ? sourcePreview.error || t('history.previewFailed')
-                  : sourcePreview.status === 'ready'
-                    ? t('history.previewReady')
-                    : sourcePreview.mode === 'production'
-                      ? t('history.productionDeployIntro')
-                      : t('history.previewBuildIntro')}
-              </p>
-              {sourcePreview.status === 'ready' && sourcePreview.mode === 'compiled_preview' ? (
-                <Link className="helloada-history-action helloada-history-action-primary" href={site.routes.preview} target="_blank">
-                  {t('history.openCompiledPreview')} <span aria-hidden="true">↗</span>
-                </Link>
-              ) : null}
-            </section>
-          ) : null}
-
+      {loading ? <div className="helloada-history-empty">{t('history.loading')}</div> : (
         <div className="helloada-history-grid">
-          <section className="helloada-history-section" aria-labelledby="helloada-conversations-heading">
+          <section className="helloada-history-section" aria-labelledby="helloada-activity-timeline">
             <div className="helloada-history-section-heading">
-              <div>
-                <p className="helloada-title-kicker">{t('history.durableContext')}</p>
-                <h2 id="helloada-conversations-heading">{t('history.conversations')}</h2>
-              </div>
-              <span>{conversations.length}</span>
+              <div><p className="helloada-title-kicker">{t('history.activityRecord')}</p><h2 id="helloada-activity-timeline">{t('history.timeline')}</h2></div>
+              <span>{events.length}</span>
             </div>
-            {conversations.length ? (
-              <div className="helloada-history-list">
-                {conversations.map((item) => (
-                  <Link className="helloada-history-item" href={`/admin?conversation_id=${item.id}`} key={item.id}>
-                    <span className="helloada-history-item-mark" aria-hidden="true">◌</span>
-                    <span className="helloada-history-item-copy">
-                      <strong>{item.title}</strong>
-                       <small>{dateLabel(item.created_ts, language, t('history.dateUnavailable'))}{item.archived_ts ? ` · ${t('history.archived')}` : ''}</small>
-                    </span>
-                    <span className="helloada-history-item-arrow" aria-hidden="true">→</span>
-                  </Link>
-                ))}
-              </div>
-            ) : (
-              <p className="helloada-history-empty">{t('history.noConversations')}</p>
-            )}
+            {events.length ? <ol className="helloada-history-list helloada-history-timeline">
+              {events.map((event) => <li className="helloada-history-item is-static" key={event.id}>
+                <span className="helloada-history-item-mark" aria-hidden="true">{event.kind === 'report' ? '≋' : event.kind === 'design' ? '✦' : '⌁'}</span>
+                <span className="helloada-history-item-copy">
+                  <strong>{event.title}</strong>
+                  <small>{labelFor(event.kind, t)} · {dateLabel(event.date, language, t('history.dateUnavailable'))}{event.status ? ` · ${labelFor(event.status, t)}` : ''}</small>
+                  {event.commit ? <em>{event.commit.slice(0, 8)}</em> : null}
+                  {event.summary ? <p>{event.summary}</p> : null}
+                  {event.report ? <details className="helloada-history-report" onToggle={(e) => { if (e.currentTarget.open) void loadReport(event.report!) }}>
+                    <summary>{busyId === `${event.report.source}:${event.report.id}` ? t('history.loadingReport') : t('history.openDetails')}</summary>
+                    {reportBody(event.report)}
+                  </details> : null}
+                  {event.executionId ? <details className="helloada-history-report" onToggle={(e) => { if (e.currentTarget.open) void loadExecution(event.executionId!) }}>
+                    <summary>{busyId === `execution:${event.executionId}` ? t('history.loadingReport') : t('history.openDetails')}</summary>
+                    {executionBody(event.executionId)}
+                  </details> : null}
+                </span>
+              </li>)}</ol> : <p className="helloada-history-empty">{t('history.noActivity')}</p>}
           </section>
 
-          <section className="helloada-history-section" aria-labelledby="helloada-design-runs-heading">
+          <aside className="helloada-history-section helloada-history-execution" aria-labelledby="helloada-execution-log">
             <div className="helloada-history-section-heading">
-              <div>
-                <p className="helloada-title-kicker">{t('history.reviewableWork')}</p>
-                <h2 id="helloada-design-runs-heading">{t('history.designRuns')}</h2>
-              </div>
-              <span>{designRuns.length}</span>
+              <div><p className="helloada-title-kicker">{t('history.executionRecord')}</p><h2 id="helloada-execution-log">{t('history.latestWork')}</h2></div>
+              <span>{data?.execution_log?.length || 0}</span>
             </div>
-            {designRuns.length ? (
-              <div className="helloada-history-list">
-                {designRuns.map((item) => (
-                  <article className="helloada-history-item is-static" key={item.run_id}>
-                    <span className="helloada-history-item-mark" aria-hidden="true">✦</span>
-                    <span className="helloada-history-item-copy">
-                      <strong>{item.target?.path || item.owner_request || t('history.untitledRun')}</strong>
-                      <small>
-                         {statusLabel(item.status, t)} · {dateLabel(item.updated_ts || item.created_ts, language, t('history.dateUnavailable'))}
-                        {item.publishable ? ` · ${t('history.approvalLane')}` : ` · ${t('history.localReview')}`}
-                      </small>
-                       {item.target?.scope ? <em>{statusLabel(item.target.scope, t)}</em> : null}
-                    </span>
-                    <span className="helloada-history-run-id">{item.run_id.slice(0, 8)}</span>
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <p className="helloada-history-empty">{t('history.noRuns')}</p>
-            )}
-          </section>
+            {data?.execution_log?.length ? <ol className="helloada-history-list helloada-history-log">
+              {data.execution_log.map((item) => {
+                const label = item.kind === 'growth_cycle'
+                  ? t(`history.cycle.${item.trigger || 'scheduled'}`)
+                  : item.kind === 'seo_report'
+                  ? `${t('history.monthlySeoReport')} · ${item.period || ''}`
+                  : item.title || t('history.monthlySeoReport')
+                return <li className="helloada-history-item is-static" key={item.id}>
+                  <span className="helloada-history-item-mark" aria-hidden="true">{item.status === 'needs_repair' ? '!' : item.kind.includes('report') || item.kind === 'report' ? '≋' : '✓'}</span>
+                  <span className="helloada-history-item-copy">
+                    <strong>{label}</strong>
+                    <small>{dateLabel(item.completed_ts || item.created_ts, language, t('history.dateUnavailable'))} · {labelFor(item.status, t)}</small>
+                    {item.detail_id ? <details className="helloada-history-report" onToggle={(e) => { if (e.currentTarget.open) void loadExecution(item.detail_id!) }}>
+                      <summary>{busyId === `execution:${item.detail_id}` ? t('history.loadingReport') : t('history.openDetails')}</summary>
+                      {executionBody(item.detail_id)}
+                    </details> : item.report ? <details className="helloada-history-report" onToggle={(e) => { if (e.currentTarget.open) void loadReport(item.report!) }}>
+                      <summary>{busyId === `${item.report.source}:${item.report.id}` ? t('history.loadingReport') : t('history.openDetails')}</summary>
+                      {reportBody(item.report)}
+                    </details> : item.status === 'needs_repair' ? <p className="helloada-history-provenance">{t('history.executionIssueNote')}</p> : item.status === 'waiting_for_data' ? <p className="helloada-history-provenance">{t('history.waitingForData')}</p> : null}
+                  </span>
+                </li>
+              })}
+            </ol> : <p className="helloada-history-empty">{t('history.noCompletedWork')}</p>}
+          </aside>
 
-          <section className="helloada-history-section" aria-labelledby="helloada-decisions-heading">
+          <section className="helloada-history-section helloada-history-wide" aria-labelledby="helloada-website-versions">
             <div className="helloada-history-section-heading">
-              <div>
-                <p className="helloada-title-kicker">{t('history.ownerAction')}</p>
-                <h2 id="helloada-decisions-heading">{t('history.decisions')}</h2>
-              </div>
-              <span>{pendingDrafts.length}</span>
+              <div><p className="helloada-title-kicker">{t('history.productionRecord')}</p><h2 id="helloada-website-versions">{t('history.websiteVersions')}</h2></div>
+              <span>{versions.length}</span>
             </div>
-            {pendingDrafts.length ? (
-              <div className="helloada-history-list">
-                {pendingDrafts.map((draft) => (
-                  <article className="helloada-history-item is-static" key={draft.id}>
-                    <span className="helloada-history-item-mark" aria-hidden="true">◈</span>
-                    <span className="helloada-history-item-copy">
-                      <strong>{draft.title}</strong>
-                       <small>{statusLabel(draft.kind, t)} · {dateLabel(draft.updated_ts || draft.created_ts, language, t('history.dateUnavailable'))}</small>
-                       {draft.meta?.candidate_sha ? <em>{t('history.candidate')} {draft.meta.candidate_sha.slice(0, 8)}</em> : null}
-                    </span>
-                    <span className="helloada-history-actions">
-                      <button
-                        className="helloada-history-action helloada-history-action-primary"
-                        type="button"
-                        disabled={Boolean(workingId)}
-                        onClick={() => void actOnDraft(draft.id, 'approve')}
-                      >
-                        {workingId === `approve-${draft.id}`
-                          ? draft.kind === 'design' ? t('history.approving') : t('history.publishing')
-                          : draft.kind === 'design' ? t('history.approve') : t('history.publish')}
-                      </button>
-                      <button
-                        className="helloada-history-action"
-                        type="button"
-                        disabled={Boolean(workingId)}
-                        onClick={() => void actOnDraft(draft.id, 'discard')}
-                      >
-                        {workingId === `discard-${draft.id}` ? t('history.discarding') : t('history.discard')}
-                      </button>
-                    </span>
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <p className="helloada-history-empty">{t('history.noDecisions')}</p>
-            )}
-          </section>
-
-          <section className="helloada-history-section" aria-labelledby="helloada-content-heading">
-            <div className="helloada-history-section-heading">
-              <div>
-                <p className="helloada-title-kicker">{t('history.contentChangesIntro')}</p>
-                <h2 id="helloada-content-heading">{t('history.contentChanges')}</h2>
-              </div>
-              <span>{contentDrafts.length}</span>
-            </div>
-            {contentDrafts.length ? (
-              <div className="helloada-history-list">
-                {contentDrafts.map((draft) => (
-                  <article className="helloada-history-item is-static" key={`${draft.collection}-${draft.id}`}>
-                    <span className="helloada-history-item-mark" aria-hidden="true">◈</span>
-                    <span className="helloada-history-item-copy">
-                      <strong>{draft.title}</strong>
-                      <small>{draft.collection} · {dateLabel(draft.updatedAt, language, t('history.dateUnavailable'))}</small>
-                      {draft.slug ? <em>{draft.slug}</em> : null}
-                    </span>
-                    <span className="helloada-history-actions">
-                      <button
-                        className="helloada-history-action helloada-history-action-primary"
-                        type="button"
-                        disabled={Boolean(workingId)}
-                        onClick={() => void actOnContentDraft(draft, 'publish')}
-                      >
-                        {workingId === `content-publish-${draft.collection}-${draft.id}` ? t('history.publishingContent') : t('history.publishContent')}
-                      </button>
-                      <button
-                        className="helloada-history-action"
-                        type="button"
-                        disabled={Boolean(workingId)}
-                        onClick={() => void actOnContentDraft(draft, 'discard')}
-                      >
-                        {workingId === `content-discard-${draft.collection}-${draft.id}` ? t('history.discardingContent') : t('history.discardContent')}
-                      </button>
-                    </span>
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <p className="helloada-history-empty">{t('history.noContentChanges')}</p>
-            )}
-          </section>
-
-          {contentVersions.length ? (
-            <section className="helloada-history-section" aria-labelledby="helloada-content-versions-heading">
-              <div className="helloada-history-section-heading">
-                <div>
-                  <p className="helloada-title-kicker">{t('history.contentVersionRecord')}</p>
-                  <h2 id="helloada-content-versions-heading">{t('history.contentVersions')}</h2>
-                </div>
-                <span>{contentVersions.length}</span>
-              </div>
-              <div className="helloada-history-list">
-                {contentVersions.slice(0, 16).map((version) => (
-                  <article className="helloada-history-item is-static" key={`${version.collection}-${version.id}`}>
-                    <span className="helloada-history-item-mark" aria-hidden="true">⌁</span>
-                    <span className="helloada-history-item-copy">
-                      <strong>{version.title}</strong>
-                      <small>{version.collection} · {dateLabel(version.createdAt, language, t('history.dateUnavailable'))}</small>
-                      {version.slug ? <em>{version.slug} · {statusLabel(version.status, t)}</em> : null}
-                    </span>
-                    <button
-                      className="helloada-history-action"
-                      type="button"
-                      disabled={Boolean(workingId)}
-                      onClick={() => void restoreContentVersion(version)}
-                    >
-                      {workingId === `content-restore-${version.id}` ? t('history.preparing') : t('history.prepareContentRollback')}
-                    </button>
-                  </article>
-                ))}
-              </div>
-            </section>
-          ) : null}
-
-          {resolvedDrafts.length ? (
-            <section className="helloada-history-section" aria-labelledby="helloada-resolved-heading">
-              <div className="helloada-history-section-heading">
-                <div>
-                  <p className="helloada-title-kicker">{t('history.decisionRecord')}</p>
-                  <h2 id="helloada-resolved-heading">{t('history.recentDecisions')}</h2>
-                </div>
-                <span>{resolvedDrafts.length}</span>
-              </div>
-              <div className="helloada-history-list">
-                {resolvedDrafts.slice(0, 12).map((draft) => (
-                  <article className="helloada-history-item is-static" key={`resolved-${draft.id}`}>
-                    <span className="helloada-history-item-mark" aria-hidden="true">◌</span>
-                    <span className="helloada-history-item-copy">
-                      <strong>{draft.title}</strong>
-                      <small>{statusLabel(draft.status, t)} · {dateLabel(draft.updated_ts || draft.created_ts, language, t('history.dateUnavailable'))}</small>
-                    </span>
-                  </article>
-                ))}
-              </div>
-            </section>
-          ) : null}
-
-          <section className="helloada-history-section" aria-labelledby="helloada-publishes-heading">
-            <div className="helloada-history-section-heading">
-              <div>
-                <p className="helloada-title-kicker">{t('history.productionRecord')}</p>
-                <h2 id="helloada-publishes-heading">{t('history.publishedVersions')}</h2>
-              </div>
-              <span>{publishes.length}</span>
-            </div>
-            {publishes.length ? (
-              <div className="helloada-history-list">
-                {publishes.map((version) => (
-                  <article className="helloada-history-item is-static" key={version.id}>
-                    <span className="helloada-history-item-mark" aria-hidden="true">⌁</span>
-                    <span className="helloada-history-item-copy">
-                      <strong>{version.summary || t('history.publishedVersion')}</strong>
-                       <small>{statusLabel(version.version_type, t)} · {dateLabel(version.ts, language, t('history.dateUnavailable'))}</small>
-                      <em>{version.commit_sha ? version.commit_sha.slice(0, 8) : t('history.commitUnavailable')}</em>
-                    </span>
-                    <button
-                      className="helloada-history-action"
-                      type="button"
-                      disabled={Boolean(workingId) || Boolean(version.reverted_ts)}
-                      onClick={() => void restoreVersion(version.id)}
-                    >
-                      {workingId === `restore-${version.id}` ? t('history.preparing') : version.reverted_ts ? t('history.superseded') : t('history.prepareRollback')}
-                    </button>
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <p className="helloada-history-empty">{t('history.noPublished')}</p>
-            )}
+            <p className="helloada-history-preview-note">{t('history.frontendOnlyNote')}</p>
+            {versions.length ? <div className="helloada-history-list">
+              {versions.map((version) => <article className="helloada-history-item is-static" key={version.id}>
+                <span className="helloada-history-item-mark" aria-hidden="true">⌁</span>
+                <span className="helloada-history-item-copy">
+                  <strong>{version.summary || t('history.publishedVersion')}</strong>
+                  <small>{dateLabel(version.ts, language, t('history.dateUnavailable'))} · {labelFor(version.version_type, t)}</small>
+                  <em>{version.commit_sha ? version.commit_sha.slice(0, 8) : t('history.commitUnavailable')}</em>
+                </span>
+                <button className="helloada-history-action" type="button" disabled={Boolean(busyId) || Boolean(version.reverted_ts)} onClick={() => void prepareRestore(version)}>
+                  {busyId === version.id ? t('history.preparing') : version.reverted_ts ? t('history.superseded') : t('history.prepareFrontendRestore')}
+                </button>
+              </article>)}
+            </div> : <p className="helloada-history-empty">{t('history.noPublished')}</p>}
           </section>
         </div>
-        </>
       )}
     </main>
   )

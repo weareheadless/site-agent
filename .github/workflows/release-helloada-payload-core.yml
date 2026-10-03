@@ -1,0 +1,40 @@
+name: Release shared HelloAda Payload core
+
+on:
+  push:
+    tags:
+      - 'helloada-payload-core-v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: helloada-payload-core-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install pinned dependencies
+        working-directory: packages/helloada-payload-core
+        run: npm ci --ignore-scripts
+      - name: Test and typecheck the shared contract
+        working-directory: packages/helloada-payload-core
+        run: |
+          npm test
+          npm run typecheck
+      - name: Package and inspect the tagged artifact
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/package-helloada-payload-core-release.mjs
+      - name: Publish immutable release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" packages/helloada-payload-core/.release/*.tgz packages/helloada-payload-core/.release/release-manifest.json --verify-tag --title "HelloAda Payload core ${RELEASE_TAG#helloada-payload-core-v}" --notes "Tested shared tenant schema, validation and server content readers. Tenant database migrations and customer deployment remain separate reviewed release stages."

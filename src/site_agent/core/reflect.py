@@ -9,6 +9,7 @@ persona prompt at runtime.
 from __future__ import annotations
 
 import json
+import hashlib
 from typing import Any
 
 from ..brain.prompts import memory_context
@@ -31,7 +32,16 @@ def _prompt(persona: str, outputs: str, context_block: str) -> list[dict[str, st
 
 
 def approved_notes(memory: Any) -> dict[str, list[str]]:
-    return memory.kv_get("persona_notes", {"voice_notes": [], "avoid": []})
+    value = memory.kv_get("persona_notes", {"voice_notes": [], "avoid": []})
+    return {
+        "voice_notes": [str(item) for item in (value.get("voice_notes") or []) if str(item).strip()],
+        "avoid": [str(item) for item in (value.get("avoid") or []) if str(item).strip()],
+    }
+
+
+def _digest(value: Any) -> str:
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 def reflect(context: dict[str, Any]) -> int:
@@ -56,14 +66,16 @@ def reflect(context: dict[str, Any]) -> int:
         raise RuntimeError(f"reflection returned invalid JSON: {raw[:200]}")
 
     proposal = {
-        "voice_notes": [str(x) for x in (parsed.get("voice_notes") or [])][:4],
-        "avoid": [str(x) for x in (parsed.get("avoid") or [])][:3],
+        "voice_notes": [str(x).strip() for x in (parsed.get("voice_notes") or []) if str(x).strip()][:4],
+        "avoid": [str(x).strip() for x in (parsed.get("avoid") or []) if str(x).strip()][:3],
     }
+    current = approved_notes(memory)
+    review_package = {"kind": "ada_writing_guidance", "before": current, "after": proposal, "existingContentAffected": False}
     draft_id = memory.save_draft(
         title="Self-reflection: proposed voice adjustments",
         body=json.dumps(proposal, indent=2),
         kind="reflection",
-        meta=proposal,
+        meta={"proposal": proposal, "base_hash": _digest(current), "review_package_hash": _digest(review_package)},
     )
     memory.record_action("reflect", f"proposal draft #{draft_id}")
     return draft_id
@@ -85,16 +97,18 @@ def effective_persona(config: dict[str, Any], memory: Any) -> str:
     return base + "\n".join(lines)
 
 
-def approve_reflection(memory: Any, draft_id: int) -> bool:
+def approve_reflection(memory: Any, draft_id: int, review_package_hash: str) -> bool:
     drafts = {d["id"]: d for d in memory.list_drafts()}
     draft = drafts.get(draft_id)
-    if not draft or draft["kind"] != "reflection" or draft["status"] == "approved":
+    if not draft or draft["kind"] != "reflection" or draft["status"] != "pending":
         return False
-    try:
-        proposal = json.loads(draft["body"])
-    except json.JSONDecodeError:
-        return False
+    meta = draft.get("meta") if isinstance(draft.get("meta"), dict) else {}
+    proposal = meta.get("proposal") if isinstance(meta.get("proposal"), dict) else None
+    expected = str(meta.get("review_package_hash") or "")
     current = approved_notes(memory)
+    package = {"kind": "ada_writing_guidance", "before": current, "after": proposal, "existingContentAffected": False}
+    if not proposal or not expected or expected != review_package_hash or _digest(current) != meta.get("base_hash") or _digest(package) != expected:
+        return False
     merged = {
         "voice_notes": list(dict.fromkeys([*proposal.get("voice_notes", []), *current.get("voice_notes", [])]))[:8],
         "avoid": list(dict.fromkeys([*proposal.get("avoid", []), *current.get("avoid", [])]))[:6],

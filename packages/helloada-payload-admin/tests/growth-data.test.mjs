@@ -27,9 +27,22 @@ test('Growth has one task list, not separate advice, schedule and approval windo
   assert.match(component, /<GrowthTasks tasks=\{growth\?\.tasks\}/);
   assert.doesNotMatch(component, /reviewQueue\?\.map|reviewCandidates|helloada-growth-side|helloada-growth-advice/);
   const tasks = readFileSync(new URL('../src/components/GrowthTasks.tsx', import.meta.url), 'utf8');
-  assert.match(tasks, /"needs_you", "preparing", "planned", "completed"/);
+  assert.match(tasks, /"needs_you", "preparing", "planned", "paused", "completed"/);
   assert.match(tasks, /review_package_hash: task\?\.reviewPackageHash/);
   assert.doesNotMatch(tasks, /\?draft=/);
+});
+
+test('Activity is a read-only timeline with a frontend-only restore preparation action', () => {
+  const activity = readFileSync(new URL('../src/components/HelloAdaHistory.tsx', import.meta.url), 'utf8');
+  assert.match(activity, /history\/\$\{endpoint\}\/\$\{report\.id\}/);
+  assert.match(activity, /report\.source === 'seo' \? 'seo-reports' : 'drafts'/);
+  assert.match(activity, /execution_log/);
+  assert.match(activity, /helloada-history-execution/);
+  assert.match(activity, /history\.websiteVersions/);
+  assert.match(activity, /versions\/\$\{version\.id\}\/restore/);
+  assert.doesNotMatch(activity, /drafts\/\$\{[^}]+\}\/(approve|discard)/);
+  assert.doesNotMatch(activity, /content\/history|content\/discard|worktree\/discard/);
+  assert.doesNotMatch(activity, /Published content|Publish content/);
 });
 
 test('report dates are normalized and sorted without filling missing days', () => {

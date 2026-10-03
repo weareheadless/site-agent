@@ -8,6 +8,7 @@ from site_agent.hands.site_build import (
     build_site,
     prepare_native_workspace,
 )
+from site_agent.frontend_ownership import is_frontend_owned_path
 from site_agent.site_scaffold import initialize_toolchain_workspace
 
 
@@ -15,6 +16,17 @@ def test_next_react_build_profile_is_explicit_and_safe():
     assert NEXT_REACT_PROFILE.name == "next_react"
     assert NEXT_REACT_PROFILE.output_dir == "out"
     assert "npm" in " ".join(NEXT_REACT_PROFILE.build_command)
+
+
+def test_shared_frontend_ownership_allows_presentation_and_rejects_platform_paths():
+    assert is_frontend_owned_path("src/components/site/Hero.tsx")
+    assert is_frontend_owned_path("src/app/(frontend)/site.css")
+    for path in (
+        "src/collections/Pages.ts", "src/app/api/helloada/route.ts", "src/components/admin/Nav.tsx",
+        "src/lib/content.ts", "payload.config.ts", "package.json", "public/brand/helloada.svg",
+        "src/components/site/../../collections/Pages.ts", "/src/components/site/Hero.tsx",
+    ):
+        assert not is_frontend_owned_path(path), path
 
 
 def test_next_react_lint_excludes_generated_and_host_trees():

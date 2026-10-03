@@ -33,6 +33,8 @@ def test_payload_template_has_one_managed_growth_write_and_renderer_boundary():
     source = BRIDGE.read_text(encoding='utf-8')
     contract = (TEMPLATE / 'src' / 'lib' / 'growth-contract.ts').read_text(encoding='utf-8')
     renderer = (TEMPLATE / 'src' / 'components' / 'PublicDocument.tsx').read_text(encoding='utf-8')
+    config = (TEMPLATE / 'payload.config.ts').read_text(encoding='utf-8')
+    shared_schema = (ROOT / 'packages' / 'helloada-payload-core' / 'src' / 'schema' / 'index.ts').read_text(encoding='utf-8')
     assert "path === '/growth/apply'" in source
     assert "path === '/growth/publish'" in source
     assert "claimOperation(operationKey, documentKey, packageHash)" in source
@@ -42,6 +44,24 @@ def test_payload_template_has_one_managed_growth_write_and_renderer_boundary():
     assert "state = 'writing'" in contract
     assert 'assertNativeWriteAllowed' in contract
     assert 'function PublicDocument' in renderer
-    for hook in ('Pages.ts', 'Posts.ts', 'Products.ts'):
-        collection = (TEMPLATE / 'src' / 'collections' / hook).read_text(encoding='utf-8')
-        assert 'assertNativeWriteAllowed' in collection
+    assert "from '@weareheadless/helloada-payload-core/schema'" in config
+    assert 'createHelloAdaSchema(assertNativeWriteAllowed)' in config
+    for slug in ('pages', 'posts', 'products'):
+        assert f"protectCollection('{slug}', guard)" in shared_schema
+        assert not (TEMPLATE / 'src' / 'collections' / f'{slug.title()}.ts').exists()
+
+
+def test_owner_edits_are_stable_draft_only_and_publish_the_exact_reviewed_revision():
+    source = BRIDGE.read_text(encoding='utf-8')
+    assert "from '@weareheadless/helloada-payload-core/bindings'" in source
+    assert 'applyHelloAdaBindingEdits(currentDocument, checkedEdits)' in source
+    assert 'expectedDraftHash' in source
+    assert "claimOperation(operationKey, documentKey, packageHash)" in source
+    assert 'prepareOperation(operationKey, intent)' in source
+    assert 'reconcileOperation(operationKey, result)' in source
+    assert "path === '/page-fields'" in source
+    assert "path === '/page-images'" not in source
+    assert "if (documents.length !== 1)" in source
+    assert 'Payload saved a different draft than the exact content edit' in source
+    assert 'The published document does not match the exact reviewed draft' in source
+    assert 'helloAdaPlainText' not in source

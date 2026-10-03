@@ -5,7 +5,7 @@ process.env.PAYLOAD_CLI = '1'
 const { getPayload } = await import('payload')
 const { default: config } = await import('../payload.config.ts')
 
-const collections = ['pages', 'posts', 'products'] as const
+const collections = ['pages', 'posts', 'products', 'productCategories'] as const
 const failures: string[] = []
 
 const check = async (label: string, operation: () => Promise<unknown>) => {

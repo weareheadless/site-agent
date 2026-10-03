@@ -1,4 +1,11 @@
 import { getPayload } from 'payload'
+import {
+  helloAdaSeo,
+  readHelloAdaGlobal,
+  readHelloAdaPage,
+  readHelloAdaPost,
+  readHelloAdaPosts,
+} from '@weareheadless/helloada-payload-core/server'
 
 import config from '@payload-config'
 
@@ -16,7 +23,7 @@ export const mediaUrl = (value: unknown) => {
 
 export const mediaAlt = (value: unknown) => {
   const media = objectValue(value)
-  return text(media.alt || media.filename || 'Website image')
+  return text(media.alt || media.filename || '')
 }
 
 export const lexicalText = (value: unknown): string => {
@@ -32,90 +39,48 @@ export const lexicalParagraphs = (value: unknown) => lexicalText(value).split(/\
 
 type PayloadClient = Awaited<ReturnType<typeof getPayload>>
 
-// A Cloudflare build must not initialize the D1/R2 Payload adapter. The
-// frontend remains buildable; at runtime Payload is the source of truth.
-// A runtime binding/database failure must surface instead of serving a
-// different static website and hiding the failed canonical source.
+// Builds must not open D1/R2. At runtime, binding errors are deliberately
+// allowed to surface: a missing Payload document is never replaced by JSX copy.
 const payload = async (): Promise<PayloadClient | undefined> => {
   if (process.env.PAYLOAD_LOCAL_BUILD === '1' || process.env.NEXT_PHASE === 'phase-production-build') return undefined
   return await getPayload({ config })
 }
 
-export async function getPageBySlug(slug = 'home'): Promise<ContentRecord | undefined> {
-  const normalized = text(slug).replace(/^\/+|\/+$/g, '') || 'home'
+export async function getPageBySlug(slug = 'home', locale?: string): Promise<ContentRecord | undefined> {
   const instance = await payload()
   if (!instance) return undefined
-  const result = await instance.find({
-    collection: 'pages',
-    draft: false,
-    depth: 2,
-    limit: 1,
-    pagination: false,
-    overrideAccess: true,
-    where: { slug: { equals: normalized } },
-  })
-  return result.docs[0] as ContentRecord | undefined
+  return await readHelloAdaPage(instance, slug, locale) as ContentRecord | undefined
 }
 
-export async function getPublishedPosts(): Promise<ContentRecord[]> {
+export async function getPublishedPosts(locale?: string): Promise<ContentRecord[]> {
   const instance = await payload()
   if (!instance) return []
-  const result = await instance.find({
-    collection: 'posts',
-    draft: false,
-    depth: 2,
-    limit: 100,
-    pagination: false,
-    overrideAccess: true,
-    sort: '-publishedAt',
-  })
-  return result.docs as ContentRecord[]
+  return await readHelloAdaPosts(instance, locale) as ContentRecord[]
 }
 
-export async function getPostBySlug(slug: string): Promise<ContentRecord | undefined> {
+export async function getPostBySlug(slug: string, locale?: string): Promise<ContentRecord | undefined> {
   const instance = await payload()
   if (!instance) return undefined
-  const result = await instance.find({
-    collection: 'posts',
-    draft: false,
-    depth: 2,
-    limit: 1,
-    pagination: false,
-    overrideAccess: true,
-    where: { slug: { equals: text(slug) } },
-  })
-  return result.docs[0] as ContentRecord | undefined
+  return await readHelloAdaPost(instance, slug, locale) as ContentRecord | undefined
 }
 
-export async function getSiteSettings(): Promise<ContentRecord> {
+export async function getSiteSettings(locale?: string): Promise<ContentRecord> {
   const instance = await payload()
   if (!instance) return {}
-  return await instance.findGlobal({
-    slug: 'siteSettings',
-    draft: false,
-    depth: 2,
-    overrideAccess: true,
-  }) as ContentRecord
+  return await readHelloAdaGlobal(instance, 'siteSettings', locale) as ContentRecord
 }
 
-export async function getNavigation(): Promise<ContentRecord> {
+export async function getNavigation(locale?: string): Promise<ContentRecord> {
   const instance = await payload()
   if (!instance) return {}
-  return await instance.findGlobal({
-    slug: 'navigation',
-    draft: false,
-    depth: 2,
-    overrideAccess: true,
-  }) as ContentRecord
+  return await readHelloAdaGlobal(instance, 'navigation', locale) as ContentRecord
 }
 
 export const seoFor = (document: ContentRecord | undefined, settings: ContentRecord) => {
   const seo = objectValue(document?.seo)
   return {
-    title: text(seo.title || document?.title || settings.defaultSeoTitle || settings.siteName || 'Website'),
-    description: text(seo.description || document?.summary || settings.defaultSeoDescription || settings.description),
-    image: mediaUrl(seo.image || document?.featuredImage || settings.defaultSocialImage),
-    canonical: text(document?.canonicalUrl),
+    ...helloAdaSeo(document, settings),
+    title: text(seo.title || document?.title || settings.defaultSeoTitle || settings.siteName),
   }
 }
 

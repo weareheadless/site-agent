@@ -31,6 +31,14 @@ owner view for real GA4/GSC metrics, DataForSEO research, Ada recommendations,
 article drafts, reports and schedules. Missing data/setup requirements are
 explicit. Actions prepare requests for discussion; they do not start paid jobs.
 
+The preview editor reads canonical Payload bindings from the selected page or
+article. A save targets one document and exact draft hash, creates an unpublished
+Payload revision and verifies the saved hash. Publishing requires that same
+reviewed revision and is an explicit owner action. Rich text stays Lexical data;
+image changes use the selected tenant media ID. The browser does not maintain a
+second editable-content store. Native Payload collection/global editing remains
+available for advanced editing.
+
 Use the separate `@weareheadless/helloada-payload-admin/server` export for
 request-time Worker bindings and authenticated tenant-readiness diagnostics.
 See `docs/helloada-connection-contract.md` in site-agent for the release gate.

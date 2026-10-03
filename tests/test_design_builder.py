@@ -158,9 +158,9 @@ def test_native_next_finalization_accepts_the_host_approved_package_manifest(tmp
     base_sha = _git(clone, "rev-parse", "HEAD").stdout.strip()
 
     (clone / "package.json").write_text('{"name":"candidate"}\n')
-    source = clone / "src" / "app"
+    source = clone / "src" / "components" / "site"
     source.mkdir(parents=True)
-    (source / "page.tsx").write_text("export default function Page() { return <h1>Candidate</h1> }\n")
+    (source / "homepage.tsx").write_text("export function HomepageContent() { return <h1>Candidate</h1> }\n")
 
     request = PageBuildRequest.from_dict({
         "schema_version": 1,
@@ -198,6 +198,7 @@ def test_native_next_finalization_accepts_the_host_approved_package_manifest(tmp
         request,
         session_id="design-session",
         transcript_path="design-runs/design-run-package-json/opencode.jsonl",
+        host_provisioned_paths={"package.json"},
     )
 
     assert receipt.candidate_sha != base_sha

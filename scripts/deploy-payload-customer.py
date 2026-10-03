@@ -67,6 +67,21 @@ def validate_target(customer: dict[str, Any], tenant: str, sha: str, release_id:
         raise ValueError("invalid tenant or noncanonical workspace API")
     if not re.fullmatch(r"https://github\.com/weareheadless/[a-zA-Z0-9_.-]+\.git", customer["repository"]):
         raise ValueError("customer repository must be in the official weareheadless account")
+    for field in ("payloadAdmin", "payloadCore"):
+        if not re.fullmatch(r"\d+\.\d+\.\d+", str(customer.get(field) or "")):
+            raise ValueError(f"registered customer has no exact {field} version")
+    if not re.fullmatch(r"helloada-content-v\d+", str(customer.get("contentContract") or "")):
+        raise ValueError("registered customer has no exact content contract")
+
+
+def validate_worker_contract(worker_config: dict[str, Any], customer: dict[str, Any], tenant: str) -> None:
+    if worker_config.get("name") != customer["worker"] or worker_config.get("tenant") != tenant:
+        raise RuntimeError("Worker name or tenant binding does not match the registry")
+    if worker_config.get("admin") != customer["payloadAdmin"]:
+        raise RuntimeError("Worker admin version does not match the registry")
+    if (worker_config.get("core") != customer["payloadCore"]
+            or worker_config.get("contract") != customer["contentContract"]):
+        raise RuntimeError("Worker shared Payload contract does not match the registry")
 
 
 def cloudflare_deployment(customer: dict[str, Any], env: dict[str, str]) -> dict[str, Any]:
@@ -83,7 +98,7 @@ def cloudflare_deployment(customer: dict[str, Any], env: dict[str, str]) -> dict
     return max(deployments, key=lambda item: item["created_on"])
 
 
-def check_health(url: str, tenant: str, version: str, sha: str) -> dict[str, Any]:
+def check_health(url: str, tenant: str, customer: dict[str, Any], sha: str) -> dict[str, Any]:
     separator = "&" if "?" in url else "?"
     request = urllib.request.Request(url + separator + urllib.parse.urlencode({"release": sha}),
                                      headers={"Accept": "application/json", "Cache-Control": "no-cache",
@@ -92,8 +107,14 @@ def check_health(url: str, tenant: str, version: str, sha: str) -> dict[str, Any
         body = json.load(response)
     if body.get("ok") is not True or body.get("tenant") != tenant:
         raise RuntimeError("live tenant health mismatch")
-    if body.get("payloadAdmin") != version or body.get("releaseSha") != sha:
-        raise RuntimeError("live release SHA or installed admin version does not match the release")
+    expected = {
+        "payloadAdmin": customer["payloadAdmin"],
+        "payloadCore": customer["payloadCore"],
+        "contentContract": customer["contentContract"],
+        "releaseSha": sha,
+    }
+    if any(body.get(key) != value for key, value in expected.items()):
+        raise RuntimeError("live release SHA or shared Payload contract version does not match the release")
     return body
 
 
@@ -112,7 +133,7 @@ def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dic
     for attempt in range(12):
         try:
             receipt["health"] = check_health(customer["health"], receipt["tenant"],
-                                             customer["payloadAdmin"], receipt["sourceSha"])
+                                             customer, receipt["sourceSha"])
             stage("verify-connection")
             run([sys.executable, str(ROOT / "scripts/check-helloada-connections.py"),
                  "--config", gate["config"], "--env-file", gate["envFile"],
@@ -132,7 +153,9 @@ def verification_receipt(directory: Path, tenant: str, sha: str, release_id: str
                          customer: dict[str, Any]) -> dict[str, Any]:
     receipt = json.loads((directory / "receipt.json").read_text())
     expected = {"tenant": tenant, "sourceSha": sha, "releaseId": release_id,
-                "worker": customer["worker"], "repository": customer["repository"]}
+                "worker": customer["worker"], "repository": customer["repository"],
+                "payloadAdmin": customer["payloadAdmin"], "payloadCore": customer["payloadCore"],
+                "contentContract": customer["contentContract"]}
     if any(receipt.get(key) != value for key, value in expected.items()):
         raise ValueError("verification target differs from the recorded release")
     if receipt.get("status") not in ("failed", "deployed", "verified") or receipt.get("stage") not in (
@@ -150,7 +173,7 @@ def verification_receipt(directory: Path, tenant: str, sha: str, release_id: str
     return receipt
 
 
-def inspect_artifact(checkout: Path, expected_admin: str, sha: str) -> dict[str, str]:
+def inspect_artifact(checkout: Path, customer: dict[str, Any], sha: str) -> dict[str, str]:
     artifact = checkout / ".open-next"
     if not (artifact / "worker.js").is_file():
         raise RuntimeError("OpenNext produced no Worker")
@@ -161,13 +184,25 @@ def inspect_artifact(checkout: Path, expected_admin: str, sha: str) -> dict[str,
     if any("/api/atelier" in route for route in routes):
         raise RuntimeError("artifact still contains the obsolete Atelier API")
     package = json.loads((checkout / "node_modules/@weareheadless/helloada-payload-admin/package.json").read_text())
-    if package["version"] != expected_admin:
+    if package["version"] != customer["payloadAdmin"]:
         raise RuntimeError("installed Payload admin version does not match the registry")
+    core_package = json.loads((checkout / "node_modules/@weareheadless/helloada-payload-core/package.json").read_text())
+    if core_package["version"] != customer["payloadCore"]:
+        raise RuntimeError("installed Payload core version does not match the registry")
+    content_contract = json.loads((checkout / "helloada-content-contract.json").read_text())
+    if content_contract.get("contract") != customer["contentContract"]:
+        raise RuntimeError("source content contract does not match the registry")
     javascript = list((artifact / "server-functions").rglob("*.mjs")) + list((artifact / "server-functions").rglob("*.js"))
     if not any("/growth/contract" in path.read_text(errors="replace") for path in javascript):
         raise RuntimeError("compiled server is missing the Growth contract")
     marker = json.loads((artifact / "assets/helloada-release.json").read_text())
-    if marker["sourceSha"] != sha or marker["payloadAdmin"] != expected_admin:
+    expected_marker = {
+        "sourceSha": sha,
+        "payloadAdmin": customer["payloadAdmin"],
+        "payloadCore": customer["payloadCore"],
+        "contentContract": customer["contentContract"],
+    }
+    if any(marker.get(key) != value for key, value in expected_marker.items()):
         raise RuntimeError("built release marker does not match the pinned source")
     return file_hashes(artifact)
 
@@ -200,6 +235,8 @@ def main() -> int:
     receipt: dict[str, Any] = {"schema": 2, "tenant": args.tenant, "releaseId": args.release_id,
         "sourceSha": args.ref, "pipelineSha": os.environ.get("HELLOADA_PIPELINE_SHA"),
         "worker": customer["worker"], "repository": customer["repository"],
+        "payloadAdmin": customer["payloadAdmin"], "payloadCore": customer["payloadCore"],
+        "contentContract": customer["contentContract"],
         "startedAt": utc_now(), "status": "running", "stage": "preflight",
         "browserVerification": "pending"}
     if args.verify_only:
@@ -259,23 +296,23 @@ def main() -> int:
         parsed = run(["node", "-e", "const fs=require('node:fs');const ts=require('typescript');"
                       "const r=ts.parseConfigFileTextToJson('wrangler.jsonc',fs.readFileSync('wrangler.jsonc','utf8'));"
                       "if(r.error)throw Error('Invalid Wrangler JSONC');const c=r.config;"
-                      "process.stdout.write(JSON.stringify({name:c.name,tenant:c.vars?.HELLOADA_TENANT_ID,admin:c.vars?.HELLOADA_PAYLOAD_ADMIN_VERSION}));"], checkout, base)
+                      "process.stdout.write(JSON.stringify({name:c.name,tenant:c.vars?.HELLOADA_TENANT_ID,"
+                      "admin:c.vars?.HELLOADA_PAYLOAD_ADMIN_VERSION,core:c.vars?.HELLOADA_PAYLOAD_CORE_VERSION,"
+                      "contract:c.vars?.HELLOADA_CONTENT_CONTRACT_VERSION}));"], checkout, base)
         wrangler = json.loads(parsed)
-        if wrangler["name"] != customer["worker"] or wrangler["tenant"] != args.tenant:
-            raise RuntimeError("Worker name or tenant binding does not match the registry")
-        if wrangler["admin"] != customer["payloadAdmin"]:
-            raise RuntimeError("Worker admin version does not match the registry")
+        validate_worker_contract(wrangler, customer, args.tenant)
         run(["npm", "run", "typecheck"], checkout, base)
         if run(["git", "status", "--porcelain"], checkout, base).strip():
             raise RuntimeError("dependency/type checks changed tracked source")
 
         stage("build")
         marker = {"sourceSha": args.ref, "pipelineSha": receipt["pipelineSha"],
-                  "tenant": args.tenant, "payloadAdmin": customer["payloadAdmin"]}
+                  "tenant": args.tenant, "payloadAdmin": customer["payloadAdmin"],
+                  "payloadCore": customer["payloadCore"], "contentContract": customer["contentContract"]}
         atomic_json(checkout / "public/helloada-release.json", marker)
         build_env = {**base, "PAYLOAD_LOCAL_BUILD": "1", "HELLOADA_RELEASE_SHA": args.ref}
         run([str(checkout / "node_modules/.bin/opennextjs-cloudflare"), "build"], checkout, build_env)
-        receipt["artifactHashes"] = inspect_artifact(checkout, customer["payloadAdmin"], args.ref)
+        receipt["artifactHashes"] = inspect_artifact(checkout, customer, args.ref)
         changed = run(["git", "diff", "--name-only"], checkout, base).strip()
         if changed:
             raise RuntimeError("build changed tracked source: " + changed)

@@ -14,6 +14,8 @@ from pathlib import Path, PurePosixPath
 from threading import RLock
 from typing import Any, Mapping
 
+from ..frontend_ownership import FRONTEND_OWNED_PATTERNS, PLATFORM_PROTECTED_PATHS, is_frontend_owned_path
+
 
 class SiteBuildError(RuntimeError):
     """A configured site build could not complete."""
@@ -230,15 +232,14 @@ NEXT_REACT_PROFILE = SiteBuildProfile(
     build_command=("npm", "run", "build"),
     output_dir="out",
     route_manifest="design/ada-route-manifest.json",
-    writable_patterns=(
-        ".gitignore", "package.json", "package-lock.json",
-        "next.config.mjs", "next.config.js", "next.config.ts", "next-env.d.ts", "tsconfig.json",
-        "eslint.config.mjs",
-        "payload.config.ts", "open-next.config.ts", "wrangler.jsonc",
-        "src/**", "public/**", "design/**", "scripts/**", "test/**", "tests/**",
-    ),
-    prohibited_paths=(".env", ".github", "node_modules", ".next", ".open-next", "out"),
+    writable_patterns=FRONTEND_OWNED_PATTERNS,
+    prohibited_paths=PLATFORM_PROTECTED_PATHS,
 )
+
+
+def is_next_react_frontend_path(path: str) -> bool:
+    """Return true only for tenant-owned presentation assets, never platform code."""
+    return is_frontend_owned_path(path)
 
 # The scaffold owns these build-time dependencies; generated design content does
 # not. Keep the catalog exact so the dependency gate can verify the copied manifest.

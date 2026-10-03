@@ -17,14 +17,12 @@ def test_initialize_payload_site_creates_canonical_helloada_template(tmp_path):
     assert "__SITE_AGENT_VERSION__" not in wrangler
 
     manifest = (root / "template-manifest.json").read_text()
-    posts = (root / "src/collections/Posts.ts").read_text()
-    pages = (root / "src/collections/Pages.ts").read_text()
-    navigation = (root / "src/globals/Navigation.ts").read_text()
-    assert '"contentContract": "payload-first-v1"' in manifest
-    assert "featuredImage" in posts
-    assert "seo" in posts
-    assert "canonicalUrl" in pages
-    assert "footerGroups" in navigation
+    assert '"contentContract": "helloada-content-v1"' in manifest
+    assert "createHelloAdaSchema" in (root / "payload.config.ts").read_text()
+    assert not (root / "src/collections/Posts.ts").exists()
+    assert not (root / "src/collections/Pages.ts").exists()
+    assert not (root / "src/globals/Navigation.ts").exists()
+    assert (root / "helloada-content-contract.json").exists()
     assert (root / "src/app/(frontend)/articles/[slug]/page.tsx").exists()
     assert (root / "src/app/(frontend)/articles.html/page.tsx").exists()
 
@@ -38,6 +36,16 @@ def test_payload_navigation_keeps_server_only_props_out_of_client_boundary(tmp_p
     assert "HelloAdaNav({ user }: ComponentProps<typeof SharedNav>)" in nav
     assert "<SharedNav user={user} />" in nav
     assert "{..." not in nav
+
+
+def test_payload_page_blocks_use_canonical_payload_block_types_and_stable_ids(tmp_path):
+    root = initialize_payload_site(tmp_path / "site", "North Star Studio", "https://north.example")
+    renderer = (root / "src/components/site/TenantSections.tsx").read_text()
+    assert "switch (entry.blockType)" in renderer
+    assert "entry.type" not in renderer
+    assert "section-${sectionIndex}" not in renderer
+    assert "${sectionKey}-${entryIndex}" not in renderer
+    assert "stableKey(section.key" in renderer
 
 
 def test_initialize_site_creates_pelican_pages_and_cms(tmp_path):
@@ -59,6 +67,7 @@ def test_initialize_site_creates_pelican_pages_and_cms(tmp_path):
 
 
 def test_initialize_site_build_stages_the_root_homepage_into_output(tmp_path):
+    import os
     import subprocess
 
     root = initialize_site(tmp_path / "site", "North Star Studio", "https://north.example")
@@ -66,8 +75,16 @@ def test_initialize_site_build_stages_the_root_homepage_into_output(tmp_path):
     (root / "styles.css").write_text("body { color: #000; }", encoding="utf-8")
     (root / "modified").mkdir(parents=True)
     (root / "modified" / "leak.txt").write_text("leak", encoding="utf-8")
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    pelican = fake_bin / "pelican"
+    pelican.write_text("#!/bin/sh\nmkdir -p output\nprintf '<html>pelican</html>' > output/index.html\n", encoding="utf-8")
+    pelican.chmod(0o755)
 
-    built = subprocess.run(["bash", "build.sh"], cwd=root, capture_output=True, text=True)
+    built = subprocess.run(
+        ["bash", "build.sh"], cwd=root, capture_output=True, text=True,
+        env={**os.environ, "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}"},
+    )
 
     assert built.returncode == 0, built.stderr
     assert (root / "output/index.html").read_text(encoding="utf-8") == "<html><body><h1>Homepage</h1></body></html>"

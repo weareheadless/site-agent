@@ -12,7 +12,8 @@
     "verify:payload": "cross-env NODE_ENV=production PAYLOAD_CLI=1 PAYLOAD_SECRET=ignore tsx scripts/verify-payload-contract.ts"
   },
   "dependencies": {
-    "@weareheadless/helloada-payload-admin": "https://github.com/weareheadless/site-agent/releases/download/payload-admin-v0.8.5/weareheadless-helloada-payload-admin-0.8.5.tgz",
+    "@weareheadless/helloada-payload-admin": "https://github.com/weareheadless/site-agent/releases/download/payload-admin-v0.8.6/weareheadless-helloada-payload-admin-0.8.6.tgz",
+    "@weareheadless/helloada-payload-core": "https://github.com/weareheadless/site-agent/releases/download/helloada-payload-core-v0.1.0/weareheadless-helloada-payload-core-0.1.0.tgz",
     "@opennextjs/cloudflare": "1.20.6",
     "@payloadcms/db-d1-sqlite": "3.88.0",
     "@payloadcms/next": "3.88.0",

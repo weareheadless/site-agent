@@ -1336,13 +1336,9 @@ def _typed_design_quality_policy(config: dict[str, Any], request, target):
     if target.allowed_paths:
         policy = replace(policy, allowed_patterns=target.allowed_paths)
     if str(getattr(target, "build_profile", "") or "").strip().lower() == NEXT_REACT_PROFILE.name:
-        # package.json is globally denied because ordinary site edits must not
-        # replace the application's manifest. Native Next builds are the
-        # explicit exception: the host owns this profile's exact toolchain and
-        # permits the model to retain any required manifest change.
         policy = replace(
             policy,
-            allowed_hard_denied_paths=tuple(dict.fromkeys((*policy.allowed_hard_denied_paths, "package.json"))),
+            prohibited_paths=tuple(dict.fromkeys((*policy.prohibited_paths, *NEXT_REACT_PROFILE.prohibited_paths))),
         )
     if request.prohibited_files:
         policy = replace(

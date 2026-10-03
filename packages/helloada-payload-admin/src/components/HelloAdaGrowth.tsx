@@ -5,7 +5,6 @@ import { useEffect, useState } from "react";
 import { fetchHelloAda } from "../api/fetchHelloAda";
 import { useHelloAdaTranslations } from "../api/useHelloAdaTranslations";
 import { type GrowthRow } from "../lib/growth-data";
-import { HelloAdaChatMessage } from "./HelloAdaChatMessage";
 import { GrowthTasks, type GrowthTask } from "./GrowthTasks";
 import { WorkspaceIcon } from "./WorkspaceIcon";
 import {
@@ -37,20 +36,13 @@ type Growth = {
     property?: string;
     updatedAt?: string;
   }>;
-  activities?: Array<{ id: string; enabled: boolean; nextRun?: string }>;
   latestInsight?: Insight;
   insights?: Insight[];
   keywords?: GrowthRow[];
   keywordMetrics?: GrowthRow[];
   articles?: GrowthRow[];
   articleIdeas?: GrowthRow[];
-  weeklyReports?: GrowthRow[];
-  monthlyReports?: GrowthRow[];
   goal?: { objective?: string; goal_key?: string; revision?: number };
-  work?: { state?: string; summaryKey?: string; nextRun?: string; latestRun?: { completed_ts?: string } };
-  reviewQueue?: Array<{ id?: number; title?: string; summary?: string; action_label?: string; state?: string }>;
-  candidates?: Array<{ id?: number; title?: string; summary?: string; state?: string; draftId?: number | null }>;
-  results?: { state?: string; message?: string; outcomes?: Array<Record<string, unknown>> };
 };
 
 export function HelloAdaGrowth() {
@@ -201,18 +193,15 @@ export function HelloAdaGrowth() {
               <small>{String(row.status || "")}</small>
             </summary>
             <small>{date(row.updated_ts || row.created_ts)}</small>
-            {row.body || row.body_md ? (
-              <HelloAdaChatMessage text={String(row.body || row.body_md)} />
-            ) : (
-              <p>
-                {String(
+            <p>
+              {String(
+                row.summary ||
                   (row.idea_json as GrowthRow | undefined)?.thesis ||
-                    (row.idea_json as GrowthRow | undefined)?.rationale ||
-                    row.focus_keyword ||
-                    "",
-                )}
-              </p>
-            )}
+                  (row.idea_json as GrowthRow | undefined)?.rationale ||
+                  row.focus_keyword ||
+                  "",
+              )}
+            </p>
           </details>
         ))
       ) : (
@@ -347,16 +336,6 @@ export function HelloAdaGrowth() {
               title={t("growth.ideas")}
               rows={growth?.articleIdeas}
               empty={t("growth.emptyResearch")}
-            />
-            <Records
-              title={t("growth.weeklyReports")}
-              rows={growth?.weeklyReports}
-              empty={t("growth.emptyReports")}
-            />
-            <Records
-              title={t("growth.monthlyReports")}
-              rows={growth?.monthlyReports}
-              empty={t("growth.emptyReports")}
             />
           </div>
           <Link

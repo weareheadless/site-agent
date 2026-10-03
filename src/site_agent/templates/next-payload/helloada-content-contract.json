@@ -1,0 +1,5 @@
+{
+  "contract": "helloada-content-v1",
+  "corePackage": "@weareheadless/helloada-payload-core",
+  "coreVersion": "0.1.0"
+}

@@ -304,6 +304,130 @@ def test_workspace_bridge_exposes_bounded_activity_history(tmp_path):
     memory.close()
 
 
+def test_activity_report_detail_is_scoped_to_single_report_and_read_only(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    report = memory.save_draft("Weekly report 2026-09-01 → 2026-09-08", "Traffic was steady.", kind="report")
+    article = memory.save_draft("Draft article", "Body", kind="article")
+    app = FastAPI()
+    register_workspace_routes(
+        app,
+        config={},
+        env={"WORKSPACE_SITE_AGENT_TOKEN": "workspace-secret"},
+        service=ChatService(memory, object()),
+    )
+
+    with TestClient(app) as client:
+        headers = {"Authorization": "Bearer workspace-secret"}
+        detail = client.get(f"/api/workspace/history/drafts/{report}", headers=headers)
+        not_report = client.get(f"/api/workspace/history/drafts/{article}", headers=headers)
+
+    assert detail.status_code == 200
+    assert detail.json()["body"] == "Traffic was steady."
+    assert not_report.status_code == 404
+    assert memory.list_drafts(status="pending")[0]["id"] == article
+    memory.close()
+
+
+def test_monthly_seo_reports_are_tenant_scoped_and_loaded_on_demand(tmp_path):
+    from site_agent.core.contracts import Artifact, ArtifactKind
+
+    tenants = {}
+    owner_memory = Memory(tmp_path / "owner.db")
+    report = owner_memory.create_seo_site_report(
+        "2026-09",
+        evidence_hash="sha256:verified-evidence",
+        evidence={"site": {"status": "ready"}, "article_research": [{}, {}]},
+    )
+    artifact = owner_memory.create_artifact(Artifact(
+        kind=ArtifactKind.SEO_REPORT,
+        title="Website SEO report 2026-09",
+        summary="A concise owner-safe summary.",
+        renderer="seo_report",
+        capability_id="seo.report.read",
+        provider_id="site-agent",
+        content_hash="sha256:report-content",
+        preview_data={"body": "The full monthly report body.", "period": "2026-09"},
+    ))
+    owner_memory.update_seo_site_report(
+        report["id"], status="completed", artifact_id=artifact.artifact_id,
+        completed_ts="2026-10-01T12:00:00+00:00", summary="A concise owner-safe summary.",
+    )
+    tenants["owner"] = Tenant("owner", {}, owner_memory, None, {"llm": object()}, "owner-token")
+    other_memory = Memory(tmp_path / "other.db")
+    other_memory.create_seo_site_report("2026-09")
+    tenants["other"] = Tenant("other", {}, other_memory, None, {"llm": object()}, "other-token")
+    registry = TenantRegistry(tenants)
+    app = FastAPI()
+    register_workspace_routes(app, config={}, env={}, service=ChatService(registry=registry), registry=registry)
+
+    with TestClient(app) as client:
+        owner_headers = {"Authorization": "Bearer owner-token"}
+        other_headers = {"Authorization": "Bearer other-token"}
+        index_response = client.get("/api/workspace/history", headers=owner_headers)
+        assert index_response.status_code == 200, index_response.json()
+        index = index_response.json()
+        detail = client.get(f"/api/workspace/history/seo-reports/{report['id']}", headers=owner_headers)
+        cross_tenant = client.get(f"/api/workspace/history/seo-reports/{report['id']}", headers=other_headers)
+
+    assert index["seo_reports"] == [{
+        "id": report["id"], "period": "2026-09", "status": "completed",
+        "summary": "A concise owner-safe summary.", "created_ts": report["created_ts"],
+        "updated_ts": owner_memory.get_seo_site_report(report["id"])["updated_ts"],
+        "completed_ts": "2026-10-01T12:00:00+00:00",
+    }]
+    assert index["execution_log"][0]["kind"] == "seo_report"
+    assert detail.status_code == 200
+    assert detail.json()["body"] == "The full monthly report body."
+    assert detail.json()["provenance"] == {
+        "evidence_hash": "sha256:verified-evidence",
+        "site_evidence_included": True,
+        "article_research_count": 2,
+    }
+    assert cross_tenant.status_code == 404
+    assert "evidence_json" not in detail.json()
+    assert "artifact_id" not in detail.json()
+    owner_memory.close()
+    other_memory.close()
+
+
+def test_activity_execution_log_shows_safe_failure_and_owner_detail(tmp_path):
+    from site_agent.application.growth_workflow import ensure_default_goal
+
+    memory = Memory(tmp_path / "memory.db")
+    goal = ensure_default_goal(memory)
+    run_id = "growth-failed-01"
+    memory.create_growth_run(
+        run_id=run_id,
+        run_key="weekly-2026-W40",
+        trigger="weekly",
+        goal_revision=goal["revision"],
+        timezone="UTC",
+        phase="assessing",
+        status="pending",
+        detail={"error": "DATAFORSEO_TASK_40501_PRIVATE_PROVIDER_DETAIL"},
+    )
+    memory.update_growth_run(run_id, phase="assessing", status="failed", completed=True)
+    tenant = Tenant("demo", {}, memory, None, {"llm": object()}, "demo-token")
+    registry = TenantRegistry({"demo": tenant})
+    app = FastAPI()
+    register_workspace_routes(app, config={}, env={}, service=ChatService(registry=registry), registry=registry)
+
+    with TestClient(app) as client:
+        headers = {"Authorization": "Bearer demo-token"}
+        index = client.get("/api/workspace/history", headers=headers).json()
+        detail = client.get(f"/api/workspace/history/executions/{run_id}", headers=headers)
+
+    item = next(row for row in index["execution_log"] if row["detail_id"] == run_id)
+    assert item["status"] == "needs_repair"
+    assert "PRIVATE_PROVIDER_DETAIL" not in str(item)
+    assert detail.status_code == 200
+    assert detail.json()["summary_key"] == "needs_repair"
+    assert detail.json()["status"] == "needs_repair"
+    assert "DATAFORSEO" not in detail.text
+    assert "PRIVATE_PROVIDER_DETAIL" not in detail.text
+    memory.close()
+
+
 def test_intake_requires_explicit_owner_acceptance(tmp_path):
     memory = Memory(tmp_path / "memory.db")
     intake = IntakeCoordinator(
@@ -1026,15 +1150,22 @@ def test_shared_api_approves_a_design_draft_through_the_design_adapter(tmp_path)
 
 
 def test_shared_api_publishes_and_rolls_back_preview_changes_through_the_workspace(tmp_path):
+    memory = Memory(tmp_path / "workspace-rollback" / "memory.db")
+
     class Adapter:
         def ensure_branch(self, branch):
             assert branch == "preview"
             return {"branch": branch}
 
-        def restore_snapshot(self, commit_sha, branch, message):
+        def restore_frontend_paths(self, commit_sha, branch, message):
             assert commit_sha == "target-sha"
             assert branch == "preview"
-            return {"committed": True, "commit_sha": "rollback-preview", "parent_sha": "head-sha"}
+            return {"committed": True, "commit_sha": "a" * 40, "parent_sha": "b" * 40, "scope": "frontend_only"}
+
+        def merge_design_candidate(self, config, candidate_sha, base_sha, message):
+            assert candidate_sha == "a" * 40
+            assert base_sha == "b" * 40
+            return {"merged": True, "commit_sha": "c" * 40, "parent_sha": "b" * 40, "path": "candidate->main"}
 
         def merge_preview(self, config, message):
             assert config["site"]["preview_branch"] == "preview"
@@ -1043,21 +1174,31 @@ def test_shared_api_publishes_and_rolls_back_preview_changes_through_the_workspa
         def reset_preview_branch(self, branch):
             return {"reset": True, "branch": branch}
 
-    memory = Memory(tmp_path / "workspace-rollback" / "memory.db")
+    class Deployment:
+        def start(self, request, allow_production=False):
+            draft_id = int(request["draft_id"])
+            draft = next(row for row in memory.list_drafts(limit=None) if row["id"] == draft_id)
+            meta = dict(draft.get("meta") or {})
+            if request["mode"] == "compiled_preview":
+                meta["preview"] = {"status": "ready", "requires_build": False, "head_sha": request["commit"],
+                    "preview_url": "/api/workspace/source/preview/rollback-preview/runtime/"}
+                memory.save_draft(draft["title"], draft["body"], kind=draft["kind"], meta=meta, draft_id=draft_id)
+                return {"status": "ready", "commit": request["commit"]}
+            assert allow_production is True
+            memory.log_publish(summary=request["publish"]["summary"], path=request["publish"]["path"],
+                commit_sha=request["commit"], parent_sha=request["publish"]["parent_sha"],
+                version_type=request["publish"]["version_type"], draft_id=draft_id)
+            memory.update_draft_status(draft_id, "live")
+            return {"status": "deployed", "commit": request["commit"]}
+
     first = memory.log_publish("First", "site", "target-sha")
     newer = memory.log_publish("Newer", "site", "newer-sha")
-    pending = memory.save_draft(
-        "Website update",
-        "preview",
-        kind="merge",
-        meta={"summary": "Website update"},
-    )
     tenant = Tenant(
         tenant_id="workspace-rollback",
         config={"site": {"preview_branch": "preview"}},
         memory=memory,
         runtime=None,
-        context={"llm": object(), "design_adapter": Adapter()},
+        context={"llm": object(), "design_adapter": Adapter(), "source_deployment": Deployment()},
         api_token="rollback-token",
     )
     registry = TenantRegistry({tenant.tenant_id: tenant})
@@ -1073,16 +1214,20 @@ def test_shared_api_publishes_and_rolls_back_preview_changes_through_the_workspa
 
     with TestClient(app) as client:
         headers = {"Authorization": "Bearer rollback-token"}
-        published = client.post(f"/v1/workspace/drafts/{pending}/approve", headers=headers)
         rollback_draft = client.post(f"/v1/workspace/versions/{first}/restore", headers=headers)
         rollback_id = rollback_draft.json()["draft_id"]
-        rollback_published = client.post(f"/v1/workspace/drafts/{rollback_id}/approve", headers=headers)
+        assert memory.list_drafts(status="pending", limit=10)[0]["meta"]["preview"]["status"] == "ready"
+        rollback = next(row for row in memory.list_drafts(limit=None) if row["id"] == rollback_id)
+        rollback_published = client.post(
+            f"/v1/workspace/drafts/{rollback_id}/approve",
+            headers=headers,
+            json={"review_package_hash": rollback["meta"]["review_package_hash"]},
+        )
 
-    assert published.status_code == 200
     assert rollback_draft.status_code == 200
     assert rollback_published.status_code == 200
     versions = {item["id"]: item for item in memory.list_publishes(limit=10)}
     assert versions[first]["reverted_ts"] is None
     assert versions[newer]["reverted_ts"]
-    assert rollback_published.json()["published"]["commit_sha"] == "rollback-publish"
+    assert rollback_published.json()["published"]["commit_sha"] == "c" * 40
     memory.close()

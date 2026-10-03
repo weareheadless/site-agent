@@ -309,6 +309,30 @@ def register_workspace_routes(
         except BridgeError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    @app.get(f"{prefix}/history/drafts/{{draft_id}}")
+    def workspace_history_draft(draft_id: int, request: Request):
+        tenant = require_service(request)
+        try:
+            return service.activity_detail(draft_id, tenant=tenant)
+        except BridgeError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get(f"{prefix}/history/seo-reports/{{report_id}}")
+    def workspace_history_seo_report(report_id: int, request: Request):
+        tenant = require_service(request)
+        try:
+            return service.activity_seo_report_detail(report_id, tenant=tenant)
+        except BridgeError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get(f"{prefix}/history/executions/{{run_id}}")
+    def workspace_history_execution(run_id: str, request: Request):
+        tenant = require_service(request)
+        try:
+            return service.activity_execution_detail(run_id, tenant=tenant)
+        except BridgeError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     @app.get(f"{prefix}/worktree")
     def workspace_worktree(request: Request):
         tenant = require_service(request)

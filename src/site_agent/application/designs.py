@@ -1364,7 +1364,6 @@ class DesignService:
                     output_dir=NEXT_REACT_PROFILE.output_dir,
                     allowed_patterns=NEXT_REACT_PROFILE.writable_patterns,
                     prohibited_paths=tuple(dict.fromkeys((*policy.prohibited_paths, *NEXT_REACT_PROFILE.prohibited_paths))),
-                    allowed_hard_denied_paths=tuple(dict.fromkeys((*policy.allowed_hard_denied_paths, "package.json"))),
                     approved_capabilities=tuple(approved.values()),
                     build_command=None,
                     build_timeout_seconds=900,

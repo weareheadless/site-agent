@@ -2206,7 +2206,13 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
 
         published = None
         if draft["kind"] == "reflection":
-            if not approve_reflection(memory, draft_id):
+            # Legacy local operator surface: the Payload owner workspace uses
+            # WorkspaceService.approve_draft with the client-reviewed hash.
+            # Retain this route's stored-package validation until that retired
+            # surface is removed, rather than calling the stricter handler with
+            # a missing argument.
+            meta = draft.get("meta") if isinstance(draft.get("meta"), dict) else {}
+            if not approve_reflection(memory, draft_id, str(meta.get("review_package_hash") or "")):
                 raise HTTPException(status_code=400, detail="could not merge reflection")
         elif draft["kind"] == "edit":
             ad = adapter_validated()

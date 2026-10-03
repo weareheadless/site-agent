@@ -164,14 +164,26 @@ def test_reflect_and_approve_updates_persona(env):
     llm = FakeLLM([json.dumps(proposal)])
     draft_id = reflect_mod.reflect(_context(memory, config, llm))
 
-    assert approve_reflection(memory, draft_id) is True
+    draft = next(item for item in memory.list_drafts() if item["id"] == draft_id)
+    review_hash = draft["meta"]["review_package_hash"]
+    assert approve_reflection(memory, draft_id, review_hash) is True
     notes = reflect_mod.approved_notes(memory)
     assert notes["voice_notes"] == ["Lead with numbers"]
     prompt = effective_persona(config, memory)
     assert "Lead with numbers" in prompt
     assert "Stop doing:" in prompt
 
-    assert approve_reflection(memory, draft_id) is False
+    assert approve_reflection(memory, draft_id, review_hash) is False
+
+
+def test_reflection_proposal_is_stale_when_current_guidance_changed(env):
+    memory, config = env
+    llm = FakeLLM([json.dumps({"voice_notes": ["Lead with useful details"], "avoid": []})])
+    draft_id = reflect_mod.reflect(_context(memory, config, llm))
+    draft = next(item for item in memory.list_drafts() if item["id"] == draft_id)
+    memory.kv_set("persona_notes", {"voice_notes": ["Owner changed this"], "avoid": []})
+    assert approve_reflection(memory, draft_id, draft["meta"]["review_package_hash"]) is False
+    assert reflect_mod.approved_notes(memory)["voice_notes"] == ["Owner changed this"]
 
 
 def test_draft_article_uses_learned_material_and_saves_pending(env):

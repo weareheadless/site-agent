@@ -222,7 +222,9 @@ def test_local_initial_build_uses_next_target_and_quality_profile(tmp_path):
     assert policy.output_dir == NEXT_REACT_PROFILE.output_dir
     assert policy.required_pages == ("home.html",)
     assert policy.allowed_patterns == NEXT_REACT_PROFILE.writable_patterns
-    assert "package.json" in policy.allowed_hard_denied_paths
+    assert "package.json" not in policy.allowed_hard_denied_paths
+    assert "src/components/site/**" in policy.allowed_patterns
+    assert "src/app/(frontend)/[[...slug]]/page.tsx" in policy.prohibited_paths
     assert {
         (item.get("package"), item.get("version"))
         for item in policy.approved_capabilities
@@ -664,7 +666,9 @@ def test_local_visual_refinement_reuses_next_target_and_quality_profile(tmp_path
     assert target.allowed_paths == NEXT_REACT_PROFILE.writable_patterns
     assert policy.output_dir == NEXT_REACT_PROFILE.output_dir
     assert policy.allowed_patterns == NEXT_REACT_PROFILE.writable_patterns
-    assert "package.json" in policy.allowed_hard_denied_paths
+    assert "package.json" not in policy.allowed_hard_denied_paths
+    assert "src/components/site/**" in policy.allowed_patterns
+    assert "src/app/(frontend)/[[...slug]]/page.tsx" in policy.prohibited_paths
     assert {
         (item.get("package"), item.get("version"))
         for item in policy.approved_capabilities
@@ -699,7 +703,19 @@ def test_legacy_local_run_infers_pelican_profile_from_frozen_quality_policy(tmp_
         run_id="legacy-pelican",
     )
     memory.add_design_run_event(run["run_id"], "experiment", "Legacy experiment clone.", {"root": str(clone)})
-    service.capture_context_snapshot(run["run_id"])
+    snapshot = service.capture_context_snapshot(run["run_id"]).to_dict()
+    # Recreate a persisted pre-profile run: the new default is Next, but an
+    # old immutable snapshot with the Pelican output contract must remain
+    # readable for review and recovery.
+    snapshot.pop("build_profile", None)
+    execution = snapshot["execution_profile"]
+    execution.pop("build_profile", None)
+    quality_policy = execution["quality_policy"]
+    quality_policy["build_profile"] = ""
+    quality_policy["output_dir"] = "output"
+    quality_identity = {key: value for key, value in quality_policy.items() if key != "hash"}
+    quality_policy["hash"] = canonical_hash(quality_identity)
+    memory.update_design_run(run["run_id"], context_snapshot=snapshot)
 
     assert service.build_profile_for_run(run["run_id"]) == PELICAN_BASELINE_PROFILE.name
     memory.close()

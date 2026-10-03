@@ -30,6 +30,12 @@ test('shared bridge forwards explicit Growth checks and refuses unknown methods 
   assert.equal(api.helloAdaWorkspacePath('/api/helloada/ada', 'GET', '?job_id=42'), '/workspace/chat/jobs/42')
   assert.equal(api.helloAdaWorkspacePath('/api/helloada/drafts/42/approve', 'POST'), '/workspace/drafts/42/approve')
   assert.equal(api.helloAdaWorkspacePath('/api/helloada/drafts/42/approve', 'GET'), undefined)
+  assert.equal(api.helloAdaWorkspacePath('/api/helloada/history/drafts/42', 'GET'), '/workspace/history/drafts/42')
+  assert.equal(api.helloAdaWorkspacePath('/api/helloada/history/seo-reports/17', 'GET'), '/workspace/history/seo-reports/17')
+  assert.equal(api.helloAdaWorkspacePath('/api/helloada/history/seo-reports/not-a-number', 'GET'), undefined)
+  assert.equal(api.helloAdaWorkspacePath('/api/helloada/history/seo-reports/17', 'POST'), undefined)
+  assert.equal(api.helloAdaWorkspacePath('/api/helloada/history/executions/growth-run-abc123', 'GET'), '/workspace/history/executions/growth-run-abc123')
+  assert.equal(api.helloAdaWorkspacePath('/api/helloada/history/executions/../../private', 'GET'), undefined)
   assert.equal(api.helloAdaWorkspacePath('/api/helloada/../../control-plane', 'POST'), undefined)
 })
 

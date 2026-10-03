@@ -28,8 +28,9 @@ def test_new_site_goal_and_reconciliation_are_durable_and_idempotent(tmp_path):
         {"scheduler": type("SchedulerView", (), {"jobs": []})()},
     )
     assert snapshot["goal"]["revision"] == 1
-    assert snapshot["work"]["state"] == "idle"
-    assert snapshot["work"]["summaryKey"] == "backgroundIdle"
+    assert "work" not in snapshot
+    assert all("nextRun" in row for row in snapshot["activities"])
+    assert all(row.get("lastError") is None for row in snapshot["tasks"])
     assert snapshot["evidence"]["artifactId"] is not None
     assert snapshot["evidence"]["sources"]
     memory.close()

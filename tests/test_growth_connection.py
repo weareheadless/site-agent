@@ -27,10 +27,10 @@ def test_growth_is_readonly_and_does_not_invent_provider_data(tmp_path):
     before = memory.list_drafts()
     result = growth_snapshot(memory, {}, {'scheduler': scheduler})
     assert result['articles'][0]['title'] == 'Owner article'
-    assert result['weeklyReports'][0]['body'] == 'Existing report'
+    assert 'weeklyReports' not in result
+    assert 'monthlyReports' not in result
     assert result['latestInsight']['headline'] == 'Improve local search'
     assert result['keywordMetrics'][0]['search_volume'] == 20
-    assert result['monthlyReports'][0]['body_md'] == 'Existing SEO report'
     assert result['sources'][0]['status'] == 'collecting'
     assert result['sources'][1]['status'] == 'verification_required'
     assert result['sources'][2]['status'] == 'not_configured'
@@ -40,6 +40,8 @@ def test_growth_is_readonly_and_does_not_invent_provider_data(tmp_path):
     assert result['activities'][1]['nextRun'] is None
     assert 'private-never-return' not in json.dumps(result)
     assert 'credential_token' not in json.dumps(result)
+    assert 'Existing report' not in json.dumps(result)
+    assert 'Existing SEO report' not in json.dumps(result)
     assert memory.list_drafts() == before
     assert result['approvalRequired'] is True
 
@@ -48,7 +50,7 @@ def test_disabled_schedules_do_not_promise_a_future_cycle(tmp_path):
     memory = Memory(tmp_path / 'memory.db')
     memory.kv_set('next_run:growth_reconciler', 1791000000)
     result = growth_snapshot(memory, {}, {'scheduler': SimpleNamespace(jobs=[])})
-    assert result['work']['nextRun'] is None
+    assert 'work' not in result
     assert all(row['nextRun'] is None for row in result['activities'])
     memory.close()
 

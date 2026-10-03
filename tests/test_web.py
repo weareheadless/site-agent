@@ -1032,11 +1032,28 @@ def test_report_and_draft_lifecycle(runtime):
 
 def test_approve_reflection_merges_persona(runtime):
     memory, _, _, _, client = runtime
+    from site_agent.core.reflect import _digest, approved_notes
+
     proposal = {"voice_notes": ["Be blunter"], "avoid": ["Hype words"]}
-    did = memory.save_draft("Self-reflection", json.dumps(proposal), kind="reflection", meta=proposal)
+    current = approved_notes(memory)
+    package = {"kind": "ada_writing_guidance", "before": current, "after": proposal, "existingContentAffected": False}
+    meta = {"proposal": proposal, "base_hash": _digest(current), "review_package_hash": _digest(package)}
+    did = memory.save_draft("Self-reflection", json.dumps(proposal), kind="reflection", meta=meta)
     _login(client)
     assert client.post(f"/api/drafts/{did}/approve").status_code == 200
     assert memory.kv_get("persona_notes")["voice_notes"] == ["Be blunter"]
+
+
+def test_incomplete_reflection_is_not_approvable(runtime):
+    memory, _, _, _, client = runtime
+    from site_agent.core.reflect import approved_notes
+
+    proposal = {"voice_notes": ["Be blunter"], "avoid": []}
+    did = memory.save_draft("Incomplete reflection", json.dumps(proposal), kind="reflection", meta=proposal)
+    _login(client)
+    response = client.post(f"/api/drafts/{did}/approve")
+    assert response.status_code == 400
+    assert approved_notes(memory)["voice_notes"] == []
 
 
 def test_approve_edit_proposal_commits_content(runtime):

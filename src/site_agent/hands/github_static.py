@@ -22,6 +22,7 @@ from typing import Any
 
 from ..config import resolve_secret
 from ..credentials import credential_environment, github_api_token, github_remote, github_ssh_command
+from ..frontend_ownership import is_frontend_owned_path
 from .base import AdapterError, SiteAdapter, register
 
 API = "https://api.github.com"
@@ -632,12 +633,13 @@ class GithubStatic(SiteAdapter):
                 results.append(self.delete_file(path, f"Revert {sha[:7]}: remove {path}"))
         return {"adapter": self.name, "reverted": sha, "files": results}
 
-    def restore_snapshot(self, target_sha: str, branch: str, message: str) -> dict[str, Any]:
-        """Create one preview commit that restores the complete target tree.
+    def restore_frontend_paths(self, target_sha: str, branch: str, message: str) -> dict[str, Any]:
+        """Prepare a frontend-only restoration on the preview branch.
 
-        This never changes production. The preview branch is based on the
-        current production head, then its tree is made identical to the target
-        commit. A single commit keeps rollback atomic and history intact.
+        The commit is based on the current production head and overlays only
+        tenant-owned presentation paths. Schema, admin, settings and current
+        Payload data remain at the current baseline. Pre-contract commits are
+        intentionally not eligible for owner rollback.
         """
         _, target = _request("GET", f"{API}/repos/{self.repo}/commits/{urllib.parse.quote(target_sha)}", token=self.token)
         target_tree = (target.get("commit") or {}).get("tree", {}).get("sha")
@@ -659,18 +661,45 @@ class GithubStatic(SiteAdapter):
 
         target_entries = self._tree_files(target_tree)
         current_entries = self._tree_files(current_tree)
-        tree = [
-            {"path": path, "mode": entry["mode"], "type": entry["type"], "sha": entry["sha"]}
-            for path, entry in target_entries.items()
-        ]
-        for path in sorted(set(current_entries) - set(target_entries)):
-            tree.append({"path": path, "mode": current_entries[path]["mode"], "type": "blob", "sha": None})
+        marker_path = "helloada-content-contract.json"
+        marker = target_entries.get(marker_path)
+        if not marker:
+            raise AdapterError("github: this version predates the supported shared-content rollback baseline")
+        _, marker_body = _request(
+            "GET", f"{self._url(marker_path)}?ref={urllib.parse.quote(target_sha)}", token=self.token,
+        )
+        try:
+            marker_data = base64.b64decode(marker_body.get("content") or "", validate=False)
+            contract = json.loads(marker_data.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise AdapterError("github: selected version has an invalid content-contract marker") from exc
+        if contract.get("contract") != "helloada-content-v1":
+            raise AdapterError("github: selected version does not use the supported shared-content contract")
+
+        frontend_paths = {
+            path for path in set(target_entries) | set(current_entries)
+            if is_frontend_owned_path(path)
+        }
+        if not frontend_paths:
+            raise AdapterError("github: selected version has no restorable frontend-owned files")
+        changes = []
+        for path in sorted(frontend_paths):
+            target_entry = target_entries.get(path)
+            current_entry = current_entries.get(path)
+            if target_entry and current_entry and target_entry.get("sha") == current_entry.get("sha"):
+                continue
+            if target_entry:
+                changes.append({"path": path, "mode": target_entry["mode"], "type": "blob", "sha": target_entry["sha"]})
+            elif current_entry:
+                changes.append({"path": path, "mode": current_entry["mode"], "type": "blob", "sha": None})
+        if not changes:
+            raise AdapterError("github: selected version has no frontend differences from the current website")
 
         _, created_tree = _request(
             "POST",
             f"{API}/repos/{self.repo}/git/trees",
             token=self.token,
-            payload={"base_tree": current_tree, "tree": tree},
+            payload={"base_tree": current_tree, "tree": changes},
         )
         tree_sha = created_tree.get("sha")
         if not tree_sha:
@@ -684,6 +713,11 @@ class GithubStatic(SiteAdapter):
         commit_sha = created_commit.get("sha")
         if not commit_sha:
             raise AdapterError("github: failed to create rollback commit")
+        _, latest_ref = _request(
+            "GET", f"{API}/repos/{self.repo}/git/ref/heads/{urllib.parse.quote(self.branch)}", token=self.token,
+        )
+        if (latest_ref.get("object") or {}).get("sha") != current_sha:
+            raise AdapterError("github: production changed while preparing the frontend restoration; prepare it again")
         _request(
             "PATCH",
             f"{API}/repos/{self.repo}/git/refs/heads/{urllib.parse.quote(branch)}",
@@ -697,8 +731,13 @@ class GithubStatic(SiteAdapter):
             "commit_sha": commit_sha,
             "parent_sha": current_sha,
             "target_sha": target_sha,
-            "path": "site",
+            "paths": [item["path"] for item in changes],
+            "scope": "frontend_only",
         }
+
+    def restore_snapshot(self, target_sha: str, branch: str, message: str) -> dict[str, Any]:
+        """Compatibility name; restoration is deliberately frontend-only."""
+        return self.restore_frontend_paths(target_sha, branch, message)
 
     def _tree_files(self, tree_sha: str) -> dict[str, dict[str, str]]:
         _, body = _request(

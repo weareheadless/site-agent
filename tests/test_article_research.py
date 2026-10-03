@@ -343,6 +343,34 @@ def test_pre_dispatch_request_failure_is_retried_without_reselecting_or_duplicat
         memory.close()
 
 
+def test_empty_provider_summary_is_rejected_before_reserving_or_spending_budget(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+
+    class Service:
+        def request_article_keyword_research(self, **_kwargs):
+            raise AssertionError("an empty idea summary must never reach the provider")
+
+    idea = {
+        "working_title": "A title is not enough evidence",
+        "candidate_queries": ["one query", "two query", "three query", "four query", "five query"],
+        "language": "en",
+        "market": "US",
+    }
+    row = memory.create_article_idea("article:2026-W40", "empty-summary-hash", idea)
+    try:
+        article_research._request_selected_idea(
+            {"memory": memory, "crawlseo_service": Service(), "config": {}},
+            row,
+            idea,
+        )
+        saved = memory.get_article_idea_by_cycle("article:2026-W40")
+        assert saved["status"] == "failed"
+        assert "reader question or thesis" in saved["error"]
+        assert saved["keyword_budget_reservation_id"] is None
+    finally:
+        memory.close()
+
+
 def test_reconcile_requests_one_serp_after_metrics_then_drafts(tmp_path, monkeypatch):
     memory = Memory(tmp_path / "memory.db")
     idea = _idea(memory)

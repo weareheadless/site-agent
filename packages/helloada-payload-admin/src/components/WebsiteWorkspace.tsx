@@ -23,6 +23,7 @@ type WorkspaceDocument = {
   slug: string
   title: string
   status: string
+  draftHash: string
 }
 
 type WorkspaceRoute = {
@@ -67,6 +68,10 @@ type EditablePageEntry = {
     collection: 'pages' | 'products' | 'posts'
     documentId: string
     field: 'editable' | 'gallery' | 'featuredImage' | 'content' | string
+    sectionKey?: string
+    entryKey?: string
+    itemKey?: string
+    property?: string
     editableId?: string
     index?: number
     contentIndex?: number
@@ -80,6 +85,7 @@ type EditablePage = {
   title: string
   slug: string
   status: string
+  draftHash?: string
   editable: EditablePageEntry[]
 }
 
@@ -95,6 +101,7 @@ type ContentField = {
   editorRole?: 'heading' | 'paragraph' | 'image'
   value?: string
   text?: string
+  richText?: unknown
   image?: {
     id?: string
     sourceId?: string
@@ -111,6 +118,10 @@ type ContentField = {
     collection?: 'pages' | 'products' | 'posts'
     documentId?: string
     field?: 'editable' | 'gallery' | 'featuredImage' | 'content' | string
+    sectionKey?: string
+    entryKey?: string
+    itemKey?: string
+    property?: string
     editableId?: string
     index?: number
     contentIndex?: number
@@ -507,7 +518,7 @@ const editorEntryFromContent = (field: ContentField): EditablePageEntry | undefi
         }
       : {
           text: field.text || value,
-          ...(type === 'richText' ? { richText: lexicalDocumentFromText(field.text || value) } : {}),
+          ...(type === 'richText' ? { richText: field.richText || lexicalDocumentFromText(field.text || value) } : {}),
         }),
     value,
     route: field.route,
@@ -519,6 +530,10 @@ const editorEntryFromContent = (field: ContentField): EditablePageEntry | undefi
       collection: contentEdit.collection,
       documentId: contentEdit.documentId,
       field: contentEdit.field,
+      ...(contentEdit.sectionKey ? { sectionKey: contentEdit.sectionKey } : {}),
+      ...(contentEdit.entryKey ? { entryKey: contentEdit.entryKey } : {}),
+      ...(contentEdit.itemKey ? { itemKey: contentEdit.itemKey } : {}),
+      ...(contentEdit.property ? { property: contentEdit.property } : {}),
       ...(contentEdit.editableId ? { editableId: contentEdit.editableId } : {}),
       ...(contentEdit.index !== undefined ? { index: contentEdit.index } : {}),
       ...(contentEdit.contentIndex !== undefined ? { contentIndex: contentEdit.contentIndex } : {}),
@@ -538,8 +553,14 @@ const mergeEditorEntries = (...groups: EditablePageEntry[][]) => {
 }
 
 const editorEntryValue = (entry: EditablePageEntry) => {
-  if (entry.type === 'image') return imageReferenceValue(entry.image)
-  if (entry.type === 'richText') return entry.text ?? sourceTextForRichText(entry.richText)
+  if (entry.type === 'image') {
+    if (entry.contentEdit) {
+      const reference = entry.image && typeof entry.image === 'object' ? entry.image as Record<string, unknown> : {}
+      return String(reference.id ?? '')
+    }
+    return imageReferenceValue(entry.image)
+  }
+  if (entry.type === 'richText') return entry.richText || lexicalDocumentFromText(entry.text ?? sourceTextForRichText(entry.richText))
   return entry.text || ''
 }
 
@@ -853,23 +874,17 @@ function ReviewWorkspace() {
   }, [t])
 
   const loadContentFields = useCallback(async (route = selectedRoute) => {
-    const [fieldsResponse, imagesResponse] = await Promise.all([
-      fetchHelloAda(`/api/helloada/page-fields?route=${encodeURIComponent(route)}`, { cache: 'no-store' }),
-      fetchHelloAda(`/api/helloada/page-images?route=${encodeURIComponent(route)}`, { cache: 'no-store' }),
-    ])
-    const fieldsBody = (await fieldsResponse.json()) as ContentImageResponse
-    const imagesBody = (await imagesResponse.json()) as ContentImageResponse
-    if (!fieldsResponse.ok && !imagesResponse.ok) {
-      throw new Error(fieldsBody.message || imagesBody.message || t('error.pageLoad'))
-    }
-    const fields = [
-      ...(fieldsResponse.ok ? fieldsBody.fields || [] : []),
-      ...(imagesResponse.ok ? imagesBody.fields || [] : []),
-    ]
+    const collection = selectedDocument?.collection || selectedRouteData?.collection || 'pages'
+    const query = new URLSearchParams({ route, collection })
+    if (selectedDocument?.id) query.set('documentId', selectedDocument.id)
+    const response = await fetchHelloAda(`/api/helloada/page-fields?${query.toString()}`, { cache: 'no-store' })
+    const body = (await response.json()) as ContentImageResponse
+    if (!response.ok) throw new Error(body.message || t('error.pageLoad'))
+    const fields = (body.fields || [])
       .map(editorEntryFromContent)
       .filter((entry): entry is EditablePageEntry => Boolean(entry))
     return { fields: mergeEditorEntries(fields) }
-  }, [selectedRoute, t])
+  }, [selectedDocument, selectedRoute, selectedRouteData, t])
 
   const loadEditorFields = useCallback(async (route = selectedRoute) => {
     const { fields: contentFields } = await loadContentFields(route)
@@ -906,7 +921,7 @@ function ReviewWorkspace() {
   const loadWorkspace = useCallback((background = false) => {
     if (!background) setLoading(true)
     setError('')
-    void fetchHelloAda('/api/helloada/workspace', { cache: 'no-store' })
+    return fetchHelloAda('/api/helloada/workspace', { cache: 'no-store' })
       .then(async (response) => {
         const body = (await response.json()) as WorkspaceSnapshot & { message?: string }
         if (!response.ok) throw new Error(body.message || t('error.workspaceLoad'))
@@ -1761,42 +1776,33 @@ function ReviewWorkspace() {
     setError('')
     setFieldEditorError('')
 
-    const contentImageChanges = changes.filter((entry) => Boolean(entry.contentEdit) && entry.type === 'image')
-    const contentTextChanges = changes.filter((entry) => Boolean(entry.contentEdit) && entry.type !== 'image')
+    const contentChanges = changes.filter((entry) => Boolean(entry.contentEdit))
 
     try {
-      if (contentImageChanges.length) {
-        const response = await fetchHelloAda('/api/helloada/page-images', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-             publish: false,
-             edits: contentImageChanges.map((entry) => ({
-              ...entry.contentEdit,
-              expectedValue: entry.contentEdit?.expectedValue ?? entry.value ?? '',
-              newValue: editorEntryValue(entry),
-            })),
-          }),
-        })
-        const body = (await response.json()) as { message?: string }
-        if (!response.ok) throw new Error(body.message || t('error.pageSave'))
+      const contentTargets = new Set(contentChanges.map((entry) => `${entry.contentEdit?.collection}:${entry.contentEdit?.documentId}`))
+      if (contentChanges.length !== changes.length || contentTargets.size !== 1 || !selectedDocument?.draftHash) {
+        throw new Error(t('error.pageSave'))
       }
-
-      if (contentTextChanges.length) {
+      let savedDraftHash = ''
+      if (contentChanges.length) {
         const response = await fetchHelloAda('/api/helloada/page-fields', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-             publish: false,
-             edits: contentTextChanges.map((entry) => ({
+            collection: contentChanges[0]?.contentEdit?.collection,
+            documentId: contentChanges[0]?.contentEdit?.documentId,
+            expectedDraftHash: selectedDocument?.draftHash,
+            edits: contentChanges.map((entry) => ({
               ...entry.contentEdit,
               expectedValue: entry.contentEdit?.expectedValue ?? entry.value ?? '',
               newValue: editorEntryValue(entry),
             })),
           }),
         })
-        const body = (await response.json()) as { message?: string }
+        const body = (await response.json()) as { message?: string; draftHash?: string }
         if (!response.ok) throw new Error(body.message || t('error.pageSave'))
+        if (!body.draftHash) throw new Error(t('error.pageSave'))
+        savedDraftHash = body.draftHash
       }
 
       setPendingChanges({})
@@ -1804,19 +1810,27 @@ function ReviewWorkspace() {
       if (selectedDocumentKey) setDraftUpdatedKey(selectedDocumentKey)
       setPreviewStatus('refreshing')
       setPreviewRevision((current) => current + 1)
+      if (savedDraftHash && selectedDocument) {
+        setWorkspace((current) => current ? {
+          ...current,
+          documents: current.documents.map((document) => document.id === selectedDocument.id && document.collection === selectedDocument.collection
+            ? { ...document, status: 'draft', draftHash: savedDraftHash }
+            : document),
+        } : current)
+      }
       const { fields } = await loadContentFields(selectedRoute)
       setReviewFields(fields)
       setEditorNotice(t('workspace.draftUpdated'))
-      loadWorkspace(true)
+      void loadWorkspace(true)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t('error.pageSave'))
     } finally {
       setPendingSaving(false)
     }
-  }, [closeFieldEditor, loadContentFields, loadWorkspace, pendingSaving, selectedDocumentKey, selectedRoute, t])
+  }, [closeFieldEditor, loadContentFields, loadWorkspace, pendingSaving, selectedDocument, selectedDocumentKey, selectedRoute, t])
 
   const publishDraft = useCallback(async () => {
-    if (!selectedDocument || !hasDraft || pendingChangeCount || publishing) return
+    if (!selectedDocument || !selectedDocument.draftHash || !hasDraft || pendingChangeCount || publishing) return
     setPublishing(true)
     setError('')
     setFieldEditorError('')
@@ -1829,6 +1843,7 @@ function ReviewWorkspace() {
           documents: [{
             collection: selectedDocument.collection,
             documentId: selectedDocument.id,
+            expectedDraftHash: selectedDocument.draftHash,
           }],
         }),
       })
@@ -1840,11 +1855,11 @@ function ReviewWorkspace() {
       closeFieldEditor()
       setPreviewStatus('refreshing')
        setPreviewRevision((current) => current + 1)
-       const { fields } = await loadContentFields(selectedRoute)
-       setReviewFields(fields)
-       setEditorNotice(t('workspace.draftPublished'))
-       setPublishNotice(t('workspace.draftPublished'))
-       loadWorkspace(true)
+      const { fields } = await loadContentFields(selectedRoute)
+      setReviewFields(fields)
+      setEditorNotice(t('workspace.draftPublished'))
+      setPublishNotice(t('workspace.draftPublished'))
+      await loadWorkspace(true)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t('error.draftPublish'))
     } finally {
@@ -1881,7 +1896,9 @@ function ReviewWorkspace() {
           const image = element as HTMLImageElement
           image.src = imageReferenceUrl(pending.image)
         } else {
-          const nextText = editorEntryValue(pending)
+          const nextText = pending.type === 'richText'
+            ? sourceTextForRichText(editorEntryValue(pending))
+            : String(editorEntryValue(pending) ?? '')
           const textNode = Array.from(element.childNodes).find((node) => node.nodeType === Node.TEXT_NODE)
           if (textNode) textNode.textContent = nextText
           else element.textContent = nextText
@@ -2497,7 +2514,7 @@ function ReviewWorkspace() {
 
        <dialog ref={publishDialogRef} className="helloada-publish-dialog" aria-labelledby="helloada-publish-title">
          <HelloAdaMark size={40} /><h2 id="helloada-publish-title">{t('owner.publishTitle')}</h2><p><strong>{currentRouteLabel}</strong> · {site.siteName}</p><p>{t('owner.publishNote')}</p>
-         <div><button type="button" autoFocus onClick={() => publishDialogRef.current?.close()}>{t('owner.keepReviewing')}</button><button type="button" className="is-primary" disabled={!hasDraft || publishing || Boolean(pendingChangeCount)} onClick={() => { publishDialogRef.current?.close(); void publishDraft() }}>{t('owner.publishChanges')}<WorkspaceIcon name="arrow" /></button></div>
+         <div><button type="button" autoFocus onClick={() => publishDialogRef.current?.close()}>{t('owner.keepReviewing')}</button><button type="button" className="is-primary" disabled={!hasDraft || !selectedDocument?.draftHash || publishing || Boolean(pendingChangeCount)} onClick={() => { publishDialogRef.current?.close(); void publishDraft() }}>{t('owner.publishChanges')}<WorkspaceIcon name="arrow" /></button></div>
        </dialog>
 
         {fieldEditorEntry && fieldEditorKey ? (

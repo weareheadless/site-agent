@@ -13,6 +13,10 @@ export function helloAdaWorkspacePath(path: string, method: string, search = "")
   if (suffix === "/intake/confirm" && method === "POST") return `/workspace/chat/intake/confirm${search}`;
   if (suffix === "/design/start" && method === "POST") return `/workspace/chat/design/start${search}`;
   if (suffix === "/conversations" && ["GET", "POST"].includes(method)) return `/workspace/chat/conversations${search}`;
+  const historyReport = suffix.match(/^\/history\/(drafts|seo-reports)\/([0-9]+)$/);
+  if (historyReport && method === "GET") return `/workspace/history/${historyReport[1]}/${historyReport[2]}${search}`;
+  const historyExecution = suffix.match(/^\/history\/executions\/([A-Za-z0-9._:-]{1,120})$/);
+  if (historyExecution && method === "GET") return `/workspace/history/executions/${encodeURIComponent(historyExecution[1])}${search}`;
   const conversation = suffix.match(/^\/conversations\/([0-9]+)$/);
   if (conversation && ["GET", "DELETE"].includes(method)) return `/workspace/chat/conversations/${conversation[1]}${search}`;
   if (["/history", "/drafts"].includes(suffix) && method === "GET") return `/workspace${suffix}${search}`;

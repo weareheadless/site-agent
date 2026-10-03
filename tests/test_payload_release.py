@@ -58,6 +58,24 @@ def test_external_customer_repository_is_rejected():
         release.validate_target(customer, "oceanicvibes", SHA, "release-1")
 
 
+@pytest.mark.parametrize("field", ["payloadAdmin", "payloadCore", "contentContract"])
+def test_release_registry_requires_exact_shared_payload_versions(field):
+    customer = {**REGISTRY["customers"]["oceanicvibes"], field: ""}
+    with pytest.raises(ValueError, match="version|contract"):
+        release.validate_target(customer, "oceanicvibes", SHA, "release-1")
+
+
+def test_worker_contract_requires_the_registered_tenant_and_all_shared_versions():
+    customer = REGISTRY["customers"]["oceanicvibes"]
+    release.validate_worker_contract({"name": "oceanicvibes", "tenant": "oceanicvibes",
+        "admin": customer["payloadAdmin"], "core": customer["payloadCore"],
+        "contract": customer["contentContract"]}, customer, "oceanicvibes")
+    with pytest.raises(RuntimeError, match="shared Payload contract"):
+        release.validate_worker_contract({"name": "oceanicvibes", "tenant": "oceanicvibes",
+            "admin": customer["payloadAdmin"], "core": "0.0.9",
+            "contract": customer["contentContract"]}, customer, "oceanicvibes")
+
+
 def test_promotion_uses_the_uploaded_version_and_rejects_ambiguous_output():
     version = "12345678-1234-1234-1234-123456789abc"
     output = f"Uploaded Worker\nWorker Version ID: {version}\n"
@@ -76,20 +94,49 @@ def test_same_admin_version_does_not_prove_new_source(monkeypatch):
             pass
 
         def read(self):
-            return json.dumps({"ok": True, "tenant": "oceanicvibes", "payloadAdmin": "0.8.4", "releaseSha": "b" * 40}).encode()
+            return json.dumps({"ok": True, "tenant": "oceanicvibes", "payloadAdmin": "0.8.6",
+                               "payloadCore": "0.1.0", "contentContract": "helloada-content-v1",
+                               "releaseSha": "b" * 40}).encode()
 
     monkeypatch.setattr(release.urllib.request, "urlopen", lambda *args, **kwargs: Response())
     with pytest.raises(RuntimeError, match="release SHA"):
-        release.check_health("https://oceanicvibes.com/api/health", "oceanicvibes", "0.8.4", SHA)
+        release.check_health("https://oceanicvibes.com/api/health", "oceanicvibes",
+                             REGISTRY["customers"]["oceanicvibes"], SHA)
+
+
+@pytest.mark.parametrize("key,value", [
+    ("payloadAdmin", "0.8.5"),
+    ("payloadCore", "0.0.9"),
+    ("contentContract", "helloada-content-v0"),
+])
+def test_live_health_requires_the_exact_shared_payload_contract(monkeypatch, key, value):
+    body = {"ok": True, "tenant": "oceanicvibes", "payloadAdmin": "0.8.6",
+            "payloadCore": "0.1.0", "contentContract": "helloada-content-v1", "releaseSha": SHA}
+    body[key] = value
+
+    class Response:
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def read(self): return json.dumps(body).encode()
+
+    monkeypatch.setattr(release.urllib.request, "urlopen", lambda *args, **kwargs: Response())
+    with pytest.raises(RuntimeError, match="shared Payload contract"):
+        release.check_health("https://oceanicvibes.com/api/health", "oceanicvibes",
+                             REGISTRY["customers"]["oceanicvibes"], SHA)
 
 
 def artifact(tmp_path):
+    customer = REGISTRY["customers"]["oceanicvibes"]
     files = {
         ".open-next/worker.js": "import './server-functions/default/handler.mjs'",
         ".open-next/server-functions/default/handler.mjs": "route('/growth/contract')",
         ".next/server/app-paths-manifest.json": json.dumps({"/api/helloada/[...path]/route": "helloada.js", "/api/content/route": "content.js", "/api/health/route": "health.js"}),
-        "node_modules/@weareheadless/helloada-payload-admin/package.json": json.dumps({"version": "0.8.4"}),
-        ".open-next/assets/helloada-release.json": json.dumps({"sourceSha": SHA, "payloadAdmin": "0.8.4"}),
+        "node_modules/@weareheadless/helloada-payload-admin/package.json": json.dumps({"version": customer["payloadAdmin"]}),
+        "node_modules/@weareheadless/helloada-payload-core/package.json": json.dumps({"version": customer["payloadCore"]}),
+        "helloada-content-contract.json": json.dumps({"contract": customer["contentContract"]}),
+        ".open-next/assets/helloada-release.json": json.dumps({"sourceSha": SHA,
+            "payloadAdmin": customer["payloadAdmin"], "payloadCore": customer["payloadCore"],
+            "contentContract": customer["contentContract"]}),
     }
     for name, value in files.items():
         path = tmp_path / name
@@ -100,15 +147,22 @@ def artifact(tmp_path):
 
 def test_checks_compiled_server_instead_of_thin_worker_entry(tmp_path):
     checkout = artifact(tmp_path)
-    hashes = release.inspect_artifact(checkout, "0.8.4", SHA)
+    hashes = release.inspect_artifact(checkout, REGISTRY["customers"]["oceanicvibes"], SHA)
     assert "server-functions/default/handler.mjs" in hashes
 
 
 def test_stale_release_marker_is_rejected(tmp_path):
     checkout = artifact(tmp_path)
-    (checkout / ".open-next/assets/helloada-release.json").write_text(json.dumps({"sourceSha": "b" * 40, "payloadAdmin": "0.8.4"}))
+    (checkout / ".open-next/assets/helloada-release.json").write_text(json.dumps({"sourceSha": "b" * 40}))
     with pytest.raises(RuntimeError, match="marker"):
-        release.inspect_artifact(checkout, "0.8.4", SHA)
+        release.inspect_artifact(checkout, REGISTRY["customers"]["oceanicvibes"], SHA)
+
+
+def test_shared_core_version_must_match_release_registry(tmp_path):
+    checkout = artifact(tmp_path)
+    (checkout / "node_modules/@weareheadless/helloada-payload-core/package.json").write_text(json.dumps({"version": "0.0.9"}))
+    with pytest.raises(RuntimeError, match="core version"):
+        release.inspect_artifact(checkout, REGISTRY["customers"]["oceanicvibes"], SHA)
 
 
 def test_browser_bridge_does_not_substitute_for_service_content_gateway(tmp_path):
@@ -118,7 +172,7 @@ def test_browser_bridge_does_not_substitute_for_service_content_gateway(tmp_path
     del routes["/api/content/route"]
     path.write_text(json.dumps(routes))
     with pytest.raises(RuntimeError, match="service content"):
-        release.inspect_artifact(checkout, "0.8.4", SHA)
+        release.inspect_artifact(checkout, REGISTRY["customers"]["oceanicvibes"], SHA)
 
 
 def test_obsolete_route_in_built_manifest_is_rejected(tmp_path):
@@ -128,7 +182,7 @@ def test_obsolete_route_in_built_manifest_is_rejected(tmp_path):
     routes["/api/atelier/ada/route"] = "old.js"
     path.write_text(json.dumps(routes))
     with pytest.raises(RuntimeError, match="obsolete"):
-        release.inspect_artifact(checkout, "0.8.4", SHA)
+        release.inspect_artifact(checkout, REGISTRY["customers"]["oceanicvibes"], SHA)
 
 
 def promoted_receipt(tmp_path):
@@ -137,6 +191,8 @@ def promoted_receipt(tmp_path):
     archive.write_bytes(b"immutable-artifact")
     result = {"tenant": "oceanicvibes", "sourceSha": SHA, "releaseId": "release-1",
               "worker": customer["worker"], "repository": customer["repository"],
+              "payloadAdmin": customer["payloadAdmin"], "payloadCore": customer["payloadCore"],
+              "contentContract": customer["contentContract"],
               "status": "failed", "stage": "verify-connection", "error": "connection failed",
               "deployment": {"id": "deployment-1"}, "uploadedVersion": "version-1",
               "archiveSha256": release.hashlib.sha256(archive.read_bytes()).hexdigest()}

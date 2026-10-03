@@ -51,6 +51,7 @@ test('functional dashboard uses the space for work and retains growth access', a
   const nav = await source('src/components/HelloAdaNav.tsx')
   assert.match(nav, /view=growth/)
   const growth = await source('src/components/HelloAdaGrowth.tsx')
-  for (const feature of ['\/growth', '\/seo\/analytics', 'weeklyReports', 'monthlyReports', 'articleIdeas', 'dataforseo']) assert.ok(growth.includes(feature), feature)
+  for (const feature of ['\/growth', '\/seo\/analytics', 'articleIdeas', 'dataforseo', 'view=history']) assert.ok(growth.includes(feature), feature)
+  assert.doesNotMatch(growth, /growth\?\.weeklyReports|growth\?\.monthlyReports/)
   assert.doesNotMatch(growth, /method:\s*['"]POST['"]|\.random\(/)
 })
