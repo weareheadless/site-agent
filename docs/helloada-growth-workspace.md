@@ -123,3 +123,37 @@ The new-site template uses the same immutable asset.
 One thorough shared UI test is sufficient for its layout and interactions.
 Each tenant still needs a deployment/authentication/data-routing smoke check:
 independent Worker bindings, proxy routes and credentials are not shared UI code.
+
+### Two-tone surface release: 2026-10-02 (local time)
+
+- Shared package `0.7.1`, source commit `a886e59`, follows the actual HelloAda
+  homepage control-room palette. Dark navigation and Ada chat remain distinct
+  from ivory review, Growth, gallery, management and native Payload surfaces.
+  The navigation palette is bound to `.helloada-payload-nav` itself, not only
+  a native Payload wrapper that standalone owner pages do not render.
+- Atelier commit `b7ea530`, Worker `d337e7c3-797c-4141-85e9-508cf7f225dc`;
+  Oceanic commit `a76a30d`, Worker `e90c4fd0-acca-4ceb-99dc-0075c9d5c9a2`.
+  Both deployments were confirmed at 100% traffic. Both canonical future-build
+  checkouts and installed dependencies were fast-forwarded to these versions.
+- Clean production builds and typechecks passed; lint has only the existing
+  migration/frontend warnings. The shared compiled CSS is identical in both
+  artifacts (`fe148e49d5e5376e.css`, SHA-256
+  `10e66503c671bd0988254ddc2f1ec9ef147fdb2fa7ee79320a30434a38d8817d`).
+  The approved logo hash is unchanged. Fresh authenticated documents served
+  this exact stylesheet, with dark chrome and dark text on light tool windows.
+- Shared admin package: 17 tests passed, including surface scope, nested tool
+  palettes and AA text contrast on both surfaces; TypeScript and Sass passed.
+  The final wheel's new-site template pins the immutable `0.7.1` asset.
+  The initial full backend run had 1054 passes and two failures: the known
+  frozen Pelican-profile failure and an environment-only missing `pelican`
+  executable. With `.venv/bin` correctly on PATH, the latter and the focused
+  default-template checks passed (3 tests). No backend application code changed.
+- Fresh live verification: both correct tenants connected to Ada; Atelier's
+  real website preview rendered; Oceanic's measured GA4 report, gallery images
+  and paper management drawer loaded. Public homepages returned 200 and
+  unauthenticated owner connection endpoints returned 401. No requests were
+  sent to Ada, paid tasks triggered, documents edited or changes published.
+- At 390px, the final navigation and page both measure 390px with no horizontal
+  page overflow. The navigation links scroll within their own row. This resolves
+  the small-screen overflow noted in the `0.6.1` record, without hiding tools.
+  The temporary viewport override was reset after the check.
