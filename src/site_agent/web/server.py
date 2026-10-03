@@ -2296,9 +2296,17 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
                 except (TypeError, ValueError):
                     pass
         if draft["kind"] == "article":
+            gsc_snapshot = memory.latest_snapshot("gsc") or {}
+            ga4_snapshot = memory.latest_snapshot("ga4") or {}
+            gsc_data = gsc_snapshot.get("data") if isinstance(gsc_snapshot.get("data"), dict) else {}
+            ga4_data = ga4_snapshot.get("data") if isinstance(ga4_snapshot.get("data"), dict) else {}
+            gsc_current = gsc_data.get("current") if isinstance(gsc_data.get("current"), dict) else {}
+            ga4_current = ga4_data.get("current") if isinstance(ga4_data.get("current"), dict) else {}
+            baseline_metric = "gsc.clicks" if "clicks" in gsc_current else "ga4.sessions" if "sessions" in ga4_current else ""
             baseline = {
-                "gsc": memory.latest_snapshot("gsc") or {},
-                "ga4": memory.latest_snapshot("ga4") or {},
+                "metric": baseline_metric,
+                "gsc": gsc_snapshot,
+                "ga4": ga4_snapshot,
             }
             memory.record_strategy_decision_for_draft(draft_id, "approved", baseline=baseline)
             owner_action_service.reconcile(draft_id=draft_id, succeeded=True)

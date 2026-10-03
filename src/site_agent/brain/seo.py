@@ -25,7 +25,6 @@ from ..core.contracts import (
     ActionRequirement,
     Artifact,
     ArtifactKind,
-    EffectClass,
     OwnerAction,
 )
 from ..core.llm import extract_json
@@ -420,55 +419,25 @@ def _strategy_prompt(material: Mapping[str, Any]) -> list[dict[str, str]]:
     ]
 
 
-def _fallback_strategy(report: Mapping[str, Any], brief: Mapping[str, Any]) -> dict[str, Any]:
-    market = brief["focus_market"]
-    keyword = str((brief.get("keyword_seeds") or ["the audience's current need"])[0])
-    paid = report.get("dataforseo") if isinstance(report, Mapping) else []
-    top_result: Mapping[str, Any] | None = None
-    if isinstance(paid, list):
-        for task in paid:
-            if not isinstance(task, Mapping) or task.get("kind") != "keyword_seed":
-                continue
-            results = task.get("result")
-            if isinstance(results, list):
-                for result in results:
-                    if isinstance(result, Mapping) and (top_result is None or (result.get("volume") or 0) > (top_result.get("volume") or 0)):
-                        top_result = result
-    if top_result and top_result.get("keyword"):
-        keyword = str(top_result["keyword"])
+def _blocked_strategy(reason: str) -> dict[str, Any]:
+    """Represent a report that is useful for inspection but not actionable."""
+
     return {
-        "summary": "Ada found enough evidence to begin with one focused, measurable opportunity.",
-        "initiatives": [{
-            "kind": "content",
-            "title": f"Write for people searching {keyword}",
-            "action": f"Prepare a useful article targeting {keyword} for the {market['language']}-{market['country']} audience.",
-            "hypothesis": "A specific answer to an observed audience need will earn qualified search visibility.",
-            "why": "The topic is present in the selected monthly research and can be measured after publication.",
-            "evidence": ["dataforseo.keyword_seed", "brief.focus_market"],
-            "expected": {"metric": "organic impressions and clicks", "horizon_days": 90},
-            "priority": "normal",
-            "language": market["language"],
-            "market": market["country"],
-        }],
-        "article": {
-            "title": f"What to know about {keyword}",
-            "angle": "Answer the audience's practical question with current, specific context.",
-            "why": "It connects the selected search opportunity to a real reader need.",
-            "primary_keyword": keyword,
-            "language": market["language"],
-            "market": market["country"],
-            "source_urls": [],
-        },
+        "status": "blocked",
+        "blocked_reason": reason[:1000],
+        "summary": "Ada could not prepare recommendations from this report.",
+        "initiatives": [],
+        "article": {},
     }
 
 
 def _normalized_strategy(raw: str, report: Mapping[str, Any], brief: Mapping[str, Any]) -> dict[str, Any]:
     decoded = extract_json(raw)
     if not isinstance(decoded, Mapping):
-        return _fallback_strategy(report, brief)
+        raise SeoPlanningError("Ada's strategy response was not a valid object")
     initiatives = decoded.get("initiatives")
     if not isinstance(initiatives, list):
-        return _fallback_strategy(report, brief)
+        raise SeoPlanningError("Ada's strategy response did not include initiatives")
     normalized: list[dict[str, Any]] = []
     for item in initiatives[:5]:
         if not isinstance(item, Mapping):
@@ -492,14 +461,15 @@ def _normalized_strategy(raw: str, report: Mapping[str, Any], brief: Mapping[str
             "market": str(item.get("market") or brief["focus_market"]["country"]).strip().upper(),
         })
     if not normalized:
-        return _fallback_strategy(report, brief)
+        raise SeoPlanningError("Ada's strategy response contained no valid initiatives")
     article = decoded.get("article") if isinstance(decoded.get("article"), Mapping) else {}
-    default_article = _fallback_strategy(report, brief)["article"]
-    article_data = {**default_article, **dict(article)}
+    article_data = dict(article)
     for field_name, max_chars in (("title", 300), ("angle", 1000), ("why", 1000), ("primary_keyword", 200)):
         article_data[field_name] = str(article_data.get(field_name) or "").strip()[:max_chars]
     article_data["source_urls"] = [str(url) for url in article_data.get("source_urls") or [] if str(url).startswith(("http://", "https://"))][:8]
-    return {"summary": str(decoded.get("summary") or "").strip()[:4000] or "Ada prepared a strategy from the available evidence.", "initiatives": normalized, "article": article_data}
+    if not article_data.get("title"):
+        raise SeoPlanningError("Ada's strategy response did not include an article proposal")
+    return {"status": "ready", "summary": str(decoded.get("summary") or "").strip()[:4000] or "Ada prepared a strategy from the available evidence.", "initiatives": normalized, "article": article_data}
 
 
 def _language_supported(config: Mapping[str, Any], language: str) -> bool:
@@ -604,6 +574,14 @@ def _render_report(
         for item in news[:8]:
             url = f" ({item.get('url')})" if item.get("url") else ""
             lines.append(f"- {item.get('text', '')}{url}")
+    if strategy.get("status") == "blocked":
+        lines.extend([
+            "",
+            "## Ada's preparation status",
+            "Recommendations were not prepared.",
+            str(strategy.get("blocked_reason") or "The strategy planner is unavailable."),
+        ])
+        return "\n".join(lines)[:30_000]
     lines.extend(["", "## What Ada suggests next"])
     for index, initiative in enumerate(strategy.get("initiatives") or [], 1):
         evidence = ", ".join(str(value) for value in initiative.get("evidence") or []) or "not specified"
@@ -678,36 +656,6 @@ def _is_site_change(initiative: Mapping[str, Any]) -> bool:
     return str(initiative.get("kind") or "").strip().lower() in _SITE_CHANGE_KINDS
 
 
-def _site_change_artifact(cycle_id: int, initiative: Mapping[str, Any], action: OwnerAction) -> Artifact:
-    evidence = [str(value)[:300] for value in initiative.get("evidence") or []][:8]
-    expected = initiative.get("expected") if isinstance(initiative.get("expected"), Mapping) else {}
-    areas = expected.get("areas") if isinstance(expected.get("areas"), list) else []
-    if not areas:
-        areas = [str(initiative.get("kind") or "website structure")]
-    preview_data = {
-        "body": str(initiative.get("action") or "Review the proposed website change.")[:6000],
-        "hypothesis": str(initiative.get("hypothesis") or "")[:1200],
-        "why": str(initiative.get("why") or "")[:1200],
-        "areas": [str(area)[:160] for area in areas[:8]],
-        "evidence": evidence,
-        "language": str(initiative.get("language") or "")[:16],
-        "market": str(initiative.get("market") or "")[:8],
-        "cycle_id": cycle_id,
-    }
-    content_hash = "sha256:" + hashlib.sha256(json.dumps(preview_data, sort_keys=True).encode()).hexdigest()
-    return Artifact(
-        kind=ArtifactKind.SITE_CHANGE,
-        title=str(initiative.get("title") or "Proposed website change")[:500],
-        summary=str(initiative.get("action") or "Review the proposed website change.")[:500],
-        renderer="site_change",
-        capability_id="review.site_change",
-        provider_id="site-agent",
-        source_action_id=action.id,
-        content_hash=content_hash,
-        preview_data=preview_data,
-    )
-
-
 def _context_action(memory: Any, period: str, message: str) -> None:
     source_ref = f"seo-research-context:{period}"
     OwnerActionService(memory).create(
@@ -768,14 +716,14 @@ def _process_report(context: dict[str, Any], request: Mapping[str, Any], payload
             "active_initiatives": memory.list_strategy_initiatives(limit=30),
         }
         llm = context.get("llm")
-        if llm is not None:
+        if llm is None:
+            strategy = _blocked_strategy("Ada's strategy planner is unavailable; no recommendation was invented.")
+        else:
             try:
                 raw = llm.chat(_strategy_prompt(material), json_mode=True, temperature=0.4)
                 strategy = _normalized_strategy(raw, report, brief)
-            except Exception:  # noqa: BLE001 — a report must still produce bounded fallback work
-                strategy = _fallback_strategy(report, brief)
-        else:
-            strategy = _fallback_strategy(report, brief)
+            except Exception as exc:  # noqa: BLE001 — preserve the evidence and expose the blocked planner boundary
+                strategy = _blocked_strategy(f"Ada's strategy planner failed: {str(exc)[:700]}")
         strategy = _apply_language_boundary(strategy, context["config"], brief)
 
         report_hash = hashlib.sha256(json.dumps(report, sort_keys=True, default=str).encode()).hexdigest()
@@ -855,43 +803,29 @@ def _process_report(context: dict[str, Any], request: Mapping[str, Any], payload
         str(row.get("title") or "").strip().lower(): row
         for row in memory.list_strategy_initiatives(cycle["id"])
     }
-    site_change_seen = any(row.get("artifact_id") for row in existing_initiatives.values())
     for initiative in strategy.get("initiatives") or []:
         if not isinstance(initiative, Mapping):
             continue
         initiative_key = str(initiative.get("title") or "").strip().lower()
         existing_initiative = existing_initiatives.get(initiative_key)
-        can_resume_site_artifact = (
-            existing_initiative is not None
-            and _is_site_change(initiative)
-            and not existing_initiative.get("artifact_id")
-            and not site_change_seen
-        )
-        if existing_initiative is not None and not can_resume_site_artifact:
+        if existing_initiative is not None:
             continue
         draft_id = article_draft_id if initiative.get("kind") == "content" and article_draft_id is not None else None
-        site_change = _is_site_change(initiative) and not site_change_seen
+        # A strategy record is evidence-backed advice, not an implementation
+        # candidate. Until Ada has prepared and validated a concrete Payload or
+        # design candidate, it must remain a proposal with no mutation approval.
+        site_change = False
         action = action_service.create(
             _initiative_action(context, cycle["id"], initiative, draft_id, site_change),
             reuse_terminal=True,
         )
         artifact_id = None
         approval_id = None
-        if site_change:
-            site_change_seen = True
-            artifact = memory.create_artifact(_site_change_artifact(cycle["id"], initiative, action))
-            artifact_id = artifact.artifact_id
-            approval_service = context.get("approval_service")
-            if approval_service is not None:
-                approval = approval_service.create(
-                    artifact,
-                    owner_action_label="Review website change",
-                    effect_class=EffectClass.SITE_MUTATION,
-                    action_id=action.id,
-                )
-                approval_id = approval.approval_id
-            else:
-                memory.link_owner_action(action.id, artifact_id=artifact_id)
+        if _is_site_change(initiative):
+            memory.record_action(
+                "seo_strategy",
+                f"initiative '{initiative.get('title', 'untitled')}' remains a proposal until Ada prepares a validated implementation candidate",
+            )
         if existing_initiative is not None:
             memory.update_strategy_initiative(
                 existing_initiative["id"],

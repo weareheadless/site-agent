@@ -47,6 +47,7 @@ class ArtifactKind(str, Enum):
     SITE_CHANGE = "site_change"
     ARTICLE = "article"
     SEO_REPORT = "seo_report"
+    GROWTH_EVIDENCE = "growth_evidence"
     BUSINESS_INFORMATION = "business_information"
     SOCIAL_POST = "social_post"
     DESIGN_TRANSCRIPT = "design_transcript"

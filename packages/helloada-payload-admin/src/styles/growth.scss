@@ -728,6 +728,23 @@
     color: var(--helloada-positive);
     background: rgba(180, 217, 144, 0.08);
   }
+  .helloada-growth-state.is-ready {
+    color: var(--helloada-positive);
+    background: rgba(180, 217, 144, 0.08);
+  }
+  .helloada-growth-state.is-stale,
+  .helloada-growth-state.is-pending,
+  .helloada-growth-state.is-uncertain {
+    color: var(--helloada-coral);
+    background: rgba(255, 107, 94, 0.1);
+  }
+  .helloada-growth-state.is-missing,
+  .helloada-growth-state.is-unauthorised,
+  .helloada-growth-state.is-unsupported,
+  .helloada-growth-state.is-failed {
+    color: var(--helloada-violet);
+    background: rgba(151, 133, 255, 0.1);
+  }
   .helloada-growth-state.is-verification_required,
   .helloada-growth-state.is-not_configured {
     color: var(--helloada-violet);

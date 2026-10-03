@@ -20,7 +20,7 @@ def _as_datetime(value: Any) -> datetime.datetime | None:
         return None
 
 
-def _metric(snapshot: Mapping[str, Any] | None) -> float | None:
+def _metric(snapshot: Mapping[str, Any] | None, metric: str) -> float | None:
     if not isinstance(snapshot, Mapping):
         return None
     data = snapshot.get("data")
@@ -29,26 +29,21 @@ def _metric(snapshot: Mapping[str, Any] | None) -> float | None:
     current = data.get("current") or data.get("current_week")
     if not isinstance(current, Mapping):
         return None
-    value = current.get("clicks")
-    if value is None:
-        value = current.get("sessions")
+    value = current.get("clicks") if metric == "gsc.clicks" else current.get("sessions") if metric == "ga4.sessions" else None
     try:
         return float(value) if value is not None else None
     except (TypeError, ValueError):
         return None
 
 
-def _observation(memory: Any) -> dict[str, Any] | None:
+def _observation(memory: Any, metric: str) -> dict[str, Any] | None:
     gsc = memory.latest_snapshot("gsc")
     ga4 = memory.latest_snapshot("ga4")
-    value = _metric(gsc)
-    source = "gsc.clicks"
-    if value is None:
-        value = _metric(ga4)
-        source = "ga4.sessions"
+    snapshot = gsc if metric == "gsc.clicks" else ga4 if metric == "ga4.sessions" else None
+    value = _metric(snapshot, metric)
     if value is None:
         return None
-    return {"metric": source, "value": value, "gsc": gsc or {}, "ga4": ga4 or {}}
+    return {"metric": metric, "value": value, "gsc": gsc or {}, "ga4": ga4 or {}}
 
 
 def _assessment(baseline: float | None, observed: float | None) -> tuple[str, str, str]:
@@ -67,30 +62,33 @@ def _assessment(baseline: float | None, observed: float | None) -> tuple[str, st
 def run(context: dict[str, Any]) -> int:
     memory = context["memory"]
     now = datetime.datetime.now(datetime.timezone.utc)
-    observed = _observation(memory)
-    if observed is None:
-        memory.record_action("seo_outcome", "skipped: first-party metric snapshots are unavailable")
-        return 0
-
     measured = 0
     for initiative in memory.list_strategy_initiatives(limit=500):
         expected = initiative.get("expected") if isinstance(initiative.get("expected"), Mapping) else {}
         baseline = expected.get("implementation_baseline") if isinstance(expected, Mapping) else None
         if not isinstance(baseline, Mapping):
             continue
-        baseline_value = _metric(baseline.get("gsc"))
-        if baseline_value is None:
-            baseline_value = _metric(baseline.get("ga4"))
+        metric = str(baseline.get("metric") or "").strip()
+        if metric not in {"gsc.clicks", "ga4.sessions"}:
+            # Legacy baselines did not record the selected source. Select from
+            # the baseline only, never by whichever source happens to be live
+            # when the outcome is measured.
+            metric = "gsc.clicks" if _metric(baseline.get("gsc"), "gsc.clicks") is not None else "ga4.sessions"
+        baseline_value = _metric(baseline.get("gsc"), metric) if metric == "gsc.clicks" else _metric(baseline.get("ga4"), metric)
+        observed = _observation(memory, metric)
         for horizon in HORIZONS:
             due = _as_datetime(initiative.get(f"review_{horizon}_ts"))
             if due is None or due > now or memory.get_strategy_outcome(initiative["id"], horizon) is not None:
                 continue
-            assessment, confidence, notes = _assessment(baseline_value, observed["value"])
+            observed_value = observed["value"] if observed is not None else None
+            assessment, confidence, notes = _assessment(baseline_value, observed_value)
+            if observed is None:
+                notes = f"{metric} data is unavailable for the observation window; no other source was substituted."
             memory.record_strategy_outcome(
                 initiative["id"],
                 horizon,
-                {"metric": observed["metric"], "value": baseline_value, "snapshots": baseline},
-                {"metric": observed["metric"], "value": observed["value"], "snapshots": observed},
+                {"metric": metric, "value": baseline_value, "snapshots": baseline},
+                {"metric": metric, "value": observed_value, "snapshots": observed or {}, "state": "missing" if observed is None else "available"},
                 assessment,
                 confidence,
                 notes,

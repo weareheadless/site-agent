@@ -32,6 +32,8 @@ type Growth = {
   sources?: Array<{
     id: string;
     status: string;
+    state?: string;
+    reason?: string;
     property?: string;
     updatedAt?: string;
   }>;
@@ -56,7 +58,6 @@ export function HelloAdaGrowth() {
   const [days, setDays] = useState(28);
   const [revision, setRevision] = useState(0);
   const [growth, setGrowth] = useState<Growth>();
-  const [checking, setChecking] = useState(false);
   const [analytics, setAnalytics] = useState<GrowthAnalyticsData>();
   const [errors, setErrors] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState<Record<string, boolean>>({
@@ -123,21 +124,6 @@ export function HelloAdaGrowth() {
     return () => controller.abort();
   }, [days, revision]);
   const refresh = () => setRevision((value) => value + 1);
-  const reviewNow = async () => {
-    if (checking) return;
-    setChecking(true);
-    try {
-      const response = await fetchHelloAda("/api/helloada/growth/check", {
-        method: "POST",
-      });
-      if (!response.ok) throw new Error("unavailable");
-      refresh();
-    } catch {
-      setErrors((current) => ({ ...current, growth: true }));
-    } finally {
-      setChecking(false);
-    }
-  };
   const ErrorNotice = () => (
     <div className="helloada-growth-error" role="status">
       {t("growth.unavailable")}{" "}
@@ -156,16 +142,19 @@ export function HelloAdaGrowth() {
             <header>
               <h3>{t(`growth.${id}`)}</h3>
               <span
-                className={`helloada-growth-state is-${source?.status || "unknown"}`}
+                className={`helloada-growth-state is-${source?.state || source?.status || "unknown"}`}
               >
                 {source
-                  ? t(`growth.${source.status}`)
+                  ? source.state
+                    ? t(`growth.state_${source.state}`)
+                    : t(`growth.${source.status}`)
                   : loading.growth
                     ? "…"
                     : t("growth.noData")}
               </span>
             </header>
             <p>{t(`growth.${id}Note`)}</p>
+            {source?.reason ? <small>{source.reason}</small> : null}
             {source?.property ? <small>{source.property}</small> : null}
             {source?.updatedAt ? (
               <small>
@@ -295,9 +284,9 @@ export function HelloAdaGrowth() {
           {growth?.goal?.objective ? <small>{growth.goal.objective}</small> : null}
           {growth?.work?.nextRun ? <small>{t("growth.next")} {date(growth.work.nextRun)}</small> : null}
         </div>
-        <button type="button" onClick={() => void reviewNow()} disabled={checking}>
-          {checking ? t("growth.loading") : t("growth.reviewNow")}
-        </button>
+        <ProductAction href={ask(t("growth.askPrompt"))}>
+          {t("growth.reviewNow")}
+        </ProductAction>
         <Link href={ask(t("growth.goalPrompt"))}>{t("growth.changeGoal")} ↗</Link>
       </div>
       {errors.growth ? <ErrorNotice /> : null}

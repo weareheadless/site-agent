@@ -41,7 +41,7 @@ from ..brain import monthly_seo_report as brain_monthly_seo_report
 from ..application.growth_workflow import run_growth_reconciler
 from ..senses import collect
 from . import maintenance
-from .contracts import ApprovalStatus, ArtifactKind
+from .contracts import ActionState, ApprovalStatus, ArtifactKind
 from .memory import Memory
 from .reflect import effective_persona
 from .scheduler import Scheduler
@@ -188,19 +188,27 @@ def _article(context: dict[str, Any]) -> None:
         return
     draft_id = _with_persona(context, brain_article.draft_article, "editorial")
     if isinstance(draft_id, int):
-        _mirror_article_draft_to_workspace(context, draft_id)
+        try:
+            _mirror_article_draft_to_workspace(context, draft_id)
+        except Exception as exc:  # noqa: BLE001 - expose the canonical content boundary
+            _mark_article_payload_blocked(context["memory"], draft_id, str(exc))
 
 
 def _mirror_article_drafts(context: dict[str, Any]) -> None:
-    """Mirror every research-produced article draft, not only the legacy path."""
+    """Mirror every article into the canonical Payload draft surface.
+
+    A local ledger row is not a publishable article for a Payload tenant. If
+    the canonical draft cannot be prepared, retain the copy for diagnostics but
+    mark the owner review as blocked instead of presenting a hidden fallback.
+    """
     memory = context["memory"]
     for draft in memory.list_drafts(limit=100):
         if draft.get("kind") != "article":
             continue
         try:
             _mirror_article_draft_to_workspace(context, int(draft["id"]))
-        except (TypeError, ValueError):
-            continue
+        except Exception as exc:  # noqa: BLE001 - persist a precise blocked state, never a local ready fallback
+            _mark_article_payload_blocked(memory, int(draft["id"]), str(exc))
 
 
 def _mirror_keyword_research(context: dict[str, Any]) -> None:
@@ -258,8 +266,24 @@ def _article_html(markdown_body: str) -> str:
         return f"<p>{str(markdown_body or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')}</p>"
 
 
+def _mark_article_payload_blocked(memory: Memory, draft_id: int, reason: str) -> None:
+    draft = next((item for item in memory.list_drafts(limit=100) if int(item.get("id") or 0) == int(draft_id)), None)
+    if not draft:
+        return
+    meta = dict(draft.get("meta") or {}) if isinstance(draft.get("meta"), Mapping) else {}
+    meta["payload_sync"] = {
+        "state": "blocked",
+        "validation": {"status": "blocked", "reason": str(reason or "Payload article preparation failed")[:500]},
+    }
+    memory.update_draft_meta(int(draft_id), meta)
+    for action in memory.list_owner_actions(states=("open", "started"), limit=500):
+        if action.draft_id == int(draft_id):
+            memory.transition_owner_action(action.id, ActionState.WAITING)
+    memory.record_action("article", f"draft #{draft_id} blocked: {str(reason or 'Payload article preparation failed')[:240]}")
+
+
 def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -> None:
-    """Put the existing Ada article draft into Payload without publishing it."""
+    """Put one Ada article into Payload and validate the returned draft."""
     payload = context.get("payload_gateway")
     if payload is None:
         return
@@ -280,7 +304,7 @@ def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -
     body = str(draft.get("body") or "")
     plain = re.sub(r"[#*_>`]", "", body)
     plain = " ".join(plain.split())[:240]
-    post = {
+    candidate = {
         "sourceId": source_id,
         "slug": slug,
         "title": title,
@@ -297,27 +321,70 @@ def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -
         or research_note.get("selected_query")
         or ""
     ).strip()[:200]
-    if primary_keyword:
-        post["seo"] = {
+    contract_fields = payload.contract.collection_fields.get("posts", frozenset())
+    required_fields = {"sourceId", "slug", "title", "content"}
+    missing_contract = sorted(required_fields - set(contract_fields))
+    if missing_contract:
+        raise RuntimeError("Payload posts contract is missing required fields: " + ", ".join(missing_contract))
+    meta = draft.get("meta") if isinstance(draft.get("meta"), Mapping) else {}
+    image_id = meta.get("featuredImage") or meta.get("featured_image_id") or meta.get("featured_image")
+    if image_id is not None and "featuredImage" in contract_fields:
+        candidate["featuredImage"] = image_id
+    if meta.get("media_asset_ids") and "gallery" in contract_fields:
+        candidate["gallery"] = list(meta["media_asset_ids"])
+    if "metaDescription" in contract_fields:
+        candidate["metaDescription"] = str(meta.get("meta_description") or plain).strip()[:320]
+    elif "seo" in contract_fields and primary_keyword:
+        candidate["seo"] = {
             "focusKeyword": primary_keyword,
             "title": title[:300],
             "description": plain[:320],
         }
-    try:
-        existing = next(
-            (item for item in payload.list("posts", draft=True, limit=100) if str(item.get("sourceId") or "") == source_id),
-            None,
-        )
-        if existing and existing.get("id") is not None:
-            document = payload.update("posts", str(existing["id"]), post, locale=language)
-        else:
-            document = payload.create("posts", post, locale=language)
-        meta = dict(draft.get("meta") or {})
-        meta.update({"payload_post_id": document.get("id"), "payload_source_id": source_id, "payload_slug": slug})
-        memory.save_draft(title, body, kind=str(draft.get("kind") or "article"), meta=meta, draft_id=draft_id)
-        memory.record_action("article", f"draft #{draft_id} mirrored to the Payload blog as a draft")
-    except Exception as exc:  # noqa: BLE001 - Payload failure must not lose the local owner-review draft
-        memory.record_action("article", f"draft #{draft_id} kept locally; Payload mirror deferred: {str(exc)[:240]}")
+    post = {key: value for key, value in candidate.items() if key in contract_fields}
+    existing = next(
+        (item for item in payload.list("posts", draft=True, limit=100) if str(item.get("sourceId") or "") == source_id),
+        None,
+    )
+    if existing and existing.get("id") is not None:
+        document = payload.update("posts", str(existing["id"]), post, locale=language)
+    else:
+        document = payload.create("posts", post, locale=language)
+    document_id = str(document.get("id") or "").strip()
+    if not document_id:
+        raise RuntimeError("Payload did not return the article draft identifier")
+    verified = payload.read("posts", identifier=document_id, identifier_kind="id", draft=True, locale=language)
+    verified_seo = verified.get("seo") if isinstance(verified.get("seo"), Mapping) else {}
+    metadata_value = verified.get("metaDescription") or verified_seo.get("description")
+    checks = {
+        "document": bool(verified.get("id")),
+        "identity": str(verified.get("sourceId") or "") == source_id,
+        "slug": str(verified.get("slug") or "") == slug,
+        "title": bool(str(verified.get("title") or "").strip()),
+        "content": bool(verified.get("content")),
+        "metadata": bool(str(metadata_value or "").strip()) if ("metaDescription" in contract_fields or "seo" in contract_fields) else True,
+        "mainImage": bool(verified.get("featuredImage")) if "featuredImage" in contract_fields else True,
+    }
+    state = "ready_for_review" if all(checks.values()) else "blocked"
+    reason = "" if state == "ready_for_review" else "Payload article validation is incomplete: " + ", ".join(key for key, passed in checks.items() if not passed)
+    next_meta = dict(meta)
+    next_meta.update({
+        "payload_sync": {
+            "state": state,
+            "collection": "posts",
+            "document_id": document_id,
+            "source_id": source_id,
+            "slug": slug,
+            "validation": {"status": "passed" if state == "ready_for_review" else "blocked", "checks": checks, "reason": reason},
+        },
+        "payload_post_id": document_id,
+        "payload_source_id": source_id,
+        "payload_slug": slug,
+    })
+    memory.update_draft_meta(draft_id, next_meta)
+    memory.record_action(
+        "article",
+        f"draft #{draft_id} mirrored to the Payload blog as a {state.replace('_', ' ')} draft",
+    )
 
 
 def _prune_seen(seen: dict[str, float], now: float) -> dict[str, float]:

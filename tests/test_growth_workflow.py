@@ -30,7 +30,36 @@ def test_new_site_goal_and_reconciliation_are_durable_and_idempotent(tmp_path):
     assert snapshot["goal"]["revision"] == 1
     assert snapshot["work"]["state"] == "idle"
     assert snapshot["work"]["summaryKey"] == "backgroundIdle"
+    assert snapshot["evidence"]["artifactId"] is not None
+    assert snapshot["evidence"]["sources"]
     memory.close()
+
+
+def test_growth_evidence_distinguishes_zero_stale_and_missing_sources(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    try:
+        memory.snapshot_metrics("ga4", {"current": {"sessions": 0}})
+        seed = memory.upsert_seo_seed("local service", "en", "US")
+        memory.mark_seo_seed_researched(seed["id"], "report-1")
+        context = {
+            "memory": memory,
+            "config": {
+                "growth": {"timezone": "UTC", "freshness_hours": {"ga4": 168, "gsc": 168, "dataforseo": 168}},
+                "ga": {"property_id": "123"},
+                "seo": {"site_url": "https://example.test"},
+            },
+            "crawlseo_service": object(),
+        }
+
+        run = run_growth_reconciler(context)
+        assert run["detail"]["evidenceArtifactId"]
+        sources = {row["id"]: row for row in run["detail"]["sources"]}
+        assert sources["ga4"]["state"] == "ready"
+        assert sources["ga4"]["data"] == "available"
+        assert sources["gsc"]["state"] == "missing"
+        assert sources["dataforseo"]["state"] == "ready"
+    finally:
+        memory.close()
 
 
 def test_growth_run_lease_and_budget_reservation_are_idempotent(tmp_path):

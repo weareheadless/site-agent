@@ -2086,6 +2086,30 @@ class ChatService:
             summary = str(draft.get("title") or f"edit: {normalized_id}")
             commit_message = str((published or {}).get("commit_message") or "")
             memory.update_draft_status(normalized_id, "approved")
+        elif kind == "article":
+            if tenant is None:
+                raise BridgeError("Payload article approval requires a tenant")
+            payload = tenant.context.get("payload_gateway")
+            sync = meta.get("payload_sync") if isinstance(meta.get("payload_sync"), Mapping) else {}
+            document_id = str(sync.get("document_id") or meta.get("payload_post_id") or "").strip()
+            if payload is None or not document_id:
+                raise BridgeError("the article has no validated Payload draft; it cannot be published")
+            validation = sync.get("validation") if isinstance(sync.get("validation"), Mapping) else {}
+            if validation.get("status") != "passed" or sync.get("state") != "ready_for_review":
+                raise BridgeError(str(validation.get("reason") or "the Payload article candidate has not passed validation")[:500])
+            try:
+                payload.publish("posts", document_id)
+                published_document = payload.read("posts", identifier=document_id, identifier_kind="id", draft=False)
+            except Exception as exc:  # noqa: BLE001 - approval stays blocked on an uncertain Payload result
+                raise BridgeError(f"Payload article publication could not be verified: {str(exc)[:400]}") from exc
+            if str(published_document.get("id") or "") != document_id:
+                raise BridgeError("Payload article publication returned no matching public document")
+            published = {"collection": "posts", "document_id": document_id, "document": published_document}
+            version_type = "article"
+            summary = f"article: {draft.get('title') or normalized_id}"
+            commit_message = ""
+            memory.update_draft_status(normalized_id, "approved")
+            result["status"] = "published"
         else:
             raise BridgeError(f"draft type '{kind}' cannot be published from the workspace")
 

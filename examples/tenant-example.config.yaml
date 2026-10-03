@@ -31,7 +31,7 @@ site:
       collections:
         pages: [sourceId, slug, title, sourceUrl, pageKind, metaDescription, canonicalUrl, content, sections, openGraph, seo, gallery]
         products: [sourceId, slug, title, sourceUrl, description, content, sections, price, currency, availability, gallery, category]
-        posts: [sourceId, slug, title, sourceUrl, excerpt, content, sections, publishedAt, modifiedAt, author, featuredImage, gallery]
+        posts: [sourceId, slug, title, sourceUrl, excerpt, content, sections, metaDescription, canonicalUrl, openGraph, publishedAt, modifiedAt, author, featuredImage, gallery]
       globals:
         navigation: [items, groups, footer, footerGroups]
         siteSettings: [siteName, businessName, description, websiteUrl, tagline, contactLabel, telephone, email, facebookUrl, instagramUrl, promoText, promoHref, promoCta, footerKicker, footerTitle, footerNote, logo, address]

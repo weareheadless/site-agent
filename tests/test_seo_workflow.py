@@ -228,7 +228,37 @@ def test_outcome_job_waits_for_baseline_and_records_due_metric_change(tmp_path):
         memory.close()
 
 
-def test_strategy_cycle_creates_report_artifact_and_one_approved_site_change(tmp_path):
+def test_outcome_job_does_not_substitute_ga4_for_gsc_baseline(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    try:
+        cycle = memory.create_strategy_cycle("report-3", "2026-02", "hash", {})
+        initiative_id = memory.create_strategy_initiative(
+            cycle["id"],
+            kind="content",
+            title="Search page",
+            summary="Improve search page",
+            expected={
+                "implementation_baseline": {
+                    "metric": "gsc.clicks",
+                    "gsc": {"data": {"current": {"clicks": 10}}},
+                    "ga4": {"data": {"current": {"sessions": 100}}},
+                }
+            },
+            review_30_ts="2020-01-01T00:00:00+00:00",
+            state="approved",
+        )
+        memory.snapshot_metrics("ga4", {"current": {"sessions": 999}})
+        assert seo_outcomes.run({"memory": memory}) == 1
+        outcome = memory.get_strategy_outcome(initiative_id, 30)
+        assert outcome is not None
+        assert outcome["assessment"] == "inconclusive"
+        assert outcome["observed"]["metric"] == "gsc.clicks"
+        assert outcome["observed"]["state"] == "missing"
+    finally:
+        memory.close()
+
+
+def test_strategy_cycle_creates_report_artifact_without_fake_site_change_approval(tmp_path):
     memory = Memory(tmp_path / "memory.db")
     try:
         request = memory.create_seo_research_request(
@@ -282,9 +312,11 @@ def test_strategy_cycle_creates_report_artifact_and_one_approved_site_change(tmp
         assert report_artifact.kind.value == "seo_report"
         assert any(draft["kind"] == "report" for draft in memory.list_drafts(limit=20))
         initiatives = memory.list_strategy_initiatives(cycles[0]["id"])
-        assert initiatives[0]["artifact_id"] is not None
-        assert initiatives[0]["approval_id"] is not None
-        assert len(memory.list_approval_requests(status="pending")) == 1
+        assert initiatives[0]["artifact_id"] is None
+        assert initiatives[0]["approval_id"] is None
+        assert len(memory.list_approval_requests(status="pending")) == 0
+        actions = memory.list_owner_actions(states=("open",), limit=10)
+        assert actions and actions[0].action_label == "Review Ada's SEO proposal"
         assert not any(action.title.startswith("Monthly SEO report") for action in HomeService(memory).snapshot(20, 20).needs_you)
     finally:
         memory.close()
