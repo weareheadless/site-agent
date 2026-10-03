@@ -77,7 +77,8 @@ def write_receipt(directory: Path, receipt: dict[str, Any]) -> Path:
 
 def health(url: str, expected_tenant: str, expected_admin: str) -> dict[str, Any]:
     query = urllib.parse.urlencode({"release": expected_admin})
-    request = urllib.request.Request(f"{url}?{query}", headers={"Accept": "application/json"})
+    separator = "&" if "?" in url else "?"
+    request = urllib.request.Request(f"{url}{separator}{query}", headers={"Accept": "application/json"})
     with urllib.request.urlopen(request, timeout=30) as response:
         if response.status != 200:
             raise RuntimeError(f"health returned HTTP {response.status}")
@@ -121,9 +122,16 @@ def main() -> int:
     try:
         profile = {"credentials": {"profile_file": str(manifest["credentialProfile"])}}
         sys.path.insert(0, str(ROOT / "src"))
-        from site_agent.credentials import credential_environment
+        from site_agent.credentials import cloudflare_env_names, credential_environment
 
-        environment = credential_environment(profile, os.environ)
+        # Ambient shell credentials are deliberately excluded.  The declared
+        # host profile must win so a runner cannot silently reuse a bootstrap
+        # token or a prior customer's environment.
+        token_name, account_name = cloudflare_env_names(profile)
+        base_environment = dict(os.environ)
+        base_environment.pop(token_name, None)
+        base_environment.pop(account_name, None)
+        environment = credential_environment(profile, base_environment)
         if not environment.get("CLOUDFLARE_API_TOKEN") or not environment.get("CLOUDFLARE_ACCOUNT_ID"):
             raise RuntimeError("the declared Cloudflare profile is missing CLOUDFLARE_API_TOKEN or CLOUDFLARE_ACCOUNT_ID")
         node_bin = Path(str(manifest["nodeBin"]))
