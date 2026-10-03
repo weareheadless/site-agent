@@ -436,6 +436,14 @@ columns. Use responsive readable cards/rows and the existing compact tab rail.
 
 ### Background work
 
+October 3 UX correction: put the persistent goal, upcoming schedule, setup
+decisions and review-ready work in the existing Growth sidebar. Do not create a
+duplicate always-visible live-task strip. Short-lived execution belongs in
+details/Activity; the owner's primary view is what Ada will do next and what
+needs their decision. A disabled task must never expose an old `next_run` as an
+upcoming commitment. Collapse unscheduled capabilities and explain the setup
+action once, rather than repeating seven empty status rows.
+
 Show one concise status and completed/remaining named steps from persisted phases.
 A details drawer exposes useful provenance: checked sources, covered dates,
 findings, candidate checks, included/extra cost, blocker and next due review.

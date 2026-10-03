@@ -1,5 +1,17 @@
 export type GrowthRow = Record<string, unknown>;
 
+export type GrowthActivity = { id: string; enabled: boolean; nextRun?: string | null };
+
+export function growthPlan(activities: GrowthActivity[] = []) {
+  const upcoming = activities.filter(item => item.enabled).sort((a, b) =>
+    (a.nextRun || "9999").localeCompare(b.nextRun || "9999"));
+  return {
+    upcoming,
+    unscheduled: activities.filter(item => !item.enabled),
+    nextRun: upcoming.find(item => item.nextRun)?.nextRun || null,
+  };
+}
+
 export function growthDate(value: unknown): string {
   const raw = String(value ?? "");
   return /^\d{8}$/.test(raw)

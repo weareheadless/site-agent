@@ -9,6 +9,27 @@ const sandbox = {exports: {}, Intl};
 vm.runInNewContext(compiled, sandbox);
 const {growthDate, growthNumber, growthSeries, growthCSV} = sandbox.exports;
 
+test('the owner plan exposes upcoming work, not stale dates on disabled tasks', () => {
+  const plan = sandbox.exports.growthPlan([
+    {id: 'article', enabled: false, nextRun: '2026-10-04T09:00:00Z'},
+    {id: 'weekly_report', enabled: true, nextRun: '2026-10-05T09:00:00Z'},
+    {id: 'seo_insight', enabled: true, nextRun: '2026-10-04T10:00:00Z'},
+  ]);
+  assert.deepEqual(Array.from(plan.upcoming, row => row.id), ['seo_insight', 'weekly_report']);
+  assert.equal(plan.unscheduled.length, 1);
+  assert.equal(plan.nextRun, '2026-10-04T10:00:00Z');
+  assert.equal(sandbox.exports.growthPlan([{id: 'article', enabled: false, nextRun: '2026-10-04T09:00:00Z'}]).nextRun, null);
+});
+
+test('Growth keeps the plan and decisions in the existing sidebar, not a live-task strip', () => {
+  const component = readFileSync(new URL('../src/components/HelloAdaGrowth.tsx', import.meta.url), 'utf8');
+  assert.doesNotMatch(component, /helloada-growth-work-strip|backgroundIdle/);
+  assert.match(component, /plan\.upcoming\.map/);
+  assert.match(component, /plan\.unscheduled\.length/);
+  assert.match(component, /growth\?\.reviewQueue\?\.map/);
+  assert.match(component, /growth\.changeGoal/);
+});
+
 test('report dates are normalized and sorted without filling missing days', () => {
   assert.equal(growthDate('20261001'), '2026-10-01');
   assert.deepEqual(JSON.parse(JSON.stringify(growthSeries([{date: '20261003', visits: 0}, {date: '20261001', visits: 5}, {date: 'bad', visits: 12}, {date: '20261002'}], 'visits', 'date'))), [{date: '2026-10-01', value: 5}, {date: '2026-10-03', value: 0}]);
