@@ -1,7 +1,10 @@
 import { initOpenNextCloudflareForDev } from '@opennextjs/cloudflare'
 import { withPayload } from '@payloadcms/next/withPayload'
 
-initOpenNextCloudflareForDev()
+// Production artifacts must be built with isolated local bindings. The Worker
+// deploy step is the only stage allowed to contact Cloudflare; otherwise a
+// deploy token without remote-preview permission can make builds non-reproducible.
+initOpenNextCloudflareForDev({ remoteBindings: false })
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
