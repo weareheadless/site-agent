@@ -20,6 +20,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
 from ..application.analytics import AnalyticsError, GoogleAnalyticsService
+from ..application.growth_evidence import growth_evidence
 from ..application.bootstrap import BootstrapError, WebsiteBootstrapService
 from ..application.tenant_registration import TenantRegistrationError, TenantRegistrationService
 from ..application.workspace import BridgeError, ChatService, SourceConflict, Tenant, TenantRegistry
@@ -530,6 +531,16 @@ def register_workspace_routes(
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except GooglePlatformError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    @app.get(f"{prefix}/seo/evidence")
+    def workspace_growth_evidence(request: Request, section: str = "research"):
+        tenant = require_service(request)
+        if section not in ("research", "health"):
+            raise HTTPException(status_code=400, detail="unknown growth evidence section")
+        provider = tenant.context.get("crawlseo_service") if tenant else None
+        if provider is None:
+            raise HTTPException(status_code=503, detail="CrawlSEO is not configured for this tenant")
+        return {"tenant": tenant.tenant_id, **growth_evidence(provider, section)}
 
     @app.get(f"{prefix}/seo/access")
     def workspace_seo_access(request: Request):

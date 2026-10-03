@@ -141,7 +141,7 @@ class GoogleAnalyticsService:
         end: str,
         metrics: tuple[str, ...],
         dimensions: tuple[str, ...] = (),
-        limit: int = 10,
+        limit: int = 250,
     ) -> list[dict[str, Any]]:
         body: dict[str, Any] = {
             "dateRanges": [{"startDate": start, "endDate": end}],
@@ -151,7 +151,8 @@ class GoogleAnalyticsService:
         if dimensions:
             body["dimensions"] = [{"name": name} for name in dimensions]
         if dimensions and metrics:
-            body["orderBys"] = [{"metric": {"metricName": metrics[0]}, "desc": True}]
+            body["orderBys"] = ([{"dimension": {"dimensionName": "date"}}] if dimensions == ("date",)
+                                else [{"metric": {"metricName": metrics[0]}, "desc": True}])
         return _ga_rows(self.google.run_analytics_report(property_id, body))
 
     def _gsc_report(
@@ -161,7 +162,7 @@ class GoogleAnalyticsService:
         start: str,
         end: str,
         dimensions: tuple[str, ...] = (),
-        limit: int = 10,
+        limit: int = 250,
     ) -> list[dict[str, Any]]:
         body: dict[str, Any] = {
             "startDate": start,
@@ -171,7 +172,8 @@ class GoogleAnalyticsService:
         }
         if dimensions:
             body["dimensions"] = list(dimensions)
-        return _gsc_rows(self.google.run_search_console_report(property_url, body))
+        rows = _gsc_rows(self.google.run_search_console_report(property_url, body))
+        return sorted(rows, key=lambda row: row.get("key", "")) if dimensions == ("date",) else rows
 
     @staticmethod
     def _attempt(
@@ -222,31 +224,31 @@ class GoogleAnalyticsService:
             ga4["channels"] = self._attempt(
                 errors,
                 "ga4.channels",
-                lambda: self._ga_report(property_id, start=str(window["startDate"]), end=str(window["endDate"]), metrics=("sessions", "activeUsers", "engagementRate"), dimensions=("sessionDefaultChannelGroup",), limit=12),
+                lambda: self._ga_report(property_id, start=str(window["startDate"]), end=str(window["endDate"]), metrics=("sessions", "activeUsers", "engagementRate"), dimensions=("sessionDefaultChannelGroup",)),
                 [],
             )
             ga4["pages"] = self._attempt(
                 errors,
                 "ga4.pages",
-                lambda: self._ga_report(property_id, start=str(window["startDate"]), end=str(window["endDate"]), metrics=("screenPageViews", "sessions"), dimensions=("landingPagePlusQueryString",), limit=12),
+                lambda: self._ga_report(property_id, start=str(window["startDate"]), end=str(window["endDate"]), metrics=("screenPageViews", "sessions"), dimensions=("landingPagePlusQueryString",)),
                 [],
             )
             ga4["events"] = self._attempt(
                 errors,
                 "ga4.events",
-                lambda: self._ga_report(property_id, start=str(window["startDate"]), end=str(window["endDate"]), metrics=("eventCount",), dimensions=("eventName",), limit=12),
+                lambda: self._ga_report(property_id, start=str(window["startDate"]), end=str(window["endDate"]), metrics=("eventCount",), dimensions=("eventName",)),
                 [],
             )
             ga4["devices"] = self._attempt(
                 errors,
                 "ga4.devices",
-                lambda: self._ga_report(property_id, start=str(window["startDate"]), end=str(window["endDate"]), metrics=("sessions", "activeUsers"), dimensions=("deviceCategory",), limit=8),
+                lambda: self._ga_report(property_id, start=str(window["startDate"]), end=str(window["endDate"]), metrics=("sessions", "activeUsers"), dimensions=("deviceCategory",)),
                 [],
             )
             ga4["countries"] = self._attempt(
                 errors,
                 "ga4.countries",
-                lambda: self._ga_report(property_id, start=str(window["startDate"]), end=str(window["endDate"]), metrics=("sessions", "activeUsers"), dimensions=("country",), limit=12),
+                lambda: self._ga_report(property_id, start=str(window["startDate"]), end=str(window["endDate"]), metrics=("sessions", "activeUsers"), dimensions=("country",)),
                 [],
             )
 
@@ -274,7 +276,7 @@ class GoogleAnalyticsService:
                 gsc[key] = self._attempt(
                     errors,
                     f"gsc.{key}",
-                    lambda dimension=dimension: self._gsc_report(property_url, start=str(window["startDate"]), end=str(window["endDate"]), dimensions=(dimension,), limit=12),
+                    lambda dimension=dimension: self._gsc_report(property_url, start=str(window["startDate"]), end=str(window["endDate"]), dimensions=(dimension,)),
                     [],
                 )
 

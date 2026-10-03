@@ -4,20 +4,27 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { fetchHelloAda } from "../api/fetchHelloAda";
 import { useHelloAdaTranslations } from "../api/useHelloAdaTranslations";
+import { type GrowthRow } from "../lib/growth-data";
 import { HelloAdaChatMessage } from "./HelloAdaChatMessage";
 import { HelloAdaMark } from "./HelloAdaLogo";
 import { WorkspaceIcon } from "./WorkspaceIcon";
+import {
+  GrowthAnalytics,
+  GrowthMetrics,
+  type GrowthAnalyticsData,
+} from "./GrowthAnalytics";
+import { GrowthEvidence } from "./GrowthEvidence";
 
-type Row = Record<string, unknown>;
 type Insight = {
   headline?: string;
   summary_md?: string;
+  ts?: string;
+  period?: string;
   opportunities?: Array<{
     title?: string;
     rationale?: string;
     action?: string;
   }>;
-  next_action?: string;
 };
 type Growth = {
   sources?: Array<{
@@ -28,39 +35,14 @@ type Growth = {
   }>;
   activities?: Array<{ id: string; enabled: boolean; nextRun?: string }>;
   latestInsight?: Insight;
-  keywords?: Row[];
-  keywordMetrics?: Row[];
-  articles?: Row[];
-  articleIdeas?: Row[];
-  weeklyReports?: Row[];
-  monthlyReports?: Row[];
+  insights?: Insight[];
+  keywords?: GrowthRow[];
+  keywordMetrics?: GrowthRow[];
+  articles?: GrowthRow[];
+  articleIdeas?: GrowthRow[];
+  weeklyReports?: GrowthRow[];
+  monthlyReports?: GrowthRow[];
 };
-type Provider = {
-  overview?: { current?: Row; deltaPct?: Row };
-  trend?: Row[];
-  pages?: Row[];
-  channels?: Row[];
-  queries?: Row[];
-  devices?: Row[];
-  countries?: Row[];
-  events?: Row[];
-};
-type Analytics = {
-  capturedAt?: string;
-  entity?: {
-    siteUrl?: string;
-    gscProperty?: string;
-    ga4PropertyId?: string;
-    ga4MeasurementId?: string;
-    displayName?: string;
-  };
-  ga4?: Provider;
-  gsc?: Provider;
-  errors?: Record<string, string>;
-};
-const text = (value: unknown) => (value == null ? "" : String(value));
-const label = (value: string) =>
-  value.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/_/g, " ");
 
 export function HelloAdaGrowth() {
   const { t, language } = useHelloAdaTranslations();
@@ -68,17 +50,14 @@ export function HelloAdaGrowth() {
   const [days, setDays] = useState(28);
   const [revision, setRevision] = useState(0);
   const [growth, setGrowth] = useState<Growth>();
-  const [analytics, setAnalytics] = useState<Analytics>();
+  const [analytics, setAnalytics] = useState<GrowthAnalyticsData>();
   const [errors, setErrors] = useState<Record<string, boolean>>({});
-  const [loading, setLoading] = useState(true);
-  const format = (value: unknown) =>
-    typeof value === "number" && Number.isFinite(value)
-      ? new Intl.NumberFormat(language, { maximumFractionDigits: 1 }).format(
-          value,
-        )
-      : "—";
+  const [loading, setLoading] = useState<Record<string, boolean>>({
+    growth: true,
+    analytics: true,
+  });
   const date = (value: unknown) => {
-    const parsed = new Date(text(value));
+    const parsed = new Date(String(value ?? ""));
     return Number.isNaN(parsed.getTime())
       ? "—"
       : new Intl.DateTimeFormat(language, {
@@ -88,96 +67,67 @@ export function HelloAdaGrowth() {
   };
   const ask = (prompt = t("growth.askPrompt")) =>
     `/admin?ask=${encodeURIComponent(prompt)}`;
+  // Changing the reporting period must not clear or refetch Ada's brief.
   useEffect(() => {
     const controller = new AbortController();
-    setLoading(true);
-    setErrors({});
-    setAnalytics(undefined);
-    setGrowth(undefined);
-    const read = async (key: string, path: string) => {
-      try {
-        const response = await fetchHelloAda(path, {
-          signal: controller.signal,
-          cache: "no-store",
-        });
+    setLoading((current) => ({ ...current, growth: true }));
+    setErrors((current) => ({ ...current, growth: false }));
+    void fetchHelloAda("/api/helloada/growth", {
+      signal: controller.signal,
+      cache: "no-store",
+    })
+      .then(async (response) => {
         if (!response.ok) throw new Error("unavailable");
         const body = await response.json();
-        if (!controller.signal.aborted) {
-          if (key === "growth") setGrowth(body as Growth);
-          else setAnalytics(body as Analytics);
-        }
-      } catch {
+        if (!controller.signal.aborted) setGrowth(body);
+      })
+      .catch(() => {
         if (!controller.signal.aborted)
-          setErrors((current) => ({ ...current, [key]: true }));
-      }
-    };
-    void Promise.all([
-      read("growth", "/api/helloada/growth"),
-      read("analytics", `/api/helloada/seo/analytics?days=${days}`),
-    ]).finally(() => {
-      if (!controller.signal.aborted) setLoading(false);
-    });
+          setErrors((current) => ({ ...current, growth: true }));
+      })
+      .finally(() => {
+        if (!controller.signal.aborted)
+          setLoading((current) => ({ ...current, growth: false }));
+      });
+    return () => controller.abort();
+  }, [revision]);
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoading((current) => ({ ...current, analytics: true }));
+    setAnalytics(undefined);
+    setErrors((current) => ({ ...current, analytics: false }));
+    void fetchHelloAda(`/api/helloada/seo/analytics?days=${days}`, {
+      signal: controller.signal,
+      cache: "no-store",
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("unavailable");
+        const body = await response.json();
+        if (!controller.signal.aborted) setAnalytics(body);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted)
+          setErrors((current) => ({ ...current, analytics: true }));
+      })
+      .finally(() => {
+        if (!controller.signal.aborted)
+          setLoading((current) => ({ ...current, analytics: false }));
+      });
     return () => controller.abort();
   }, [days, revision]);
-  const Empty = ({ children }: { children: string }) => (
-    <p className="helloada-growth-empty">{children}</p>
-  );
+  const refresh = () => setRevision((value) => value + 1);
   const ErrorNotice = () => (
     <div className="helloada-growth-error" role="status">
       {t("growth.unavailable")}{" "}
-      <button type="button" onClick={() => setRevision((value) => value + 1)}>
+      <button type="button" onClick={refresh}>
         {t("growth.retry")}
       </button>
     </div>
   );
-  const Table = ({
-    rows,
-    columns,
-    empty = t("growth.noData"),
-    className = "",
-  }: {
-    rows?: Row[];
-    columns: Array<[string, string]>;
-    empty?: string;
-    className?: string;
-  }) =>
-    !rows?.length ? (
-      <Empty>{empty}</Empty>
-    ) : (
-      <div className={`helloada-growth-table-scroll ${className}`.trim()}>
-        <table>
-          <thead>
-            <tr>
-              {columns.map(([key, title]) => (
-                <th key={key} scope="col">
-                  {title}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row, index) => (
-              <tr key={index}>
-                {columns.map(([key]) => (
-                  <td key={key}>
-                    {typeof row[key] === "number"
-                      ? format(row[key])
-                      : text(row[key]) || "—"}
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    );
-  const ga = analytics?.ga4?.overview?.current;
-  const gsc = analytics?.gsc?.overview?.current;
   const insight = growth?.latestInsight;
-  const sources = ["ga4", "gsc", "dataforseo"];
   const Sources = () => (
     <div className="helloada-growth-sources">
-      {sources.map((id) => {
+      {["ga4", "gsc", "dataforseo"].map((id) => {
         const source = growth?.sources?.find((item) => item.id === id);
         return (
           <article key={id} className="helloada-growth-source">
@@ -188,11 +138,9 @@ export function HelloAdaGrowth() {
               >
                 {source
                   ? t(`growth.${source.status}`)
-                  : errors.growth
-                    ? t("growth.unavailable")
-                    : loading
-                      ? "…"
-                      : t("growth.noData")}
+                  : loading.growth
+                    ? "…"
+                    : t("growth.noData")}
               </span>
             </header>
             <p>{t(`growth.${id}Note`)}</p>
@@ -207,189 +155,58 @@ export function HelloAdaGrowth() {
       })}
     </div>
   );
-  const ProviderDetail = ({
-    id,
-    provider,
-  }: {
-    id: "ga4" | "gsc";
-    provider?: Provider;
-  }) => {
-    const isGa4 = id === "ga4";
-    const current = provider?.overview?.current;
-    const metrics: Array<[string, string]> = isGa4
-      ? [
-          ["activeUsers", t("growth.visitors")],
-          ["sessions", t("growth.sessions")],
-          ["screenPageViews", t("growth.views")],
-          ["engagementRate", t("growth.engagement")],
-        ]
-      : [
-          ["clicks", t("growth.clicks")],
-          ["impressions", t("growth.impressions")],
-          ["ctr", t("growth.ctr")],
-          ["position", t("growth.position")],
-        ];
-    const value = (key: string) => {
-      const raw = current?.[key];
-      return key === "engagementRate" || key === "ctr"
-        ? typeof raw === "number"
-          ? `${(raw * 100).toFixed(1)}%`
-          : "—"
-        : format(raw);
-    };
-    const breakdowns: Array<{
-      key: "pages" | "channels" | "events" | "devices" | "countries" | "queries";
-      title: string;
-      columns: Array<[string, string]>;
-    }> = isGa4
-      ? [
-          {
-            key: "pages",
-            title: t("growth.pages"),
-            columns: [
-              ["landingPagePlusQueryString", t("growth.pages")],
-              ["sessions", t("growth.sessions")],
-              ["screenPageViews", t("growth.views")],
-            ],
-          },
-          {
-            key: "channels",
-            title: t("growth.channels"),
-            columns: [
-              ["sessionDefaultChannelGroup", t("growth.channels")],
-              ["sessions", t("growth.sessions")],
-              ["activeUsers", t("growth.visitors")],
-            ],
-          },
-          {
-            key: "events",
-            title: t("growth.events"),
-            columns: [["eventName", t("growth.events")], ["eventCount", t("growth.count")]],
-          },
-          {
-            key: "devices",
-            title: t("growth.devices"),
-            columns: [["deviceCategory", t("growth.devices")], ["sessions", t("growth.sessions")], ["activeUsers", t("growth.visitors")]],
-          },
-          {
-            key: "countries",
-            title: t("growth.countries"),
-            columns: [["country", t("growth.countries")], ["sessions", t("growth.sessions")], ["activeUsers", t("growth.visitors")]],
-          },
-        ]
-      : [
-          {
-            key: "queries",
-            title: t("growth.queries"),
-            columns: [["key", t("growth.keyword")], ["clicks", t("growth.clicks")], ["impressions", t("growth.impressions")], ["position", t("growth.position")]],
-          },
-          {
-            key: "pages",
-            title: t("growth.pages"),
-            columns: [["key", t("growth.pages")], ["clicks", t("growth.clicks")], ["impressions", t("growth.impressions")], ["position", t("growth.position")]],
-          },
-          {
-            key: "devices",
-            title: t("growth.devices"),
-            columns: [["key", t("growth.devices")], ["clicks", t("growth.clicks")], ["impressions", t("growth.impressions")]],
-          },
-          {
-            key: "countries",
-            title: t("growth.countries"),
-            columns: [["key", t("growth.countries")], ["clicks", t("growth.clicks")], ["impressions", t("growth.impressions")]],
-          },
-        ];
-    const property = isGa4
-      ? analytics?.entity?.ga4PropertyId
-      : analytics?.entity?.gscProperty;
-    return (
-      <section className="helloada-growth-card helloada-growth-provider">
-        <header className="helloada-growth-provider-header">
-          <div>
-            <span className="helloada-growth-eyebrow">{t(`growth.${id}`)}</span>
-            <h2>{t(isGa4 ? "growth.ga4History" : "growth.gscHistory")}</h2>
-          </div>
-          {property ? <small>{property}</small> : null}
-        </header>
-        <div className="helloada-growth-provider-metrics">
-          {metrics.map(([key, title]) => (
-            <article key={key}>
-              <span>{title}</span>
-              <strong>{loading && !analytics ? "…" : value(key)}</strong>
-            </article>
-          ))}
-        </div>
-        <section className="helloada-growth-history-block">
-          <header>
-            <h3>{t("growth.history")}</h3>
-            <small>{t("growth.historyNote")}</small>
-          </header>
-          <Table
-            className="is-history"
-            rows={provider?.trend}
-            columns={isGa4
-              ? [["date", t("growth.date")], ["activeUsers", t("growth.visitors")], ["sessions", t("growth.sessions")], ["screenPageViews", t("growth.views")]]
-              : [["key", t("growth.date")], ["clicks", t("growth.clicks")], ["impressions", t("growth.impressions")], ["ctr", t("growth.ctr")], ["position", t("growth.position")]]}
-          />
-        </section>
-        <div className="helloada-growth-breakdown-grid">
-          {breakdowns.map((breakdown) => (
-            <section className="helloada-growth-breakdown" key={breakdown.key}>
-              <header><h3>{breakdown.title}</h3></header>
-              <Table
-                rows={provider?.[breakdown.key] as Row[] | undefined}
-                columns={breakdown.columns}
-              />
-            </section>
-          ))}
-        </div>
-      </section>
-    );
-  };
   const Records = ({
     title,
     rows,
     empty,
   }: {
     title: string;
-    rows?: Row[];
+    rows?: GrowthRow[];
     empty: string;
   }) => (
     <section className="helloada-growth-card">
       <header>
         <h2>{title}</h2>
+        <small>{rows?.length || 0}</small>
       </header>
       {rows?.length ? (
-        rows.map((row) => (
-          <details className="helloada-growth-record" key={text(row.id)}>
+        rows.map((row, index) => (
+          <details
+            className="helloada-growth-record"
+            key={String(row.id || index)}
+          >
             <summary>
               <span>
-                {text(
+                {String(
                   row.title ||
                     row.period ||
-                    (row.idea_json as Row | undefined)?.working_title ||
-                    (row.idea_json as Row | undefined)?.title ||
-                    row.focus_keyword,
+                    (row.idea_json as GrowthRow | undefined)?.working_title ||
+                    (row.idea_json as GrowthRow | undefined)?.title ||
+                    row.focus_keyword ||
+                    "—",
                 )}
               </span>
-              <small>{text(row.status)}</small>
+              <small>{String(row.status || "")}</small>
             </summary>
             <small>{date(row.updated_ts || row.created_ts)}</small>
             {row.body || row.body_md ? (
-              <HelloAdaChatMessage text={text(row.body || row.body_md)} />
+              <HelloAdaChatMessage text={String(row.body || row.body_md)} />
             ) : (
               <p>
-                {text(
-                  (row.idea_json as Row | undefined)?.thesis ||
-                    (row.idea_json as Row | undefined)?.rationale ||
-                    row.focus_keyword,
+                {String(
+                  (row.idea_json as GrowthRow | undefined)?.thesis ||
+                    (row.idea_json as GrowthRow | undefined)?.rationale ||
+                    row.focus_keyword ||
+                    "",
                 )}
               </p>
             )}
           </details>
         ))
       ) : (
-        <Empty>{empty}</Empty>
+        <p className="helloada-growth-empty">
+          {loading.growth ? t("growth.loading") : empty}
+        </p>
       )}
     </section>
   );
@@ -401,7 +218,14 @@ export function HelloAdaGrowth() {
           role="group"
           aria-label={t("growth.title")}
         >
-          {["overview", "analytics", "search", "content", "connections"].map((view) => (
+          {[
+            "overview",
+            "analytics",
+            "search",
+            "health",
+            "content",
+            "connections",
+          ].map((view) => (
             <button
               key={view}
               type="button"
@@ -413,22 +237,24 @@ export function HelloAdaGrowth() {
           ))}
         </div>
         <div className="helloada-growth-controls">
-          <select
-            aria-label={t("growth.days")}
-            value={days}
-            onChange={(event) => setDays(Number(event.target.value))}
-          >
-            {[28, 90, 180, 365, 540].map((value) => (
-              <option key={value} value={value}>
-                {value} {t("growth.days")}
-              </option>
-            ))}
-          </select>
+          {tab === "overview" || tab === "analytics" ? (
+            <select
+              aria-label={t("growth.days")}
+              value={days}
+              onChange={(event) => setDays(Number(event.target.value))}
+            >
+              {[7, 28, 90, 180, 365, 540].map((value) => (
+                <option key={value} value={value}>
+                  {value} {t("growth.days")}
+                </option>
+              ))}
+            </select>
+          ) : null}
           <button
             type="button"
             aria-label={t("growth.refresh")}
             title={t("growth.refresh")}
-            onClick={() => setRevision((value) => value + 1)}
+            onClick={refresh}
           >
             <WorkspaceIcon name="refresh" />
           </button>
@@ -437,25 +263,6 @@ export function HelloAdaGrowth() {
       {errors.growth ? <ErrorNotice /> : null}
       {tab === "overview" ? (
         <>
-          <div className="helloada-growth-metrics">
-            {[
-              ["visitors", ga?.activeUsers],
-              ["sessions", ga?.sessions],
-              ["clicks", gsc?.clicks],
-              ["impressions", gsc?.impressions],
-            ].map(([key, value]) => (
-              <article key={text(key)}>
-                <span>{t(`growth.${key}`)}</span>
-                <strong>{loading && !analytics ? "…" : format(value)}</strong>
-                <small>
-                  {value === undefined
-                    ? t("growth.noData")
-                    : `${days} ${t("growth.days")}`}
-                </small>
-              </article>
-            ))}
-          </div>
-          {errors.analytics ? <ErrorNotice /> : null}
           <div className="helloada-growth-overview-grid">
             <section className="helloada-growth-card helloada-growth-advice">
               <header>
@@ -463,11 +270,16 @@ export function HelloAdaGrowth() {
                   <HelloAdaMark size={28} />
                   <h2>{t("growth.recommendations")}</h2>
                 </div>
-                <Link href={ask()}>
-                  {t("growth.ask")}
-                  <WorkspaceIcon name="arrow" size={16} />
-                </Link>
+                <Link href={ask()}>{t("growth.ask")} ↗</Link>
               </header>
+              <div className="helloada-growth-brief-meta">
+                <span>{t("growth.briefNote")}</span>
+                {insight?.ts ? (
+                  <small>{date(insight.ts)}</small>
+                ) : insight?.period ? (
+                  <small>{insight.period}</small>
+                ) : null}
+              </div>
               {insight?.headline ? (
                 <>
                   <h3>{insight.headline}</h3>
@@ -484,8 +296,7 @@ export function HelloAdaGrowth() {
                               `${item.title}. ${item.action}. ${t("growth.askPrompt")}`,
                             )}
                           >
-                            {t("growth.ask")}
-                            <WorkspaceIcon name="arrow" size={14} />
+                            {t("growth.ask")} ↗
                           </Link>
                         ) : null}
                       </div>
@@ -493,178 +304,123 @@ export function HelloAdaGrowth() {
                   ))}
                 </>
               ) : (
-                <Empty>{t("growth.noRecommendations")}</Empty>
+                <p className="helloada-growth-empty">
+                  {loading.growth
+                    ? t("growth.loading")
+                    : t("growth.noRecommendations")}
+                </p>
               )}
             </section>
-            <section className="helloada-growth-card">
-              <header>
-                <h2>{t("growth.schedule")}</h2>
-              </header>
-              <div className="helloada-growth-plan">
-                {(
-                  growth?.activities ||
-                  ["article", "seo_insight", "weekly_report"].map((id) => ({
-                    id,
-                    enabled: false,
-                    nextRun: undefined,
-                  }))
-                ).map((item) => (
-                  <div key={item.id}>
-                    <i className={item.enabled ? "is-enabled" : ""} />
-                    <div>
-                      <strong>{t(`growth.${item.id}`)}</strong>
-                      <small>
-                        {item.enabled
-                          ? item.nextRun
-                            ? `${t("growth.next")} ${date(item.nextRun)}`
-                            : t("growth.scheduled")
-                          : errors.growth || !growth
-                            ? t("growth.noData")
+            <aside className="helloada-growth-side">
+              <section className="helloada-growth-card">
+                <header>
+                  <h2>{t("growth.schedule")}</h2>
+                </header>
+                <div className="helloada-growth-plan">
+                  {growth?.activities?.map((item) => (
+                    <div key={item.id}>
+                      <i className={item.enabled ? "is-enabled" : ""} />
+                      <div>
+                        <strong>{t(`growth.${item.id}`)}</strong>
+                        <small>
+                          {item.enabled
+                            ? item.nextRun
+                              ? `${t("growth.next")} ${date(item.nextRun)}`
+                              : t("growth.scheduled")
                             : t("growth.notScheduled")}
-                      </small>
+                        </small>
+                      </div>
                     </div>
-                  </div>
-                ))}
-              </div>
-              <Link
-                className="helloada-growth-text-action"
-                href={ask(t("growth.schedulePrompt"))}
-              >
-                {t("growth.manageSchedule")}
-                <WorkspaceIcon name="arrow" size={16} />
-              </Link>
-              <p className="helloada-growth-footnote">{t("growth.approval")}</p>
-            </section>
+                  )) || (
+                    <p className="helloada-growth-empty">
+                      {loading.growth
+                        ? t("growth.loading")
+                        : t("growth.noData")}
+                    </p>
+                  )}
+                </div>
+                <Link
+                  className="helloada-growth-text-action"
+                  href={ask(t("growth.schedulePrompt"))}
+                >
+                  {t("growth.manageSchedule")} ↗
+                </Link>
+                <p className="helloada-growth-footnote">
+                  {t("growth.approval")}
+                </p>
+              </section>
+              <section className="helloada-growth-card helloada-growth-review">
+                <header>
+                  <h2>{t("growth.readyForReview")}</h2>
+                </header>
+                <p>
+                  {growth
+                    ? `${growth.articles?.filter((row) => row.status !== "published").length || 0} ${t("growth.articles").toLocaleLowerCase(language)}`
+                    : "—"}
+                </p>
+                <button type="button" onClick={() => setTab("content")}>
+                  {t("growth.openContent")} ↗
+                </button>
+              </section>
+            </aside>
           </div>
-          <Sources />
+          <div className="helloada-growth-section-head">
+            <h2>{t("growth.performance")}</h2>
+            <button type="button" onClick={() => setTab("analytics")}>
+              {t("growth.exploreData")} ↗
+            </button>
+          </div>
+          {errors.analytics ? <ErrorNotice /> : null}
+          <div className="helloada-growth-overview-metrics">
+            <GrowthMetrics
+              pending={loading.analytics}
+              provider={analytics?.ga4}
+              metrics={[
+                ["activeUsers", t("growth.visitors")],
+                ["sessions", t("growth.sessions")],
+              ]}
+            />
+            <GrowthMetrics
+              pending={loading.analytics}
+              provider={analytics?.gsc}
+              metrics={[
+                ["clicks", t("growth.clicks")],
+                ["impressions", t("growth.impressions")],
+              ]}
+            />
+          </div>
+          <p className="helloada-growth-footnote">
+            {days} {t("growth.days")} · {t("growth.briefPeriodNote")}
+          </p>
         </>
       ) : null}
       {tab === "analytics" ? (
         <>
-          <div className="helloada-growth-analytics-intro">
-            <div>
-              <span className="helloada-growth-eyebrow">{t("growth.analytics")}</span>
-              <p>{t("growth.analyticsIntro")}</p>
-            </div>
-            <Link href={ask(t("growth.analyticsPrompt"))}>
-              {t("growth.interpretWithAda")}
-              <WorkspaceIcon name="arrow" size={16} />
-            </Link>
-          </div>
           {errors.analytics ? <ErrorNotice /> : null}
-          <div className="helloada-growth-provider-grid">
-            <ProviderDetail id="ga4" provider={analytics?.ga4} />
-            <ProviderDetail id="gsc" provider={analytics?.gsc} />
-          </div>
+          <GrowthAnalytics
+            data={analytics}
+            pending={loading.analytics}
+            days={days}
+            ask={ask(t("growth.analyticsPrompt"))}
+            retry={refresh}
+          />
         </>
       ) : null}
-      {tab === "search" ? (
-        <>
-          <div className="helloada-growth-detail-grid">
-            <section className="helloada-growth-card">
-              <header>
-                <h2>{t("growth.queries")}</h2>
-              </header>
-              <Table
-                rows={analytics?.gsc?.queries}
-                columns={[
-                  ["key", t("growth.keyword")],
-                  ["clicks", t("growth.clicks")],
-                  ["impressions", t("growth.impressions")],
-                  ["position", t("growth.position")],
-                ]}
-              />
-            </section>
-            <section className="helloada-growth-card">
-              <header>
-                <h2>{t("growth.dataforseo")}</h2>
-                <Link href={ask()}>
-                  {t("growth.ask")}
-                  <WorkspaceIcon name="arrow" size={16} />
-                </Link>
-              </header>
-              <Table
-                rows={growth?.keywordMetrics}
-                columns={[
-                  ["keyword", t("growth.keyword")],
-                  ["search_volume", t("growth.volume")],
-                  ["competition", t("growth.competition")],
-                  ["cpc", "CPC"],
-                ]}
-                empty={t("growth.emptyResearch")}
-              />
-              <details className="helloada-growth-advanced">
-                <summary>{t("growth.researched")}</summary>
-                <Table
-                  rows={growth?.keywords}
-                  columns={[
-                    ["keyword", t("growth.keyword")],
-                    ["market", t("growth.market")],
-                    ["research_count", t("growth.researched")],
-                  ]}
-                  empty={t("growth.emptyResearch")}
-                />
-              </details>
-            </section>
-          </div>
-          {errors.analytics ? <ErrorNotice /> : null}
-          <div className="helloada-growth-detail-grid">
-            <section className="helloada-growth-card">
-              <header>
-                <h2>{t("growth.pages")}</h2>
-              </header>
-              <Table
-                rows={analytics?.ga4?.pages}
-                columns={[
-                  ["landingPagePlusQueryString", t("growth.pages")],
-                  ["sessions", t("growth.sessions")],
-                  ["screenPageViews", "Views"],
-                ]}
-              />
-            </section>
-            <section className="helloada-growth-card">
-              <header>
-                <h2>{t("growth.channels")}</h2>
-              </header>
-              <Table
-                rows={analytics?.ga4?.channels}
-                columns={[
-                  ["sessionDefaultChannelGroup", t("growth.channels")],
-                  ["sessions", t("growth.sessions")],
-                  ["activeUsers", t("growth.visitors")],
-                ]}
-              />
-            </section>
-          </div>
-          <details className="helloada-growth-card helloada-growth-advanced">
-            <summary>GA4 · GSC — {t("owner.advanced")}</summary>
-            {[analytics?.ga4, analytics?.gsc].map((provider, index) => (
-              <div key={index}>
-                {(["devices", "countries", "events"] as const).map((key) =>
-                  provider?.[key]?.length ? (
-                    <section key={key}>
-                      <h3>{label(key)}</h3>
-                      <Table
-                        rows={provider[key]}
-                        columns={Object.keys(provider[key]![0]).map(
-                          (column) => [column, label(column)],
-                        )}
-                      />
-                    </section>
-                  ) : null,
-                )}
-              </div>
-            ))}
-          </details>
-        </>
+      {tab === "search" || tab === "health" ? (
+        <GrowthEvidence
+          key={tab}
+          section={tab === "search" ? "research" : "health"}
+          revision={revision}
+          ask={ask}
+          seeds={growth?.keywords}
+        />
       ) : null}
       {tab === "content" ? (
         <>
           <div className="helloada-growth-content-bar">
             <span>{t("growth.approval")}</span>
             <Link href="/admin/collections/posts">
-              {t("growth.openBlog")}
-              <WorkspaceIcon name="arrow" size={16} />
+              {t("growth.openBlog")} ↗
             </Link>
           </div>
           <div className="helloada-growth-detail-grid">
@@ -693,27 +449,23 @@ export function HelloAdaGrowth() {
             className="helloada-growth-text-action"
             href="/admin?view=history"
           >
-            {t("growth.activity")}
-            <WorkspaceIcon name="arrow" size={16} />
+            {t("growth.activity")} ↗
           </Link>
         </>
       ) : null}
       {tab === "connections" ? (
         <>
-          <section className="helloada-growth-card">
-            <header>
-              <h2>{t("growth.connections")}</h2>
-              <Link href={ask(t("growth.setupPrompt"))}>
-                {t("growth.setup")}
-                <WorkspaceIcon name="arrow" size={16} />
-              </Link>
-            </header>
-            <p className="helloada-growth-footnote">{t("growth.setupNote")}</p>
-            <Sources />
-          </section>
+          <div className="helloada-growth-section-head">
+            <h2>{t("growth.connections")}</h2>
+            <Link href={ask(t("growth.setupPrompt"))}>
+              {t("growth.setup")} ↗
+            </Link>
+          </div>
+          <p className="helloada-growth-footnote">{t("growth.setupNote")}</p>
+          <Sources />
         </>
       ) : null}
-      {analytics?.capturedAt ? (
+      {analytics?.capturedAt && (tab === "overview" || tab === "analytics") ? (
         <p className="helloada-growth-captured">
           {t("growth.updated")} {date(analytics.capturedAt)}
         </p>

@@ -13,13 +13,13 @@
   .helloada-manage-drawer *, .helloada-publish-dialog, .helloada-publish-dialog * { box-sizing: border-box; }
   html { color-scheme: dark; }
   body::before {
-    background: radial-gradient(ellipse at 78% 0%, rgba(255, 107, 94, .045), transparent 46%), #080706;
+    background: radial-gradient(ellipse at 78% 0%, rgba(255, 107, 94, .045), transparent 46%), var(--helloada-bg);
   }
   .template-default { min-height: 100dvh; grid-template-rows: auto 1fr; }
   .template-default .nav {
     top: 14px; width: calc(100% - 48px); max-width: 1640px; height: 64px; min-height: 64px;
     margin: 14px auto 0; overflow: visible; border: 1px solid rgba(255,244,223,.1); border-radius: 20px;
-    background: rgba(18,16,15,.94); box-shadow: inset 0 1px rgba(255,244,223,.035);
+    background: var(--helloada-top); box-shadow: inset 0 1px rgba(255,244,223,.07), 0 8px 28px rgba(0,0,0,.12);
     backdrop-filter: blur(18px);
   }
   .helloada-payload-nav {
@@ -55,7 +55,7 @@
   .helloada-manage-drawer {
     position: fixed; inset: 12px 12px 12px auto; margin: 0; width: min(410px, calc(100vw - 24px)); height: calc(100dvh - 24px); max-height: none;
     padding: 30px 26px 22px; border: 1px solid rgba(255,244,223,.14); border-radius: 24px;
-    background: #15110f; color: var(--helloada-ink); box-shadow: inset 0 1px rgba(255,244,223,.045);
+    background: var(--helloada-panel); color: var(--helloada-ink); box-shadow: inset 0 1px rgba(255,244,223,.045);
   }
   .helloada-manage-drawer[open] { display: flex; flex-direction: column; animation: helloada-drawer-in 350ms var(--helloada-ease) both; }
   .helloada-manage-drawer::backdrop, .helloada-publish-dialog::backdrop { background: rgba(8,7,6,.6); backdrop-filter: blur(5px); }
@@ -92,10 +92,10 @@
   }
   .helloada-owner-workspace .helloada-workspace-grid.is-chat-only { grid-template-columns: minmax(0, 700px); justify-content: center; max-width: 712px; margin: 0 auto; }
   .helloada-owner-workspace .helloada-review-window, .helloada-owner-workspace .helloada-ada-panel {
-    min-width: 0; height: 100%; border: 0; border-radius: 0; background: #12100f; box-shadow: none;
+    min-width: 0; height: 100%; border: 0; border-radius: 0; background: var(--helloada-review); box-shadow: none;
   }
   .helloada-owner-workspace .helloada-review-window { grid-column: 2; grid-row: 1; border-radius: 0 19px 19px 0; }
-  .helloada-owner-workspace .helloada-ada-panel { grid-column: 1; grid-row: 1; position: relative; top: auto; border-right: 1px solid var(--helloada-soft-line); border-radius: 19px 0 0 19px; background: linear-gradient(180deg, rgba(255,244,223,.012), transparent 70%), #12100f; }
+  .helloada-owner-workspace .helloada-ada-panel { grid-column: 1; grid-row: 1; position: relative; top: auto; border-right: 1px solid var(--helloada-soft-line); border-radius: 19px 0 0 19px; background: var(--helloada-review); }
   .helloada-owner-workspace .helloada-ada-panel::before { display: none; }
   .helloada-owner-workspace .is-chat-only .helloada-ada-panel { border-right: 0; border-radius: 19px; }
   .helloada-owner-workspace .helloada-panel-header { min-height: 66px; padding: 16px 22px; align-items: center; background: transparent; border-bottom: 1px solid var(--helloada-soft-line); }
@@ -113,7 +113,7 @@
   .helloada-owner-workspace .helloada-phase-copy strong { font-size: 11px; }
   .helloada-owner-workspace .helloada-phase-copy > span:not(.helloada-sr-only) { white-space: normal; font-size: 10px; line-height: 1.6; }
   .helloada-owner-workspace .helloada-phase-action { font-size: 10px; min-height: 32px; color: var(--helloada-ink); }
-  .helloada-owner-workspace .helloada-brief-inspector { top: 110px; max-height: calc(100% - 125px); background: #191513; color: var(--helloada-ink); border-color: var(--helloada-line); }
+  .helloada-owner-workspace .helloada-brief-inspector { top: 110px; max-height: calc(100% - 125px); background: var(--helloada-panel); color: var(--helloada-ink); border-color: var(--helloada-line); }
   .helloada-owner-workspace .helloada-chat-log { padding: 20px 22px; background: transparent; }
   .helloada-owner-welcome { display: flex; flex-direction: column; align-items: flex-start; padding: clamp(20px, 5vh, 72px) 2px 22px; }
   .helloada-owner-welcome > .helloada-mark { margin-bottom: 23px; }
@@ -133,13 +133,13 @@
   .helloada-owner-workspace .helloada-shortcuts button:hover { color: var(--helloada-ink); transform: translateY(-1px); background: rgba(255,244,223,.035); }
   .helloada-owner-workspace .helloada-chat-form { padding: 0 18px 14px; gap: 0; border: 0; background: transparent; }
   .helloada-owner-workspace .helloada-chat-form textarea { min-height: 116px; padding: 15px 16px 50px; font-size: 13px; line-height: 1.5; background: rgba(8,7,6,.6); border-color: var(--helloada-line); border-radius: 14px; }
-  .helloada-owner-workspace .helloada-chat-form textarea::placeholder { color: #8a8076; }
+  .helloada-owner-workspace .helloada-chat-form textarea::placeholder { color: var(--helloada-dim); }
   .helloada-owner-workspace .helloada-chat-form textarea:focus { outline: none; border-color: rgba(255,107,94,.45); box-shadow: 0 0 0 3px rgba(255,107,94,.045); }
   .helloada-owner-workspace .helloada-attach-button { width: 34px; height: 34px; bottom: 10px; left: 10px; background: transparent; border: 0; color: var(--helloada-muted); }
   .helloada-owner-workspace .helloada-send-button { display: grid; place-items: center; width: 34px; height: 34px; padding: 0; right: 10px; bottom: 10px; border-radius: 9px; background: var(--helloada-cyan); color: #080706; }
   .helloada-owner-workspace .helloada-send-button:hover:not(:disabled) { background: #ff8075; transform: translateY(-1px); }
   .helloada-owner-workspace .helloada-send-button:disabled { opacity: .25; }
-  .helloada-composer-note { margin: 11px 0 0; color: var(--helloada-dim); font-size: 9px; line-height: 1.5; text-align: center; }
+  .helloada-composer-note { margin: 11px 0 0; color: var(--helloada-dim); font-size: 11px; line-height: 1.5; text-align: center; }
 
   .helloada-owner-workspace .helloada-review-toolbar { min-height: 66px; padding: 12px 18px; gap: 12px; overflow: visible; background: transparent; border-color: var(--helloada-soft-line); box-shadow: none; }
   .helloada-owner-workspace .helloada-window-dots span { width: 6px; height: 6px; background: rgba(255,244,223,.18); }

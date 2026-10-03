@@ -73,6 +73,9 @@ def test_google_analytics_report_supports_long_history_without_truncating_daily_
     gsc_trend = next(item for item in calls if item["provider"] == "gsc" and item["body"].get("dimensions") == ["date"])
     assert ga_trend["body"]["limit"] == 547
     assert gsc_trend["body"]["rowLimit"] == 547
+    assert ga_trend["body"]["orderBys"] == [{"dimension": {"dimensionName": "date"}}]
+    ga_pages = next(item for item in calls if item["provider"] == "ga4" and item["body"].get("dimensions") == [{"name": "landingPagePlusQueryString"}])
+    assert ga_pages["body"]["limit"] == 250
 
 
 def test_google_analytics_report_keeps_partial_provider_errors() -> None:

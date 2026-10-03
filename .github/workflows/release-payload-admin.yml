@@ -1,0 +1,32 @@
+name: Release shared HelloAda Payload admin
+
+on:
+  push:
+    tags:
+      - 'payload-admin-v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify version and package the tagged source
+        working-directory: packages/helloada-payload-admin
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node --input-type=module -e 'import fs from "node:fs"; const pkg = JSON.parse(fs.readFileSync("package.json", "utf8")); if (process.env.RELEASE_TAG !== `payload-admin-v${pkg.version}`) throw new Error("Release tag/version mismatch");'
+          mkdir -p .release
+          npm pack --pack-destination .release
+      - name: Publish immutable release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" packages/helloada-payload-admin/.release/*.tgz --verify-tag --title "HelloAda Payload admin ${RELEASE_TAG#payload-admin-v}" --notes "Shared customer-neutral owner workspace, packaged from the verified tagged source."

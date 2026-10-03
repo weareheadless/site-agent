@@ -1,3 +1,5 @@
+import {growthWorkspaceCopy} from './growth-workspace-copy';
+
 export const growthCopy: Record<string, Record<string, string>> = {
   en: {
     "growth.title": "Growth",
@@ -281,3 +283,7 @@ export const growthCopy: Record<string, Record<string, string>> = {
       "Revisa el plan de artículos semanales, recomendaciones SEO, investigación de palabras clave e informes. Muestra qué está activado y propón un calendario útil. Mantén los artículos y cambios como borradores para mi aprobación.",
   },
 };
+
+for (const [language, entries] of Object.entries(growthWorkspaceCopy)) {
+  for (const [key, value] of Object.entries(entries)) growthCopy[language][`growth.${key}`] = value;
+}

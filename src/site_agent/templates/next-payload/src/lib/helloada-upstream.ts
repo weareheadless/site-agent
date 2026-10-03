@@ -13,7 +13,7 @@ const upstreamPath = (path: string) => {
 
 const remapPath = (path: string, method: string, search: string) => {
   const suffix = path.replace(/^\/api\/helloada/, '') || '/'
-  if (method === 'GET' && ['/connection', '/growth', '/seo/analytics', '/seo/insights'].includes(suffix)) return `/workspace${suffix}${search}`
+  if (method === 'GET' && ['/connection', '/growth', '/seo/analytics', '/seo/insights', '/seo/evidence'].includes(suffix)) return `/workspace${suffix}${search}`
   if (suffix === '/ada' && method === 'POST') return `/workspace/chat${search}`
   if (suffix === '/ada' && method === 'GET') {
     const params = new URLSearchParams(search)
