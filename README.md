@@ -4,7 +4,8 @@ Portable AI website content manager. One installable package, one instance direc
 
 - Plan: [PLAN.md](PLAN.md)
 - Positioning: [POSITIONING.md](POSITIONING.md)
-- Deploy + onboarding: [docs/deploy.md](docs/deploy.md) — worked example for OceanicVibes
+- Production customer releases: [deploy/README.md](deploy/README.md) — canonical GitHub queue and VPS pipeline
+- Platform release boundaries: [docs/platform-release-runbook.md](docs/platform-release-runbook.md) — shared API, admin package and customer Workers
 - Defining a new site's persona: [docs/persona.md](docs/persona.md) — the Ada personality contract for onboarding LLMs
 - Architecture: [docs/architecture.md](docs/architecture.md) — runtime boundaries and approval flow
 - Owner experience implementation: [docs/owner-experience-implementation-plan.md](docs/owner-experience-implementation-plan.md) — active product, UI, approval, and capability roadmap

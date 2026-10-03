@@ -22,6 +22,10 @@ combined database-and-app deployment for it.
 
 ## Deterministic Worker release
 
+The following checks are implemented by the VPS pipeline. Request a release
+through `deploy/desired-releases.json`; these are not separate manual deployment
+commands. See `deploy/README.md` for the operator procedure.
+
 - Identify the one clean official checkout, remote, exact commit and Worker.
 - Resolve the existing `cloudflare` profile from
   `/SOCIAL/configs/host-credentials.yaml` via `site_agent.credentials`.
