@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "credentialProfile": "/SOCIAL/configs/host-credentials.yaml",
+  "nodeBin": "/home/admin/.local/share/site-agent-node22/bin",
+  "lockFile": "/SOCIAL/site-agent-api/payload-release.lock",
+  "receiptDir": "/SOCIAL/site-agent-api/deploy-receipts",
+  "customers": {
+    "oceanicvibes": {
+      "repository": "https://github.com/weareheadless/oceanicvibes.git",
+      "checkout": "/SOCIAL/customer-sites/oceanicvibes",
+      "worker": "oceanicvibes",
+      "health": "https://oceanicvibes.com/api/health",
+      "adminPath": "/api/helloada",
+      "payloadAdmin": "0.8.4"
+    },
+    "atelier-harmonie": {
+      "repository": "https://github.com/weareheadless/atelier-harmonie-headless.git",
+      "checkout": "/SOCIAL/customer-sites/atelier-growth-release",
+      "worker": "atelier-harmonie",
+      "health": "https://atelier-harmonie.weareheadless.workers.dev/api/health",
+      "adminPath": "/api/helloada",
+      "payloadAdmin": "0.8.4"
+    }
+  }
+}

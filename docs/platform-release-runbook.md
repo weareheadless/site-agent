@@ -60,27 +60,29 @@ Report source, artifact, deployment and live verification stages independently.
 Do not report the whole platform updated until every selected consumer has an
 exact pinned release and its own deployment/verification receipt.
 
-## Automation contract (target, not a claim that rollout CI is already wired)
+## VPS-owned release automation
 
-Make this path a reusable GitHub Actions workflow. The coding agent prepares
-source changes; CI, not conversational judgement, decides whether to promote.
-Use one concurrency group per environment/tenant, protected deployment secrets,
-an explicit target matrix from the tenant registry, and terminal failure receipts.
-Build each customer artifact once from its pinned commit/package; promote that
-artifact rather than rebuilding after approval. A shared admin release needs a
-version-pin update and deployment receipt for every selected consumer.
+The rollout workflow is now wired. The only supported customer promotion is the
+manually dispatched `Payload customer release` workflow in
+`.github/workflows/payload-customer-release.yml`. It runs on the VPS
+`helloada-deploy` self-hosted runner and invokes the central script described in
+[`deploy/README.md`](../deploy/README.md).
 
-The release manifest must bind backend commit, admin version/integrity, customer
-commit, artifact hashes, schema/migration plan, target Worker, connection contract,
-previous good Cloudflare version, checks and live verification. Migration is an
-explicit compatible rollout phase, never part of an admin-only shortcut.
-Rollback selects a known version and verifies it; code rollback is not database
-rollback. Browser/tenant integration tests must fail the release on stale UI,
-wrong tenant, failed chat or missing preview even when uploads succeeded.
+The workflow accepts only a registered tenant and a full customer commit SHA.
+The script serializes releases, resolves the declared Cloudflare profile,
+builds from a clean detached checkout, inspects one OpenNext artifact, deploys
+that same artifact, verifies the tenant-specific health contract, and writes a
+secret-free receipt. It rejects legacy `/api/atelier` source, stale Payload
+admin markers, missing Growth contract markers, dirty checkouts, missing
+credentials and failed live health checks. It never repairs, falls back to, or
+reuses a stale artifact.
 
-The existing package-tag workflow publishes immutable assets. It is **not** yet
-a complete tested, multi-customer rollout pipeline; a written runbook alone
-does not provide that enforcement. Keep this distinction explicit in status.
+Production is intentionally not triggered by every push. Review and owner
+approval happen before an exact-SHA dispatch; the pipeline then makes the
+promotion deterministic. Once the VPS runner is registered, a release is
+complete only after both the workflow receipt and a fresh authenticated browser
+verification pass. GitHub success or a public health response alone is not
+evidence that the owner-visible release is live.
 
 References: [GitHub deployment environments and concurrency](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/control-deployments),
 [Cloudflare builds](https://developers.cloudflare.com/workers/ci-cd/builds/),

@@ -1,0 +1,40 @@
+name: Payload customer release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tenant:
+        description: Customer registered in deploy/payload-customers.json
+        required: true
+        type: choice
+        options:
+          - oceanicvibes
+          - atelier-harmonie
+      ref:
+        description: Full 40-character commit SHA from the customer repository
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: payload-customer-${{ inputs.tenant }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Release ${{ inputs.tenant }}
+    runs-on: [self-hosted, helloada-deploy]
+    environment: production
+    timeout-minutes: 45
+    steps:
+      - name: Run the canonical VPS release gate
+        env:
+          RELEASE_TENANT: ${{ inputs.tenant }}
+          RELEASE_REF: ${{ inputs.ref }}
+        run: >-
+          /SOCIAL/site-agent/.venv/bin/python
+          /SOCIAL/site-agent/scripts/deploy-payload-customer.py
+          --tenant "$RELEASE_TENANT"
+          --ref "$RELEASE_REF"

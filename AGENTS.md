@@ -204,9 +204,46 @@ from a Git push.
 ## Tenant deployment handoff
 
 Each tenant's frontend or Payload application is a separate repository named by
-its tenant configuration. Its own contributor guide owns the GitHub and
-Cloudflare workflow; a local site-agent change is not deployed merely because
-backend tests pass.
+the central tenant manifest. The VPS-owned Payload release pipeline in
+`deploy/payload-customers.json` and
+`scripts/deploy-payload-customer.py` owns production promotion for every
+tenant. A local site-agent change, a customer-repository push, or a direct
+`wrangler deploy` is not a deployment.
+
+### Mandatory Payload/Worker release pipeline
+
+Use the `Payload customer release` workflow in
+`.github/workflows/payload-customer-release.yml`, dispatched with a registered
+tenant and the full 40-character customer commit SHA. The workflow runs on the
+VPS `helloada-deploy` self-hosted runner and invokes the central script. The
+one-time runner registration and operating rules are in `deploy/README.md`.
+
+The central script is a hard gate, not a repair or fallback layer. It must:
+
+1. resolve the tenant from the manifest and reject an unregistered target;
+2. verify the configured repository, clean checkout, exact immutable SHA and
+   detached state;
+3. resolve Cloudflare through `/SOCIAL/configs/host-credentials.yaml` using
+   `site_agent.credentials`, never by sourcing `/SOCIAL/site-agent/.env`;
+4. run `wrangler whoami`, `npm ci`, typecheck and the full OpenNext build with
+   isolated local bindings;
+5. inspect the generated `.open-next` artifact and reject legacy `/api/atelier`
+   source, missing Growth contract markers, or stale Payload admin markers;
+6. upload that exact inspected artifact, then verify the tenant-specific health
+   contract; and
+7. write an immutable, secret-free receipt. A failed receipt is an incomplete
+   release.
+
+There is no customer-facing legacy admin API. The canonical Payload bridge is
+`/api/helloada/*`; customer source containing `/api/atelier` is rejected. The
+Python/FastAPI service remains the internal shared API only where an application
+contract explicitly requires it; it is not an alternative customer admin
+surface, deployment path, or fallback.
+
+GitHub Actions success and a public health response are not sufficient live
+verification. After a passing receipt, reload a fresh authenticated browser
+document with a cache-busting release query and verify the changed UI and
+connection behavior. Do not report a release as live until this check passes.
 
 ### Host credential source of truth
 
@@ -229,7 +266,7 @@ Never print, paste, commit, or pass credential values to Ada/model prompts.
 
 - Backend/API changes: validate here, then restart `site-agent-api.service`.
 - Frontend/Payload changes: validate and push the tenant's configured repository,
-  then deploy only with the tenant's scoped Cloudflare environment.
+  then promote only through the central exact-SHA release workflow.
 - Never commit protected credential files, tenant memory databases, or generated
   Worker/build output.
 - Keep the packaged intake defaults stable; database-only intake/research must
