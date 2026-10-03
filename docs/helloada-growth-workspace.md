@@ -210,3 +210,70 @@ correction and current production version are recorded below as `0.7.2`.
 - The final `0.7.2` document was rechecked at 390px: page width and viewport width
   both 390px, dark navigation and the correct stylesheet present. The viewport
   override was then reset; customer tabs remain open in their owner workspace.
+
+### Contrast, competition and credential-refresh release `0.8.1`
+
+Final verified release on 2026-10-02. This supersedes the warm two-tone palette
+and resolves the expired-token defect recorded in the `0.7.2` section above.
+
+- Shared code commit `27e4dabddf4996919221feeebc61e940a70d2dd6`; immutable package
+  `payload-admin-v0.8.1`. GitHub's package-release workflow completed successfully.
+  The default new-site package, manifest, Worker marker and health response pin
+  this same release. The approved HelloAda SVG is unchanged (SHA-256
+  `929ec100918ec19fd32319d083bb961ca60d7373da41b7622e5568a260eeaa1f`).
+- Atelier commit `694ae0be15a2d71be71f3f84c7b5a80208969278`, Worker
+  `3b3ec552-d6b8-4db1-ba6f-22e7d4c44160`; Oceanic commit
+  `a1fd0f57e6c0c0bbce38ddcb76860708c14884bf`, Worker
+  `b82dc4c4-4d5b-46fe-ba37-5f737faa8984`. Both deployments reached 100% traffic.
+  Both canonical future-build customer checkouts and installed dependencies are
+  synchronized to `0.8.1`; Oceanic's live health endpoint reports compatibility.
+- Builds came from clean customer release checkouts. Generated artifacts were
+  checked for current UI scripts, the required palette and absence of the old
+  brown canvas token. Shared CSS `21291e689a69e155.css` is byte-identical in both:
+  SHA-256 `abdf06b4951580d87e4bbbcea5a4fd4af733a79142c01ff569cadaff5ae4f728`.
+  Both fresh authenticated production documents served that exact asset.
+- Visual verification confirmed near-black navigation/chat, neutral silver
+  `#f1f3f6` canvas, white work panels, `#161a23` text and brand `#ff6b5e` actions.
+  Growth uses a compact 58px desktop tool rail with internal link scrolling.
+  Activity, the gallery and native Payload lists use the same surface system;
+  actual Activity decisions and gallery images were inspected without editing.
+  Atelier's real website preview and connected Ada conversation remain visible.
+- At 390px, the actual Atelier production document and page both measured 390px,
+  with horizontally scrollable navigation and stacked Growth content. No page
+  overflow was found. The temporary viewport override was reset. This is a
+  focused responsive smoke check, not a claim of an exhaustive device audit.
+- Competition is tenant-scoped and uses completed CrawlSEO/DataForSEO evidence,
+  not invented ranks. Oceanic exposed two researched SERPs and 14 rival domains;
+  Atelier exposed one SERP and six rival domains. The default view selects the
+  existing search-rival evidence when no domain benchmark exists. Switching
+  Oceanic's keyword changed the actual winning-page links and Ada analysis
+  context. Market, evidence date and sample limitations are visible. Domain
+  comparison can display completed monthly own/selected-competitor benchmarks,
+  but neither tenant currently has that selected-competitor benchmark. An Ada
+  research CTA only prepares a conversation; it does not launch paid research.
+  Full-domain keyword gaps, rank tracking and a backlink explorer remain future
+  work, not shipped Ahrefs parity.
+- The live API backend was restarted at `764a6c157799514cd8002974a0d59d6b2ddc6762`
+  after validating the authorized Google fix. `GooglePlatformClient` now retains
+  expiry-aware credentials per normalized scope set and calls `before_request`
+  under a lock before returning a token. It no longer caches raw tokens forever
+  or serves an expired token after refresh failure. Tests cover expiry, scope
+  separation, refresh failure and concurrent requests. The first expiry tests
+  were demonstrated failing on the old implementation. The final UI-only commit
+  did not require another API restart. Revocation and provider outages remain
+  explicit errors, not hidden by a stale-token fallback.
+- Real authenticated GA4 and GSC reads succeeded for both tenants after that
+  restart. Atelier's live 28-day GA4 report showed 32 visitors, 35 sessions and
+  38 views; its GSC report returned measured zero clicks/impressions, not a load
+  error. The 90-day selection updated the report window and keyboard ArrowRight
+  moved the selected chart point/caption. Oceanic's GSC missing overview remains
+  missing rather than becoming fabricated traffic. Saved Ada analyses are
+  explicitly labelled as saved analyses, not the current live report.
+- Shared UI: 22 tests passed, TypeScript and Sass compilation passed. Backend:
+  1,062 tests passed with the one known pre-existing frozen Pelican-profile
+  failure; the final focused evidence/refresh checks passed 12 tests. The final
+  wheel was built from an exact clean Git archive, verified to contain the
+  default `0.8.1` template pin and no `node_modules`. No customer content/schema
+  migration, paid provider task, chat submission or owner publish/discard action
+  was performed during verification. The unrelated dirty `/SEO` tree was not
+  modified or deployed.
