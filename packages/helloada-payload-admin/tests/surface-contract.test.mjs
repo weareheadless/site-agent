@@ -34,6 +34,12 @@ test('nested tool windows explicitly restore paper instead of inheriting dark ch
   for (const name of ['manage-drawer', 'chat-gallery', 'publish-dialog']) assert.match(owner, new RegExp(`\\.helloada-${name} \\{\\s*@include surfaces\\.paper;`));
   for (const name of ['field-popover', 'page-editor']) assert.match(read('admin.scss'), new RegExp(`\\.helloada-${name} \\{\\s*@include surfaces\\.paper;`));
 });
+test('native collection, field and login surfaces use paper rather than dark literals', () => {
+  const admin = read('admin.scss');
+  assert.match(admin, /\.template-default \.document-fields \{\s*border-color: var\(--helloada-soft-line\);\s*background: var\(--helloada-panel\);\s*color: var\(--helloada-ink\);/);
+  assert.match(admin, /\.login__form \{[\s\S]*?background: var\(--helloada-panel\);\s*color: var\(--helloada-ink\);/);
+  assert.doesNotMatch(admin, /rgba\(16, 18, 24, 0\.(8|86)\)/);
+});
 test('primary, secondary, caption and action text meet AA on both surfaces', () => {
   for (const [name, surface] of [['paper', paper], ['chrome', chrome]]) {
     for (const bg of ['bg', 'panel', 'panel-raised', 'panel-soft']) {
