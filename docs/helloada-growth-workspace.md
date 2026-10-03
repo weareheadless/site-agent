@@ -7,6 +7,14 @@ or website preview. Its default is Ada's saved, business-specific analysis and
 next actions. The approved HelloAda mark is unchanged. All customers and new
 Payload sites consume the same shared package; no customer-specific UI fork.
 
+The shared `0.7.0` surface system follows the actual helloada.app control-room
+example: ivory canvas (`#eee6da`), paper tool windows and dark foregrounds,
+with dark navigation and Ada conversation. Nested galleries, drawers and editors
+explicitly use paper tokens rather than inheriting dark conversation colors.
+Charts, statuses, controls and native Payload forms use surface-aware tokens.
+Contrast tests cover primary/secondary/caption/action text on both palettes.
+No data, chat, publication or approval behavior changes with this theme release.
+
 - **Ada's brief:** recommendations, automation schedules, review queue, then a
   compact current performance snapshot. A saved brief is labelled as such: its
   period is not silently rewritten when a live reporting range changes.
@@ -92,7 +100,7 @@ connections, responsive layout and the preserved chat/preview surface.
 ### Verified release: 2026-10-02
 
 - Shared package `0.6.1`, code commit `9dc34e1`; GitHub release workflow succeeded.
-  The new-site template uses the same immutable asset.
+The new-site template uses the same immutable asset.
 - Atelier commit `c6002a2`, Worker `f7e5d3e4-7536-4bd1-9dce-2edd25f216b7`.
   Oceanic commit `1cd71d5`, Worker `3dbf2b01-09be-42eb-919e-63cd7d980d4e`.
   Both versions were confirmed at 100% traffic after deployment.

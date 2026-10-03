@@ -35,7 +35,7 @@
     line-height: 1.6;
   }
   .helloada-growth a {
-    color: #ffa69a;
+    color: var(--helloada-cyan);
     text-decoration: none;
     font-size: 13px;
     font-weight: 500;
@@ -107,7 +107,7 @@
     position: relative;
   }
   .helloada-growth-tabs button[aria-pressed="true"] {
-    background: rgba(255, 107, 94, 0.11);
+    background: var(--helloada-cyan-soft);
     border-color: rgba(255, 107, 94, 0.3);
     color: var(--helloada-ink);
   }
@@ -239,7 +239,7 @@
     background: var(--helloada-dim);
   }
   .helloada-growth-plan .is-enabled {
-    background: #b4d990;
+    background: var(--helloada-positive);
     box-shadow: 0 0 8px rgba(180, 217, 144, 0.2);
   }
   .helloada-growth-text-action {
@@ -311,7 +311,7 @@
     padding: 18px 20px;
     border: 1px solid var(--helloada-soft-line);
     border-radius: 13px;
-    background: var(--helloada-top);
+    background: var(--helloada-panel);
   }
   .helloada-growth-metrics article > span {
     display: block;
@@ -336,10 +336,10 @@
     margin-left: 3px;
   }
   .helloada-growth .is-positive {
-    color: #b4d990;
+    color: var(--helloada-positive);
   }
   .helloada-growth .is-negative {
-    color: #ffb198;
+    color: var(--helloada-negative);
   }
   .helloada-growth-overview-metrics {
     display: grid;
@@ -350,7 +350,7 @@
     padding: 14px 18px;
     border: 1px solid rgba(255, 200, 87, 0.25);
     border-radius: 12px;
-    color: #ffdc91;
+    color: var(--helloada-violet);
     background: rgba(255, 200, 87, 0.04);
     font-size: 13px;
     margin-bottom: 16px;
@@ -449,10 +449,10 @@
     overflow-wrap: anywhere;
   }
   .helloada-growth tbody tr:nth-child(even) {
-    background: rgba(255, 255, 255, 0.015);
+    background: var(--helloada-inset);
   }
   .helloada-growth tbody tr:hover {
-    background: rgba(255, 244, 223, 0.04);
+    background: var(--helloada-hover);
   }
   .helloada-growth .helloada-table-detail {
     min-height: 24px;
@@ -460,7 +460,7 @@
     padding: 0;
     border: 0;
     background: transparent;
-    color: #ffa69a;
+    color: var(--helloada-cyan);
     white-space: normal;
   }
   .helloada-table-pagination {
@@ -505,14 +505,14 @@
     stroke-dasharray: 3 6;
   }
   .helloada-chart-line {
-    stroke: #ff9989;
+    stroke: var(--helloada-cyan);
     stroke-width: 2;
     vector-effect: non-scaling-stroke;
     stroke-linejoin: round;
     stroke-linecap: round;
   }
   .helloada-chart-point {
-    fill: #ff9989;
+    fill: var(--helloada-cyan);
     cursor: crosshair;
     stroke: var(--helloada-panel);
     stroke-width: 1;
@@ -643,16 +643,16 @@
     font-size: 11px;
     padding: 3px 8px;
     border-radius: 6px;
-    background: rgba(255, 244, 223, 0.05);
+    background: var(--helloada-inset);
     color: var(--helloada-muted);
   }
   .helloada-growth-state.is-has_data {
-    color: #b4d990;
+    color: var(--helloada-positive);
     background: rgba(180, 217, 144, 0.08);
   }
   .helloada-growth-state.is-verification_required,
   .helloada-growth-state.is-not_configured {
-    color: #ffdc91;
+    color: var(--helloada-violet);
     background: rgba(255, 200, 87, 0.08);
   }
   .helloada-growth-captured {

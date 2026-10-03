@@ -1,0 +1,81 @@
+/* The control-room palette shown on helloada.app: paper for work,
+   dark chrome for navigation and Ada. Tokens follow their local surface. */
+@mixin paper {
+  color-scheme: light;
+  --theme-bg: #eee6da;
+  --theme-text: #211b17;
+  --theme-elevation-0: #eee6da;
+  --theme-elevation-50: #f2ece2;
+  --theme-elevation-100: #fbf8f2;
+  --theme-elevation-150: #f5efe6;
+  --theme-elevation-200: #ffffff;
+  --theme-elevation-250: #e8dfd2;
+  --theme-elevation-300: #d8cdbf;
+  --theme-elevation-350: #c8bcad;
+  --theme-elevation-400: #b7a896;
+  --theme-elevation-450: #a08f7d;
+  --theme-elevation-500: #71655a;
+  --theme-elevation-550: #65584d;
+  --theme-elevation-600: #5e5146;
+  --theme-elevation-650: #51463b;
+  --theme-elevation-700: #463b31;
+  --theme-elevation-750: #3b3128;
+  --theme-elevation-800: #42382f;
+  --theme-elevation-850: #302721;
+  --theme-elevation-900: #211b17;
+  --theme-elevation-950: #191411;
+  --theme-elevation-1000: #120f0c;
+  --theme-success-500: #386144;
+  --theme-warning-500: #8b5a15;
+  --theme-error-500: #a33f32;
+  --theme-input-bg: #ffffff;
+  --theme-border-color: rgba(63, 45, 29, .18);
+  --helloada-bg: #eee6da;
+  --helloada-top: #f2ece2;
+  --helloada-review: #fbf8f2;
+  --helloada-panel: #fbf8f2;
+  --helloada-panel-raised: #ffffff;
+  --helloada-panel-soft: #f0e8dc;
+  --helloada-ink: #211b17;
+  --helloada-muted: #5e554c;
+  --helloada-dim: #71655a;
+  --helloada-line: rgba(63, 45, 29, .2);
+  --helloada-soft-line: rgba(63, 45, 29, .12);
+  --helloada-hover: rgba(63, 45, 29, .045);
+  --helloada-inset: rgba(63, 45, 29, .025);
+  --helloada-cyan: #a34336;
+  --helloada-cyan-soft: rgba(163, 67, 54, .08);
+  --helloada-violet: #8b5a15;
+  --helloada-violet-soft: rgba(139, 90, 21, .08);
+  --helloada-positive: #386144;
+  --helloada-negative: #a33f32;
+  --helloada-warm: #fff4df;
+  --helloada-action-ink: #ffffff;
+  --helloada-code: #8a412d;
+}
+
+@mixin chrome {
+  color-scheme: dark;
+  --helloada-bg: #0d0b0a;
+  --helloada-top: #0d0b0a;
+  --helloada-review: #171411;
+  --helloada-panel: #211c18;
+  --helloada-panel-raised: #2c2520;
+  --helloada-panel-soft: #332b24;
+  --helloada-ink: #fff8ee;
+  --helloada-muted: #d0c3b3;
+  --helloada-dim: #b4a695;
+  --helloada-line: rgba(255, 244, 223, .22);
+  --helloada-soft-line: rgba(255, 244, 223, .12);
+  --helloada-hover: rgba(255, 244, 223, .055);
+  --helloada-inset: rgba(255, 244, 223, .025);
+  --helloada-cyan: #ff6b5e;
+  --helloada-cyan-soft: rgba(255, 107, 94, .14);
+  --helloada-violet: #ffc857;
+  --helloada-violet-soft: rgba(255, 200, 87, .15);
+  --helloada-positive: #b4d990;
+  --helloada-negative: #ffb198;
+  --helloada-warm: #fff4df;
+  --helloada-action-ink: #171411;
+  --helloada-code: #ffe0c2;
+}

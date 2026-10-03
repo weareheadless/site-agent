@@ -1,44 +1,13 @@
 @use 'owner-workspace' as owner;
 @use 'growth' as growth;
-/* HelloAda Payload owner workspace: OLED control room, coral signal, amber activity. */
+@use 'surfaces' as surfaces;
+/* HelloAda control room: paper workspace, dark conversation and navigation. */
 
 :root,
-[data-theme='dark'] {
-  --theme-bg: #161411;
-  --theme-text: #fff4df;
-  --theme-elevation-0: #161411;
-  --theme-elevation-50: #1c1916;
-  --theme-elevation-100: #24201c;
-  --theme-elevation-150: #2a2520;
-  --theme-elevation-200: #302a24;
-  --theme-elevation-250: #393129;
-  --theme-elevation-300: #413029;
-  --theme-elevation-400: #665046;
-  --theme-elevation-500: #b4a695;
-  --theme-elevation-800: #eadcc8;
-  --theme-elevation-900: #fff8ed;
-  --theme-success-500: #a9d86e;
-  --theme-warning-500: #ffc857;
-  --theme-error-500: #ff6b5e;
-  --theme-input-bg: #24201c;
-  --theme-border-color: rgba(255, 244, 223, 0.18);
+[data-theme='dark'],
+[data-theme='light'] {
+  @include surfaces.paper;
   --theme-font-family: 'Avenir Next', 'Segoe UI Variable', ui-sans-serif, sans-serif;
-  --helloada-bg: #161411;
-  --helloada-top: #1c1916;
-  --helloada-review: #1c1916;
-  --helloada-panel: #24201c;
-  --helloada-panel-raised: #302a24;
-  --helloada-panel-soft: #393129;
-  --helloada-ink: #fff8ee;
-  --helloada-muted: #d0c3b3;
-  --helloada-dim: #b4a695;
-  --helloada-line: rgba(255, 244, 223, 0.22);
-  --helloada-soft-line: rgba(255, 244, 223, 0.12);
-  --helloada-cyan: #ff6b5e;
-  --helloada-cyan-soft: rgba(255, 107, 94, 0.14);
-  --helloada-violet: #ffc857;
-  --helloada-violet-soft: rgba(255, 200, 87, 0.15);
-  --helloada-warm: #fff4df;
   --helloada-ease: cubic-bezier(0.16, 1, 0.3, 1);
   --helloada-spring: cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -100,6 +69,7 @@ textarea:focus-visible {
 /* Payload shell: make the whole CMS read as the same HelloAda product. */
 
 .template-default .nav {
+  @include surfaces.chrome;
   z-index: 10;
   background: rgba(9, 10, 14, 0.92);
   border-right: 1px solid var(--helloada-soft-line);
@@ -267,7 +237,7 @@ textarea:focus-visible {
   border: 1px solid var(--helloada-soft-line);
   border-radius: 999px;
   color: var(--helloada-muted);
-  background: rgba(255, 255, 255, 0.025);
+  background: var(--helloada-inset);
   font-size: 10px;
   text-decoration: none;
 }
@@ -351,9 +321,9 @@ textarea:focus-visible {
   gap: 11px;
   width: 238px;
   padding: 11px;
-  border: 1px solid rgba(197, 220, 244, 0.2);
+  border: 1px solid var(--helloada-soft-line);
   border-radius: 14px;
-  background: linear-gradient(145deg, #1a2332, #101722);
+  background: var(--helloada-panel);
   box-shadow: 0 22px 54px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.07);
 }
 
@@ -369,7 +339,7 @@ textarea:focus-visible {
 
 .helloada-payload-menu-section strong {
   padding: 3px 9px 5px;
-  color: #9facc0;
+  color: var(--helloada-muted);
   font-size: 9px;
   letter-spacing: 0.13em;
   text-transform: uppercase;
@@ -389,7 +359,7 @@ textarea:focus-visible {
 
 .helloada-payload-links .helloada-payload-menu-panel a:hover,
 .helloada-payload-links .helloada-payload-menu-panel a[aria-current='page'] {
-  color: #dfffff;
+  color: var(--helloada-ink);
   background: rgba(255, 107, 94, 0.12);
   transform: translateX(2px);
 }
@@ -412,7 +382,7 @@ textarea:focus-visible {
 
 .helloada-payload-context strong {
   overflow: hidden;
-  color: var(--helloada-warm);
+  color: var(--helloada-ink);
   font-size: 12px;
   font-weight: 650;
   letter-spacing: -0.03em;
@@ -474,7 +444,7 @@ textarea:focus-visible {
 }
 
 .helloada-payload-language-error {
-  color: #ff9d9d;
+  color: var(--helloada-negative);
   font-size: 8px;
   white-space: nowrap;
 }
@@ -523,7 +493,7 @@ textarea:focus-visible {
   border: 1px solid rgba(255, 107, 94, 0.35);
   border-radius: 999px;
   background: var(--helloada-cyan);
-  color: #071014;
+  color: var(--helloada-action-ink);
   font-weight: 700;
   box-shadow: 0 0 0 4px rgba(255, 107, 94, 0.04);
   transition: transform 650ms var(--helloada-spring), background-color 650ms var(--helloada-spring), box-shadow 650ms var(--helloada-spring);
@@ -532,7 +502,7 @@ textarea:focus-visible {
 .template-default .btn:hover,
 .template-default button.btn:hover,
 .template-default .form-submit button:hover {
-  background: #84f4f8;
+  background: var(--helloada-cyan);
   box-shadow: 0 0 24px rgba(255, 107, 94, 0.2);
   transform: translateY(-2px);
 }
@@ -730,7 +700,7 @@ textarea:focus-visible {
   padding: 10px 14px;
   border: 1px solid rgba(255, 109, 131, 0.3);
   border-radius: 12px;
-  color: #ffb8c4;
+  color: var(--helloada-negative);
   background: rgba(255, 109, 131, 0.08);
   font-size: 12px;
 }
@@ -741,7 +711,7 @@ textarea:focus-visible {
   padding: 10px 14px;
   border: 1px solid rgba(255, 107, 94, 0.3);
   border-radius: 12px;
-  color: #dfffff;
+  color: var(--helloada-ink);
   background: rgba(255, 107, 94, 0.08);
   font-size: 12px;
 }
@@ -774,7 +744,7 @@ textarea:focus-visible {
 
 .helloada-history-header h1 {
   margin: 9px 0 8px;
-  color: #f8fbff;
+  color: var(--helloada-ink);
   font-size: clamp(32px, 5vw, 62px);
   font-weight: 500;
   letter-spacing: -0.065em;
@@ -798,7 +768,7 @@ textarea:focus-visible {
   padding: 0 14px;
   border: 1px solid rgba(255, 107, 94, 0.3);
   border-radius: 999px;
-  color: #dfffff;
+  color: var(--helloada-ink);
   background: rgba(255, 107, 94, 0.08);
   font-size: 11px;
   font-weight: 700;
@@ -845,7 +815,7 @@ textarea:focus-visible {
 .helloada-history-local-summary li {
   overflow: hidden;
   padding: 7px 9px;
-  border: 1px solid rgba(197, 220, 244, 0.08);
+  border: 1px solid var(--helloada-soft-line);
   border-radius: 8px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -853,7 +823,7 @@ textarea:focus-visible {
 
 .helloada-history-local-summary code {
   margin-right: 7px;
-  color: var(--helloada-warm);
+  color: var(--helloada-ink);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 10px;
 }
@@ -868,9 +838,9 @@ textarea:focus-visible {
 .helloada-history-section {
   min-width: 0;
   padding: 18px;
-  border: 1px solid rgba(197, 220, 244, 0.14);
+  border: 1px solid var(--helloada-soft-line);
   border-radius: 18px;
-  background: linear-gradient(145deg, rgba(24, 34, 48, 0.94), rgba(13, 20, 29, 0.92));
+  background: var(--helloada-panel);
   box-shadow: 0 22px 60px rgba(0, 0, 0, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.045);
 }
 
@@ -884,7 +854,7 @@ textarea:focus-visible {
 
 .helloada-history-section-heading h2 {
   margin: 5px 0 0;
-  color: #f8fbff;
+  color: var(--helloada-ink);
   font-size: 20px;
   font-weight: 600;
   letter-spacing: -0.04em;
@@ -914,10 +884,10 @@ textarea:focus-visible {
   gap: 11px;
   min-width: 0;
   padding: 12px 11px;
-  border: 1px solid rgba(197, 220, 244, 0.08);
+  border: 1px solid var(--helloada-soft-line);
   border-radius: 11px;
   color: var(--helloada-ink);
-  background: rgba(255, 255, 255, 0.018);
+  background: var(--helloada-inset);
   text-decoration: none;
   transition: border-color 400ms var(--helloada-ease), background-color 400ms var(--helloada-ease), transform 400ms var(--helloada-spring);
 }
@@ -949,7 +919,7 @@ textarea:focus-visible {
 
 .helloada-history-item-copy strong {
   overflow: hidden;
-  color: #f4f8ff;
+  color: var(--helloada-ink);
   font-size: 12px;
   font-weight: 600;
   text-overflow: ellipsis;
@@ -968,7 +938,7 @@ textarea:focus-visible {
 }
 
 .helloada-history-item-copy em {
-  color: var(--helloada-warm);
+  color: var(--helloada-ink);
   text-transform: capitalize;
 }
 
@@ -1009,10 +979,10 @@ textarea:focus-visible {
 .helloada-history-action {
   min-height: 28px;
   padding: 0 9px;
-  border: 1px solid rgba(197, 220, 244, 0.18);
+  border: 1px solid var(--helloada-soft-line);
   border-radius: 999px;
   color: var(--helloada-muted);
-  background: rgba(255, 255, 255, 0.035);
+  background: var(--helloada-inset);
   cursor: pointer;
   font-size: 9px;
   font-weight: 700;
@@ -1023,7 +993,7 @@ textarea:focus-visible {
 
 .helloada-history-action:hover:not(:disabled) {
   border-color: rgba(255, 107, 94, 0.42);
-  color: #efffff;
+  color: var(--helloada-ink);
   background: rgba(255, 107, 94, 0.09);
 }
 
@@ -1057,7 +1027,7 @@ textarea:focus-visible {
 }
 
 .helloada-acceptance-card strong {
-  color: var(--helloada-warm);
+  color: var(--helloada-ink);
   font-size: 12px;
 }
 
@@ -1100,8 +1070,8 @@ textarea:focus-visible {
   gap: 9px;
   min-height: 52px;
   padding: 8px 12px;
-  border-bottom: 1px solid rgba(197, 220, 244, 0.1);
-  background: rgba(7, 10, 18, 0.34);
+  border-bottom: 1px solid var(--helloada-soft-line);
+  background: var(--helloada-inset);
 }
 
 .helloada-phase-mark {
@@ -1133,7 +1103,7 @@ textarea:focus-visible {
 
 .helloada-phase-copy strong {
   overflow: hidden;
-  color: var(--helloada-warm);
+  color: var(--helloada-ink);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: -0.01em;
@@ -1160,10 +1130,10 @@ textarea:focus-visible {
 .helloada-phase-action {
   min-height: 27px;
   padding: 0 9px;
-  border: 1px solid rgba(197, 220, 244, 0.2);
+  border: 1px solid var(--helloada-soft-line);
   border-radius: 999px;
   color: var(--helloada-muted);
-  background: rgba(255, 255, 255, 0.035);
+  background: var(--helloada-inset);
   cursor: pointer;
   font-size: 9px;
   font-weight: 700;
@@ -1185,7 +1155,7 @@ textarea:focus-visible {
 }
 
 .helloada-phase-action.is-primary:hover:not(:disabled) {
-  border-color: var(--helloada-warm);
+  border-color: var(--helloada-ink);
   color: #17120a;
   background: #ffffff;
 }
@@ -1229,7 +1199,7 @@ textarea:focus-visible {
 }
 
 .helloada-brief-inspector-header strong {
-  color: var(--helloada-warm);
+  color: var(--helloada-ink);
   font-size: 17px;
   font-weight: 650;
   letter-spacing: -0.04em;
@@ -1240,10 +1210,10 @@ textarea:focus-visible {
   width: 26px;
   height: 26px;
   place-items: center;
-  border: 1px solid rgba(197, 220, 244, 0.18);
+  border: 1px solid var(--helloada-soft-line);
   border-radius: 50%;
   color: var(--helloada-muted);
-  background: rgba(255, 255, 255, 0.04);
+  background: var(--helloada-inset);
   cursor: pointer;
   font-size: 18px;
   line-height: 1;
@@ -1268,12 +1238,12 @@ textarea:focus-visible {
 
 .helloada-brief-section {
   padding-top: 8px;
-  border-top: 1px solid rgba(197, 220, 244, 0.1);
+  border-top: 1px solid var(--helloada-soft-line);
 }
 
 .helloada-brief-section h3 {
   margin: 0 0 6px;
-  color: #b8adff;
+  color: var(--helloada-violet);
   font-size: 9px;
   font-weight: 750;
   letter-spacing: 0.12em;
@@ -1290,9 +1260,9 @@ textarea:focus-visible {
   grid-template-columns: minmax(75px, 0.62fr) minmax(0, 1fr);
   gap: 9px;
   padding: 7px 8px;
-  border: 1px solid rgba(197, 220, 244, 0.08);
+  border: 1px solid var(--helloada-soft-line);
   border-radius: 8px;
-  background: rgba(7, 10, 18, 0.28);
+  background: var(--helloada-inset);
 }
 
 .helloada-brief-entry > div {
@@ -1319,7 +1289,7 @@ textarea:focus-visible {
 
 .helloada-brief-entry > span {
   overflow-wrap: anywhere;
-  color: #dce3ed;
+  color: var(--helloada-muted);
   font-size: 10px;
   line-height: 1.4;
 }
@@ -1328,7 +1298,7 @@ textarea:focus-visible {
   display: grid;
   gap: 6px;
   padding-top: 9px;
-  border-top: 1px solid rgba(197, 220, 244, 0.1);
+  border-top: 1px solid var(--helloada-soft-line);
 }
 
 .helloada-brief-correction label {
@@ -1343,10 +1313,10 @@ textarea:focus-visible {
   width: 100%;
   min-height: 52px;
   padding: 8px;
-  border: 1px solid rgba(197, 220, 244, 0.16);
+  border: 1px solid var(--helloada-soft-line);
   border-radius: 8px;
   color: var(--helloada-ink);
-  background: rgba(7, 10, 18, 0.42);
+  background: var(--helloada-inset);
   font-size: 10px;
   line-height: 1.4;
   resize: vertical;
@@ -1356,7 +1326,7 @@ textarea:focus-visible {
   min-height: 29px;
   border: 1px solid rgba(255, 107, 94, 0.3);
   border-radius: 8px;
-  color: #071014;
+  color: var(--helloada-action-ink);
   background: var(--helloada-cyan);
   cursor: pointer;
   font-size: 9px;
@@ -1388,7 +1358,7 @@ textarea:focus-visible {
 .helloada-ada-panel {
   height: 100%;
   min-height: 0;
-  border: 1px solid rgba(197, 220, 244, 0.15);
+  border: 1px solid var(--helloada-soft-line);
   border-radius: 18px;
   background: var(--helloada-review);
   box-shadow: 0 24px 70px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.06);
@@ -1398,7 +1368,7 @@ textarea:focus-visible {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: linear-gradient(180deg, #111a24, #0c121a 40%);
+  background: var(--helloada-panel);
 }
 
 .helloada-review-toolbar {
@@ -1408,8 +1378,8 @@ textarea:focus-visible {
   min-height: 54px;
   padding: 7px 11px;
   overflow-x: auto;
-  border-bottom: 1px solid rgba(197, 220, 244, 0.12);
-  background: linear-gradient(180deg, #192230, #121a25);
+  border-bottom: 1px solid var(--helloada-soft-line);
+  background: var(--helloada-panel);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.065), inset 0 -1px 0 rgba(255, 107, 94, 0.04);
   scrollbar-width: none;
 }
@@ -1443,7 +1413,7 @@ textarea:focus-visible {
 }
 
 .helloada-window-title span {
-  color: #9ba9ba;
+  color: var(--helloada-muted);
   font-size: 10px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -1451,7 +1421,7 @@ textarea:focus-visible {
 
 .helloada-window-title strong {
   overflow: hidden;
-  color: #f8fbff;
+  color: var(--helloada-ink);
   font-size: 12px;
   font-weight: 600;
   text-overflow: ellipsis;
@@ -1462,7 +1432,7 @@ textarea:focus-visible {
   flex: 0 0 auto;
   gap: 3px;
   padding: 3px;
-  border: 1px solid rgba(197, 220, 244, 0.16);
+  border: 1px solid var(--helloada-soft-line);
   border-radius: 999px;
   background: rgba(0, 0, 0, 0.14);
 }
@@ -1482,7 +1452,7 @@ textarea:focus-visible {
 
 .helloada-segmented button:hover,
 .helloada-segmented button.is-selected {
-  color: #091013;
+  color: var(--helloada-action-ink);
   background: var(--helloada-cyan);
   transform: translateY(-1px);
 }
@@ -1496,7 +1466,7 @@ textarea:focus-visible {
 }
 
 .helloada-page-control > span {
-  color: #98a8b9;
+  color: var(--helloada-muted);
   font-size: 9px;
   font-weight: 700;
   letter-spacing: 0.1em;
@@ -1508,10 +1478,10 @@ textarea:focus-visible {
   width: 96px;
   min-width: 96px;
   padding: 7px 24px 7px 9px;
-  border: 1px solid rgba(197, 220, 244, 0.18);
+  border: 1px solid var(--helloada-soft-line);
   border-radius: 8px;
   color: var(--helloada-ink);
-  background: #202c3c;
+  background: var(--helloada-panel-soft);
   font-size: 11px;
   font-weight: 600;
 }
@@ -1524,7 +1494,7 @@ textarea:focus-visible {
   padding: 7px 10px;
   border: 1px solid rgba(143, 128, 255, 0.52);
   border-radius: 9px;
-  color: #e5e0ff;
+  color: var(--helloada-violet);
   background: linear-gradient(105deg, rgba(255, 200, 87, 0.26), rgba(255, 107, 94, 0.12));
   cursor: pointer;
   font-size: 10px;
@@ -1572,7 +1542,7 @@ textarea:focus-visible {
   padding: 0 10px;
   border: 1px solid rgba(255, 107, 94, 0.48);
   border-radius: 8px;
-  color: #071014;
+  color: var(--helloada-action-ink);
   background: var(--helloada-cyan);
   cursor: pointer;
   font-size: 9px;
@@ -1582,21 +1552,21 @@ textarea:focus-visible {
 }
 
 .helloada-draft-actions button.is-quiet {
-  border-color: rgba(197, 220, 244, 0.2);
+  border-color: var(--helloada-soft-line);
   color: var(--helloada-muted);
   background: transparent;
 }
 
 .helloada-draft-action.is-publish {
   border-color: rgba(142, 128, 255, 0.7);
-  color: #f8f5ff;
+  color: var(--helloada-action-ink);
   background: linear-gradient(105deg, rgba(255, 200, 87, 0.72), rgba(255, 107, 94, 0.72));
 }
 
 .helloada-draft-confirmation {
   flex-basis: 100%;
   margin: 0;
-  color: #dfffff;
+  color: var(--helloada-ink);
   font-size: 10px;
   line-height: 1.4;
   text-align: right;
@@ -1619,7 +1589,7 @@ textarea:focus-visible {
   flex: 0 0 auto;
   gap: 9px;
   padding: 10px 11px;
-  border-bottom: 1px solid rgba(197, 220, 244, 0.12);
+  border-bottom: 1px solid var(--helloada-soft-line);
   background: linear-gradient(105deg, rgba(255, 107, 94, 0.055), rgba(255, 200, 87, 0.08));
 }
 
@@ -1641,7 +1611,7 @@ textarea:focus-visible {
 }
 
 .helloada-review-edit-strip-heading strong {
-  color: #edf7ff;
+  color: var(--helloada-ink);
   font-size: 11px;
   font-weight: 650;
 }
@@ -1669,9 +1639,9 @@ textarea:focus-visible {
   align-items: center;
   min-width: 300px;
   padding: 6px;
-  border: 1px solid rgba(197, 220, 244, 0.13);
+  border: 1px solid var(--helloada-soft-line);
   border-radius: 10px;
-  background: rgba(7, 10, 18, 0.34);
+  background: var(--helloada-inset);
 }
 
 .helloada-review-edit-card-thumb {
@@ -1706,7 +1676,7 @@ textarea:focus-visible {
 }
 
 .helloada-review-edit-card-copy strong {
-  color: #eaf3ff;
+  color: var(--helloada-ink);
   font-size: 10px;
   font-weight: 650;
 }
@@ -1749,7 +1719,7 @@ textarea:focus-visible {
   flex: 1;
   min-height: 0;
   padding: 9px;
-  background: #080d14;
+  background: var(--helloada-panel-soft);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
 }
 
@@ -1760,7 +1730,7 @@ textarea:focus-visible {
   width: 100%;
   height: 100%;
   min-height: 0;
-  border: 1px solid rgba(197, 220, 244, 0.13);
+  border: 1px solid var(--helloada-soft-line);
   border-radius: 10px;
   background: var(--helloada-warm);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
@@ -1798,7 +1768,7 @@ textarea:focus-visible {
   padding: 8px 11px;
   border: 1px solid rgba(255, 107, 94, 0.38);
   border-radius: 9px;
-  color: #e9ffff;
+  color: var(--helloada-ink);
   background: rgba(7, 16, 20, 0.86);
   box-shadow: 0 8px 24px rgba(3, 5, 9, 0.3);
   font-size: 10px;
@@ -1809,12 +1779,12 @@ textarea:focus-visible {
 
 .helloada-preview-status.is-build-required {
   border-color: rgba(255, 198, 92, 0.46);
-  color: #ffe6ad;
+  color: var(--helloada-violet);
 }
 
 .helloada-preview-status.is-error {
   border-color: rgba(255, 104, 122, 0.52);
-  color: #ffd1d7;
+  color: var(--helloada-negative);
 }
 
 .helloada-preview-status-spinner {
@@ -1848,7 +1818,7 @@ textarea:focus-visible {
   padding: 0 8px;
   border: 1px solid rgba(255, 255, 255, 0.82);
   border-radius: 7px;
-  color: #071014;
+  color: var(--helloada-action-ink);
   background: var(--helloada-cyan);
   box-shadow: 0 5px 18px rgba(3, 5, 9, 0.4), 0 0 0 3px rgba(7, 16, 20, 0.25);
   cursor: pointer;
@@ -1861,7 +1831,7 @@ textarea:focus-visible {
 }
 
 .helloada-preview-edit-overlay button:hover {
-  background: #a4ffff;
+  background: var(--helloada-cyan);
   transform: translateY(-3px) scale(1.03);
 }
 
@@ -1898,7 +1868,7 @@ textarea:focus-visible {
   justify-content: space-between;
   gap: 12px;
   padding: 17px 18px 14px;
-  border-bottom: 1px solid rgba(197, 220, 244, 0.12);
+  border-bottom: 1px solid var(--helloada-soft-line);
   background: linear-gradient(120deg, rgba(255, 107, 94, 0.08), rgba(255, 200, 87, 0.12));
 }
 
@@ -1908,19 +1878,19 @@ textarea:focus-visible {
 }
 
 .helloada-panel-header strong {
-  color: var(--helloada-warm);
+  color: var(--helloada-ink);
   font-size: 20px;
   font-weight: 650;
   letter-spacing: -0.04em;
 }
 
 .helloada-panel-header > div > span:last-child {
-  color: #aeb8ca;
+  color: var(--helloada-muted);
   font-size: 10px;
 }
 
 .helloada-panel-header .helloada-eyebrow {
-  color: #b8adff;
+  color: var(--helloada-violet);
   font-size: 9px;
 }
 
@@ -1939,7 +1909,7 @@ textarea:focus-visible {
   padding: 0 8px;
   border: 1px solid rgba(255, 107, 94, 0.24);
   border-radius: 999px;
-  color: #c9fbff;
+  color: var(--helloada-ink);
   background: rgba(255, 107, 94, 0.08);
   font-size: 9px;
   font-weight: 650;
@@ -1979,9 +1949,9 @@ textarea:focus-visible {
   gap: 8px;
   min-height: 35px;
   padding: 0 17px;
-  border-bottom: 1px solid rgba(197, 220, 244, 0.1);
-  color: #8f9db0;
-  background: rgba(7, 10, 18, 0.28);
+  border-bottom: 1px solid var(--helloada-soft-line);
+  color: var(--helloada-muted);
+  background: var(--helloada-inset);
   font-size: 10px;
 }
 
@@ -2010,7 +1980,7 @@ textarea:focus-visible {
   min-height: 0;
   overflow-y: auto;
   padding: 17px 16px;
-  background: rgba(7, 10, 18, 0.22);
+  background: var(--helloada-inset);
   scrollbar-color: rgba(255, 107, 94, 0.34) transparent;
   scrollbar-width: thin;
 }
@@ -2109,9 +2079,9 @@ textarea:focus-visible {
 
 .helloada-chat-message-body {
   padding: 11px 12px;
-  border: 1px solid rgba(197, 220, 244, 0.11);
+  border: 1px solid var(--helloada-soft-line);
   border-radius: 13px 13px 13px 3px;
-  color: #d9dee7;
+  color: var(--helloada-muted);
   background: rgba(28, 37, 54, 0.78);
   font-size: 12px;
   line-height: 1.52;
@@ -2120,7 +2090,7 @@ textarea:focus-visible {
 .helloada-chat-message.is-user .helloada-chat-message-body {
   border-color: rgba(255, 107, 94, 0.24);
   border-radius: 13px 13px 3px 13px;
-  color: #dffcff;
+  color: var(--helloada-ink);
   background: rgba(255, 107, 94, 0.1);
 }
 
@@ -2136,9 +2106,9 @@ textarea:focus-visible {
   width: 92px;
   margin: 0;
   overflow: hidden;
-  border: 1px solid rgba(197, 220, 244, 0.16);
+  border: 1px solid var(--helloada-soft-line);
   border-radius: 9px;
-  background: rgba(7, 10, 18, 0.5);
+  background: var(--helloada-inset);
 }
 
 .helloada-chat-attachment img,
@@ -2149,7 +2119,7 @@ textarea:focus-visible {
   place-items: center;
   object-fit: cover;
   color: var(--helloada-dim);
-  background: rgba(197, 220, 244, 0.06);
+  background: var(--helloada-soft-line);
   font-size: 9px;
 }
 
@@ -2179,7 +2149,7 @@ textarea:focus-visible {
 }
 
 .helloada-chat-attachment figcaption small.is-error {
-  color: #ff9b9b;
+  color: var(--helloada-negative);
 }
 
 .helloada-chat-message-body p,
@@ -2207,7 +2177,7 @@ textarea:focus-visible {
 .helloada-chat-message-body h3,
 .helloada-chat-message-body h4,
 .helloada-chat-message-body h5 {
-  color: var(--helloada-warm);
+  color: var(--helloada-ink);
   line-height: 1.2;
 }
 
@@ -2218,8 +2188,8 @@ textarea:focus-visible {
 .helloada-chat-message-body ol { padding-left: 18px; }
 .helloada-chat-message-body li + li { margin-top: 4px; }
 .helloada-chat-message-body blockquote { padding-left: 10px; border-left: 2px solid var(--helloada-cyan); color: var(--helloada-muted); }
-.helloada-chat-message-body code { padding: 1px 4px; border-radius: 4px; color: #ffe0c2; background: rgba(255, 107, 94, 0.1); font-size: 0.9em; }
-.helloada-chat-message-body pre { overflow-x: auto; padding: 10px; border-radius: 9px; color: #dce2ed; background: #090b0f; white-space: pre-wrap; }
+.helloada-chat-message-body code { padding: 1px 4px; border-radius: 4px; color: var(--helloada-code); background: rgba(255, 107, 94, 0.1); font-size: 0.9em; }
+.helloada-chat-message-body pre { overflow-x: auto; padding: 10px; border-radius: 9px; color: var(--helloada-ink); background: var(--helloada-panel-soft); white-space: pre-wrap; }
 .helloada-chat-message-body pre code { padding: 0; background: transparent; }
 .helloada-chat-message-body a { color: var(--helloada-cyan); text-decoration: underline; text-underline-offset: 2px; }
 
@@ -2228,13 +2198,13 @@ textarea:focus-visible {
   padding: 10px 11px;
   border: 1px solid rgba(255, 202, 103, 0.25);
   border-radius: 10px;
-  color: #f3dca8;
+  color: var(--helloada-violet);
   background: rgba(255, 202, 103, 0.08);
 }
 
 .helloada-context-note strong {
   display: block;
-  color: #ffe7ae;
+  color: var(--helloada-violet);
   font-size: 11px;
 }
 
@@ -2259,10 +2229,10 @@ textarea:focus-visible {
 .helloada-shortcuts button {
   min-width: max-content;
   padding: 7px 9px;
-  border: 1px solid rgba(197, 220, 244, 0.13);
+  border: 1px solid var(--helloada-soft-line);
   border-radius: 8px;
   color: var(--helloada-muted);
-  background: rgba(7, 10, 18, 0.24);
+  background: var(--helloada-inset);
   cursor: pointer;
   font-size: 10px;
   font-weight: 650;
@@ -2284,8 +2254,8 @@ textarea:focus-visible {
   display: grid;
   gap: 7px;
   padding: 13px 14px 14px;
-  border-top: 1px solid rgba(197, 220, 244, 0.12);
-  background: rgba(7, 10, 18, 0.55);
+  border-top: 1px solid var(--helloada-soft-line);
+  background: var(--helloada-inset);
 }
 
 .helloada-chat-form label {
@@ -2305,10 +2275,10 @@ textarea:focus-visible {
   width: 100%;
   min-height: 77px;
   padding: 11px 11px 42px 44px;
-  border: 1px solid rgba(197, 220, 244, 0.17);
+  border: 1px solid var(--helloada-soft-line);
   border-radius: 11px;
   color: var(--helloada-ink);
-  background: #151e2e;
+  background: var(--helloada-panel-soft);
   font-size: 12px;
   line-height: 1.4;
   resize: none;
@@ -2357,7 +2327,7 @@ textarea:focus-visible {
   height: 14px;
   place-items: center;
   border-radius: 50%;
-  color: #061014;
+  color: var(--helloada-action-ink);
   background: var(--helloada-cyan);
   font-size: 12px;
   line-height: 1;
@@ -2371,10 +2341,10 @@ textarea:focus-visible {
   width: 28px;
   height: 28px;
   place-items: center;
-  border: 1px solid rgba(197, 220, 244, 0.2);
+  border: 1px solid var(--helloada-soft-line);
   border-radius: 8px;
   color: var(--helloada-cyan);
-  background: rgba(7, 10, 18, 0.5);
+  background: var(--helloada-inset);
   cursor: pointer;
   font-size: 16px;
   line-height: 1;
@@ -2397,8 +2367,8 @@ textarea:focus-visible {
   padding: 5px 5px 5px 10px;
   border: 0;
   border-radius: 999px;
-  color: #071014;
-  background: linear-gradient(120deg, var(--helloada-cyan), #92eaff 58%, #9181ff);
+  color: var(--helloada-action-ink);
+  background: var(--helloada-cyan);
   cursor: pointer;
   font-size: 10px;
   font-weight: 750;
@@ -2418,7 +2388,7 @@ textarea:focus-visible {
   transition: transform 650ms var(--helloada-spring);
 }
 
-.helloada-send-button:hover:not(:disabled) { background: #84f4f8; transform: translateY(-2px); }
+.helloada-send-button:hover:not(:disabled) { background: var(--helloada-cyan); transform: translateY(-2px); }
 .helloada-send-button:hover:not(:disabled) b { transform: translate(2px, -2px); }
 .helloada-send-button:disabled { cursor: not-allowed; opacity: 0.4; }
 
@@ -2456,6 +2426,7 @@ textarea:focus-visible {
 }
 
 .helloada-field-popover {
+  @include surfaces.paper;
   display: grid;
   gap: 16px;
   width: min(510px, 100%);
@@ -2464,7 +2435,7 @@ textarea:focus-visible {
   padding: 20px;
   border: 1px solid rgba(255, 107, 94, 0.35);
   border-radius: 18px;
-  background: linear-gradient(150deg, #182334, #0d141f 72%);
+  background: var(--helloada-panel);
   box-shadow: 0 28px 90px rgba(0, 0, 0, 0.58), inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
@@ -2477,7 +2448,7 @@ textarea:focus-visible {
 
 .helloada-field-popover-header h2 {
   margin: 6px 0 3px;
-  color: #f7fbff;
+  color: var(--helloada-ink);
   font-size: 24px;
   font-weight: 550;
   letter-spacing: -0.04em;
@@ -2495,7 +2466,7 @@ textarea:focus-visible {
   width: 30px;
   height: 30px;
   padding: 0;
-  border: 1px solid rgba(197, 220, 244, 0.2);
+  border: 1px solid var(--helloada-soft-line);
   border-radius: 50%;
   color: var(--helloada-muted);
   background: transparent;
@@ -2512,10 +2483,10 @@ textarea:focus-visible {
   width: 100%;
   min-height: 115px;
   padding: 12px;
-  border: 1px solid rgba(197, 220, 244, 0.18);
+  border: 1px solid var(--helloada-soft-line);
   border-radius: 10px;
-  color: #f7fbff;
-  background: rgba(7, 10, 18, 0.5);
+  color: var(--helloada-ink);
+  background: var(--helloada-inset);
   resize: vertical;
   font: inherit;
   font-size: 14px;
@@ -2560,7 +2531,7 @@ textarea:focus-visible {
 
 .helloada-field-popover-image-actions button.is-quiet,
 .helloada-field-popover-footer .helloada-page-editor-cancel {
-  border-color: rgba(197, 220, 244, 0.2);
+  border-color: var(--helloada-soft-line);
   color: var(--helloada-muted);
   background: transparent;
 }
@@ -2575,9 +2546,9 @@ textarea:focus-visible {
   max-height: 240px;
   overflow: auto;
   padding: 8px;
-  border: 1px solid rgba(197, 220, 244, 0.12);
+  border: 1px solid var(--helloada-soft-line);
   border-radius: 10px;
-  background: rgba(7, 10, 18, 0.28);
+  background: var(--helloada-inset);
 }
 
 .helloada-field-popover-gallery button {
@@ -2585,7 +2556,7 @@ textarea:focus-visible {
   gap: 4px;
   min-width: 0;
   padding: 5px;
-  border: 1px solid rgba(197, 220, 244, 0.12);
+  border: 1px solid var(--helloada-soft-line);
   border-radius: 8px;
   color: var(--helloada-muted);
   background: transparent;
@@ -2608,6 +2579,7 @@ textarea:focus-visible {
 }
 
 .helloada-page-editor {
+  @include surfaces.paper;
   display: flex;
   flex-direction: column;
   width: min(900px, 100%);
@@ -2615,7 +2587,7 @@ textarea:focus-visible {
   overflow: hidden;
   border: 1px solid rgba(255, 107, 94, 0.26);
   border-radius: 22px;
-  background: linear-gradient(150deg, #182334, #0d141f 72%);
+  background: var(--helloada-panel);
   box-shadow: 0 34px 110px rgba(0, 0, 0, 0.58), 0 0 0 1px rgba(255, 200, 87, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
@@ -2626,13 +2598,13 @@ textarea:focus-visible {
   justify-content: space-between;
   gap: 24px;
   padding: 24px 26px 20px;
-  border-bottom: 1px solid rgba(197, 220, 244, 0.12);
+  border-bottom: 1px solid var(--helloada-soft-line);
   background: linear-gradient(110deg, rgba(255, 107, 94, 0.08), rgba(255, 200, 87, 0.16));
 }
 
 .helloada-page-editor-header h2 {
   margin: 8px 0 7px;
-  color: #f7fbff;
+  color: var(--helloada-ink);
   font-size: clamp(24px, 4vw, 38px);
   font-weight: 550;
   letter-spacing: -0.06em;
@@ -2642,7 +2614,7 @@ textarea:focus-visible {
 .helloada-page-editor-header > div > p:last-child {
   max-width: 560px;
   margin: 0;
-  color: #aab6c8;
+  color: var(--helloada-muted);
   font-size: 11px;
   line-height: 1.5;
 }
@@ -2654,10 +2626,10 @@ textarea:focus-visible {
   width: 32px;
   height: 32px;
   padding: 0;
-  border: 1px solid rgba(197, 220, 244, 0.2);
+  border: 1px solid var(--helloada-soft-line);
   border-radius: 50%;
   color: var(--helloada-muted);
-  background: rgba(7, 10, 18, 0.32);
+  background: var(--helloada-inset);
   cursor: pointer;
   font-size: 22px;
   line-height: 1;
@@ -2684,9 +2656,9 @@ textarea:focus-visible {
   display: grid;
   gap: 10px;
   padding: 15px;
-  border: 1px solid rgba(197, 220, 244, 0.1);
+  border: 1px solid var(--helloada-soft-line);
   border-radius: 15px;
-  background: rgba(7, 10, 18, 0.2);
+  background: var(--helloada-inset);
 }
 
 .helloada-page-editor-section-heading {
@@ -2695,11 +2667,11 @@ textarea:focus-visible {
   justify-content: space-between;
   gap: 12px;
   padding-bottom: 7px;
-  border-bottom: 1px solid rgba(197, 220, 244, 0.12);
+  border-bottom: 1px solid var(--helloada-soft-line);
 }
 
 .helloada-page-editor-section-heading > span {
-  color: #c4bcff;
+  color: var(--helloada-violet);
   font-size: 11px;
   font-weight: 750;
   letter-spacing: 0.16em;
@@ -2720,17 +2692,17 @@ textarea:focus-visible {
   display: grid;
   gap: 8px;
   padding: 13px;
-  border: 1px solid rgba(197, 220, 244, 0.1);
+  border: 1px solid var(--helloada-soft-line);
   border-radius: 13px;
-  background: rgba(7, 10, 18, 0.32);
+  background: var(--helloada-inset);
 }
 
 .helloada-page-editor-empty {
   padding: 34px 22px;
-  border: 1px dashed rgba(197, 220, 244, 0.18);
+  border: 1px dashed var(--helloada-soft-line);
   border-radius: 13px;
   color: var(--helloada-muted);
-  background: rgba(7, 10, 18, 0.2);
+  background: var(--helloada-inset);
   font-size: 12px;
   text-align: center;
 }
@@ -2743,7 +2715,7 @@ textarea:focus-visible {
 }
 
 .helloada-page-editor-field-heading label {
-  color: #eef5ff;
+  color: var(--helloada-ink);
   font-size: 12px;
   font-weight: 650;
 }
@@ -2759,10 +2731,10 @@ textarea:focus-visible {
   width: 100%;
   min-height: 84px;
   padding: 10px 11px;
-  border: 1px solid rgba(197, 220, 244, 0.17);
+  border: 1px solid var(--helloada-soft-line);
   border-radius: 9px;
   color: var(--helloada-ink);
-  background: rgba(16, 25, 39, 0.82);
+  background: var(--helloada-inset);
   font-size: 12px;
   line-height: 1.55;
   resize: vertical;
@@ -2828,7 +2800,7 @@ textarea:focus-visible {
   padding: 0 10px;
   border: 1px solid rgba(255, 200, 87, 0.44);
   border-radius: 8px;
-  color: #d7d2ff;
+  color: var(--helloada-violet);
   background: rgba(255, 200, 87, 0.13);
   cursor: pointer;
   font-size: 9px;
@@ -2862,10 +2834,10 @@ textarea:focus-visible {
   width: 100%;
   min-height: 35px;
   padding: 0 10px;
-  border: 1px solid rgba(197, 220, 244, 0.18);
+  border: 1px solid var(--helloada-soft-line);
   border-radius: 9px;
   color: var(--helloada-ink);
-  background: #182638;
+  background: var(--helloada-panel-soft);
   font-size: 11px;
 }
 
@@ -2884,10 +2856,10 @@ textarea:focus-visible {
   gap: 5px;
   min-width: 0;
   padding: 5px;
-  border: 1px solid rgba(197, 220, 244, 0.12);
+  border: 1px solid var(--helloada-soft-line);
   border-radius: 8px;
   color: var(--helloada-muted);
-  background: rgba(255, 255, 255, 0.025);
+  background: var(--helloada-inset);
   cursor: pointer;
   text-align: left;
   transition: border-color 250ms var(--helloada-ease), background-color 250ms var(--helloada-ease), transform 250ms var(--helloada-spring);
@@ -2919,7 +2891,7 @@ textarea:focus-visible {
 
 .helloada-page-editor-gallery-caption {
   overflow: hidden;
-  color: #c7d1df;
+  color: var(--helloada-muted);
   font-size: 9px;
   line-height: 1.25;
   text-overflow: ellipsis;
@@ -2996,16 +2968,16 @@ textarea:focus-visible {
 
 .helloada-page-editor-image-actions button.is-quiet,
 .helloada-page-editor-cancel {
-  border-color: rgba(197, 220, 244, 0.16);
+  border-color: var(--helloada-soft-line);
   color: var(--helloada-muted);
-  background: rgba(255, 255, 255, 0.025);
+  background: var(--helloada-inset);
 }
 
 .helloada-rich-editor {
   overflow: hidden;
-  border: 1px solid rgba(197, 220, 244, 0.17);
+  border: 1px solid var(--helloada-soft-line);
   border-radius: 10px;
-  background: rgba(16, 25, 39, 0.82);
+  background: var(--helloada-inset);
 }
 
 .helloada-rich-editor-toolbar {
@@ -3014,8 +2986,8 @@ textarea:focus-visible {
   gap: 4px;
   min-height: 37px;
   padding: 4px 6px;
-  border-bottom: 1px solid rgba(197, 220, 244, 0.11);
-  background: rgba(255, 255, 255, 0.025);
+  border-bottom: 1px solid var(--helloada-soft-line);
+  background: var(--helloada-inset);
 }
 
 .helloada-rich-editor-toolbar button {
@@ -3042,7 +3014,7 @@ textarea:focus-visible {
   width: 1px;
   height: 18px;
   margin: 0 3px;
-  background: rgba(197, 220, 244, 0.15);
+  background: var(--helloada-soft-line);
 }
 
 .helloada-rich-editor-canvas {
@@ -3084,8 +3056,8 @@ textarea:focus-visible {
   justify-content: space-between;
   gap: 16px;
   padding: 14px 26px;
-  border-top: 1px solid rgba(197, 220, 244, 0.12);
-  background: rgba(7, 10, 18, 0.36);
+  border-top: 1px solid var(--helloada-soft-line);
+  background: var(--helloada-inset);
 }
 
 .helloada-page-editor-footer > span {
@@ -3104,12 +3076,12 @@ textarea:focus-visible {
   min-height: 34px;
   padding-inline: 14px;
   border-color: rgba(255, 107, 94, 0.55);
-  color: #071014;
+  color: var(--helloada-action-ink);
   background: var(--helloada-cyan);
 }
 
 .helloada-page-editor-save:hover:not(:disabled) {
-  background: #8cf6f7;
+  background: var(--helloada-cyan);
   transform: translateY(-1px);
 }
 
@@ -3138,9 +3110,9 @@ textarea:focus-visible {
   line-height: 1.5;
 }
 
-.helloada-page-editor-notice { color: #9ffbe3; background: rgba(50, 229, 188, 0.07); }
+.helloada-page-editor-notice { color: var(--helloada-positive); background: rgba(50, 229, 188, 0.07); }
 .helloada-page-editor-message { color: var(--helloada-muted); }
-.helloada-page-editor-message.is-error { color: #ffb8c4; background: rgba(255, 109, 131, 0.08); }
+.helloada-page-editor-message.is-error { color: var(--helloada-negative); background: rgba(255, 109, 131, 0.08); }
 
 @media (max-width: 1080px) {
   .helloada-workspace {
