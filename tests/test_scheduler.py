@@ -171,3 +171,14 @@ def test_config_driven_spec_flows_through(setup):
     config = {"schedule": {"article": {"every": 21, "weekday": "friday"}}}
     assert _spec(config, "article") == {"every": 21, "weekday": "friday"}
     assert _spec(config, "digest") == {"every": "daily", "at": "09:00"}
+
+
+def test_monthly_schedule_is_calendar_anchored_and_survives_short_month():
+    from zoneinfo import ZoneInfo
+    zone = ZoneInfo("America/Cancun")
+    spec = normalize_schedule({"every": "monthly", "day": 31, "at": "09:00"})
+    start = datetime.datetime(2026, 1, 31, 12, tzinfo=zone)
+    february = compute_next(spec, start.timestamp(), timezone_name="America/Cancun")
+    assert datetime.datetime.fromtimestamp(february, zone) == datetime.datetime(2026, 2, 28, 9, tzinfo=zone)
+    march = compute_next(spec, february, timezone_name="America/Cancun")
+    assert datetime.datetime.fromtimestamp(march, zone) == datetime.datetime(2026, 3, 31, 9, tzinfo=zone)

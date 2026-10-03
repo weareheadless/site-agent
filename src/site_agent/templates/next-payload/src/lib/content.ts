@@ -22,6 +22,7 @@ export const mediaAlt = (value: unknown) => {
 export const lexicalText = (value: unknown): string => {
   if (typeof value === 'string') return value.trim()
   const node = objectValue(value)
+  if (node.root && typeof node.root === 'object') return lexicalText(node.root)
   if (typeof node.text === 'string') return node.text.trim()
   if (!Array.isArray(node.children)) return ''
   return node.children.map(lexicalText).filter(Boolean).join('\n').trim()
@@ -32,16 +33,12 @@ export const lexicalParagraphs = (value: unknown) => lexicalText(value).split(/\
 type PayloadClient = Awaited<ReturnType<typeof getPayload>>
 
 // A Cloudflare build must not initialize the D1/R2 Payload adapter. The
-// frontend remains buildable and falls back to its static shell; at runtime
-// Payload is the source of truth. This guard also prevents a failed binding
-// from taking down the entire public site during a deploy.
+// frontend remains buildable; at runtime Payload is the source of truth.
+// A runtime binding/database failure must surface instead of serving a
+// different static website and hiding the failed canonical source.
 const payload = async (): Promise<PayloadClient | undefined> => {
   if (process.env.PAYLOAD_LOCAL_BUILD === '1' || process.env.NEXT_PHASE === 'phase-production-build') return undefined
-  try {
-    return await getPayload({ config })
-  } catch {
-    return undefined
-  }
+  return await getPayload({ config })
 }
 
 export async function getPageBySlug(slug = 'home'): Promise<ContentRecord | undefined> {

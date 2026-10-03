@@ -8,18 +8,22 @@ from ..core.contracts import ArtifactKind
 from ..core.growth_contracts import GrowthPolicy
 from ..core.memory import Memory
 from .growth_workflow import _source_state
+from .growth_tasks import growth_tasks
 
 
 def growth_snapshot(memory: Memory, config: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     state = context.get("seo_provisioning_state") or memory.kv_get("seo_provisioning_state", {}) or {}
     scheduler = context.get("scheduler")
     jobs = {name: spec for name, spec, _fn in getattr(scheduler, "jobs", [])}
+    runs = memory.list_growth_runs(limit=None)
     activities = []
-    for name in ("article", "growth_reconciler", "seo_insight", "weekly_report", "seo_site_report_cycle", "article_research_cycle", "social_post"):
+    for name in ("growth_initial", "growth_daily", "growth_weekly", "growth_monthly"):
+        if name == "growth_initial" and any(row.get("trigger") == "initial" and row.get("status") == "complete" for row in runs):
+            continue
         stamp = memory.kv_get(f"next_run:{name}")
         next_run = datetime.datetime.fromtimestamp(stamp, datetime.timezone.utc).isoformat() if name in jobs and isinstance(stamp, (int, float)) else None
         activities.append({"id": name, "enabled": name in jobs, "schedule": jobs.get(name), "nextRun": next_run})
-    drafts = memory.list_drafts(limit=100)
+    drafts = memory.list_drafts(limit=None)
     def pick(row: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
         return {key: row.get(key) for key in keys}
     evidence_artifact = next(iter(memory.list_artifacts(kind=ArtifactKind.GROWTH_EVIDENCE.value, limit=1)), None)
@@ -32,19 +36,19 @@ def growth_snapshot(memory: Memory, config: dict[str, Any], context: dict[str, A
     goal = memory.latest_growth_goal()
     latest_run = memory.latest_growth_run()
     owner_actions = []
-    for action in memory.list_owner_actions(states=("open", "started", "waiting"), limit=3):
+    for action in memory.list_owner_actions(states=("open", "started", "waiting"), limit=500):
         row = action.to_record()
-        owner_actions.append({key: row.get(key) for key in ("id", "title", "summary", "action_label", "priority", "state", "source_ref", "artifact_id", "approval_id", "draft_id")})
-    initiatives = memory.list_strategy_initiatives(limit=100)
+        owner_actions.append(row)
+    initiatives = memory.list_strategy_initiatives(limit=None)
     candidates = [
-        {"id": row.get("id"), "kind": row.get("kind"), "title": row.get("title"), "summary": row.get("summary"), "state": row.get("state"), "draftId": row.get("draft_id"), "artifactId": row.get("artifact_id"), "approvalId": row.get("approval_id"), "growthRunId": row.get("growth_run_id"), "goalRevision": row.get("goal_revision"), "originRevision": row.get("origin_revision"), "candidateHash": row.get("candidate_hash"), "reviewPackageHash": row.get("review_package_hash"), "validation": row.get("validation", {}), "lastError": row.get("last_error"), "evidence": row.get("evidence", []), "expected": row.get("expected", {})}
+        {"id": row.get("id"), "kind": row.get("kind"), "title": row.get("title"), "summary": row.get("summary"), "state": row.get("state"), "draftId": row.get("draft_id"), "ownerActionId": row.get("owner_action_id"), "artifactId": row.get("artifact_id"), "approvalId": row.get("approval_id"), "growthRunId": row.get("growth_run_id"), "goalRevision": row.get("goal_revision"), "originRevision": row.get("origin_revision"), "candidateHash": row.get("candidate_hash"), "reviewPackageHash": row.get("review_package_hash"), "validation": row.get("validation", {}), "lastError": row.get("last_error"), "evidence": row.get("evidence", []), "expected": row.get("expected", {})}
         for row in initiatives
         if row.get("state") in {"preparing", "validating", "ready_for_review", "publishing", "verifying_live", "measuring", "reviewed"}
     ]
     if latest_run and latest_run.get("status") == "running":
         work_state = "running"
         work_summary_key = "backgroundRunning"
-    elif latest_run and latest_run.get("status") == "failed":
+    elif latest_run and latest_run.get("status") in {"failed", "blocked"}:
         work_state = "blocked"
         work_summary_key = "backgroundBlocked"
     else:
@@ -84,12 +88,13 @@ def growth_snapshot(memory: Memory, config: dict[str, Any], context: dict[str, A
         "evidence": evidence_projection,
         "latestEvidence": evidence_projection,
         "activities": activities,
+        "tasks": growth_tasks(memory, initiatives, drafts, activities, memory.list_strategy_outcomes(limit=100), runs),
         "goal": goal,
         "work": {
             "state": work_state,
             "summaryKey": work_summary_key,
             "latestRun": latest_run,
-            "nextRun": next((item["nextRun"] for item in activities if item["id"] == "growth_reconciler"), None),
+            "nextRun": min((item["nextRun"] for item in activities if item["nextRun"]), default=None),
         },
         "reviewQueue": owner_actions,
         "candidates": candidates[:10],

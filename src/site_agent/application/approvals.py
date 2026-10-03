@@ -141,6 +141,8 @@ class ApprovalService:
         idempotency_key = self._idempotency_key(approval)
         existing = self.memory.get_provider_receipt_by_idempotency_key(idempotency_key)
         if existing is not None:
+            self.memory.link_approval_request(approval_id, provider_receipt_id=existing.receipt_id)
+            self._reconcile_settled(approval, existing)
             return existing
         provider = self.providers.get(approval.provider_id)
         if provider is None:
@@ -148,6 +150,24 @@ class ApprovalService:
         capability = self._capability(artifact, approval.effect_class)
         if capability is not None and capability.availability == CapabilityAvailability.UNAVAILABLE:
             raise ApprovalServiceError("provider unavailable; prepared work is still saved")
+        # Persist the intent BEFORE crossing the provider boundary. A concurrent
+        # process or a retry after a crash sees this claim and must reconcile the
+        # provider's idempotency key, not invoke the effect again.
+        try:
+            claim = self.memory.create_provider_receipt(ProviderReceipt(
+                provider_id=approval.provider_id, capability_id=artifact.capability_id,
+                idempotency_key=idempotency_key, status=ReceiptStatus.UNCERTAIN,
+                action_id=approval.action_id, approval_id=approval.approval_id,
+                safe_message="Dispatch started; provider confirmation is pending.",
+            ))
+        except sqlite3.IntegrityError:
+            claim = self.memory.get_provider_receipt_by_idempotency_key(idempotency_key)
+            if claim is None:
+                raise
+            self.memory.link_approval_request(approval_id, provider_receipt_id=claim.receipt_id)
+            self._reconcile_settled(approval, claim)
+            return claim
+        self.memory.link_approval_request(approval_id, provider_receipt_id=claim.receipt_id)
         try:
             receipt = self._invoke(provider, artifact, approval, idempotency_key, capability)
             if not isinstance(receipt, ProviderReceipt):
@@ -167,7 +187,7 @@ class ApprovalService:
                 provider_id=approval.provider_id,
                 capability_id=artifact.capability_id,
                 idempotency_key=idempotency_key,
-                status=ReceiptStatus.FAILURE,
+                status=ReceiptStatus.UNCERTAIN,
                 action_id=approval.action_id,
                 approval_id=approval.approval_id,
                 safe_message=safe_provider_message(str(exc)),
@@ -188,18 +208,40 @@ class ApprovalService:
                     approval_id=approval.approval_id,
                     safe_message="The provider response exceeded the configured size limit.",
                 )
-        try:
-            saved = self.memory.create_provider_receipt(receipt)
-        except sqlite3.IntegrityError:
-            saved = self.memory.get_provider_receipt_by_idempotency_key(idempotency_key)
-            if saved is None:
-                raise
-        self.memory.link_approval_request(approval_id, provider_receipt_id=saved.receipt_id)
-        if saved.status in {ReceiptStatus.FAILURE, ReceiptStatus.UNCERTAIN}:
-            self.memory.transition_approval_request(approval_id, ApprovalStatus.FAILED)
-        elif self.actions is not None:
-            self.actions.reconcile(approval_id=approval_id)
+        saved = self.memory.settle_provider_receipt(claim.receipt_id, receipt)
+        self._reconcile_settled(approval, saved)
         return saved
+
+    def reconcile_dispatch(self, approval_id: int) -> ProviderReceipt:
+        """Read provider confirmation after a crash; never repeat the effect."""
+        approval = self._require(approval_id)
+        receipt = self.memory.get_provider_receipt_by_idempotency_key(self._idempotency_key(approval))
+        if receipt is None:
+            raise ApprovalServiceError("there is no dispatched operation to reconcile")
+        self.memory.link_approval_request(approval_id, provider_receipt_id=receipt.receipt_id)
+        if receipt.status != ReceiptStatus.UNCERTAIN:
+            self._reconcile_settled(approval, receipt)
+            return receipt
+        provider = self.providers.get(approval.provider_id)
+        reconcile = getattr(provider, "reconcile", None)
+        if not callable(reconcile):
+            raise ApprovalServiceError("provider confirmation is pending; automatic redispatch is prohibited")
+        artifact = self._ensure_current(approval)
+        confirmation = reconcile(artifact, approval, receipt.idempotency_key)
+        if not isinstance(confirmation, ProviderReceipt):
+            raise ApprovalServiceError("provider reconciliation returned no receipt")
+        saved = self.memory.settle_provider_receipt(receipt.receipt_id, confirmation)
+        self._reconcile_settled(approval, saved)
+        return saved
+
+    def _reconcile_settled(self, approval: ApprovalRequest, receipt: ProviderReceipt) -> None:
+        """Recover a crash between receipt settlement and the owner projection."""
+        if receipt.status == ReceiptStatus.FAILURE:
+            current = self._require(approval.approval_id)
+            if current.status == ApprovalStatus.APPROVED:
+                self.memory.transition_approval_request(approval.approval_id, ApprovalStatus.FAILED)
+        elif receipt.status == ReceiptStatus.SUCCESS and self.actions is not None:
+            self.actions.reconcile(approval_id=approval.approval_id)
 
     def approve_site_draft(self, draft_id: int) -> Any:
         if self.site_drafts is None:

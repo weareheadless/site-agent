@@ -504,9 +504,9 @@ class WebsiteBootstrapService:
                 "api_prefix": "/api",
                 "contract": {
                     "collections": {
-                        "pages": ["title", "slug", "summary", "body", "featuredImage", "canonicalUrl", "seo", "published"],
-                        "posts": ["title", "slug", "summary", "body", "featuredImage", "gallery", "author", "publishedAt", "modifiedAt", "category", "canonicalUrl", "seo", "published"],
-                        "products": ["title", "slug", "summary", "body", "featuredImage", "price", "published"],
+                        "pages": ["sourceId", "title", "slug", "summary", "body", "sections", "featuredImage", "canonicalUrl", "seo", "published"],
+                        "posts": ["sourceId", "title", "slug", "summary", "body", "featuredImage", "gallery", "author", "publishedAt", "modifiedAt", "category", "canonicalUrl", "seo", "published"],
+                        "products": ["sourceId", "title", "slug", "summary", "body", "featuredImage", "price", "published"],
                     },
                     "globals": {
                         "navigation": ["items", "groups", "footer", "footerGroups"],
@@ -523,6 +523,7 @@ class WebsiteBootstrapService:
             },
         })
         raw["display_name"] = display_name or raw.get("display_name") or tenant_id
+        raw["scheduler"] = {**_mapping(raw.get("scheduler")), "enabled": True}
         raw["blog"] = {**_mapping(raw.get("blog")), "engine": "payload", "journal_enabled": True}
         raw["ga"] = {
             **_mapping(raw.get("ga")),

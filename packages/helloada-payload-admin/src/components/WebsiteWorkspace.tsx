@@ -663,6 +663,7 @@ function ReviewWorkspace() {
   const [previewPlan, setPreviewPlan] = useState<PreviewPlan>()
   const [message, setMessage] = useState('')
   const preparedAsk = searchParams.get('ask')
+  const selectedGrowthTask = searchParams.get('growth_task')
   const selectedAssetId = searchParams.get('asset_id') || ''
   const selectedAssetUrl = searchParams.get('asset_url') || ''
   const selectedAssetName = searchParams.get('asset_name') || ''
@@ -1489,6 +1490,7 @@ function ReviewWorkspace() {
           attachments: attachments.map((attachment) => ({ asset_id: attachment.asset_id })),
           conversation_id: conversationId,
           context: {
+            ...(selectedGrowthTask ? { growth_task_id: selectedGrowthTask } : {}),
              language,
             site: workspace?.site.name || site.siteName,
             route: selectedRoute,

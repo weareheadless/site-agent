@@ -16,7 +16,7 @@ from typing import Any
 
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
 from ..application.analytics import AnalyticsError, GoogleAnalyticsService
@@ -637,18 +637,18 @@ def register_workspace_routes(
         return {"revoked": True, "name": binding_name}
 
     @app.post(f"{prefix}/drafts/{{draft_id}}/approve")
-    def workspace_approve_draft(draft_id: int, request: Request):
+    def workspace_approve_draft(draft_id: int, request: Request, body: dict[str, Any] | None = Body(default=None)):
         tenant = require_service(request)
         try:
-            return service.approve_draft(draft_id, tenant=tenant)
+            return service.approve_draft(draft_id, tenant=tenant, review_package_hash=(body or {}).get("review_package_hash"))
         except BridgeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post(f"{prefix}/drafts/{{draft_id}}/discard")
-    def workspace_discard_draft(draft_id: int, request: Request):
+    def workspace_discard_draft(draft_id: int, request: Request, body: dict[str, Any] | None = Body(default=None)):
         tenant = require_service(request)
         try:
-            return service.discard_draft(draft_id, tenant=tenant)
+            return service.discard_draft(draft_id, tenant=tenant, review_package_hash=(body or {}).get("review_package_hash"))
         except BridgeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -1022,10 +1022,10 @@ def register_workspace_routes(
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
 
         @app.post(f"{control_prefix}/{{website_id}}/drafts/{{draft_id}}/approve")
-        def control_plane_approve_draft(website_id: str, draft_id: int, request: Request):
+        def control_plane_approve_draft(website_id: str, draft_id: int, request: Request, body: dict[str, Any] | None = Body(default=None)):
             tenant = require_control_tenant(request, website_id)
             try:
-                return service.approve_draft(draft_id, tenant=tenant)
+                return service.approve_draft(draft_id, tenant=tenant, review_package_hash=(body or {}).get("review_package_hash"))
             except BridgeError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
 

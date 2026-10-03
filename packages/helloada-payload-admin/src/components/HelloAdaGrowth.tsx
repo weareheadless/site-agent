@@ -4,9 +4,9 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { fetchHelloAda } from "../api/fetchHelloAda";
 import { useHelloAdaTranslations } from "../api/useHelloAdaTranslations";
-import { growthPlan, type GrowthRow } from "../lib/growth-data";
+import { type GrowthRow } from "../lib/growth-data";
 import { HelloAdaChatMessage } from "./HelloAdaChatMessage";
-import { HelloAdaMark } from "./HelloAdaLogo";
+import { GrowthTasks, type GrowthTask } from "./GrowthTasks";
 import { WorkspaceIcon } from "./WorkspaceIcon";
 import {
   GrowthAnalytics,
@@ -15,7 +15,6 @@ import {
 } from "./GrowthAnalytics";
 import { GrowthEvidence } from "./GrowthEvidence";
 import { GrowthCompetition } from "./GrowthCompetition";
-import { ProductAction } from "./ProductAction";
 
 type Insight = {
   headline?: string;
@@ -29,6 +28,7 @@ type Insight = {
   }>;
 };
 type Growth = {
+  tasks?: GrowthTask[];
   sources?: Array<{
     id: string;
     status: string;
@@ -134,9 +134,6 @@ export function HelloAdaGrowth() {
     </div>
   );
   const insight = growth?.latestInsight;
-  const plan = growthPlan(growth?.activities);
-  const reviewCandidates = growth?.candidates?.filter(item => item.state === "ready_for_review") || [];
-  const reviewArticles = growth?.articles?.filter(item => ["pending", "draft", "ready_for_review"].includes(String(item.status))) || [];
   const Sources = () => (
     <div className="helloada-growth-sources">
       {["ga4", "gsc", "dataforseo"].map((id) => {
@@ -279,126 +276,7 @@ export function HelloAdaGrowth() {
       {errors.growth ? <ErrorNotice /> : null}
       {tab === "overview" ? (
         <>
-          <div className="helloada-growth-overview-grid">
-            <section className="helloada-growth-card helloada-growth-advice">
-              <header>
-                <div className="helloada-growth-identity">
-                  <HelloAdaMark size={28} />
-                  <h2>{t("growth.recommendations")}</h2>
-                </div>
-                <ProductAction href={ask()}>{t("growth.ask")}</ProductAction>
-              </header>
-              <div className="helloada-growth-brief-meta">
-                <span>{t("growth.briefNote")}</span>
-                {insight?.ts ? (
-                  <small>{date(insight.ts)}</small>
-                ) : insight?.period ? (
-                  <small>{insight.period}</small>
-                ) : null}
-              </div>
-              {insight?.headline ? (
-                <>
-                  <h3>{insight.headline}</h3>
-                  <HelloAdaChatMessage text={insight.summary_md || ""} />
-                  {insight.opportunities?.map((item, index) => (
-                    <div className="helloada-growth-recommendation" key={index}>
-                      <span>{String(index + 1).padStart(2, "0")}</span>
-                      <div>
-                        <strong>{item.title}</strong>
-                        <p>{item.rationale}</p>
-                        {item.action ? (
-                          <Link
-                            href={ask(
-                              `${item.title}. ${item.action}. ${t("growth.askPrompt")}`,
-                            )}
-                          >
-                            {t("growth.ask")} ↗
-                          </Link>
-                        ) : null}
-                      </div>
-                    </div>
-                  ))}
-                </>
-              ) : (
-                <p className="helloada-growth-empty">
-                  {loading.growth
-                    ? t("growth.loading")
-                    : t("growth.noRecommendations")}
-                </p>
-              )}
-            </section>
-            <aside className="helloada-growth-side">
-              <section className="helloada-growth-card">
-                <header>
-                  <h2>{t("growth.schedule")}</h2>
-                </header>
-                <div className="helloada-growth-goal">
-                  <small>{t("growth.goalLabel")}</small>
-                  <strong>{growth?.goal?.goal_key === "relevant_visitors" ? t("growth.visitorGoal") : growth?.goal?.objective || t("growth.goalNotSet")}</strong>
-                  <Link href={ask(t("growth.goalPrompt"))}>{t("growth.changeGoal")} ↗</Link>
-                </div>
-                <h3 className="helloada-growth-plan-heading">{t("growth.upcoming")}</h3>
-                <div className="helloada-growth-plan">
-                  {plan.upcoming.map((item) => (
-                    <div key={item.id}>
-                      <i className={item.enabled ? "is-enabled" : ""} />
-                      <div>
-                        <strong>{t(`growth.${item.id}`)}</strong>
-                        <small>
-                          {item.nextRun ? date(item.nextRun) : t("growth.scheduled")}
-                        </small>
-                      </div>
-                    </div>
-                  ))}
-                  {!plan.upcoming.length ? (
-                    <p className="helloada-growth-empty">
-                      {loading.growth
-                        ? t("growth.loading")
-                        : t("growth.noSchedule")}
-                    </p>
-                  ) : null}
-                </div>
-                {plan.unscheduled.length ? (
-                  <details className="helloada-growth-paused">
-                    <summary>{plan.unscheduled.length} {t("growth.unscheduledTasks")}</summary>
-                    {plan.unscheduled.map(item => <span key={item.id}>{t(`growth.${item.id}`)}</span>)}
-                  </details>
-                ) : null}
-                <ProductAction href={ask(t("growth.schedulePrompt"))}>{t("growth.manageSchedule")}</ProductAction>
-                <p className="helloada-growth-footnote">
-                  {t("growth.approval")}
-                </p>
-              </section>
-              <section className="helloada-growth-card helloada-growth-review">
-                <header>
-                  <h2>{t("growth.decisions")}</h2>
-                </header>
-                <p>
-                  {growth
-                    ? (growth.reviewQueue?.length || reviewCandidates.length || reviewArticles.length ? t("growth.decisionNote") : t("growth.noDecisions"))
-                    : "—"}
-                </p>
-                {growth?.reviewQueue?.map(item => (
-                  <div className="helloada-growth-decision" key={item.id || item.title}>
-                    <strong>{item.title}</strong>
-                    {item.summary ? <p>{item.summary}</p> : null}
-                    <Link href={ask(`${item.title}. ${item.summary || ""} ${t("growth.decisionPrompt")}`)}>{item.action_label || t("growth.ask")} ↗</Link>
-                  </div>
-                ))}
-                {reviewCandidates.slice(0, 2).map((item) => (
-                  <details className="helloada-growth-record" key={String(item.id || item.title)}>
-                    <summary>
-                      <span>{item.title || "—"}</span>
-                      <small>{(item.state || "").replaceAll("_", " ")}</small>
-                    </summary>
-                    {item.summary ? <p>{item.summary}</p> : null}
-                    {item.draftId ? <Link href={`/admin?draft=${item.draftId}`}>{t("growth.openContent")} ↗</Link> : null}
-                  </details>
-                ))}
-                {reviewArticles.length ? <button className="helloada-product-action" type="button" onClick={() => setTab("content")}><span>{reviewArticles.length} {t("growth.articles")}</span><i aria-hidden="true">↗</i></button> : null}
-              </section>
-            </aside>
-          </div>
+          <GrowthTasks tasks={growth?.tasks} pending={loading.growth} refresh={refresh} ask={ask} date={date} goal={growth?.goal} brief={insight} />
           <div className="helloada-growth-section-head">
             <h2>{t("growth.performance")}</h2>
             <button type="button" onClick={() => setTab("analytics")}>

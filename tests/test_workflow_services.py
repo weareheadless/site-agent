@@ -134,9 +134,9 @@ def test_approval_service_expires_stale_work_and_safely_records_provider_failure
     )
     service.decide(failed.approval_id, True)
     receipt = service.dispatch(failed.approval_id)
-    assert receipt.status is ReceiptStatus.FAILURE
+    assert receipt.status is ReceiptStatus.UNCERTAIN
     assert "provider-secret" not in receipt.safe_message
-    assert memory.get_approval_request(failed.approval_id).status is ApprovalStatus.FAILED
+    assert memory.get_approval_request(failed.approval_id).status is ApprovalStatus.APPROVED
     memory.close()
 
 

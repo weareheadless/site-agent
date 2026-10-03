@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: payload-admin-release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -16,17 +20,21 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Verify version and package the tagged source
+      - name: Install pinned dependencies
         working-directory: packages/helloada-payload-admin
+        run: npm ci --ignore-scripts
+      - name: Test and typecheck the shared workspace
+        working-directory: packages/helloada-payload-admin
+        run: |
+          npm test
+          npm run typecheck
+      - name: Package and inspect the tagged artifact
         env:
           RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          node --input-type=module -e 'import fs from "node:fs"; const pkg = JSON.parse(fs.readFileSync("package.json", "utf8")); if (process.env.RELEASE_TAG !== `payload-admin-v${pkg.version}`) throw new Error("Release tag/version mismatch");'
-          mkdir -p .release
-          npm pack --pack-destination .release
+        run: node scripts/package-payload-admin-release.mjs
       - name: Publish immutable release asset
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          gh release create "$RELEASE_TAG" packages/helloada-payload-admin/.release/*.tgz --verify-tag --title "HelloAda Payload admin ${RELEASE_TAG#payload-admin-v}" --notes "Shared customer-neutral owner workspace, packaged from the verified tagged source."
+          gh release create "$RELEASE_TAG" packages/helloada-payload-admin/.release/*.tgz packages/helloada-payload-admin/.release/release-manifest.json --verify-tag --title "HelloAda Payload admin ${RELEASE_TAG#payload-admin-v}" --notes "Tested shared owner workspace with inspected artifact and integrity manifest. Customer deployment and authenticated browser verification remain separate release stages."

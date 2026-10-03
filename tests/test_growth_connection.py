@@ -22,8 +22,8 @@ def test_growth_is_readonly_and_does_not_invent_provider_data(tmp_path):
     report = memory.create_seo_site_report('2026-10')
     memory.update_seo_site_report(report['id'], summary='Existing SEO report', status='completed')
     memory.kv_set('seo_provisioning_state', {'ga4_property_id': 'properties/123', 'gsc_property': 'https://example.test', 'gsc_pending': True, 'credential_token': 'private-never-return'})
-    memory.kv_set('next_run:article', 1791000000)
-    scheduler = SimpleNamespace(jobs=[('article', {'every': 'week'}, object())])
+    memory.kv_set('next_run:growth_initial', 1791000000)
+    scheduler = SimpleNamespace(jobs=[('growth_initial', {'every': 'week'}, object())])
     before = memory.list_drafts()
     result = growth_snapshot(memory, {}, {'scheduler': scheduler})
     assert result['articles'][0]['title'] == 'Owner article'
@@ -129,3 +129,27 @@ def test_site_origin_change_is_persisted_before_runtime_reconciliation(tmp_path)
     assert calls[0][0] == 'demo'
     assert calls[0][2]['api_token'] == 'demo-token'
     assert calls[0][2]['api_token_env'] == 'CUSTOM_DEMO_TOKEN'
+
+
+def test_managed_draft_http_decisions_require_the_saved_exact_review(tmp_path):
+    memory = Memory(tmp_path / 'memory.db')
+    draft = memory.save_draft('Exact change', 'Only this version', kind='payload_content', meta={'review_package_hash': 'sha256:exact'})
+    tenant = Tenant('demo', {}, memory, None, {'llm': SimpleNamespace(api_key='configured')}, 'demo-token')
+    registry = TenantRegistry({'demo': tenant})
+    service = ChatService(registry=registry)
+    app = FastAPI()
+    register_workspace_routes(app, config={}, env={}, service=service, registry=registry)
+    headers = {'Authorization': 'Bearer demo-token'}
+    with TestClient(app) as client:
+        for operation in ('approve', 'discard'):
+            endpoint = f'/api/workspace/drafts/{draft}/{operation}'
+            for body in ({}, {'review_package_hash': 'sha256:wrong'}):
+                response = client.post(endpoint, headers=headers, json=body)
+                assert response.status_code == 409
+                assert 'missing or stale' in response.json()['detail']
+                assert memory.list_drafts()[0]['status'] == 'pending'
+        # A decline carries no public effect and is allowed only for this exact package.
+        response = client.post(f'/api/workspace/drafts/{draft}/discard', headers=headers, json={'review_package_hash': 'sha256:exact'})
+        assert response.status_code == 200
+        assert response.json()['status'] == 'discarded'
+    memory.close()

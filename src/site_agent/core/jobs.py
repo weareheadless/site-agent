@@ -38,14 +38,14 @@ from ..brain import seo as brain_seo
 from ..brain import seo_insights as brain_seo_insights
 from ..brain import seo_outcomes as brain_seo_outcomes
 from ..brain import monthly_seo_report as brain_monthly_seo_report
-from ..application.growth_workflow import run_growth_reconciler
+from ..application.growth_workflow import run_growth_reconciler, run_growth_cycle, run_pending_growth
 from ..senses import collect
 from . import maintenance
 from .contracts import ActionState, ApprovalStatus, ArtifactKind
 from .design_contracts import canonical_hash
 from .memory import Memory
 from .reflect import effective_persona
-from .scheduler import Scheduler
+from .scheduler import Scheduler, compute_next
 
 _SEEN_TTL_DAYS = 30
 
@@ -511,23 +511,8 @@ def _ga_snapshot(context: dict[str, Any]) -> None:
     else:
         summary = ga_sense.weekly_summary(config)
     memory.snapshot_metrics("ga4", summary)
-    payload = context.get("payload_gateway")
-    if payload is not None:
-        tenant_id = context.get("tenant_id") or context["config"].get("instance_name")
-        captured_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
-        period = str(summary.get("period") or summary.get("period_days") or captured_at[:10]) if isinstance(summary, Mapping) else captured_at[:10]
-        payload.upsert_seo_record(
-            "snapshot",
-            {
-                "sourceId": f"snapshot:{tenant_id}:ga4:{captured_at[:10]}",
-                "source": "ga4",
-                "period": period,
-                "captured_at": captured_at,
-                "data": summary,
-                "tenant_id": tenant_id,
-            },
-        )
-        _mirror_integration_sync(context, captured_at)
+    # Growth reads the tenant's durable Memory history through the workspace
+    # API. Payload owns website content, not a second analytics database.
 
 
 def _seo_snapshot(context: dict[str, Any]) -> None:
@@ -542,23 +527,6 @@ def _seo_snapshot(context: dict[str, Any]) -> None:
     else:
         summary = seo_sense.summary(config)
     memory.snapshot_metrics("gsc", summary)
-    payload = context.get("payload_gateway")
-    if payload is not None:
-        tenant_id = context.get("tenant_id") or context["config"].get("instance_name")
-        captured_at = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
-        period = str(summary.get("period") or summary.get("period_days") or captured_at[:10]) if isinstance(summary, Mapping) else captured_at[:10]
-        payload.upsert_seo_record(
-            "snapshot",
-            {
-                "sourceId": f"snapshot:{tenant_id}:gsc:{captured_at[:10]}",
-                "source": "gsc",
-                "period": period,
-                "captured_at": captured_at,
-                "data": summary,
-                "tenant_id": tenant_id,
-            },
-        )
-        _mirror_integration_sync(context, captured_at)
 
 
 def _mirror_integration_sync(context: dict[str, Any], captured_at: str) -> None:
@@ -619,6 +587,48 @@ def _article_research_cycle(context: dict[str, Any]) -> None:
     _mirror_keyword_research(context)
 
 
+def register_growth_jobs(scheduler: Scheduler, config: dict[str, Any], context: dict[str, Any]) -> bool:
+    """Both runtime entry points consume this one production growth contract."""
+    site = config.get("site") or {}
+    if not (site.get("website_present") and (site.get("payload") or {}).get("enabled")):
+        return False
+    settings = config.get("scheduler") or {}
+    if not settings.get("enabled"):
+        return True  # Explicit operational pause: never activate a legacy producer.
+    overrides = settings.get("schedule") or {}
+    schedules = {
+        "growth_initial": {"every": "daily", "at": "07:00"},
+        "growth_daily": {"every": "daily", "at": "07:30"},
+        "growth_weekly": {"every": "weekly", "weekday": "monday", "at": "08:30"},
+        "growth_monthly": {"every": "monthly", "day": 1, "at": "09:00"},
+        "growth_pending": {"every": "1h"},
+    }
+    for name, spec in schedules.items():
+        if name == "growth_pending":
+            operation = lambda: run_pending_growth(context)
+        else:
+            trigger = name.removeprefix("growth_")
+            operation = lambda trigger=trigger: run_growth_cycle(context, trigger=trigger)
+        scheduler.job(name, overrides.get(name, spec), operation)
+        # An initial review is due now; recurring service work starts at its
+        # real calendar slot, not seven paid catch-up jobs on first activation.
+        if scheduler.memory.kv_get(f"next_run:{name}") is None:
+            next_run = scheduler.clock() if name == "growth_initial" else compute_next(scheduler.jobs[-1][1], scheduler.clock(), timezone_name=scheduler.timezone_name)
+            scheduler.memory.kv_set(f"next_run:{name}", next_run)
+    # These are independent maintenance/measurement operations, not competing
+    # recommendation producers. Inventory failure must not stop either one.
+    maintenance = []
+    if _seo_provisioning_enabled(config):
+        maintenance.append(("seo_provisioning", {"every": "6h"}, lambda: _seo_provisioning(context)))
+    if context.get("llm") is not None:
+        maintenance.append(("seo_outcomes", {"every": "daily", "at": "13:00"}, lambda: _with_persona(context, brain_seo_outcomes.run, "seo_outcomes")))
+    for name, spec, operation in maintenance:
+        scheduler.job(name, overrides.get(name, spec), operation)
+        if scheduler.memory.kv_get(f"next_run:{name}") is None:
+            scheduler.memory.kv_set(f"next_run:{name}", compute_next(scheduler.jobs[-1][1], scheduler.clock(), timezone_name=scheduler.timezone_name))
+    return True
+
+
 def register_jobs(scheduler: Scheduler, config: dict[str, Any], context: dict[str, Any]) -> None:
     """Register Ada's reusable reading/editorial loop for a shared tenant API.
 
@@ -627,6 +637,8 @@ def register_jobs(scheduler: Scheduler, config: dict[str, Any], context: dict[st
     uses this small selection of the same digest, learning, and article jobs
     instead of silently dropping Ada's original news loop.
     """
+    if register_growth_jobs(scheduler, config, context):
+        return
     settings = config.get("scheduler") or {}
     if not isinstance(settings, dict) or not bool(settings.get("enabled", False)):
         return
@@ -733,6 +745,10 @@ def _reindex_memory(context: dict[str, Any]) -> None:
 
 
 def register_builtin(scheduler: Scheduler, config: dict[str, Any], context: dict[str, Any]) -> None:
+    if register_growth_jobs(scheduler, config, context):
+        scheduler.job("health_check", _spec(config, "health_check"), lambda: maintenance.health_check(context))
+        scheduler.job("backup", _spec(config, "backup"), lambda: maintenance.backup_data(context))
+        return
     scheduler.job("heartbeat", _spec(config, "heartbeat"), lambda: _heartbeat(context))
     scheduler.job("growth_reconciler", _spec(config, "growth_reconciler"), lambda: run_growth_reconciler(context))
     scheduler.job("health_check", _spec(config, "health_check"), lambda: maintenance.health_check(context))

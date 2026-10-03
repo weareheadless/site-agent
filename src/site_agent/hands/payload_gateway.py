@@ -145,6 +145,29 @@ class PayloadGatewayClient(EditableFieldGatewayMixin):
             raise PayloadGatewayError("Payload gateway resource is required")
         return f"{self.gateway_prefix}/{resource}"
 
+    def require_growth_contract(self) -> dict[str, Any]:
+        """Managed writes require a destination-enforced contract, not a flag.
+
+        A gateway that only publishes the latest document by ID is not a Growth
+        provider. Reject before any draft write when its contract is absent.
+        """
+        contract = self._request("GET", self._gateway_path("growth/contract"))
+        required = {"conditionalDraft", "immutablePreview", "exactApproval", "allPublisherGuard", "effectReceipts"}
+        if contract.get("version") != 1 or not required.issubset(set(contract.get("capabilities") or [])):
+            raise PayloadGatewayError("The managed Growth publication contract is not installed on this website")
+        return contract
+
+    def validate_growth_candidate(self, package: Mapping[str, Any], package_hash: str) -> dict[str, Any]:
+        result = self._request("POST", self._gateway_path("growth/validate"), payload={"package": dict(package), "packageHash": package_hash})
+        proof = result.get("validation")
+        if not isinstance(proof, dict) or proof.get("status") != "passed" or proof.get("packageHash") != package_hash:
+            raise PayloadGatewayError("The exact Growth candidate did not pass destination validation")
+        required = {"canonicalSchema", "exactDraft", "private", "publicRenderer", "approvalBoundary"}
+        checks = proof.get("checks")
+        if not isinstance(checks, Mapping) or not all(checks.get(key) is True for key in required):
+            raise PayloadGatewayError("The Growth validation proof is incomplete")
+        return proof
+
     def _request(
         self,
         method: str,
@@ -286,7 +309,7 @@ class PayloadGatewayClient(EditableFieldGatewayMixin):
             },
         ).get("document") or {}
 
-    def update(self, collection: str, document_id: str, data: Mapping[str, Any], *, locale: str | None = None) -> dict[str, Any]:
+    def update(self, collection: str, document_id: str, data: Mapping[str, Any], *, locale: str | None = None, expected_hash: str | None = None, expected_fields: list[str] | None = None) -> dict[str, Any]:
         collection = self._collection(collection)
         document_id = str(document_id or "").strip()
         if not document_id:
@@ -299,11 +322,12 @@ class PayloadGatewayClient(EditableFieldGatewayMixin):
                 "collection": collection,
                 "id": document_id,
                 "data": self._data(collection, data),
+                **({"expectedHash": expected_hash, "expectedFields": expected_fields} if expected_hash else {}),
                 **({"locale": str(locale).strip()} if str(locale or "").strip() else {}),
             },
         ).get("document") or {}
 
-    def publish(self, collection: str, document_id: str) -> dict[str, Any]:
+    def publish(self, collection: str, document_id: str, *, expected_hash: str | None = None, expected_fields: list[str] | None = None) -> dict[str, Any]:
         collection = self._collection(collection)
         document_id = str(document_id or "").strip()
         if not document_id:
@@ -311,7 +335,8 @@ class PayloadGatewayClient(EditableFieldGatewayMixin):
         return self._request(
             "POST",
             self._gateway_path("content"),
-            payload={"operation": "publish", "collection": collection, "id": document_id},
+            payload={"operation": "publish", "collection": collection, "id": document_id,
+                **({"expectedHash": expected_hash, "expectedFields": expected_fields} if expected_hash else {})},
         ).get("document") or {}
 
     def read_global(self, slug: str, *, draft: bool = True, locale: str | None = None) -> dict[str, Any]:

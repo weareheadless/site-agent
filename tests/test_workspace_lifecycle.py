@@ -34,3 +34,17 @@ def test_stale_owner_update_cannot_be_approved(tmp_path):
             service.approve_draft(first)
     finally:
         memory.close()
+
+
+@pytest.mark.parametrize("method", ["approve_draft", "discard_draft"])
+@pytest.mark.parametrize("review_hash", [None, "sha256:wrong", "é"])
+def test_managed_decision_cannot_omit_or_replace_the_reviewed_hash(tmp_path, method, review_hash):
+    memory = Memory(tmp_path / "memory.db")
+    try:
+        draft = memory.save_draft("Exact managed change", "diff", kind="payload_content", meta={"review_package_hash": "sha256:exact"})
+        service = ChatService(memory, object())
+        with pytest.raises(BridgeError, match="missing or stale"):
+            getattr(service, method)(draft, review_package_hash=review_hash)
+        assert memory.list_drafts()[0]["status"] == "pending"
+    finally:
+        memory.close()

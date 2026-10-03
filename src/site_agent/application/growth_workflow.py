@@ -1,4 +1,4 @@
-"""The durable, provider-neutral first stage of Ada's growth workflow."""
+"""One durable growth coordinator: collection, Ada assessment and real candidates."""
 
 from __future__ import annotations
 
@@ -221,6 +221,7 @@ def _evidence_manifest(
     policy: GrowthPolicy,
     sources: list[dict[str, Any]],
     captured_at: str,
+    material: Mapping[str, Any] | None = None,
 ) -> tuple[dict[str, Any], str]:
     manifest = {
         "schemaVersion": 1,
@@ -236,6 +237,8 @@ def _evidence_manifest(
             "Missing, stale, unauthorised and pending sources remain distinct from observed zero values.",
         ],
     }
+    if material is not None:
+        manifest["material"] = dict(material)
     encoded = json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return manifest, hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
@@ -247,6 +250,7 @@ def _persist_evidence_artifact(
     goal: Mapping[str, Any],
     policy: GrowthPolicy,
     sources: list[dict[str, Any]],
+    material: Mapping[str, Any] | None = None,
 ) -> tuple[int, str, dict[str, Any]]:
     captured_at = utc_now()
     manifest, content_hash = _evidence_manifest(
@@ -255,6 +259,7 @@ def _persist_evidence_artifact(
         policy=policy,
         sources=sources,
         captured_at=captured_at,
+        material=material,
     )
     for existing in memory.list_artifacts(kind=ArtifactKind.GROWTH_EVIDENCE.value, limit=100):
         existing_manifest = existing.preview_data.get("manifest") if isinstance(existing.preview_data, Mapping) else None
@@ -353,10 +358,6 @@ def run_growth_reconciler(context: dict[str, Any]) -> dict[str, Any]:
                     "artifactId": evidence_artifact_id,
                     "contentHash": evidence_hash,
                 },
-                {"id": "external_collection", "status": "scheduled", "reason": "paid collection is dispatched by the bounded provider jobs"},
-                {"id": "assessment", "status": "complete", "reason": "source states and freshness were evaluated without substituting missing data"},
-                {"id": "preparation", "status": "complete", "reason": "owner candidates remain in their durable strategy records until provider evidence and Payload validation exist"},
-                {"id": "validation", "status": "complete", "reason": "this reconciliation validated the evidence manifest; content/code candidates have their own gates"},
             ],
             "sources": sources,
             "evidenceArtifactId": evidence_artifact_id,
@@ -373,9 +374,7 @@ def run_growth_reconciler(context: dict[str, Any]) -> dict[str, Any]:
             policy=policy.to_dict(),
             origin_revision=policy.origin_revision,
         )
-        for phase in ("assessing", "preparing", "validating"):
-            run = memory.update_growth_run(run["run_id"], phase=phase, status="running", detail=detail)
-        return memory.update_growth_run(run["run_id"], phase="complete", status="complete", detail=detail, completed=True)
+        return memory.update_growth_run(run["run_id"], phase="evidence_reconciled", status="complete", detail=detail, completed=True)
     except Exception as exc:  # noqa: BLE001 - persist the exact blocked boundary
         return memory.update_growth_run(
             run["run_id"],
@@ -386,4 +385,210 @@ def run_growth_reconciler(context: dict[str, Any]) -> dict[str, Any]:
         )
 
 
-__all__ = ["ensure_default_goal", "run_growth_reconciler"]
+def _cycle_key(policy: GrowthPolicy, goal_revision: int, trigger: str, now: datetime.datetime) -> str:
+    local = now.astimezone(ZoneInfo(policy.timezone))
+    if trigger == "initial":
+        period = "first-live-review"
+    elif trigger == "weekly":
+        iso = local.date().isocalendar()
+        period = f"{iso.year}-W{iso.week:02d}"
+    elif trigger == "monthly":
+        period = local.strftime("%Y-%m")
+    elif trigger == "daily":
+        period = local.date().isoformat()
+    else:
+        period = trigger
+    return f"growth-v2:{policy.origin_revision}:goal-{goal_revision}:{trigger}:{period}"
+
+
+def queue_growth_check(context: Mapping[str, Any], *, trigger: str = "owner_review") -> dict[str, Any]:
+    memory, config = context["memory"], context["config"]
+    policy, goal = GrowthPolicy.from_config(config), ensure_default_goal(memory)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    # Coalesce an explicit owner review for this day/goal/origin. GET never queues.
+    key = _cycle_key(policy, int(goal["revision"]), trigger + ":" + now.date().isoformat(), now)
+    return memory.create_growth_run(run_id=f"growth-{uuid.uuid4().hex}", run_key=key, trigger=trigger,
+        goal_revision=int(goal["revision"]), timezone=policy.timezone, phase="collecting", status="pending",
+        policy=policy.to_dict(), origin_revision=policy.origin_revision, phase_version=2)
+
+
+def _inventory(context: Mapping[str, Any]) -> list[dict[str, Any]]:
+    from .growth_candidates import document_content
+
+    payload = context.get("payload_gateway")
+    if payload is None:
+        raise RuntimeError("The canonical Payload content gateway is unavailable")
+    inventory = []
+    for collection in payload.contract.collections:
+        for document in payload.list(collection, draft=False, limit=100):
+            if not document.get("id"):
+                raise ValueError("A canonical document has no identity")
+            inventory.append({"collection": collection, "document": {"id": str(document["id"]),
+                "sourceId": document.get("sourceId"), "slug": document.get("slug"),
+                **document_content(document, payload.contract.collection_fields[collection])},
+                "sourceRef": f"payload:{collection}:{document['id']}", "route": document.get("route")})
+    if not inventory:
+        raise RuntimeError("The website has no canonical editable documents")
+    if len(json.dumps(inventory, ensure_ascii=False).encode()) > 120_000:
+        raise ValueError("Canonical content exceeds the bounded assessment size; select a smaller declared scope")
+    return inventory
+
+
+def _collect_cycle_evidence(context: Mapping[str, Any], trigger: str) -> dict[str, Any]:
+    from .growth import growth_metrics
+    from .growth_evidence import growth_evidence
+
+    memory, config = context["memory"], context["config"]
+    errors: dict[str, str] = {}
+    if trigger in {"daily", "initial"}:
+        from ..core.jobs import _ga_snapshot, _seo_snapshot
+        for source, operation in (("ga4", _ga_snapshot), ("gsc", _seo_snapshot)):
+            try:
+                operation(dict(context))
+            except Exception as exc:
+                errors[source] = str(exc)[:500]
+    inventory = _inventory(context)
+    sources = _source_state(memory, config, context)
+    for source in sources:
+        if source["id"] in errors:
+            source.update(state="failed", reason=errors[source["id"]])
+    sources.append({"id": "inventory", "state": "ready", "sourceRef": "canonical_payload_inventory", "observedAt": utc_now()})
+    datasets: dict[str, Any] = {}
+    service = context.get("crawlseo_service")
+    if service is not None:
+        for section in ("health", "research", "competition"):
+            try:
+                value = growth_evidence(service, section)
+                datasets[section] = value
+                if value.get("errors"):
+                    errors[section] = "; ".join(str(item) for item in value["errors"].values())[:500]
+            except Exception as exc:
+                errors[section] = str(exc)[:500]
+    return {"sources": sources, "inventory": inventory, "metrics": growth_metrics(memory), "datasets": datasets, "collectionErrors": errors}
+
+
+def run_growth_cycle(context: dict[str, Any], *, trigger: str = "weekly", run_id: str | None = None) -> dict[str, Any]:
+    """Execute persisted phases, never count labels as proof of completed work."""
+    from ..brain import growth as brain_growth
+    from .growth_candidates import prepare_payload_candidate
+
+    memory, config = context["memory"], context["config"]
+    policy, goal = GrowthPolicy.from_config(config), ensure_default_goal(memory)
+    _invalidate_incompatible_candidates(memory, goal, policy)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    run = memory.get_growth_run(run_id) if run_id else memory.create_growth_run(
+        run_id=f"growth-{uuid.uuid4().hex}", run_key=_cycle_key(policy, int(goal["revision"]), trigger, now), trigger=trigger,
+        goal_revision=int(goal["revision"]), timezone=policy.timezone, phase="collecting", status="pending",
+        policy=policy.to_dict(), origin_revision=policy.origin_revision, phase_version=2)
+    if run is None:
+        raise ValueError("The queued growth run does not exist")
+    if run["status"] in {"complete", "cancelled"}:
+        return run
+    due = _parsed_timestamp(run.get("next_due_ts"))
+    if due is not None and due > now:
+        return run
+    claimed = memory.claim_growth_run(run["run_id"], lease_owner=f"growth:{uuid.uuid4().hex}", lease_seconds=3600)
+    if claimed is None:
+        return memory.get_growth_run(run["run_id"]) or run
+    run = claimed
+    lease_owner = run["lease_owner"]
+    def advance(**fields):
+        return memory.update_growth_run(run["run_id"], expected_lease=lease_owner, **fields)
+    detail = dict(run.get("detail") or {})
+    try:
+        if "material" not in detail:
+            detail["material"] = _collect_cycle_evidence(context, trigger)
+            artifact_id, evidence_hash, _ = _persist_evidence_artifact(memory, run=run, goal=goal, policy=policy, sources=detail["material"]["sources"], material=detail["material"])
+            detail.update(evidenceArtifactId=artifact_id, evidenceHash=evidence_hash, policy=policy.to_dict())
+            run = advance(phase="assessing", detail=detail, next_due_ts=None)
+        material = detail["material"]
+        if trigger == "daily":
+            return advance(phase="complete", status="complete", detail=detail, completed=True)
+        if trigger == "monthly":
+            # Do not label a read of saved research as a paid research refresh.
+            # This phase remains blocked until the existing bounded provider
+            # dispatch, reservation and result reconciliation are connected.
+            detail["error"] = "The monthly research dispatch is not connected. No paid research was run."
+            return advance(status="blocked", phase="collecting", detail=detail, lease_owner=None, lease_until=None,
+                next_due_ts=(now + datetime.timedelta(days=1)).isoformat(timespec="seconds"))
+        if "assessment" not in detail:
+            service = context.get("customer_context_service")
+            business = service.task_view("research") if service is not None and service.current() is not None else {
+                "audience": (config.get("persona") or {}).get("audience"),
+                "research": {key: ((config.get("seo") or {}).get("research") or {}).get(key) for key in ("languages", "priority_services", "anchor_topics")}}
+            detail["assessment"] = brain_growth.assess(context, {**material, "goal": goal, "business": business,
+                "maxRecommendations": policy.max_recommendations, "priorWork": memory.list_strategy_initiatives(limit=100),
+                "priorOutcomes": memory.list_strategy_outcomes(limit=20), "allowance": policy.research_allowance_micros})
+            run = advance(phase="preparing", detail=detail)
+        cycle = memory.growth_strategy_cycle(run["run_id"], detail["evidenceArtifactId"])
+        existing = memory.list_strategy_initiatives(cycle["id"])
+        by_title = {row["title"]: row for row in existing}
+        valid_refs = {row["sourceRef"] for row in material["inventory"]} | {row.get("sourceRef") for row in material["sources"] if row.get("sourceRef")}
+        ready_sources = {row["id"] for row in material["sources"] if row["state"] == "ready"}
+        candidate_ids, blocks = [], []
+        active = [row for row in memory.list_strategy_initiatives(limit=500) if row["state"] in {"preparing", "validating", "ready_for_review", "publishing", "verifying_live"} and row.get("growth_run_id") != run["run_id"]]
+        for opportunity in detail["assessment"]["opportunities"]:
+            if set(opportunity["evidence"]) - valid_refs:
+                raise ValueError("Ada referenced evidence that is not in this run")
+            initiative = by_title.get(opportunity["title"])
+            if initiative is None:
+                initiative_id = memory.create_strategy_initiative(cycle["id"], kind=opportunity["kind"], title=opportunity["title"],
+                    summary=opportunity["scope"], hypothesis=str(opportunity.get("hypothesis") or ""), rationale=opportunity["why"], evidence=opportunity["evidence"],
+                    expected={"opportunity": opportunity}, state="preparing", growth_run_id=run["run_id"], goal_revision=int(goal["revision"]), origin_revision=policy.origin_revision)
+                initiative = memory.update_strategy_initiative(initiative_id)
+            if initiative["state"] == "ready_for_review":
+                candidate_ids.append(initiative["id"])
+                continue
+            missing = set(opportunity["requiredSources"]) - ready_sources
+            if missing:
+                reason = "Required evidence is not ready: " + ", ".join(sorted(missing))
+            elif len(active) + len(candidate_ids) >= policy.max_active_candidates:
+                reason = "Existing improvements are awaiting review; no additional candidate was prepared."
+            elif opportunity["kind"] == "owner_information":
+                from .actions import OwnerActionService
+                from ..core.contracts import ActionPriority, ActionRequirement, OwnerAction
+                action = OwnerActionService(memory).create(OwnerAction(
+                    capability_id="growth.owner_information", provider_id="site-agent", title=opportunity["title"],
+                    summary=opportunity["scope"], action_label="Answer Ada", priority=ActionPriority.NORMAL,
+                    requirement=ActionRequirement.OWNER_INFORMATION, source_ref=f"growth-initiative:{initiative['id']}",
+                    dedupe_key=f"growth-initiative:{initiative['id']}"))
+                memory.update_strategy_initiative(initiative["id"], owner_action_id=action.id)
+                if initiative["state"] == "blocked":
+                    memory.transition_strategy_initiative(initiative["id"], "preparing")
+                memory.transition_strategy_initiative(initiative["id"], "waiting_for_owner")
+                continue
+            elif opportunity["kind"] == "payload_content":
+                try:
+                    if initiative["state"] == "blocked":
+                        initiative = memory.transition_strategy_initiative(initiative["id"], "preparing")
+                    candidate = prepare_payload_candidate(context, initiative, opportunity, material["inventory"], detail)
+                    candidate_ids.append(candidate["id"])
+                    continue
+                except Exception as exc:
+                    reason = str(exc)[:500]
+            else:
+                reason = f"The {opportunity['kind']} preparation boundary is not connected; no candidate was invented."
+            memory.transition_strategy_initiative(initiative["id"], "blocked", last_error=reason)
+            blocks.append({"initiativeId": initiative["id"], "reason": reason})
+        detail.update(candidateIds=candidate_ids, blocks=blocks)
+        memory.update_strategy_cycle(cycle["id"], summary=detail["assessment"]["summary"], status="blocked" if blocks else "completed")
+        retry_at = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=24)).isoformat(timespec="seconds") if blocks else None
+        return advance(phase="preparing" if blocks else "complete", status="blocked" if blocks else "complete", detail=detail, completed=not blocks,
+            lease_owner=None, lease_until=None, next_due_ts=retry_at)
+    except Exception as exc:
+        detail["error"] = str(exc)[:700]
+        retry_at = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=min(24, 2 ** min(int(run["attempt"]), 4)))).isoformat(timespec="seconds")
+        from ..core.contracts import ContractError
+        try:
+            return advance(status="failed", detail=detail, lease_owner=None, lease_until=None, next_due_ts=retry_at)
+        except ContractError:
+            # A superseded executor must not overwrite the new owner's state.
+            return memory.get_growth_run(run["run_id"])
+
+
+def run_pending_growth(context: dict[str, Any]) -> None:
+    for run in context["memory"].due_growth_runs(limit=20):
+        run_growth_cycle(context, trigger=run["trigger"], run_id=run["run_id"])
+
+
+__all__ = ["ensure_default_goal", "queue_growth_check", "run_growth_cycle", "run_growth_reconciler", "run_pending_growth"]

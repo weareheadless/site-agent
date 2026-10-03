@@ -28,6 +28,8 @@ Certainty rules:
 from __future__ import annotations
 
 import datetime
+import calendar
+import fcntl
 import os
 import re
 from pathlib import Path
@@ -72,6 +74,9 @@ def normalize_schedule(spec: str | int | dict[str, Any]) -> dict[str, Any]:
     every = spec.get("every", "daily")
     weekday_raw = spec.get("weekday")
     at_raw = spec.get("at")
+    month_day = spec.get("day")
+    if month_day is not None and (every != "monthly" or isinstance(month_day, bool) or not isinstance(month_day, int) or not 1 <= month_day <= 31):
+        raise ScheduleError("a calendar day from 1 to 31 is supported only for monthly work")
 
     weekday = None
     if weekday_raw is not None:
@@ -122,6 +127,8 @@ def normalize_schedule(spec: str | int | dict[str, Any]) -> dict[str, Any]:
         "days": days,
         "weekday": weekday,
         "at_time": at_time,
+        "month_day": month_day,
+        "calendar_monthly": every == "monthly",
         "label": f"{every}" + (f"/{at_raw}" if at_raw else "") + (f"/{weekday_raw}" if weekday_raw else ""),
     }
 
@@ -149,6 +156,16 @@ def compute_next(
     base = datetime.datetime.fromtimestamp(after_ts, zone)
     at_time = spec["at_time"]
     weekday = spec["weekday"]
+
+    if spec.get("calendar_monthly"):
+        requested_day = spec.get("month_day") or base.day
+        candidate_date = base.date().replace(day=min(requested_day, calendar.monthrange(base.year, base.month)[1]))
+        candidate_dt = datetime.datetime.combine(candidate_date, at_time or base.time().replace(tzinfo=None), tzinfo=zone)
+        if candidate_dt <= base:
+            year, month = (base.year + 1, 1) if base.month == 12 else (base.year, base.month + 1)
+            candidate_date = datetime.date(year, month, min(requested_day, calendar.monthrange(year, month)[1]))
+            candidate_dt = datetime.datetime.combine(candidate_date, at_time or base.time().replace(tzinfo=None), tzinfo=zone)
+        return candidate_dt.timestamp()
 
     if at_time is None and weekday is None:
         return after_ts + spec["interval_seconds"]
@@ -233,29 +250,31 @@ class Scheduler:
         return max(0.0, (self.clock() - nxt) / 3600)
 
     def acquire_lock(self) -> bool:
-        if self.lock_path.exists():
-            try:
-                pid = int(self.lock_path.read_text().strip())
-            except ValueError:
-                return self._claim()
-            try:
-                alive = Path(f"/proc/{pid}").exists()
-            except OSError:
-                alive = False
-            if alive:
-                return False
-        return self._claim()
-
-    def _claim(self) -> bool:
+        if getattr(self, "_lock_file", None) is not None:
+            return True
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
-        self.lock_path.write_text(str(os.getpid()))
+        handle = self.lock_path.open("a+")
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            handle.close()
+            return False
+        handle.seek(0)
+        handle.truncate()
+        handle.write(str(os.getpid()))
+        handle.flush()
+        self._lock_file = handle
         return True
 
     def release_lock(self) -> None:
-        try:
-            self.lock_path.unlink()
-        except FileNotFoundError:
-            pass
+        handle = getattr(self, "_lock_file", None)
+        if handle is not None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            handle.close()
+            self._lock_file = None
+        # Keep the inode: unlinking lets another process lock a different file
+        # while a waiting process still holds the old inode. The OS releases
+        # the lock automatically on process exit, on both macOS and Linux.
 
     def run_once(self) -> list[str]:
         ran = []
@@ -265,9 +284,13 @@ class Scheduler:
             late_hours = round(self.overdue_by_hours(name), 1)
             succeeded = False
             try:
-                fn()
+                result = fn()
+                result_status = result.get("status") if isinstance(result, dict) else None
+                if result_status == "failed":
+                    raise RuntimeError(f"persisted execution failed ({result.get('run_id') or name})")
                 succeeded = True
-                detail = f"{spec['label']} ok" + (f" (caught up, {late_hours}h late)" if late_hours else "")
+                outcome = result_status if result_status in {"blocked", "pending", "running", "waiting_for_owner"} else "ok"
+                detail = f"{spec['label']} {outcome}" + (f" (caught up, {late_hours}h late)" if late_hours else "")
                 self.memory.record_action("job", f"{name}: {detail}")
             except Exception as exc:  # noqa: BLE001 — jobs must never kill the loop
                 retry_seconds = self._record_failure(name, spec)

@@ -21,13 +21,15 @@ test('the owner plan exposes upcoming work, not stale dates on disabled tasks', 
   assert.equal(sandbox.exports.growthPlan([{id: 'article', enabled: false, nextRun: '2026-10-04T09:00:00Z'}]).nextRun, null);
 });
 
-test('Growth keeps the plan and decisions in the existing sidebar, not a live-task strip', () => {
+test('Growth has one task list, not separate advice, schedule and approval windows', () => {
   const component = readFileSync(new URL('../src/components/HelloAdaGrowth.tsx', import.meta.url), 'utf8');
   assert.doesNotMatch(component, /helloada-growth-work-strip|backgroundIdle/);
-  assert.match(component, /plan\.upcoming\.map/);
-  assert.match(component, /plan\.unscheduled\.length/);
-  assert.match(component, /growth\?\.reviewQueue\?\.map/);
-  assert.match(component, /growth\.changeGoal/);
+  assert.match(component, /<GrowthTasks tasks=\{growth\?\.tasks\}/);
+  assert.doesNotMatch(component, /reviewQueue\?\.map|reviewCandidates|helloada-growth-side|helloada-growth-advice/);
+  const tasks = readFileSync(new URL('../src/components/GrowthTasks.tsx', import.meta.url), 'utf8');
+  assert.match(tasks, /"needs_you", "preparing", "planned", "completed"/);
+  assert.match(tasks, /review_package_hash: task\?\.reviewPackageHash/);
+  assert.doesNotMatch(tasks, /\?draft=/);
 });
 
 test('report dates are normalized and sorted without filling missing days', () => {

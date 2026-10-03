@@ -7,7 +7,7 @@ import ts from 'typescript'
 const source = readFileSync(new URL('../src/server/runtime-env.ts', import.meta.url), 'utf8').replace(/import \{ getCloudflareContext \} from [^\n]+\n/, '')
 const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText
 function runtime(bindings, env = {}) {
-  const sandbox = { exports: {}, process: { env }, getCloudflareContext: () => {
+  const sandbox = { exports: {}, URLSearchParams, process: { env }, getCloudflareContext: () => {
     if (bindings === undefined) throw new Error('Not in a Worker')
     return { env: bindings }
   } }
@@ -20,6 +20,17 @@ test('request-time Worker bindings win over stale process environment', () => {
   assert.equal(api.helloAdaRuntime().token, 'worker-token')
   assert.equal(api.helloAdaRuntime().source, 'cloudflare')
   assert.equal(api.helloAdaRuntime().url, 'https://api.example/v1')
+})
+
+test('shared bridge forwards explicit Growth checks and refuses unknown methods and paths', () => {
+  const api = runtime({})
+  assert.equal(api.helloAdaWorkspacePath('/api/helloada/growth/check', 'POST'), '/workspace/growth/check')
+  assert.equal(api.helloAdaWorkspacePath('/api/atelier/growth/check', 'POST'), '/workspace/growth/check')
+  assert.equal(api.helloAdaWorkspacePath('/api/helloada/growth/check', 'GET'), undefined)
+  assert.equal(api.helloAdaWorkspacePath('/api/helloada/ada', 'GET', '?job_id=42'), '/workspace/chat/jobs/42')
+  assert.equal(api.helloAdaWorkspacePath('/api/helloada/drafts/42/approve', 'POST'), '/workspace/drafts/42/approve')
+  assert.equal(api.helloAdaWorkspacePath('/api/helloada/drafts/42/approve', 'GET'), undefined)
+  assert.equal(api.helloAdaWorkspacePath('/api/helloada/../../control-plane', 'POST'), undefined)
 })
 
 test('missing Worker bindings fail closed, not against a local/other tenant token', () => {

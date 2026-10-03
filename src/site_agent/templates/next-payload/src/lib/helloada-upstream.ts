@@ -1,4 +1,4 @@
-import { helloAdaRuntime } from '@weareheadless/helloada-payload-admin/server'
+import { helloAdaRuntime, helloAdaWorkspacePath } from '@weareheadless/helloada-payload-admin/server'
 
 const UPSTREAM_TIMEOUT_MS = 25_000
 
@@ -11,35 +11,8 @@ const upstreamPath = (path: string) => {
   return `${base}${path.startsWith('/') ? path : `/${path}`}`
 }
 
-const remapPath = (path: string, method: string, search: string) => {
-  const suffix = path.replace(/^\/api\/helloada/, '') || '/'
-  if (method === 'GET' && ['/connection', '/growth', '/seo/analytics', '/seo/insights', '/seo/evidence'].includes(suffix)) return `/workspace${suffix}${search}`
-  if (suffix === '/ada' && method === 'POST') return `/workspace/chat${search}`
-  if (suffix === '/ada' && method === 'GET') {
-    const params = new URLSearchParams(search)
-    const jobId = params.get('job_id')
-    if (jobId) return `/workspace/chat/jobs/${encodeURIComponent(jobId)}`
-    return `/workspace/chat/status${search}`
-  }
-  if (suffix === '/intake/confirm') return `/workspace/chat/intake/confirm${search}`
-  if (suffix === '/design/start') return `/workspace/chat/design/start${search}`
-  if (suffix === '/conversations') return `/workspace/chat/conversations${search}`
-  const conversation = suffix.match(/^\/conversations\/([^/]+)$/)
-  if (conversation) return `/workspace/chat/conversations/${encodeURIComponent(conversation[1])}${search}`
-  if (suffix === '/history') return `/workspace/history${search}`
-  if (suffix === '/drafts') return `/workspace/drafts${search}`
-  const draft = suffix.match(/^\/drafts\/([^/]+)\/(approve|discard)$/)
-  if (draft) return `/workspace/drafts/${encodeURIComponent(draft[1])}/${draft[2]}${search}`
-  const version = suffix.match(/^\/versions\/([^/]+)\/restore$/)
-  if (version) return `/workspace/versions/${encodeURIComponent(version[1])}/restore${search}`
-  if (suffix === '/worktree/discard') return `/workspace/worktree/discard${search}`
-  if (suffix === '/source/preview') return `/workspace/source/preview${search}`
-  if (suffix.startsWith('/source/preview/')) return `/workspace${suffix}${search}`
-  return undefined
-}
-
 export async function fetchHelloAdaUpstream(path: string, request: Request): Promise<Response | undefined> {
-  const mapped = remapPath(path, request.method, new URL(request.url).search)
+  const mapped = helloAdaWorkspacePath(path, request.method, new URL(request.url).search)
   const url = mapped ? upstreamPath(mapped) : undefined
   if (!url) return undefined
   const controller = new AbortController()

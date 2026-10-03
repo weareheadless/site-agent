@@ -561,7 +561,6 @@ class TenantRegistry:
         tenant.memory.interrupt_running_design_runs()
         if tenant.intake_coordinator is not None:
             tenant.intake_coordinator.start()
-        self._start_scheduler(tenant)
         tenant.design_executor = DesignJobExecutor(
             tenant.context,
             tenant.context["design_service"],
@@ -575,6 +574,7 @@ class TenantRegistry:
                 intake_service.lab_service = handoff
                 tenant.context["design_intake_build_service"] = handoff
         tenant.design_executor.start()
+        self._start_scheduler(tenant)
         tenant.executor = ChatJobExecutor(
             tenant.context,
             adapter_factory=lambda tenant=tenant: (
@@ -1243,6 +1243,18 @@ class ChatService:
         attachments = self._attachment_rows(body.get("attachments"))
         owner_context = body.get("context")
         owner_context = dict(owner_context) if isinstance(owner_context, Mapping) else {}
+        task_id = str(owner_context.pop("growth_task_id", "") or "").strip()
+        owner_context.pop("growth_task", None)
+        selected_task = None
+        if task_id:
+            from .growth import growth_snapshot
+            settings = tenant.config if tenant is not None else self.config
+            runtime_context = tenant.context if tenant is not None else {}
+            selected_task = next((row for row in growth_snapshot(memory, settings, runtime_context)["tasks"] if row["id"] == task_id), None)
+            if selected_task is None:
+                raise BridgeError("this growth task is no longer available")
+            owner_context["growth_task"] = {key: selected_task.get(key) for key in (
+                "id", "title", "summary", "scope", "state", "draftId", "ownerActionId", "approvalId", "reviewPackageHash")}
         if not message and not attachments:
             raise BridgeError("empty message")
         if len(message) > 8000:
@@ -1320,6 +1332,8 @@ class ChatService:
             attachments,
             display_message=message,
         )
+        if selected_task and selected_task.get("ownerActionId"):
+            memory.link_owner_action(selected_task["ownerActionId"], conversation_id=conversation_id)
         response = {
             "job_id": int(job_id),
             "conversation_id": int(conversation_id),
@@ -1885,12 +1899,12 @@ class ChatService:
         if self.registry is not None:
             if tenant is None or tenant.tenant_id not in self.registry.tenants:
                 raise BridgeError("tenant is not authorized")
-            from .growth_workflow import run_growth_reconciler
+            from .growth_workflow import queue_growth_check
 
             context = dict(tenant.context)
             context["memory"] = tenant.memory
             context["config"] = tenant.config
-            run = run_growth_reconciler(context)
+            run = queue_growth_check(context)
             return {"tenant": tenant.tenant_id, "run": run}
         if self.memory is None:
             raise BridgeError("growth is unavailable")
@@ -1908,13 +1922,22 @@ class ChatService:
             "insights": memory.list_seo_insights(limit=bounded),
         }
 
-    def approve_draft(self, draft_id: Any, *, tenant: Tenant | None = None) -> dict[str, Any]:
+    def approve_draft(self, draft_id: Any, *, tenant: Tenant | None = None, review_package_hash: str | None = None) -> dict[str, Any]:
         # A retried HTTP request must observe the first approval's durable
         # receipt rather than perform the same merge twice.
         with self._approval_lock:
-            return self._approve_draft(draft_id, tenant=tenant)
+            return self._approve_draft(draft_id, tenant=tenant, review_package_hash=review_package_hash)
 
-    def _approve_draft(self, draft_id: Any, *, tenant: Tenant | None = None) -> dict[str, Any]:
+    @staticmethod
+    def _assert_review_package(draft: Mapping[str, Any], supplied_hash: str | None) -> None:
+        """Membership comes from saved work, never from an optional HTTP field."""
+        meta = draft.get("meta") if isinstance(draft.get("meta"), Mapping) else {}
+        expected = meta.get("review_package_hash")
+        if expected or meta.get("growth_package") or draft.get("kind") == "payload_content":
+            if not expected or not supplied_hash or not hmac.compare_digest(str(expected).encode(), str(supplied_hash).encode()):
+                raise BridgeError("the reviewed version is missing or stale; reload this improvement before deciding")
+
+    def _approve_draft(self, draft_id: Any, *, tenant: Tenant | None = None, review_package_hash: str | None = None) -> dict[str, Any]:
         """Publish exactly one pending owner change through its existing lane.
 
         Design candidates use the immutable design service. Legacy/source merge
@@ -1937,6 +1960,7 @@ class ChatService:
             draft = {"id": normalized_id, "title": f"Design candidate {normalized_id}", "kind": "design", "status": "pending", "meta": {}}
         if draft is None:
             raise BridgeError("no such draft")
+        self._assert_review_package(draft, review_package_hash)
         if draft.get("status") != "pending":
             deployer = tenant.context.get("source_deployment") if tenant else self.source_deployment
             lookup = getattr(deployer, "for_draft", None)
@@ -2170,7 +2194,7 @@ class ChatService:
         result.setdefault("published", dict(published) if published else None)
         return result
 
-    def discard_draft(self, draft_id: Any, *, tenant: Tenant | None = None) -> dict[str, Any]:
+    def discard_draft(self, draft_id: Any, *, tenant: Tenant | None = None, review_package_hash: str | None = None) -> dict[str, Any]:
         """Cancel one pending draft and clean its review branch when needed."""
         memory, _llm, _tenant_id = self._scope(tenant)
         try:
@@ -2180,6 +2204,7 @@ class ChatService:
         draft = next((item for item in memory.list_drafts(limit=500) if int(item["id"]) == normalized_id), None)
         if draft is None:
             raise BridgeError("no such draft")
+        self._assert_review_package(draft, review_package_hash)
         if draft.get("status") != "pending":
             raise BridgeError(f"draft already {draft.get('status')}")
 
@@ -2592,6 +2617,10 @@ class ChatService:
         }
 
         raw_target = context.get("target")
+        growth_task = context.get("growth_task")
+        if isinstance(growth_task, Mapping):
+            safe_context["growth_task"] = {key: str(growth_task[key])[:500] for key in (
+                "id", "title", "summary", "scope", "state", "draftId", "ownerActionId", "approvalId", "reviewPackageHash") if growth_task.get(key) is not None}
         if isinstance(raw_target, Mapping):
             nested_keys = {
                 "route": ("path", "kind", "sourceId", "source_id"),

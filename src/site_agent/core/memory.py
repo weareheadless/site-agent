@@ -25,6 +25,7 @@ from .contracts import (
     ContractError,
     OwnerAction,
     ProviderReceipt,
+    ReceiptStatus,
     validate_action_transition,
     validate_approval_transition,
     safe_payload,
@@ -74,7 +75,7 @@ from .incubation_contracts import (
 
 _OPERATION_FIELD_UNSET = object()
 
-SCHEMA_VERSION = 49
+SCHEMA_VERSION = 50
 
 MIGRATIONS: dict[int, list[str]] = {
     1: [
@@ -1107,6 +1108,31 @@ MIGRATIONS: dict[int, list[str]] = {
         "ALTER TABLE strategy_initiatives ADD COLUMN last_error TEXT NOT NULL DEFAULT ''",
         "CREATE INDEX IF NOT EXISTS idx_strategy_initiatives_growth_run ON strategy_initiatives (growth_run_id, state, id)",
     ],
+    50: [
+        """CREATE TABLE strategy_cycles_v50 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            report_id TEXT UNIQUE,
+            period TEXT NOT NULL,
+            report_hash TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            summary TEXT NOT NULL DEFAULT '',
+            report_json TEXT NOT NULL DEFAULT '{}',
+            report_draft_id INTEGER,
+            created_ts TEXT NOT NULL,
+            updated_ts TEXT NOT NULL,
+            report_artifact_id INTEGER,
+            growth_run_id TEXT UNIQUE REFERENCES growth_runs(run_id),
+            evidence_artifact_id INTEGER
+        )""",
+        """INSERT INTO strategy_cycles_v50
+            (id, report_id, period, report_hash, status, summary, report_json,
+             report_draft_id, created_ts, updated_ts, report_artifact_id)
+            SELECT id, report_id, period, report_hash, status, summary, report_json,
+                   report_draft_id, created_ts, updated_ts, report_artifact_id FROM strategy_cycles""",
+        "DROP TABLE strategy_cycles",
+        "ALTER TABLE strategy_cycles_v50 RENAME TO strategy_cycles",
+        "CREATE INDEX idx_strategy_cycles_period ON strategy_cycles (period, id)",
+    ],
 }
 
 
@@ -1286,20 +1312,12 @@ class Memory:
         now = now_dt.isoformat(timespec="seconds")
         lease_until = (now_dt + datetime.timedelta(seconds=int(lease_seconds))).isoformat(timespec="seconds")
         with self.conn:
-            row = self.conn.execute(
-                "SELECT status, lease_owner, lease_until, attempt FROM growth_runs WHERE run_id = ?",
-                (run_id,),
-            ).fetchone()
-            if row is None or row["status"] in {"complete", "cancelled"}:
-                return None
-            current_lease = row["lease_until"]
-            if current_lease and current_lease > now and row["lease_owner"] not in {None, lease_owner}:
-                return None
-            increment = 1 if row["status"] in {"running", "failed", "blocked"} else 0
             cur = self.conn.execute(
                 "UPDATE growth_runs SET status = 'running', lease_owner = ?, lease_until = ?, "
-                "attempt = attempt + ?, completed_ts = NULL, updated_ts = ? WHERE run_id = ?",
-                (lease_owner, lease_until, increment, now, run_id),
+                "attempt = attempt + 1, completed_ts = NULL, updated_ts = ? WHERE run_id = ? "
+                "AND status NOT IN ('complete', 'cancelled') "
+                "AND (lease_until IS NULL OR lease_until <= ? OR lease_owner = ?)",
+                (lease_owner, lease_until, now, run_id, now, lease_owner),
             )
             if cur.rowcount != 1:
                 return None
@@ -1334,15 +1352,28 @@ class Memory:
         return self._decode_growth_run(dict(row)) if row else None
 
     @_locked
-    def list_growth_runs(self, limit: int = 20) -> list[dict[str, Any]]:
+    def list_growth_runs(self, limit: int | None = 20) -> list[dict[str, Any]]:
+        query = "SELECT * FROM growth_runs ORDER BY updated_ts DESC, created_ts DESC"
+        rows = self.conn.execute(query if limit is None else query + " LIMIT ?",
+                                 () if limit is None else (max(1, min(int(limit), 100)),))
+        return [self._decode_growth_run(dict(row)) for row in rows]
+
+    @_locked
+    def due_growth_runs(self, limit: int = 20) -> list[dict[str, Any]]:
+        """Filter before limiting so repeatedly blocked work cannot starve work."""
+        now = _now()
         rows = self.conn.execute(
-            "SELECT * FROM growth_runs ORDER BY updated_ts DESC, created_ts DESC LIMIT ?",
-            (max(1, min(int(limit), 100)),),
+            "SELECT * FROM growth_runs WHERE phase_version = 2 "
+            "AND status IN ('pending', 'running', 'failed', 'blocked') "
+            "AND (next_due_ts IS NULL OR next_due_ts <= ?) "
+            "AND (lease_until IS NULL OR lease_until <= ?) "
+            "ORDER BY COALESCE(next_due_ts, created_ts), created_ts LIMIT ?",
+            (now, now, max(1, min(int(limit), 100))),
         )
         return [self._decode_growth_run(dict(row)) for row in rows]
 
     @_locked
-    def update_growth_run(self, run_id: str, *, completed: bool = False, **fields: Any) -> dict[str, Any]:
+    def update_growth_run(self, run_id: str, *, completed: bool = False, expected_lease: str | None = None, **fields: Any) -> dict[str, Any]:
         allowed = {"phase", "status", "detail", "attempt", "lease_owner", "lease_until", "next_due_ts", "policy", "origin_revision", "phase_version", "source_refs"}
         updates: dict[str, Any] = {}
         for key, value in fields.items():
@@ -1358,10 +1389,13 @@ class Memory:
             updates["updated_ts"] = _now()
             assignments = ", ".join(f"{key} = ?" for key in updates)
             with self.conn:
-                self.conn.execute(
-                    f"UPDATE growth_runs SET {assignments} WHERE run_id = ?",
-                    [*updates.values(), str(run_id)],
+                cur = self.conn.execute(
+                    f"UPDATE growth_runs SET {assignments} WHERE run_id = ?" +
+                    (" AND lease_owner = ? AND lease_until > ?" if expected_lease else ""),
+                    [*updates.values(), str(run_id), *([expected_lease, _now()] if expected_lease else [])],
                 )
+                if expected_lease and cur.rowcount != 1:
+                    raise ContractError("growth execution lease was superseded or expired")
         result = self.get_growth_run(str(run_id))
         if result is None:
             raise ContractError("growth run does not exist")
@@ -1582,7 +1616,7 @@ class Memory:
     def list_owner_actions(
         self,
         states: list[str] | tuple[str, ...] | None = None,
-        limit: int = 100,
+        limit: int | None = 100,
         *,
         job_id: int | None = None,
     ) -> list[OwnerAction]:
@@ -1598,8 +1632,10 @@ class Memory:
             params.append(job_id)
         if clauses:
             query += " WHERE " + " AND ".join(clauses)
-        query += " ORDER BY id DESC LIMIT ?"
-        params.append(limit)
+        query += " ORDER BY id DESC"
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(limit)
         return [OwnerAction.from_record(dict(row)) for row in self.conn.execute(query, params)]
 
     @_locked
@@ -2178,10 +2214,12 @@ class Memory:
         decided_ts = updated_ts if target != ApprovalStatus.PENDING else current.decided_ts
         feedback = current.owner_feedback if owner_feedback is None else owner_feedback.strip()[:1000]
         with self.conn:
-            self.conn.execute(
-                "UPDATE approval_requests SET status = ?, updated_ts = ?, decided_ts = ?, owner_feedback = ? WHERE id = ?",
-                (target.value, updated_ts, decided_ts, feedback, approval_id),
+            cur = self.conn.execute(
+                "UPDATE approval_requests SET status = ?, updated_ts = ?, decided_ts = ?, owner_feedback = ? WHERE id = ? AND status = ?",
+                (target.value, updated_ts, decided_ts, feedback, approval_id, current.status.value),
             )
+            if cur.rowcount != 1:
+                raise ContractError("approval decision changed concurrently")
         return replace(current, status=target, updated_ts=updated_ts, decided_ts=decided_ts, owner_feedback=feedback)
 
     @_locked
@@ -2206,6 +2244,27 @@ class Memory:
     def get_provider_receipt(self, receipt_id: int) -> ProviderReceipt | None:
         row = self.conn.execute("SELECT * FROM provider_receipts WHERE id = ?", (receipt_id,)).fetchone()
         return ProviderReceipt.from_record(dict(row)) if row else None
+
+    @_locked
+    def settle_provider_receipt(self, receipt_id: int, receipt: ProviderReceipt) -> ProviderReceipt:
+        """Settle the durable dispatch claim; never insert a second receipt."""
+        existing = self.get_provider_receipt(receipt_id)
+        if existing is None:
+            raise ContractError("provider dispatch claim does not exist")
+        if (existing.provider_id, existing.capability_id, existing.idempotency_key) != (
+            receipt.provider_id, receipt.capability_id, receipt.idempotency_key
+        ):
+            raise ContractError("provider dispatch identifiers changed")
+        if existing.status != ReceiptStatus.UNCERTAIN:
+            return existing
+        with self.conn:
+            self.conn.execute(
+                "UPDATE provider_receipts SET status = ?, external_object_id = ?, external_url = ?, safe_message = ?, updated_ts = ? "
+                "WHERE id = ? AND status = ?",
+                (receipt.status.value, receipt.external_object_id, receipt.external_url, receipt.safe_message, _now(),
+                 receipt_id, ReceiptStatus.UNCERTAIN.value),
+            )
+        return self.get_provider_receipt(receipt_id)
 
     @_locked
     def get_provider_receipt_by_idempotency_key(self, idempotency_key: str) -> ProviderReceipt | None:
@@ -2317,14 +2376,16 @@ class Memory:
             return False
 
     @_locked
-    def list_drafts(self, status: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    def list_drafts(self, status: str | None = None, limit: int | None = 50) -> list[dict[str, Any]]:
         query = "SELECT * FROM drafts"
         params: list[Any] = []
         if status:
             query += " WHERE status = ?"
             params.append(status)
-        query += " ORDER BY id DESC LIMIT ?"
-        params.append(limit)
+        query += " ORDER BY id DESC"
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(limit)
         rows = [dict(r) for r in self.conn.execute(query, params)]
         for row in rows:
             try:
@@ -5227,6 +5288,26 @@ class Memory:
         return result
 
     @_locked
+    def growth_strategy_cycle(self, run_id: str, evidence_artifact_id: int) -> dict[str, Any]:
+        """A strategy can exist without manufacturing a provider report ID."""
+        run = self.get_growth_run(run_id)
+        if run is None or not evidence_artifact_id:
+            raise ContractError("a growth strategy requires its real run and evidence")
+        now = _now()
+        with self.conn:
+            self.conn.execute(
+                "INSERT OR IGNORE INTO strategy_cycles "
+                "(period, growth_run_id, evidence_artifact_id, created_ts, updated_ts) VALUES (?, ?, ?, ?, ?)",
+                (run["created_ts"][:10], run_id, int(evidence_artifact_id), now, now),
+            )
+        row = self.conn.execute("SELECT * FROM strategy_cycles WHERE growth_run_id = ?", (run_id,)).fetchone()
+        if row is None:
+            raise ContractError("growth strategy cycle was not persisted")
+        result = dict(row)
+        result["report_json"] = json.loads(result["report_json"])
+        return result
+
+    @_locked
     def create_strategy_cycle(
         self,
         report_id: str,
@@ -5383,7 +5464,8 @@ class Memory:
         allowed = {
             "identified": {"preparing", "blocked", "snoozed", "rejected", "superseded"},
             "proposed": {"preparing", "blocked", "snoozed", "rejected", "superseded"},
-            "preparing": {"validating", "blocked", "snoozed", "superseded"},
+            "preparing": {"validating", "waiting_for_owner", "blocked", "snoozed", "superseded"},
+            "waiting_for_owner": {"preparing", "snoozed", "rejected", "superseded"},
             "validating": {"ready_for_review", "preparing", "blocked", "superseded"},
             "ready_for_review": {"publishing", "rejected", "snoozed", "validating", "superseded"},
             "publishing": {"verifying_live", "blocked", "uncertain", "superseded"},
@@ -5408,22 +5490,31 @@ class Memory:
             raise ContractError(f"strategy initiative is {current}, expected {expected_state}")
         if target != current and target not in allowed.get(current, set()):
             raise ContractError(f"invalid strategy initiative transition {current} -> {target}")
-        fields: dict[str, Any] = {"state": target}
+        fields: dict[str, Any] = {"state": target, "updated_ts": _now()}
         if validation is not None:
-            fields["validation"] = validation
+            fields["validation_json"] = json.dumps(validation)
         if last_error is not None:
             fields["last_error"] = str(last_error)[:2000]
-        return self.update_strategy_initiative(int(initiative_id), **fields)
+        with self.conn:
+            cur = self.conn.execute(
+                f"UPDATE strategy_initiatives SET {', '.join(f'{key} = ?' for key in fields)} WHERE id = ? AND state = ?",
+                [*fields.values(), int(initiative_id), current],
+            )
+            if cur.rowcount != 1:
+                raise ContractError("strategy initiative changed concurrently")
+        return self.update_strategy_initiative(int(initiative_id))
 
     @_locked
-    def list_strategy_initiatives(self, cycle_id: int | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    def list_strategy_initiatives(self, cycle_id: int | None = None, limit: int | None = 100) -> list[dict[str, Any]]:
         query = "SELECT * FROM strategy_initiatives"
         params: list[Any] = []
         if cycle_id is not None:
             query += " WHERE cycle_id = ?"
             params.append(cycle_id)
-        query += " ORDER BY id ASC LIMIT ?"
-        params.append(max(1, min(int(limit), 500)))
+        query += " ORDER BY id ASC"
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(max(1, min(int(limit), 500)))
         rows = [dict(row) for row in self.conn.execute(query, params)]
         for row in rows:
             for field_name in ("evidence_json", "expected_json"):

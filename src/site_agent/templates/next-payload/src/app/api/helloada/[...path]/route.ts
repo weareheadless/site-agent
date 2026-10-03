@@ -37,6 +37,7 @@ const plainText = (value: unknown): string => {
   if (typeof value === 'string') return value.trim()
   if (!value || typeof value !== 'object' || Array.isArray(value)) return ''
   const node = value as Record<string, unknown>
+  if (node.root && typeof node.root === 'object') return plainText(node.root)
   if (typeof node.text === 'string') return node.text
   if (!Array.isArray(node.children)) return ''
   return node.children.map(plainText).filter(Boolean).join('\n').trim()
