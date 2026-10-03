@@ -13,7 +13,7 @@ Accepted forms:
   - 14 or {every: 14}                              (every N days)
   - "6h" or "3d"                                   (fixed hour/day interval)
   - {every: ..., at: "HH:MM"}                      (anchored to wall-clock time,
-                                                    server-local timezone)
+                                                    explicit tenant timezone)
   - {every: weekly|daily, weekday: monday, at: ..} (anchored to a weekday)
 
 Certainty rules:
@@ -32,6 +32,7 @@ import os
 import re
 from pathlib import Path
 from typing import Any, Callable
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .memory import Memory
 
@@ -125,10 +126,27 @@ def normalize_schedule(spec: str | int | dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def compute_next(spec: dict[str, Any], after_ts: float, now_local: Callable[[], datetime.datetime] | None = None) -> float:
-    """Next fire time strictly after after_ts, honoring weekday/time anchors."""
-    local = now_local or (lambda ts=None: datetime.datetime.fromtimestamp(after_ts if ts is None else ts))
-    base = datetime.datetime.fromtimestamp(after_ts)
+def compute_next(
+    spec: dict[str, Any],
+    after_ts: float,
+    now_local: Callable[[], datetime.datetime] | None = None,
+    timezone_name: str | None = None,
+) -> float:
+    """Next fire time strictly after ``after_ts`` in one tenant timezone.
+
+    A configured tenant always passes an explicit IANA timezone.  ``None`` is
+    retained for callers of the original low-level helper and deliberately
+    follows the process-local timezone so existing integrations keep their
+    established behavior while tenant runtimes migrate to explicit config.
+    """
+    if timezone_name is None:
+        zone = datetime.datetime.now().astimezone().tzinfo or datetime.timezone.utc
+    else:
+        try:
+            zone = ZoneInfo(str(timezone_name))
+        except (ZoneInfoNotFoundError, ValueError) as exc:
+            raise ScheduleError(f"invalid scheduler timezone '{timezone_name}'") from exc
+    base = datetime.datetime.fromtimestamp(after_ts, zone)
     at_time = spec["at_time"]
     weekday = spec["weekday"]
 
@@ -139,7 +157,7 @@ def compute_next(spec: dict[str, Any], after_ts: float, now_local: Callable[[], 
     if weekday is not None:
         delta = (weekday - candidate_date.weekday()) % 7
         candidate_date += datetime.timedelta(days=delta)
-        candidate_dt = datetime.datetime.combine(candidate_date, at_time or datetime.time(9, 0))
+        candidate_dt = datetime.datetime.combine(candidate_date, at_time or datetime.time(9, 0), tzinfo=zone)
         if candidate_dt <= base:
             candidate_dt += datetime.timedelta(days=7)
         # "every N days on weekday W": keep skipping whole weeks until the
@@ -150,7 +168,7 @@ def compute_next(spec: dict[str, Any], after_ts: float, now_local: Callable[[], 
                 candidate_dt += datetime.timedelta(days=7)
         return candidate_dt.timestamp()
 
-    candidate_dt = datetime.datetime.combine(candidate_date, at_time)
+    candidate_dt = datetime.datetime.combine(candidate_date, at_time, tzinfo=zone)
     if candidate_dt <= base:
         candidate_dt += datetime.timedelta(days=1)
     return candidate_dt.timestamp()
@@ -161,10 +179,24 @@ def _utcnow() -> float:
 
 
 class Scheduler:
-    def __init__(self, memory: Memory, lock_path: str | Path, clock: Callable[[], float] = _utcnow):
+    def __init__(
+        self,
+        memory: Memory,
+        lock_path: str | Path,
+        clock: Callable[[], float] = _utcnow,
+        timezone_name: str | None = None,
+    ):
         self.memory = memory
         self.lock_path = Path(lock_path)
         self.clock = clock
+        if timezone_name is not None:
+            try:
+                ZoneInfo(str(timezone_name))
+            except (ZoneInfoNotFoundError, ValueError) as exc:
+                raise ScheduleError(f"invalid scheduler timezone '{timezone_name}'") from exc
+            self.timezone_name = str(timezone_name)
+        else:
+            self.timezone_name = None
         self.jobs: list[tuple[str, dict[str, Any], Callable[[], Any]]] = []
 
     def job(self, name: str, schedule: str | int | dict[str, Any], fn: Callable[[], Any]) -> None:
@@ -245,7 +277,7 @@ class Scheduler:
                 self.memory.kv_set(f"last_run:{name}", round(fired_at, 3))
                 if succeeded:
                     self.memory.kv_set(self._failure_count_key(name), 0)
-                    next_run = compute_next(spec, fired_at)
+                    next_run = compute_next(spec, fired_at, timezone_name=self.timezone_name)
                 else:
                     next_run = fired_at + retry_seconds
                 self.memory.kv_set(self._next_run_key(name), round(next_run, 3))

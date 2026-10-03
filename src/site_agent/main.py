@@ -29,6 +29,8 @@ from .core.jobs import register_builtin
 from .core.memory import Memory
 from .core.reflect import effective_persona
 from .core.scheduler import Scheduler
+from .core.growth_contracts import growth_timezone
+from .application.growth_workflow import ensure_default_goal
 from .application.designs import DEEPSEEK_DESIGN_MODEL, DesignServiceError
 from .application.design_lab import DesignLabError, DesignLabService
 from .hands.builder import BuilderError, OperationRoutingBuilder
@@ -786,8 +788,13 @@ def _build_runtime(args: argparse.Namespace):
     # environment to every trusted runtime adapter, including Payload.
     raw_env = credential_environment(config, raw_env)
     memory = Memory(data_dir(config) / "memory.db")
+    ensure_default_goal(memory)
     llm = Client(config, memory, env=raw_env)
-    scheduler = Scheduler(memory, lock_path=data_dir(config) / "scheduler.lock")
+    scheduler = Scheduler(
+        memory,
+        lock_path=data_dir(config) / "scheduler.lock",
+        timezone_name=growth_timezone(config),
+    )
     runtime = Runtime(config, memory, scheduler, llm, effective_persona(config, memory))
     context = runtime.context()
     from .hands.payload_gateway import PayloadGatewayClient

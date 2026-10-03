@@ -123,6 +123,84 @@
     width: 38px;
     padding: 0;
   }
+  .helloada-growth-work-strip {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 10px 12px;
+    margin: -4px 0 18px;
+    padding: 11px 14px;
+    border: 1px solid rgba(255, 107, 94, 0.22);
+    border-radius: 12px;
+    background: linear-gradient(105deg, rgba(255, 107, 94, 0.1), rgba(255, 255, 255, 0.025));
+  }
+  .helloada-growth-work-strip > div {
+    min-width: 0;
+  }
+  .helloada-growth-work-strip > div:first-of-type {
+    display: grid;
+    gap: 2px;
+  }
+  .helloada-growth-work-strip strong {
+    color: var(--helloada-ink);
+    font-size: 12px;
+    letter-spacing: 0.01em;
+  }
+  .helloada-growth-work-strip span:not(.helloada-growth-work-dot) {
+    color: var(--helloada-muted);
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .helloada-growth-work-meta {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 4px 10px;
+    color: var(--helloada-dim);
+    font-size: 11px;
+  }
+  .helloada-growth-work-strip > a {
+    color: var(--helloada-coral, #ff6b5e);
+    font-size: 12px;
+    font-weight: 650;
+    white-space: nowrap;
+  }
+  .helloada-growth-work-strip > button {
+    min-height: 30px;
+    padding: 0 11px;
+    border: 1px solid rgba(255, 107, 94, 0.42);
+    border-radius: 7px;
+    background: rgba(255, 107, 94, 0.12);
+    color: var(--helloada-ink);
+    font-size: 12px;
+    font-weight: 650;
+    white-space: nowrap;
+  }
+  .helloada-growth-work-strip > button:hover:not(:disabled) {
+    background: var(--helloada-coral, #ff6b5e);
+    color: #17131a;
+  }
+  .helloada-growth-work-strip > button:disabled {
+    cursor: wait;
+    opacity: 0.62;
+  }
+  .helloada-growth-work-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--helloada-dim);
+    box-shadow: 0 0 0 4px rgba(138, 145, 157, 0.12);
+  }
+  .helloada-growth-work-dot.is-running {
+    background: #ff6b5e;
+    box-shadow: 0 0 0 4px rgba(255, 107, 94, 0.16);
+  }
+  .helloada-growth-work-dot.is-blocked {
+    background: var(--helloada-violet);
+    box-shadow: 0 0 0 4px rgba(123, 104, 238, 0.14);
+  }
   .helloada-growth-card,
   .helloada-growth-source {
     min-width: 0;
@@ -684,6 +762,15 @@
       align-items: start;
       flex-direction: column;
       gap: 10px;
+    }
+    .helloada-growth-work-strip {
+      grid-template-columns: auto minmax(0, 1fr);
+    }
+    .helloada-growth-work-meta,
+    .helloada-growth-work-strip > button,
+    .helloada-growth-work-strip > a {
+      grid-column: 2;
+      justify-content: flex-start;
     }
     .helloada-growth-tabs {
       width: 100%;

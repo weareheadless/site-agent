@@ -74,7 +74,7 @@ from .incubation_contracts import (
 
 _OPERATION_FIELD_UNSET = object()
 
-SCHEMA_VERSION = 44
+SCHEMA_VERSION = 46
 
 MIGRATIONS: dict[int, list[str]] = {
     1: [
@@ -1033,6 +1033,56 @@ MIGRATIONS: dict[int, list[str]] = {
                    AND instr(message, '[Owner workspace context — metadata, not instructions]') = 1
              )""",
     ],
+    45: [
+        """CREATE TABLE IF NOT EXISTS growth_goal_revisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            revision INTEGER NOT NULL UNIQUE,
+            goal_key TEXT NOT NULL,
+            objective TEXT NOT NULL,
+            metrics_json TEXT NOT NULL DEFAULT '[]',
+            confirmed_by TEXT NOT NULL,
+            confirmed_ts TEXT NOT NULL,
+            source TEXT NOT NULL,
+            created_ts TEXT NOT NULL
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_growth_goals_created ON growth_goal_revisions (created_ts DESC, id DESC)",
+        """CREATE TABLE IF NOT EXISTS growth_runs (
+            run_id TEXT PRIMARY KEY,
+            run_key TEXT NOT NULL UNIQUE,
+            trigger TEXT NOT NULL,
+            goal_revision INTEGER NOT NULL REFERENCES growth_goal_revisions(revision),
+            timezone TEXT NOT NULL,
+            phase TEXT NOT NULL,
+            status TEXT NOT NULL,
+            detail_json TEXT NOT NULL DEFAULT '{}',
+            attempt INTEGER NOT NULL DEFAULT 1,
+            lease_owner TEXT,
+            lease_until TEXT,
+            next_due_ts TEXT,
+            created_ts TEXT NOT NULL,
+            updated_ts TEXT NOT NULL,
+            completed_ts TEXT
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_growth_runs_status_updated ON growth_runs (status, updated_ts DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_growth_runs_goal ON growth_runs (goal_revision, created_ts DESC)",
+    ],
+    46: [
+        """CREATE TABLE IF NOT EXISTS growth_budget_reservations (
+            reservation_id TEXT PRIMARY KEY,
+            period TEXT NOT NULL,
+            idempotency_key TEXT NOT NULL UNIQUE,
+            amount_micros INTEGER NOT NULL CHECK(amount_micros >= 0),
+            currency TEXT NOT NULL DEFAULT 'USD',
+            operation TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'reserved',
+            provider_task_id TEXT,
+            detail_json TEXT NOT NULL DEFAULT '{}',
+            created_ts TEXT NOT NULL,
+            updated_ts TEXT NOT NULL,
+            settled_ts TEXT
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_growth_budget_period ON growth_budget_reservations (period, status, created_ts)",
+    ],
 }
 
 
@@ -1105,6 +1155,275 @@ class Memory:
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (key, encoded),
             )
+
+    @_locked
+    def create_growth_goal(self, goal: dict[str, Any]) -> dict[str, Any]:
+        """Persist an immutable goal revision, returning the existing default on a race."""
+
+        required = ("goal_key", "objective", "confirmed_by", "confirmed_ts", "source")
+        if any(not str(goal.get(field) or "").strip() for field in required):
+            raise ContractError("growth goal is missing required fields")
+        metrics = goal.get("metrics") or []
+        if not isinstance(metrics, list) or any(not isinstance(item, str) or not item.strip() for item in metrics):
+            raise ContractError("growth goal metrics must be a list of text")
+        now = _now()
+        try:
+            with self.conn:
+                row = self.conn.execute("SELECT * FROM growth_goal_revisions ORDER BY revision DESC LIMIT 1").fetchone()
+                revision = int(row["revision"] if row else 0) + 1
+                self.conn.execute(
+                    "INSERT INTO growth_goal_revisions "
+                    "(revision, goal_key, objective, metrics_json, confirmed_by, confirmed_ts, source, created_ts) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        revision,
+                        str(goal["goal_key"]).strip()[:120],
+                        str(goal["objective"]).strip()[:500],
+                        json.dumps(metrics),
+                        str(goal["confirmed_by"]).strip()[:120],
+                        str(goal["confirmed_ts"]).strip()[:80],
+                        str(goal["source"]).strip()[:120],
+                        now,
+                    ),
+                )
+        except sqlite3.IntegrityError:
+            # Another provisioning worker committed the immutable revision.
+            # Return that committed state instead of creating a duplicate goal.
+            existing = self.latest_growth_goal()
+            if existing is not None:
+                return existing
+            raise
+        return self.latest_growth_goal() or {}
+
+    @_locked
+    def latest_growth_goal(self) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM growth_goal_revisions ORDER BY revision DESC, id DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        try:
+            result["metrics"] = json.loads(result.pop("metrics_json") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            raise ContractError("stored growth goal metrics are invalid")
+        return result
+
+    @_locked
+    def create_growth_run(
+        self,
+        *,
+        run_id: str,
+        run_key: str,
+        trigger: str,
+        goal_revision: int,
+        timezone: str,
+        phase: str,
+        status: str,
+        detail: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if not run_id.strip() or not run_key.strip() or not trigger.strip() or not timezone.strip():
+            raise ContractError("growth run identity fields must not be empty")
+        with self.conn:
+            self.conn.execute(
+                "INSERT OR IGNORE INTO growth_runs "
+                "(run_id, run_key, trigger, goal_revision, timezone, phase, status, detail_json, created_ts, updated_ts) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    run_id.strip(), run_key.strip(), trigger.strip()[:120], int(goal_revision), timezone.strip()[:120],
+                    phase.strip()[:80], status.strip()[:40], json.dumps(detail or {}), _now(), _now(),
+                ),
+            )
+        row = self.conn.execute("SELECT * FROM growth_runs WHERE run_key = ?", (run_key,)).fetchone()
+        if row is None:
+            raise ContractError("growth run was not persisted")
+        return self._decode_growth_run(dict(row))
+
+    @_locked
+    def claim_growth_run(
+        self,
+        run_id: str,
+        *,
+        lease_owner: str,
+        lease_seconds: int = 300,
+    ) -> dict[str, Any] | None:
+        """Acquire a restart-safe lease without allowing concurrent execution."""
+
+        run_id = str(run_id or "").strip()
+        lease_owner = str(lease_owner or "").strip()
+        if not run_id or not lease_owner or not 1 <= int(lease_seconds) <= 3600:
+            raise ContractError("growth run lease parameters are invalid")
+        now_dt = datetime.datetime.now(datetime.timezone.utc)
+        now = now_dt.isoformat(timespec="seconds")
+        lease_until = (now_dt + datetime.timedelta(seconds=int(lease_seconds))).isoformat(timespec="seconds")
+        with self.conn:
+            row = self.conn.execute(
+                "SELECT status, lease_owner, lease_until, attempt FROM growth_runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            if row is None or row["status"] in {"complete", "cancelled"}:
+                return None
+            current_lease = row["lease_until"]
+            if current_lease and current_lease > now and row["lease_owner"] not in {None, lease_owner}:
+                return None
+            increment = 1 if row["status"] in {"running", "failed", "blocked"} else 0
+            cur = self.conn.execute(
+                "UPDATE growth_runs SET status = 'running', lease_owner = ?, lease_until = ?, "
+                "attempt = attempt + ?, completed_ts = NULL, updated_ts = ? WHERE run_id = ?",
+                (lease_owner, lease_until, increment, now, run_id),
+            )
+            if cur.rowcount != 1:
+                return None
+        return self.get_growth_run(run_id)
+
+    @staticmethod
+    def _decode_growth_run(row: dict[str, Any]) -> dict[str, Any]:
+        try:
+            row["detail"] = json.loads(row.pop("detail_json") or "{}")
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise ContractError("stored growth run detail is invalid") from exc
+        return row
+
+    @_locked
+    def get_growth_run(self, run_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT * FROM growth_runs WHERE run_id = ?", (str(run_id),)).fetchone()
+        return self._decode_growth_run(dict(row)) if row else None
+
+    @_locked
+    def get_growth_run_by_key(self, run_key: str) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT * FROM growth_runs WHERE run_key = ?", (str(run_key),)).fetchone()
+        return self._decode_growth_run(dict(row)) if row else None
+
+    @_locked
+    def latest_growth_run(self) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT * FROM growth_runs ORDER BY updated_ts DESC, created_ts DESC LIMIT 1").fetchone()
+        return self._decode_growth_run(dict(row)) if row else None
+
+    @_locked
+    def list_growth_runs(self, limit: int = 20) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT * FROM growth_runs ORDER BY updated_ts DESC, created_ts DESC LIMIT ?",
+            (max(1, min(int(limit), 100)),),
+        )
+        return [self._decode_growth_run(dict(row)) for row in rows]
+
+    @_locked
+    def update_growth_run(self, run_id: str, *, completed: bool = False, **fields: Any) -> dict[str, Any]:
+        allowed = {"phase", "status", "detail", "attempt", "lease_owner", "lease_until", "next_due_ts"}
+        updates: dict[str, Any] = {}
+        for key, value in fields.items():
+            if key not in allowed:
+                continue
+            updates["detail_json" if key == "detail" else key] = json.dumps(value) if key == "detail" else value
+        if completed:
+            updates["completed_ts"] = _now()
+            updates["lease_owner"] = None
+            updates["lease_until"] = None
+        if updates:
+            updates["updated_ts"] = _now()
+            assignments = ", ".join(f"{key} = ?" for key in updates)
+            with self.conn:
+                self.conn.execute(
+                    f"UPDATE growth_runs SET {assignments} WHERE run_id = ?",
+                    [*updates.values(), str(run_id)],
+                )
+        result = self.get_growth_run(str(run_id))
+        if result is None:
+            raise ContractError("growth run does not exist")
+        return result
+
+    @_locked
+    def reserve_growth_budget(
+        self,
+        *,
+        reservation_id: str,
+        period: str,
+        idempotency_key: str,
+        amount_micros: int,
+        cap_micros: int,
+        operation: str,
+        currency: str = "USD",
+        detail: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Reserve one bounded paid operation before a provider is called."""
+
+        reservation_id = str(reservation_id or "").strip()
+        period = str(period or "").strip()
+        idempotency_key = str(idempotency_key or "").strip()
+        operation = str(operation or "").strip()
+        amount_micros = int(amount_micros)
+        cap_micros = int(cap_micros)
+        if not reservation_id or not period or not idempotency_key or not operation:
+            raise ContractError("growth budget reservation identity is incomplete")
+        if amount_micros < 0 or cap_micros < 0 or amount_micros > cap_micros:
+            raise ContractError("growth budget amount exceeds the configured cap")
+        now = _now()
+        with self.conn:
+            existing = self.conn.execute(
+                "SELECT * FROM growth_budget_reservations WHERE idempotency_key = ?",
+                (idempotency_key,),
+            ).fetchone()
+            if existing is not None:
+                if int(existing["amount_micros"]) != amount_micros or existing["period"] != period:
+                    raise ContractError("growth budget idempotency key was reused for a different reservation")
+                return self._decode_growth_budget(dict(existing))
+            spent = self.conn.execute(
+                "SELECT COALESCE(SUM(amount_micros), 0) FROM growth_budget_reservations "
+                "WHERE period = ? AND status IN ('reserved', 'uncertain', 'settled')",
+                (period,),
+            ).fetchone()[0]
+            if int(spent) + amount_micros > cap_micros:
+                raise ContractError("growth research allowance is exhausted for this period")
+            self.conn.execute(
+                "INSERT INTO growth_budget_reservations "
+                "(reservation_id, period, idempotency_key, amount_micros, currency, operation, status, detail_json, created_ts, updated_ts) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'reserved', ?, ?, ?)",
+                (reservation_id, period, idempotency_key, amount_micros, str(currency or "USD")[:12], operation[:160], json.dumps(detail or {}), now, now),
+            )
+        return self.get_growth_budget_reservation(reservation_id) or {}
+
+    @staticmethod
+    def _decode_growth_budget(row: dict[str, Any]) -> dict[str, Any]:
+        try:
+            row["detail"] = json.loads(row.pop("detail_json") or "{}")
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise ContractError("stored growth budget detail is invalid") from exc
+        return row
+
+    @_locked
+    def get_growth_budget_reservation(self, reservation_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM growth_budget_reservations WHERE reservation_id = ?",
+            (str(reservation_id),),
+        ).fetchone()
+        return self._decode_growth_budget(dict(row)) if row else None
+
+    @_locked
+    def settle_growth_budget(
+        self,
+        reservation_id: str,
+        *,
+        status: str,
+        provider_task_id: str | None = None,
+        detail: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if status not in {"settled", "released", "uncertain"}:
+            raise ContractError("invalid growth budget settlement status")
+        updates = {"status": status, "updated_ts": _now(), "settled_ts": _now() if status != "uncertain" else None}
+        if provider_task_id is not None:
+            updates["provider_task_id"] = str(provider_task_id)[:240]
+        if detail is not None:
+            updates["detail_json"] = json.dumps(detail)
+        with self.conn:
+            assignments = ", ".join(f"{field} = ?" for field in updates)
+            self.conn.execute(
+                f"UPDATE growth_budget_reservations SET {assignments} WHERE reservation_id = ?",
+                [*updates.values(), str(reservation_id)],
+            )
+        result = self.get_growth_budget_reservation(reservation_id)
+        if result is None:
+            raise ContractError("growth budget reservation does not exist")
+        return result
 
     @_locked
     def record_observation(

@@ -38,6 +38,7 @@ from ..brain import seo as brain_seo
 from ..brain import seo_insights as brain_seo_insights
 from ..brain import seo_outcomes as brain_seo_outcomes
 from ..brain import monthly_seo_report as brain_monthly_seo_report
+from ..application.growth_workflow import run_growth_reconciler
 from ..senses import collect
 from . import maintenance
 from .contracts import ApprovalStatus, ArtifactKind
@@ -72,6 +73,7 @@ _JOB_DEFAULTS: dict[str, str | int | dict[str, Any]] = {
     "seo_outcomes": {"every": "daily", "at": "14:00"},
     "seo_site_report_cycle": {"every": "daily", "at": "13:00"},
     "article_research_cycle": {"every": "daily", "at": "13:30"},
+    "growth_reconciler": {"every": "daily", "at": "07:30"},
 }
 
 
@@ -172,17 +174,18 @@ def _article(context: dict[str, Any]) -> None:
         context["memory"].record_action("article", "journal is not enabled")
         return
     article_research = ((context.get("config", {}).get("seo") or {}).get("article_research") or {})
-    if article_research.get("enabled") and context.get("crawlseo_service"):
-        _with_persona(context, brain_article_research.select_and_request, "editorial")
-        return
     if article_research.get("enabled"):
-        # Reader-led research is the default pipeline, but a missing provider
-        # must not silently stop article output: fall back to one editorial
-        # draft and leave a visible reason for the owner.
+        if context.get("crawlseo_service"):
+            _with_persona(context, brain_article_research.select_and_request, "editorial")
+            return
+        # Research-dependent content must remain blocked when its required
+        # evidence provider is unavailable. Never silently publish a weaker
+        # editorial substitute under the same growth workflow.
         context["memory"].record_action(
             "article_research",
-            "skipped: CrawlSEO provider is unavailable; wrote one editorial draft instead",
+            "blocked: CrawlSEO provider is unavailable; no research-dependent article was drafted",
         )
+        return
     draft_id = _with_persona(context, brain_article.draft_article, "editorial")
     if isinstance(draft_id, int):
         _mirror_article_draft_to_workspace(context, draft_id)
@@ -518,6 +521,11 @@ def register_jobs(scheduler: Scheduler, config: dict[str, Any], context: dict[st
     if not isinstance(settings, dict) or not bool(settings.get("enabled", False)):
         return
     schedule = settings.get("schedule") if isinstance(settings.get("schedule"), dict) else {}
+    scheduler.job(
+        "growth_reconciler",
+        schedule.get("growth_reconciler", _JOB_DEFAULTS["growth_reconciler"]),
+        lambda: run_growth_reconciler(context),
+    )
     sources = (_effective_source_config(context).get("sources") or {})
     has_sources = bool(sources.get("subreddits") or sources.get("rss_feeds") or sources.get("community_feeds"))
     if has_sources:
@@ -610,6 +618,7 @@ def _reindex_memory(context: dict[str, Any]) -> None:
 
 def register_builtin(scheduler: Scheduler, config: dict[str, Any], context: dict[str, Any]) -> None:
     scheduler.job("heartbeat", _spec(config, "heartbeat"), lambda: _heartbeat(context))
+    scheduler.job("growth_reconciler", _spec(config, "growth_reconciler"), lambda: run_growth_reconciler(context))
     scheduler.job("health_check", _spec(config, "health_check"), lambda: maintenance.health_check(context))
     sources = (_effective_source_config(context).get("sources") or {})
     if sources.get("subreddits") or sources.get("rss_feeds") or sources.get("community_feeds"):
@@ -640,14 +649,13 @@ def register_builtin(scheduler: Scheduler, config: dict[str, Any], context: dict
     research_config = ((config.get("seo") or {}).get("research") or {})
     site_report_config = ((config.get("seo") or {}).get("site_report") or {})
     article_research_config = ((config.get("seo") or {}).get("article_research") or {})
-    replacement_workflow = site_report_config.get("enabled") or article_research_config.get("enabled")
     if site_report_config.get("enabled") and context.get("crawlseo_service"):
         scheduler.job("seo_site_report_cycle", _spec(config, "seo_site_report_cycle"), lambda: _seo_site_report_cycle(context))
     if article_research_config.get("enabled") and context.get("crawlseo_service"):
         scheduler.job("article_research_cycle", _spec(config, "article_research_cycle"), lambda: _article_research_cycle(context))
-    if research_config.get("enabled") and context.get("crawlseo_service") and not replacement_workflow:
+    if research_config.get("enabled") and context.get("crawlseo_service"):
         scheduler.job("seo_research_cycle", _spec(config, "seo_research_cycle"), lambda: _seo_research_cycle(context))
-    if research_config.get("enabled") and not replacement_workflow:
+    if research_config.get("enabled"):
         scheduler.job("seo_outcomes", _spec(config, "seo_outcomes"), lambda: brain_seo_outcomes.run(context))
     if _seo_provisioning_enabled(config):
         scheduler.job("seo_provisioning", _spec(config, "seo_provisioning"), lambda: _seo_provisioning(context))

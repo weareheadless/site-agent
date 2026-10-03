@@ -514,6 +514,14 @@ def register_workspace_routes(
         tenant = require_service(request)
         return service.growth(tenant=tenant)
 
+    @app.post(f"{prefix}/growth/check")
+    def workspace_growth_check(request: Request):
+        tenant = require_service(request)
+        try:
+            return service.request_growth_check(tenant=tenant)
+        except BridgeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.get(f"{prefix}/seo/insights")
     def workspace_seo_insights(request: Request, limit: int = 12):
         tenant = require_service(request)

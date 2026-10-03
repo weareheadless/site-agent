@@ -44,6 +44,10 @@ type Growth = {
   articleIdeas?: GrowthRow[];
   weeklyReports?: GrowthRow[];
   monthlyReports?: GrowthRow[];
+  goal?: { objective?: string; goal_key?: string; revision?: number };
+  work?: { state?: string; summaryKey?: string; nextRun?: string; latestRun?: { completed_ts?: string } };
+  reviewQueue?: Array<{ id?: number; title?: string; summary?: string; action_label?: string; state?: string }>;
+  results?: { state?: string; message?: string };
 };
 
 export function HelloAdaGrowth() {
@@ -52,6 +56,7 @@ export function HelloAdaGrowth() {
   const [days, setDays] = useState(28);
   const [revision, setRevision] = useState(0);
   const [growth, setGrowth] = useState<Growth>();
+  const [checking, setChecking] = useState(false);
   const [analytics, setAnalytics] = useState<GrowthAnalyticsData>();
   const [errors, setErrors] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState<Record<string, boolean>>({
@@ -118,6 +123,21 @@ export function HelloAdaGrowth() {
     return () => controller.abort();
   }, [days, revision]);
   const refresh = () => setRevision((value) => value + 1);
+  const reviewNow = async () => {
+    if (checking) return;
+    setChecking(true);
+    try {
+      const response = await fetchHelloAda("/api/helloada/growth/check", {
+        method: "POST",
+      });
+      if (!response.ok) throw new Error("unavailable");
+      refresh();
+    } catch {
+      setErrors((current) => ({ ...current, growth: true }));
+    } finally {
+      setChecking(false);
+    }
+  };
   const ErrorNotice = () => (
     <div className="helloada-growth-error" role="status">
       {t("growth.unavailable")}{" "}
@@ -263,6 +283,23 @@ export function HelloAdaGrowth() {
           </button>
         </div>
       </div>
+      <div className="helloada-growth-work-strip" role="status" aria-live="polite">
+        <span className={`helloada-growth-work-dot is-${growth?.work?.state || "unknown"}`} aria-hidden="true" />
+        <div>
+          <strong>{t("growth.background")}</strong>
+          <span>
+            {growth?.work?.summaryKey ? t(`growth.${growth.work.summaryKey}`) : loading.growth ? t("growth.loading") : t("growth.backgroundIdle")}
+          </span>
+        </div>
+        <div className="helloada-growth-work-meta">
+          {growth?.goal?.objective ? <small>{growth.goal.objective}</small> : null}
+          {growth?.work?.nextRun ? <small>{t("growth.next")} {date(growth.work.nextRun)}</small> : null}
+        </div>
+        <button type="button" onClick={() => void reviewNow()} disabled={checking}>
+          {checking ? t("growth.loading") : t("growth.reviewNow")}
+        </button>
+        <Link href={ask(t("growth.goalPrompt"))}>{t("growth.changeGoal")} ↗</Link>
+      </div>
       {errors.growth ? <ErrorNotice /> : null}
       {tab === "overview" ? (
         <>
@@ -358,7 +395,7 @@ export function HelloAdaGrowth() {
                 </header>
                 <p>
                   {growth
-                    ? `${growth.articles?.filter((row) => row.status !== "published").length || 0} ${t("growth.articles").toLocaleLowerCase(language)}`
+                    ? `${growth.reviewQueue?.length || growth.articles?.filter((row) => row.status !== "published").length || 0} ${t("growth.reviewItems").toLocaleLowerCase(language)}`
                     : "—"}
                 </p>
                 <button type="button" onClick={() => setTab("content")}>

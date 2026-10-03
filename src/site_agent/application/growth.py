@@ -12,7 +12,7 @@ def growth_snapshot(memory: Memory, config: dict[str, Any], context: dict[str, A
     scheduler = context.get("scheduler")
     jobs = {name: spec for name, spec, _fn in getattr(scheduler, "jobs", [])}
     activities = []
-    for name in ("article", "seo_insight", "weekly_report", "seo_site_report_cycle", "article_research_cycle", "social_post"):
+    for name in ("growth_reconciler", "article", "seo_insight", "weekly_report", "seo_site_report_cycle", "article_research_cycle", "social_post"):
         stamp = memory.kv_get(f"next_run:{name}")
         next_run = datetime.datetime.fromtimestamp(stamp, datetime.timezone.utc).isoformat() if isinstance(stamp, (int, float)) else None
         activities.append({"id": name, "enabled": name in jobs, "schedule": jobs.get(name), "nextRun": next_run})
@@ -25,13 +25,28 @@ def growth_snapshot(memory: Memory, config: dict[str, Any], context: dict[str, A
     gsc_property = state.get("gsc_property") or (config.get("seo") or {}).get("site_url")
     # A configured provider is not proof of fresh data or successful verification.
     sources = [
-        {"id": "ga4", "status": "collecting" if ga_property else "not_configured", "property": ga_property, "updatedAt": (ga4 or {}).get("ts")},
-        {"id": "gsc", "status": "verification_required" if state.get("gsc_pending") else "collecting" if gsc_property else "not_configured", "property": gsc_property, "updatedAt": (gsc or {}).get("ts")},
-        {"id": "dataforseo", "status": "configured" if context.get("crawlseo_service") else "not_configured", "updatedAt": state.get("provisioned_at")},
+        {"id": "ga4", "status": "collecting" if ga_property else "not_configured", "property": ga_property, "updatedAt": (ga4 or {}).get("ts"), "dataState": "available" if ga4 else "missing"},
+        {"id": "gsc", "status": "verification_required" if state.get("gsc_pending") else "collecting" if gsc_property else "not_configured", "property": gsc_property, "updatedAt": (gsc or {}).get("ts"), "dataState": "available" if gsc else "missing"},
+        {"id": "dataforseo", "status": "configured" if context.get("crawlseo_service") else "not_configured", "updatedAt": state.get("provisioned_at"), "dataState": "available" if memory.list_seo_seeds(limit=1) else "missing"},
     ]
     for source, snapshot in ((sources[0], ga4), (sources[1], gsc)):
         if snapshot is not None and source["status"] == "collecting":
             source["status"] = "has_data"
+    goal = memory.latest_growth_goal()
+    latest_run = memory.latest_growth_run()
+    owner_actions = []
+    for action in memory.list_owner_actions(states=("open", "started", "waiting"), limit=3):
+        row = action.to_record()
+        owner_actions.append({key: row.get(key) for key in ("id", "title", "summary", "action_label", "priority", "state", "source_ref", "artifact_id", "approval_id", "draft_id")})
+    if latest_run and latest_run.get("status") == "running":
+        work_state = "running"
+        work_summary_key = "backgroundRunning"
+    elif latest_run and latest_run.get("status") == "failed":
+        work_state = "blocked"
+        work_summary_key = "backgroundBlocked"
+    else:
+        work_state = "idle"
+        work_summary_key = "backgroundIdle"
     ideas = memory.list_article_ideas(limit=40)
     keyword_metrics = [
         pick(metric, ("keyword", "search_volume", "volume", "competition", "difficulty", "cpc"))
@@ -46,6 +61,18 @@ def growth_snapshot(memory: Memory, config: dict[str, Any], context: dict[str, A
     return {
         "sources": sources,
         "activities": activities,
+        "goal": goal,
+        "work": {
+            "state": work_state,
+            "summaryKey": work_summary_key,
+            "latestRun": latest_run,
+            "nextRun": next((item["nextRun"] for item in activities if item["id"] == "growth_reconciler"), None),
+        },
+        "reviewQueue": owner_actions,
+        "results": {
+            "state": "available" if ga4 or gsc else "too_early",
+            "message": "Ada will compare results after a verified change has been live for a complete observation window.",
+        },
         "latestInsight": memory.latest_seo_insight(),
         "insights": memory.list_seo_insights(limit=12),
         "keywords": [{"keyword": row.get("seed"), **pick(row, ("id", "language", "market", "research_count", "last_researched_ts"))} for row in memory.list_seo_seeds(limit=40)],

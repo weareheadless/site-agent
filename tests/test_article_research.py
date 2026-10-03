@@ -248,7 +248,7 @@ def test_article_job_requests_research_when_provider_present(tmp_path, monkeypat
         memory.close()
 
 
-def test_article_job_falls_back_to_editorial_draft_without_research_provider(tmp_path, monkeypatch):
+def test_article_job_blocks_research_dependent_draft_without_provider(tmp_path, monkeypatch):
     from site_agent.core import jobs
 
     memory = Memory(tmp_path / "memory.db")
@@ -267,9 +267,9 @@ def test_article_job_falls_back_to_editorial_draft_without_research_provider(tmp
     }
     try:
         jobs._article(context)
-        assert drafted["called"] is True
+        assert drafted["called"] is False
         details = [row["detail"] for row in memory.recent_actions(limit=5) if row["kind"] == "article_research"]
-        assert any("editorial draft instead" in detail for detail in details)
+        assert any("no research-dependent article was drafted" in detail for detail in details)
     finally:
         memory.close()
 

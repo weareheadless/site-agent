@@ -27,6 +27,8 @@ from .intake_coordinator import IntakeCoordinator
 from ..core.memory import Memory
 from ..core.reflect import effective_persona
 from ..core.scheduler import Scheduler
+from ..core.growth_contracts import growth_timezone
+from .growth_workflow import ensure_default_goal
 from ..brain.owner_copy import owner_safe_failure
 from ..runtime import Runtime
 from .tenant_registration import tenant_token_env
@@ -322,6 +324,7 @@ class TenantRegistry:
                 seen_tokens.add(api_token)
 
                 memory = Memory(data_dir / "memory.db")
+                ensure_default_goal(memory)
                 from .seo_bootstrap import auto_provision_seo, load_tenant_environment
 
                 tenant_env = load_tenant_environment(tenant_config, env)
@@ -340,7 +343,11 @@ class TenantRegistry:
                             {"state": "error", "error": str(exc)[:500]},
                         )
                         seo_state = memory.kv_get("seo_provisioning_state", {}) or {}
-                scheduler = Scheduler(memory, lock_path=data_dir / "scheduler.lock")
+                scheduler = Scheduler(
+                    memory,
+                    lock_path=data_dir / "scheduler.lock",
+                    timezone_name=growth_timezone(tenant_config),
+                )
                 from ..core.llm import Client
 
                 llm = Client(tenant_config, memory, env=dict(tenant_env))
@@ -1866,6 +1873,30 @@ class ChatService:
         scope = self.connection(tenant=tenant)
         memory, tenant_id = (tenant.memory if tenant else self.memory), scope["tenant"]
         return {"tenant": tenant_id, **growth_snapshot(memory, tenant.config if tenant else {}, tenant.context if tenant else {})}
+
+    def request_growth_check(self, *, tenant: Tenant | None = None) -> dict[str, Any]:
+        """Request the idempotent tenant-local reconciliation stage.
+
+        This does not buy research or publish a change. It reuses the same
+        durable run key as the scheduled reconciler, so repeated clicks cannot
+        create duplicate background work.
+        """
+
+        if self.registry is not None:
+            if tenant is None or tenant.tenant_id not in self.registry.tenants:
+                raise BridgeError("tenant is not authorized")
+            from .growth_workflow import run_growth_reconciler
+
+            context = dict(tenant.context)
+            context["memory"] = tenant.memory
+            context["config"] = tenant.config
+            run = run_growth_reconciler(context)
+            return {"tenant": tenant.tenant_id, "run": run}
+        if self.memory is None:
+            raise BridgeError("growth is unavailable")
+        from .growth_workflow import run_growth_reconciler
+
+        return {"tenant": "legacy", "run": run_growth_reconciler({"memory": self.memory, "config": self.config})}
 
     def seo_insights(self, *, limit: int = 12, tenant: Tenant | None = None) -> dict[str, Any]:
         """Owner-facing SEO synthesis, newest first, scoped to one tenant."""
