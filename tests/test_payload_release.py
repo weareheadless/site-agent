@@ -42,6 +42,15 @@ def test_external_customer_repository_is_rejected():
         release.validate_target(customer, "oceanicvibes", SHA, "release-1")
 
 
+def test_promotion_uses_the_uploaded_version_and_rejects_ambiguous_output():
+    version = "12345678-1234-1234-1234-123456789abc"
+    output = f"Uploaded Worker\nWorker Version ID: {version}\n"
+    assert release.uploaded_version_id(output) == version
+    for invalid in ("Upload failed", output + output):
+        with pytest.raises(RuntimeError, match="exactly one"):
+            release.uploaded_version_id(invalid)
+
+
 def test_same_admin_version_does_not_prove_new_source(monkeypatch):
     class Response:
         def __enter__(self):

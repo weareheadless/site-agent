@@ -52,6 +52,13 @@ def file_hashes(root: Path) -> dict[str, str]:
             for p in sorted(root.rglob("*")) if p.is_file()}
 
 
+def uploaded_version_id(output: str) -> str:
+    versions = re.findall(r"Worker Version ID:\s*([0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})", output)
+    if len(versions) != 1:
+        raise RuntimeError("upload did not identify exactly one immutable Worker version")
+    return versions[0]
+
+
 def validate_target(customer: dict[str, Any], tenant: str, sha: str, release_id: str) -> None:
     if not SHA_RE.fullmatch(sha) or not ID_RE.fullmatch(release_id):
         raise ValueError("release requires a full commit SHA and a safe release ID")
@@ -204,22 +211,30 @@ def main() -> int:
         run(["tar", "-czf", str(directory / "open-next.tar.gz"), "-C", str(checkout), ".open-next"], directory, base)
         receipt["archiveSha256"] = hashlib.sha256((directory / "open-next.tar.gz").read_bytes()).hexdigest()
 
-        stage("deploy")
+        stage("upload")
         before_deploy = cloudflare_deployment(customer, deploy_env)
         if before_deploy["id"] != receipt["previousDeployment"]["id"]:
             raise RuntimeError("production changed during the build; reconcile that deployment before retrying")
-        run([str(checkout / "node_modules/.bin/opennextjs-cloudflare"), "deploy", "--var",
-             "HELLOADA_RELEASE_SHA:" + args.ref], checkout, deploy_env)
+        uploaded = run([str(checkout / "node_modules/.bin/opennextjs-cloudflare"), "upload", "--var",
+                        "HELLOADA_RELEASE_SHA:" + args.ref, "--tag", args.release_id], checkout, deploy_env)
+        receipt["uploadedVersion"] = uploaded_version_id(uploaded)
         if file_hashes(checkout / ".open-next") != receipt["artifactHashes"]:
-            raise RuntimeError("deployment changed the inspected artifact")
+            raise RuntimeError("upload changed the inspected artifact")
+
+        stage("promote")
+        if cloudflare_deployment(customer, deploy_env)["id"] != before_deploy["id"]:
+            raise RuntimeError("production changed during upload; reconcile before promotion")
+        run([str(checkout / "node_modules/.bin/wrangler"), "versions", "deploy",
+             receipt["uploadedVersion"] + "@100%", "--name", customer["worker"], "--yes"], checkout, deploy_env)
 
         stage("verify-deployment")
         deployment = cloudflare_deployment(customer, deploy_env)
         if deployment["id"] == before_deploy["id"]:
             raise RuntimeError("Cloudflare did not create a new deployment")
         versions = deployment["versions"]
-        if len(versions) != 1 or versions[0]["percentage"] != 100:
-            raise RuntimeError("new Worker version does not receive 100% of production traffic")
+        if (len(versions) != 1 or versions[0]["percentage"] != 100
+                or versions[0]["version_id"] != receipt["uploadedVersion"]):
+            raise RuntimeError("the exact uploaded Worker version does not receive 100% of production traffic")
         receipt["deployment"] = deployment
         for attempt in range(12):
             try:

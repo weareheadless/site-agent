@@ -48,8 +48,14 @@ official `main`, uses Node 22 and `npm ci`, typechecks and builds OpenNext with
 local bindings. Production credentials are supplied only to Cloudflare calls,
 never to dependency installation or builds. The artifact is inspected, hashed
 and archived before upload. The pipeline checks production did not change during
-the build, deploys once, confirms a new Cloudflare version gets 100% traffic,
+the build, uploads an immutable version and promotes that exact version to 100% traffic,
 checks the live SHA and tenant, then performs the authenticated connection gate.
+
+Application releases use OpenNext `upload` and Wrangler `versions deploy`.
+Domain routes, DNS and cron triggers are provisioned separately and are never
+rewritten by an application release. This keeps the existing deployment token's
+Worker permissions sufficient. See [Cloudflare's deployment permissions](https://developers.cloudflare.com/workers/authorization/workers/)
+and [OpenNext's upload command](https://opennext.js.org/cloudflare/cli).
 
 Artifacts, source, receipts and previous Cloudflare versions are retained under
 `/SOCIAL/payload-releases`. Customer content and databases are untouched. Schema

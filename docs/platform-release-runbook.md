@@ -40,9 +40,10 @@ commands. See `deploy/README.md` for the operator procedure.
 - Inspect `.open-next/worker.js` and `.open-next/assets`, not just `.next`.
   Confirm required changed markup/scripts and version markers. Record the
   source SHA, package integrity and Worker SHA256 in the release receipt.
-- Deploy that exact `.open-next` bundle with `opennextjs-cloudflare deploy`.
-  Do not rebuild between inspection and upload. Wait for terminal success,
-  record the Cloudflare version ID and confirm it receives 100% traffic.
+- Upload that exact `.open-next` bundle with `opennextjs-cloudflare upload`.
+  Promote the returned immutable version with `wrangler versions deploy`.
+  Do not rebuild between inspection and upload. Domain routes and triggers are
+  separate provisioning operations. Confirm that exact version receives 100% traffic.
 - Run the authenticated connection gate in
   `scripts/check-helloada-connections.py`. Reload fresh authenticated admin
   documents with the release ID and exercise the changed UI and chat. Record
