@@ -237,6 +237,12 @@ The central script is a hard gate, not a repair or fallback layer. It must:
    interrupted releases stop. Fix their cause and commit a new release ID to
    retry; never repeat failed builds automatically or bypass their gate.
 
+For a promoted version whose live gate failed during rollout, the documented
+`--verify-only` command may repeat the exact read-only checks under the queue
+lock without rebuilding or deploying. It validates the retained artifact and
+exact serving version and preserves the original failure. Never edit a failed
+receipt into success by hand.
+
 There is no customer-facing legacy admin API. The canonical Payload bridge is
 `/api/helloada/*`; customer source containing `/api/atelier` is rejected. The
 Python/FastAPI service remains the internal shared API only where an application
