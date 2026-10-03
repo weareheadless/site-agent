@@ -2097,18 +2097,57 @@ class ChatService:
             validation = sync.get("validation") if isinstance(sync.get("validation"), Mapping) else {}
             if validation.get("status") != "passed" or sync.get("state") != "ready_for_review":
                 raise BridgeError(str(validation.get("reason") or "the Payload article candidate has not passed validation")[:500])
+            gsc_snapshot = memory.latest_snapshot("gsc") or {}
+            ga4_snapshot = memory.latest_snapshot("ga4") or {}
+            gsc_data = gsc_snapshot.get("data") if isinstance(gsc_snapshot.get("data"), Mapping) else {}
+            ga4_data = ga4_snapshot.get("data") if isinstance(ga4_snapshot.get("data"), Mapping) else {}
+            gsc_current = gsc_data.get("current") if isinstance(gsc_data.get("current"), Mapping) else {}
+            ga4_current = ga4_data.get("current") if isinstance(ga4_data.get("current"), Mapping) else {}
+            baseline = {
+                "metric": "gsc.clicks" if "clicks" in gsc_current else "ga4.sessions" if "sessions" in ga4_current else "",
+                "scope": {"document_id": document_id, "collection": "posts", "path": f"/post/{sync.get('slug')}" if sync.get("slug") else ""},
+                "gsc": gsc_snapshot,
+                "ga4": ga4_snapshot,
+            }
+            # Record the exact owner decision and freeze the measurement plan
+            # before any external mutation. Publication is a separate,
+            # receipt-backed transition below.
+            memory.record_strategy_decision_for_draft(normalized_id, "approved", baseline=baseline)
             try:
                 payload.publish("posts", document_id)
                 published_document = payload.read("posts", identifier=document_id, identifier_kind="id", draft=False)
             except Exception as exc:  # noqa: BLE001 - approval stays blocked on an uncertain Payload result
+                for initiative in memory.list_strategy_initiatives(limit=500):
+                    if int(initiative.get("draft_id") or 0) == normalized_id and initiative.get("state") == "publishing":
+                        memory.transition_strategy_initiative(int(initiative["id"]), "blocked", last_error=str(exc)[:500])
                 raise BridgeError(f"Payload article publication could not be verified: {str(exc)[:400]}") from exc
             if str(published_document.get("id") or "") != document_id:
+                for initiative in memory.list_strategy_initiatives(limit=500):
+                    if int(initiative.get("draft_id") or 0) == normalized_id and initiative.get("state") == "publishing":
+                        memory.transition_strategy_initiative(int(initiative["id"]), "uncertain", last_error="Payload returned a document that did not match the approved candidate.")
                 raise BridgeError("Payload article publication returned no matching public document")
             published = {"collection": "posts", "document_id": document_id, "document": published_document}
             version_type = "article"
             summary = f"article: {draft.get('title') or normalized_id}"
             commit_message = ""
             memory.update_draft_status(normalized_id, "approved")
+            for initiative in memory.list_strategy_initiatives(limit=500):
+                if int(initiative.get("draft_id") or 0) == normalized_id:
+                    initiative_id = int(initiative["id"])
+                    if initiative.get("state") == "publishing":
+                        memory.transition_strategy_initiative(initiative_id, "verifying_live")
+                    current = next((item for item in memory.list_strategy_initiatives(limit=500) if int(item["id"]) == initiative_id), None)
+                    if current and current.get("state") == "verifying_live":
+                        memory.update_strategy_initiative(
+                            initiative_id,
+                            published_revision=f"payload:{document_id}:{published_document.get('updatedAt') or published_document.get('updated_at') or 'verified'}",
+                            validation={**(current.get("validation") or {}), "liveVerification": {"status": "passed", "documentId": document_id}},
+                            last_error="",
+                        )
+                        memory.transition_strategy_initiative(initiative_id, "measuring")
+            action_service = tenant.context.get("owner_action_service")
+            if action_service is not None and hasattr(action_service, "reconcile"):
+                action_service.reconcile(draft_id=normalized_id, succeeded=True)
             result["status"] = "published"
         else:
             raise BridgeError(f"draft type '{kind}' cannot be published from the workspace")

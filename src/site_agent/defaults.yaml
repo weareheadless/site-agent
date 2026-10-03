@@ -126,6 +126,24 @@ maintenance:
   observation_retention_days: 45
   compact_min_batch: 20
 
+growth:
+  policy_version: 1
+  timezone: UTC
+  review_cadence: weekly
+  research_cadence: monthly
+  monthly_research_cap_micros: 500000
+  research_quote_micros: 100000
+  research_quotes_micros:
+    seo_monthly_research: 250000
+    article_keyword_overview: 100000
+    article_serp_snapshot: 100000
+  freshness_hours:
+    ga4: 168
+    gsc: 168
+    dataforseo: 744
+  max_recommendations: 3
+  max_active_candidates: 2
+
 sources:
   subreddits: []
   community_feeds: []

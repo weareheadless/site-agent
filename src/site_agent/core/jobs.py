@@ -42,6 +42,7 @@ from ..application.growth_workflow import run_growth_reconciler
 from ..senses import collect
 from . import maintenance
 from .contracts import ActionState, ApprovalStatus, ArtifactKind
+from .design_contracts import canonical_hash
 from .memory import Memory
 from .reflect import effective_persona
 from .scheduler import Scheduler
@@ -207,8 +208,50 @@ def _mirror_article_drafts(context: dict[str, Any]) -> None:
             continue
         try:
             _mirror_article_draft_to_workspace(context, int(draft["id"]))
+            _sync_strategy_initiative_for_draft(memory, int(draft["id"]))
         except Exception as exc:  # noqa: BLE001 - persist a precise blocked state, never a local ready fallback
             _mark_article_payload_blocked(memory, int(draft["id"]), str(exc))
+
+
+def _sync_strategy_initiative_for_draft(memory: Memory, draft_id: int) -> None:
+    """Move a strategy candidate only after the canonical Payload check passes."""
+
+    draft = next((row for row in memory.list_drafts(limit=200) if int(row.get("id") or 0) == draft_id), None)
+    if not draft:
+        return
+    meta = draft.get("meta") if isinstance(draft.get("meta"), Mapping) else {}
+    sync = meta.get("payload_sync") if isinstance(meta.get("payload_sync"), Mapping) else {}
+    validation = sync.get("validation") if isinstance(sync.get("validation"), Mapping) else {}
+    state = "ready_for_review" if sync.get("state") == "ready_for_review" and validation.get("status") == "passed" else "validating"
+    candidate = {
+        "draft_id": draft_id,
+        "title": draft.get("title"),
+        "body": draft.get("body"),
+        "meta": meta,
+        "payload_document": sync.get("document_id"),
+        "payload_slug": sync.get("slug"),
+        "validation": dict(validation),
+    }
+    candidate_hash = canonical_hash(candidate)
+    review_package_hash = canonical_hash({"candidate": candidate_hash, "payload": sync, "validation": validation})
+    validation_manifest = {
+        "status": validation.get("status") or "blocked",
+        "checks": validation.get("checks") or {},
+        "validator": "payload-article-sync-v1",
+        "candidateHash": candidate_hash,
+        "reviewPackageHash": review_package_hash,
+    }
+    for initiative in memory.list_strategy_initiatives(limit=500):
+        if int(initiative.get("draft_id") or 0) == draft_id and initiative.get("state") in {"preparing", "validating", "ready_for_review"}:
+            initiative_id = int(initiative["id"])
+            memory.update_strategy_initiative(
+                initiative_id,
+                candidate_hash=candidate_hash,
+                review_package_hash=review_package_hash,
+                validation=validation_manifest,
+            )
+            if initiative.get("state") != state:
+                memory.transition_strategy_initiative(initiative_id, state, validation=validation_manifest)
 
 
 def _mirror_keyword_research(context: dict[str, Any]) -> None:
@@ -640,6 +683,12 @@ def register_jobs(scheduler: Scheduler, config: dict[str, Any], context: dict[st
             schedule.get("article_research_cycle", {"every": "daily", "at": "13:30"}),
             lambda: _article_research_cycle(context),
         )
+    if seo_enabled:
+        scheduler.job(
+            "seo_outcomes",
+            schedule.get("seo_outcomes", _JOB_DEFAULTS["seo_outcomes"]),
+            lambda: brain_seo_outcomes.run(context),
+        )
     intake = context.get("intake_coordinator")
     if intake is not None and bool(getattr(intake, "research_enabled", False)):
         scheduler.job(
@@ -722,7 +771,7 @@ def register_builtin(scheduler: Scheduler, config: dict[str, Any], context: dict
         scheduler.job("article_research_cycle", _spec(config, "article_research_cycle"), lambda: _article_research_cycle(context))
     if research_config.get("enabled") and context.get("crawlseo_service"):
         scheduler.job("seo_research_cycle", _spec(config, "seo_research_cycle"), lambda: _seo_research_cycle(context))
-    if research_config.get("enabled"):
+    if research_config.get("enabled") or site_report_config.get("enabled") or article_research_config.get("enabled") or bool((config.get("seo") or {}).get("enabled") or (config.get("ga") or {}).get("enabled")):
         scheduler.job("seo_outcomes", _spec(config, "seo_outcomes"), lambda: brain_seo_outcomes.run(context))
     if _seo_provisioning_enabled(config):
         scheduler.job("seo_provisioning", _spec(config, "seo_provisioning"), lambda: _seo_provisioning(context))

@@ -20,12 +20,25 @@ def _as_datetime(value: Any) -> datetime.datetime | None:
         return None
 
 
-def _metric(snapshot: Mapping[str, Any] | None, metric: str) -> float | None:
+def _metric(snapshot: Mapping[str, Any] | None, metric: str, scope: Mapping[str, Any] | None = None) -> float | None:
     if not isinstance(snapshot, Mapping):
         return None
     data = snapshot.get("data")
     if not isinstance(data, Mapping):
         return None
+    scope = scope if isinstance(scope, Mapping) else {}
+    path = str(scope.get("path") or "").strip()
+    if path:
+        pages = data.get("top_pages") if isinstance(data.get("top_pages"), list) else []
+        matching = [row for row in pages if isinstance(row, Mapping) and str(row.get("path") or "") == path]
+        if not matching:
+            return None
+        key = "clicks" if metric == "gsc.clicks" else "sessions" if metric == "ga4.sessions" else ""
+        values = [row.get(key) for row in matching if row.get(key) is not None]
+        try:
+            return float(sum(float(value) for value in values)) if values else None
+        except (TypeError, ValueError):
+            return None
     current = data.get("current") or data.get("current_week")
     if not isinstance(current, Mapping):
         return None
@@ -36,11 +49,11 @@ def _metric(snapshot: Mapping[str, Any] | None, metric: str) -> float | None:
         return None
 
 
-def _observation(memory: Any, metric: str) -> dict[str, Any] | None:
+def _observation(memory: Any, metric: str, scope: Mapping[str, Any] | None = None) -> dict[str, Any] | None:
     gsc = memory.latest_snapshot("gsc")
     ga4 = memory.latest_snapshot("ga4")
     snapshot = gsc if metric == "gsc.clicks" else ga4 if metric == "ga4.sessions" else None
-    value = _metric(snapshot, metric)
+    value = _metric(snapshot, metric, scope)
     if value is None:
         return None
     return {"metric": metric, "value": value, "gsc": gsc or {}, "ga4": ga4 or {}}
@@ -74,8 +87,9 @@ def run(context: dict[str, Any]) -> int:
             # the baseline only, never by whichever source happens to be live
             # when the outcome is measured.
             metric = "gsc.clicks" if _metric(baseline.get("gsc"), "gsc.clicks") is not None else "ga4.sessions"
-        baseline_value = _metric(baseline.get("gsc"), metric) if metric == "gsc.clicks" else _metric(baseline.get("ga4"), metric)
-        observed = _observation(memory, metric)
+        scope = baseline.get("scope") if isinstance(baseline.get("scope"), Mapping) else {}
+        baseline_value = _metric(baseline.get("gsc"), metric, scope) if metric == "gsc.clicks" else _metric(baseline.get("ga4"), metric, scope)
+        observed = _observation(memory, metric, scope)
         for horizon in HORIZONS:
             due = _as_datetime(initiative.get(f"review_{horizon}_ts"))
             if due is None or due > now or memory.get_strategy_outcome(initiative["id"], horizon) is not None:
@@ -83,7 +97,7 @@ def run(context: dict[str, Any]) -> int:
             observed_value = observed["value"] if observed is not None else None
             assessment, confidence, notes = _assessment(baseline_value, observed_value)
             if observed is None:
-                notes = f"{metric} data is unavailable for the observation window; no other source was substituted."
+                notes = f"{metric} data for the approved scope is unavailable; no site-wide or alternate source was substituted."
             memory.record_strategy_outcome(
                 initiative["id"],
                 horizon,
@@ -93,6 +107,8 @@ def run(context: dict[str, Any]) -> int:
                 confidence,
                 notes,
             )
+            if initiative.get("state") == "measuring":
+                memory.transition_strategy_initiative(int(initiative["id"]), "reviewed")
             measured += 1
     memory.record_action("seo_outcome", f"measured {measured} due initiative horizon(s)")
     return measured

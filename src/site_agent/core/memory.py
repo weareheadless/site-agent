@@ -74,7 +74,7 @@ from .incubation_contracts import (
 
 _OPERATION_FIELD_UNSET = object()
 
-SCHEMA_VERSION = 46
+SCHEMA_VERSION = 49
 
 MIGRATIONS: dict[int, list[str]] = {
     1: [
@@ -1083,6 +1083,30 @@ MIGRATIONS: dict[int, list[str]] = {
         )""",
         "CREATE INDEX IF NOT EXISTS idx_growth_budget_period ON growth_budget_reservations (period, status, created_ts)",
     ],
+    47: [
+        "ALTER TABLE growth_runs ADD COLUMN policy_json TEXT NOT NULL DEFAULT '{}'",
+        "ALTER TABLE growth_runs ADD COLUMN origin_revision TEXT NOT NULL DEFAULT 'unconfigured'",
+        "ALTER TABLE growth_runs ADD COLUMN phase_version INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE growth_runs ADD COLUMN source_refs_json TEXT NOT NULL DEFAULT '[]'",
+        "ALTER TABLE seo_research_requests ADD COLUMN budget_reservation_id TEXT",
+        "CREATE INDEX IF NOT EXISTS idx_seo_research_budget ON seo_research_requests (budget_reservation_id)",
+    ],
+    48: [
+        "ALTER TABLE article_ideas ADD COLUMN keyword_budget_reservation_id TEXT",
+        "ALTER TABLE article_ideas ADD COLUMN serp_budget_reservation_id TEXT",
+        "CREATE INDEX IF NOT EXISTS idx_article_ideas_budget ON article_ideas (keyword_budget_reservation_id, serp_budget_reservation_id)",
+    ],
+    49: [
+        "ALTER TABLE strategy_initiatives ADD COLUMN growth_run_id TEXT",
+        "ALTER TABLE strategy_initiatives ADD COLUMN goal_revision INTEGER",
+        "ALTER TABLE strategy_initiatives ADD COLUMN origin_revision TEXT NOT NULL DEFAULT 'unconfigured'",
+        "ALTER TABLE strategy_initiatives ADD COLUMN candidate_hash TEXT",
+        "ALTER TABLE strategy_initiatives ADD COLUMN review_package_hash TEXT",
+        "ALTER TABLE strategy_initiatives ADD COLUMN validation_json TEXT NOT NULL DEFAULT '{}'",
+        "ALTER TABLE strategy_initiatives ADD COLUMN published_revision TEXT",
+        "ALTER TABLE strategy_initiatives ADD COLUMN last_error TEXT NOT NULL DEFAULT ''",
+        "CREATE INDEX IF NOT EXISTS idx_strategy_initiatives_growth_run ON strategy_initiatives (growth_run_id, state, id)",
+    ],
 }
 
 
@@ -1221,17 +1245,22 @@ class Memory:
         phase: str,
         status: str,
         detail: dict[str, Any] | None = None,
+        policy: dict[str, Any] | None = None,
+        origin_revision: str = "unconfigured",
+        phase_version: int = 1,
+        source_refs: list[Any] | None = None,
     ) -> dict[str, Any]:
         if not run_id.strip() or not run_key.strip() or not trigger.strip() or not timezone.strip():
             raise ContractError("growth run identity fields must not be empty")
         with self.conn:
             self.conn.execute(
                 "INSERT OR IGNORE INTO growth_runs "
-                "(run_id, run_key, trigger, goal_revision, timezone, phase, status, detail_json, created_ts, updated_ts) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "(run_id, run_key, trigger, goal_revision, timezone, phase, status, detail_json, policy_json, origin_revision, phase_version, source_refs_json, created_ts, updated_ts) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     run_id.strip(), run_key.strip(), trigger.strip()[:120], int(goal_revision), timezone.strip()[:120],
-                    phase.strip()[:80], status.strip()[:40], json.dumps(detail or {}), _now(), _now(),
+                    phase.strip()[:80], status.strip()[:40], json.dumps(detail or {}), json.dumps(policy or {}),
+                    str(origin_revision or "unconfigured")[:160], max(1, int(phase_version)), json.dumps(source_refs or []), _now(), _now(),
                 ),
             )
         row = self.conn.execute("SELECT * FROM growth_runs WHERE run_key = ?", (run_key,)).fetchone()
@@ -1282,6 +1311,11 @@ class Memory:
             row["detail"] = json.loads(row.pop("detail_json") or "{}")
         except (json.JSONDecodeError, TypeError) as exc:
             raise ContractError("stored growth run detail is invalid") from exc
+        for field_name, default in (("policy_json", {}), ("source_refs_json", [])):
+            try:
+                row[field_name.removesuffix("_json")] = json.loads(row.pop(field_name) or json.dumps(default))
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise ContractError(f"stored growth run {field_name} is invalid") from exc
         return row
 
     @_locked
@@ -1309,12 +1343,13 @@ class Memory:
 
     @_locked
     def update_growth_run(self, run_id: str, *, completed: bool = False, **fields: Any) -> dict[str, Any]:
-        allowed = {"phase", "status", "detail", "attempt", "lease_owner", "lease_until", "next_due_ts"}
+        allowed = {"phase", "status", "detail", "attempt", "lease_owner", "lease_until", "next_due_ts", "policy", "origin_revision", "phase_version", "source_refs"}
         updates: dict[str, Any] = {}
         for key, value in fields.items():
             if key not in allowed:
                 continue
-            updates["detail_json" if key == "detail" else key] = json.dumps(value) if key == "detail" else value
+            json_key = {"detail": "detail_json", "policy": "policy_json", "source_refs": "source_refs_json"}.get(key, key)
+            updates[json_key] = json.dumps(value) if key in {"detail", "policy", "source_refs"} else value
         if completed:
             updates["completed_ts"] = _now()
             updates["lease_owner"] = None
@@ -1366,6 +1401,14 @@ class Memory:
             if existing is not None:
                 if int(existing["amount_micros"]) != amount_micros or existing["period"] != period:
                     raise ContractError("growth budget idempotency key was reused for a different reservation")
+                if existing["status"] == "released":
+                    self.conn.execute(
+                        "UPDATE growth_budget_reservations SET status = 'reserved', detail_json = ?, updated_ts = ?, settled_ts = NULL WHERE reservation_id = ?",
+                        (json.dumps(detail or {}), now, existing["reservation_id"]),
+                    )
+                    existing = dict(existing)
+                    existing["status"] = "reserved"
+                    existing["detail_json"] = json.dumps(detail or {})
                 return self._decode_growth_budget(dict(existing))
             spent = self.conn.execute(
                 "SELECT COALESCE(SUM(amount_micros), 0) FROM growth_budget_reservations "
@@ -4866,7 +4909,7 @@ class Memory:
         allowed = {
             "status", "research_run_id", "serp_run_id", "research_result_hash", "provider_task_id",
             "research_cost_micros", "research_note_json", "research_result_json", "draft_id", "researched_ts",
-            "drafted_ts", "error",
+            "drafted_ts", "error", "keyword_budget_reservation_id", "serp_budget_reservation_id",
         }
         updates = {key: value for key, value in fields.items() if key in allowed}
         if "research_note_json" in updates and not isinstance(updates["research_note_json"], str):
@@ -5052,7 +5095,7 @@ class Memory:
 
     @_locked
     def update_seo_research_request(self, request_id: int, **fields: Any) -> dict[str, Any] | None:
-        allowed = {"report_id", "status", "error", "requested_ts", "completed_ts"}
+        allowed = {"report_id", "status", "error", "requested_ts", "completed_ts", "budget_reservation_id"}
         updates = {key: value for key, value in fields.items() if key in allowed}
         if updates:
             updates["updated_ts"] = _now()
@@ -5256,6 +5299,14 @@ class Memory:
         approval_id: int | None = None,
         draft_id: int | None = None,
         parent_initiative_id: int | None = None,
+        growth_run_id: str | None = None,
+        goal_revision: int | None = None,
+        origin_revision: str = "unconfigured",
+        candidate_hash: str | None = None,
+        review_package_hash: str | None = None,
+        validation: dict[str, Any] | None = None,
+        published_revision: str | None = None,
+        last_error: str = "",
     ) -> int:
         now = _now()
         with self.conn:
@@ -5263,13 +5314,17 @@ class Memory:
                 "INSERT INTO strategy_initiatives "
                 "(cycle_id, kind, title, summary, hypothesis, rationale, evidence_json, expected_json, "
                 "language, market, priority, state, review_30_ts, review_90_ts, review_180_ts, "
-                "owner_action_id, artifact_id, approval_id, draft_id, parent_initiative_id, created_ts, updated_ts) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "owner_action_id, artifact_id, approval_id, draft_id, parent_initiative_id, growth_run_id, "
+                "goal_revision, origin_revision, candidate_hash, review_package_hash, validation_json, "
+                "published_revision, last_error, created_ts, updated_ts) "
+                "VALUES (" + ", ".join("?" for _ in range(30)) + ")",
                 (
                     cycle_id, kind, title[:300], summary[:2000], hypothesis[:2000], rationale[:2000],
                     json.dumps(evidence or []), json.dumps(expected or {}), language, market, priority, state,
                     review_30_ts, review_90_ts, review_180_ts, owner_action_id, artifact_id, approval_id, draft_id,
-                    parent_initiative_id, now, now,
+                    parent_initiative_id, growth_run_id, goal_revision, str(origin_revision or "unconfigured")[:160],
+                    candidate_hash, review_package_hash, json.dumps(validation or {}), published_revision,
+                    str(last_error or "")[:2000], now, now,
                 ),
             )
         return cur.lastrowid
@@ -5279,8 +5334,14 @@ class Memory:
         allowed = {
             "state", "owner_action_id", "artifact_id", "approval_id", "draft_id", "receipt_id",
             "parent_initiative_id", "review_30_ts", "review_90_ts", "review_180_ts",
+            "growth_run_id", "goal_revision", "origin_revision", "candidate_hash", "review_package_hash",
+            "validation_json", "published_revision", "last_error",
         }
         updates = {key: value for key, value in fields.items() if key in allowed}
+        if "validation" in fields and "validation_json" not in updates:
+            updates["validation_json"] = json.dumps(fields["validation"] or {})
+        if "validation_json" in updates and not isinstance(updates["validation_json"], str):
+            updates["validation_json"] = json.dumps(updates["validation_json"] or {})
         if updates:
             updates["updated_ts"] = _now()
             assignments = ", ".join(f"{key} = ?" for key in updates)
@@ -5298,7 +5359,61 @@ class Memory:
                 result[field_name.removesuffix("_json")] = json.loads(result[field_name])
             except (json.JSONDecodeError, TypeError):
                 result[field_name.removesuffix("_json")] = [] if field_name == "evidence_json" else {}
+        try:
+            result["validation"] = json.loads(result.get("validation_json") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            result["validation"] = {}
         return result
+
+    @_locked
+    def transition_strategy_initiative(
+        self,
+        initiative_id: int,
+        state: str,
+        *,
+        expected_state: str | None = None,
+        validation: dict[str, Any] | None = None,
+        last_error: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Advance a growth candidate through its persisted lifecycle.
+
+        The guard keeps UI retries and scheduler retries from silently skipping
+        validation, owner review, publication or live verification.
+        """
+        allowed = {
+            "identified": {"preparing", "blocked", "snoozed", "rejected", "superseded"},
+            "proposed": {"preparing", "blocked", "snoozed", "rejected", "superseded"},
+            "preparing": {"validating", "blocked", "snoozed", "superseded"},
+            "validating": {"ready_for_review", "preparing", "blocked", "superseded"},
+            "ready_for_review": {"publishing", "rejected", "snoozed", "validating", "superseded"},
+            "publishing": {"verifying_live", "blocked", "uncertain", "superseded"},
+            "verifying_live": {"measuring", "blocked", "uncertain", "superseded"},
+            "measuring": {"reviewed", "blocked", "superseded"},
+            "approved": {"publishing", "measuring", "rejected", "superseded"},
+            "reviewed": {"preparing", "superseded"},
+            "blocked": {"preparing", "validating", "superseded"},
+            "uncertain": {"publishing", "verifying_live", "blocked", "superseded"},
+            "snoozed": {"preparing", "superseded"},
+            "rejected": {"preparing", "superseded"},
+            "superseded": set(),
+        }
+        current_row = self.conn.execute(
+            "SELECT state FROM strategy_initiatives WHERE id = ?", (int(initiative_id),)
+        ).fetchone()
+        if current_row is None:
+            raise ContractError("strategy initiative does not exist")
+        current = str(current_row["state"] or "")
+        target = str(state or "").strip()
+        if expected_state is not None and current != expected_state:
+            raise ContractError(f"strategy initiative is {current}, expected {expected_state}")
+        if target != current and target not in allowed.get(current, set()):
+            raise ContractError(f"invalid strategy initiative transition {current} -> {target}")
+        fields: dict[str, Any] = {"state": target}
+        if validation is not None:
+            fields["validation"] = validation
+        if last_error is not None:
+            fields["last_error"] = str(last_error)[:2000]
+        return self.update_strategy_initiative(int(initiative_id), **fields)
 
     @_locked
     def list_strategy_initiatives(self, cycle_id: int | None = None, limit: int = 100) -> list[dict[str, Any]]:
@@ -5316,6 +5431,10 @@ class Memory:
                     row[field_name.removesuffix("_json")] = json.loads(row[field_name])
                 except (json.JSONDecodeError, TypeError):
                     row[field_name.removesuffix("_json")] = [] if field_name == "evidence_json" else {}
+            try:
+                row["validation"] = json.loads(row.get("validation_json") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                row["validation"] = {}
         return rows
 
     @_locked
@@ -5350,9 +5469,10 @@ class Memory:
                 expected["implementation_baseline"] = baseline
                 expected["implemented_ts"] = now
             updates = {
-                "state": "approved" if decision == "approved" else "declined",
+                "state": "publishing" if decision == "approved" else "rejected",
                 "expected_json": json.dumps(expected),
                 "updated_ts": now,
+                "last_error": "",
             }
             if decision == "approved":
                 updates.update({
@@ -5427,6 +5547,23 @@ class Memory:
                 result[field_name.removesuffix("_json")] = json.loads(result[field_name])
             except (json.JSONDecodeError, TypeError):
                 result[field_name.removesuffix("_json")] = {}
+        return result
+
+    @_locked
+    def list_strategy_outcomes(self, limit: int = 100) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT * FROM strategy_outcomes ORDER BY measured_ts DESC, id DESC LIMIT ?",
+            (max(1, min(int(limit), 500)),),
+        ).fetchall()
+        result: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            for field_name in ("baseline_json", "observed_json"):
+                try:
+                    item[field_name.removesuffix("_json")] = json.loads(item[field_name] or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    item[field_name.removesuffix("_json")] = {}
+            result.append(item)
         return result
 
     @_locked

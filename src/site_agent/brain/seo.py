@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from ..application.actions import OwnerActionService
+from ..application.growth_budget import GrowthBudgetBlocked, mark_paid_research_uncertain, reserve_paid_research, settle_paid_research
 from ..config import validate_research_config
 from ..core.contracts import (
     ActionPriority,
@@ -28,6 +29,7 @@ from ..core.contracts import (
     OwnerAction,
 )
 from ..core.llm import extract_json
+from ..core.growth_contracts import GrowthPolicy
 from . import article as brain_article
 
 
@@ -803,18 +805,22 @@ def _process_report(context: dict[str, Any], request: Mapping[str, Any], payload
         str(row.get("title") or "").strip().lower(): row
         for row in memory.list_strategy_initiatives(cycle["id"])
     }
+    growth_policy = GrowthPolicy.from_config(context.get("config") or {})
+    growth_goal = memory.latest_growth_goal() or {}
+    growth_run = memory.latest_growth_run() or {}
     for initiative in strategy.get("initiatives") or []:
         if not isinstance(initiative, Mapping):
             continue
         initiative_key = str(initiative.get("title") or "").strip().lower()
         existing_initiative = existing_initiatives.get(initiative_key)
-        if existing_initiative is not None:
+        if existing_initiative is not None and existing_initiative.get("state") not in {"proposed", "preparing", "validating"}:
             continue
         draft_id = article_draft_id if initiative.get("kind") == "content" and article_draft_id is not None else None
         # A strategy record is evidence-backed advice, not an implementation
         # candidate. Until Ada has prepared and validated a concrete Payload or
         # design candidate, it must remain a proposal with no mutation approval.
         site_change = False
+        candidate_state = "preparing" if draft_id is not None else "proposed"
         action = action_service.create(
             _initiative_action(context, cycle["id"], initiative, draft_id, site_change),
             reuse_terminal=True,
@@ -833,6 +839,10 @@ def _process_report(context: dict[str, Any], request: Mapping[str, Any], payload
                 artifact_id=artifact_id,
                 approval_id=approval_id,
                 draft_id=draft_id,
+                state=candidate_state,
+                growth_run_id=str(growth_run.get("run_id") or "") or None,
+                goal_revision=int(growth_goal["revision"]) if growth_goal.get("revision") is not None else None,
+                origin_revision=growth_policy.origin_revision,
             )
         else:
             memory.create_strategy_initiative(
@@ -851,6 +861,10 @@ def _process_report(context: dict[str, Any], request: Mapping[str, Any], payload
                 artifact_id=artifact_id,
                 approval_id=approval_id,
                 draft_id=draft_id,
+                state=candidate_state,
+                growth_run_id=str(growth_run.get("run_id") or "") or None,
+                goal_revision=int(growth_goal["revision"]) if growth_goal.get("revision") is not None else None,
+                origin_revision=growth_policy.origin_revision,
             )
         existing_initiatives[initiative_key] = {"artifact_id": artifact_id}
     report_status = str(payload.get("status") or "completed").lower()
@@ -915,23 +929,42 @@ def run(context: dict[str, Any]) -> None:
             _context_action(memory, period, "The stored SEO brief is invalid and must be rebuilt")
             return
         key = str(request.get("idempotency_key") or f"seo:{period}:{PACKAGE_VERSION}")
+        reservation_id = str(request.get("budget_reservation_id") or "").strip()
         try:
+            if reservation_id:
+                reservation = memory.get_growth_budget_reservation(reservation_id)
+                if not reservation or str(reservation.get("status")) != "reserved":
+                    raise GrowthBudgetBlocked(f"SEO research reservation {reservation_id} is not safely dispatchable; reconcile it first")
+            else:
+                reservation = reserve_paid_research(context, idempotency_key=key, operation="seo_monthly_research", detail={"request_id": request["id"], "package_version": PACKAGE_VERSION})
+                reservation_id = str(reservation["reservation_id"])
+                request = memory.update_seo_research_request(request["id"], budget_reservation_id=reservation_id, status="budget_reserved") or request
             response = service.request_research_report(dict(brief), key)
             report_id = str(response.get("report_id") or "")
             if not report_id:
                 raise SeoPlanningError("CrawlSEO did not return a research report ID")
+            settle_paid_research(context, reservation_id, provider_task_id=report_id, detail={"provider_status": response.get("status") or "requested"})
             request = memory.update_seo_research_request(
                 request["id"], report_id=report_id, status=str(response.get("status") or "requested"), requested_ts=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
             )
             memory.record_action("seo_research", f"requested {period} report {report_id} for {brief['focus_market']['language']}-{brief['focus_market']['country']}")
+        except GrowthBudgetBlocked as exc:
+            memory.update_seo_research_request(request["id"], status="blocked", error=str(exc)[:500])
+            _context_action(memory, period, str(exc))
+            memory.record_action("seo_research", f"blocked for {period}: {str(exc)[:500]}")
+            return
         except SeoPlanningError as exc:
+            if reservation_id:
+                mark_paid_research_uncertain(context, reservation_id, error=str(exc))
             memory.update_seo_research_request(request["id"], status="failed", error=str(exc)[:500])
             _context_action(memory, period, str(exc))
             memory.record_action("seo_research", f"not requested for {period}: {str(exc)[:500]}")
             return
         except Exception as exc:  # noqa: BLE001 — scheduler must continue and owner gets a concrete action
             message = str(exc)[:500]
-            memory.update_seo_research_request(request["id"], status="failed", error=message)
+            if reservation_id:
+                mark_paid_research_uncertain(context, reservation_id, error=message)
+            memory.update_seo_research_request(request["id"], status="uncertain", error=message)
             memory.record_action("seo_research", f"not requested for {period}: {message}")
             return
 
@@ -943,8 +976,12 @@ def run(context: dict[str, Any]) -> None:
     memory.update_seo_research_request(request["id"], status=status_value or "waiting")
     if status_value not in {"completed", "partial"}:
         if status_value in TERMINAL_REPORT_STATUSES:
+            if request.get("budget_reservation_id"):
+                settle_paid_research(context, str(request["budget_reservation_id"]), provider_task_id=report_id, detail={"provider_status": status_value, "error": status.get("error_code")})
             memory.update_seo_research_request(request["id"], status=status_value, error=str(status.get("error_code") or "research failed"))
         return
+    if request.get("budget_reservation_id"):
+        settle_paid_research(context, str(request["budget_reservation_id"]), provider_task_id=report_id, detail={"provider_status": status_value})
     payload = service.research_report(report_id)
     _process_report(context, request, payload)
 

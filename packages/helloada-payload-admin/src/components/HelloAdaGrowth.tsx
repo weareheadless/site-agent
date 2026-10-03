@@ -49,7 +49,8 @@ type Growth = {
   goal?: { objective?: string; goal_key?: string; revision?: number };
   work?: { state?: string; summaryKey?: string; nextRun?: string; latestRun?: { completed_ts?: string } };
   reviewQueue?: Array<{ id?: number; title?: string; summary?: string; action_label?: string; state?: string }>;
-  results?: { state?: string; message?: string };
+  candidates?: Array<{ id?: number; title?: string; summary?: string; state?: string; draftId?: number | null }>;
+  results?: { state?: string; message?: string; outcomes?: Array<Record<string, unknown>> };
 };
 
 export function HelloAdaGrowth() {
@@ -384,9 +385,19 @@ export function HelloAdaGrowth() {
                 </header>
                 <p>
                   {growth
-                    ? `${growth.reviewQueue?.length || growth.articles?.filter((row) => row.status !== "published").length || 0} ${t("growth.reviewItems").toLocaleLowerCase(language)}`
+                    ? `${(growth.reviewQueue?.length || 0) + (growth.candidates?.filter((item) => item.state === "ready_for_review").length || 0)} ${t("growth.reviewItems").toLocaleLowerCase(language)}`
                     : "—"}
                 </p>
+                {growth?.candidates?.filter((item) => item.state === "ready_for_review").slice(0, 2).map((item) => (
+                  <details className="helloada-growth-record" key={String(item.id || item.title)}>
+                    <summary>
+                      <span>{item.title || "—"}</span>
+                      <small>{(item.state || "").replaceAll("_", " ")}</small>
+                    </summary>
+                    {item.summary ? <p>{item.summary}</p> : null}
+                    {item.draftId ? <Link href={`/admin?draft=${item.draftId}`}>{t("growth.openContent")} ↗</Link> : null}
+                  </details>
+                ))}
                 <button type="button" onClick={() => setTab("content")}>
                   {t("growth.openContent")} ↗
                 </button>

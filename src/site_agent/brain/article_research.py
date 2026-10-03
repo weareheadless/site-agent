@@ -15,12 +15,19 @@ from collections.abc import Mapping
 from typing import Any
 
 from ..config import primary_research_locale
+from ..application.growth_budget import GrowthBudgetBlocked, mark_paid_research_uncertain, release_paid_research, reserve_paid_research, settle_paid_research
 from ..core.llm import extract_json
 from . import article as brain_article
 
 
 _ORIGINS = {"news", "audience_concern", "learning", "community_question"}
 _DECISIONS = {"keep", "reframe", "editorial_despite_low_demand"}
+
+
+def _request_not_dispatched(exc: Exception) -> bool:
+    """Recognise only the provider's explicit pre-dispatch/unavailable contract."""
+
+    return "request is unavailable" in str(exc or "").lower()
 
 
 def _settings(config: Mapping[str, Any]) -> dict[str, Any]:
@@ -338,18 +345,31 @@ def _idea_summary(idea: Mapping[str, Any], *, limit: int = 1800) -> str:
 def _request_selected_idea(context: Mapping[str, Any], row: Mapping[str, Any], idea: Mapping[str, Any]) -> None:
     memory = context["memory"]
     service = context["crawlseo_service"]
+    idempotency_key = f"article-research:{row['idea_hash']}:v1"
+    reservation_id = str(row.get("keyword_budget_reservation_id") or "").strip()
     try:
+        if reservation_id:
+            reservation = memory.get_growth_budget_reservation(reservation_id)
+            if reservation and str(reservation.get("status")) == "released":
+                reservation_id = ""
+            elif not reservation or str(reservation.get("status")) != "reserved":
+                raise GrowthBudgetBlocked(f"article keyword research reservation {reservation_id} is not safely dispatchable; reconcile it first")
+        if not reservation_id:
+            reservation = reserve_paid_research(context, idempotency_key=idempotency_key, operation="article_keyword_overview", detail={"idea_id": row["id"], "cycle_key": row["cycle_key"]})
+            reservation_id = str(reservation["reservation_id"])
+            row = memory.update_article_idea(int(row["id"]), keyword_budget_reservation_id=reservation_id) or row
         response = service.request_article_keyword_research(
             idea_key=str(row["cycle_key"]),
             idea_summary=_idea_summary(idea),
             queries=list(idea.get("candidate_queries") or []),
             language=str(idea["language"]),
             country=str(idea["market"]),
-            idempotency_key=f"article-research:{row['idea_hash']}:v1",
+            idempotency_key=idempotency_key,
         )
         run_id = str(response.get("run_id") or "").strip()
         if not run_id:
             raise RuntimeError("CrawlSEO did not return an article research run ID")
+        settle_paid_research(context, reservation_id, provider_task_id=run_id, detail={"provider_status": response.get("status") or "requested", "stage": "keyword_overview"})
         memory.update_article_idea(
             int(row["id"]),
             status="research_requested",
@@ -357,17 +377,25 @@ def _request_selected_idea(context: Mapping[str, Any], row: Mapping[str, Any], i
             error=None,
         )
         memory.record_action("article_research", f"idea #{row['id']}: requested one keyword overview run {run_id}")
-    except Exception as exc:  # noqa: BLE001 - only pre-dispatch requests are retried
-        # No provider run ID means no paid task is known to exist. Keep the idea
-        # selected so the next scheduled article cycle can retry idempotently.
+    except GrowthBudgetBlocked as exc:
+        memory.update_article_idea(int(row["id"]), status="blocked", error=str(exc)[:500])
+        memory.record_action("article_research", f"idea #{row['id']}: blocked before paid request: {str(exc)[:300]}")
+    except Exception as exc:  # noqa: BLE001 — an unknown paid outcome must not be retried blindly
+        if reservation_id and _request_not_dispatched(exc):
+            release_paid_research(context, reservation_id, reason=str(exc))
+            memory.update_article_idea(int(row["id"]), status="selected", error=str(exc)[:500])
+            memory.record_action("article_research", f"idea #{row['id']}: provider rejected the request before dispatch; safe retry is queued")
+            return
+        if reservation_id:
+            mark_paid_research_uncertain(context, reservation_id, error=str(exc))
         memory.update_article_idea(
             int(row["id"]),
-            status="selected",
+            status="uncertain",
             error=str(exc)[:500],
         )
         memory.record_action(
             "article_research",
-            f"idea #{row['id']}: request deferred for safe retry: {str(exc)[:300]}",
+            f"idea #{row['id']}: paid request outcome is uncertain and needs reconciliation: {str(exc)[:300]}",
         )
 
 
@@ -665,15 +693,28 @@ def _reconcile_overview(context: dict[str, Any], idea: Mapping[str, Any], servic
     if not selected_query:
         memory.update_article_idea(idea["id"], status="failed", error="research note selected no query")
         return
+    serp_reservation_id = str(idea.get("serp_budget_reservation_id") or "").strip()
     try:
+        serp_key = f"article-serp:{idea['idea_hash']}:{_hash(selected_query)}:v1"
+        if serp_reservation_id:
+            reservation = memory.get_growth_budget_reservation(serp_reservation_id)
+            if reservation and str(reservation.get("status")) == "released":
+                serp_reservation_id = ""
+            elif not reservation or str(reservation.get("status")) != "reserved":
+                raise GrowthBudgetBlocked(f"article SERP reservation {serp_reservation_id} is not safely dispatchable; reconcile it first")
+        if not serp_reservation_id:
+            reservation = reserve_paid_research(context, idempotency_key=serp_key, operation="article_serp_snapshot", detail={"idea_id": idea["id"], "query": selected_query})
+            serp_reservation_id = str(reservation["reservation_id"])
+            memory.update_article_idea(idea["id"], serp_budget_reservation_id=serp_reservation_id)
         response = service.request_article_serp_research(
             parent_run_id=run_id,
             keyword=selected_query,
-            idempotency_key=f"article-serp:{idea['idea_hash']}:{_hash(selected_query)}:v1",
+            idempotency_key=serp_key,
         )
         serp_run_id = str(response.get("run_id") or "").strip()
         if not serp_run_id:
             raise RuntimeError("CrawlSEO did not return an article SERP run ID")
+        settle_paid_research(context, serp_reservation_id, provider_task_id=serp_run_id, detail={"provider_status": response.get("status") or "requested", "stage": "serp_snapshot"})
         memory.update_article_idea(
             idea["id"],
             status="serp_requested",
@@ -684,11 +725,21 @@ def _reconcile_overview(context: dict[str, Any], idea: Mapping[str, Any], servic
             "article_research",
             f"idea #{idea['id']}: metrics saved; requested one SERP run {serp_run_id} for '{selected_query}'",
         )
-    except Exception as exc:  # noqa: BLE001 - the metrics are persisted; the SERP request retries next cycle
-        memory.update_article_idea(idea["id"], error=str(exc)[:500])
+    except GrowthBudgetBlocked as exc:
+        memory.update_article_idea(idea["id"], status="blocked", error=str(exc)[:500])
+        memory.record_action("article_research", f"idea #{idea['id']}: SERP blocked before paid request: {str(exc)[:300]}")
+    except Exception as exc:  # noqa: BLE001 — the provider outcome is not safe to replay blindly
+        if serp_reservation_id and _request_not_dispatched(exc):
+            release_paid_research(context, serp_reservation_id, reason=str(exc))
+            memory.update_article_idea(idea["id"], status="research_requested", error=str(exc)[:500])
+            memory.record_action("article_research", f"idea #{idea['id']}: provider rejected the SERP request before dispatch; safe retry is queued")
+            return
+        if serp_reservation_id:
+            mark_paid_research_uncertain(context, serp_reservation_id, error=str(exc))
+        memory.update_article_idea(idea["id"], status="uncertain", error=str(exc)[:500])
         memory.record_action(
             "article_research",
-            f"idea #{idea['id']}: SERP request deferred for safe retry: {str(exc)[:300]}",
+            f"idea #{idea['id']}: SERP outcome is uncertain and needs reconciliation: {str(exc)[:300]}",
         )
 
 

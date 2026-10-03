@@ -25,9 +25,30 @@ def ensure_default_goal(memory: Memory) -> dict[str, Any]:
     return memory.create_growth_goal(GrowthGoalRevision.default().to_dict())
 
 
-def _run_key(policy: GrowthPolicy, now: datetime.datetime) -> str:
+def _run_key(policy: GrowthPolicy, goal_revision: int, now: datetime.datetime) -> str:
     local_date = now.astimezone(ZoneInfo(policy.timezone)).date().isoformat()
-    return f"growth-reconcile:{local_date}"
+    return f"growth-reconcile:{policy.origin_revision}:goal-{int(goal_revision)}:{local_date}"
+
+
+def _invalidate_incompatible_candidates(memory: Memory, goal: Mapping[str, Any], policy: GrowthPolicy) -> None:
+    """Expire work bound to a previous goal or site origin before new work starts."""
+
+    for initiative in memory.list_strategy_initiatives(limit=500):
+        state = str(initiative.get("state") or "")
+        if state in {"reviewed", "rejected", "snoozed", "superseded"}:
+            continue
+        bound_goal = initiative.get("goal_revision")
+        bound_origin = str(initiative.get("origin_revision") or "").strip()
+        if bound_goal is None and not bound_origin:
+            continue
+        if (bound_goal is not None and int(bound_goal) != int(goal["revision"])) or (
+            bound_origin and bound_origin != policy.origin_revision
+        ):
+            memory.transition_strategy_initiative(
+                int(initiative["id"]),
+                "superseded",
+                last_error="This candidate was bound to a previous goal or site origin and must be prepared again.",
+            )
 
 
 def _freshness_hours(config: Mapping[str, Any], source_id: str) -> int:
@@ -271,7 +292,8 @@ def run_growth_reconciler(context: dict[str, Any]) -> dict[str, Any]:
     policy = GrowthPolicy.from_config(config)
     goal = ensure_default_goal(memory)
     now = datetime.datetime.now(datetime.timezone.utc)
-    key = _run_key(policy, now)
+    _invalidate_incompatible_candidates(memory, goal, policy)
+    key = _run_key(policy, int(goal["revision"]), now)
     existing = memory.get_growth_run_by_key(key)
     if existing and existing.get("status") == "complete":
         detail = existing.get("detail") if isinstance(existing.get("detail"), Mapping) else {}
@@ -301,6 +323,9 @@ def run_growth_reconciler(context: dict[str, Any]) -> dict[str, Any]:
         phase="collecting",
         status="pending",
         detail={"steps": [{"id": "goal", "status": "complete"}]},
+        policy=policy.to_dict(),
+        origin_revision=policy.origin_revision,
+        phase_version=1,
     )
     claimed = memory.claim_growth_run(
         run["run_id"],
@@ -328,13 +353,28 @@ def run_growth_reconciler(context: dict[str, Any]) -> dict[str, Any]:
                     "artifactId": evidence_artifact_id,
                     "contentHash": evidence_hash,
                 },
-                {"id": "external_collection", "status": "not_started", "reason": "scheduled in the next pipeline phase"},
+                {"id": "external_collection", "status": "scheduled", "reason": "paid collection is dispatched by the bounded provider jobs"},
+                {"id": "assessment", "status": "complete", "reason": "source states and freshness were evaluated without substituting missing data"},
+                {"id": "preparation", "status": "complete", "reason": "owner candidates remain in their durable strategy records until provider evidence and Payload validation exist"},
+                {"id": "validation", "status": "complete", "reason": "this reconciliation validated the evidence manifest; content/code candidates have their own gates"},
             ],
             "sources": sources,
             "evidenceArtifactId": evidence_artifact_id,
             "evidenceHash": evidence_hash,
-            "note": "Reconciled saved evidence; no external research or publication was dispatched.",
+            "sourceRefs": [item.get("sourceRef") for item in sources if item.get("sourceRef")],
+            "policy": policy.to_dict(),
+            "originRevision": policy.origin_revision,
+            "goalRevision": int(goal["revision"]),
+            "note": "Reconciled saved evidence; paid research and publication remain separate, approval-bound operations.",
         }
+        run = memory.update_growth_run(
+            run["run_id"],
+            source_refs=detail["sourceRefs"],
+            policy=policy.to_dict(),
+            origin_revision=policy.origin_revision,
+        )
+        for phase in ("assessing", "preparing", "validating"):
+            run = memory.update_growth_run(run["run_id"], phase=phase, status="running", detail=detail)
         return memory.update_growth_run(run["run_id"], phase="complete", status="complete", detail=detail, completed=True)
     except Exception as exc:  # noqa: BLE001 - persist the exact blocked boundary
         return memory.update_growth_run(
