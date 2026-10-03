@@ -25,7 +25,7 @@ export const growthTaskCopy: Record<string, Record<string, string>> = {
     taskState_verifying_live: "Vérification du site en ligne", taskState_snoozed: "Reporté", taskState_ready_for_review: "Prêt à valider",
     growth_initial: "Première analyse du site", growth_daily: "Actualiser les visites, recherches et résultats", growth_weekly: "Préparer les prochaines améliorations", growth_monthly: "Recherche de mots-clés et concurrents", paused: "En pause",
   },
-  "es-MX": {
+  es: {
     overview: "Tu plan de crecimiento", taskTitle: "Tu plan de crecimiento", taskNote: "Ada prepara. Tú decides. Todo está en un solo lugar.",
     taskFocus: "Filtrar el plan", task_all: "Todo", task_needs_you: "Te toca decidir", task_preparing: "Ada está preparando", task_planned: "Programado", task_completed: "Terminado",
     taskEmpty: "No hay trabajo en esta vista. Usa los filtros para ver lo demás.", taskFailed: "No se pudo completar la acción. No se ha dado por exitosa.",

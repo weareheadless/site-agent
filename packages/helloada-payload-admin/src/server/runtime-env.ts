@@ -2,7 +2,7 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 
 /** One method/path contract for shared UI additions and thin tenant bridges. */
 export function helloAdaWorkspacePath(path: string, method: string, search = ""): string | undefined {
-  const suffix = path.replace(/^\/api\/(helloada|atelier)/, "") || "/";
+  const suffix = path.replace(/^\/api\/helloada(?=\/|$)/, "") || "/";
   if (method === "GET" && ["/connection", "/growth", "/seo/analytics", "/seo/insights", "/seo/evidence"].includes(suffix)) return `/workspace${suffix}${search}`;
   if (method === "POST" && suffix === "/growth/check") return `/workspace/growth/check${search}`;
   if (suffix === "/ada" && method === "POST") return `/workspace/chat${search}`;
