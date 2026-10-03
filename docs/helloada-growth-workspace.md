@@ -126,6 +126,9 @@ independent Worker bindings, proxy routes and credentials are not shared UI code
 
 ### Two-tone surface release: 2026-10-02 (local time)
 
+This records the initial `0.7.1` workspace verification. The final native-editor
+correction and current production version are recorded below as `0.7.2`.
+
 - Shared package `0.7.1`, source commit `a886e59`, follows the actual HelloAda
   homepage control-room palette. Dark navigation and Ada chat remain distinct
   from ivory review, Growth, gallery, management and native Payload surfaces.
@@ -157,3 +160,36 @@ independent Worker bindings, proxy routes and credentials are not shared UI code
   page overflow. The navigation links scroll within their own row. This resolves
   the small-screen overflow noted in the `0.6.1` record, without hiding tools.
   The temporary viewport override was reset after the check.
+
+### Final two-tone release `0.7.2`
+
+- Source commit `af17592` additionally removes hard-coded dark paint from native
+  Payload collection lists, field containers, tables and login forms. The final
+  native collection screen was verified with `#fbf8f2` background and `#211b17`
+  foreground. Navigation stays dark without changing the approved mark.
+- Atelier commit `0cf3645`, Worker `f9cb8616-a2ae-4e0c-84ef-5fad1c54c1ae`;
+  Oceanic commit `40e9c6f`, Worker `31800c0f-2b1d-4aff-ba37-579195d3775c`.
+  Both are at 100% traffic. Canonical customer checkouts and dependencies are
+  clean and synchronized to `0.7.2`. Oceanic's live health response confirms
+  tenant `oceanicvibes`, Payload admin `0.7.2` and compatible workspace API.
+- Shared compiled CSS `11041d0f16b5a75c.css`, SHA-256
+  `34360c040afa03c5ad55ef628222c5b6ef5641d1e87ba12b6760207938267f66`, is
+  byte-identical in both generated artifacts. The minifier reordered the native
+  selector group; artifact checks validate each selector and its declarations,
+  not assumed selector order. Logo and dependency integrity match in both.
+- All 18 shared-package tests, TypeScript and Sass passed. Both clean production
+  builds passed their TypeScript checks. The final wheel template pins `0.7.2`.
+  Fresh authenticated documents served the correct final stylesheet and both
+  Ada connections remained available. Atelier's real website preview rendered.
+- **Separate unresolved backend issue found during final reporting check:**
+  Both Oceanic and Atelier GA4 calls began returning Google's invalid-authentication
+  error after working earlier in this session. `GooglePlatformClient.access_token` caches
+  raw access-token strings indefinitely and never checks their expiry; the
+  provisioning service retains that client. This code was not changed by the
+  theme release. Do not describe the final live analytics check as fully passed
+  or present cached earlier figures as current. A follow-up backend fix must
+  retain credentials with expiry-aware refresh and regression tests; restarting
+  the API alone would only temporarily clear the stale token cache.
+- The final `0.7.2` document was rechecked at 390px: page width and viewport width
+  both 390px, dark navigation and the correct stylesheet present. The viewport
+  override was then reset; customer tabs remain open in their owner workspace.
