@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -96,6 +97,59 @@ def check_health(url: str, tenant: str, version: str, sha: str) -> dict[str, Any
     return body
 
 
+def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dict[str, Any],
+                deploy_env: dict[str, str], base: dict[str, str], stage: Any) -> None:
+    stage("verify-deployment")
+    deployment = cloudflare_deployment(customer, deploy_env)
+    versions = deployment["versions"]
+    if (len(versions) != 1 or versions[0]["percentage"] != 100
+            or versions[0]["version_id"] != receipt["uploadedVersion"]):
+        raise RuntimeError("the exact uploaded Worker version does not receive 100% of production traffic")
+    receipt["deployment"] = deployment
+    gate = manifest["connectionGate"]
+    # Edge rollout is asynchronous. Repeat the same strict read-only gates;
+    # never change the version, identity, endpoint or success criteria.
+    for attempt in range(12):
+        try:
+            receipt["health"] = check_health(customer["health"], receipt["tenant"],
+                                             customer["payloadAdmin"], receipt["sourceSha"])
+            stage("verify-connection")
+            run([sys.executable, str(ROOT / "scripts/check-helloada-connections.py"),
+                 "--config", gate["config"], "--env-file", gate["envFile"],
+                 "--api-url", gate["apiUrl"], "--tenant", receipt["tenant"]], ROOT,
+                {**base, "PYTHONPATH": str(ROOT / "src")})
+            receipt["connectionVerifiedAt"] = utc_now()
+            return
+        except (OSError, ValueError, RuntimeError) as error:
+            receipt.setdefault("gateAttempts", []).append({"at": utc_now(), "error": str(error)})
+            stage(receipt["stage"])
+            if attempt == 11:
+                raise
+            time.sleep(5)
+
+
+def verification_receipt(directory: Path, tenant: str, sha: str, release_id: str,
+                         customer: dict[str, Any]) -> dict[str, Any]:
+    receipt = json.loads((directory / "receipt.json").read_text())
+    expected = {"tenant": tenant, "sourceSha": sha, "releaseId": release_id,
+                "worker": customer["worker"], "repository": customer["repository"]}
+    if any(receipt.get(key) != value for key, value in expected.items()):
+        raise ValueError("verification target differs from the recorded release")
+    if receipt.get("status") not in ("failed", "deployed", "verified") or receipt.get("stage") not in (
+            "verify-deployment", "verify-connection", "awaiting-browser-verification", "verified"):
+        raise ValueError("only a promoted release may resume read-only verification")
+    if not receipt.get("uploadedVersion") or not receipt.get("deployment"):
+        raise ValueError("release has no recorded immutable production promotion")
+    archive = directory / "open-next.tar.gz"
+    if hashlib.sha256(archive.read_bytes()).hexdigest() != receipt.get("archiveSha256"):
+        raise ValueError("recorded release artifact is missing or changed")
+    receipt.setdefault("verificationHistory", []).append({key: receipt.get(key) for key in
+        ("status", "stage", "error", "finishedAt")})
+    receipt.pop("error", None)
+    receipt.update({"status": "running", "browserVerification": "pending"})
+    return receipt
+
+
 def inspect_artifact(checkout: Path, expected_admin: str, sha: str) -> dict[str, str]:
     artifact = checkout / ".open-next"
     if not (artifact / "worker.js").is_file():
@@ -123,6 +177,8 @@ def main() -> int:
     parser.add_argument("--tenant", required=True)
     parser.add_argument("--ref", required=True)
     parser.add_argument("--release-id", required=True)
+    parser.add_argument("--verify-only", action="store_true",
+                        help="Recheck an already promoted version; never build, upload or promote")
     parser.add_argument("--manifest", type=Path, default=ROOT / "deploy/payload-customers.json")
     args = parser.parse_args()
     manifest = json.loads(args.manifest.read_text())
@@ -131,7 +187,14 @@ def main() -> int:
         parser.error("tenant is not registered")
     validate_target(customer, args.tenant, args.ref, args.release_id)
     directory = Path(manifest["releaseRoot"]) / "runs" / args.tenant / args.release_id
-    directory.mkdir(parents=True, exist_ok=False)
+    # Serialize read-only continuation with the queue, which owns this lock
+    # during normal releases. Keep the handle alive until main returns.
+    verification_lock = None
+    if args.verify_only:
+        verification_lock = (Path(manifest["releaseRoot"]) / "reconcile.lock").open("a+")
+        fcntl.flock(verification_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    else:
+        directory.mkdir(parents=True, exist_ok=False)
     receipt_path = directory / "receipt.json"
     checkout = directory / "source"
     receipt: dict[str, Any] = {"schema": 2, "tenant": args.tenant, "releaseId": args.release_id,
@@ -139,6 +202,8 @@ def main() -> int:
         "worker": customer["worker"], "repository": customer["repository"],
         "startedAt": utc_now(), "status": "running", "stage": "preflight",
         "browserVerification": "pending"}
+    if args.verify_only:
+        receipt = verification_receipt(directory, args.tenant, args.ref, args.release_id, customer)
 
     def stage(name: str) -> None:
         receipt["stage"] = name
@@ -159,6 +224,12 @@ def main() -> int:
         deploy_env = credential_environment({"credentials": {"cloudflare": cloudflare}}, base)
         if not deploy_env.get("CLOUDFLARE_API_TOKEN") or not deploy_env.get("CLOUDFLARE_ACCOUNT_ID"):
             raise RuntimeError("declared Cloudflare profile is incomplete")
+        if args.verify_only:
+            verify_live(receipt, customer, manifest, deploy_env, base, stage)
+            receipt.update({"status": "deployed", "stage": "awaiting-browser-verification", "finishedAt": utc_now()})
+            atomic_json(receipt_path, receipt)
+            print(f"[release] REVERIFIED receipt={receipt_path}", flush=True)
+            return 0
         if not Path(manifest["nodeBin"], "node").is_file():
             raise RuntimeError("configured Node runtime is missing")
         if run(["node", "--version"], directory, base).strip().split(".")[0] != "v22":
@@ -232,26 +303,8 @@ def main() -> int:
         deployment = cloudflare_deployment(customer, deploy_env)
         if deployment["id"] == before_deploy["id"]:
             raise RuntimeError("Cloudflare did not create a new deployment")
-        versions = deployment["versions"]
-        if (len(versions) != 1 or versions[0]["percentage"] != 100
-                or versions[0]["version_id"] != receipt["uploadedVersion"]):
-            raise RuntimeError("the exact uploaded Worker version does not receive 100% of production traffic")
         receipt["deployment"] = deployment
-        for attempt in range(12):
-            try:
-                receipt["health"] = check_health(customer["health"], args.tenant, customer["payloadAdmin"], args.ref)
-                break
-            except (OSError, ValueError, RuntimeError):
-                if attempt == 11:
-                    raise
-                time.sleep(5)
-
-        stage("verify-connection")
-        gate = manifest["connectionGate"]
-        run([sys.executable, str(ROOT / "scripts/check-helloada-connections.py"),
-             "--config", gate["config"], "--env-file", gate["envFile"],
-             "--api-url", gate["apiUrl"], "--tenant", args.tenant], ROOT,
-             {**base, "PYTHONPATH": str(ROOT / "src")})
+        verify_live(receipt, customer, manifest, deploy_env, base, stage)
         receipt.update({"status": "deployed", "stage": "awaiting-browser-verification", "finishedAt": utc_now()})
         atomic_json(receipt_path, receipt)
         print(f"[release] DEPLOYED receipt={receipt_path}", flush=True)

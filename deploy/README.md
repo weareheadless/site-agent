@@ -34,6 +34,21 @@ make it idempotent: unchanged requests do no work. Failed or interrupted request
 are recorded and never rebuilt by every poll. Fix the cause, then commit a new
 release ID. A release ID cannot be reused for a different source SHA.
 
+If a version was promoted but its read-only verification failed during edge
+rollout, first diagnose the failed gate. Then rerun only verification from the
+reviewed VPS checkout, using the same recorded tenant, full SHA and release ID:
+
+```bash
+.venv/bin/python scripts/deploy-payload-customer.py --tenant <tenant> --ref <full-sha> --release-id <recorded-id> --verify-only
+```
+
+This command takes the queue lock, checks the retained artifact's hash and
+requires the exact uploaded version at 100% traffic. It does not build, upload,
+promote or change customer data. Prior failures remain in `verificationHistory`.
+The normal gate also waits for edge convergence with bounded repetitions of
+the same strict health and authenticated connection checks. A failure never
+selects another endpoint, credential or Worker version.
+
 To cancel an obsolete build, stop `helloada-release.timer` and then
 `helloada-release.service`. The service stops its complete process group. Commit
 the corrected source and a new release ID, then start the timer again. The next

@@ -129,3 +129,79 @@ def test_obsolete_route_in_built_manifest_is_rejected(tmp_path):
     path.write_text(json.dumps(routes))
     with pytest.raises(RuntimeError, match="obsolete"):
         release.inspect_artifact(checkout, "0.8.4", SHA)
+
+
+def promoted_receipt(tmp_path):
+    customer = REGISTRY["customers"]["oceanicvibes"]
+    archive = tmp_path / "open-next.tar.gz"
+    archive.write_bytes(b"immutable-artifact")
+    result = {"tenant": "oceanicvibes", "sourceSha": SHA, "releaseId": "release-1",
+              "worker": customer["worker"], "repository": customer["repository"],
+              "status": "failed", "stage": "verify-connection", "error": "connection failed",
+              "deployment": {"id": "deployment-1"}, "uploadedVersion": "version-1",
+              "archiveSha256": release.hashlib.sha256(archive.read_bytes()).hexdigest()}
+    (tmp_path / "receipt.json").write_text(json.dumps(result))
+    return result, customer
+
+
+def test_read_only_continuation_preserves_prior_failure(tmp_path):
+    _, customer = promoted_receipt(tmp_path)
+    result = release.verification_receipt(tmp_path, "oceanicvibes", SHA, "release-1", customer)
+    assert result["status"] == "running" and "error" not in result
+    assert result["verificationHistory"][-1]["error"] == "connection failed"
+
+
+@pytest.mark.parametrize("changed", ["identity", "unpromoted", "artifact"])
+def test_read_only_continuation_rejects_unproven_release(tmp_path, changed):
+    result, customer = promoted_receipt(tmp_path)
+    if changed == "identity":
+        result["sourceSha"] = "b" * 40
+    elif changed == "unpromoted":
+        result["stage"] = "upload"
+    else:
+        (tmp_path / "open-next.tar.gz").write_bytes(b"changed")
+    (tmp_path / "receipt.json").write_text(json.dumps(result))
+    with pytest.raises(ValueError):
+        release.verification_receipt(tmp_path, "oceanicvibes", SHA, "release-1", customer)
+
+
+def test_edge_convergence_repeats_identical_checks_without_deploying(monkeypatch):
+    result = {"tenant": "oceanicvibes", "sourceSha": SHA, "uploadedVersion": "version-1"}
+    customer = REGISTRY["customers"]["oceanicvibes"]
+    monkeypatch.setattr(release, "cloudflare_deployment", lambda *args: {
+        "versions": [{"percentage": 100, "version_id": "version-1"}]})
+    monkeypatch.setattr(release, "check_health", lambda *args: {"ok": True})
+    monkeypatch.setattr(release.time, "sleep", lambda _: None)
+    commands = []
+
+    def run(command, *args):
+        commands.append(command)
+        if len(commands) == 1:
+            raise RuntimeError("connection gate failed")
+
+    monkeypatch.setattr(release, "run", run)
+    release.verify_live(result, customer, REGISTRY, {}, {}, lambda name: result.update(stage=name))
+    assert commands[0] == commands[1] and len(commands) == 2
+    assert commands[0][1].endswith("check-helloada-connections.py")
+    assert result["connectionVerifiedAt"] and len(result["gateAttempts"]) == 1
+
+
+def test_read_only_gate_rejects_a_different_production_version(monkeypatch):
+    monkeypatch.setattr(release, "cloudflare_deployment", lambda *args: {
+        "versions": [{"percentage": 100, "version_id": "other-version"}]})
+    monkeypatch.setattr(release, "check_health", lambda *args: pytest.fail("must reject before health"))
+    with pytest.raises(RuntimeError, match="exact uploaded"):
+        release.verify_live({"uploadedVersion": "version-1"}, {}, {}, {}, {}, lambda _: None)
+
+
+def test_failed_connection_gate_is_bounded_and_remains_failed(monkeypatch):
+    result = {"tenant": "oceanicvibes", "sourceSha": SHA, "uploadedVersion": "version-1"}
+    monkeypatch.setattr(release, "cloudflare_deployment", lambda *args: {
+        "versions": [{"percentage": 100, "version_id": "version-1"}]})
+    monkeypatch.setattr(release, "check_health", lambda *args: {"ok": True})
+    monkeypatch.setattr(release.time, "sleep", lambda _: None)
+    monkeypatch.setattr(release, "run", lambda *args: (_ for _ in ()).throw(RuntimeError("gate failed")))
+    with pytest.raises(RuntimeError, match="gate failed"):
+        release.verify_live(result, REGISTRY["customers"]["oceanicvibes"], REGISTRY,
+                            {}, {}, lambda name: result.update(stage=name))
+    assert len(result["gateAttempts"]) == 12 and "connectionVerifiedAt" not in result
