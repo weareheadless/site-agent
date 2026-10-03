@@ -14,14 +14,14 @@
       "worker": "oceanicvibes",
       "health": "https://oceanicvibes.com/api/health",
       "adminPath": "/api/helloada",
-      "payloadAdmin": "0.8.4"
+      "payloadAdmin": "0.8.5"
     },
     "atelier-harmonie": {
       "repository": "https://github.com/weareheadless/atelier-harmonie-headless.git",
       "worker": "atelier-harmonie",
       "health": "https://atelier-harmonie.weareheadless.workers.dev/api/health",
       "adminPath": "/api/helloada",
-      "payloadAdmin": "0.8.4"
+      "payloadAdmin": "0.8.5"
     }
   }
 }
