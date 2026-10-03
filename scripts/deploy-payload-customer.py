@@ -101,8 +101,9 @@ def inspect_artifact(checkout: Path, expected_admin: str, sha: str) -> dict[str,
     if not (artifact / "worker.js").is_file():
         raise RuntimeError("OpenNext produced no Worker")
     routes = json.loads((checkout / ".next/server/app-paths-manifest.json").read_text())
-    if "/api/helloada/[...path]/route" not in routes or "/api/health/route" not in routes:
-        raise RuntimeError("artifact has no canonical workspace or release health route")
+    required = {"/api/helloada/[...path]/route", "/api/content/route", "/api/health/route"}
+    if not required.issubset(routes):
+        raise RuntimeError("artifact is missing a canonical workspace, service content or release health route")
     if any("/api/atelier" in route for route in routes):
         raise RuntimeError("artifact still contains the obsolete Atelier API")
     package = json.loads((checkout / "node_modules/@weareheadless/helloada-payload-admin/package.json").read_text())

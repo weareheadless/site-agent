@@ -59,7 +59,8 @@ def main() -> int:
         except Exception as exc:
             failures += 1
             # No response body, exception text, tokens or environment values.
-            print(json.dumps({'tenant': name, 'connection': 'failed', 'failureType': type(exc).__name__, 'httpStatus': getattr(exc, 'code', None)}))
+            status = getattr(exc, 'code', None) or getattr(exc.__cause__, 'code', None)
+            print(json.dumps({'tenant': name, 'connection': 'failed', 'failureType': type(exc).__name__, 'httpStatus': status}))
     return 1 if failures or not declared else 0
 
 

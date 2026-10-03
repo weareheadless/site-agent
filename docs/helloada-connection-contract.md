@@ -28,6 +28,8 @@ existing canonical tenant token; secret-name presence alone cannot detect this.
 | Worker secret | `HELLOADA_SITE_AGENT_TOKEN` (tenant-specific value) |
 | Shared API registry | Tenant ID, existing config path, `api_token_env` |
 | VPS tenant config | `site.payload.token_env` equals that registry name |
+| VPS Payload content gateway | `site.payload.api_prefix=/api` (`/api/content`) |
+| Browser workspace bridge | `/api/helloada/*`, authenticated by the Payload session |
 | VPS environment | That variable contains the same value as the Worker secret |
 | Admin site config | `tenantId` equals the authenticated backend tenant |
 
@@ -75,6 +77,15 @@ It also performs a read-only authenticated Worker content request, catching a
 token-value mismatch in the reverse direction without creating a chat job.
 For a scoped customer release add `--tenant atelier-harmonie --tenant oceanicvibes`.
 Other intake/lab tenants are not silently considered deployed customer sites.
+
+The October 3 clean release exposed a second incomplete migration: Atelier's
+VPS config still declared `/api/atelier` after the old Worker routes were removed.
+The reverse content read failed with 404 although backend readiness passed.
+Atelier now uses the same `/api/content` service gateway as the default template
+and Oceanic. The browser workspace stays at `/api/helloada/*`; its session auth
+is deliberately different from the server-to-server content gateway's token
+auth. Changing Worker routes requires migrating their configured caller in the
+same release; token readiness alone does not prove that path works.
 
 ## Growth behavior
 

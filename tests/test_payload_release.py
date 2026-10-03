@@ -71,7 +71,7 @@ def artifact(tmp_path):
     files = {
         ".open-next/worker.js": "import './server-functions/default/handler.mjs'",
         ".open-next/server-functions/default/handler.mjs": "route('/growth/contract')",
-        ".next/server/app-paths-manifest.json": json.dumps({"/api/helloada/[...path]/route": "helloada.js", "/api/health/route": "health.js"}),
+        ".next/server/app-paths-manifest.json": json.dumps({"/api/helloada/[...path]/route": "helloada.js", "/api/content/route": "content.js", "/api/health/route": "health.js"}),
         "node_modules/@weareheadless/helloada-payload-admin/package.json": json.dumps({"version": "0.8.4"}),
         ".open-next/assets/helloada-release.json": json.dumps({"sourceSha": SHA, "payloadAdmin": "0.8.4"}),
     }
@@ -92,6 +92,16 @@ def test_stale_release_marker_is_rejected(tmp_path):
     checkout = artifact(tmp_path)
     (checkout / ".open-next/assets/helloada-release.json").write_text(json.dumps({"sourceSha": "b" * 40, "payloadAdmin": "0.8.4"}))
     with pytest.raises(RuntimeError, match="marker"):
+        release.inspect_artifact(checkout, "0.8.4", SHA)
+
+
+def test_browser_bridge_does_not_substitute_for_service_content_gateway(tmp_path):
+    checkout = artifact(tmp_path)
+    path = checkout / ".next/server/app-paths-manifest.json"
+    routes = json.loads(path.read_text())
+    del routes["/api/content/route"]
+    path.write_text(json.dumps(routes))
+    with pytest.raises(RuntimeError, match="service content"):
         release.inspect_artifact(checkout, "0.8.4", SHA)
 
 

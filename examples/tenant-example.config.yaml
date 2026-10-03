@@ -23,7 +23,7 @@ site:
   payload:
     enabled: true
     url: https://tenant.example.test
-    api_prefix: /api/workspace
+    api_prefix: /api
     token_env: PROVISIONED_TENANT_EXAMPLE_TOKEN
     contract:
       # The gateway client is schema-neutral; each tenant declares the fields
