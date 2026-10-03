@@ -89,3 +89,24 @@ that it has collected data; show those states separately.
 Tests prevent these known regressions; they cannot guarantee that external
 providers, credentials or deployments will never fail. When readiness fails,
 fix the first failing boundary and preserve the owner's published website.
+
+## Chat must see the same Growth state
+
+The October 3 configuration-check reply was misleading: chat received only a
+GA4 snapshot and a GA4-only `get_metrics` tool. The Growth screen could see a
+verified Search Console property and configured CrawlSEO service, but Ada could
+not. This was a context boundary failure, not evidence that Google provisioning
+had failed.
+
+`application.growth.growth_chat_context` now projects the same source states as
+the owner dashboard into every tool-enabled chat. `get_growth` refreshes that
+read-only projection; `get_metrics` reads bounded GA4 **and** GSC snapshots with
+their capture timestamps. Neither operation provisions, spends, publishes, or
+enables schedules. Bound structured fields before serialization; never slice a
+JSON response by character count.
+
+Distinguish a configured research capability from approved seeds/results, and
+a verified search property from available query data. Do not request owner
+accounts or new setup when platform records already establish the connection.
+Tests cover this boundary, missing evidence, zero-valued metrics and exclusion
+of credential fields. No tenant-specific response or fallback is involved.

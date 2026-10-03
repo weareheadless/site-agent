@@ -155,6 +155,63 @@ def test_tools_spec_respects_writable_patterns(env):
     assert "propose_changes" in spec
 
 
+def test_chat_receives_the_same_provider_state_as_growth_without_collection(env):
+    from site_agent.application.growth import growth_snapshot
+    from site_agent.brain.editor import _execute_tool
+    from site_agent.hands.base import SiteAdapter
+
+    class Adapter(SiteAdapter):
+        name = "test"
+        site = {}
+        def get_content(self): return {}
+        def commit_file(self, *args, **kwargs):
+            raise AssertionError("Read-only growth checks cannot change the site")
+
+    memory, config, context = env
+    config["ga"] = {"property_id": "123"}
+    config["seo"] = {"site_url": "https://example.test/"}
+    memory.kv_set("seo_provisioning_state", {
+        "gsc_property": "https://example.test/", "gsc_verified": True,
+        "credential_token": "must-not-reach-model",
+    })
+    memory.snapshot_metrics("ga4", {"current_week": {"totalUsers": 6}})
+    memory.snapshot_metrics("gsc", {"totals": {"clicks": 1, "impressions": 12}})
+    # Availability of the service does not imply an approved paid search.
+    context["crawlseo_service"] = object()
+    llm = FakeToolsLLM([{"content": "Read-only check.", "tool_calls": None}])
+    context["llm"] = llm
+    before = memory.list_seo_seeds()
+    handle_message(context, Adapter(), "Check analytics and search configuration; do not spend.")
+    system = llm.calls[0]["messages"][0]["content"]
+    assert "Current Growth workspace state" in system
+    assert "must-not-reach-model" not in system
+    tools = {row["function"]["name"] for row in llm.calls[0]["tools"]}
+    assert "get_growth" in tools
+    state = json.loads(_execute_tool(context, Adapter(), "get_growth", {}, lambda _: None))
+    assert state["sources"] == growth_snapshot(memory, config, context)["sources"]
+    sources = {row["id"]: row for row in state["sources"]}
+    assert sources["gsc"]["verification"] == "verified"
+    assert sources["gsc"]["state"] == "ready"
+    assert sources["dataforseo"]["configured"] is True
+    assert sources["dataforseo"]["seedCount"] == 0
+    assert "approved keyword seeds" in sources["dataforseo"]["reason"]
+    assert memory.list_seo_seeds() == before
+
+
+def test_metrics_are_valid_bounded_json_and_include_search_evidence(env):
+    from site_agent.brain.editor import _execute_tool
+    memory, _config, context = env
+    memory.snapshot_metrics("ga4", {"current_week": {"totalUsers": 0}, "top_pages": [
+        {"path": "/" + "a" * 100, "views": i} for i in range(100)
+    ]})
+    memory.snapshot_metrics("gsc", {"totals": {"clicks": 0, "impressions": 0}})
+    result = json.loads(_execute_tool(context, None, "get_metrics", {}, lambda _: None))
+    assert result["traffic"]["current_week"]["totalUsers"] == 0
+    assert len(result["traffic"]["top_pages"]) == 10
+    assert result["search"]["totals"]["clicks"] == 0
+    assert result["observedAt"]["gsc"]
+
+
 def test_existing_source_site_routes_focused_visual_edits_to_builder(env, monkeypatch):
     from site_agent.brain.editor import _looks_like_source_edit_request, _tools_spec
     from site_agent.hands import opencode_runner as runner

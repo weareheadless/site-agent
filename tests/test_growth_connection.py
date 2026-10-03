@@ -37,10 +37,20 @@ def test_growth_is_readonly_and_does_not_invent_provider_data(tmp_path):
     assert result['activities'][0]['enabled'] is True
     assert result['activities'][0]['nextRun']
     assert result['activities'][1]['enabled'] is False
+    assert result['activities'][1]['nextRun'] is None
     assert 'private-never-return' not in json.dumps(result)
     assert 'credential_token' not in json.dumps(result)
     assert memory.list_drafts() == before
     assert result['approvalRequired'] is True
+
+
+def test_disabled_schedules_do_not_promise_a_future_cycle(tmp_path):
+    memory = Memory(tmp_path / 'memory.db')
+    memory.kv_set('next_run:growth_reconciler', 1791000000)
+    result = growth_snapshot(memory, {}, {'scheduler': SimpleNamespace(jobs=[])})
+    assert result['work']['nextRun'] is None
+    assert all(row['nextRun'] is None for row in result['activities'])
+    memory.close()
 
 
 def test_connection_and_growth_are_authenticated_and_tenant_isolated(tmp_path):

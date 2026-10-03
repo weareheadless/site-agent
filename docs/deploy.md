@@ -1,5 +1,9 @@
 # Deploying site-agent — worked example: OceanicVibes
 
+For current shared Payload/Next.js customer releases, use
+[`platform-release-runbook.md`](platform-release-runbook.md). The legacy
+static-site examples below are not the supported admin release procedure.
+
 ## Shared Ada API
 
 Customer-facing Payload workspaces should use the shared tenant-aware API, not

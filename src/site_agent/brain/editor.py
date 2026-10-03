@@ -63,7 +63,7 @@ def set_dotted(doc: dict[str, Any], field: str, value: Any) -> Any:
     return old
 
 
-_READ_ACTIONS = {"read_file", "list_files", "get_content", "get_metrics", "list_drafts", "recall",
+_READ_ACTIONS = {"read_file", "list_files", "get_content", "get_metrics", "get_growth", "list_drafts", "recall",
                  "search_media", "search_business_knowledge", "read_payload_content",
                  "inspect_editable_fields", "validate_editable_fields"}
 
@@ -385,7 +385,8 @@ def _tools_spec(
             "contains": {"type": "string", "description": "substring to locate"}}, ["path"]),
         fn("list_files", "List every file path in the site repo", {}),
         fn("get_content", "Read the structured text fields (content.json)", {}),
-        fn("get_metrics", "GA4 traffic snapshot plus weekly LLM cost", {}),
+        fn("get_metrics", "Read persisted GA4 and Search Console evidence with collection timestamps; no collection or spending", {}),
+        fn("get_growth", "Read the current Growth workspace: provider configuration, verification, evidence freshness, keyword research readiness, schedules and approvals. Never provisions or spends.", {}),
         fn("list_drafts", "Pending proposals awaiting owner approval", {}),
         fn("recall_memory",
            "Remember by meaning: pull your own past memories — what you learned, "
@@ -614,7 +615,8 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
         "read_file": lambda: f"reading {args.get('path', '')}",
         "list_files": lambda: "listing repository files",
         "get_content": lambda: "reading content.json",
-        "get_metrics": lambda: "pulling GA4 numbers",
+        "get_metrics": lambda: "reading saved analytics and search evidence",
+        "get_growth": lambda: "checking growth connections and approvals",
         "list_drafts": lambda: "checking pending drafts",
         "recall_memory": lambda: "searching my memory",
         "search_media": lambda: "searching the Library",
@@ -690,9 +692,11 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
             return "content.json not found."
         return _content_summary(doc)
     if name == "get_metrics":
-        snap = (memory.latest_snapshot("ga4") or {}).get("data", {})
-        spend = memory.llm_spend(since_hours=24 * 7)
-        return json.dumps({"traffic": snap, "weekly_llm_cost_usd": round(spend["cost_usd"], 2)})[:1500]
+        from ..application.growth import growth_metrics
+        return json.dumps(growth_metrics(memory), ensure_ascii=False)
+    if name == "get_growth":
+        from ..application.growth import growth_chat_context
+        return json.dumps(growth_chat_context(memory, context["config"], context), ensure_ascii=False)
     if name == "list_drafts":
         drafts = memory.list_drafts(status="pending", limit=10)
         return "\n".join(f"#{d['id']} [{d['kind']}] {d['title']}" for d in drafts) or "(no pending drafts)"
@@ -999,6 +1003,17 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
     system += _tweakmap_block(context)
     system += _template_tokens_block(context)
     system += _decision_ledger_block(context)
+    from ..application.growth import growth_chat_context
+    system += (
+        "\n\nCurrent Growth workspace state (read-only platform records):\n"
+        + json.dumps(growth_chat_context(context["memory"], context["config"], context), ensure_ascii=False)
+        + "\nTreat provider configuration, verification, evidence availability and freshness as separate facts. "
+        "Missing keyword seeds or empty search results do not mean a configured service is disconnected. "
+        "Use get_metrics for persisted numbers and their timestamps. Do not describe old snapshots as live data. "
+        "Use these records before asking the owner to create accounts or supply access already managed by the platform. "
+        "A read-only check never authorizes provisioning, paid research or publication. "
+        "Do not claim an enabled schedule or a missing consent/access setting without recorded evidence."
+    )
     if _payload_gateway(context) is not None:
         system += (
             "\n\nPayload workflow: the selected workspace document is supplied in the user context. "

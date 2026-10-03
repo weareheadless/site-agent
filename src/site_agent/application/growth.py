@@ -17,7 +17,7 @@ def growth_snapshot(memory: Memory, config: dict[str, Any], context: dict[str, A
     activities = []
     for name in ("article", "growth_reconciler", "seo_insight", "weekly_report", "seo_site_report_cycle", "article_research_cycle", "social_post"):
         stamp = memory.kv_get(f"next_run:{name}")
-        next_run = datetime.datetime.fromtimestamp(stamp, datetime.timezone.utc).isoformat() if isinstance(stamp, (int, float)) else None
+        next_run = datetime.datetime.fromtimestamp(stamp, datetime.timezone.utc).isoformat() if name in jobs and isinstance(stamp, (int, float)) else None
         activities.append({"id": name, "enabled": name in jobs, "schedule": jobs.get(name), "nextRun": next_run})
     drafts = memory.list_drafts(limit=100)
     def pick(row: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
@@ -108,3 +108,56 @@ def growth_snapshot(memory: Memory, config: dict[str, Any], context: dict[str, A
         "articleIdeas": [pick(row, ("id", "status", "focus_keyword", "language", "market", "idea_json", "draft_id", "created_ts")) for row in ideas[:12]],
         "approvalRequired": GrowthPolicy.from_config(config).approval_required,
     }
+
+
+def growth_chat_context(memory: Memory, config: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    """Bounded, read-only model view of the same state the owner sees in Growth.
+
+    No credential/config dump and no provider call. A missing research result
+    must not erase a configured capability; source timestamps remain explicit.
+    """
+    snapshot = growth_snapshot(memory, config, context)
+    def pick(row: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
+        return {key: row.get(key) for key in keys}
+    return {
+        "sources": snapshot["sources"],
+        "goal": pick(snapshot["goal"], ("revision", "goal_key", "objective", "metrics")) if snapshot["goal"] else None,
+        "work": {"state": snapshot["work"]["state"], "nextRun": snapshot["work"]["nextRun"]},
+        "activities": [pick(row, ("id", "enabled", "nextRun")) for row in snapshot["activities"]],
+        "reviewQueue": [pick(row, ("id", "title", "state")) for row in snapshot["reviewQueue"]],
+        "candidates": [pick(row, ("id", "title", "kind", "state")) for row in snapshot["candidates"]],
+        "keywords": snapshot["keywords"][:10],
+        "keywordMetrics": snapshot["keywordMetrics"][:10],
+        "approvalRequired": snapshot["approvalRequired"],
+        "readOnly": True,
+    }
+
+
+def growth_metrics(memory: Memory) -> dict[str, Any]:
+    """Persisted analytics/search evidence, bounded before JSON serialization."""
+    measures = ("totalUsers", "activeUsers", "newUsers", "sessions", "engagedSessions",
+                "screenPageViews", "engagementRate", "averageSessionDuration", "keyEvents",
+                "clicks", "impressions", "ctr", "position", "users", "views")
+    dimensions = ("path", "page", "query", "source", "medium", "channel", "country", "device")
+    def fields(row: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
+        return {key: value[:300] if isinstance(value, str) else value
+                for key in keys if key in row
+                for value in (row[key],) if value is None or isinstance(value, (str, int, float, bool))}
+    result: dict[str, Any] = {"observedAt": {}}
+    for source, label in (("ga4", "traffic"), ("gsc", "search")):
+        snapshot = memory.latest_snapshot(source)
+        result["observedAt"][source] = snapshot.get("ts") if snapshot else None
+        if snapshot is None:
+            result[label] = None
+            continue
+        data = snapshot["data"]
+        summary: dict[str, Any] = fields(data, ("period_days", "period", "start_date", "end_date"))
+        for key in ("current", "previous", "current_week", "previous_week", "delta_pct", "totals"):
+            if isinstance(data.get(key), dict):
+                summary[key] = fields(data[key], measures)
+        for key in ("top_pages", "top_queries", "sources", "organic_queries"):
+            if isinstance(data.get(key), list):
+                summary[key] = [fields(row, measures + dimensions) for row in data[key][:10] if isinstance(row, dict)]
+        result[label] = summary
+    result["weekly_llm_cost_usd"] = round(memory.llm_spend(since_hours=24 * 7)["cost_usd"], 2)
+    return result
