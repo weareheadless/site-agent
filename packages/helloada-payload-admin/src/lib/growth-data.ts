@@ -44,7 +44,7 @@ export function growthCSV(
   // Prevent formulas when owner-exported text is opened in a spreadsheet.
   const cell = (value: unknown) => {
     const raw = String(value ?? "");
-    const safe = /^[\s]*[=+@-]/.test(raw) ? `'${raw}` : raw;
+    const safe = typeof value === "string" && /^[\s]*[=+@-]/.test(raw) ? `'${raw}` : raw;
     return `"${safe.replace(/"/g, '""')}"`;
   };
   return [

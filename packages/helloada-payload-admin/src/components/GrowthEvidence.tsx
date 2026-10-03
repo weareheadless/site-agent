@@ -222,7 +222,7 @@ export function GrowthEvidence({
               ) : null}
               <Link
                 href={ask(
-                  `${t("growth.researchPrompt")}\n${JSON.stringify({ keyword: selected.keyword, language: selected.language, market: selected.market, source: selected.source, observedAt: selected.updatedAt })}`,
+                  `${t("growth.researchPrompt")}\n${t("growth.keyword")}: ${String(selected.keyword)} · ${t("growth.market")}: ${String(selected.market || "—")} · ${t("growth.updated")}: ${String(selected.updatedAt || "—").slice(0, 10)}`,
                 )}
               >
                 {t("growth.planKeyword")} ↗
@@ -335,7 +335,9 @@ export function GrowthEvidence({
                   ? t("growth.unavailable")
                   : data?.summary?.status === "none"
                     ? t("growth.noCrawl")
-                    : t("growth.noIssues")
+                    : severity
+                      ? t("growth.noMatches")
+                      : t("growth.noIssues")
               }
             />
           </section>

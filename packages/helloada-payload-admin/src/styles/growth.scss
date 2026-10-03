@@ -1,4 +1,5 @@
 @mixin styles {
+  .helloada-table-label { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; max-width: 420px; }
   .helloada-growth,
   .helloada-growth * {
     box-sizing: border-box;

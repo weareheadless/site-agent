@@ -138,6 +138,10 @@ export function GrowthTable({
                         >
                           {growthNumber(row[key], language, key)}
                         </button>
+                      ) : col === 0 && !["date"].includes(key) && !/^\d{8}$/.test(String(row[key])) ? (
+                        <span className="helloada-table-label" title={String(row[key] ?? "")}>
+                          {growthNumber(row[key], language, key)}
+                        </span>
                       ) : ["date", "key"].includes(key) &&
                         /^\d{8}$/.test(String(row[key])) ? (
                         growthDate(row[key])

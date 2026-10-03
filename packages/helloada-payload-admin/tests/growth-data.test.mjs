@@ -21,4 +21,5 @@ test('zero is a measurement; missing data is not zero; rates are percentages', (
 });
 test('CSV preserves raw measurements and quotes spreadsheet formulas safely', () => {
   assert.equal(growthCSV([{keyword: '=HYPERLINK("bad")', ctr: .2}], [['keyword', 'Keyword'], ['ctr', 'CTR']]), '"Keyword","CTR"\r\n"\'=HYPERLINK(""bad"")","0.2"');
+  assert.equal(growthCSV([{delta: -12}], [['delta', 'Change']]), '"Change"\r\n"-12"');
 });
