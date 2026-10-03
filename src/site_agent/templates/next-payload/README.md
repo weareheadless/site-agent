@@ -10,6 +10,13 @@ the exact `@weareheadless/helloada-payload-admin` release in `package.json`;
 do not copy the package into a customer repository or replace it with the
 retired FastAPI admin.
 
+Production releases use the central VPS pipeline. Register the tenant in
+`weareheadless/site-agent/deploy/payload-customers.json`, then commit its full
+customer source SHA and a new release ID to `deploy/desired-releases.json` on
+the official `site-agent/main`. The VPS systemd timer builds a fresh clone,
+deploys the inspected artifact and records a receipt. Follow the shared
+`deploy/README.md`; do not invoke local `deploy:app` or Wrangler uploads.
+
 `npm run verify:payload` is a release gate. It exercises published, draft, and
 version reads for every editable collection plus both shared globals and media.
 It must pass against the tenant's remote D1 database before the Worker is

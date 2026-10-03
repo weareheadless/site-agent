@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "releases": {
+    "oceanicvibes": {
+      "id": "20261003-durable-release-1",
+      "sha": "1feb94ccf4e08a9e6ffe266db87cb1b54456f2e9"
+    },
+    "atelier-harmonie": {
+      "id": "20261003-durable-release-1",
+      "sha": "70d3989124d64bbcf5610ee0314b5753fc771aae"
+    }
+  }
+}

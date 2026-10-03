@@ -212,27 +212,30 @@ tenant. A local site-agent change, a customer-repository push, or a direct
 
 ### Mandatory Payload/Worker release pipeline
 
-Use the `Payload customer release` workflow in
-`.github/workflows/payload-customer-release.yml`, dispatched with a registered
-tenant and the full 40-character customer commit SHA. The workflow runs on the
-VPS `helloada-deploy` self-hosted runner and invokes the central script. The
-one-time runner registration and operating rules are in `deploy/README.md`.
+Commit the approved tenant's full 40-character customer SHA and a new release ID
+to `deploy/desired-releases.json` on the official `main` branch. The VPS
+`helloada-release.timer` polls that file through the configured GitHub SSH
+identity every minute. `helloada-release.service` snapshots the exact control
+commit and runs `scripts/deploy-payload-customer.py` from that snapshot. Full
+operating and installation instructions are in `deploy/README.md`.
 
 The central script is a hard gate, not a repair or fallback layer. It must:
 
 1. resolve the tenant from the manifest and reject an unregistered target;
-2. verify the configured repository, clean checkout, exact immutable SHA and
-   detached state;
+2. clone the configured repository into a new release directory, verify the
+   immutable SHA is on official `main`, and use a detached checkout;
 3. resolve Cloudflare through `/SOCIAL/configs/host-credentials.yaml` using
    `site_agent.credentials`, never by sourcing `/SOCIAL/site-agent/.env`;
-4. run `wrangler whoami`, `npm ci`, typecheck and the full OpenNext build with
-   isolated local bindings;
+4. verify Cloudflare deployment access, run `npm ci`, typecheck and the full
+   OpenNext build with isolated local bindings and no production credentials;
 5. inspect the generated `.open-next` artifact and reject legacy `/api/atelier`
    source, missing Growth contract markers, or stale Payload admin markers;
-6. upload that exact inspected artifact, then verify the tenant-specific health
-   contract; and
-7. write an immutable, secret-free receipt. A failed receipt is an incomplete
-   release.
+6. archive and upload that exact inspected artifact, verify Cloudflare gives
+   the new version 100% traffic, check the live source SHA, and perform the
+   authenticated Ada/Payload connection gate; and
+7. persist a secret-free receipt in `/SOCIAL/payload-releases/runs`. Failed or
+   interrupted releases stop. Fix their cause and commit a new release ID to
+   retry; never repeat failed builds automatically or bypass their gate.
 
 There is no customer-facing legacy admin API. The canonical Payload bridge is
 `/api/helloada/*`; customer source containing `/api/atelier` is rejected. The
@@ -240,7 +243,7 @@ Python/FastAPI service remains the internal shared API only where an application
 contract explicitly requires it; it is not an alternative customer admin
 surface, deployment path, or fallback.
 
-GitHub Actions success and a public health response are not sufficient live
+GitHub CI success and a public health response are not sufficient live
 verification. After a passing receipt, reload a fresh authenticated browser
 document with a cache-busting release query and verify the changed UI and
 connection behavior. Do not report a release as live until this check passes.
@@ -266,7 +269,7 @@ Never print, paste, commit, or pass credential values to Ada/model prompts.
 
 - Backend/API changes: validate here, then restart `site-agent-api.service`.
 - Frontend/Payload changes: validate and push the tenant's configured repository,
-  then promote only through the central exact-SHA release workflow.
+  then promote only by committing its SHA to the central release queue.
 - Never commit protected credential files, tenant memory databases, or generated
   Worker/build output.
 - Keep the packaged intake defaults stable; database-only intake/research must

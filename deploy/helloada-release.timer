@@ -1,0 +1,11 @@
+[Unit]
+Description=Poll the approved HelloAda GitHub release queue
+
+[Timer]
+OnBootSec=1min
+OnUnitInactiveSec=1min
+Persistent=true
+Unit=helloada-release.service
+
+[Install]
+WantedBy=timers.target

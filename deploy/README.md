@@ -1,52 +1,91 @@
-# Canonical customer release pipeline
+# HelloAda VPS deployment pipeline
 
-Customer Payload/Next.js Workers are released by the VPS-owned pipeline. A
-conversation, a local checkout, a cached `.open-next` directory, or a direct
-`wrangler deploy` is not a release mechanism.
+## Release command
 
-## Release flow
+1. Review, test and push the customer source to its official GitHub `main`.
+2. In `site-agent`, update `deploy/desired-releases.json` with the registered
+   tenant, full customer commit SHA and a new release ID:
 
-1. Merge the reviewed customer change into its configured GitHub repository.
-2. Copy the resulting **full 40-character commit SHA**.
-3. Dispatch the `Payload customer release` workflow in `site-agent`, choosing
-   the registered tenant and that exact SHA.
-4. The self-hosted `helloada-deploy` runner executes
-   `scripts/deploy-payload-customer.py` from `/SOCIAL/site-agent` on the VPS.
-5. The gate resolves Cloudflare credentials through
-   `/SOCIAL/configs/host-credentials.yaml`, checks the clean pinned checkout,
-   installs from the lockfile, typechecks, builds one OpenNext artifact,
-   rejects `/api/atelier` and stale admin markers, deploys that exact artifact,
-   and verifies the tenant health contract.
-6. The receipt in `/SOCIAL/site-agent-api/deploy-receipts` is the deployment
-   record. A failed receipt means the release is incomplete.
-7. After the workflow passes, perform the authenticated browser check with a
-   fresh cache-busting URL. GitHub success or a public health response alone
-   is not live verification.
+   ```json
+   {
+     "schema": 1,
+     "releases": {
+       "oceanicvibes": { "id": "20261003-release-1", "sha": "<full 40-character SHA>" }
+     }
+   }
+   ```
 
-## One-time VPS runner setup
+3. Run `python -m pytest -q tests/test_payload_release.py`, then commit and push
+   the queue to official `site-agent/main`.
+4. The VPS discovers the request within one minute. Check it with:
 
-The VPS must have one GitHub Actions self-hosted runner registered on the
-`site-agent` repository with labels `self-hosted`, `linux`, and
-`helloada-deploy`. Register it as a dedicated service account with access to
-the configured customer checkouts and `/SOCIAL/configs/host-credentials.yaml`.
-The registration token is short-lived and must be entered interactively; it
-must never be committed here or placed in a workflow file.
+   ```bash
+   ssh codex-vps 'systemctl status helloada-release.service --no-pager'
+   ssh codex-vps 'journalctl -u helloada-release.service -n 80 --no-pager'
+   ```
 
-The service account must have the repository's Node 22 runtime first in PATH
-and the fixed Python environment at
-`/home/admin/.local/share/site-agent-venv/bin/python`. The runner is allowed
-to invoke only the central release script for production deployments.
+5. Read `/SOCIAL/payload-releases/runs/<tenant>/<release-id>/receipt.json`.
+   `deployed` means upload, exact live SHA and authenticated Ada/Payload checks
+   passed. It still requires a fresh signed-in browser check. Record that check
+   in `browser-verification.json` beside the receipt before reporting completion.
 
-Do not add a push trigger. Production promotion is an explicit exact-SHA
-dispatch so code review and owner approval remain separate from deployment.
+Keep the latest request for each tenant in the queue. Existing terminal receipts
+make it idempotent: unchanged requests do no work. Failed or interrupted requests
+are recorded and never rebuilt by every poll. Fix the cause, then commit a new
+release ID. A release ID cannot be reused for a different source SHA.
 
-## Non-negotiable rules
+## What executes
 
-- The manifest is the tenant registry; do not invent paths or Worker names in
-  a command.
-- The declared Cloudflare profile is the only credential source. Never source
-  `/SOCIAL/site-agent/.env` for a release.
-- No legacy customer admin path, repair route, fallback build, or reused
-  `.open-next` artifact is allowed.
-- The same source SHA and artifact inspected by the gate must be the one
-  uploaded to Cloudflare.
+`helloada-release.timer` starts a systemd service every minute after the previous
+run finishes. The service fetches official `site-agent/main` via the existing
+host GitHub SSH identity and snapshots the control commit. It runs that snapshot's
+tests, manifest and pipeline, so later Git changes cannot alter an in-flight run.
+It persists across SSH/chat disconnects and machine restarts. A systemd timeout
+kills the complete process group; the next poll records an interrupted attempt.
+
+Each customer gets a fresh Git clone. The pipeline checks its source SHA is on
+official `main`, uses Node 22 and `npm ci`, typechecks and builds OpenNext with
+local bindings. Production credentials are supplied only to Cloudflare calls,
+never to dependency installation or builds. The artifact is inspected, hashed
+and archived before upload. The pipeline checks production did not change during
+the build, deploys once, confirms a new Cloudflare version gets 100% traffic,
+checks the live SHA and tenant, then performs the authenticated connection gate.
+
+Artifacts, source, receipts and previous Cloudflare versions are retained under
+`/SOCIAL/payload-releases`. Customer content and databases are untouched. Schema
+migrations require a separate reviewed migration release; this command does not
+guess or apply them. Rollback uses the previous receipt's Cloudflare version with
+`wrangler versions deploy <version>@100% --name <worker> --yes` through the
+declared credential profile, followed by live checks. It never rolls back data.
+
+## Install/update the service
+
+From a reviewed, clean `/SOCIAL/site-agent` checkout on the VPS:
+
+```bash
+sudo install -m 0644 deploy/helloada-release.service /etc/systemd/system/helloada-release.service
+sudo install -m 0644 deploy/helloada-release.timer /etc/systemd/system/helloada-release.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now helloada-release.timer
+```
+
+The service uses `/SOCIAL/site-agent/.venv/bin/python`. The host profile at
+`/SOCIAL/configs/host-credentials.yaml` supplies GitHub SSH wiring and the
+Cloudflare credential file. No GitHub PAT, runner registration, webhook secret or
+inbound deployment endpoint is needed. GitHub's hosted CI validates the release
+contract; the VPS performs the same validation before execution.
+
+## Rules for coding agents
+
+- Use this queue for every customer Worker release. Do not run direct
+  `npm run deploy`, `deploy:app`, or Wrangler uploads from an arbitrary checkout.
+- Register future tenants in `deploy/payload-customers.json` first. The customer
+  must use `/api/helloada/*`, the shared Payload package, and the health route
+  from the default template.
+- Read the receipt and failed stage before changing source. Never use an old
+  build, a different credential file, a fallback route or an automatic rollback
+  to turn a failed gate into a success.
+- A shared admin package release requires version-pin updates and queue entries
+  for every selected consumer. Publishing a package alone cannot redeploy them.
+- Source, artifact, deployment and authenticated browser verification are
+  separately recorded. Report only what those records prove.

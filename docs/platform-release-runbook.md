@@ -62,13 +62,14 @@ exact pinned release and its own deployment/verification receipt.
 
 ## VPS-owned release automation
 
-The rollout workflow is now wired. The only supported customer promotion is the
-manually dispatched `Payload customer release` workflow in
-`.github/workflows/payload-customer-release.yml`. It runs on the VPS
-`helloada-deploy` self-hosted runner and invokes the central script described in
-[`deploy/README.md`](../deploy/README.md).
+The only supported customer promotion is a committed request in
+`deploy/desired-releases.json` on official `main`. The VPS systemd timer polls
+GitHub using the existing SSH identity, snapshots the exact control commit and
+executes its release script. GitHub CI validates queue changes on hosted runners;
+the VPS also runs the focused contract tests before processing requests. See
+[`deploy/README.md`](../deploy/README.md) for the command and service setup.
 
-The workflow accepts only a registered tenant and a full customer commit SHA.
+The queue accepts only a registered tenant, a full customer SHA and a release ID.
 The script serializes releases, resolves the declared Cloudflare profile,
 builds from a clean detached checkout, inspects one OpenNext artifact, deploys
 that same artifact, verifies the tenant-specific health contract, and writes a
@@ -78,9 +79,8 @@ credentials and failed live health checks. It never repairs, falls back to, or
 reuses a stale artifact.
 
 Production is intentionally not triggered by every push. Review and owner
-approval happen before an exact-SHA dispatch; the pipeline then makes the
-promotion deterministic. Once the VPS runner is registered, a release is
-complete only after both the workflow receipt and a fresh authenticated browser
+approval happen before a release request is committed. A release is
+complete only after both the VPS receipt and a fresh authenticated browser
 verification pass. GitHub success or a public health response alone is not
 evidence that the owner-visible release is live.
 

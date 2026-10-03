@@ -1,0 +1,19 @@
+[Unit]
+Description=HelloAda canonical Payload release queue
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=admin
+Group=admin
+UMask=0077
+WorkingDirectory=/SOCIAL/site-agent
+ExecStart=/SOCIAL/site-agent/.venv/bin/python /SOCIAL/site-agent/scripts/reconcile-payload-releases.py
+TimeoutStartSec=90min
+KillMode=control-group
+NoNewPrivileges=true
+PrivateTmp=true
+StandardOutput=journal
+StandardError=journal
+

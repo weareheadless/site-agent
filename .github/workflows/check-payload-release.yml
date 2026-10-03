@@ -1,0 +1,22 @@
+name: Validate Payload release queue
+
+on:
+  pull_request:
+    paths: ['deploy/**', 'scripts/*payload*', 'tests/test_payload_release.py']
+  push:
+    branches: [main]
+    paths: ['deploy/**', 'scripts/*payload*', 'tests/test_payload_release.py']
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install pytest PyYAML
+      - run: python -m pytest -q tests/test_payload_release.py
