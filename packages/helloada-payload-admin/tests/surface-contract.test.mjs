@@ -24,6 +24,7 @@ test('paper foundation matches the HelloAda homepage control room', () => {
 });
 test('navigation and Ada are explicitly dark; review and Growth inherit paper', () => {
   assert.match(read('admin.scss'), /\.template-default \.nav \{\s*@include surfaces\.chrome;/);
+  assert.match(read('admin.scss'), /\.helloada-payload-nav \{\s*@include surfaces\.chrome;\s*background: var\(--helloada-top\);/);
   assert.match(read('owner-workspace.scss'), /\.helloada-owner-workspace \.helloada-ada-panel \{ @include surfaces\.chrome;/);
   assert.match(read('owner-workspace.scss'), /\.helloada-review-window \{ grid-column: 2/);
   assert.doesNotMatch(read('growth.scss'), /@include surfaces\.chrome/);

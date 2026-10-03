@@ -169,6 +169,8 @@ textarea:focus-visible {
 }
 
 .helloada-payload-nav {
+  @include surfaces.chrome;
+  background: var(--helloada-top);
   display: flex;
   align-items: center;
   gap: 10px;

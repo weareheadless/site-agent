@@ -7,7 +7,7 @@ or website preview. Its default is Ada's saved, business-specific analysis and
 next actions. The approved HelloAda mark is unchanged. All customers and new
 Payload sites consume the same shared package; no customer-specific UI fork.
 
-The shared `0.7.0` surface system follows the actual helloada.app control-room
+The shared `0.7.1` surface system follows the actual helloada.app control-room
 example: ivory canvas (`#eee6da`), paper tool windows and dark foregrounds,
 with dark navigation and Ada conversation. Nested galleries, drawers and editors
 explicitly use paper tokens rather than inheriting dark conversation colors.
