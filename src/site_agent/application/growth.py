@@ -88,7 +88,7 @@ def growth_snapshot(memory: Memory, config: dict[str, Any], context: dict[str, A
         "evidence": evidence_projection,
         "latestEvidence": evidence_projection,
         "activities": activities,
-        "tasks": growth_tasks(memory, initiatives, drafts, activities, memory.list_strategy_outcomes(limit=100), runs),
+        "tasks": growth_tasks(memory, initiatives, drafts, activities, memory.list_strategy_outcomes(limit=100), runs, memory.list_article_ideas(limit=40)),
         "goal": goal,
         "work": {
             "state": work_state,

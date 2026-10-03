@@ -1,4 +1,5 @@
 import type { GlobalConfig } from 'payload'
+import { assertNativeWriteAllowed } from '@/lib/growth-contract'
 
 export const Navigation: GlobalConfig = {
   slug: 'navigation',
@@ -57,4 +58,9 @@ export const Navigation: GlobalConfig = {
       ],
     },
   ],
+  hooks: {
+    beforeOperation: [async ({ args, operation }) => {
+      if (operation === 'update') await assertNativeWriteAllowed('global:navigation', 'navigation', args.req)
+    }],
+  },
 }

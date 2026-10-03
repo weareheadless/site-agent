@@ -1,4 +1,5 @@
 import type { CollectionConfig } from 'payload'
+import { assertNativeWriteAllowed } from '@/lib/growth-contract'
 
 export const Posts: CollectionConfig = {
   slug: 'posts',
@@ -28,4 +29,12 @@ export const Posts: CollectionConfig = {
     },
     { name: 'published', type: 'checkbox', defaultValue: true },
   ],
+  hooks: {
+    beforeOperation: [async ({ args, operation }) => {
+      if (operation === 'update' || operation === 'delete') {
+        const operationArgs = args as unknown as { id?: unknown; req?: { context?: Record<string, unknown> } }
+        await assertNativeWriteAllowed('posts', operationArgs.id, operationArgs.req)
+      }
+    }],
+  },
 }

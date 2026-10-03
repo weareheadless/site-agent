@@ -27,3 +27,21 @@ def test_payload_template_has_remote_payload_contract_gate():
     verifier = (TEMPLATE / 'scripts' / 'verify-payload-contract.ts').read_text(encoding='utf-8')
     for expected in ['draft: false', 'draft: true', 'findVersions', 'findGlobal', "collection: 'media'"]:
         assert expected in verifier
+
+
+def test_payload_template_has_one_managed_growth_write_and_renderer_boundary():
+    source = BRIDGE.read_text(encoding='utf-8')
+    contract = (TEMPLATE / 'src' / 'lib' / 'growth-contract.ts').read_text(encoding='utf-8')
+    renderer = (TEMPLATE / 'src' / 'components' / 'PublicDocument.tsx').read_text(encoding='utf-8')
+    assert "path === '/growth/apply'" in source
+    assert "path === '/growth/publish'" in source
+    assert "claimOperation(operationKey, documentKey, packageHash)" in source
+    assert 'renderToStaticMarkup' in source
+    assert 'helloada_growth_candidates' in contract
+    assert 'helloada_growth_operations' in contract
+    assert "state = 'writing'" in contract
+    assert 'assertNativeWriteAllowed' in contract
+    assert 'function PublicDocument' in renderer
+    for hook in ('Pages.ts', 'Posts.ts', 'Products.ts'):
+        collection = (TEMPLATE / 'src' / 'collections' / hook).read_text(encoding='utf-8')
+        assert 'assertNativeWriteAllowed' in collection

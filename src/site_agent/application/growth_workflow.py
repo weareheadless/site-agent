@@ -467,6 +467,88 @@ def _collect_cycle_evidence(context: Mapping[str, Any], trigger: str) -> dict[st
     return {"sources": sources, "inventory": inventory, "metrics": growth_metrics(memory), "datasets": datasets, "collectionErrors": errors}
 
 
+def _run_monthly_research(context: dict[str, Any], detail: dict[str, Any]) -> dict[str, Any]:
+    """Advance the one paid monthly research request through its existing lane.
+
+    ``brain.seo`` owns the provider brief, reservation, idempotency key, result
+    reconciliation and report/initiative lineage. The Growth run owns the
+    schedule and exposes provider state to the unified owner task list. This
+    wrapper never creates a second research request or infers success from a
+    saved snapshot.
+    """
+    from ..brain import seo as brain_seo
+
+    service = context.get("crawlseo_service")
+    if service is None:
+        raise RuntimeError("The monthly research provider is not configured for this site")
+    config = context["config"]
+    seo = config.get("seo") if isinstance(config.get("seo"), Mapping) else {}
+    research = seo.get("research") if isinstance(seo, Mapping) else None
+    if not isinstance(research, Mapping) or not bool(research.get("enabled")):
+        raise RuntimeError("Monthly research is not enabled in the tenant Growth policy")
+
+    memory = context["memory"]
+    period = brain_seo.previous_period(config)
+    before = memory.get_seo_research_request(period, brain_seo.PACKAGE_VERSION)
+    brain_seo.run(context)
+    request = memory.get_seo_research_request(period, brain_seo.PACKAGE_VERSION)
+    if request is None:
+        raise RuntimeError("The monthly research request was not persisted")
+    status = str(request.get("status") or "pending").lower()
+    research_detail = {
+        "period": period,
+        "requestId": request.get("id"),
+        "reportId": request.get("report_id"),
+        "status": status,
+        "idempotencyKey": request.get("idempotency_key"),
+        "budgetReservationId": request.get("budget_reservation_id"),
+        "requestedAt": request.get("requested_ts"),
+        "completedAt": request.get("completed_ts"),
+        "error": request.get("error") or None,
+        "created": before is None,
+    }
+    detail["monthlyResearch"] = research_detail
+    return research_detail
+
+
+def _queue_article_research(context: dict[str, Any]) -> dict[str, Any]:
+    """Start the optional reader-led article flow from the weekly Growth run."""
+    from ..brain import article_research as brain_article_research
+
+    config = context["config"]
+    seo = config.get("seo") if isinstance(config.get("seo"), Mapping) else {}
+    settings = seo.get("article_research") if isinstance(seo, Mapping) else {}
+    if not isinstance(settings, Mapping) or not bool(settings.get("enabled")):
+        return {"state": "disabled", "reason": "Article research is not enabled for this site."}
+    if context.get("llm") is None or context.get("crawlseo_service") is None:
+        return {"state": "blocked", "reason": "Article research requires both Ada and the configured CrawlSEO provider."}
+    from ..core.jobs import _with_persona
+
+    _with_persona(context, brain_article_research.select_and_request, "article_research")
+    ideas = context["memory"].list_article_ideas(limit=20)
+    current = ideas[0] if ideas else None
+    return {
+        "state": str((current or {}).get("status") or "queued"),
+        "ideaId": (current or {}).get("id"),
+        "draftId": (current or {}).get("draft_id"),
+        "error": (current or {}).get("error") or None,
+    }
+
+
+def _reconcile_article_research(context: dict[str, Any]) -> None:
+    """Reconcile article provider work from the same durable pending tick."""
+    config = context["config"]
+    seo = config.get("seo") if isinstance(config.get("seo"), Mapping) else {}
+    settings = seo.get("article_research") if isinstance(seo, Mapping) else {}
+    if not isinstance(settings, Mapping) or not bool(settings.get("enabled")):
+        return
+    if context.get("llm") is None or context.get("crawlseo_service") is None:
+        return
+    from ..core.jobs import _article_research_cycle
+
+    _article_research_cycle(context)
+
+
 def run_growth_cycle(context: dict[str, Any], *, trigger: str = "weekly", run_id: str | None = None) -> dict[str, Any]:
     """Execute persisted phases, never count labels as proof of completed work."""
     from ..brain import growth as brain_growth
@@ -504,13 +586,30 @@ def run_growth_cycle(context: dict[str, Any], *, trigger: str = "weekly", run_id
         material = detail["material"]
         if trigger == "daily":
             return advance(phase="complete", status="complete", detail=detail, completed=True)
+        if trigger == "weekly" and "articleResearch" not in detail:
+            detail["articleResearch"] = _queue_article_research(context)
+            run = advance(phase="assessing", detail=detail)
         if trigger == "monthly":
-            # Do not label a read of saved research as a paid research refresh.
-            # This phase remains blocked until the existing bounded provider
-            # dispatch, reservation and result reconciliation are connected.
-            detail["error"] = "The monthly research dispatch is not connected. No paid research was run."
-            return advance(status="blocked", phase="collecting", detail=detail, lease_owner=None, lease_until=None,
-                next_due_ts=(now + datetime.timedelta(days=1)).isoformat(timespec="seconds"))
+            research_detail = _run_monthly_research(context, detail)
+            status = str(research_detail.get("status") or "pending")
+            if status in {"completed", "partial"}:
+                detail["note"] = "Monthly research was reconciled through the bounded provider contract; its report and owner work remain in the unified Growth list."
+                return advance(phase="complete", status="complete", detail=detail, completed=True,
+                    lease_owner=None, lease_until=None, next_due_ts=None)
+            if status == "uncertain":
+                detail["error"] = "The provider did not conclusively reconcile the paid monthly operation. No duplicate dispatch is allowed."
+                return advance(status="uncertain", phase="collecting", detail=detail, lease_owner=None, lease_until=None,
+                    next_due_ts=None)
+            if status in {"blocked", "failed"}:
+                detail["error"] = str(research_detail.get("error") or f"Monthly research is {status}.")
+                retry = None if status == "blocked" else (now + datetime.timedelta(days=1)).isoformat(timespec="seconds")
+                return advance(status="blocked" if status == "blocked" else "failed", phase="collecting", detail=detail,
+                    lease_owner=None, lease_until=None, next_due_ts=retry)
+            # Requested, budget_reserved and waiting are durable provider work,
+            # not a completed report. Re-enter this same run later to poll it.
+            detail["nextAction"] = "Ada will reconcile the provider report before preparing recommendations."
+            return advance(status="pending", phase="collecting", detail=detail, lease_owner=None, lease_until=None,
+                next_due_ts=(now + datetime.timedelta(hours=6)).isoformat(timespec="seconds"))
         if "assessment" not in detail:
             service = context.get("customer_context_service")
             business = service.task_view("research") if service is not None and service.current() is not None else {
@@ -589,6 +688,7 @@ def run_growth_cycle(context: dict[str, Any], *, trigger: str = "weekly", run_id
 def run_pending_growth(context: dict[str, Any]) -> None:
     for run in context["memory"].due_growth_runs(limit=20):
         run_growth_cycle(context, trigger=run["trigger"], run_id=run["run_id"])
+    _reconcile_article_research(context)
 
 
 __all__ = ["ensure_default_goal", "queue_growth_check", "run_growth_cycle", "run_growth_reconciler", "run_pending_growth"]

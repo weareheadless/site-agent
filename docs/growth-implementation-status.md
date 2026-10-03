@@ -32,7 +32,8 @@ tag, or enable customer candidate writes without the destination proof below.
 - A crash after receipt settlement can reconcile the owner action without
   repeating the external effect. API and control-plane draft decisions require
   the saved review hash for managed candidates; missing metadata cannot bypass
-  this check. This does not replace the still-missing destination contract.
+  this check. The canonical Payload template now adds the destination contract;
+  customer Workers still need the exact release artifact.
 - Analytics/search history has one authority: tenant Memory via workspace API.
   Successful ingestion no longer depends on nonexistent Payload SEO mirrors.
 - New-site content contracts retain source IDs and page sections. Canonical
@@ -42,23 +43,30 @@ tag, or enable customer candidate writes without the destination proof below.
 - Package release CI now installs a committed dependency lock, tests/typechecks,
   inspects the packed source, and generates a source/integrity/artifact manifest.
   Package version **0.8.4 is a candidate**, not an existing published release.
+- The monthly Growth slot now drives the existing bounded CrawlSEO/DataForSEO
+  request, reservation, idempotency, polling and report reconciliation path;
+  pending provider work remains on the same durable run and appears in the one
+  owner task list instead of being reported as an unconnected placeholder.
+- The weekly Growth run starts the existing reader-led article research flow,
+  while the hourly pending tick reconciles its provider work and exposes
+  research-held items in the same task list.
 
 ## First remaining broken boundary
 
 `evidence -> Ada assessment -> canonical private candidate -> exact rendered
 preview -> owner approval -> verified publication -> measurement`
 
-The existing customer/template Payload gateways publish the latest mutable
-document by ID. They do not enforce conditional draft writes, immutable review
-packages or managed membership across all native/service/restore publishers.
-Sending `expectedHash` alone is not compare-and-swap.
+The existing customer Payload deployments still publish the latest mutable
+document by ID. The canonical site-agent template now contains the destination
+contract that replaces that boundary, but the customer Workers have not yet
+been rebuilt from it. Sending `expectedHash` alone is not compare-and-swap.
 
 The new coordinator therefore requires a destination-managed contract **before
 any draft write** and requires actual renderer/publication-boundary validation
-before a review can become publishable. These endpoints are NOT implemented on
-the customer Workers yet. Their absence is an explicit preparation block, not
-an alternative publication route. Do not remove this requirement to make the
-tests or UI appear complete.
+before a review can become publishable. These endpoints are implemented in the
+canonical template but are not yet installed on the customer Workers. Their
+absence in a customer deployment remains an explicit preparation block, not an
+alternative publication route.
 
 Implement a narrow shared server/platform provider (separate from the UI
 package's ownership). Retain customer-specific public renderers and schema
@@ -79,16 +87,18 @@ success before the Memory receipt: restart must recover that same effect.
 
 ## Other required work — not implemented by this checkpoint
 
-- Connect monthly bounded research dispatch, task polling, provider actual costs,
-  allowance/quote validation and uncertain-cost reconciliation to the coordinator.
-  The current monthly slot explicitly blocks; reading saved research is not a
-  monthly refresh. No paid production research was started for these tests.
-- Connect article research/preparation and selected/provenance-bound main media;
-  unify the current canonical Lexical/localised content adapters. Connect code
-  candidates only through the proven autonomous Design pipeline and its gates.
-- Wire generic managed-content approval/discard to the existing approval service
-  with trusted owner identity, exact package hash, recovery and rejection lineage.
-  UI eligibility alone is not server publication enforcement.
+- Exercise monthly bounded research dispatch, task polling, provider actual
+  costs, allowance/quote validation and uncertain-cost reconciliation against a
+  controlled provider fixture. No paid production research was started for
+  these tests.
+- Complete article preparation with selected/provenance-bound main media and
+  move its Payload mirror onto the same immutable Growth package contract; the
+  scheduler/queue integration is present, but the article-specific destination
+  write still needs this final contract slice. Connect code candidates only
+  through the proven autonomous Design pipeline and its gates.
+- Complete generic managed-content discard/rejection lineage beside the now
+  strict `payload_content` approval path. UI eligibility alone is not server
+  publication enforcement.
 - Bind source identities, final/partial observation windows and freshness to
   collection evidence; support evidence-change re-evaluation without reusing
   indefinitely stale frozen material or duplicating work across weekly cycles.
@@ -105,11 +115,11 @@ success before the Memory receipt: restart must recover that same effect.
 
 ## Verification performed
 
-- Focused Python contract/execution/schema-migration/API tests: **66 passed**.
+- Focused Python contract/execution/schema-migration/API tests: **68 passed**.
 - Shared UI/server package tests after installing the committed lock: **25 passed**.
 - Shared package TypeScript check passed after the clean dependency install.
 - Python wheel build succeeded; this is not a clean production release artifact.
-- Full Python suite: **1,081 passed, 5 failed**. Known failures concern the removed
+- Full Python suite: **1,098 passed, 5 failed**. Known failures concern the removed
   Pelican profile/tool, preview/environment fixtures and a sandbox-denied socket
   bind. This is not a clean full-suite pass. Do not conceal or silently skip them.
 - Both user-owned production admin sessions were visibly authenticated. The

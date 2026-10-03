@@ -43,6 +43,14 @@ class Payload:
         self.draft.update(data, updatedAt=f"revision-{self.writes + 1}")
         return dict(self.draft)
 
+    def apply_growth_candidate(self, package, package_hash):
+        assert package_hash
+        self.update(package["collection"], package["documentId"], package["changes"])
+        return {"ok": True, "candidateHash": package["candidateHash"]}
+
+    def publish_growth_candidate(self, package_hash):
+        raise AssertionError("scheduled work must not publish")
+
     def publish(self, *args, **kwargs):
         self.publishes += 1
         raise AssertionError("scheduled work must not publish")
@@ -133,4 +141,36 @@ def test_renderer_failure_is_not_a_validated_candidate_or_owner_decision(tmp_pat
     assert not memory.list_owner_actions()
     assert not memory.list_drafts()
     assert payload.publishes == 0
+    memory.close()
+
+
+def test_monthly_growth_run_reuses_one_durable_research_request_and_polls_it(tmp_path, monkeypatch):
+    memory = Memory(tmp_path / "memory.db")
+    payload = Payload()
+    settings = config()
+    settings["seo"] = {
+        "site_url": "https://business.test",
+        "research": {
+            "enabled": True,
+            "timezone": "UTC",
+            "languages": [{"code": "en", "markets": ["US"], "primary": True}],
+            "existing_locales": ["en"],
+            "business_goals": ["relevant visitors"],
+            "priority_services": ["local service"],
+            "anchor_topics": ["service topic"],
+        },
+    }
+    request = memory.create_seo_research_request(
+        "2026-09", "standard-v1", "seo:2026-09:standard-v1", {"focus_market": {"language": "en", "country": "US"}}
+    )
+    monkeypatch.setattr("site_agent.brain.seo.previous_period", lambda _config: "2026-09")
+    monkeypatch.setattr("site_agent.brain.seo.run", lambda _context: None)
+    run = run_growth_cycle(
+        {"config": settings, "memory": memory, "payload_gateway": payload, "crawlseo_service": object()},
+        trigger="monthly",
+    )
+    assert run["status"] == "pending"
+    assert run["detail"]["monthlyResearch"]["requestId"] == request["id"]
+    assert run["detail"]["monthlyResearch"]["status"] in {"preparing", "pending"}
+    assert "not connected" not in str(run["detail"].get("error") or "").lower()
     memory.close()

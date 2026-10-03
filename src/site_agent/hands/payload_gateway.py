@@ -168,6 +168,18 @@ class PayloadGatewayClient(EditableFieldGatewayMixin):
             raise PayloadGatewayError("The Growth validation proof is incomplete")
         return proof
 
+    def apply_growth_candidate(self, package: Mapping[str, Any], package_hash: str) -> dict[str, Any]:
+        result = self._request("POST", self._gateway_path("growth/apply"), payload={"package": dict(package), "packageHash": package_hash})
+        if result.get("ok") is not True or result.get("candidateHash") != package.get("candidateHash"):
+            raise PayloadGatewayError("The destination did not save the exact Growth candidate")
+        return result
+
+    def publish_growth_candidate(self, package_hash: str) -> dict[str, Any]:
+        result = self._request("POST", self._gateway_path("growth/publish"), payload={"packageHash": package_hash})
+        if result.get("ok") is not True or result.get("status") != "published":
+            raise PayloadGatewayError("The destination did not verify publication of the approved Growth candidate")
+        return result
+
     def _request(
         self,
         method: str,

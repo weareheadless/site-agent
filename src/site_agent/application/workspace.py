@@ -2110,6 +2110,57 @@ class ChatService:
             summary = str(draft.get("title") or f"edit: {normalized_id}")
             commit_message = str((published or {}).get("commit_message") or "")
             memory.update_draft_status(normalized_id, "approved")
+        elif kind == "payload_content":
+            if tenant is None:
+                raise BridgeError("Payload content approval requires a tenant")
+            payload = tenant.context.get("payload_gateway")
+            package = meta.get("growth_package") if isinstance(meta.get("growth_package"), Mapping) else None
+            package_hash = str(meta.get("review_package_hash") or "").strip()
+            if payload is None or not package or not package_hash:
+                raise BridgeError("the content candidate has no exact managed Payload package")
+            initiatives = [row for row in memory.list_strategy_initiatives(limit=500) if int(row.get("draft_id") or 0) == normalized_id]
+            initiative = initiatives[0] if initiatives else None
+            approval_id = int((initiative or {}).get("approval_id") or 0)
+            if not approval_id:
+                raise BridgeError("the content candidate has no durable owner approval")
+            from .approvals import ApprovalService
+            from .actions import OwnerActionService
+            approval_service = ApprovalService(memory, actions=OwnerActionService(memory))
+            approval = memory.get_approval_request(approval_id)
+            if approval is None:
+                raise BridgeError("the content candidate references a missing owner approval")
+            if approval.status.value == "pending":
+                approval = approval_service.decide(approval_id, True)
+            if approval.status.value != "approved":
+                raise BridgeError(f"the content candidate is not approved ({approval.status.value})")
+            # Freeze the owner decision before crossing the Payload mutation boundary.
+            memory.record_strategy_decision_for_draft(normalized_id, "approved")
+            try:
+                published = payload.publish_growth_candidate(package_hash)
+            except Exception as exc:
+                for item in memory.list_strategy_initiatives(limit=500):
+                    if int(item.get("draft_id") or 0) == normalized_id and item.get("state") == "publishing":
+                        memory.transition_strategy_initiative(int(item["id"]), "blocked", last_error=str(exc)[:500])
+                raise BridgeError(f"Payload candidate publication could not be verified: {str(exc)[:400]}") from exc
+            if not isinstance(published, Mapping) or published.get("status") != "published":
+                raise BridgeError("Payload returned no verified publication receipt")
+            baseline = {
+                "metric": str(package.get("metric") or "gsc.clicks"),
+                "scope": {"document_id": str(package.get("documentId") or ""), "collection": str(package.get("collection") or ""), "path": str(package.get("route") or "")},
+                "gsc": memory.latest_snapshot("gsc") or {},
+                "ga4": memory.latest_snapshot("ga4") or {},
+            }
+            published_meta = published.get("published") if isinstance(published.get("published"), Mapping) else {}
+            published_revision = f"payload:{package.get('collection')}:{package.get('documentId')}:{published_meta.get('updatedAt') or 'verified'}"
+            memory.record_strategy_publication_for_draft(normalized_id, baseline=baseline, published_revision=published_revision, validation={"status": "passed", "liveVerification": published.get("liveVerification") or {}})
+            memory.update_draft_status(normalized_id, "approved")
+            action_service = tenant.context.get("owner_action_service")
+            if action_service is not None and hasattr(action_service, "reconcile"):
+                action_service.reconcile(draft_id=normalized_id, succeeded=True)
+            version_type = "payload_content"
+            summary = str(draft.get("title") or f"content: {normalized_id}")
+            commit_message = ""
+            result["status"] = "published"
         elif kind == "article":
             if tenant is None:
                 raise BridgeError("Payload article approval requires a tenant")

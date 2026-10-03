@@ -5,7 +5,7 @@ from typing import Any
 from ..core.contracts import safe_provider_message
 
 
-def growth_tasks(memory, initiatives, drafts, activities, outcomes, runs=()) -> list[dict[str, Any]]:
+def growth_tasks(memory, initiatives, drafts, activities, outcomes, runs=(), article_ideas=()) -> list[dict[str, Any]]:
     actions = {row.id: row.to_record() for row in memory.list_owner_actions(limit=None)}
     draft_by_id = {row['id']: row for row in drafts}
     linked_actions, linked_drafts, linked_approvals, tasks = set(), set(), set(), []
@@ -75,6 +75,23 @@ def growth_tasks(memory, initiatives, drafts, activities, outcomes, runs=()) -> 
         tasks.append({'id': f"draft:{draft['id']}", 'kind': draft['kind'], 'title': draft['title'], 'summary': str(draft.get('body') or '')[:2000],
             'focus': 'preparing', 'state': sync.get('state') or 'preparing', 'draftId': draft['id'], 'canApprove': False,
             'lastError': safe_provider_message(str((sync.get('validation') or {}).get('reason') or '')), 'updatedAt': draft.get('updated_ts')})
+    for idea in article_ideas:
+        if idea.get('draft_id'):
+            continue
+        idea_data = idea.get('idea_json') if isinstance(idea.get('idea_json'), dict) else {}
+        state = str(idea.get('status') or 'preparing')
+        blocked = state in {'held', 'blocked', 'failed', 'uncertain'}
+        tasks.append({
+            'id': f"article-idea:{idea.get('id')}",
+            'kind': 'article_research',
+            'title': idea_data.get('working_title') or 'Ada article research',
+            'summary': idea.get('error') or idea_data.get('audience_need') or 'Ada is researching a useful reader-led article opportunity.',
+            'focus': 'needs_you' if blocked else 'preparing',
+            'state': state,
+            'canApprove': False,
+            'lastError': safe_provider_message(str(idea.get('error') or '')),
+            'updatedAt': idea.get('updated_ts') or idea.get('created_ts'),
+        })
     latest_by_trigger = {}
     for row in sorted(runs, key=lambda row: row.get('updated_ts') or '', reverse=True):
         latest_by_trigger.setdefault(row.get('trigger'), row)

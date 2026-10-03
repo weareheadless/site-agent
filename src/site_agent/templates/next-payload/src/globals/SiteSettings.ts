@@ -1,4 +1,5 @@
 import type { GlobalConfig } from 'payload'
+import { assertNativeWriteAllowed } from '@/lib/growth-contract'
 
 export const SiteSettings: GlobalConfig = {
   slug: 'siteSettings',
@@ -27,4 +28,9 @@ export const SiteSettings: GlobalConfig = {
       ],
     },
   ],
+  hooks: {
+    beforeOperation: [async ({ args, operation }) => {
+      if (operation === 'update') await assertNativeWriteAllowed('global:siteSettings', 'siteSettings', args.req)
+    }],
+  },
 }

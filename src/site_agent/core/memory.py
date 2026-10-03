@@ -5581,6 +5581,43 @@ class Memory:
         return changed
 
     @_locked
+    def record_strategy_publication_for_draft(
+        self,
+        draft_id: int,
+        *,
+        baseline: dict[str, Any],
+        published_revision: str,
+        validation: dict[str, Any],
+    ) -> int:
+        """Start measurement only after the exact public candidate is verified."""
+        now = _now()
+        now_dt = datetime.datetime.fromisoformat(now)
+        changed = 0
+        for row in self.conn.execute("SELECT * FROM strategy_initiatives WHERE draft_id = ?", (draft_id,)):
+            try:
+                expected = json.loads(row["expected_json"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                expected = {}
+            expected["implementation_baseline"] = baseline
+            expected["implemented_ts"] = now
+            updates = {
+                "state": "measuring",
+                "expected_json": json.dumps(expected),
+                "published_revision": str(published_revision or "")[:500],
+                "validation_json": json.dumps(validation or {}),
+                "review_30_ts": (now_dt + datetime.timedelta(days=30)).isoformat(timespec="seconds"),
+                "review_90_ts": (now_dt + datetime.timedelta(days=90)).isoformat(timespec="seconds"),
+                "review_180_ts": (now_dt + datetime.timedelta(days=180)).isoformat(timespec="seconds"),
+                "last_error": "",
+                "updated_ts": now,
+            }
+            assignments = ", ".join(f"{key} = ?" for key in updates)
+            with self.conn:
+                self.conn.execute(f"UPDATE strategy_initiatives SET {assignments} WHERE id = ?", [*updates.values(), row["id"]])
+            changed += 1
+        return changed
+
+    @_locked
     def record_strategy_decision(
         self,
         initiative_id: int,
