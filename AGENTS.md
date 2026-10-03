@@ -92,6 +92,11 @@ realization, autonomous repair, or end-to-end acceptance requirements.
   Never claim a customer release ready from a public health response or local
   fixture: verify the correct tenant in an authenticated production session.
 
+For growth orchestration, SEO/AEO, goals and owner review, follow
+`docs/ada-growth-seo-aeo-pipeline-implementation-plan.md`. Reuse the canonical
+evidence, candidate, approval and outcome path; do not introduce silent
+degradation or independent customer-specific workflows.
+
 ## Module Ownership
 
 - `config.py`: config loading, validation, secret resolution.

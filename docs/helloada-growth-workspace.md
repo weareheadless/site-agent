@@ -7,6 +7,12 @@ or website preview. Its default is Ada's saved, business-specific analysis and
 next actions. The approved HelloAda mark is unchanged. All customers and new
 Payload sites consume the same shared package; no customer-specific UI fork.
 
+The next service implementation follows the
+[Ada Growth SEO/AEO pipeline plan](ada-growth-seo-aeo-pipeline-implementation-plan.md):
+one default growth goal, durable background work, real reviewed improvements,
+precise owner approval and scope-correct outcomes. That plan is a specification,
+not a claim that those additional capabilities are already shipped.
+
 The shared `0.8.1` product system retains the homepage's dark Ada / light tool-window
 relationship but uses neutral silver (`#f1f3f6`) and white rather than brown/ivory.
 The exact approved logo coral-orange (`#ff6b5e`) marks active navigation, primary
