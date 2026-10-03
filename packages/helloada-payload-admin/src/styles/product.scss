@@ -1,0 +1,152 @@
+@use 'surfaces' as surfaces;
+
+/* One functional product hierarchy, shared by every workspace surface. */
+@mixin styles {
+  body::before { background: none; }
+  .helloada-history, .helloada-history *, .helloada-gallery-shell, .helloada-gallery-shell * { box-sizing: border-box; }
+  .helloada-payload-nav {
+    width: calc(100% - 32px); max-width: 1640px; height: 60px; min-height: 60px;
+    margin: 12px auto 0; padding: 0 16px; border-radius: 16px;
+    box-shadow: 0 8px 28px rgba(20, 28, 43, .09), inset 0 1px rgba(255,255,255,.07);
+  }
+  .template-default .nav:has(.helloada-payload-nav) {
+    width: 100%; max-width: none; height: 72px; min-height: 72px; margin: 0;
+    top: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; backdrop-filter: none;
+  }
+  .helloada-payload-links a { font-size: 13px; font-weight: 550; padding-inline: 16px; }
+  .helloada-payload-links a.is-active, .helloada-payload-links a.is-active:hover {
+    color: var(--helloada-accent-ink); background: var(--helloada-accent);
+    box-shadow: inset 0 1px rgba(255,255,255,.24);
+  }
+  .helloada-payload-brand strong { font-size: 18px; }
+  .helloada-payload-status { font-size: 12px; }
+  .helloada-owner-workspace { --helloada-review-height: max(360px, calc(100dvh - 100px)); padding-inline: 16px; }
+  .helloada-owner-workspace .helloada-workspace-grid {
+    background: #e5e9f0; border-color: rgba(29,39,59,.1);
+    box-shadow: inset 0 1px rgba(255,255,255,.9), 0 12px 36px rgba(20,28,43,.04);
+  }
+  .helloada-owner-workspace .helloada-panel-header { border-top: 3px solid var(--helloada-accent); }
+  .helloada-owner-workspace .helloada-chat-message-body { font-size: 14px; line-height: 1.75; }
+  .helloada-owner-workspace .helloada-chat-message.is-user .helloada-chat-message-body { color: var(--helloada-ink); background: var(--helloada-panel-raised); }
+  .helloada-owner-workspace .helloada-chat-form textarea { background: #101218; font-size: 14px; }
+  .helloada-owner-workspace .helloada-shortcuts button { font-size: 11px; border-color: rgba(255,107,94,.22); }
+  .helloada-owner-workspace .helloada-review-toolbar { background: #fff; border-bottom-color: var(--helloada-line); }
+  .helloada-owner-workspace .helloada-preview-footer { font-size: 11px; }
+  .helloada-owner-workspace .helloada-send-button,
+  .helloada-owner-workspace .helloada-draft-action.is-publish,
+  .helloada-publish-dialog button.is-primary,
+  .helloada-history-action-primary,
+  .helloada-gallery-upload,
+  .template-default .btn:not(.btn--style-secondary):not(.btn--style-none),
+  .helloada-product-action,
+  .helloada-growth a.helloada-product-action {
+    background: var(--helloada-accent); color: var(--helloada-accent-ink);
+    border-color: transparent; font-weight: 650;
+    box-shadow: 0 3px 12px rgba(255,107,94,.12), inset 0 1px rgba(255,255,255,.25);
+  }
+  .helloada-product-action, .helloada-growth a.helloada-product-action {
+    display: inline-flex; align-items: center; justify-content: space-between; gap: 12px;
+    min-height: 42px; padding: 5px 6px 5px 17px; border-radius: 999px;
+    text-decoration: none; font-size: 13px; white-space: nowrap;
+    transition: transform 280ms var(--helloada-ease), box-shadow 280ms var(--helloada-ease);
+  }
+  .helloada-product-action > i {
+    display: grid; place-items: center; width: 30px; height: 30px; flex: 0 0 30px;
+    border-radius: 50%; background: rgba(22,26,35,.09); font-style: normal;
+    transition: transform 280ms var(--helloada-ease);
+  }
+  .helloada-product-action:hover { transform: translateY(-1px); box-shadow: 0 5px 20px rgba(255,107,94,.22); }
+  .helloada-product-action:hover > i { transform: translate(1px,-1px); }
+  .helloada-product-action:active { transform: scale(.98); }
+  .helloada-growth { max-width: 1640px; padding: 20px 16px 32px; font-size: 14px; }
+  .helloada-growth-toolbar {
+    @include surfaces.chrome;
+    background: var(--helloada-top); color: var(--helloada-ink); border: 0; border-radius: 16px; padding: 8px;
+    gap: 12px; margin-bottom: 24px; box-shadow: inset 0 1px rgba(255,255,255,.06);
+  }
+  .helloada-growth-tabs { gap: 3px; }
+  .helloada-growth-tabs button { color: var(--helloada-muted); padding: 0 14px; min-height: 42px; font-weight: 550; }
+  .helloada-growth-tabs button:hover:not(:disabled) { background: var(--helloada-inset); color: var(--helloada-ink); border-color: transparent; }
+  .helloada-growth-tabs button[aria-pressed='true'], .helloada-growth-tabs button[aria-pressed='true']:hover {
+    background: var(--helloada-accent); color: var(--helloada-accent-ink); border-color: transparent;
+    box-shadow: inset 0 1px rgba(255,255,255,.24);
+  }
+  .helloada-growth-controls select, .helloada-growth-controls button { color: var(--helloada-ink); background: var(--helloada-panel); border-color: var(--helloada-line); }
+  .helloada-growth-card, .helloada-growth-source, .helloada-history-section {
+    background: var(--helloada-panel); border-color: rgba(29,39,59,.09); border-radius: 20px;
+    box-shadow: inset 0 1px #fff, 0 8px 32px rgba(20,28,43,.04); padding: 24px;
+  }
+  .helloada-growth h2 { font-size: 18px; font-weight: 650; letter-spacing: -.025em; }
+  .helloada-growth-advice { border-top: 3px solid var(--helloada-accent); }
+  .helloada-growth-advice > h3 { font-size: clamp(21px, 2vw, 26px); line-height: 1.35; color: var(--helloada-ink); margin: 20px 0; font-weight: 600; }
+  .helloada-growth-brief-meta { background: var(--helloada-panel-soft); padding: 8px 11px; border-radius: 8px; }
+  .helloada-growth-advice .helloada-chat-message-body { color: var(--helloada-muted); font-size: 14px; line-height: 1.75; }
+  .helloada-growth-advice .helloada-chat-message-body strong { color: var(--helloada-ink); }
+  .helloada-growth-recommendation { border-top-color: var(--helloada-soft-line); padding-top: 20px; margin-top: 20px; }
+  .helloada-growth-recommendation > span { color: var(--helloada-cyan); background: var(--helloada-cyan-soft); border-radius: 10px; padding: 6px; font-weight: 650; }
+  .helloada-growth-section-head { align-items: center; margin-bottom: 20px; }
+  .helloada-growth-segment { border: 0; padding: 4px; border-radius: 12px; background: #e5e9f0; }
+  .helloada-growth-segment button { color: var(--helloada-muted); border: 0; border-radius: 9px; min-height: 42px; }
+  .helloada-growth-segment button[aria-pressed='true'] { background: #161a23; color: #fff; box-shadow: inset 0 -2px var(--helloada-accent); }
+  .helloada-growth-segment button[aria-pressed='true'] small { color: #ff9b8e; }
+  .helloada-growth-metrics article { padding: 22px; background: #fff; border-radius: 16px; border-color: rgba(29,39,59,.09); box-shadow: 0 5px 22px rgba(20,28,43,.025); }
+  .helloada-growth-metrics article > strong { font-size: 36px; font-weight: 600; line-height: 1.2; color: var(--helloada-ink); letter-spacing: -.035em; }
+  .helloada-growth-metrics article:first-child { @include surfaces.chrome; background: #161a23; border-top: 3px solid var(--helloada-accent); }
+  .helloada-growth-metrics article:first-child > span { color: var(--helloada-muted); }
+  .helloada-chart-line { stroke: var(--helloada-accent); }
+  .helloada-chart-point { fill: var(--helloada-accent); }
+  .helloada-table-tools { padding-bottom: 14px; }
+  .helloada-table-tools input { background: var(--helloada-panel-soft); min-height: 42px; }
+  .helloada-data-table thead { background: var(--helloada-panel-soft); }
+  .helloada-data-table th button { color: var(--helloada-ink); font-weight: 650; }
+  .helloada-data-table td { color: var(--helloada-ink); }
+  .helloada-history, .helloada-gallery-shell { background: transparent; max-width: 1640px; padding: 20px 16px 32px; }
+  .helloada-history-header { padding-bottom: 20px; }
+  .helloada-history-header h2, .helloada-history-section-heading h2 { font-size: 18px; font-weight: 650; color: var(--helloada-ink); }
+  .helloada-history-section-heading > span { color: var(--helloada-cyan); background: var(--helloada-cyan-soft); border: 0; min-width: 30px; min-height: 30px; }
+  .helloada-history-item { background: var(--helloada-panel-soft); border: 1px solid transparent; padding: 14px; border-radius: 12px; }
+  .helloada-history-item:not(.is-static):hover { background: #fff; border-color: rgba(255,107,94,.3); }
+  .helloada-history-item-copy strong { font-size: 14px; color: var(--helloada-ink); }
+  .helloada-history-item-copy small, .helloada-history-item-copy em { font-size: 12px; color: var(--helloada-muted); }
+  .helloada-history-item-mark { color: var(--helloada-cyan); background: var(--helloada-cyan-soft); }
+  .helloada-history-return { color: var(--helloada-ink); border-color: var(--helloada-line); background: #fff; }
+  .helloada-history-action { min-height: 36px; font-size: 12px; color: var(--helloada-ink); background: #fff; border-color: var(--helloada-line); }
+  .helloada-history-action-primary { background: var(--helloada-accent); color: var(--helloada-accent-ink); border-color: transparent; }
+  .helloada-gallery-card { background: #fff; border-color: var(--helloada-soft-line); }
+  .helloada-competition-layout { display: grid; grid-template-columns: minmax(0,1.6fr) minmax(260px,.8fr); gap: 20px; align-items: start; }
+  .helloada-competition-plan { @include surfaces.chrome; background: var(--helloada-top); color: var(--helloada-ink); padding: 24px; border-radius: 20px; border-top: 3px solid var(--helloada-accent); }
+  .helloada-competition-plan h3 { font-size: 22px; line-height: 1.3; margin: 18px 0 12px; }
+  .helloada-competition-plan p, .helloada-competition-plan small { color: var(--helloada-muted); }
+  .helloada-competition-plan label { display: block; font-size: 12px; color: var(--helloada-muted); margin: 20px 0 8px; }
+  .helloada-competition-plan input { width: 100%; background: var(--helloada-panel); color: var(--helloada-ink); min-height: 44px; margin-bottom: 12px; }
+  .helloada-competition-benchmark { width: 100%; border-collapse: collapse; margin-top: 12px; }
+  .helloada-competition-benchmark th, .helloada-competition-benchmark td { padding: 14px 10px; text-align: right; border-bottom: 1px solid var(--helloada-soft-line); }
+  .helloada-competition-benchmark th:first-child, .helloada-competition-benchmark td:first-child { text-align: left; }
+  .helloada-competition-benchmark th { font-size: 12px; color: var(--helloada-muted); font-weight: 550; }
+  .helloada-competition-benchmark td { font-variant-numeric: tabular-nums; font-size: 16px; font-weight: 550; }
+  .helloada-competition-benchmark td:first-child { font-size: 13px; font-weight: 450; }
+  .helloada-competition-benchmark .is-own { background: var(--helloada-cyan-soft); }
+  .helloada-competition-market { display: inline-flex; align-items: center; padding: 5px 9px; border-radius: 7px; background: var(--helloada-panel-soft); color: var(--helloada-muted); font-size: 12px; }
+  .helloada-competition-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 20px 0; }
+  .helloada-competition-table-scroll { overflow-x: auto; }
+  .helloada-competition-benchmark th { overflow-wrap: anywhere; max-width: 230px; }
+  .helloada-competition-benchmark small { display: block; font-size: 11px; font-weight: 450; margin-top: 4px; color: var(--helloada-muted); }
+  .helloada-competition-empty { padding: 24px 4px 16px; }
+  .helloada-competition-empty > span { display: inline-grid; place-items: center; width: 42px; height: 42px; border-radius: 12px; background: var(--helloada-cyan-soft); color: var(--helloada-cyan); font-weight: 650; }
+  .helloada-competition-empty h3 { font-size: 20px; margin: 16px 0 8px; }
+  .helloada-competition-results { margin-top: 20px; }
+  .helloada-competition-results > header { align-items: start; }
+  .helloada-competition-results select { max-width: 100%; min-height: 42px; background: var(--helloada-panel-soft); }
+  .helloada-competition-results > .helloada-product-action { margin-top: 20px; }
+  .helloada-serp-pages { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
+  .helloada-serp-pages li { display: grid; grid-template-columns: 34px minmax(0,1fr); gap: 12px; padding: 14px; background: var(--helloada-panel-soft); border-radius: 12px; }
+  .helloada-serp-pages li.is-own { background: var(--helloada-cyan-soft); box-shadow: inset 3px 0 var(--helloada-accent); }
+  .helloada-serp-pages li > strong { color: var(--helloada-cyan); font-size: 20px; }
+  .helloada-serp-pages a { display: block; color: var(--helloada-ink); font-size: 14px; font-weight: 600; line-height: 1.5; }
+  .helloada-serp-pages small { display: block; overflow-wrap: anywhere; }
+  .helloada-serp-pages em { display: inline-block; color: var(--helloada-cyan); font-size: 11px; font-style: normal; margin-top: 4px; }
+  @media(max-width:1100px) { .helloada-growth-toolbar { flex-wrap: wrap; } .helloada-growth-tabs { flex: 1 1 100%; } .helloada-growth-controls { margin-left: auto; } }
+  @media(max-width:760px) { .helloada-competition-layout { grid-template-columns: minmax(0,1fr); } .helloada-growth-card, .helloada-history-section { padding: 18px; } .helloada-growth-section-head { align-items: flex-start; flex-wrap: wrap; } .helloada-growth-card > header { flex-wrap: wrap; } .helloada-growth-advice > h3 { font-size: 21px; } }
+  @media(max-width:560px) { .helloada-payload-nav { width: calc(100% - 20px); margin-top: 10px; padding-inline: 10px; gap: 6px; } .helloada-payload-links a { padding-inline: 9px; font-size: 11px; } .helloada-payload-brand strong { font-size: 15px; } .helloada-growth, .helloada-history, .helloada-gallery-shell { padding-inline: 12px; } .helloada-growth-tabs button { padding-inline: 12px; } .helloada-competition-benchmark th, .helloada-competition-benchmark td { padding: 12px 6px; } }
+  @media(prefers-reduced-motion:reduce) { .helloada-product-action, .helloada-product-action > i { transition: none; } }
+}

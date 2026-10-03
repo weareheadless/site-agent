@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { ProductAction } from "./ProductAction";
 import { useEffect, useState } from "react";
 import { fetchHelloAda } from "../api/fetchHelloAda";
 import { useHelloAdaTranslations } from "../api/useHelloAdaTranslations";
@@ -96,7 +97,7 @@ export function GrowthEvidence({
             )}
           </p>
         </div>
-        <Link
+        <ProductAction
           href={ask(
             t(
               section === "research"
@@ -105,8 +106,8 @@ export function GrowthEvidence({
             ),
           )}
         >
-          {t("growth.ask")} ↗
-        </Link>
+          {t("growth.ask")}
+        </ProductAction>
       </div>
       {loading ? (
         <p className="helloada-growth-empty" role="status">

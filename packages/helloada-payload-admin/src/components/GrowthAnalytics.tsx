@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import { ProductAction } from "./ProductAction";
 import { useState } from "react";
 import { useHelloAdaTranslations } from "../api/useHelloAdaTranslations";
 import { growthNumber, type GrowthRow } from "../lib/growth-data";
@@ -178,9 +178,7 @@ export function GrowthAnalytics({
             </button>
           ))}
         </div>
-        <Link href={ask}>
-          {t("growth.interpretWithAda")} <span aria-hidden="true">↗</span>
-        </Link>
+        <ProductAction href={ask}>{t("growth.interpretWithAda")}</ProductAction>
       </div>
       <p className="helloada-growth-footnote">
         {t(ga ? "growth.ga4Note" : "growth.gscNote")} ·{" "}

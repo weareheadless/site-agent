@@ -1,5 +1,6 @@
 @use 'owner-workspace' as owner;
 @use 'growth' as growth;
+@use 'product' as product;
 @use 'surfaces' as surfaces;
 /* HelloAda control room: paper workspace, dark conversation and navigation. */
 
@@ -3341,3 +3342,4 @@ textarea:focus-visible {
 
 @include owner.styles;
 @include growth.styles;
+@include product.styles;

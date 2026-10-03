@@ -7,13 +7,14 @@ or website preview. Its default is Ada's saved, business-specific analysis and
 next actions. The approved HelloAda mark is unchanged. All customers and new
 Payload sites consume the same shared package; no customer-specific UI fork.
 
-The shared `0.7.2` surface system follows the actual helloada.app control-room
-example: ivory canvas (`#eee6da`), paper tool windows and dark foregrounds,
-with dark navigation and Ada conversation. Nested galleries, drawers and editors
-explicitly use paper tokens rather than inheriting dark conversation colors.
-Charts, statuses, controls and native Payload forms use surface-aware tokens.
-Contrast tests cover primary/secondary/caption/action text on both palettes.
-No data, chat, publication or approval behavior changes with this theme release.
+The shared `0.8.0` product system retains the homepage's dark Ada / light tool-window
+relationship but uses neutral silver (`#f1f3f6`) and white rather than brown/ivory.
+The exact approved logo coral-orange (`#ff6b5e`) marks active navigation, primary
+actions and key indicators. Text on orange is near-black, not low-contrast white.
+Analytics navigation has a near-black rail; Activity uses the same white cards,
+neutral canvas, readable hierarchy and orange actions. Nested galleries, drawers,
+editors and native Payload forms restore light tokens instead of inheriting chat.
+AA contrast tests cover primary, secondary, caption and action roles on both palettes.
 
 - **Ada's brief:** recommendations, automation schedules, review queue, then a
   compact current performance snapshot. A saved brief is labelled as such: its
@@ -27,6 +28,11 @@ No data, chat, publication or approval behavior changes with this theme release.
   never confused with measured GA4 visits.
 - **Site health:** latest completed crawl and severity-filtered issues. A
   missing audit does not produce a perfect score.
+- **Competitors:** completed monthly own/selected-competitor domain and backlink
+  benchmarks; search rivals counted once per keyword and market; top-10 organic
+  result samples with real winning-page links and observed owner rank. This is
+  not a full-domain keyword-gap, continuous rank tracker or backlink explorer.
+  Missing research has a clear explanation and an Ada planning action, not fake figures.
 - **Content:** article drafts, ideas, weekly and monthly reports, native Payload
   blog editing, and the activity history remain accessible.
 - **Connections:** actual provider state and property identifiers.
@@ -39,7 +45,7 @@ they do not send it, approve a change, run a paid task, or publish content.
 `Payload authenticated owner -> server-only tenant proxy -> authenticated
 /workspace/seo/evidence -> CrawlSEOApplicationService -> project provider`
 
-The evidence endpoint accepts only `research` and `health`. It never provisions
+The evidence endpoint accepts only `research`, `health` and `competition`. It never provisions
 or initiates work. Each unavailable source is represented in `errors`, not an
 empty success. Research deduplication uses keyword + language + country, keeping
 the most recent observation. Only completed metric runs (`keyword_overview`,
@@ -85,6 +91,17 @@ DataForSEO Labs supports several of the planned evidence types, but availability
 is not integration. See the official [Labs API overview](https://docs.dataforseo.com/v3/dataforseo_labs-google-overview/).
 Every paid capability needs tenant isolation, idempotency, retention, cost
 budgets, caching and owner approval before we add it to the interface.
+
+## Google credential lifecycle
+
+The retained platform client caches expiry-aware google-auth **credential objects**
+per normalized scope set, never raw access-token strings indefinitely. Each request
+uses `before_request`, which refreshes when necessary before applying the token.
+A client lock prevents concurrent refresh races. Refresh failures raise a safe
+`GooglePlatformError`; an expired token is never returned as a fallback. Scopes,
+tenant bindings and credential access remain unchanged. Tests simulate expiry,
+scope isolation, concurrent reads and a failed refresh, without logging secrets.
+Restart the API only to load this code, not as the token-refresh mechanism.
 
 ## Release verification
 

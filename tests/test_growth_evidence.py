@@ -14,6 +14,7 @@ from site_agent.web.workspace import register_workspace_routes
 
 def provider(keyword="local service"):
     return SimpleNamespace(
+        project=lambda: {"site": {"domain": f"{keyword}.test", "url": f"https://{keyword}.test/"}},
         latest_research_report=lambda: {"period": "2026-10", "completed_at": "2026-10-01", "report": {
             "focus_market": {"language": "en", "country": "MX"},
             "dataforseo": [
@@ -68,4 +69,8 @@ def test_evidence_requires_authentication_and_uses_only_resolved_tenant(tmp_path
             assert response.status_code == 200
             assert response.json()["tenant"] == name
             assert response.json()["keywords"][0]["keyword"] == name
+            competition = client.get("/api/workspace/seo/evidence?section=competition", headers={"Authorization": f"Bearer {name}-token"})
+            assert competition.status_code == 200
+            assert competition.json()["tenant"] == name
+            assert competition.json()["site"]["domain"] == f"{name}.test"
         assert client.get("/api/workspace/seo/evidence?section=bad", headers={"Authorization": "Bearer alpha-token"}).status_code == 400

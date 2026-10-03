@@ -14,6 +14,8 @@ import {
   type GrowthAnalyticsData,
 } from "./GrowthAnalytics";
 import { GrowthEvidence } from "./GrowthEvidence";
+import { GrowthCompetition } from "./GrowthCompetition";
+import { ProductAction } from "./ProductAction";
 
 type Insight = {
   headline?: string;
@@ -222,6 +224,7 @@ export function HelloAdaGrowth() {
             "overview",
             "analytics",
             "search",
+            "competitionTab",
             "health",
             "content",
             "connections",
@@ -270,7 +273,7 @@ export function HelloAdaGrowth() {
                   <HelloAdaMark size={28} />
                   <h2>{t("growth.recommendations")}</h2>
                 </div>
-                <Link href={ask()}>{t("growth.ask")} ↗</Link>
+                <ProductAction href={ask()}>{t("growth.ask")}</ProductAction>
               </header>
               <div className="helloada-growth-brief-meta">
                 <span>{t("growth.briefNote")}</span>
@@ -415,6 +418,7 @@ export function HelloAdaGrowth() {
           seeds={growth?.keywords}
         />
       ) : null}
+      {tab === "competitionTab" ? <GrowthCompetition revision={revision} ask={ask} /> : null}
       {tab === "content" ? (
         <>
           <div className="helloada-growth-content-bar">

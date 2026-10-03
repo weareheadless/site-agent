@@ -1,4 +1,5 @@
 import {growthWorkspaceCopy} from './growth-workspace-copy';
+import {competitionCopy} from './competition-copy';
 
 export const growthCopy: Record<string, Record<string, string>> = {
   en: {
@@ -285,5 +286,8 @@ export const growthCopy: Record<string, Record<string, string>> = {
 };
 
 for (const [language, entries] of Object.entries(growthWorkspaceCopy)) {
+  for (const [key, value] of Object.entries(entries)) growthCopy[language][`growth.${key}`] = value;
+}
+for (const [language, entries] of Object.entries(competitionCopy)) {
   for (const [key, value] of Object.entries(entries)) growthCopy[language][`growth.${key}`] = value;
 }

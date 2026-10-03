@@ -17,9 +17,9 @@ const luminance = hex => {
 };
 const contrast = (a, b) => (Math.max(luminance(a), luminance(b)) + .05) / (Math.min(luminance(a), luminance(b)) + .05);
 
-test('paper foundation matches the HelloAda homepage control room', () => {
-  assert.equal(token(paper, 'bg'), '#eee6da');
-  assert.equal(token(paper, 'ink'), '#211b17');
+test('neutral work surfaces contrast with dark Ada chrome', () => {
+  assert.equal(token(paper, 'bg'), '#f1f3f6');
+  assert.equal(token(paper, 'ink'), '#161a23');
   assert.match(read('admin.scss'), /\[data-theme='light'\] \{\s*@include surfaces\.paper;/);
 });
 test('navigation and Ada are explicitly dark; review and Growth inherit paper', () => {
@@ -49,7 +49,16 @@ test('primary, secondary, caption and action text meet AA on both surfaces', () 
       }
     }
     assert.ok(contrast(token(surface, 'action-ink'), token(surface, 'cyan')) >= 4.5, `${name} action text`);
+    assert.equal(token(surface, 'accent'), '#ff6b5e');
+    assert.ok(contrast(token(surface, 'accent-ink'), token(surface, 'accent')) >= 4.5, `${name} brand action text`);
   }
+});
+test('shared product hierarchy is loaded last with orange selection, CTA and Activity roles', () => {
+  assert.ok(read('admin.scss').lastIndexOf('@include product.styles') > read('admin.scss').lastIndexOf('@include growth.styles'));
+  const product = read('product.scss');
+  assert.match(product, /button\[aria-pressed='true'\][\s\S]*?background: var\(--helloada-accent\); color: var\(--helloada-accent-ink\)/);
+  assert.match(product, /helloada-history-action-primary \{ background: var\(--helloada-accent\)/);
+  assert.match(product, /prefers-reduced-motion/);
 });
 test('charts and status text use surface-aware accents rather than pale dark-only colors', () => {
   const growth = read('growth.scss');

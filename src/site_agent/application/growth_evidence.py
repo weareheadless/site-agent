@@ -9,9 +9,12 @@ import datetime
 from typing import Any
 
 from .crawlseo import CrawlSEOApplicationError, CrawlSEOApplicationService
+from .competitive_evidence import competitive_evidence
 
 
 def growth_evidence(service: CrawlSEOApplicationService, section: str) -> dict[str, Any]:
+    if section == "competition":
+        return competitive_evidence(service)
     result: dict[str, Any] = {"capturedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"), "errors": {}}
 
     def read(name: str, operation):

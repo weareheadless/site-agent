@@ -9,6 +9,7 @@ only exposes the resulting property ids and status.
 from __future__ import annotations
 
 import json
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -63,7 +64,10 @@ class GooglePlatformClient:
         self._path = path
         self._scopes = tuple(scopes) or (ANALYTICS_EDIT, ANALYTICS_READONLY, WEBMASTERS_SCOPE, SITEVERIFICATION_SCOPE)
         self._timeout = float(timeout_seconds)
-        self._tokens: dict[tuple[str, ...], str] = {}
+        # Retain the credential object, including expiry. Caching token strings
+        # alone keeps returning expired tokens for the lifetime of the API.
+        self._credentials: dict[tuple[str, ...], Any] = {}
+        self._credential_lock = threading.RLock()
 
     # -- auth -------------------------------------------------------------
 
@@ -71,21 +75,26 @@ class GooglePlatformClient:
         wanted = tuple(sorted({str(scope) for scope in scopes if str(scope).strip()}))
         if not wanted:
             raise GooglePlatformError("at least one Google scope is required")
-        cached = self._tokens.get(wanted)
-        if cached:
-            return cached
         try:
             from google.auth.transport.requests import Request
             from google.oauth2 import service_account
         except ImportError as exc:  # pragma: no cover - optional dependency
             raise GooglePlatformError("google-auth is not installed") from exc
-        credentials = service_account.Credentials.from_service_account_file(self._path, scopes=list(wanted))
-        credentials.refresh(Request())
-        token = str(getattr(credentials, "token", "") or "")
-        if not token:
-            raise GooglePlatformError("Google did not return an access token")
-        self._tokens[wanted] = token
-        return token
+        with self._credential_lock:
+            credentials = self._credentials.get(wanted)
+            if credentials is None:
+                credentials = service_account.Credentials.from_service_account_file(self._path, scopes=list(wanted))
+            # google-auth refreshes before expiry, then applies the current token.
+            # A failed refresh raises; never reuse an expired value as a fallback.
+            try:
+                credentials.before_request(Request(), "GET", ANALYTICS_DATA, {})
+            except Exception as exc:
+                raise GooglePlatformError(f"Google credential refresh failed: {type(exc).__name__}") from exc
+            token = str(getattr(credentials, "token", "") or "")
+            if not token:
+                raise GooglePlatformError("Google did not return an access token")
+            self._credentials[wanted] = credentials
+            return token
 
     def _request(
         self,

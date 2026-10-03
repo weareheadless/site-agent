@@ -535,7 +535,7 @@ def register_workspace_routes(
     @app.get(f"{prefix}/seo/evidence")
     def workspace_growth_evidence(request: Request, section: str = "research"):
         tenant = require_service(request)
-        if section not in ("research", "health"):
+        if section not in ("research", "health", "competition"):
             raise HTTPException(status_code=400, detail="unknown growth evidence section")
         provider = tenant.context.get("crawlseo_service") if tenant else None
         if provider is None:
