@@ -13,6 +13,7 @@ test('competitor screen reads scoped completed evidence and does not dispatch pa
   assert.match(view, /AbortController/);
   assert.match(view, /value == null/);
   assert.match(view, /ownPosition == null/);
+  assert.match(view, /const activeView\s*=\s*view\s*\|\|/);
   assert.match(view, /ProductAction href=\{ask\(prompt\)\}/);
   assert.doesNotMatch(view, /method:.*POST|request_research|dispatch|dangerouslySetInnerHTML/);
 });

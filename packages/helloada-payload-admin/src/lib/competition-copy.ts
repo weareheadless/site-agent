@@ -1,11 +1,137 @@
 export const competitionCopy: Record<string, Record<string, string>> = {
   en: {
-    competitionTab: "Competitors", competitorTitle: "See who you’re up against", competitorIntro: "Compare a competitor, then turn the evidence into a plan with Ada.", benchmark: "Domain comparison", rivals: "Search rivals", yourSite: "Your website", selectedCompetitor: "Selected competitor", metric: "Metric", organicKeywords: "Ranking keywords · estimate", organicTraffic: "Monthly search traffic · estimate", referringDomains: "Referring websites", totalBacklinks: "Backlinks", marketUnspecified: "Market not yet researched", competitorSource: "Source: completed CrawlSEO / DataForSEO research. Traffic and keyword counts are estimates, not GA4 measurements. — means unavailable, not zero.", benchmarkEmpty: "Your comparison starts here", benchmarkEmptyNote: "No completed domain comparison is available yet. Choose a competitor and ask Ada to review a focused research plan.", competitorPlan: "A competitor. A clearer next move.", competitorPlanNote: "Ada can compare visibility, inspect search results and recommend opportunities specific to your business.", competitorDomain: "Competitor domain · optional", competitorAction: "Review with Ada", competitorApproval: "Opens a conversation, not a paid task. Ada must explain costs and obtain your approval before new research.", competitorPrompt: "Review competitive research for my website. Use the latest completed CrawlSEO/DataForSEO domain, backlink and SERP evidence. Distinguish estimated traffic from GA4 and search rivals from verified business competitors. Recommend concrete opportunities. If evidence is missing, propose a focused monthly competitor and keyword research plan with its cost; do not start paid research without my approval.", rivalsNote: "Search neighbours seen in completed keyword samples, grouped by market. These are not automatically your business competitors.", domain: "Website / market", sampleAppearances: "Keywords in sample", bestPosition: "Best observed rank", rivalsEmpty: "Who appears alongside you?", rivalsEmptyNote: "Completed keyword search-result research will reveal search rivals and their winning pages. Ask Ada to choose relevant keywords first.", winningPages: "The pages winning these searches", sampleNote: "The top-10 organic sample for each researched keyword—not a complete domain keyword-gap report.", yourPosition: "Your observed rank", notInSample: "Not in this sample", serpPrompt: "Analyse this completed SERP sample and its winning pages. Explain search intent, what differentiates the leading pages and the practical content opportunity for my website. Do not infer full-domain rankings from this sample.",
+    competitionTab: "Competitors",
+    competitorTitle: "See who you’re up against",
+    competitorIntro:
+      "Compare a competitor, then turn the evidence into a plan with Ada.",
+    benchmark: "Domain comparison",
+    rivals: "Search rivals",
+    yourSite: "Your website",
+    selectedCompetitor: "Selected competitor",
+    metric: "Metric",
+    organicKeywords: "Ranking keywords · estimate",
+    organicTraffic: "Monthly search traffic · estimate",
+    referringDomains: "Referring websites",
+    totalBacklinks: "Backlinks",
+    marketUnspecified: "Market not yet researched",
+    competitorSource:
+      "Source: completed CrawlSEO / DataForSEO research. Traffic and keyword counts are estimates, not GA4 measurements. — means unavailable, not zero.",
+    benchmarkEmpty: "Your comparison starts here",
+    benchmarkEmptyNote:
+      "No completed domain comparison is available yet. Choose a competitor and ask Ada to review a focused research plan.",
+    competitorPlan: "A competitor. A clearer next move.",
+    competitorPlanNote:
+      "Ada can compare visibility, inspect search results and recommend opportunities specific to your business.",
+    competitorDomain: "Competitor domain · optional",
+    competitorAction: "Review with Ada",
+    competitorApproval:
+      "Opens a conversation, not a paid task. Ada must explain costs and obtain your approval before new research.",
+    competitorPrompt:
+      "Review competitive research for my website. Use the latest completed CrawlSEO/DataForSEO domain, backlink and SERP evidence. Distinguish estimated traffic from GA4 and search rivals from verified business competitors. Recommend concrete opportunities. If evidence is missing, propose a focused monthly competitor and keyword research plan with its cost; do not start paid research without my approval.",
+    rivalsNote:
+      "Search neighbours seen in completed keyword samples, grouped by market. These are not automatically your business competitors.",
+    domain: "Website / market",
+    sampleAppearances: "Keywords in sample",
+    bestPosition: "Best observed rank",
+    rivalsEmpty: "Who appears alongside you?",
+    rivalsEmptyNote:
+      "Completed keyword search-result research will reveal search rivals and their winning pages. Ask Ada to choose relevant keywords first.",
+    winningPages: "The pages winning these searches",
+    sampleNote:
+      "The top-10 organic sample for each researched keyword—not a complete domain keyword-gap report.",
+    yourPosition: "Your observed rank",
+    notInSample: "Not in this sample",
+    serpPrompt:
+      "Analyse this completed SERP sample and its winning pages. Explain search intent, what differentiates the leading pages and the practical content opportunity for my website. Do not infer full-domain rankings from this sample.",
   },
   fr: {
-    competitionTab: "Concurrents", competitorTitle: "Comprendre votre environnement", competitorIntro: "Comparez un concurrent, puis construisez un plan concret avec Ada.", benchmark: "Comparer les domaines", rivals: "Voisins dans Google", yourSite: "Votre site", selectedCompetitor: "Concurrent sélectionné", metric: "Indicateur", organicKeywords: "Mots-clés classés · estimation", organicTraffic: "Visites Google / mois · estimation", referringDomains: "Sites référents", totalBacklinks: "Liens entrants", marketUnspecified: "Marché pas encore étudié", competitorSource: "Source : recherches terminées CrawlSEO / DataForSEO. Visites et mots-clés sont des estimations, pas des mesures GA4. — signifie indisponible, pas zéro.", benchmarkEmpty: "Votre comparaison commence ici", benchmarkEmptyNote: "Aucune comparaison de domaines terminée pour le moment. Choisissez un concurrent et demandez à Ada un plan de recherche ciblé.", competitorPlan: "Un concurrent. Une prochaine action claire.", competitorPlanNote: "Ada peut comparer la visibilité, examiner les résultats Google et proposer des opportunités adaptées à votre activité.", competitorDomain: "Domaine concurrent · facultatif", competitorAction: "Étudier avec Ada", competitorApproval: "Ouvre une conversation, pas une recherche payante. Ada doit expliquer le coût et obtenir votre accord avant toute nouvelle recherche.", competitorPrompt: "Étudie la concurrence de mon site avec les dernières recherches terminées CrawlSEO/DataForSEO : domaines, liens entrants et résultats Google. Distingue les visites estimées des mesures GA4 et les voisins Google des concurrents commerciaux confirmés. Propose des actions concrètes. Si des données manquent, propose une recherche mensuelle ciblée avec son coût ; ne lance aucune recherche payante sans mon accord.", rivalsNote: "Sites observés dans les recherches de mots-clés terminées, regroupés par marché. Ce ne sont pas automatiquement vos concurrents commerciaux.", domain: "Site / marché", sampleAppearances: "Mots-clés de l’échantillon", bestPosition: "Meilleur rang observé", rivalsEmpty: "Qui apparaît à vos côtés ?", rivalsEmptyNote: "Les recherches Google terminées feront apparaître les sites voisins et leurs meilleures pages. Demandez d’abord à Ada de choisir des mots-clés pertinents.", winningPages: "Les pages qui gagnent ces recherches", sampleNote: "Les 10 premiers résultats naturels de chaque mot-clé étudié, pas une analyse exhaustive des écarts entre domaines.", yourPosition: "Votre rang observé", notInSample: "Absent de cet échantillon", serpPrompt: "Analyse cet échantillon Google terminé et ses meilleures pages. Explique l’intention de recherche, ce qui distingue les pages en tête et l’opportunité concrète pour mon site. Ne déduis pas les classements de tout le domaine de cet échantillon.",
+    competitionTab: "Concurrents",
+    competitorTitle: "Comprendre votre environnement",
+    competitorIntro:
+      "Comparez un concurrent, puis construisez un plan concret avec Ada.",
+    benchmark: "Comparer les domaines",
+    rivals: "Voisins dans Google",
+    yourSite: "Votre site",
+    selectedCompetitor: "Concurrent sélectionné",
+    metric: "Indicateur",
+    organicKeywords: "Mots-clés classés · estimation",
+    organicTraffic: "Visites Google / mois · estimation",
+    referringDomains: "Sites référents",
+    totalBacklinks: "Liens entrants",
+    marketUnspecified: "Marché pas encore étudié",
+    competitorSource:
+      "Source : recherches terminées CrawlSEO / DataForSEO. Visites et mots-clés sont des estimations, pas des mesures GA4. — signifie indisponible, pas zéro.",
+    benchmarkEmpty: "Votre comparaison commence ici",
+    benchmarkEmptyNote:
+      "Aucune comparaison de domaines terminée pour le moment. Choisissez un concurrent et demandez à Ada un plan de recherche ciblé.",
+    competitorPlan: "Un concurrent. Une prochaine action claire.",
+    competitorPlanNote:
+      "Ada peut comparer la visibilité, examiner les résultats Google et proposer des opportunités adaptées à votre activité.",
+    competitorDomain: "Domaine concurrent · facultatif",
+    competitorAction: "Étudier avec Ada",
+    competitorApproval:
+      "Ouvre une conversation, pas une recherche payante. Ada doit expliquer le coût et obtenir votre accord avant toute nouvelle recherche.",
+    competitorPrompt:
+      "Étudie la concurrence de mon site avec les dernières recherches terminées CrawlSEO/DataForSEO : domaines, liens entrants et résultats Google. Distingue les visites estimées des mesures GA4 et les voisins Google des concurrents commerciaux confirmés. Propose des actions concrètes. Si des données manquent, propose une recherche mensuelle ciblée avec son coût ; ne lance aucune recherche payante sans mon accord.",
+    rivalsNote:
+      "Sites observés dans les recherches de mots-clés terminées, regroupés par marché. Ce ne sont pas automatiquement vos concurrents commerciaux.",
+    domain: "Site / marché",
+    sampleAppearances: "Mots-clés de l’échantillon",
+    bestPosition: "Meilleur rang observé",
+    rivalsEmpty: "Qui apparaît à vos côtés ?",
+    rivalsEmptyNote:
+      "Les recherches Google terminées feront apparaître les sites voisins et leurs meilleures pages. Demandez d’abord à Ada de choisir des mots-clés pertinents.",
+    winningPages: "Les pages qui gagnent ces recherches",
+    sampleNote:
+      "Les 10 premiers résultats naturels de chaque mot-clé étudié, pas une analyse exhaustive des écarts entre domaines.",
+    yourPosition: "Votre rang observé",
+    notInSample: "Absent de cet échantillon",
+    serpPrompt:
+      "Analyse cet échantillon Google terminé et ses meilleures pages. Explique l’intention de recherche, ce qui distingue les pages en tête et l’opportunité concrète pour mon site. Ne déduis pas les classements de tout le domaine de cet échantillon.",
   },
   es: {
-    competitionTab: "Competidores", competitorTitle: "Conoce con quién compites", competitorIntro: "Compara un competidor y convierte la evidencia en un plan con Ada.", benchmark: "Comparar dominios", rivals: "Vecinos en Google", yourSite: "Tu sitio", selectedCompetitor: "Competidor seleccionado", metric: "Indicador", organicKeywords: "Palabras posicionadas · estimación", organicTraffic: "Visitas desde Google / mes · estimación", referringDomains: "Sitios que te enlazan", totalBacklinks: "Enlaces entrantes", marketUnspecified: "Mercado aún sin investigar", competitorSource: "Fuente: investigaciones terminadas de CrawlSEO / DataForSEO. Tráfico y palabras clave son estimaciones, no mediciones de GA4. — significa no disponible, no cero.", benchmarkEmpty: "Tu comparación empieza aquí", benchmarkEmptyNote: "Todavía no hay una comparación de dominios terminada. Elige un competidor y revisa un plan de investigación con Ada.", competitorPlan: "Un competidor. Un siguiente paso claro.", competitorPlanNote: "Ada puede comparar visibilidad, revisar resultados de Google y recomendar oportunidades para tu negocio.", competitorDomain: "Dominio del competidor · opcional", competitorAction: "Revisar con Ada", competitorApproval: "Abre una conversación, no una tarea de paga. Ada debe explicar el costo y obtener tu aprobación antes de investigar.", competitorPrompt: "Revisa la competencia de mi sitio con las últimas investigaciones terminadas de CrawlSEO/DataForSEO: dominios, enlaces entrantes y resultados de Google. Distingue tráfico estimado de GA4 y vecinos de Google de competidores comerciales confirmados. Recomienda acciones concretas. Si faltan datos, propón una investigación mensual enfocada y su costo; no inicies investigaciones de paga sin mi aprobación.", rivalsNote: "Sitios observados en muestras de palabras clave, agrupados por mercado. No son automáticamente tus competidores comerciales.", domain: "Sitio / mercado", sampleAppearances: "Palabras en la muestra", bestPosition: "Mejor posición observada", rivalsEmpty: "¿Quién aparece junto a ti?", rivalsEmptyNote: "Las investigaciones de resultados terminadas mostrarán vecinos de búsqueda y sus mejores páginas. Pídele primero a Ada que elija palabras relevantes.", winningPages: "Las páginas que ganan estas búsquedas", sampleNote: "Los primeros 10 resultados orgánicos de cada palabra investigada, no un análisis completo de brechas entre dominios.", yourPosition: "Tu posición observada", notInSample: "No aparece en esta muestra", serpPrompt: "Analiza esta muestra terminada de Google y sus mejores páginas. Explica la intención de búsqueda, qué diferencia a los líderes y la oportunidad práctica de contenido para mi sitio. No deduzcas posiciones de todo el dominio a partir de esta muestra.",
+    competitionTab: "Competidores",
+    competitorTitle: "Conoce con quién compites",
+    competitorIntro:
+      "Compara un competidor y convierte la evidencia en un plan con Ada.",
+    benchmark: "Comparar dominios",
+    rivals: "Vecinos en Google",
+    yourSite: "Tu sitio",
+    selectedCompetitor: "Competidor seleccionado",
+    metric: "Indicador",
+    organicKeywords: "Palabras posicionadas · estimación",
+    organicTraffic: "Visitas desde Google / mes · estimación",
+    referringDomains: "Sitios que te enlazan",
+    totalBacklinks: "Enlaces entrantes",
+    marketUnspecified: "Mercado aún sin investigar",
+    competitorSource:
+      "Fuente: investigaciones terminadas de CrawlSEO / DataForSEO. Tráfico y palabras clave son estimaciones, no mediciones de GA4. — significa no disponible, no cero.",
+    benchmarkEmpty: "Tu comparación empieza aquí",
+    benchmarkEmptyNote:
+      "Todavía no hay una comparación de dominios terminada. Elige un competidor y revisa un plan de investigación con Ada.",
+    competitorPlan: "Un competidor. Un siguiente paso claro.",
+    competitorPlanNote:
+      "Ada puede comparar visibilidad, revisar resultados de Google y recomendar oportunidades para tu negocio.",
+    competitorDomain: "Dominio del competidor · opcional",
+    competitorAction: "Revisar con Ada",
+    competitorApproval:
+      "Abre una conversación, no una tarea de paga. Ada debe explicar el costo y obtener tu aprobación antes de investigar.",
+    competitorPrompt:
+      "Revisa la competencia de mi sitio con las últimas investigaciones terminadas de CrawlSEO/DataForSEO: dominios, enlaces entrantes y resultados de Google. Distingue tráfico estimado de GA4 y vecinos de Google de competidores comerciales confirmados. Recomienda acciones concretas. Si faltan datos, propón una investigación mensual enfocada y su costo; no inicies investigaciones de paga sin mi aprobación.",
+    rivalsNote:
+      "Sitios observados en muestras de palabras clave, agrupados por mercado. No son automáticamente tus competidores comerciales.",
+    domain: "Sitio / mercado",
+    sampleAppearances: "Palabras en la muestra",
+    bestPosition: "Mejor posición observada",
+    rivalsEmpty: "¿Quién aparece junto a ti?",
+    rivalsEmptyNote:
+      "Las investigaciones de resultados terminadas mostrarán vecinos de búsqueda y sus mejores páginas. Pídele primero a Ada que elija palabras relevantes.",
+    winningPages: "Las páginas que ganan estas búsquedas",
+    sampleNote:
+      "Los primeros 10 resultados orgánicos de cada palabra investigada, no un análisis completo de brechas entre dominios.",
+    yourPosition: "Tu posición observada",
+    notInSample: "No aparece en esta muestra",
+    serpPrompt:
+      "Analiza esta muestra terminada de Google y sus mejores páginas. Explica la intención de búsqueda, qué diferencia a los líderes y la oportunidad práctica de contenido para mi sitio. No deduzcas posiciones de todo el dominio a partir de esta muestra.",
   },
 };

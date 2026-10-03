@@ -7,7 +7,7 @@ or website preview. Its default is Ada's saved, business-specific analysis and
 next actions. The approved HelloAda mark is unchanged. All customers and new
 Payload sites consume the same shared package; no customer-specific UI fork.
 
-The shared `0.8.0` product system retains the homepage's dark Ada / light tool-window
+The shared `0.8.1` product system retains the homepage's dark Ada / light tool-window
 relationship but uses neutral silver (`#f1f3f6`) and white rather than brown/ivory.
 The exact approved logo coral-orange (`#ff6b5e`) marks active navigation, primary
 actions and key indicators. Text on orange is near-black, not low-contrast white.

@@ -59,6 +59,8 @@ test('shared product hierarchy is loaded last with orange selection, CTA and Act
   assert.match(product, /button\[aria-pressed='true'\][\s\S]*?background: var\(--helloada-accent\); color: var\(--helloada-accent-ink\)/);
   assert.match(product, /helloada-history-action-primary \{ background: var\(--helloada-accent\)/);
   assert.match(product, /prefers-reduced-motion/);
+  assert.doesNotMatch(product, /helloada-growth-toolbar \{ flex-wrap: wrap/);
+  assert.match(product, /helloada-growth-segment button\[aria-pressed='true'\]:hover:not\(:disabled\)/);
 });
 test('charts and status text use surface-aware accents rather than pale dark-only colors', () => {
   const growth = read('growth.scss');
