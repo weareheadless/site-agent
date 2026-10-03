@@ -34,6 +34,12 @@ make it idempotent: unchanged requests do no work. Failed or interrupted request
 are recorded and never rebuilt by every poll. Fix the cause, then commit a new
 release ID. A release ID cannot be reused for a different source SHA.
 
+To cancel an obsolete build, stop `helloada-release.timer` and then
+`helloada-release.service`. The service stops its complete process group. Commit
+the corrected source and a new release ID, then start the timer again. The next
+poll records unfinished receipts as `interrupted`, including requests superseded
+in the queue. Never edit the canceled source directory or resume its upload.
+
 ## What executes
 
 `helloada-release.timer` starts a systemd service every minute after the previous

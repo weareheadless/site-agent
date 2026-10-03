@@ -20,7 +20,9 @@ export async function GET(request: Request) {
   const draft = params.get('draft') === 'true'
   const identifier = params.get('id') || params.get('sourceId') || params.get('slug')
   if (!identifier) {
-    const result = await payload.find({ collection, draft, limit: 100, pagination: false, overrideAccess: true, sort: '-updatedAt' })
+    const requestedLimit = Number(params.get('limit') || '100')
+    const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(Math.trunc(requestedLimit), 100)) : 100
+    const result = await payload.find({ collection, draft, limit, depth: 1, pagination: false, overrideAccess: true, sort: '-updatedAt' })
     return NextResponse.json({ collection, documents: result.docs }, { headers: { 'Cache-Control': 'no-store' } })
   }
   const result = params.get('id')

@@ -25,6 +25,22 @@ def test_committed_queue_is_valid():
     queue.validate_queue(json.loads((ROOT / "deploy/desired-releases.json").read_text()), REGISTRY)
 
 
+def test_interrupted_receipts_are_terminal_even_after_the_queue_moves_on(tmp_path):
+    interrupted = tmp_path / "runs/oceanicvibes/old-request/receipt.json"
+    interrupted.parent.mkdir(parents=True)
+    interrupted.write_text(json.dumps({"status": "running", "sourceSha": SHA, "stage": "build"}))
+    completed = tmp_path / "runs/oceanicvibes/completed/receipt.json"
+    completed.parent.mkdir(parents=True)
+    completed.write_text(json.dumps({"status": "deployed", "sourceSha": SHA}))
+    queue.mark_interrupted_runs(tmp_path)
+    result = json.loads(interrupted.read_text())
+    assert result["status"] == "interrupted" and result["finishedAt"]
+    assert json.loads(completed.read_text())["status"] == "deployed"
+    first = interrupted.read_bytes()
+    queue.mark_interrupted_runs(tmp_path)
+    assert interrupted.read_bytes() == first
+
+
 @pytest.mark.parametrize("tenant,release_request", [
     ("unknown", {"id": "release-1", "sha": SHA}),
     ("oceanicvibes", {"id": "../escape", "sha": SHA}),

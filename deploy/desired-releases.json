@@ -2,12 +2,12 @@
   "schema": 1,
   "releases": {
     "oceanicvibes": {
-      "id": "20261003-durable-release-5",
-      "sha": "422e56cf8624dee31d01a4c2c2910f3d18b8e4a7"
+      "id": "20261003-durable-release-6",
+      "sha": "de9026fcde7105712a949e2e6fa6b92130c69d4a"
     },
     "atelier-harmonie": {
-      "id": "20261003-durable-release-4",
-      "sha": "7fa1c71b9b9cb22de5638239d65cac52d55b9e77"
+      "id": "20261003-durable-release-5",
+      "sha": "ddafd9bfce2f1e5dd6b884270379a68b68ce4830"
     }
   }
 }

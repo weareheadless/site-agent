@@ -10,11 +10,26 @@ import re
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from site_agent.credentials import github_ssh_command
+
+
+def mark_interrupted_runs(root: Path) -> None:
+    # The caller owns the global lock; no previous service process can still run.
+    for receipt in (root / "runs").glob("*/*/receipt.json"):
+        result = json.loads(receipt.read_text())
+        if result.get("status") != "running":
+            continue
+        result.update({"status": "interrupted", "error": "systemd job ended before a terminal receipt",
+                       "finishedAt": datetime.now(timezone.utc).isoformat()})
+        temporary = receipt.with_suffix(".tmp")
+        temporary.write_text(json.dumps(result, indent=2) + "\n")
+        temporary.chmod(0o600)
+        temporary.replace(receipt)
 
 
 def validate_queue(queue: dict, registry: dict) -> None:
@@ -41,6 +56,7 @@ def main() -> int:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return 0
+        mark_interrupted_runs(args.root)
         profile = {"credentials": {"profile_file": "/SOCIAL/configs/host-credentials.yaml"}}
         ssh_command = github_ssh_command(profile, {})
         if not ssh_command:
@@ -90,11 +106,6 @@ def main() -> int:
                 result = json.loads(receipt.read_text())
                 if result["sourceSha"] != request["sha"]:
                     raise RuntimeError("release ID was reused for a different SHA")
-                if result["status"] == "running":
-                    result.update({"status": "interrupted", "error": "systemd job ended before a terminal receipt"})
-                    temporary = receipt.with_suffix(".tmp")
-                    temporary.write_text(json.dumps(result, indent=2) + "\n")
-                    temporary.replace(receipt)
                 if result["status"] not in ("deployed", "verified"):
                     failures += 1
                 continue
