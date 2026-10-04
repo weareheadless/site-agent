@@ -216,6 +216,12 @@ contract and regenerating tenant lockfiles with that version.
 - Register future tenants in `deploy/payload-customers.json` first. The customer
   must use `/api/helloada/*`, the shared Payload package, and the health route
   from the default template.
+- The Payload workspace gateway path is exactly `/api/workspace` for every
+  tenant. Before deploying an API release that enforces this contract, run
+  `scripts/migrate_payload_gateway_prefix.py` from its exact official-main
+  snapshot in dry-run mode, inspect the registered-tenant list, then run it with
+  `--apply`. Verify every registered tenant config is canonical. The API rejects
+  all other paths; there is no alternate-route fallback.
 - Read the receipt and failed stage before changing source. Never use an old
   build, a different credential file, a fallback route or an automatic rollback
   to turn a failed gate into a success.
