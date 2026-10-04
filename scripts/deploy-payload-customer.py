@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -283,24 +284,31 @@ def tenant_runtime_secrets(manifest: dict[str, Any], tenant: str) -> dict[str, s
         raise RuntimeError(f"tenant runtime secrets are unavailable: {str(error)[:240]}") from error
 
 
-def put_worker_secret(customer: dict[str, Any], name: str, value: str, env: dict[str, str]) -> None:
-    url = ("https://api.cloudflare.com/client/v4/accounts/" + env["CLOUDFLARE_ACCOUNT_ID"]
-           + "/workers/scripts/" + urllib.parse.quote(customer["worker"], safe="") + "/secrets")
-    request = urllib.request.Request(
-        url,
-        data=json.dumps({"name": name, "text": value, "type": "secret_text"}).encode(),
-        method="PUT",
-        headers={"Authorization": "Bearer " + env["CLOUDFLARE_API_TOKEN"],
-                 "Content-Type": "application/json", "Accept": "application/json"},
-    )
+def worker_secrets_file(directory: Path, values: dict[str, str]) -> Path:
+    """Create a private, short-lived file for one immutable Worker upload."""
+    descriptor, filename = tempfile.mkstemp(prefix=".worker-secrets-", suffix=".json", dir=directory)
+    path = Path(filename)
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            body = json.load(response)
-    except (OSError, urllib.error.URLError, TimeoutError) as error:
-        raise RuntimeError(f"Worker secret provisioning failed: {type(error).__name__}") from error
-    if body.get("success") is not True:
-        raise RuntimeError(f"Worker secret provisioning failed for {name}")
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(values, stream, sort_keys=True)
+            stream.write("\n")
+        return path
+    except BaseException:
+        try:
+            os.close(descriptor)
+        except OSError:
+            pass
+        path.unlink(missing_ok=True)
+        raise
 
+
+def upload_worker_version(checkout: Path, sha: str, release_id: str,
+                          secrets_path: Path, env: dict[str, str]) -> str:
+    output = run([str(checkout / "node_modules/.bin/opennextjs-cloudflare"), "upload",
+                  "--secrets-file", str(secrets_path), "--var",
+                  "HELLOADA_RELEASE_SHA:" + sha, "--tag", release_id], checkout, env)
+    return uploaded_version_id(output)
 
 def check_health(url: str, tenant: str, customer: dict[str, Any], sha: str) -> dict[str, Any]:
     separator = "&" if "?" in url else "?"
@@ -604,9 +612,14 @@ def main() -> int:
         before_deploy = cloudflare_deployment(customer, deploy_env)
         if before_deploy.get("id") != receipt["previousDeployment"].get("id"):
             raise RuntimeError("production changed during the build; reconcile that deployment before retrying")
-        uploaded = run([str(checkout / "node_modules/.bin/opennextjs-cloudflare"), "upload", "--var",
-                        "HELLOADA_RELEASE_SHA:" + args.ref, "--tag", args.release_id], checkout, deploy_env)
-        receipt["uploadedVersion"] = uploaded_version_id(uploaded)
+        runtime_secrets = tenant_runtime_secrets(manifest, args.tenant)
+        secrets_path = worker_secrets_file(directory, runtime_secrets)
+        try:
+            receipt["uploadedVersion"] = upload_worker_version(
+                checkout, args.ref, args.release_id, secrets_path, deploy_env,
+            )
+        finally:
+            secrets_path.unlink(missing_ok=True)
         if file_hashes(checkout / ".open-next") != receipt["artifactHashes"]:
             raise RuntimeError("upload changed the inspected artifact")
 
@@ -627,10 +640,6 @@ def main() -> int:
             raise RuntimeError("production changed during upload; reconcile before promotion")
         run([str(checkout / "node_modules/.bin/wrangler"), "versions", "deploy",
              receipt["uploadedVersion"] + "@100%", "--name", customer["worker"], "--yes"], checkout, deploy_env)
-
-        stage("provision-runtime-secrets")
-        for secret_name, secret_value in tenant_runtime_secrets(manifest, args.tenant).items():
-            put_worker_secret(customer, secret_name, secret_value, deploy_env)
 
         stage("verify-deployment")
         deployment = cloudflare_deployment(customer, deploy_env)
