@@ -363,7 +363,7 @@ npx wrangler whoami
 
 Never print, paste, commit, or pass credential values to Ada/model prompts.
 
-- Backend/API changes: validate here, then restart `site-agent-api.service`.
+- Backend/API changes: validate here, then queue a full-SHA API release through the central release pipeline; never restart the service by hand.
 - Frontend/Payload changes: validate and push the tenant's configured repository,
   then promote only by committing its SHA to the central release queue.
 - Never commit protected credential files, tenant memory databases, or generated
