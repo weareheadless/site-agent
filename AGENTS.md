@@ -371,6 +371,7 @@ npx wrangler whoami
 Never print, paste, commit, or pass credential values to Ada/model prompts.
 
 - Backend/API changes: validate here, then queue a full-SHA API release through the central release pipeline; never restart the service by hand.
+- Every managed Payload gateway uses exactly `/api/workspace`. Keep this path explicit in defaults and tenant provisioning, reject any other runtime route, and migrate existing registered host configs with `scripts/migrate_payload_gateway_prefix.py` before releasing that strict API contract. Never probe or fall back to another route.
 - Frontend/Payload changes: validate and push the tenant's configured repository,
   then promote only by committing its SHA to the central release queue.
 - Never commit protected credential files, tenant memory databases, or generated
