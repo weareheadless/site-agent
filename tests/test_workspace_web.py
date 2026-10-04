@@ -80,6 +80,48 @@ def test_shared_host_credentials_are_inherited_by_tenants(tmp_path, api_key):
         registry.close()
 
 
+def test_registry_reuses_loaded_payload_client_for_source_adapter(tmp_path):
+    tenant_token_env = "PROVISIONED_DEMO_TOKEN"
+    tenant_config = tmp_path / "websites" / "demo" / "config.yaml"
+    tenant_config.parent.mkdir(parents=True)
+    tenant_config.write_text(
+        f"instance_name: demo\n"
+        f"data_dir: {tmp_path / 'data'}\n"
+        "site:\n"
+        "  adapter: payload_gateway\n"
+        "  website_present: true\n"
+        "  payload:\n"
+        "    enabled: true\n"
+        "    url: https://demo.example.test\n"
+        f"    token_env: {tenant_token_env}\n",
+        encoding="utf-8",
+    )
+    registry = TenantRegistry.from_config(
+        {
+            "workspace_api": {
+                "enabled": True,
+                "tenants": {
+                    "demo": {
+                        "config_path": str(tenant_config),
+                        "api_token_env": tenant_token_env,
+                    }
+                },
+            }
+        },
+        {tenant_token_env: "tenant-private-token"},
+        _allow_internal_tenant_spec=True,
+    )
+    try:
+        tenant = registry.tenants["demo"]
+        adapter = tenant.context["source_editor"].adapter
+        assert tenant.context["payload_gateway"] is not None
+        assert isinstance(adapter, PayloadGatewaySiteAdapter)
+        assert adapter.payload_client is tenant.context["payload_gateway"]
+        assert adapter.payload_client.token == "tenant-private-token"
+    finally:
+        registry.close()
+
+
 def test_shared_registry_rejects_payload_token_name_drift(tmp_path):
     tenant_config = tmp_path / "tenant.yaml"
     tenant_config.write_text(
