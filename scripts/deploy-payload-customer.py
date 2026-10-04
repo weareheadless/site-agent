@@ -202,7 +202,7 @@ def enforce_payload_migrations(checkout: Path, customer: dict[str, Any], env: di
         stage("migrate-schema")
         runtime = tenant_runtime_secrets(manifest, tenant)
         migration_env = {**base, **env, **runtime, "NODE_ENV": "production", "PAYLOAD_CLI": "1"}
-        run([str(checkout / "node_modules/.bin/payload"), "migrate"], checkout, migration_env)
+        run(payload_migration_command(manifest), checkout, migration_env)
         tables, applied = applied_payload_migrations(customer, env)
     elif migration_from_ledger is not None:
         prefix_heads = {
