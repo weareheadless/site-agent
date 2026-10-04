@@ -7,7 +7,6 @@ SocketUser=admin
 SocketGroup=admin
 SocketMode=0600
 Accept=yes
-Service=helloada-api-restart@.service
 RemoveOnStop=true
 
 [Install]
