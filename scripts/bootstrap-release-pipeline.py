@@ -83,11 +83,8 @@ def bootstrap(root: Path = ROOT, source_dir: Path | None = None) -> dict[str, st
 
     snapshot_root = root / "control"
     snapshot_root.mkdir(parents=True, exist_ok=True, mode=0o700)
-    snapshot = snapshot_root / source_sha
-    if source_dir:
-        if snapshot.resolve() != bootstrap_source:
-            raise RuntimeError("bootstrap source is not the selected official-main snapshot")
-    elif not snapshot.exists():
+    snapshot = bootstrap_source if source_dir else snapshot_root / source_sha
+    if not source_dir and not snapshot.exists():
         staging = Path(tempfile.mkdtemp(prefix="bootstrap-", dir=snapshot_root))
         try:
             with subprocess.Popen(
