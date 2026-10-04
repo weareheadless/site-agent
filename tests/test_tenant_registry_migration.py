@@ -88,18 +88,12 @@ def test_registry_migration_moves_tenants_and_canonicalizes_runtime_secrets(tmp_
     assert "PROVISIONED_OCEANICVIBES_TOKEN=" not in host_env
 
 
-def test_registry_migration_fails_closed_on_conflicting_api_tokens(tmp_path):
+def test_registry_migration_uses_the_active_host_token_and_removes_its_duplicate(tmp_path):
     config_path, env_path, root = _inputs(tmp_path, mismatch=True)
-    original_config = config_path.read_text()
-    original_env = env_path.read_text()
 
-    try:
-        migration.migrate(config_path, env_path, apply=True)
-    except ValueError as error:
-        assert "API token differs" in str(error)
-    else:
-        raise AssertionError("conflicting tenant tokens must fail closed")
+    receipt = migration.migrate(config_path, env_path, apply=True)
 
-    assert config_path.read_text() == original_config
-    assert env_path.read_text() == original_env
-    assert not (root / "tenants.json").exists()
+    assert receipt["status"] == "migrated"
+    oceanic = migration.read_tenant_env(root / "oceanicvibes" / "tenant.env")
+    assert oceanic["PROVISIONED_OCEANICVIBES_TOKEN"] == "oceanic-api-token"
+    assert "PROVISIONED_OCEANICVIBES_TOKEN=" not in env_path.read_text()

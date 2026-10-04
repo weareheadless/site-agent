@@ -134,12 +134,11 @@ def migrate(config_path: Path, env_path: Path, *, apply: bool) -> dict[str, Any]
             token = current_values.get(canonical_token_name, "")
             if not token:
                 raise ValueError(f"{tenant_id} canonical tenant token is missing")
-            host_token = host_env.get(canonical_token_name, "")
-            if host_token and host_token != token:
-                raise ValueError(f"{tenant_id} API token differs between host and registry env files")
             continue
 
         host_token = host_env.get(canonical_token_name, "")
+        if not host_token:
+            raise ValueError(f"{tenant_id} active host API token is missing")
         source_env_path = source_config.parent / "tenant.env"
         values = read_tenant_env(source_env_path)
         if expected_env.exists():
@@ -148,13 +147,10 @@ def migrate(config_path: Path, env_path: Path, *, apply: bool) -> dict[str, Any]
                 if name in target_values and target_values[name] != value:
                     raise ValueError(f"{tenant_id} has conflicting values for {name} during registry adoption")
             values = {**target_values, **values}
-        tenant_token = values.get(canonical_token_name, "")
-        if host_token and tenant_token and host_token != tenant_token:
-            raise ValueError(f"{tenant_id} API token differs between host and tenant env files")
-        token = tenant_token or host_token
-        if not token:
-            raise ValueError(f"{tenant_id} canonical API token is missing")
-        values[canonical_token_name] = token
+        # Host-declared tenants authenticate from the shared systemd
+        # EnvironmentFile. That is the active credential source; an older
+        # tenant.env copy is superseded as part of this one-time adoption.
+        values[canonical_token_name] = host_token
         if not values.get("PAYLOAD_SECRET"):
             if apply:
                 values["PAYLOAD_SECRET"] = secrets.token_hex(36)
