@@ -75,8 +75,15 @@ def register(cls: type[SiteAdapter]) -> type[SiteAdapter]:
     return cls
 
 
-def get_adapter(name: str, config: dict[str, Any]) -> SiteAdapter:
+def get_adapter(
+    name: str,
+    config: dict[str, Any],
+    *,
+    payload_client: Any | None = None,
+) -> SiteAdapter:
     cls = ADAPTERS.get(name)
     if cls is None:
         raise AdapterError(f"unknown adapter '{name}' (known: {sorted(ADAPTERS)})")
+    if name == "payload_gateway" and payload_client is not None:
+        return cls(config, payload_client=payload_client)
     return cls(config)
