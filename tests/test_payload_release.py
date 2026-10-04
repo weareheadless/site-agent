@@ -359,6 +359,14 @@ def test_existing_database_never_receives_a_schema_mutation(monkeypatch):
     assert result == expected and calls == []
 
 
+def test_payload_migration_uses_the_pinned_package_script():
+    package = json.loads((TEMPLATE / "package.json").read_text())
+    assert release.payload_migration_command(REGISTRY) == [
+        str(Path(REGISTRY["npmBin"]) / "npm"), "run", "payload", "--", "migrate",
+    ]
+    assert "PAYLOAD_CLI=1" in package["scripts"]["payload"]
+
+
 def test_new_site_initialization_is_exact_and_idempotent(monkeypatch):
     expected = [entry["name"] for entry in TEMPLATE_MANIFEST["migrations"]]
     calls = []
@@ -368,11 +376,11 @@ def test_new_site_initialization_is_exact_and_idempotent(monkeypatch):
     monkeypatch.setattr(release, "tenant_runtime_secrets", lambda *args: {"PAYLOAD_SECRET": "secret"})
     stages = []
     result = release.enforce_payload_migrations(
-        TEMPLATE, CUSTOMER, {}, CUSTOMER["migrationHead"], None, {}, {}, "oceanicvibes", stages.append,
+        TEMPLATE, CUSTOMER, {}, CUSTOMER["migrationHead"], None, {}, REGISTRY, "oceanicvibes", stages.append,
     )
     assert result == expected
     assert stages == ["initialize-schema"]
-    assert calls == [[str(TEMPLATE / "node_modules/.bin/payload"), "migrate"]]
+    assert calls == [[str(Path(REGISTRY["npmBin"]) / "npm"), "run", "payload", "--", "migrate"]]
 
 
 def test_tenant_token_is_mapped_to_the_canonical_worker_binding(tmp_path):
@@ -514,12 +522,12 @@ def test_existing_tenant_migration_requires_the_exact_nonempty_ledger_prefix(mon
     monkeypatch.setattr(release, "tenant_runtime_secrets", lambda *args: {"PAYLOAD_SECRET": "secret"})
 
     result = release.enforce_payload_migrations(
-        TEMPLATE, CUSTOMER, {}, None, from_head, {}, {}, "oceanicvibes", stages.append,
+        TEMPLATE, CUSTOMER, {}, None, from_head, {}, REGISTRY, "oceanicvibes", stages.append,
     )
 
     assert result == expected
     assert stages == ["migrate-schema"]
-    assert calls == [[str(TEMPLATE / "node_modules/.bin/payload"), "migrate"]]
+    assert calls == [[str(Path(REGISTRY["npmBin"]) / "npm"), "run", "payload", "--", "migrate"]]
 
 
 @pytest.mark.parametrize("applied,requested_head", [
