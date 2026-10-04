@@ -10,7 +10,7 @@
       }
     },
     "atelier-harmonie": {
-      "id": "20261004-atelier-canonical-schema-8",
+      "id": "20261004-atelier-canonical-schema-9",
       "sha": "1a49bfb8583dfb47ec58878cee60045fe8f36260",
       "schemaMigration": {
         "fromLedgerIdentity": "8f08d0bbcccbe59a22d485354a91823da8ee16c3c478a7170bee05c5456e6ff4",
