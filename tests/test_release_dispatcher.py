@@ -91,7 +91,7 @@ def test_dispatcher_activates_versioned_slot_atomically(tmp_path):
         "[Service]\n"
         "WorkingDirectory=/SOCIAL/payload-releases\n"
         "ExecStart=/SOCIAL/site-agent/.venv/bin/python /SOCIAL/payload-releases/bin/current/dispatch-payload-releases.py\n"
-        "KillMode=control-group\nNoNewPrivileges=false\n"
+        "KillMode=control-group\nNoNewPrivileges=true\n"
     )
 
     first = dispatcher.ensure_dispatcher_slot(snapshot, "a" * 40, tmp_path / "bin")
@@ -113,4 +113,31 @@ def test_release_service_uses_only_the_stable_immutable_dispatcher():
     unit = (ROOT / "deploy/helloada-release.service").read_text()
     assert f"ExecStart={dispatcher.DISPATCHER_ENTRYPOINT}" in unit
     assert "/SOCIAL/site-agent/scripts/reconcile-payload-releases.py" not in unit
-    assert "NoNewPrivileges=false" in unit
+    assert "NoNewPrivileges=true" in unit
+
+
+def test_dispatcher_requires_the_bootstrapped_service_unit_to_match_main(tmp_path):
+    snapshot = tmp_path / "snapshot"
+    (snapshot / "deploy").mkdir(parents=True)
+    unit = (
+        "[Service]\n"
+        f"WorkingDirectory=/SOCIAL/payload-releases\nExecStart={dispatcher.DISPATCHER_ENTRYPOINT}\n"
+        "KillMode=control-group\nNoNewPrivileges=true\n"
+    )
+    (snapshot / "deploy/helloada-release.service").write_text(unit)
+    installed = tmp_path / "helloada-release.service"
+    installed.write_text(unit)
+    dispatcher.verify_host_service_unit(snapshot, installed)
+    installed.write_text(unit.replace("NoNewPrivileges=true", "NoNewPrivileges=false"))
+    with pytest.raises(RuntimeError, match="reviewed host bootstrap"):
+        dispatcher.verify_host_service_unit(snapshot, installed)
+
+
+def test_api_restart_policy_is_scoped_and_release_scripts_do_not_use_sudo():
+    policy = (ROOT / "deploy/helloada-api-restart.rules").read_text()
+    assert 'action.id === "org.freedesktop.systemd1.manage-units"' in policy
+    assert 'subject.user === "admin"' in policy
+    assert 'action.lookup("unit") === "site-agent-api.service"' in policy
+    assert 'action.lookup("verb") === "restart"' in policy
+    assert "sudo" not in (ROOT / "scripts/dispatch-payload-releases.py").read_text()
+    assert "sudo" not in (ROOT / "scripts/deploy-site-agent-api.py").read_text()

@@ -12,10 +12,10 @@ WorkingDirectory=/SOCIAL/payload-releases
 ExecStart=/SOCIAL/site-agent/.venv/bin/python /SOCIAL/payload-releases/bin/current/dispatch-payload-releases.py
 TimeoutStartSec=90min
 KillMode=control-group
-# API release promotion uses the host's existing non-interactive sudo policy.
-# The trusted, serialized queue is the only caller; the mutable source checkout
-# is never executed by this service.
-NoNewPrivileges=false
+# Customer build scripts run as the deployment account, so privilege escalation
+# remains disabled. Polkit grants only the API service restart requested by the
+# reviewed API release queue.
+NoNewPrivileges=true
 PrivateTmp=true
 StandardOutput=journal
 StandardError=journal

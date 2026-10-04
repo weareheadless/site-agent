@@ -28,10 +28,13 @@ rejects static host tenants while the VPS still has those declarations.
 The VPS snapshots the exact source commit from its official `site-agent/main`
 mirror, runs the complete Python test suite, builds one wheel, verifies that the
 wheel imports from its own isolated release directory, and refuses new runtime
-dependencies that are not already installed in the API environment. It then
-installs the unit from that same commit, atomically switches
-`/SOCIAL/payload-releases/api/current`, restarts `site-agent-api.service`, and
-requires `http://127.0.0.1:3014/healthz` to return exactly `{"ok":true}`.
+dependencies that are not already installed in the API environment. It verifies
+that the candidate's API unit exactly matches the host unit installed by the
+reviewed bootstrap, atomically switches `/SOCIAL/payload-releases/api/current`,
+restarts `site-agent-api.service`, and requires
+`http://127.0.0.1:3014/healthz` to return exactly `{"ok":true}`. Unit changes are
+host-policy changes and must be applied by the explicit bootstrap, never by a
+tenant release.
 On failure the timer restores the prior immutable slot, restarts it, and writes
 a sanitized receipt. No tenant Worker requests run if the API release fails.
 
@@ -111,10 +114,15 @@ run finishes. Its stable dispatcher fetches official `site-agent/main` via the
 existing host GitHub SSH identity and snapshots the control commit. It runs that
 snapshot's tests, manifest and pipeline, so later Git changes cannot alter an
 in-flight run. The dispatcher never points at the mutable `/SOCIAL/site-agent`
-checkout; it validates an install manifest and synchronizes its code and systemd
-unit only from official-main snapshots. It persists across SSH/chat disconnects
-and machine restarts. A systemd timeout kills the complete process group; the
-next poll records an interrupted attempt.
+checkout; it validates an install manifest and synchronizes only its dispatcher
+code from official-main snapshots. Its service keeps `NoNewPrivileges=true`
+because customer builds execute code from tenant repositories. The reviewed
+bootstrap installs host systemd units and a Polkit rule permitting `admin` to
+restart only `site-agent-api.service`. Routine release code cannot run `sudo`,
+write system units, or reload systemd. Host unit changes require the explicit
+bootstrap from the exact official-main snapshot. The timer persists across
+SSH/chat disconnects and machine restarts. A systemd timeout kills the complete
+process group; the next poll records an interrupted attempt.
 
 Each customer gets a fresh Git clone. The pipeline checks its source SHA is on
 official `main`, verifies the exact Node/npm versions in
@@ -172,17 +180,18 @@ release_sha="$(git --git-dir=/SOCIAL/payload-releases/control.git rev-parse refs
 ```
 
 The bootstrap fetches official `main`, verifies the dispatcher, controller and
-systemd files against Git objects, then installs the dispatcher and both
-systemd files from that snapshot. On a new host, run the same script from a clean
+host policy files against Git objects, then installs the dispatcher, API and
+release systemd units, timer and scoped Polkit rule from that snapshot. On a new host, run the same script from a clean
 `/SOCIAL/site-agent` checkout whose `main` SHA matches official `main`:
 
 ```bash
 /SOCIAL/site-agent/.venv/bin/python /SOCIAL/site-agent/scripts/bootstrap-release-pipeline.py
 ```
 
-Future dispatcher and service-unit changes self-synchronize
-from official main into versioned slots, with the active dispatcher switched
-atomically. The service uses
+Future dispatcher changes self-synchronize from official main into versioned
+slots, with the active dispatcher switched atomically. Host service-unit changes
+are installed only by the bootstrap and are checked against official main on
+each run. The service uses
 `/SOCIAL/site-agent/.venv/bin/python`; only this interpreter and the protected
 host credential profile are reused from the host setup. The profile at
 `/SOCIAL/configs/host-credentials.yaml` supplies GitHub SSH wiring and the

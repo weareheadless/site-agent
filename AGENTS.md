@@ -167,12 +167,15 @@ every possible concurrent Payload writer.
 - The VPS release service executes only
   `/SOCIAL/payload-releases/bin/current/dispatch-payload-releases.py`. The dispatcher
   fetches official `site-agent/main`, snapshots its exact full SHA, and runs the
-  reconciler from that immutable snapshot. It synchronizes its own reviewed
-  dispatcher and systemd unit from official main and records their source SHA
-  and hashes. Never point systemd at `/SOCIAL/site-agent/scripts` or any mutable
-  checkout. The release service must permit the host's existing non-interactive
-  sudo operations required by API release promotion; its unit is installed only
-  from the official-main snapshot.
+  reconciler from that immutable snapshot. It synchronizes only its own reviewed
+  dispatcher into a versioned slot; it never installs host units or runs `sudo`.
+  The release service keeps `NoNewPrivileges=true`, because it builds customer
+  code. API promotion restarts only the fixed `site-agent-api.service` through
+  the narrowly scoped Polkit rule installed by the reviewed host bootstrap. The
+  bootstrap installs systemd units and that rule from the exact official-main
+  snapshot. If a host unit changes, run that bootstrap explicitly; never let a
+  tenant build or routine release rewrite host policy. Never point systemd at
+  `/SOCIAL/site-agent/scripts` or any mutable checkout.
 
 ## Module Ownership
 

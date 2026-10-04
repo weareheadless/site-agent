@@ -33,7 +33,7 @@ def validate_service_contract(unit_path: Path) -> None:
     expected = {
         "WorkingDirectory": "/SOCIAL/payload-releases",
         "ExecStart": DISPATCHER_ENTRYPOINT,
-        "NoNewPrivileges": "false",
+        "NoNewPrivileges": "true",
         "KillMode": "control-group",
     }
     for key, value in expected.items():
@@ -190,22 +190,16 @@ def ensure_dispatcher_slot(snapshot: Path, source_sha: str, bin_root: Path) -> P
     return destination
 
 
-def install_service_unit(snapshot: Path, env: dict[str, str]) -> str:
+def verify_host_service_unit(
+    snapshot: Path,
+    installed_path: Path = Path("/etc/systemd/system/helloada-release.service"),
+) -> None:
     candidate_unit = snapshot / "deploy/helloada-release.service"
     if not candidate_unit.is_file():
         raise RuntimeError("official-main snapshot is missing the release service unit")
     validate_service_contract(candidate_unit)
-    manifest = {
-        "unitSha256": hashlib.sha256(candidate_unit.read_bytes()).hexdigest(),
-    }
-    unit_destination = Path("/etc/systemd/system/helloada-release.service")
-    if unit_destination.is_file() and hashlib.sha256(unit_destination.read_bytes()).hexdigest() == manifest["unitSha256"]:
-        return manifest["unitSha256"]
-    _run(["systemd-analyze", "verify", str(candidate_unit)], env=env)
-    _run(["sudo", "-n", "install", "-m", "0644", str(candidate_unit), str(unit_destination)], env=env)
-    _run(["sudo", "-n", "systemctl", "daemon-reload"], env=env)
-    print("[dispatcher] synchronized the systemd unit from official main", flush=True)
-    return manifest["unitSha256"]
+    if not installed_path.is_file() or installed_path.read_bytes() != candidate_unit.read_bytes():
+        raise RuntimeError("host release service unit differs from official main; run the reviewed host bootstrap")
 
 
 def main() -> int:
@@ -236,7 +230,7 @@ def main() -> int:
     if ancestry.returncode:
         raise RuntimeError("installed dispatcher source is not an ancestor of official main")
     snapshot = snapshot_main(mirror, args.root, source_sha, environment)
-    install_service_unit(snapshot, environment)
+    verify_host_service_unit(snapshot)
     target_script = snapshot / "scripts/dispatch-payload-releases.py"
     target_unit = snapshot / "deploy/helloada-release.service"
     if (hashlib.sha256(target_script.read_bytes()).hexdigest() != installed.get("dispatcherSha256")

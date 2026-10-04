@@ -105,8 +105,10 @@ def bootstrap(root: Path = ROOT, source_dir: Path | None = None) -> dict[str, st
         "scripts/bootstrap-release-pipeline.py",
         "scripts/dispatch-payload-releases.py",
         "scripts/reconcile-payload-releases.py",
+        "deploy/site-agent-api.service",
         "deploy/helloada-release.service",
         "deploy/helloada-release.timer",
+        "deploy/helloada-api-restart.rules",
     ):
         committed = subprocess.check_output(
             ["git", "-C", str(mirror), "show", f"{source_sha}:{relative}"]
@@ -121,12 +123,22 @@ def bootstrap(root: Path = ROOT, source_dir: Path | None = None) -> dict[str, st
     dispatcher = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(dispatcher)
     dispatcher.ensure_dispatcher_slot(snapshot, source_sha, root / "bin")
-    dispatcher.install_service_unit(snapshot, environment)
 
-    timer = snapshot / "deploy/helloada-release.timer"
-    run(["systemd-analyze", "verify", str(timer)], env=environment)
-    run(["sudo", "-n", "install", "-m", "0644", str(timer),
-         "/etc/systemd/system/helloada-release.timer"], env=environment)
+    system_unit_dir = Path("/etc/systemd/system")
+    policy_dir = Path("/etc/polkit-1/rules.d")
+    if not policy_dir.is_dir() or not shutil.which("pkaction"):
+        raise RuntimeError("polkit is required for narrowly scoped API restart authorization")
+    run(["systemctl", "is-active", "--quiet", "polkit.service"], env=environment)
+    for name in ("site-agent-api.service", "helloada-release.service", "helloada-release.timer"):
+        unit = snapshot / "deploy" / name
+        run(["systemd-analyze", "verify", str(unit)], env=environment)
+        run(["sudo", "-n", "install", "-m", "0644", str(unit),
+             str(system_unit_dir / name)], env=environment)
+    policy = snapshot / "deploy/helloada-api-restart.rules"
+    if not policy.is_file():
+        raise RuntimeError("official-main snapshot is missing the scoped API restart policy")
+    run(["sudo", "-n", "install", "-m", "0644", str(policy),
+         str(policy_dir / "60-helloada-api-restart.rules")], env=environment)
     run(["sudo", "-n", "systemctl", "daemon-reload"], env=environment)
     run(["sudo", "-n", "systemctl", "enable", "--now", "helloada-release.timer"], env=environment)
     return {"sourceSha": source_sha, "mirror": str(mirror), "snapshot": str(snapshot)}
