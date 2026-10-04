@@ -170,11 +170,13 @@ every possible concurrent Payload writer.
   reconciler from that immutable snapshot. It synchronizes only its own reviewed
   dispatcher into a versioned slot; it never installs host units or runs `sudo`.
   The release service keeps `NoNewPrivileges=true`, because it builds customer
-  code. API promotion restarts only the fixed `site-agent-api.service` through
-  the narrowly scoped Polkit rule installed by the reviewed host bootstrap. The
-  bootstrap installs systemd units and that rule from the exact official-main
-  snapshot. If a host unit changes, run that bootstrap explicitly; never let a
-  tenant build or routine release rewrite host policy. Never point systemd at
+  code. API promotion requests a restart only for the fixed
+  `site-agent-api.service` through the root-owned, fixed-function socket broker
+  installed by the reviewed host bootstrap. The broker accepts no command or
+  unit arguments. The bootstrap installs systemd units and broker from the exact
+  official-main snapshot and removes the exact obsolete Polkit rule path. If a
+  host unit changes, run that bootstrap explicitly; never let a tenant build or
+  routine release rewrite host policy. Never point systemd at
   `/SOCIAL/site-agent/scripts` or any mutable checkout.
 
 ## Module Ownership
