@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from site_agent.payload_contract import PayloadContractError, validate_payload_migrations
+from site_agent.payload_contract import _MIGRATION_NAME, PayloadContractError, validate_payload_migrations
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,6 +16,16 @@ def test_canonical_template_migration_chain_is_hash_pinned():
     manifest = validate_payload_migrations(TEMPLATE)
     assert manifest["migrations"]
     assert len(manifest["migrationHead"]) == 64
+
+
+@pytest.mark.parametrize(("name", "valid"), [
+    ("20260917_050948", True),
+    ("20261004_080109_helloada_shared_schema_additive", True),
+    ("20261004_080109_", False),
+    ("2026104_080109", False),
+])
+def test_payload_migration_names_accept_timestamp_only_or_labeled_forms(name, valid):
+    assert bool(_MIGRATION_NAME.fullmatch(name)) is valid
 
 
 @pytest.mark.parametrize("relative", [
