@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from fastapi.testclient import TestClient
 
 from site_agent.application.tenant_registration import (
@@ -9,16 +7,11 @@ from site_agent.application.tenant_registration import (
     load_provisioned_tenants,
 )
 from site_agent.application.workspace import TenantRegistry
-from site_agent.config import load
+from site_agent.config import ConfigError, load
 from site_agent.web.workspace import create_workspace_api_app
 
 
 def _host(tmp_path):
-    host_config = tmp_path / "host.yaml"
-    host_config.write_text(
-        f"instance_name: host\ndata_dir: {tmp_path / 'host-data'}\n",
-        encoding="utf-8",
-    )
     root_config = tmp_path / "config.yaml"
     root_config.write_text(
         "\n".join(
@@ -27,10 +20,7 @@ def _host(tmp_path):
                 "workspace_api:",
                 "  enabled: true",
                 f"  provisioned_root: {tmp_path / 'websites'}",
-                "  tenants:",
-                "    host:",
-                f"      config_path: {host_config}",
-                "      api_token_env: HOST_TOKEN",
+                "  tenants: {}",
                 "",
             ]
         ),
@@ -76,6 +66,18 @@ def test_registration_creates_an_isolated_idempotent_tenant(tmp_path):
         registry.close()
 
 
+def test_host_configuration_cannot_declare_a_second_tenant_registry(tmp_path):
+    config, env = _host(tmp_path)
+    config["workspace_api"]["tenants"] = {"unregistered": {"config_path": "/tmp/site.yaml"}}
+
+    try:
+        TenantRegistry.from_config(config, env)
+    except ConfigError as error:
+        assert "canonical tenant registry" in str(error)
+    else:
+        raise AssertionError("host-declared tenants must not bypass the canonical registry")
+
+
 def test_shared_build_toolchain_is_inherited_by_new_site_tenants(tmp_path):
     config, env = _host(tmp_path)
     config["source_deployment"] = {
@@ -84,12 +86,6 @@ def test_shared_build_toolchain_is_inherited_by_new_site_tenants(tmp_path):
         "npm_command": "/opt/helloada/npm/bin/npm",
         "npm_version": "11.13.0",
     }
-    host_config_path = config["workspace_api"]["tenants"]["host"]["config_path"]
-    Path(host_config_path).write_text(
-        f"instance_name: host\ndata_dir: {tmp_path / 'host-data'}\n"
-        "source_deployment:\n  npm_command: /tenant-specific/npm\n",
-        encoding="utf-8",
-    )
     registry = TenantRegistry.from_config(config, env)
     service = TenantRegistrationService(config, env, registry=registry)
     try:
@@ -97,7 +93,6 @@ def test_shared_build_toolchain_is_inherited_by_new_site_tenants(tmp_path):
         tenant = registry.for_tenant_id("new-site")
         assert tenant is not None
         assert tenant.config["source_deployment"] == config["source_deployment"]
-        assert registry.for_tenant_id("host").config["source_deployment"]["npm_command"] == "/opt/helloada/npm/bin/npm"
     finally:
         registry.close()
 

@@ -8,7 +8,7 @@
     "dev": "next dev",
     "lint": "eslint src",
     "payload": "cross-env PAYLOAD_CLI=1 payload",
-    "test": "node --test tests/*.test.mjs",
+    "test": "node --import tsx --test tests/*.test.mjs",
     "typecheck": "tsc --noEmit",
     "verify:payload": "cross-env NODE_ENV=production PAYLOAD_CLI=1 PAYLOAD_SECRET=ignore tsx scripts/verify-payload-contract.ts"
   },

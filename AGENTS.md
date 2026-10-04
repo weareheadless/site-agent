@@ -124,6 +124,12 @@ every possible concurrent Payload writer.
   another endpoint, another credential, an empty success result, or a second
   schema. Optional content is omitted only when the canonical schema declares
   it optional.
+- The shared API's `workspace_api.tenants` map stays empty. Every persistent
+  tenant, existing or newly spawned, is loaded from the single protected
+  `provisioned_root/tenants.json` registry and its per-tenant `tenant.env`.
+  Never add a tenant-specific systemd `EnvironmentFile` or a second static
+  tenant list; migrate old host declarations with
+  `scripts/migrate-static-tenants-to-registry.py`.
 - A production Worker reads tenant secrets only from its Cloudflare runtime
   bindings. Process variables are a local-development/test source only. Payload
   CLI execution is explicit through package scripts; production CLI operations

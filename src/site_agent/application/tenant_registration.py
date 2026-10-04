@@ -1,10 +1,9 @@
 """Server-only, local registration of a HelloAda website tenant.
 
 Registering a website in HelloAda creates a real site-agent tenant on the local
-filesystem: a tenant config, a dedicated memory database, a runtime api token,
-and a durable entry in the provisioned-tenant registry.  The tenant is then
-built and started through the exact same path used for host-declared tenants, so
-a provisioned website behaves identically to a configured one.
+filesystem: a tenant config, a dedicated memory database, a runtime API token,
+and a durable entry in the sole tenant registry. The shared API reloads every
+tenant from this registry after restart; host config does not declare tenants.
 
 This module intentionally stops before provider mutations. The companion
 ``application.bootstrap`` saga owns the separately retryable GitHub/Cloudflare/

@@ -209,17 +209,26 @@ class TenantRegistry:
         self._started = False
 
     @classmethod
-    def from_config(cls, config: Mapping[str, Any], env: Mapping[str, str]) -> "TenantRegistry":
+    def from_config(
+        cls,
+        config: Mapping[str, Any],
+        env: Mapping[str, str],
+        *,
+        _allow_internal_tenant_spec: bool = False,
+    ) -> "TenantRegistry":
         section = config.get("workspace_api") or {}
         if not isinstance(section, Mapping) or not bool(section.get("enabled", False)):
             raise ConfigError("workspace_api.enabled must be true for the shared workspace API")
         declared = section.get("tenants") or {}
         if not isinstance(declared, Mapping):
             raise ConfigError("workspace_api.tenants must be an object")
-        # Runtime-registered tenants (HelloAda website creations) are persisted
-        # separately and reloaded here so the API process can restart without
-        # losing a provisioned workspace.  Their token values live in per-tenant
-        # env files next to the tenant registry, never in a config file.
+        if declared and not _allow_internal_tenant_spec:
+            raise ConfigError(
+                "workspace_api.tenants must be empty; register every website through the canonical tenant registry"
+            )
+        # Every persistent website lives in the same protected registry used by
+        # release and onboarding. Tenant token values live in per-tenant env
+        # files beside their registered configs, never in host config.
         from .tenant_registration import load_provisioned_tenants
 
         provisioned_declared, provisioned_env = load_provisioned_tenants(config, env)
@@ -601,12 +610,11 @@ class TenantRegistry:
         env: Mapping[str, str] | None = None,
         start: bool = True,
     ) -> Tenant:
-        """Build, register, and optionally start one runtime-registered tenant.
+        """Build and optionally start one tenant from its canonical registration.
 
-        The tenant is constructed through the exact same path used at API
-        startup (``from_config``), so a provisioned website behaves identically
-        to a tenant declared in the host config.  The call is idempotent: a
-        tenant already registered under the same id is returned as-is.
+        The internal one-tenant constructor shares startup validation without
+        adding a second persistent source of tenant declarations. Registration
+        is idempotent for an existing identity.
         """
         normalized = str(tenant_id or "").strip().lower()
         if not _SAFE_NAME.fullmatch(normalized):
@@ -639,7 +647,11 @@ class TenantRegistry:
                 "tenants": {normalized: spec},
             },
         }
-        temporary = TenantRegistry.from_config(proxy, merged_env)
+        temporary = TenantRegistry.from_config(
+            proxy,
+            merged_env,
+            _allow_internal_tenant_spec=True,
+        )
         try:
             tenant = temporary.tenants[normalized]
         except Exception:
@@ -704,7 +716,11 @@ class TenantRegistry:
                 "tenants": {normalized: {"config_path": str(config_path), "api_token_env": token_env}},
             },
         }
-        temporary = TenantRegistry.from_config(proxy, merged_env)
+        temporary = TenantRegistry.from_config(
+            proxy,
+            merged_env,
+            _allow_internal_tenant_spec=True,
+        )
         try:
             replacement = temporary.tenants[normalized]
         except Exception:

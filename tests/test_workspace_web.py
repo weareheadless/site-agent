@@ -70,6 +70,7 @@ def test_shared_host_credentials_are_inherited_by_tenants(tmp_path, api_key):
             },
         },
         {"WORKSPACE_DEMO_TOKEN": "bridge-secret", "CF_TOKEN": "cloudflare-secret"},
+        _allow_internal_tenant_spec=True,
     )
     try:
         credentials = registry.tenants["demo"].config["credentials"]
@@ -110,6 +111,7 @@ site:
                 "PROVISIONED_DEMO_TOKEN": "bridge-secret",
                 "LEGACY_DEMO_TOKEN": "legacy-secret",
             },
+            _allow_internal_tenant_spec=True,
         )
 
 
