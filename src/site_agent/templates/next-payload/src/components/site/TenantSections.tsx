@@ -1,9 +1,10 @@
 import { RichText } from '@payloadcms/richtext-lexical/react'
+import type { SerializedEditorState } from 'lexical'
 import { helloAdaBindingId } from '@weareheadless/helloada-payload-core/bindings'
 import { mediaAlt, mediaUrl } from '@/lib/content'
 
-type ContentEntry = Record<string, any> & { key: string; blockType: string }
-type Section = Record<string, any> & { key: string; label: string }
+type ContentEntry = Record<string, unknown> & { key: string; blockType: string }
+type Section = Record<string, unknown> & { key: string; label: string }
 
 const requiredText = (value: unknown, field: string) => {
   if (typeof value !== 'string' || !value.trim()) throw new Error(`Payload content is missing required ${field}.`)
@@ -59,14 +60,14 @@ function ContentEntryView({ entry, collection, documentId, sectionKey }: {
       if (!value) throw new Error(`Payload rich-text item “${key}” has no content.`)
       return <div className="content-rich-text" data-content-key={key}
         data-helloada-field={helloAdaBindingId(collection, documentId, { ...target, field: 'entry', property: 'value' })}>
-        <RichText data={value} />
+        <RichText data={value as SerializedEditorState} />
       </div>
     }
     case 'helloAdaImage':
       return <figure className="content-image" data-content-key={key}
         data-helloada-field={helloAdaBindingId(collection, documentId, { ...target, field: 'entry', property: 'image' })}>
         <img src={requiredMediaUrl(entry.image)} alt={String(entry.alt || mediaAlt(entry.image))} />
-        {entry.caption ? <figcaption>{entry.caption}</figcaption> : null}
+        {entry.caption ? <figcaption>{String(entry.caption)}</figcaption> : null}
       </figure>
     case 'helloAdaLink': {
       const text = requiredText(entry.text, 'link text')
@@ -78,7 +79,8 @@ function ContentEntryView({ entry, collection, documentId, sectionKey }: {
     case 'helloAdaContentList': {
       if (!Array.isArray(entry.items)) throw new Error(`Payload list “${key}” has invalid items.`)
       return <ul className="content-list" data-content-key={key}>
-        {entry.items.map((item: Record<string, any>) => {
+        {entry.items.map((rawItem: unknown) => {
+          const item = rawItem as Record<string, unknown>
           const itemKey = stableKey(item.key, 'List item')
           const src = item.image ? requiredMediaUrl(item.image) : ''
           const href = item.href ? safeHref(item.href) : ''
@@ -87,9 +89,9 @@ function ContentEntryView({ entry, collection, documentId, sectionKey }: {
           return <li key={itemKey} data-content-key={itemKey}>
             {src ? <img src={src} alt={String(item.alt || mediaAlt(item.image))}
               data-helloada-field={helloAdaBindingId(collection, documentId, { ...itemTarget, property: 'image' })} /> : null}
-            {item.title ? <h3 data-helloada-field={helloAdaBindingId(collection, documentId, { ...itemTarget, property: 'title' })}>{item.title}</h3> : null}
-            {item.body ? <p data-helloada-field={helloAdaBindingId(collection, documentId, { ...itemTarget, property: 'body' })}>{item.body}</p> : null}
-            {href ? <a href={href} data-helloada-field={helloAdaBindingId(collection, documentId, { ...itemTarget, property: 'linkText' })}>{item.linkText}</a> : null}
+            {item.title ? <h3 data-helloada-field={helloAdaBindingId(collection, documentId, { ...itemTarget, property: 'title' })}>{String(item.title)}</h3> : null}
+            {item.body ? <p data-helloada-field={helloAdaBindingId(collection, documentId, { ...itemTarget, property: 'body' })}>{String(item.body)}</p> : null}
+            {href ? <a href={href} data-helloada-field={helloAdaBindingId(collection, documentId, { ...itemTarget, property: 'linkText' })}>{String(item.linkText)}</a> : null}
           </li>
         })}
       </ul>
@@ -100,12 +102,13 @@ function ContentEntryView({ entry, collection, documentId, sectionKey }: {
 }
 
 export default function TenantSections({ sections, collection, documentId }: {
-  sections: Record<string, any>[]
+  sections: Record<string, unknown>[]
   collection: string
   documentId: string
 }) {
   return <>
-    {sections.map((section: Section) => {
+    {sections.map((sectionValue) => {
+      const section = sectionValue as Section
       const sectionKey = stableKey(section.key, 'Section')
       const label = requiredText(section.label, `Section “${sectionKey}” name`)
       const sectionBinding = helloAdaBindingId(collection, documentId, { collection, documentId, sectionKey, field: 'sectionLabel' })
@@ -113,7 +116,10 @@ export default function TenantSections({ sections, collection, documentId }: {
       if (!Array.isArray(entries)) throw new Error(`Payload section “${sectionKey}” content is invalid.`)
       return <section className="content-section" key={sectionKey} data-section-key={sectionKey}>
         <h2 data-helloada-field={sectionBinding}>{label}</h2>
-        {entries.map((entry: ContentEntry) => <ContentEntryView key={stableKey(entry.key, 'Content')} entry={entry} collection={collection} documentId={documentId} sectionKey={sectionKey} />)}
+        {entries.map((rawEntry: unknown) => {
+          const entry = rawEntry as ContentEntry
+          return <ContentEntryView key={stableKey(entry.key, 'Content')} entry={entry} collection={collection} documentId={documentId} sectionKey={sectionKey} />
+        })}
       </section>
     })}
   </>

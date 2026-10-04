@@ -45,6 +45,11 @@ test('missing Worker bindings fail closed, not against a local/other tenant toke
   assert.equal(api.helloAdaConnection('demo').body.error, 'runtime_unconfigured')
 })
 
+test('production without Worker bindings throws instead of using process variables', () => {
+  const api = runtime(undefined, { NODE_ENV: 'production', SITE_AGENT_URL: 'https://api.example/v1', HELLOADA_SITE_AGENT_TOKEN: 'stale' })
+  assert.throws(() => api.helloAdaRuntime(), /Worker bindings are unavailable in production/)
+})
+
 test('local Node execution uses canonical process variables', () => {
   assert.equal(runtime(undefined, { SITE_AGENT_URL: 'https://api.example/v1', HELLOADA_SITE_AGENT_TOKEN: 'local' }).helloAdaRuntime().configured, true)
 })

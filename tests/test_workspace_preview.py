@@ -9,7 +9,7 @@ from site_agent.application.designs import DesignService
 from site_agent.application.workspace import Tenant, TenantRegistry
 from site_agent.core.design_contracts import SiteIntake
 from site_agent.core.memory import Memory
-from site_agent.hands.site_build import PELICAN_BASELINE_PROFILE, SiteOutputArtifactStore
+from site_agent.hands.site_build import NEXT_REACT_PROFILE, SiteOutputArtifactStore
 from site_agent.web.workspace import register_workspace_routes
 
 
@@ -50,7 +50,7 @@ def _preview_tenant(tmp_path):
         publishable=True,
     )
     candidate_sha = "b" * 40
-    published = store.publish(output, profile=PELICAN_BASELINE_PROFILE, candidate_sha=candidate_sha)
+    published = store.publish(output, profile=NEXT_REACT_PROFILE, candidate_sha=candidate_sha)
     memory.update_design_run(
         run["run_id"],
         candidate_sha=candidate_sha,

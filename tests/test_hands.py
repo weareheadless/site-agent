@@ -1,4 +1,4 @@
-import json
+import base64
 import subprocess
 
 import pytest
@@ -15,7 +15,6 @@ def _config(adapter="github_static", **site):
             "adapter": adapter,
             "repository": "acme/site",
             "branch": "main",
-            "content_path": "content.json",
             **site,
         },
     }
@@ -53,25 +52,15 @@ def test_commit_file_puts_b64_content_with_existing_sha(monkeypatch):
 
     monkeypatch.setattr(github_static, "_request", fake_request)
     adapter = get_adapter("github_static", _config())
-    result = adapter.commit_file("content.json", b'{"a":1}', "Update content")
+    result = adapter.commit_file("src/app/page.tsx", b"export default function Page() {}", "Update page")
     method, url, payload = calls[-1]
     assert method == "PUT"
-    assert url.endswith("/repos/acme/site/contents/content.json")
+    assert url.endswith("/repos/acme/site/contents/src/app/page.tsx")
     assert payload["sha"] == "abc123"
     assert payload["branch"] == "main"
-    assert json.loads(__import__("base64").b64decode(payload["content"])) == {"a": 1}
+    assert base64.b64decode(payload["content"]) == b"export default function Page() {}"
     assert result["committed"] is True
     assert result["commit_sha"] == "deadbeef"
-
-
-def test_get_content_parses_json(monkeypatch):
-    monkeypatch.setattr(
-        github_static,
-        "_request",
-        lambda *a, **k: (200, {"sha": "s", "content": __import__("base64").b64encode(b'{"hero":"hi"}').decode()}),
-    )
-    adapter = get_adapter("github_static", _config())
-    assert adapter.get_content() == {"hero": "hi"}
 
 
 def test_local_missing_source_file_returns_empty_blob(monkeypatch, tmp_path):
@@ -85,13 +74,13 @@ def test_local_missing_source_file_returns_empty_blob(monkeypatch, tmp_path):
 
     def missing_file(args, cwd, **kwargs):
         raise AdapterError(
-            "github git transport: fatal: path 'content.json' does not exist in "
+            "github git transport: fatal: path 'src/app/missing.tsx' does not exist in "
             "'refs/remotes/origin/preview'"
         )
 
     monkeypatch.setattr(adapter, "_git", missing_file)
 
-    assert adapter._local_get_file("content.json", "preview") == (None, None)
+    assert adapter._local_get_file("src/app/missing.tsx", "preview") == (None, None)
 
 
 def test_cloudflare_pages_inherits_commit_and_reports_unconfigured_status():
@@ -156,15 +145,15 @@ def test_frontend_restore_overlays_only_owned_paths_onto_current_platform(monkey
         if method == "GET" and "/git/trees/target-tree" in url:
             return 200, {"tree": [
                 {"path": "helloada-content-contract.json", "mode": "100644", "type": "blob", "sha": "contract"},
-                {"path": "src/components/site/Hero.tsx", "mode": "100644", "type": "blob", "sha": "old-hero"},
+                {"path": "src/components/site/presentation/Hero.tsx", "mode": "100644", "type": "blob", "sha": "old-hero"},
                 {"path": "src/app/(frontend)/site.css", "mode": "100644", "type": "blob", "sha": "old-css"},
                 {"path": "src/lib/content.ts", "mode": "100644", "type": "blob", "sha": "old-reader"},
             ]}
         if method == "GET" and "/git/trees/current-tree" in url:
             return 200, {"tree": [
                 {"path": "helloada-content-contract.json", "mode": "100644", "type": "blob", "sha": "contract"},
-                {"path": "src/components/site/Hero.tsx", "mode": "100644", "type": "blob", "sha": "new-hero"},
-                {"path": "src/components/site/NewCard.tsx", "mode": "100644", "type": "blob", "sha": "new-card"},
+                {"path": "src/components/site/presentation/Hero.tsx", "mode": "100644", "type": "blob", "sha": "new-hero"},
+                {"path": "src/components/site/presentation/NewCard.tsx", "mode": "100644", "type": "blob", "sha": "new-card"},
                 {"path": "src/app/(frontend)/site.css", "mode": "100644", "type": "blob", "sha": "new-css"},
                 {"path": "src/lib/content.ts", "mode": "100644", "type": "blob", "sha": "current-reader"},
                 {"path": "src/collections/Pages.ts", "mode": "100644", "type": "blob", "sha": "current-schema"},
@@ -188,11 +177,11 @@ def test_frontend_restore_overlays_only_owned_paths_onto_current_platform(monkey
     tree_call = next(call for call in calls if call[0] == "POST" and "/git/trees" in call[1])
     entries = tree_call[2]["tree"]
     assert {entry["path"] for entry in entries} == {
-        "src/app/(frontend)/site.css", "src/components/site/Hero.tsx", "src/components/site/NewCard.tsx",
+        "src/app/(frontend)/site.css", "src/components/site/presentation/Hero.tsx", "src/components/site/presentation/NewCard.tsx",
     }
-    assert next(entry for entry in entries if entry["path"] == "src/components/site/Hero.tsx")["sha"] == "old-hero"
+    assert next(entry for entry in entries if entry["path"] == "src/components/site/presentation/Hero.tsx")["sha"] == "old-hero"
     assert next(entry for entry in entries if entry["path"] == "src/app/(frontend)/site.css")["sha"] == "old-css"
-    assert next(entry for entry in entries if entry["path"] == "src/components/site/NewCard.tsx")["sha"] is None
+    assert next(entry for entry in entries if entry["path"] == "src/components/site/presentation/NewCard.tsx")["sha"] is None
     assert all("src/lib/content.ts" != entry["path"] and "src/collections/Pages.ts" != entry["path"] for entry in entries)
 
 
@@ -207,7 +196,7 @@ def test_frontend_restore_rejects_versions_before_shared_content_contract(monkey
         if method == "GET" and "/git/trees/target-tree" in url:
             return 200, {"tree": [{"path": "index.html", "mode": "100644", "type": "blob", "sha": "old"}]}
         if method == "GET" and "/git/trees/current-tree" in url:
-            return 200, {"tree": [{"path": "src/components/site/Hero.tsx", "mode": "100644", "type": "blob", "sha": "new"}]}
+            return 200, {"tree": [{"path": "src/components/site/presentation/Hero.tsx", "mode": "100644", "type": "blob", "sha": "new"}]}
         raise AssertionError((method, url, payload))
 
     monkeypatch.setattr(github_static, "_request", fake_request)
@@ -275,7 +264,6 @@ def test_neutral_scaffold_keeps_candidate_local_until_owner_merge(tmp_path):
     git("config", "user.name", "Test")
     git("config", "user.email", "test@example.com")
     (repo / "index.html").write_text("baseline")
-    (repo / "content.json").write_text('{"title":"baseline"}\n')
     git("add", "-A")
     git("commit", "-qm", "baseline")
     base_sha = git("rev-parse", "HEAD").stdout.strip()
@@ -291,7 +279,6 @@ def test_neutral_scaffold_keeps_candidate_local_until_owner_merge(tmp_path):
             "adapter": "neutral_scaffold",
             "clone_path": str(repo),
             "branch": "main",
-            "content_path": "content.json",
         },
     })
     adapter.validate()

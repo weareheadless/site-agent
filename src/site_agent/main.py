@@ -162,32 +162,6 @@ def _cmd_init_site(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_migrate_site(args: argparse.Namespace) -> int:
-    """Convert legacy Pelican Markdown into a reviewable Payload bundle."""
-    from .migrations.legacy import MigrationError, import_pelican_tree
-
-    try:
-        bundle = import_pelican_tree(args.directory)
-    except MigrationError as exc:
-        print(f"[site-agent] migration error: {exc}", file=sys.stderr)
-        return 2
-    payload = json.dumps(bundle.to_dict(), indent=2, ensure_ascii=False)
-    if args.output:
-        destination = Path(args.output).expanduser()
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(payload + "\n", encoding="utf-8")
-        print(f"wrote Payload migration bundle: {destination}")
-    else:
-        print(payload)
-    if bundle.rejected:
-        print(
-            f"[site-agent] migration completed with {len(bundle.rejected)} rejected file(s); review the bundle before import",
-            file=sys.stderr,
-        )
-        return 1
-    return 0
-
-
 def _cmd_provision_r2(args: argparse.Namespace) -> int:
     from .hands.cloudflare_r2 import CloudflareR2Provisioner, R2ProvisioningError, write_instance_r2_config
 
@@ -954,12 +928,6 @@ def main(argv: list[str] | None = None) -> int:
     init_parser.add_argument("--directory", required=True, help="empty customer website directory")
     init_parser.add_argument("--name", default="New Website", help="customer website name")
     init_parser.add_argument("--url", default="", help="public website URL")
-    migrate_parser = sub.add_parser(
-        "migrate-site",
-        help="inspect legacy Pelican Markdown and produce a reviewable Payload migration bundle",
-    )
-    migrate_parser.add_argument("--directory", required=True, help="legacy customer website directory")
-    migrate_parser.add_argument("--output", help="write JSON to this path instead of stdout")
     r2_parser = sub.add_parser("provision-r2", parents=[common], help="create a private customer-scoped Cloudflare R2 bucket and credential")
     r2_parser.add_argument("--instance", required=True, help="stable lowercase customer instance slug")
     r2_parser.add_argument("--account-id", required=True, help="Cloudflare account ID")
@@ -1033,7 +1001,7 @@ def main(argv: list[str] | None = None) -> int:
     if getattr(args, "config", None) is None:
         args.config = None
     handlers = {"check": _cmd_check, "once": _cmd_once, "run": _cmd_run, "serve": _cmd_serve, "api": _cmd_api,
-                "init-site": _cmd_init_site, "migrate-site": _cmd_migrate_site,
+                "init-site": _cmd_init_site,
                 "provision-r2": _cmd_provision_r2, "provision-seo": _cmd_provision_seo,
                 "design-experiment": _cmd_design_experiment, "intake-lab": _cmd_intake_lab}
     if args.command == "design-lab":

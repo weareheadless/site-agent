@@ -1,14 +1,4 @@
-"""editor.py — the admin chat: owner asks, Ada implements, owner approves.
-
-She has hands, not scripts: repository tools (read / spawn_build) matching
-writable_patterns, plus read-only senses. Source changes are implemented by
-the builder in an approval-gated preview; nothing reaches production without
-approval.
-
-``propose_changes`` remains as a compatibility fallback for installations
-without the builder. It only records an edit draft and cannot produce the
-compiled preview used by an existing source-backed site.
-"""
+"""Owner chat tools for Payload content and approval-gated source changes."""
 
 from __future__ import annotations
 
@@ -16,15 +6,10 @@ import json
 import re
 from typing import Any
 
-from ..hands.base import AdapterError, SiteAdapter
-from ..hands.repo_changes import HARD_DENY, normalize_path, writable
+from ..hands.base import SiteAdapter
 from ..core.design_contracts import DesignRequest
 from .owner_copy import owner_safe_reply as _owner_safe_reply
 from .prompts import configured_site_profile_prompt, inner_life_context
-
-
-class EditError(ValueError):
-    pass
 
 
 def slugify(text: str) -> str:
@@ -45,27 +30,6 @@ def _workspace_language(message: str) -> str:
     context_block = str(message or "").split("[User request]", 1)[0]
     match = re.search(r'"language"\s*:\s*"([a-z]{2,3}(?:-[a-z0-9]{2,8}){0,2})"', context_block, re.IGNORECASE)
     return match.group(1).lower() if match else ""
-
-
-def set_dotted(doc: dict[str, Any], field: str, value: Any) -> Any:
-    keys = [k for k in field.split(".") if k]
-    if not keys:
-        raise EditError("empty field path")
-    current: Any = doc
-    for key in keys[:-1]:
-        if not isinstance(current, dict) or key not in current:
-            raise EditError(f"unknown section '{key}'")
-        current = current[key]
-    if not isinstance(current, dict) or keys[-1] not in current:
-        raise EditError(f"unknown field '{field}' — only existing fields can be changed")
-    old = current[keys[-1]]
-    current[keys[-1]] = value
-    return old
-
-
-_READ_ACTIONS = {"read_file", "list_files", "get_content", "get_metrics", "get_growth", "list_drafts", "recall",
-                 "search_media", "search_business_knowledge", "read_payload_content",
-                 "inspect_editable_fields", "validate_editable_fields"}
 
 
 def _looks_like_design_request(message: str) -> bool:
@@ -102,23 +66,6 @@ def _looks_like_source_edit_request(message: str) -> bool:
     return any(term in text for term in source_terms) and any(term in text for term in action_terms)
 
 
-def _content_summary(content: dict[str, Any]) -> str:
-    def shape(value: Any, depth: int = 0) -> str:
-        if isinstance(value, dict):
-            inner = ", ".join(f"{k}: {shape(v, depth + 1)}" for k, v in list(value.items())[:12])
-            return "{" + inner + "}"
-        if isinstance(value, list):
-            if value and all(isinstance(item, dict) for item in value[:5]):
-                sample = ", ".join(shape(item, depth + 1) for item in value[:5])
-                suffix = ", …" if len(value) > 5 else ""
-                return f"list[{len(value)}] [{sample}{suffix}]"
-            return f"list[{len(value)}]"
-        text = str(value)
-        return f"{text[:60]}…" if len(text) > 60 else text
-
-    return shape(content)
-
-
 def _staged_branch(context: dict[str, Any]) -> str | None:
     """Use the same preview ref the Design tab uses while a build is pending."""
     memory = context.get("memory")
@@ -146,17 +93,6 @@ def _cached_file(context: dict[str, Any], adapter: SiteAdapter, path: str) -> by
     from ..hands import file_cache
 
     return file_cache.get(context["config"], adapter, path, branch=_staged_branch(context))
-
-
-def _cached_content(context: dict[str, Any], adapter: SiteAdapter) -> dict[str, Any] | None:
-    path = str((context["config"].get("site") or {}).get("content_path", "content.json"))
-    raw = _cached_file(context, adapter, path)
-    if raw is None:
-        return None
-    try:
-        return json.loads(raw.decode(errors="replace"))
-    except json.JSONDecodeError:
-        return None
 
 
 def _decision_ledger_block(context: dict[str, Any]) -> str:
@@ -188,130 +124,6 @@ def _decision_ledger_block(context: dict[str, Any]) -> str:
             "context so you don't repeat rejected work and know what shipped):\n" + "\n".join(lines))
 
 
-def _content_summary_cached(context: dict[str, Any], adapter: SiteAdapter) -> str:
-    try:
-        doc = _cached_content(context, adapter)
-        if doc is not None:
-            return _content_summary(doc)
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        branch = _staged_branch(context)
-        try:
-            doc = adapter.get_content(branch=branch)
-        except TypeError:
-            doc = adapter.get_content()
-        return _content_summary(doc)
-    except Exception:  # noqa: BLE001
-        return ""
-
-
-def validate_ops(context: dict[str, Any], ops: list[dict[str, Any]], adapter: SiteAdapter) -> list[dict[str, Any]]:
-    """Normalize + sanity-check ops against writable patterns. Raises EditError."""
-    patterns = [str(p) for p in ((context["config"].get("site") or {}).get("writable_patterns") or [])]
-    clean = []
-    for op in (ops or [])[:10]:
-        kind = str(op.get("op", "")).strip().lower()
-        path = normalize_path(str(op.get("path", "")))
-        if kind == "set_field":
-            if "field" not in op or "value" not in op:
-                raise EditError("set_field needs field + value")
-            content_path = str((context["config"].get("site") or {}).get("content_path", "content.json")).lstrip("/")
-            target = normalize_path(str(op.get("path") or content_path))
-            if target != content_path or any(denied in target for denied in HARD_DENY):
-                raise EditError(f"set_field can only change {content_path}")
-            _, raw = _get_file(context, adapter, target)   # live read: validation is the safety net
-            if raw is None:
-                raise EditError(f"{target}: file not found")
-            probe = json.loads(raw)
-            node: Any = probe
-            for key in [k for k in op["field"].split(".") if k][:-1]:
-                if not isinstance(node, dict) or key not in node:
-                    raise EditError(f"unknown section '{key}' in {target}")
-                node = node[key]
-            last = op["field"].split(".")[-1]
-            if not isinstance(node, dict) or last not in node:
-                raise EditError(f"unknown field '{op['field']}' in {target}")
-            clean.append({"op": "set_field", "path": target,
-                          "field": str(op["field"]), "value": op.get("value")})
-            continue
-        if kind not in ("write", "edit", "delete"):
-            raise EditError(f"unknown op '{kind}'")
-        if not path or not writable(path, patterns):
-            raise EditError(f"'{path}' is outside my writable area ({patterns or 'none configured'})")
-        entry = {"op": kind, "path": path}
-        if kind == "write":
-            content = str(op.get("content", ""))
-            if not content.strip():
-                raise EditError(f"write {path}: empty content")
-            entry["content"] = content
-        elif kind == "edit":
-            find, replace = str(op.get("find", "")), str(op.get("replace", ""))
-            if not find.strip():
-                raise EditError(f"edit {path}: missing find")
-            _, raw = _get_file(context, adapter, path)   # live read: validation is the safety net
-            if raw is None:
-                raise EditError(f"edit {path}: file not found")
-            count = raw.decode().count(find)
-            if count == 0:
-                raise EditError(f"edit {path}: snippet not found — read_file first")
-            if count > 1:
-                raise EditError(f"edit {path}: snippet appears {count} times — include more context")
-            entry.update({"find": find, "replace": replace})
-        clean.append(entry)
-    if not clean:
-        raise EditError("no operations provided")
-    return clean
-
-
-def store_proposal(memory: Any, meta: dict[str, Any], summary: str) -> int:
-    """Persist one reviewable edit proposal."""
-    ops = list(meta.get("ops") or [])
-    return memory.save_draft(
-        title=f"Proposed changes: {summary}"[:120],
-        body=json.dumps(ops, indent=2),
-        kind="edit",
-        meta={**meta, "ops": ops, "summary": summary},
-    )
-
-
-def _apply_ops(adapter: SiteAdapter, ops: list[dict[str, Any]], branch: str | None = None, memory: Any = None):
-    results = []
-    for op in ops:
-        kind, path = op["op"], op["path"]
-        if kind == "set_field":  # content.json dotted-field edit (legacy/structured)
-            try:
-                doc = adapter.get_content(branch=branch)
-            except TypeError:
-                doc = adapter.get_content()
-            set_dotted(doc, op["field"], op["value"])
-            r = adapter.commit_file(
-                path or "content.json",
-                (json.dumps(doc, indent=2, ensure_ascii=False) + "\n").encode(),
-                f"[{branch or 'main'}] set {op['field']}", branch=branch,
-            )
-        elif kind == "write":
-            r = adapter.commit_file(path, op["content"].encode(), f"[{branch or 'main'}] write {path}", branch=branch)
-        elif kind == "edit":
-            _, raw = adapter.get_file(path, branch=branch)
-            if raw is None:
-                base_raw = adapter.get_file(path)
-                raw = base_raw[1]
-            text = (raw or b"").decode()
-            if op["find"] not in text:
-                # already applied (e.g. an approve retry) — nothing to do
-                results.append({"skipped": True, "path": path})
-                continue
-            r = adapter.commit_file(
-                path, text.replace(op["find"], op["replace"], 1).encode(),
-                f"[{branch or 'main'}] edit {path}", branch=branch,
-            )
-        else:
-            r = adapter.delete_file(path, f"[{branch or 'main'}] delete {path}", branch=branch)
-        results.append(r)
-    return results
-
-
 def _writable_patterns(context: dict[str, Any]) -> list[str]:
     return [str(p) for p in ((context["config"].get("site") or {}).get("writable_patterns") or [])]
 
@@ -328,25 +140,13 @@ def _payload_result(document: Any, *, action: str) -> str:
         for key in ("id", "sourceId", "slug", "title", "_status", "updatedAt")
         if key in document
     }
+    revision = document.get("_helloadaRevision")
+    if isinstance(revision, str) and revision:
+        compact["expectedHash"] = revision
     if action == "read":
         for key in ("content", "sections", "description", "excerpt", "metaDescription", "seo"):
             if key in document:
                 compact[key] = document[key]
-    rendered = json.dumps(compact, ensure_ascii=False, default=str)
-    return rendered[:8000] + ("…" if len(rendered) > 8000 else "")
-
-
-def _editable_fields_result(result: Any, *, action: str) -> str:
-    """Keep the field gateway response useful without exposing a whole document."""
-    if not isinstance(result, dict):
-        return f"Editable field {action} completed, but returned no result."
-    compact = {
-        key: result.get(key)
-        for key in (
-            "collection", "document_id", "revision", "valid", "validation_errors", "field", "fields",
-        )
-        if key in result
-    }
     rendered = json.dumps(compact, ensure_ascii=False, default=str)
     return rendered[:8000] + ("…" if len(rendered) > 8000 else "")
 
@@ -384,7 +184,6 @@ def _tools_spec(
            {"path": {"type": "string"},
             "contains": {"type": "string", "description": "substring to locate"}}, ["path"]),
         fn("list_files", "List every file path in the site repo", {}),
-        fn("get_content", "Read the structured text fields (content.json)", {}),
         fn("get_metrics", "Read persisted GA4 and Search Console evidence with collection timestamps; no collection or spending", {}),
         fn("get_growth", "Read the current Growth workspace: provider configuration, verification, evidence freshness, keyword research readiness, schedules and approvals. Never provisions or spends.", {}),
         fn("list_drafts", "Pending proposals awaiting owner approval", {}),
@@ -415,18 +214,6 @@ def _tools_spec(
                     },
                 }, ["intent", "intake", "owner_summary"]),
         ])
-    if not source_builder_available and not canonical_design_handoff:
-        tools.append(fn(
-            "propose_changes",
-            "Compatibility fallback: stage one or more file operations as a proposal the owner must approve. "
-            "This records an edit draft but does not build a rendered preview. "
-            "ops entries: {op:'edit',path,find(unique exact snippet),replace} | "
-            "{op:'write',path,content(full file)} | {op:'delete',path} | "
-            "{op:'set_field',field(dotted into content.json),value}",
-            {"summary": {"type": "string"},
-             "ops": {"type": "array", "items": {"type": "object"}}},
-            ["summary", "ops"]),
-        )
     if _payload_gateway(context) is not None:
         payload = _payload_gateway(context)
         contract = getattr(payload, "contract", None)
@@ -456,77 +243,6 @@ def _tools_spec(
                 ["collection", "identifier"],
             ),
             fn(
-                "inspect_editable_fields",
-                "Read the explicit editable-field registry for one Payload document. Do not scan source code or infer fields from rendered text; use only the returned stable field IDs.",
-                {
-                    "collection": collection,
-                    "identifier": {"type": "string", "description": "Payload id, sourceId, or slug"},
-                    "identifier_kind": {"type": "string", "enum": ["id", "sourceId", "slug"]},
-                    "draft": {"type": "boolean"},
-                },
-                ["collection", "identifier"],
-            ),
-            fn(
-                "define_editable_field",
-                "Define one stable, declarative field binding on an existing Payload document. This writes a draft only. Use a dotted field ID such as page.hero.heading; never generate a field ID from visible copy or a DOM position.",
-                {
-                    "collection": collection,
-                    "identifier": {"type": "string", "description": "Payload id, sourceId, or slug"},
-                    "identifier_kind": {"type": "string", "enum": ["id", "sourceId", "slug"]},
-                    "key": {"type": "string", "description": "Stable dotted ID, for example page.hero.heading"},
-                    "type": {"type": "string", "enum": ["text", "richText", "image", "link"]},
-                    "label": {"type": "string"},
-                    "section": {"type": "string"},
-                    "value": {"description": "Initial text, rich-text-compatible value, or portable image source ID"},
-                    "image": {"description": "Portable media source ID or {sourceId/id} reference for an image field"},
-                    "rich_text": {"type": "object", "additionalProperties": True},
-                },
-                ["collection", "identifier", "key", "type", "label"],
-            ),
-            fn(
-                "migrate_editable_fields",
-                "Apply an explicit batch of declarative field definitions to an existing Payload document in one draft update. The definitions must come from an intentional migration plan; this tool does not scan source code or infer fields.",
-                {
-                    "collection": collection,
-                    "identifier": {"type": "string", "description": "Payload id, sourceId, or slug"},
-                    "identifier_kind": {"type": "string", "enum": ["id", "sourceId", "slug"]},
-                    "fields": {
-                        "type": "array",
-                        "maxItems": 100,
-                        "items": {
-                            "type": "object",
-                            "required": ["key", "type", "label"],
-                            "additionalProperties": True,
-                        },
-                    },
-                },
-                ["collection", "identifier", "fields"],
-            ),
-            fn(
-                "set_editable_field",
-                "Update the value of an existing registered field in a draft. Inspect the registry first and pass expected_value when the current value matters; this tool cannot create a missing binding.",
-                {
-                    "collection": collection,
-                    "identifier": {"type": "string", "description": "Payload id, sourceId, or slug"},
-                    "identifier_kind": {"type": "string", "enum": ["id", "sourceId", "slug"]},
-                    "key": {"type": "string"},
-                    "value": {"description": "New text or rich text value"},
-                    "image": {"description": "New portable media source ID or {sourceId/id} reference"},
-                    "expected_value": {"type": "string"},
-                },
-                ["collection", "identifier", "key"],
-            ),
-            fn(
-                "validate_editable_fields",
-                "Validate the explicit field registry without writing. Reports invalid IDs, duplicate bindings, missing labels, or unsupported types.",
-                {
-                    "collection": collection,
-                    "identifier": {"type": "string", "description": "Payload id, sourceId, or slug"},
-                    "identifier_kind": {"type": "string", "enum": ["id", "sourceId", "slug"]},
-                },
-                ["collection", "identifier"],
-            ),
-            fn(
                 "create_payload_draft",
                 "Create a new Payload draft. Ask for missing required business facts instead of inventing them.",
                 {"collection": collection, "data": data},
@@ -534,16 +250,10 @@ def _tools_spec(
             ),
             fn(
                 "update_payload_draft",
-                "Update only the requested fields on an existing Payload draft. Never publish as part of this tool.",
-                {"collection": collection, "id": {"type": "string"}, "data": data},
-                ["collection", "id", "data"],
+                "Update only the requested fields on an existing Payload draft. Read the document first and pass its exact expectedHash. Never publish as part of this tool.",
+                {"collection": collection, "id": {"type": "string"}, "expected_hash": {"type": "string"}, "data": data},
+                ["collection", "id", "expected_hash", "data"],
             ),
-             fn(
-                 "publish_payload_document",
-                  "Publish an existing Payload document only when the owner explicitly asks to publish it.",
-                 {"collection": collection, "id": {"type": "string"}},
-                 ["collection", "id"],
-             ),
              fn(
                  "read_payload_global",
                   "Read one shared Payload global. Use this before changing navigation or site-wide settings.",
@@ -555,18 +265,13 @@ def _tools_spec(
              ),
              fn(
                  "update_payload_global",
-                  "Update selected fields on a shared Payload global draft. Never publish as part of this tool.",
+                  "Update selected fields on a shared Payload global draft. Read it first and pass its exact expectedHash. Never publish as part of this tool.",
                  {
                       "global": payload_global,
+                     "expected_hash": {"type": "string"},
                      "data": {"type": "object", "additionalProperties": True},
                  },
-                 ["global", "data"],
-             ),
-             fn(
-                 "publish_payload_global",
-                  "Publish a shared Payload global only when the owner explicitly asks to publish it.",
-                  {"global": payload_global},
-                 ["global"],
+                 ["global", "expected_hash", "data"],
              ),
          ])
     if use_existing_builder:
@@ -589,9 +294,9 @@ SYSTEM_NOTE_TOOLS = (
     "You are the creative lead: the owner expects high-end, distinctive design, not a template "
     "or typical CMS look, and you have full coding capability through the builder for that. "
     "For an existing source-backed site, use spawn_build for every source, style, layout, "
-    "responsive, or visual change — even a focused one-line fix. It inspects the repository, "
-    "implements the change, and creates the rendered preview/approval draft. Do not use the "
-    "legacy proposal-only path for source changes. The typed design handoff is only for a "
+        "responsive, or visual change — even a focused one-line fix. It inspects the repository, "
+        "implements the change, and creates the rendered preview/approval draft. Do not use the "
+        "typed design handoff for an existing source workspace. The typed design handoff is only for a "
     "site without an existing source workspace. "
     "Read tools exist to inform your answer; once you have what you need, act. "
     "Do not re-read what you already saw."
@@ -614,28 +319,19 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
     phrase = {
         "read_file": lambda: f"reading {args.get('path', '')}",
         "list_files": lambda: "listing repository files",
-        "get_content": lambda: "reading content.json",
         "get_metrics": lambda: "reading saved analytics and search evidence",
         "get_growth": lambda: "checking growth connections and approvals",
         "list_drafts": lambda: "checking pending drafts",
         "recall_memory": lambda: "searching my memory",
         "search_media": lambda: "searching the Library",
         "search_business_knowledge": lambda: "searching approved business knowledge",
-        "propose_changes": lambda: "staging the change",
         "spawn_build": lambda: "briefing the builder agent",
         "design_request": lambda: "preparing the typed design handoff",
          "read_payload_content": lambda: "reading the selected Payload document",
-        "inspect_editable_fields": lambda: "reading the declared editable fields",
-        "define_editable_field": lambda: "declaring an editable field draft",
-        "set_editable_field": lambda: "updating an editable field draft",
-        "migrate_editable_fields": lambda: "migrating declared editable fields",
-        "validate_editable_fields": lambda: "validating the declared editable fields",
         "create_payload_draft": lambda: "creating a Payload draft",
         "update_payload_draft": lambda: "updating the Payload draft",
-        "publish_payload_document": lambda: "publishing the Payload document",
         "read_payload_global": lambda: "reading the shared Payload global",
         "update_payload_global": lambda: "updating the shared Payload global draft",
-        "publish_payload_global": lambda: "publishing the shared Payload global",
     }.get(name, lambda: name)
     say(phrase())
     if name == "read_file":
@@ -664,7 +360,7 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
                 next_step = (
                     "use spawn_build with a concise implementation brief"
                     if _runner.builder_available(context.get("config") or {})
-                    else "use propose_changes edit with an exact unique snippet"
+                    else "the canonical source build is unavailable; do not stage an unbuilt edit"
                 )
                 out = f"[{path} around '{contains}']\n{window}\n\n[{next_step}]"
             elif contains:
@@ -686,11 +382,6 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
             return "\n".join(files[:150])
         except AttributeError:
             return "Listing not supported on this adapter."
-    if name == "get_content":
-        doc = _cached_content(context, adapter)
-        if doc is None:
-            return "content.json not found."
-        return _content_summary(doc)
     if name == "get_metrics":
         from ..application.growth import growth_metrics
         return json.dumps(growth_metrics(memory), ensure_ascii=False)
@@ -733,10 +424,8 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
             return "Approved business knowledge is not available."
         return json.dumps(service.search(str(args.get("query") or ""), int(args.get("limit", 8))))
     if name in {
-        "read_payload_content", "create_payload_draft", "update_payload_draft", "publish_payload_document",
-        "read_payload_global", "update_payload_global", "publish_payload_global",
-        "inspect_editable_fields", "define_editable_field", "set_editable_field", "validate_editable_fields",
-        "migrate_editable_fields",
+        "read_payload_content", "create_payload_draft", "update_payload_draft",
+        "read_payload_global", "update_payload_global",
     }:
         payload = _payload_gateway(context)
         if payload is None:
@@ -756,62 +445,6 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
                     **read_kwargs,
                 )
                 return _payload_result(document, action="read")
-            if name == "inspect_editable_fields":
-                result = payload.inspect_editable_fields(
-                    str(args.get("collection") or ""),
-                    identifier=str(args.get("identifier") or ""),
-                    identifier_kind=str(args.get("identifier_kind") or "sourceId"),
-                    draft=bool(args.get("draft", True)),
-                    locale=locale,
-                )
-                return _editable_fields_result(result, action="inspection")
-            if name == "define_editable_field":
-                result = payload.define_editable_field(
-                    str(args.get("collection") or ""),
-                    identifier=str(args.get("identifier") or ""),
-                    identifier_kind=str(args.get("identifier_kind") or "sourceId"),
-                    key=str(args.get("key") or ""),
-                    field_type=str(args.get("type") or ""),
-                    label=str(args.get("label") or ""),
-                    section=args.get("section"),
-                    value=args.get("value"),
-                    image=args.get("image"),
-                    rich_text=args.get("rich_text"),
-                    locale=locale,
-                )
-                context["_last_action_succeeded"] = True
-                return f"Editable field draft defined: {_editable_fields_result(result, action='definition')}"
-            if name == "set_editable_field":
-                result = payload.set_editable_field(
-                    str(args.get("collection") or ""),
-                    identifier=str(args.get("identifier") or ""),
-                    identifier_kind=str(args.get("identifier_kind") or "sourceId"),
-                    key=str(args.get("key") or ""),
-                    value=args.get("value"),
-                    image=args.get("image"),
-                    expected_value=args.get("expected_value"),
-                    locale=locale,
-                )
-                context["_last_action_succeeded"] = True
-                return f"Editable field draft updated: {_editable_fields_result(result, action='update')}"
-            if name == "migrate_editable_fields":
-                result = payload.migrate_editable_fields(
-                    str(args.get("collection") or ""),
-                    identifier=str(args.get("identifier") or ""),
-                    identifier_kind=str(args.get("identifier_kind") or "sourceId"),
-                    fields=args.get("fields") or [],
-                    locale=locale,
-                )
-                context["_last_action_succeeded"] = True
-                return f"Editable field migration draft applied: {_editable_fields_result(result, action='migration')}"
-            if name == "validate_editable_fields":
-                result = payload.validate_editable_fields(
-                    str(args.get("collection") or ""),
-                    identifier=str(args.get("identifier") or ""),
-                    identifier_kind=str(args.get("identifier_kind") or "sourceId"),
-                    locale=locale,
-                )
-                return _editable_fields_result(result, action="validation")
             if name == "read_payload_global":
                 read_kwargs = {"draft": bool(args.get("draft", True))}
                 if locale:
@@ -829,51 +462,22 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
                     str(args.get("collection") or ""),
                     str(args.get("id") or ""),
                     args.get("data") or {},
+                    expected_hash=str(args.get("expected_hash") or ""),
                     **write_kwargs,
                 )
                 context["_last_action_succeeded"] = True
                 return f"Payload draft updated: {_payload_result(document, action='write')}"
-            if name == "publish_payload_document":
-                document = payload.publish(str(args.get("collection") or ""), str(args.get("id") or ""))
-                context["_last_action_succeeded"] = True
-                return f"Payload document published: {_payload_result(document, action='write')}"
             if name == "update_payload_global":
                 write_kwargs = {"locale": locale} if locale else {}
-                document = payload.update_global(str(args.get("global") or ""), args.get("data") or {}, **write_kwargs)
+                document = payload.update_global(
+                    str(args.get("global") or ""), args.get("data") or {},
+                    expected_hash=str(args.get("expected_hash") or ""), **write_kwargs,
+                )
                 context["_last_action_succeeded"] = True
                 return f"Payload global draft updated: {_payload_result(document, action='write')}"
-            document = payload.publish_global(str(args.get("global") or ""))
-            context["_last_action_succeeded"] = True
-            return f"Payload global published: {_payload_result(document, action='write')}"
+            return "REFUSED: unknown Payload action."
         except Exception as exc:  # noqa: BLE001 — a tool failure should be explained to Ada
             return f"REFUSED: Payload content action failed: {str(exc)[:500]}"
-    if name == "propose_changes":
-        summary = str(args.get("summary", "site changes"))[:200]
-        say("checking every operation against the live files")
-        try:
-            ops = validate_ops(context, args.get("ops"), adapter)
-        except EditError as exc:
-            return f"REFUSED: {exc}"
-        try:
-            proposal_id = store_proposal(memory, {"ops": ops}, summary)
-        except EditError as exc:
-            return f"REFUSED: {exc}"
-        say(f"proposal #{proposal_id} ready")
-        context["_last_proposal_id"] = proposal_id
-        context["_last_change"] = {
-            "status": "stored_only",
-            "draft_id": proposal_id,
-            "changed_paths": sorted({str(item.get("path") or "") for item in ops}),
-            "preview": None,
-        }
-        context["_last_action_succeeded"] = True
-        lines = "\n".join(f"[{o['op']}] {o['path']}" for o in ops)
-        return (
-            f"Technical edit draft #{proposal_id} recorded.\n"
-            "No rendered preview was created by this compatibility path, and no source change is ready for review. "
-            "Use the implementation build workflow before asking the owner to review a result.\n"
-            f"Operations recorded: {lines}"
-        )
     if name == "spawn_build":
         from ..hands import opencode_runner as runner
         brief = str(args.get("brief", "")).strip()
@@ -956,16 +560,10 @@ def _max_work_steps(context: dict[str, Any], default: int = 8) -> int:
 
 
 SIDE_EFFECTS = {
-    "propose_changes",
     "spawn_build",
     "create_payload_draft",
     "update_payload_draft",
-    "define_editable_field",
-    "set_editable_field",
-    "migrate_editable_fields",
-    "publish_payload_document",
     "update_payload_global",
-    "publish_payload_global",
 }
 
 
@@ -981,7 +579,6 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
         persona
         + ("\n\n" + inner if inner else "")
         + SYSTEM_NOTE_TOOLS.replace("%%WRITABLE%%", patterns)
-        + "\n\nReference — content.json fields: " + _content_summary_cached(context, adapter)
     )
     profile = configured_site_profile_prompt(context.get("config") or {})
     if profile:
@@ -1017,16 +614,15 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
     if _payload_gateway(context) is not None:
         system += (
             "\n\nPayload workflow: the selected workspace document is supplied in the user context. "
-            "For a focused content request, inspect the explicit editable-field registry first, then "
-            "use set_editable_field for a registered binding. Use define_editable_field only when Ada "
-            "is creating or deliberately migrating a stable field ID; never scan source code, rendered "
-            "text, or image URLs to discover fields. Payload edits remain drafts. Read the document first "
+            "For a focused content request, read the selected Payload document and use its shared, typed "
+            "content fields and stable section IDs. Do not invent schema fields or scan source code, rendered "
+            "text, or image URLs to discover them. Payload edits remain drafts. Read the document first "
             "when broader context is needed, and use update_payload_draft only for non-visual structured "
             "document fields. Use create_payload_draft "
             "only when the owner has supplied the required facts; do not invent titles, prices, dates, "
-            "or URLs. Never call publish_payload_document unless the owner explicitly asks to publish. "
+            "or URLs. Ada can prepare draft content only; publication is a separate explicit owner action in the Payload workspace. "
             "For shared navigation or site identity, read the relevant global first and use update_payload_global; "
-            "global edits remain drafts. Never call publish_payload_global unless the owner explicitly asks to publish. "
+            "global edits remain drafts and must never be published by Ada. "
             "Broad visual requests belong on the typed design workflow instead of Payload content tools."
         )
     try:

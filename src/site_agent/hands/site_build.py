@@ -1,4 +1,4 @@
-"""Explicit local build profiles for legacy static and Next/React sites."""
+"""The canonical local build profile for managed Next/React/Payload sites."""
 
 from __future__ import annotations
 
@@ -177,17 +177,6 @@ class SiteOutputArtifactStore:
             route_inventory=self._routes(path),
         )
 
-
-PELICAN_BASELINE_PROFILE = SiteBuildProfile(
-    name="pelican_baseline",
-    source_kind="pelican",
-    install_command=(),
-    check_commands=(),
-    build_command=("bash", "build.sh"),
-    output_dir="output",
-    writable_patterns=("content/**", "themes/**", "pelicanconf.py", "build.sh"),
-    prohibited_paths=(".env", ".github", "output"),
-)
 
 # These trees are either produced by the framework/toolchain or belong to the
 # host's authoring session. They are never candidate source and must not be
@@ -439,7 +428,7 @@ def prepare_native_workspace(root: str | Path, profile: SiteBuildProfile) -> tup
 
 _EXACT_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
 
-PROFILES = {profile.name: profile for profile in (PELICAN_BASELINE_PROFILE, NEXT_REACT_PROFILE)}
+PROFILES = {NEXT_REACT_PROFILE.name: NEXT_REACT_PROFILE}
 
 
 def get_build_profile(name: str) -> SiteBuildProfile:
@@ -737,7 +726,6 @@ __all__ = [
     "NEXT_REACT_PROFILE",
     "NEXT_REACT_BUILD_TRANSIENT_FILES",
     "NEXT_REACT_TOOLCHAIN_DEPENDENCIES",
-    "PELICAN_BASELINE_PROFILE",
     "PROFILES",
     "SiteBuildError",
     "SiteBuildProfile",

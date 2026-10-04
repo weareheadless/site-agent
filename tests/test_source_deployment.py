@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import sys
-import threading
 
 import pytest
 
@@ -22,9 +20,10 @@ def test_revision_marker_is_written_only_to_the_detached_worktree(tmp_path):
         service.close()
 
 
-def test_missing_repo_inventory_uses_host_owned_fallback(tmp_path):
+def test_preview_inventory_uses_only_the_host_owned_implementation(tmp_path):
     service = source_deployment.SourceDeploymentService(
-        {"site": {"clone_path": str(tmp_path), "preview_branch": "preview"}},
+        {"site": {"clone_path": str(tmp_path), "preview_branch": "preview"},
+         "source_deployment": {"inventory_script": "customer-controlled-inventory.ts"}},
     )
     try:
         command = service._inventory_command(tmp_path, tmp_path)
@@ -66,25 +65,28 @@ def test_source_deployment_prefers_configured_supported_node_runtime(tmp_path):
         service.close()
 
 
-def test_public_revision_verification_requires_the_exact_commit(tmp_path):
+def test_public_revision_verification_requires_the_exact_commit(monkeypatch, tmp_path):
     expected = "b" * 40
 
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):  # noqa: N802 - stdlib handler API
-            if self.path.split("?", 1)[0] != "/site-agent-revision.txt":
-                self.send_response(404)
-                self.end_headers()
-                return
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write((expected + "\n").encode("utf-8"))
+    class Response:
+        status = 200
 
-        def log_message(self, *_args):
-            return
+        def __enter__(self):
+            return self
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+        def __exit__(self, *_args):
+            return None
+
+        def read(self):
+            return (expected + "\n").encode("utf-8")
+
+    requests = []
+
+    def open_url(request, timeout):
+        requests.append((request, timeout))
+        return Response()
+
+    monkeypatch.setattr(source_deployment.urllib.request, "urlopen", open_url)
     service = source_deployment.SourceDeploymentService(
         {
             "site": {"clone_path": str(tmp_path), "preview_branch": "preview"},
@@ -93,17 +95,20 @@ def test_public_revision_verification_requires_the_exact_commit(tmp_path):
     )
     try:
         result = service._verify_public_revision(
-            f"http://127.0.0.1:{server.server_port}",
+            "https://tenant.example",
             expected,
             label="test runtime",
         )
         assert result["ok"] is True
         assert result["commit"] == expected
+        assert len(requests) == 1
+        request, timeout = requests[0]
+        assert request.full_url == f"https://tenant.example/site-agent-revision.txt?revision_check={expected}"
+        assert request.get_method() == "GET"
+        assert request.get_header("X-site-agent-revision-check") == expected
+        assert timeout == 10
     finally:
         service.close()
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=2)
 
 
 def test_compiled_preview_rebuilds_exact_commit_after_process_restart(monkeypatch, tmp_path):

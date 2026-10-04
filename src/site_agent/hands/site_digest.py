@@ -145,8 +145,7 @@ def build(clone: Path, ref: str = "origin/main") -> str:
         key=lambda p: (p.lower() != "styles.css", p),
     )
     lines = [
-        f"Files ({len(files)}): {len(html)} pages, {len(css)} stylesheets, "
-        f"content.json: {'yes' if 'content.json' in files else 'no'}"
+        f"Files ({len(files)}): {len(html)} pages, {len(css)} stylesheets"
     ]
     for page in html[:_MAX_PAGES]:
         block = _describe_page(clone, ref, page)

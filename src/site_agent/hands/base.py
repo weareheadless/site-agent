@@ -9,11 +9,10 @@ class AdapterError(Exception):
 
 
 class SiteAdapter(ABC):
-    """A publish target. Reads site content, commits changes, reports status.
+    """A versioned source target used for code review and deployment.
 
-    Contract (Phase 4 will build the editor on top of this):
-      get_content()  -> parsed content document (dict)
-      commit_file()  -> persist one file to the target, returns info dict
+    Contract:
+      commit_file()  -> persist one source file to the target, returns info dict
       status()       -> deployment/health info dict for the admin UI
       validate()     -> raise AdapterError if config is unusable
     """
@@ -23,10 +22,6 @@ class SiteAdapter(ABC):
     def __init__(self, config: dict[str, Any] | None = None):
         self.root = config or {}
         self.site = self.root.get("site") or {}
-
-    @abstractmethod
-    def get_content(self) -> dict[str, Any]:
-        ...
 
     @abstractmethod
     def commit_file(self, path: str, data: bytes, message: str) -> dict[str, Any]:

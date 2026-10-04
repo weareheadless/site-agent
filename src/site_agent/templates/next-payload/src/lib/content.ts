@@ -5,11 +5,12 @@ import {
   readHelloAdaPage,
   readHelloAdaPost,
   readHelloAdaPosts,
+  readHelloAdaProduct,
 } from '@weareheadless/helloada-payload-core/server'
 
 import config from '@payload-config'
 
-export type ContentRecord = Record<string, any>
+export type ContentRecord = Record<string, unknown>
 
 const objectValue = (value: unknown): ContentRecord =>
   value && typeof value === 'object' && !Array.isArray(value) ? value as ContentRecord : {}
@@ -39,41 +40,37 @@ export const lexicalParagraphs = (value: unknown) => lexicalText(value).split(/\
 
 type PayloadClient = Awaited<ReturnType<typeof getPayload>>
 
-// Builds must not open D1/R2. At runtime, binding errors are deliberately
-// allowed to surface: a missing Payload document is never replaced by JSX copy.
-const payload = async (): Promise<PayloadClient | undefined> => {
-  if (process.env.PAYLOAD_LOCAL_BUILD === '1' || process.env.NEXT_PHASE === 'phase-production-build') return undefined
-  return await getPayload({ config })
+// Routes are request-rendered on the Worker. A build-time Payload read would
+// silently bind to an empty local D1, so it is an architecture error.
+const payload = async (): Promise<PayloadClient> => {
+  if (process.env.PAYLOAD_LOCAL_BUILD === '1' || process.env.NEXT_PHASE === 'phase-production-build') {
+    throw new Error('Public Payload content was read during a build; managed routes must remain request-rendered.')
+  }
+  return getPayload({ config })
 }
 
 export async function getPageBySlug(slug = 'home', locale?: string): Promise<ContentRecord | undefined> {
-  const instance = await payload()
-  if (!instance) return undefined
-  return await readHelloAdaPage(instance, slug, locale) as ContentRecord | undefined
+  return await readHelloAdaPage(await payload(), slug, locale) as ContentRecord | undefined
+}
+
+export async function getProductBySlug(slug: string, locale?: string): Promise<ContentRecord | undefined> {
+  return await readHelloAdaProduct(await payload(), slug, locale) as ContentRecord | undefined
 }
 
 export async function getPublishedPosts(locale?: string): Promise<ContentRecord[]> {
-  const instance = await payload()
-  if (!instance) return []
-  return await readHelloAdaPosts(instance, locale) as ContentRecord[]
+  return await readHelloAdaPosts(await payload(), locale) as ContentRecord[]
 }
 
 export async function getPostBySlug(slug: string, locale?: string): Promise<ContentRecord | undefined> {
-  const instance = await payload()
-  if (!instance) return undefined
-  return await readHelloAdaPost(instance, slug, locale) as ContentRecord | undefined
+  return await readHelloAdaPost(await payload(), slug, locale) as ContentRecord | undefined
 }
 
 export async function getSiteSettings(locale?: string): Promise<ContentRecord> {
-  const instance = await payload()
-  if (!instance) return {}
-  return await readHelloAdaGlobal(instance, 'siteSettings', locale) as ContentRecord
+  return await readHelloAdaGlobal(await payload(), 'siteSettings', locale) as ContentRecord
 }
 
 export async function getNavigation(locale?: string): Promise<ContentRecord> {
-  const instance = await payload()
-  if (!instance) return {}
-  return await readHelloAdaGlobal(instance, 'navigation', locale) as ContentRecord
+  return await readHelloAdaGlobal(await payload(), 'navigation', locale) as ContentRecord
 }
 
 export const seoFor = (document: ContentRecord | undefined, settings: ContentRecord) => {
@@ -83,12 +80,3 @@ export const seoFor = (document: ContentRecord | undefined, settings: ContentRec
     title: text(seo.title || document?.title || settings.defaultSeoTitle || settings.siteName),
   }
 }
-
-export const navigationItems = (value: unknown) =>
-  Array.isArray(value)
-    ? value.filter((item) => objectValue(item).visible !== false).map((item) => ({
-        label: text(objectValue(item).label),
-        href: text(objectValue(item).href) || '/',
-        external: objectValue(item).external === true,
-      })).filter((item) => item.label)
-    : []

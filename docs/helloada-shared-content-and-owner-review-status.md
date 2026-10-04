@@ -1,9 +1,55 @@
 # HelloAda shared content and owner review — implementation status
 
-This is the maintained architecture/status companion for the approved
-25-section implementation plan. It records source changes separately from
-release proof. It is not a declaration that customer migrations or production
-deployment have happened.
+This is the maintained architecture/status companion for
+`docs/site-agent-payload-platform-consolidation-implementation-plan.md` (20
+sections). Source changes are reported separately from release proof. Atelier
+Harmonie and OceanicVibes are validation tenants, not production/customer-data
+migration targets; final acceptance additionally requires a newly spawned
+HelloAda site to inherit the canonical schema and editable bindings.
+
+## Current candidate status — 2026-10-04
+
+This is a source candidate, not an accepted rollout. The user clarified that
+Atelier Harmonie and OceanicVibes are validation tenants with no production or
+real customer data. They exist to test the shared architecture. A green local
+test is not validation: both tenants must first be deployed and checked, and a
+new normal-flow HelloAda site must be the final proof that schema and editable
+field bindings are inherited without manual repair.
+
+- Local canonical versions: core `0.2.0`, admin `0.8.7`; the template has a
+  committed lockfile, imports the shared schema, and includes a committed
+  initial migration chain. Core schema identity is locale-independent; tenant
+  locale/configuration identity is recorded separately.
+- Bootstrap now creates from the canonical template and queues the exact source
+  SHA and migration identity through the central VPS release queue. It does not
+  directly deploy Wrangler or apply an existing-tenant migration.
+- The local central repo's full Python suite previously passed **1,140 tests**;
+  a new focused release/migration queue suite passes **47 tests**. Core package
+  passed **13 tests + typecheck**, admin **30 tests + typecheck**, and template
+  **5 tests + typecheck**. A fresh full-suite run is currently in progress.
+- Existing tenant source snapshots have not yet been converted to the canonical
+  contract, deployed, or validated. They have different historical migration
+  ledgers, which must remain append-only; only the final schema identity should
+  match. Their D1 and R2 resources are not to be replaced.
+- A durable, fail-closed release path exists locally. This change adds an
+  explicit schema-migration queue request: the VPS verifies the exact starting
+  ledger, uploads the candidate without promotion, applies only committed
+  migrations, verifies Payload, and then promotes. Ordinary releases cannot
+  advance an existing schema.
+- The legacy FastAPI-served owner UI/commands still exist pending the plan's
+  migration/parity gates; Pelican runtime, importer and build paths have been
+  removed from active code. Remaining historical references need cleanup.
+- No package release for core `0.2.0` or admin `0.8.7`, central source commit,
+  tenant release receipt, authenticated tenant browser proof, or fresh spawn
+  proof has yet been confirmed. Therefore the implementation remains **in
+  progress and not accepted**.
+
+Acceptance order: convert and deploy both validation tenants from their existing
+source and migration histories; verify canonical Payload edits, frontend
+bindings, globals, SEO metadata and package/schema identities independently on
+both; then create a genuinely new site through normal HelloAda intake and prove
+the default schema, editable page/article fields, navigation and settings are
+present and rendered automatically. No DNS changes are part of acceptance.
 
 ## Locked product contract
 
@@ -22,9 +68,9 @@ deployment have happened.
 - Owner website rollback is a new selective frontend-code restoration on the
   current platform baseline. It never restores a prior Worker wholesale or
   rolls back Payload content, media, settings, schema or admin.
-- Production source changes use the central VPS release queue. Schema/data
-  migration is a distinct reviewed operation with tenant/database identity,
-  backup and restoration rehearsal, dry-run evidence and a recorded cutover.
+- All shared-source deployments use the central VPS release queue. Existing
+  tenant schema migrations are explicit, ledger-pinned requests; new tenants
+  use the canonical initial migration. Preserve each tenant's D1/R2 identity.
 
 ## Implemented in this local source candidate
 
@@ -73,150 +119,90 @@ manifest checks. Focused tests cover those source contracts. Do not infer from
 those tests that provider accounts, paid research, the scheduler on the VPS, or
 either customer's deployed UI has passed a live end-to-end run.
 
-## Not complete — hard release and acceptance gates
+## Not complete — acceptance blockers
 
-### 1. Default intake is not on the durable release path
+### Tenant conversions and deployments
 
-`application/bootstrap.py` still runs `npm install`, creates/applies a Payload
-migration against the configured Worker bindings, builds locally, and invokes
-`wrangler deploy` directly. That contradicts the VPS-only production release
-contract. It is not acceptable to claim the new-site default path complete until
-bootstrap queues an exact release through the central VPS pipeline and the
-initial shared-schema migration is a reviewed deterministic artifact.
+Neither existing tenant repository yet imports the published canonical core or
+maps its public frontend to the stable editable fields. Each must retain its own
+append-only Payload history, gain a deterministic migration into the shared
+schema, and preserve its current D1/R2 identities. Source inspection or a build
+does not satisfy this gate: both must be deployed through the release queue and
+independently checked in Payload and on the public routes.
 
-The normal HelloAda intake has not been exercised from a fresh tenant through
-generation, typed-content population, actual preview, refusal/revision, exact
-approval and verified publication. A successful unit test or manually prepared
-template is not this proof.
+### Shared package release and central source
 
-### 2. Payload writes are not yet proven atomic compare-and-swap
+Core `0.2.0` and admin `0.8.7` are local candidates only. Publish exact immutable
+artifacts from a committed `site-agent` SHA, verify package contents and
+integrities, then consume those releases from the template and both tenant
+repositories. Do not queue a tenant whose package asset or migration manifest
+does not exist and match the registry.
 
-The new save/publish endpoints verify hashes before and after their Payload
-effects and coordinate through the D1 operation registry. The shared Payload
-hooks also reject writes while another registered operation is active. This is
-useful fencing and receipts, but it does not prove a serializable CAS boundary
-against every possible Payload writer: an independent Payload operation could
-pass its hook immediately before a competing operation claims the D1 row. The
-plan's race test (candidate B paused, independent edit C, resume B; C must
-survive and B must become stale) has not been implemented/run against the pinned
-D1 adapter. Growth approval/publication must remain blocked from release until
-that destination boundary is solved and parameterized across native, service,
-REST, global and version-restore paths.
+### Fresh-site proof
 
-### 3. Review preview is not the exact public site
+No brand-new site has been created by the normal HelloAda intake from the final
+template. The final proof must exercise onboarding/spawn, then verify that
+Payload already contains the default editable page/article fields and shared
+navigation/settings and that the generated frontend renders their edited values
+without tenant-specific schema repair.
 
-The current Growth renderer validates a generic `PublicDocument` projection. It
-does not render the tenant's complete route tree, site chrome, article index
-card, customer-specific composition, candidate code, or actual edge-cache
-result. Article change review therefore does not yet prove the listing card and
-cover together. The admin's draft preview also has not passed an authenticated
-browser test against an exact draft revision. Do not label the current renderer
-hash as a full visual/publication proof.
+### Plan-wide functional gates
 
-### 4. Schema/package build and published artifact gates are missing
+- Run authenticated browser acceptance on all three sites. Confirm the shared
+  HelloAda shell, spacious chat/preview, image gallery and editing affordances,
+  Payload-owned page/article/SEO/navigation/footer fields, Growth analysis and
+  one review-first decision list. Validate actual changes on their public routes.
+- The D1-backed conditional-write race must prove stale Ada drafts cannot
+  overwrite an independent Payload Admin/REST change. Until that race passes,
+  do not claim atomic compare-and-swap or enable unsafe publication paths.
+- Confirm Growth scheduling has durable dates, one clear user-action/approval
+  list, truthful task details and execution history; ensure provider failures
+  are actionable technical diagnostics, not owner recommendations.
+- Finish the plan's legacy FastAPI UI retirement only after Payload parity is
+  verified. Pelican remains absent from active code; remove stale executable or
+  runbook references without reintroducing a fallback.
+- Prove source, candidate artifact, migration, promotion, health, authenticated
+  connection and browser evidence independently for each tenant. No DNS change
+  is needed or authorized by this acceptance.
 
-- The template has no committed `package-lock.json`; its `node_modules` are not
-  installed. It has not passed `npm ci`, template typecheck, OpenNext build or
-  packed-artifact verification.
-- The template points to admin `0.8.6` and core `0.1.0` release URLs. Those
-  immutable GitHub artifacts were not verified/published in this task. The
-  configured customer manifest versions are not evidence that an artifact is
-  live or used by the customers.
-- No generated Payload/D1 initial migration is committed or rehearsed. Existing
-  tenants cannot safely consume the new contract until migration data mapping,
-  backup/restore rehearsal, dry runs and tenant identity checks pass.
+## Verification recorded on this candidate
 
-### 5. Customer upgrades and production verification are not done
+- Previous full local Python suite: **1,140 passed**. A new run is in progress
+  after the explicit existing-tenant schema-migration gate was added.
+- Focused release queue and schema migration tests: **47 passed**, including
+  exact old-ledger matching, strict-prefix enforcement, no implicit migration,
+  idempotent completed migration, and exact registered target-head checks.
+- Shared packages and canonical template previously passed their local Node
+  tests and TypeScript checks; template OpenNext build was blocked by sandbox
+  denial of its localhost platform-proxy bind. Re-run the build after package
+  artifacts are published and the tenant work is integrated.
+- The template has a lockfile and committed migration artifacts. These do not
+  substitute for a clean package-consumer build or live tenant migration proof.
+- No candidate shared-package release, final source commit, tenant deployment
+  receipt, authenticated browser proof, or fresh spawn proof is recorded yet.
 
-Atelier and OceanicVibes have not been migrated to this schema/content model.
-Their database/media identities, counts and locale/route mappings have not been
-reconfirmed in this checkout; there are no reviewed migration artifacts or
-rehearsed restore evidence. No migration or live content change was performed.
-
-No shared package asset was published, no customer release was queued or
-promoted, and no fresh signed-in browser check proves both customer sites use
-this candidate. GitHub/network access was unavailable during the repository
-audit; local modifications are not committed or pushed production source.
-
-### 6. Remaining product behavior needs end-to-end proof
-
-- Ada's tool writes, builder ownership checks and review APIs need a complete
-  audit proving every content/code mutation uses the shared contract and cannot
-  change platform files or bypass exact approval.
-- A complete review detail must include before/after, named dated evidence,
-  affected routes/components, exact candidate/base/document revisions, platform
-  contract version, cost/risk, validation and actual effect. Source tests do not
-  prove every legacy stored record has the required detail.
-- Existing task/report/voice/research history still requires the plan's
-  dry-run classification and safe migration; technical errors must remain
-  operator history, not owner approvals. Known provider fixtures need corrected
-  end-to-end validation before paid submission.
-- Scheduler ownership, default cadence, restart/DST/dual-process behavior,
-  actual planned dates, paid-work reconciliation and the recent execution rail
-  need production-equivalent integration tests.
-- The frontend rollback UI/pipeline must produce a selective new commit from a
-  supported baseline while preserving current shared packages, CMS data and
-  customer design bindings. Promoting an old full Worker is not an acceptable
-  rollback. This is not yet proved.
-- Global navbar/footer changes need an authenticated Payload edit followed by
-  all affected route checks; publication cache invalidation is not yet verified
-  live.
-- The existing bootstrap and generic source-deployment pathways require an
-  explicit audit to ensure they cannot bypass the central release queue.
-
-## Verification performed on this candidate
-
-Candidate verification on 2026-10-03:
-
-- `packages/helloada-payload-core`: **11 tests passed** and `tsc --noEmit`
-  passed.
-- `packages/helloada-payload-admin`: **28 tests passed** and `tsc --noEmit`
-  passed.
-- `npm pack --dry-run --json` succeeded for both shared packages, confirming the
-  expected source files are included without producing release artifacts.
-- Python syntax compilation (`compileall`) and `git diff --check` passed on the
-  final local source state.
-- A prior full Python-suite run reported **1,137 passed, 7 failed**. Six
-  failures were in candidate ownership/design-lab tests, a removed Pelican
-  profile, environment allowlisting/preview fixtures, and a sandbox-denied
-  socket bind. The seventh exposed a reflection-approval fixture/contract
-  mismatch; its handler and fixture were subsequently changed, but that repair
-  has not been rerun in this checkout because the active Python runtime has no
-  `pytest` installed.
-- A prior focused Python contract run reported **127 passed** before that final
-  reflection-contract adjustment. It is not evidence for the final Python
-  candidate.
-- Template TypeScript was syntax-parsed, not typechecked or built. The template
-  has no committed lockfile or installed dependency tree, and its candidate
-  GitHub package artifacts could not be fetched/verified in this network
-  environment.
-- Wheel packaging was attempted but not completed: isolated build dependencies
-  could not be fetched because network DNS was unavailable.
-- No clean packed-package integration, fresh-tenant intake acceptance,
-  database migration rehearsal, official VPS receipt, production deployment,
-  or fresh authenticated customer-browser verification has been produced.
-
-These results are deliberately separated: green shared-package tests do not
-prove the template, Python services, migrations, scheduler, VPS release, or
-customer deployments. Missing evidence is a blocked gate, not an assumed pass.
+Test status refers only to source-level candidate evidence. It does not validate
+the common Payload contract across live tenants; the release and new-site gates
+above remain mandatory.
 
 ## Release order
 
-1. Solve the default bootstrap/release path and deterministic shared initial
-   migration; commit a template lockfile.
-2. Implement and test destination-level conditional writes and exact review
-   rendering against the pinned Payload/D1/OpenNext runtime.
-3. Run the normal intake vertical slice in an isolated tenant and complete the
-   approval/refusal/article/report/scheduling/rollback acceptance scenarios.
-4. Publish immutable tested core/admin artifacts. Pin the default template and
-   register intended consumers to exact versions.
-5. Produce tenant-specific migration mapping, backup and restore rehearsal,
-   dry-run counts and reviewed migration releases for Atelier and OceanicVibes.
-6. Queue customer releases through the official VPS contract; verify exact
-   source/artifact/Worker/D1 migration receipts and authenticated browser
-   behavior independently for both customers.
-7. Update this record with exact official Git SHAs, artifact hashes, migration
-   IDs, release receipts, tests and browser proof. Only then mark the plan done.
+1. Finish and commit the exact local central-source candidate; publish and
+   verify the immutable core/admin assets from that commit.
+2. Convert Atelier and OceanicVibes repos to the core schema and explicit
+   editable-field/frontend bindings, appending migrations without replacing
+   either tenant's D1/R2 identity. Run tenant builds and migration checks.
+3. Queue and deploy each validation tenant separately; record exact source,
+   artifact, migration and Worker receipts and verify Payload edits on actual
+   pages, article cards/routes, SEO metadata and shared globals.
+4. Run the plan-wide authenticated Payload/browser checks and finish retirement
+   of the legacy FastAPI owner UI once parity is established.
+5. Create a genuinely new tenant through normal HelloAda onboarding. Verify
+   schema identity, package pins, default editable fields, shared globals and
+   frontend bindings with no manual schema repair.
+6. Update this record with exact SHAs, package integrities, migration IDs,
+   release receipts, test output and authenticated browser evidence. Only then
+   mark the implementation plan accepted.
 
 Until these gates pass, this work is an unpushed source candidate—not a
 production migration, customer upgrade, or completed implementation plan.

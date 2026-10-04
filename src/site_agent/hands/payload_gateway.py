@@ -18,7 +18,6 @@ from typing import Any, Mapping
 
 from ..config import ConfigError
 from .base import AdapterError, SiteAdapter, register
-from .payload_fields import EditableFieldGatewayMixin
 
 
 class PayloadGatewayError(RuntimeError):
@@ -97,13 +96,22 @@ def _safe_json(raw: bytes) -> Any:
         return {"message": raw.decode(errors="replace")[:300]}
 
 
+def _revision(document: Any, response: Mapping[str, Any], label: str) -> dict[str, Any]:
+    if not isinstance(document, dict):
+        raise PayloadGatewayError(f"gateway returned no {label}")
+    digest = str(response.get("documentHash") or response.get("globalHash") or "").strip()
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+        raise PayloadGatewayError(f"gateway returned no exact {label} revision")
+    return {**document, "_helloadaRevision": digest}
+
+
 @dataclass(frozen=True)
-class PayloadGatewayClient(EditableFieldGatewayMixin):
+class PayloadGatewayClient:
     base_url: str
     token: str
     contract: PayloadContract
     timeout_seconds: float = 30.0
-    gateway_prefix: str = "/api"
+    gateway_prefix: str = "/api/workspace"
 
     @classmethod
     def from_config(
@@ -133,7 +141,7 @@ class PayloadGatewayClient(EditableFieldGatewayMixin):
             raise ConfigError("site.payload.timeout_seconds must be a positive number") from exc
         if not 0 < timeout <= 120:
             raise ConfigError("site.payload.timeout_seconds must be between 0 and 120")
-        gateway_prefix = str(settings.get("api_prefix") or "/api").strip().rstrip("/")
+        gateway_prefix = str(settings.get("api_prefix") or "/api/workspace").strip().rstrip("/")
         if not gateway_prefix.startswith("/") or "?" in gateway_prefix or "#" in gateway_prefix:
             raise ConfigError("site.payload.api_prefix must be an absolute path without query data")
         contract = PayloadContract.from_settings(settings)
@@ -231,7 +239,7 @@ class PayloadGatewayClient(EditableFieldGatewayMixin):
                 f"refusing fields outside the {collection} draft contract: {', '.join(unknown[:8])}"
             )
         if not data:
-            raise PayloadGatewayError("at least one editable field is required")
+            raise PayloadGatewayError("at least one Payload field is required")
         return dict(data)
 
     def _global(self, slug: str) -> str:
@@ -279,9 +287,7 @@ class PayloadGatewayClient(EditableFieldGatewayMixin):
             },
         )
         document = response.get("document")
-        if not isinstance(document, dict):
-            raise PayloadGatewayError("gateway returned no document")
-        return document
+        return _revision(document, response, "document")
 
     def list(
         self,
@@ -310,7 +316,7 @@ class PayloadGatewayClient(EditableFieldGatewayMixin):
 
     def create(self, collection: str, data: Mapping[str, Any], *, locale: str | None = None) -> dict[str, Any]:
         collection = self._collection(collection)
-        return self._request(
+        response = self._request(
             "POST",
             self._gateway_path("content"),
             payload={
@@ -319,14 +325,17 @@ class PayloadGatewayClient(EditableFieldGatewayMixin):
                 "data": self._data(collection, data),
                 **({"locale": str(locale).strip()} if str(locale or "").strip() else {}),
             },
-        ).get("document") or {}
+        )
+        return _revision(response.get("document"), response, "created document")
 
     def update(self, collection: str, document_id: str, data: Mapping[str, Any], *, locale: str | None = None, expected_hash: str | None = None, expected_fields: list[str] | None = None) -> dict[str, Any]:
         collection = self._collection(collection)
         document_id = str(document_id or "").strip()
         if not document_id:
             raise PayloadGatewayError("document id is required")
-        return self._request(
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", str(expected_hash or "")):
+            raise PayloadGatewayError("an exact expected draft revision is required before updating")
+        response = self._request(
             "POST",
             self._gateway_path("content"),
             payload={
@@ -337,19 +346,23 @@ class PayloadGatewayClient(EditableFieldGatewayMixin):
                 **({"expectedHash": expected_hash, "expectedFields": expected_fields} if expected_hash else {}),
                 **({"locale": str(locale).strip()} if str(locale or "").strip() else {}),
             },
-        ).get("document") or {}
+        )
+        return _revision(response.get("document"), response, "updated document")
 
     def publish(self, collection: str, document_id: str, *, expected_hash: str | None = None, expected_fields: list[str] | None = None) -> dict[str, Any]:
         collection = self._collection(collection)
         document_id = str(document_id or "").strip()
         if not document_id:
             raise PayloadGatewayError("document id is required")
-        return self._request(
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", str(expected_hash or "")):
+            raise PayloadGatewayError("publication requires the exact owner-reviewed draft revision")
+        response = self._request(
             "POST",
             self._gateway_path("content"),
             payload={"operation": "publish", "collection": collection, "id": document_id,
-                **({"expectedHash": expected_hash, "expectedFields": expected_fields} if expected_hash else {})},
-        ).get("document") or {}
+                "expectedHash": expected_hash},
+        )
+        return _revision(response.get("document"), response, "published document")
 
     def read_global(self, slug: str, *, draft: bool = True, locale: str | None = None) -> dict[str, Any]:
         slug = self._global(slug)
@@ -363,53 +376,24 @@ class PayloadGatewayClient(EditableFieldGatewayMixin):
             },
         )
         document = response.get("global")
-        if not isinstance(document, dict):
-            raise PayloadGatewayError("gateway returned no global")
-        return document
+        return _revision(document, response, "global")
 
-    def update_global(self, slug: str, data: Mapping[str, Any], *, locale: str | None = None) -> dict[str, Any]:
+    def update_global(self, slug: str, data: Mapping[str, Any], *, locale: str | None = None, expected_hash: str | None = None) -> dict[str, Any]:
         slug = self._global(slug)
-        return self._request(
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", str(expected_hash or "")):
+            raise PayloadGatewayError("an exact expected global revision is required before updating")
+        response = self._request(
             "POST",
             self._gateway_path("global"),
             payload={
                 "operation": "update",
                 "global": slug,
                 "data": self._global_data(slug, data),
+                "expectedHash": expected_hash,
                 **({"locale": str(locale).strip()} if str(locale or "").strip() else {}),
             },
-        ).get("global") or {}
-
-    def publish_global(self, slug: str) -> dict[str, Any]:
-        slug = self._global(slug)
-        return self._request(
-            "POST",
-            self._gateway_path("global"),
-            payload={"operation": "publish", "global": slug},
-        ).get("global") or {}
-
-    def upsert_seo_record(self, resource: str, data: Mapping[str, Any]) -> dict[str, Any]:
-        """Persist provider data in the tenant's Payload SEO data surface.
-
-        SEO records are intentionally outside the editable content contract:
-        they are written by Ada's authenticated service token and read by the
-        owner-facing Payload view. Provider credentials never enter this
-        payload; the bridge rejects/omits them on the other side.
-        """
-        resource = str(resource or "").strip().lower()
-        if resource not in {"integration", "snapshot", "insight", "keyword_research"}:
-            raise PayloadGatewayError("unsupported SEO resource")
-        if not isinstance(data, Mapping) or not data:
-            raise PayloadGatewayError("SEO record data must be a non-empty object")
-        response = self._request(
-            "POST",
-            self._gateway_path("seo/data"),
-            payload={"operation": "upsert", "resource": resource, "data": dict(data)},
         )
-        document = response.get("document")
-        if not isinstance(document, dict):
-            raise PayloadGatewayError("Payload SEO gateway returned no document")
-        return document
+        return _revision(response.get("global"), response, "updated global")
 
     @staticmethod
     def _media_data(data: Mapping[str, Any]) -> dict[str, Any]:
@@ -446,17 +430,20 @@ class PayloadGatewayClient(EditableFieldGatewayMixin):
         media = response.get("media")
         if not isinstance(media, dict):
             raise PayloadGatewayError("gateway returned no media document")
-        return media
+        return _revision(media, response, "media document")
 
-    def update_media(self, document_id: str, data: Mapping[str, Any]) -> dict[str, Any]:
+    def update_media(self, document_id: str, data: Mapping[str, Any], *, expected_hash: str) -> dict[str, Any]:
         document_id = str(document_id or "").strip()
         if not document_id:
             raise PayloadGatewayError("media id is required")
-        return self._request(
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", str(expected_hash or "")):
+            raise PayloadGatewayError("an exact expected media revision is required before updating")
+        response = self._request(
             "POST",
             self._gateway_path("media"),
-            payload={"operation": "update", "id": document_id, "data": self._media_data(data)},
-        ).get("media") or {}
+            payload={"operation": "update", "id": document_id, "expectedHash": expected_hash, "data": self._media_data(data)},
+        )
+        return _revision(response.get("media"), response, "updated media document")
 
 
 @dataclass(frozen=True)
@@ -634,14 +621,7 @@ class PayloadMediaService:
 
 @register
 class PayloadGatewaySiteAdapter(SiteAdapter):
-    """Payload-backed adapter used by the shared API's chat worker.
-
-    Ada's Payload content tools use ``PayloadGatewayClient`` directly. The
-    editor still expects a ``SiteAdapter`` for its common read context. When a
-    source adapter is supplied, repository reads are allowed through that
-    adapter while file writes remain disabled here; Payload mutations must use
-    the narrow gateway tools instead.
-    """
+    """Read-only source adapter for Payload-backed chat/build workers."""
 
     name = "payload_gateway"
 
@@ -662,47 +642,8 @@ class PayloadGatewaySiteAdapter(SiteAdapter):
         except ConfigError as exc:
             raise AdapterError(str(exc)) from exc
 
-    def get_content(self) -> dict[str, Any]:
-        if self.payload_client is None:
-            return {}
-        collections: dict[str, list[dict[str, Any]]] = {}
-        for collection in self.payload_client.contract.collections if self.payload_client else ():
-            try:
-                rows = self.payload_client.list(collection, draft=True, limit=100)
-            except PayloadGatewayError:
-                rows = []
-            collections[collection] = [
-                {
-                    key: row.get(key)
-                    for key in ("id", "sourceId", "slug", "title", "_status", "updatedAt")
-                    if row.get(key) is not None
-                }
-                for row in rows
-            ]
-        globals: dict[str, dict[str, Any]] = {}
-        for slug in self.payload_client.contract.globals if self.payload_client else ():
-            try:
-                row = self.payload_client.read_global(slug, draft=True) if self.payload_client else {}
-            except PayloadGatewayError:
-                row = {}
-            globals[slug] = {
-                key: row.get(key)
-                for key in (
-                    "siteName", "businessName", "tagline", "items", "groups", "footer", "footerGroups", "telephone", "email",
-                    "facebookUrl", "instagramUrl", "footerKicker", "footerTitle", "footerNote", "address",
-                )
-                if row.get(key) is not None
-            }
-        return {"payload_documents": collections, "payload_globals": globals}
-
     def get_file(self, path: str, branch: str | None = None) -> tuple[str | None, bytes | None]:
         requested = str(path or "").lstrip("/")
-        payload_content_path = str(self.site.get("content_path") or "content.json").lstrip("/")
-        if requested == payload_content_path:
-            # This document belongs to Payload, not the source repository.
-            # Let get_content() use the gateway contract instead of asking Git
-            # for a path that is expected not to exist on either branch.
-            return None, None
         if self.read_adapter is None:
             return None, None
         try:

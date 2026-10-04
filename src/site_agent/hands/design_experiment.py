@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 import os
+import json
 import subprocess
 from pathlib import Path
 
@@ -168,17 +169,46 @@ def initialize_neutral_repository(root: str | Path) -> tuple[Path, str]:
             raise DesignExperimentError("neutral scaffold must not have a remote")
         if _run(destination, "status", "--porcelain").strip():
             raise DesignExperimentError("neutral scaffold must be clean before use")
+        _validate_managed_payload_scaffold(destination)
         return destination, resolve_commit_sha(destination, "HEAD")
 
-    from ..site_scaffold import initialize_toolchain_workspace
+    from ..site_scaffold import initialize_managed_site
 
-    initialize_toolchain_workspace(destination, "New website")
+    initialize_managed_site(destination, "New website")
     _run(destination, "init", "-q", "-b", "main")
     _run(destination, "config", "user.email", "intake-ada@localhost")
     _run(destination, "config", "user.name", "Intake Ada")
     _run(destination, "add", "-A")
     _run(destination, "commit", "-qm", "neutral scaffold baseline")
     return destination, resolve_commit_sha(destination, "HEAD")
+
+
+def _validate_managed_payload_scaffold(root: Path) -> None:
+    """Reject non-canonical sites and locally forked schemas at the site boundary."""
+    try:
+        manifest = json.loads((root / "template-manifest.json").read_text(encoding="utf-8"))
+        package = json.loads((root / "package.json").read_text(encoding="utf-8"))
+        payload_config = (root / "payload.config.ts").read_text(encoding="utf-8")
+        agent_guide = (root / "AGENTS.md").read_text(encoding="utf-8")
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise DesignExperimentError("existing scaffold is not the canonical managed Payload template") from exc
+    dependencies = package.get("dependencies") if isinstance(package, dict) else None
+    admin_version = str(manifest.get("payloadAdmin") or "") if isinstance(manifest, dict) else ""
+    core_version = str(manifest.get("payloadCore") or "") if isinstance(manifest, dict) else ""
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("templateSchema") != 4
+        or not re.fullmatch(r"helloada-content-v\d+", str(manifest.get("contentContract") or ""))
+        or not re.fullmatch(r"\d+\.\d+\.\d+", admin_version)
+        or not re.fullmatch(r"\d+\.\d+\.\d+", core_version)
+        or not re.fullmatch(r"[0-9a-f]{64}", str(manifest.get("schemaIdentity") or ""))
+        or not isinstance(dependencies, dict)
+        or f"payload-admin-v{admin_version}/" not in str(dependencies.get("@weareheadless/helloada-payload-admin") or "")
+        or f"helloada-payload-core-v{core_version}/" not in str(dependencies.get("@weareheadless/helloada-payload-core") or "")
+        or "createHelloAdaSchema" not in payload_config
+        or "VPS pipeline" not in agent_guide
+    ):
+        raise DesignExperimentError("existing scaffold does not match the canonical Payload package contract")
 
 
 def detach_remote(root: str | Path, remote: str = "origin") -> None:

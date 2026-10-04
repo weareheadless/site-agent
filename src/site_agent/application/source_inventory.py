@@ -1,10 +1,8 @@
-"""Host-owned source inventory fallback for compiled tenant previews.
+"""Host-owned source inventory for compiled tenant previews.
 
-Customer repositories may be older than the optional TypeScript inventory
-script.  Preview validation still needs a deterministic inventory receipt, but
-it must not require a customer repo to carry site-agent tooling.  This module
-intentionally reports repository-level facts only; Payload remains the source
-of truth for editable content.
+The inventory implementation is part of site-agent, never loaded from or
+executed out of a customer repository. It reports repository-level facts only;
+Payload remains the source of truth for editable content.
 """
 
 from __future__ import annotations
@@ -33,7 +31,7 @@ def inventory(root: str | Path) -> dict[str, object]:
         if path.suffix.lower() not in _TEXT_SUFFIXES:
             continue
         files_scanned += 1
-    warnings.append("host-owned fallback inventory; Payload is the editable content source")
+    warnings.append("host-owned source inventory; Payload is the editable content source")
     return {
         "version": 1,
         "root": str(directory),

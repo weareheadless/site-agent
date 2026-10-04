@@ -65,7 +65,6 @@ class GithubStatic(SiteAdapter):
         self.token = github_api_token(config, self.env) or secret(config, "github_token", self.env)
         self.repo = str(self.site.get("repository", "")).strip().strip("/")
         self.branch = str(self.site.get("branch", "main"))
-        self.content_path = str(self.site.get("content_path", "content.json"))
         self._api_unavailable = False
 
     def _local_checkout(self) -> Path | None:
@@ -153,10 +152,8 @@ class GithubStatic(SiteAdapter):
             data = self._git(["show", spec], checkout).stdout
             return sha, data
         except AdapterError as exc:
-            # A Payload-backed site legitimately has no content.json in the
-            # source repository; content is served by the gateway instead.
-            # Missing source paths must therefore behave like the API's 404
-            # result rather than aborting the entire owner-chat job.
+            # A missing source path is an ordinary not-found result rather
+            # than a transport failure; other Git errors must remain visible.
             detail = str(exc).lower()
             if (
                 "needed a single revision" in detail
@@ -348,12 +345,6 @@ class GithubStatic(SiteAdapter):
         self._api_unavailable = False
         value = body.get("object", {}).get("sha") if isinstance(body, dict) else None
         return str(value or "").strip() or None
-
-    def get_content(self, branch: str | None = None) -> dict[str, Any]:
-        _, data = self.get_file(self.content_path, branch=branch)
-        if data is None:
-            raise AdapterError(f"{self.name}: {self.content_path} not found on branch '{branch or self.branch}'")
-        return json.loads(data)
 
     def commit_file(
         self,

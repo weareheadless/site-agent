@@ -12,6 +12,12 @@ from site_agent.core.design_contracts import (
 )
 from site_agent.core.memory import Memory
 from site_agent.hands.design_quality import QualityPolicy
+from site_agent.hands.site_build import (
+    NEXT_REACT_PROFILE,
+    SiteBuildResult,
+    SiteOutputArtifactStore,
+)
+from site_agent.web.preview import PreviewBuildCache
 from site_agent.web.server import create_app
 
 
@@ -36,24 +42,25 @@ def _repo(tmp_path):
     subprocess.run(["git", "-C", str(repo), "init", "-q", "-b", "main"], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
-    (repo / "build.sh").write_text("#!/usr/bin/env bash\nset -e\n")
-    (repo / "pelicanconf.py").write_text("ARTICLE_PATHS = ['articles']\n")
+    presentation = repo / "src/components/site/presentation/Home.tsx"
+    presentation.parent.mkdir(parents=True)
+    presentation.write_text("export function Home(){return <main>Baseline</main>}\n")
     (repo / "index.html").write_text("baseline")
     subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", "baseline"], check=True)
     base_sha = subprocess.run(
         ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
     ).stdout.strip()
-    output = repo / "output"
+    output = repo / "out"
     output.mkdir()
-    (repo / "index.html").write_text("candidate")
+    presentation.write_text("export function Home(){return <main>Candidate</main>}\n")
     (output / "index.html").write_text(
         '<html lang="en"><head><title>Candidate</title>'
         '<meta name="description" content="A real page">'
         '<meta name="viewport" content="width=device-width, initial-scale=1"></head>'
         '<body><h1>Candidate</h1></body></html>'
     )
-    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "src/components/site/presentation/Home.tsx"], check=True)
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", "candidate"], check=True)
     candidate_sha = subprocess.run(
         ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
@@ -74,7 +81,7 @@ def test_design_review_is_sha_bound_and_approval_is_explicit(tmp_path, monkeypat
                 "candidate_sha": candidate_sha,
                 "candidate_ref": target.candidate_ref,
                 "diff_summary": "candidate",
-                "changed_paths": ["index.html", "output/index.html"],
+                "changed_paths": ["src/components/site/presentation/Home.tsx"],
                 "manifest_path": "design/ada-design-manifest.json",
                 "manifest_hash": "d" * 64,
                 "opencode_session_id": "fake-session",
@@ -84,7 +91,13 @@ def test_design_review_is_sha_bound_and_approval_is_explicit(tmp_path, monkeypat
                 "publishable": True,
             })
 
-    service = DesignService(memory, config={"site": {"clone_path": str(repo)}}, builder=FakeBuilder())
+    output_artifacts = SiteOutputArtifactStore(tmp_path / "design-output-artifacts")
+    service = DesignService(
+        memory,
+        config={"site": {"clone_path": str(repo)}},
+        builder=FakeBuilder(),
+        output_artifact_store=output_artifacts,
+    )
     run = service.create_run(_intake(), run_id="design-web-1", base_sha=base_sha)
     request = PageBuildRequest.from_dict({
         "schema_version": 1,
@@ -101,15 +114,66 @@ def test_design_review_is_sha_bound_and_approval_is_explicit(tmp_path, monkeypat
         "candidate_ref": "refs/ada-design/design-web-1",
         "push_mode": "none",
         "publishable": True,
+        "build_profile": NEXT_REACT_PROFILE.name,
+        "allowed_paths": list(NEXT_REACT_PROFILE.writable_patterns),
     })
     service.execute_build(run["run_id"], request, target)
+    import site_agent.application.designs as designs_module
+    def build_candidate(workspace, profile, **_kwargs):
+        output = workspace / profile.output_dir
+        output.mkdir(parents=True, exist_ok=True)
+        (output / "index.html").write_text(
+            '<html lang="en"><head><title>Candidate</title><meta name="description" content="A real page"><meta name="viewport" content="width=device-width, initial-scale=1"></head><body><h1>Candidate</h1></body></html>'
+        )
+        (output / "articles.html").write_text(
+            '<html lang="en"><head><title>Articles</title><meta name="viewport" content="width=device-width, initial-scale=1"></head><body><h1>Articles</h1></body></html>'
+        )
+        return SiteBuildResult(
+            profile=profile.name, ok=True, output_dir=profile.output_dir,
+            commands=(), route_inventory=("index.html", "articles.html"),
+        )
+
+    monkeypatch.setattr(designs_module, "build_site", build_candidate)
     service.validate_run(
         run["run_id"], repo,
         policy=QualityPolicy(
-            build_command=None,
-            allowed_patterns=("index.html", "output/**"),
+            allowed_patterns=NEXT_REACT_PROFILE.writable_patterns,
             required_pages=("index.html",),
         ),
+    )
+    validated_run = service.get_run(run["run_id"])
+    assert validated_run["output_artifact_id"], validated_run["quality_report_json"]["findings"]
+    # This endpoint test exercises the owner-review/approval lifecycle after
+    # the independent gates have passed. Keep the complete host-issued gate
+    # receipt explicit; a build artifact by itself is not review approval.
+    memory.update_design_run(
+        run["run_id"],
+        quality_report_json={
+            "run_id": run["run_id"],
+            "candidate_sha": candidate_sha,
+            "state": "passed",
+            "findings": [],
+            "gates": {
+                "build": "passed",
+                "output": "passed",
+                "native_source": "passed",
+                "browser": "passed",
+                "motion": "passed",
+                "composition": "passed",
+                "experience_journey": "passed",
+            },
+            "evidence": {
+                "output_artifact": {
+                    "status": "passed",
+                    "artifact_id": validated_run["output_artifact_id"],
+                    "tree_hash": validated_run["output_tree_hash"],
+                },
+                "native_source": {
+                    "react_source_files": ["src/components/site/presentation/Home.tsx"],
+                    "gsap_usage_files": ["src/components/site/presentation/Home.tsx"],
+                },
+            },
+        },
     )
 
     class FakeAdapter:
@@ -129,6 +193,13 @@ def test_design_review_is_sha_bound_and_approval_is_explicit(tmp_path, monkeypat
 
     import site_agent.web.server as server_module
 
+    monkeypatch.setattr(
+        PreviewBuildCache,
+        "read_file",
+        lambda self, clone, ref, name, overlays=None, profile=None: (
+            b"baseline" if ref == base_sha and name == "index.html" else b""
+        ),
+    )
     original_get_adapter = server_module.get_adapter
     server_module.get_adapter = lambda name, config: FakeAdapter()
     try:
@@ -142,7 +213,7 @@ def test_design_review_is_sha_bound_and_approval_is_explicit(tmp_path, monkeypat
             assert client.post("/api/login", json={"password": "secret"}).status_code == 200
 
             direct = client.get(f"/api/design/runs/{run['run_id']}/review/index.html")
-            assert direct.status_code == 200
+            assert direct.status_code == 200, direct.text
             assert b"Candidate" in direct.content
             original = client.get(f"/api/design/runs/{run['run_id']}/review/index.html?variant=original")
             assert original.status_code == 200
@@ -151,7 +222,7 @@ def test_design_review_is_sha_bound_and_approval_is_explicit(tmp_path, monkeypat
             assert invalid_variant.status_code == 422
             candidate_pages = client.get(f"/api/design/runs/{run['run_id']}/pages")
             assert candidate_pages.status_code == 200
-            assert candidate_pages.json()["pages"] == ["index.html", "articles.html"]
+            assert candidate_pages.json()["pages"] == ["index.html"]
             original_pages = client.get(f"/api/design/runs/{run['run_id']}/pages?variant=original")
             assert original_pages.status_code == 200
             assert original_pages.json()["ref"] == base_sha
@@ -160,7 +231,7 @@ def test_design_review_is_sha_bound_and_approval_is_explicit(tmp_path, monkeypat
             assert listed[0]["candidate_sha"] == candidate_sha
 
             created = client.post(f"/api/design/runs/{run['run_id']}/review")
-            assert created.status_code == 202
+            assert created.status_code == 202, created.text
             draft_id = created.json()["run"]["draft_id"]
             assert "index.html" in client.get(f"/api/pages?draft_id={draft_id}").json()["pages"]
             staged = client.get(f"/api/review/{draft_id}/index.html")
@@ -250,7 +321,12 @@ def test_design_visual_review_and_refinement_are_explicit_worker_actions(tmp_pat
     memory = Memory(tmp_path / "memory.db")
     run_id = "design-api-flow"
     candidate_ref = f"refs/ada-design/{run_id}"
-    service = DesignService(memory, config={"site": {"clone_path": str(repo)}})
+    output_artifacts = SiteOutputArtifactStore(tmp_path / "design-output-artifacts")
+    service = DesignService(
+        memory,
+        config={"site": {"clone_path": str(repo)}},
+        output_artifact_store=output_artifacts,
+    )
     run = service.create_run(
         _intake(),
         run_id=run_id,
@@ -272,12 +348,28 @@ def test_design_visual_review_and_refinement_are_explicit_worker_actions(tmp_pat
         "candidate_ref": candidate_ref,
         "push_mode": "none",
         "publishable": True,
+        "build_profile": NEXT_REACT_PROFILE.name,
+        "allowed_paths": list(NEXT_REACT_PROFILE.writable_patterns),
     })
+    candidate_output = repo / NEXT_REACT_PROFILE.output_dir
+    candidate_output.mkdir(parents=True, exist_ok=True)
+    (candidate_output / "index.html").write_text(
+        '<html lang="en"><head><title>Candidate</title></head><body><h1>Candidate</h1></body></html>'
+    )
+    retained_output = output_artifacts.publish(
+        candidate_output, profile=NEXT_REACT_PROFILE, candidate_sha=candidate_sha
+    )
     memory.update_design_run(
         run_id,
         candidate_sha=candidate_sha,
         candidate_ref=candidate_ref,
-        planning_json={"build_request": request.to_dict(), "build_target": target.to_dict()},
+        output_artifact_id=retained_output["artifact_id"],
+        output_tree_hash=retained_output["tree_hash"],
+        planning_json={
+            "build_profile": NEXT_REACT_PROFILE.name,
+            "build_request": request.to_dict(),
+            "build_target": target.to_dict(),
+        },
         quality_report_json={"run_id": run_id, "candidate_sha": candidate_sha, "state": "passed", "findings": [], "evidence": {}},
     )
 

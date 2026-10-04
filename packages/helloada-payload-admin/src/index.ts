@@ -11,5 +11,6 @@ export { HelloAdaIcon, HelloAdaLogo, HelloAdaMark } from './components/HelloAdaL
 export { HelloAdaNav } from './components/HelloAdaNav'
 export { WebsiteWorkspace } from './components/WebsiteWorkspace'
 export { WebsiteWorkspace as WebsiteWorkspaceServer } from './components/WebsiteWorkspaceServer'
+export { HELLOADA_PAYLOAD_ADMIN_VERSION } from './version'
 export { HELLOADA_LANGUAGES, DEFAULT_LANGUAGE, isHelloAdaLanguage } from './lib/languages'
 export type { HelloAdaLanguage } from './lib/languages'

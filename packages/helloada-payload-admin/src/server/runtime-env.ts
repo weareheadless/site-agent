@@ -35,9 +35,13 @@ export function helloAdaRuntime() {
   let bindings: Record<string, unknown> | undefined;
   try {
     bindings = getCloudflareContext().env as unknown as Record<string, unknown>;
-  } catch {
-    /* Node/local tests */
+  } catch (cause) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('Cloudflare Worker bindings are unavailable in production.', { cause });
+    }
   }
+  // Process variables are a local-development/test source only. A deployed
+  // Worker must never silently use a VPS/process value for tenant bindings.
   const value = (name: string) =>
     String(bindings ? bindings[name] || "" : process.env[name] || "").trim();
   const url = value("SITE_AGENT_URL").replace(/\/$/, "");

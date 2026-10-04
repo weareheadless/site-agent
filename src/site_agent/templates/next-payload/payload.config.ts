@@ -1,4 +1,3 @@
-import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -15,23 +14,27 @@ import { helloAdaSite } from './src/helloada.config'
 
 const filename = fileURLToPath(import.meta.url)
 const dirname = path.dirname(filename)
-const isCLI = process.env.PAYLOAD_CLI === '1' || process.argv.some((value) => {
-  try {
-    return fs.realpathSync(value).endsWith(path.join('payload', 'bin.js'))
-  } catch {
-    return false
-  }
-})
+const payloadCliEntrypoint = process.argv.some((value) =>
+  /(?:^|[\\/])payload(?:\.cmd|\.js)?$/i.test(value) || /[\\/]payload[\\/]bin\.js$/i.test(value),
+)
+const isCLI = process.env.PAYLOAD_CLI === '1'
+const isDatabaseMigrationCommand = process.argv.some((value) =>
+  ['migrate', 'migrate:status', 'migrate:create', 'migrate:down'].includes(value),
+)
 const isProduction = process.env.NODE_ENV === 'production'
 const isNextBuild = process.env.NEXT_PHASE === 'phase-production-build'
 const isLocalBuild = process.env.PAYLOAD_LOCAL_BUILD === '1'
 const hasCloudflareToken = Boolean(process.env.CLOUDFLARE_API_TOKEN)
 const schema = createHelloAdaSchema(assertNativeWriteAllowed)
 
+if (payloadCliEntrypoint && !isCLI) {
+  throw new Error('Payload CLI commands must use the package-managed scripts, which set PAYLOAD_CLI=1 explicitly.')
+}
+
 // A production Payload CLI command must use Cloudflare's remote bindings.
 // Without this guard, `payload migrate` silently targets Wrangler's local D1
 // database and reports success while production remains on the old schema.
-if (isCLI && isProduction && !hasCloudflareToken && process.env.ALLOW_LOCAL_PAYLOAD_MIGRATION !== '1') {
+if (isCLI && isProduction && isDatabaseMigrationCommand && !hasCloudflareToken) {
   throw new Error('Refusing production Payload CLI without CLOUDFLARE_API_TOKEN; this would target local D1 instead of the tenant database.')
 }
 
@@ -79,14 +82,17 @@ export default buildConfig({
   collections: schema.collections,
   globals: schema.globals,
   localization: {
-    locales: helloAdaSite.locales,
+    locales: [...helloAdaSite.locales],
     defaultLocale: helloAdaSite.defaultLocale,
     fallback: false,
   },
   editor: lexicalEditor(),
   secret: process.env.PAYLOAD_SECRET || (isProduction ? '' : 'helloada-local-development-secret'),
   typescript: { outputFile: path.resolve(dirname, 'src/payload-types.ts') },
-  db: sqliteD1Adapter({ binding: cloudflare.env.D1 }),
+  db: sqliteD1Adapter({
+    binding: cloudflare.env.D1,
+    migrationDir: path.resolve(dirname, 'src/migrations'),
+  }),
   plugins: [r2Storage({ bucket: cloudflare.env.R2, collections: { media: true } })],
 })
 

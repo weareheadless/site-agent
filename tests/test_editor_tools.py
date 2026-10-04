@@ -75,8 +75,7 @@ def env(tmp_path):
         "site": {
             "adapter": "github_static",
             "repository": "acme/site",
-            "content_path": "content.json",
-            "writable_patterns": ["*.html", "*.css", "*.md", "articles/*"],
+            "writable_patterns": ["src/app/(frontend)/site.css", "src/components/site/presentation/**"],
         },
     }
     context = {"config": config, "memory": memory}
@@ -84,75 +83,11 @@ def env(tmp_path):
     memory.close()
 
 
-def test_tool_loop_reads_then_proposes(env):
-    from site_agent.hands.base import SiteAdapter
-
-    class Adapter(SiteAdapter):
-        name = "t"
-        def __init__(self):
-            self.site = {"content_path": "content.json"}
-            self.files = {"styles.css": ".footer { padding: 4px; }"}
-            self.commits = []
-        def get_content(self): return {}
-        def get_file(self, path, branch=None):
-            raw = self.files.get(path)
-            return ("sha", raw.encode()) if raw is not None else (None, None)
-        def commit_file(self, path, data, message, branch=None):
-            self.commits.append(path)
-            return {"committed": True, "path": path}
-
-    adapter = Adapter()
-    llm = FakeToolsLLM([
-        {"content": "Checking the footer styles.", "tool_calls": _tc("read_file", path="styles.css")},
-        {"content": None, "tool_calls": _tc(
-            "propose_changes", summary="footer spacing",
-            ops=[{"op": "edit", "path": "styles.css",
-                  "find": ".footer { padding: 4px; }", "replace": ".footer { padding: 28px 0; }"}])},
-    ])
-    steps = []
-    r = handle_message({"config": env[1], "memory": env[0], "llm": llm}, adapter,
-                       "add space under the Oceanic Vibes logo in the footer",
-                       progress=steps.append)
-
-    assert r["reply"].startswith("Technical edit draft #")
-    assert "No rendered preview was created" in r["reply"]
-    assert r["proposal_id"] > 0
-    drafts = env[0].list_drafts()
-    assert drafts[0]["meta"]["ops"][0]["replace"].startswith(".footer { padding: 28px")
-    assert any("reading styles.css" in s for s in steps)
-    # A successful mutation is terminal; there is no post-side-effect model
-    # round that can repeat it or turn a completed job into an error.
-    assert len(llm.calls) == 2
-
-
-def test_tool_loop_reports_refusals_to_model(env):
-    from site_agent.hands.base import SiteAdapter
-
-    class Adapter(SiteAdapter):
-        name = "t"
-        site = {"content_path": "content.json"}
-        def get_content(self): return {}
-        def get_file(self, path, branch=None): return (None, None)
-        def commit_file(self, path, data, message, branch=None): return {}
-
-    adapter = Adapter()
-    llm = FakeToolsLLM([
-        {"content": None, "tool_calls": _tc(
-            "propose_changes", summary="hack",
-            ops=[{"op": "write", "path": ".github/evil.yml", "content": "x"}])},
-        {"content": "Understood — that file is off-limits. Nothing staged.", "tool_calls": None},
-    ])
-    r = handle_message({"config": env[1], "memory": env[0], "llm": llm}, adapter, "do it")
-    assert r["proposal_id"] is None
-    assert "off-limits" in r["reply"]
-    sent_back = llm.calls[1]["messages"][-1]
-    assert sent_back["role"] == "tool" and sent_back["content"].startswith("REFUSED")
-
-
 def test_tools_spec_respects_writable_patterns(env):
     from site_agent.brain.editor import _tools_spec
     spec = json.dumps(_tools_spec(env[1]))
-    assert "propose_changes" in spec
+    assert "propose_changes" not in spec
+    assert "design_request" in spec
 
 
 def test_chat_receives_the_same_provider_state_as_growth_without_collection(env):
@@ -163,7 +98,6 @@ def test_chat_receives_the_same_provider_state_as_growth_without_collection(env)
     class Adapter(SiteAdapter):
         name = "test"
         site = {}
-        def get_content(self): return {}
         def commit_file(self, *args, **kwargs):
             raise AssertionError("Read-only growth checks cannot change the site")
 
@@ -240,11 +174,6 @@ def test_existing_source_site_routes_focused_visual_edits_to_builder(env, monkey
 
     class Adapter(SiteAdapter):
         name = "t"
-        site = {"content_path": "content.json"}
-
-        def get_content(self):
-            return {}
-
         def get_file(self, path, branch=None):
             return (None, None)
 
@@ -281,11 +210,6 @@ def test_unoffered_mutation_tool_cannot_create_a_draft_on_source_sites(env):
 
     class Adapter(SiteAdapter):
         name = "t"
-        site = {"content_path": "content.json"}
-
-        def get_content(self):
-            return {}
-
         def get_file(self, path, branch=None):
             return ("sha", b".footer { padding: 4px; }")
 
@@ -325,6 +249,8 @@ def test_payload_tool_schema_uses_the_gateway_contract(env):
     by_name = {tool["function"]["name"]: tool for tool in tools}
     assert by_name["read_payload_content"]["function"]["parameters"]["properties"]["collection"]["enum"] == ["articles"]
     assert by_name["read_payload_global"]["function"]["parameters"]["properties"]["global"]["enum"] == ["settings"]
+    assert "publish_payload_document" not in by_name
+    assert "publish_payload_global" not in by_name
 
 
 def test_payload_gateway_tools_read_then_update_draft(env):
@@ -338,19 +264,14 @@ def test_payload_gateway_tools_read_then_update_draft(env):
         def read(self, collection, **kwargs):
             assert collection == "pages"
             assert kwargs["identifier"] == "home"
-            return {"id": "7", "sourceId": "home", "title": "Old heading", "content": {"heading": "Old heading"}}
+            return {"id": "7", "sourceId": "home", "title": "Old heading", "content": {"heading": "Old heading"}, "_helloadaRevision": "sha256:" + "a" * 64}
 
-        def update(self, collection, document_id, data):
-            self.updates.append((collection, document_id, data))
-            return {"id": document_id, "sourceId": "home", "title": data["title"], "_status": "draft"}
+        def update(self, collection, document_id, data, *, expected_hash):
+            self.updates.append((collection, document_id, data, expected_hash))
+            return {"id": document_id, "sourceId": "home", "title": data["title"], "_status": "draft", "_helloadaRevision": "sha256:" + "b" * 64}
 
     class Adapter(SiteAdapter):
         name = "t"
-        site = {"content_path": "content.json"}
-
-        def get_content(self):
-            return {}
-
         def get_file(self, path, branch=None):
             return (None, None)
 
@@ -362,128 +283,14 @@ def test_payload_gateway_tools_read_then_update_draft(env):
         {"content": None, "tool_calls": _tc(
             "read_payload_content", collection="pages", identifier="home", identifier_kind="sourceId")},
         {"content": None, "tool_calls": _tc(
-            "update_payload_draft", collection="pages", id="7", data={"title": "New heading"})},
+            "update_payload_draft", collection="pages", id="7", expected_hash="sha256:" + "a" * 64,
+            data={"title": "New heading"})},
     ]), "payload_gateway": payload}
     result = handle_message(context, Adapter(), "Change the heading on the homepage")
 
     assert result["reply"].startswith("Payload draft updated:")
-    assert payload.updates == [("pages", "7", {"title": "New heading"})]
+    assert payload.updates == [("pages", "7", {"title": "New heading"}, "sha256:" + "a" * 64)]
     assert "read_payload_content" in json.dumps(_tools_spec(context))
-
-
-def test_payload_gateway_editable_tools_inspect_then_set_registered_field(env):
-    from site_agent.brain.editor import _tools_spec
-    from site_agent.hands.base import SiteAdapter
-
-    class Payload:
-        def __init__(self):
-            self.calls = []
-
-        def inspect_editable_fields(self, collection, **kwargs):
-            self.calls.append(("inspect", collection, kwargs))
-            return {
-                "collection": collection,
-                "document_id": "7",
-                "fields": [{
-                    "id": "home-hero-heading",
-                    "key": "home.hero.heading",
-                    "type": "text",
-                    "value": "Old heading",
-                }],
-            }
-
-        def set_editable_field(self, collection, **kwargs):
-            self.calls.append(("set", collection, kwargs))
-            return {
-                "collection": collection,
-                "document_id": "7",
-                "field": {"key": kwargs["key"], "value": kwargs["value"]},
-            }
-
-    class Adapter(SiteAdapter):
-        name = "t"
-        site = {"content_path": "content.json"}
-
-        def get_content(self):
-            return {}
-
-        def get_file(self, path, branch=None):
-            return (None, None)
-
-        def commit_file(self, path, data, message, branch=None):
-            return {}
-
-    payload = Payload()
-    context = {**env[2], "llm": FakeToolsLLM([
-        {"content": None, "tool_calls": _tc(
-            "inspect_editable_fields", collection="pages", identifier="home", identifier_kind="sourceId")},
-        {"content": None, "tool_calls": _tc(
-            "set_editable_field", collection="pages", identifier="home",
-            identifier_kind="sourceId", key="home.hero.heading",
-            value="New heading", expected_value="Old heading")},
-    ]), "payload_gateway": payload}
-
-    result = handle_message(context, Adapter(), "Change the homepage hero heading")
-
-    assert result["reply"].startswith("Editable field draft updated:")
-    assert payload.calls[0][0] == "inspect"
-    assert payload.calls[1][2]["key"] == "home.hero.heading"
-    assert payload.calls[1][2]["expected_value"] == "Old heading"
-    spec = json.dumps(_tools_spec(context))
-    assert "inspect_editable_fields" in spec
-    assert "set_editable_field" in spec
-
-
-def test_payload_gateway_editable_tool_migrates_a_new_section_contract(env):
-    from site_agent.hands.base import SiteAdapter
-
-    class Payload:
-        def __init__(self):
-            self.calls = []
-
-        def migrate_editable_fields(self, collection, **kwargs):
-            self.calls.append((collection, kwargs))
-            return {
-                "collection": collection,
-                "document_id": "7",
-                "fields": kwargs["fields"],
-            }
-
-    class Adapter(SiteAdapter):
-        name = "t"
-        site = {"content_path": "content.json"}
-
-        def get_content(self):
-            return {}
-
-        def get_file(self, path, branch=None):
-            return (None, None)
-
-        def commit_file(self, path, data, message, branch=None):
-            return {}
-
-    fields = [
-        {"key": "home.ada.test.eyebrow", "type": "text", "label": "Ada test eyebrow"},
-        {"key": "home.ada.test.title", "type": "text", "label": "Ada test title"},
-        {"key": "home.ada.test.body", "type": "richText", "label": "Ada test body"},
-        {"key": "home.ada.test.image", "type": "image", "label": "Ada test image"},
-    ]
-    payload = Payload()
-    context = {**env[2], "llm": FakeToolsLLM([
-        {"content": None, "tool_calls": _tc(
-            "migrate_editable_fields", collection="pages", identifier="home",
-            identifier_kind="sourceId", fields=fields)},
-    ]), "payload_gateway": payload}
-
-    result = handle_message(context, Adapter(), "Create a new editable test section on the homepage")
-
-    assert result["reply"].startswith("Editable field migration draft applied:")
-    assert payload.calls == [("pages", {
-        "identifier": "home",
-        "identifier_kind": "sourceId",
-        "fields": fields,
-        "locale": None,
-    })]
 
 
 def test_reads_pending_build_from_preview_branch(env):
@@ -523,8 +330,6 @@ def test_spawn_build_tool_runs_staged_builder_and_surfaces_draft(env, monkeypatc
 
     class Adapter(SiteAdapter):
         name = "t"
-        site = {"content_path": "content.json"}
-        def get_content(self): return {}
         def get_file(self, path, branch=None): return (None, None)
         def commit_file(self, path, data, message, branch=None): return {}
 
@@ -544,8 +349,6 @@ def test_builder_route_sends_creative_request_directly_to_builder(env, monkeypat
 
     class Adapter(SiteAdapter):
         name = "t"
-        site = {"content_path": "content.json"}
-        def get_content(self): return {}
         def get_file(self, path, branch=None): return (None, None)
         def commit_file(self, path, data, message, branch=None): return {}
 
@@ -589,11 +392,6 @@ def test_canonical_design_intent_uses_typed_handoff_instead_of_legacy_builder(en
 
     class Adapter(SiteAdapter):
         name = "t"
-        site = {"content_path": "content.json"}
-
-        def get_content(self):
-            return {}
-
         def get_file(self, path, branch=None):
             return (None, None)
 
@@ -638,28 +436,19 @@ def test_canonical_design_intent_uses_typed_handoff_instead_of_legacy_builder(en
     assert "spawn_build" not in json.dumps(llm.calls[0]["tools"])
 
 
-def test_store_proposal_allows_owner_to_reconsider_declined_work(env):
-    from site_agent.brain.editor import store_proposal
+def test_site_source_changes_have_no_proposal_only_tool(env):
+    from site_agent.brain.editor import _tools_spec
 
-    memory, config, context = env
-    ops = [{"op": "edit", "path": "index.html",
-            "find": "<div class=\"hero-image image-frame\"></div>",
-            "replace": "<div class=\"breath-ring\" aria-hidden=\"true\"></div>"}]
-    pid = store_proposal(memory, {"ops": ops}, "add breath-ring div")
-    memory.update_draft_status(pid, "declined")
-
-    second = store_proposal(memory, {"ops": ops}, "owner explicitly asks to retry")
-    assert second != pid
+    names = {item["function"]["name"] for item in _tools_spec(env[2])}
+    assert not names.intersection({"propose_changes", "set_field", "store_proposal"})
 
 
 def test_decision_ledger_block_lists_declined_and_approved(env):
-    from site_agent.brain.editor import _decision_ledger_block, store_proposal
+    from site_agent.brain.editor import _decision_ledger_block
 
-    memory, config, context = env
-    good = store_proposal(memory, {"ops": [{"op": "edit", "path": "a.html",
-                                             "find": "x", "replace": "y"}]}, "good change")
-    bad = store_proposal(memory, {"ops": [{"op": "edit", "path": "b.html",
-                                            "find": "p", "replace": "q"}]}, "bad change")
+    memory, _config, context = env
+    good = memory.save_draft("good change", "", "design", meta={"run_id": "good"})
+    bad = memory.save_draft("bad change", "", "design", meta={"run_id": "bad"})
     memory.update_draft_status(good, "approved")
     memory.update_draft_status(bad, "declined")
     memory.add_draft_feedback(bad, "looks amateurish")
@@ -674,19 +463,16 @@ def test_ledger_in_system_prompt_per_hop(env):
 
     class Adapter(SiteAdapter):
         name = "t"
-        site = {"content_path": "content.json"}
-        def get_content(self): return {}
         def get_file(self, path, branch=None): return (None, None)
         def commit_file(self, path, data, message, branch=None): return {}
 
     memory, config, context = env
-    bad = memory.save_draft("bad", "", "edit", meta={"ops": [{"op": "edit", "path": "x.html", "find": "a", "replace": "b"}]})
+    bad = memory.save_draft("bad", "", "design", meta={"run_id": "bad"})
     memory.update_draft_status(bad, "declined")
 
     llm = FakeToolsLLM([
         {"content": None, "tool_calls": _tc("read_file", path="x.html")},
-        {"content": None, "tool_calls": _tc(
-            "propose_changes", summary="tweak", ops=[{"op": "edit", "path": "x.html", "find": "a", "replace": "c"}])},
+        {"content": "I have enough context.", "tool_calls": None},
         {"content": "done", "tool_calls": None},
     ])
     handle_message({"config": config, "memory": memory, "llm": llm}, Adapter(), "tweak the page")
@@ -699,11 +485,9 @@ def test_tool_loop_reuses_cached_read_without_behavioral_nudge(env):
 
     class Adapter(SiteAdapter):
         name = "t"
-        site = {"content_path": "content.json"}
         def __init__(self):
             self.files = {"styles.css": ".footer { padding: 4px; }"}
             self.reads = 0
-        def get_content(self): return {}
         def get_file(self, path, branch=None):
             self.reads += 1
             raw = self.files.get(path)
@@ -715,18 +499,15 @@ def test_tool_loop_reuses_cached_read_without_behavioral_nudge(env):
     llm = FakeToolsLLM([
         {"content": None, "tool_calls": _tc("read_file", path="styles.css")},
         {"content": None, "tool_calls": _tc("read_file", path="styles.css")},
-        {"content": None, "tool_calls": _tc(
-            "propose_changes", summary="tweak",
-            ops=[{"op": "edit", "path": "styles.css", "find": ".footer { padding: 4px; }",
-                  "replace": ".footer { padding: 28px; }"}])},
+        {"content": "The footer is currently configured with four pixels of padding.", "tool_calls": None},
     ])
     result = handle_message({"config": config, "memory": memory, "llm": llm}, adapter, "add footer padding")
     first_tool = llm.calls[1]["messages"][-1]
     second_tool = llm.calls[2]["messages"][-1]
     assert ".footer { padding: 4px; }" in first_tool["content"]
     assert second_tool["content"] == first_tool["content"]
-    assert adapter.reads == 3  # content summary + one file read + live validation
-    assert result["proposal_id"] is not None
+    assert adapter.reads == 1  # repeated reads use the per-turn cache
+    assert result["proposal_id"] is None
 
 
 def test_system_prompt_describes_capabilities_without_forced_routing(env):
@@ -737,8 +518,6 @@ def test_system_prompt_describes_capabilities_without_forced_routing(env):
 
     class Adapter(SiteAdapter):
         name = "t"
-        site = {"content_path": "content.json"}
-        def get_content(self): return {}
         def get_file(self, path, branch=None): return (None, None)
         def commit_file(self, path, data, message, branch=None): return {}
 
@@ -755,10 +534,8 @@ def test_read_file_truncates_with_marker_and_guards_repeat_reads(env):
 
     class Adapter(SiteAdapter):
         name = "t"
-        site = {"content_path": "content.json"}
         def __init__(self):
             self.reads = 0
-        def get_content(self): return {}
         def get_file(self, path, branch=None):
             self.reads += 1
             return ("sha", (b"/* head */\n" + b".x{}\n" * 2000).decode().encode())
@@ -786,8 +563,6 @@ def test_tool_loop_rejects_mixed_mutation_batch(env):
 
     class Adapter(SiteAdapter):
         name = "t"
-        site = {"content_path": "content.json"}
-        def get_content(self): return {}
         def get_file(self, path, branch=None): return (None, None)
         def commit_file(self, path, data, message, branch=None): return {}
 
@@ -806,57 +581,14 @@ def test_tool_loop_rejects_mixed_mutation_batch(env):
     result = handle_message({"config": env[1], "memory": env[0], "llm": llm}, Adapter(), "change it")
     assert result["proposal_id"] is None
     assert env[0].list_drafts(status="pending") == []
-    assert all(m["content"].startswith("REFUSED") for m in llm.calls[1]["messages"][-2:])
+    assert llm.calls[1]["messages"][-1]["content"].startswith("REFUSED")
 
 
-def test_validate_ops_preserves_write_content_and_restricts_set_field(env):
-    from site_agent.brain.editor import EditError, validate_ops
-    from site_agent.hands.base import SiteAdapter
+def test_site_source_cannot_be_written_by_chat_tools(env):
+    from site_agent.brain.editor import _tools_spec
 
-    class Adapter(SiteAdapter):
-        name = "t"
-        site = {"content_path": "content.json"}
-        def get_content(self): return {"hero": "old"}
-        def get_file(self, path, branch=None):
-            files = {"content.json": b'{"hero":"old"}', "other.json": b'{"hero":"old"}'}
-            return ("sha", files[path]) if path in files else (None, None)
-        def commit_file(self, path, data, message, branch=None): return {}
-
-    adapter = Adapter()
-    content = "<!doctype html><title>New</title>"
-    clean = validate_ops(env[2], [{"op": "write", "path": "new.html", "content": content}], adapter)
-    assert clean == [{"op": "write", "path": "new.html", "content": content}]
-    with pytest.raises(EditError, match="can only change content.json"):
-        validate_ops(env[2], [{"op": "set_field", "path": "other.json",
-                               "field": "hero", "value": "new"}], adapter)
-
-
-def test_apply_ops_writes_content_and_deletes_on_requested_branch():
-    from site_agent.brain.editor import _apply_ops
-    from site_agent.hands.base import SiteAdapter
-
-    class Adapter(SiteAdapter):
-        name = "t"
-        site = {"content_path": "content.json"}
-        def __init__(self): self.calls = []
-        def get_content(self, branch=None): return {}
-        def get_file(self, path, branch=None): return (None, None)
-        def commit_file(self, path, data, message, branch=None):
-            self.calls.append(("write", path, data, branch))
-            return {"committed": True}
-        def delete_file(self, path, message, branch=None):
-            self.calls.append(("delete", path, None, branch))
-            return {"deleted": True}
-
-    adapter = Adapter()
-    _apply_ops(adapter, [
-        {"op": "write", "path": "new.html", "content": "<p>new</p>"},
-        {"op": "delete", "path": "old.html"},
-    ], branch="preview")
-    assert adapter.calls == [
-        ("write", "new.html", b"<p>new</p>", "preview"),
-        ("delete", "old.html", None, "preview"),
-    ]
+    names = {item["function"]["name"] for item in _tools_spec(env[2])}
+    assert not names.intersection({"propose_changes", "write_file", "delete_file"})
 
 
 def test_tool_calling_required_no_json_fallback(env):
@@ -864,8 +596,6 @@ def test_tool_calling_required_no_json_fallback(env):
 
     class Adapter(SiteAdapter):
         name = "t"
-        site = {"content_path": "content.json"}
-        def get_content(self): return {}
         def get_file(self, path, branch=None): return (None, None)
         def commit_file(self, path, data, message, branch=None): return {}
 

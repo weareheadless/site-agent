@@ -377,10 +377,11 @@ def test_next_target_prompt_keeps_legacy_source_out_of_native_authoring():
     prompt = runner._design_prompt(request, target)
 
     assert "NATIVE NEXT/REACT/PAYLOAD TOOLCHAIN CONTRACT" in prompt
-    assert "Do not execute build.sh" in prompt
+    assert "Do not create alternate build entry points" in prompt
     assert "root index.html" in prompt
     assert "public/images/ada-media/" in prompt
-    assert "src/app/page.tsx" in prompt
+    assert "src/components/site/presentation/" in prompt
+    assert "src/app/page.tsx" not in prompt
     assert "next@16.3.4" in prompt
     assert "Do not use ranges or newer versions" in prompt
 

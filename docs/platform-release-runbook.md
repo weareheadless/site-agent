@@ -1,7 +1,7 @@
 # Platform release: one source, explicit deployment receipts
 
-This is the current Payload/Next.js release path. The static/Pelican worked
-example in `deploy.md` is not the customer admin release procedure.
+This is the current Payload/Next.js release path. The older worked example in
+`deploy.md` is not the customer admin release procedure.
 
 ## Boundaries
 

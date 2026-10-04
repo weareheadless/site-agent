@@ -35,6 +35,9 @@ export const helloAdaBindingId = (collection: string, documentId: string, target
     .map((value) => encodeURIComponent(String(value)))
     .join(':')}`
 
+export const helloAdaGlobalBindingId = (global: 'navigation' | 'siteSettings', itemKey: string, field: string) =>
+  `payload:global:${encodeURIComponent(global)}:${encodeURIComponent(itemKey)}:${encodeURIComponent(field)}`
+
 const binding = (
   document: Row,
   route: string,
@@ -60,9 +63,9 @@ const labelValue = (value: unknown, fallback: string) => String(value || fallbac
 const mediaValue = (value: unknown) => objectValue(value)
 const mediaId = (value: unknown) => {
   const media = mediaValue(value)
-  // Payload relations must use the tenant-local collection ID. `sourceId` is
-  // provenance only and can refer to an asset in another system.
-  return media.id || media.sourceId || ''
+  // Relation writes always target a real ID in this tenant's media collection.
+  // sourceId is an import identity and must never be sent as a Payload relation.
+  return media.id || ''
 }
 
 /** Build the owner editor inventory from the same canonical document the public renderer consumes. */

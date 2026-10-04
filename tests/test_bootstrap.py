@@ -106,8 +106,9 @@ def test_bootstrap_configures_generic_seo_provisioning_for_new_sites(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text("site: {}\n", encoding="utf-8")
     site_dir = tmp_path / "site"
-    site_dir.mkdir()
-    (site_dir / "wrangler.jsonc").write_text(json.dumps({"vars": {}}), encoding="utf-8")
+    from site_agent.site_scaffold import initialize_managed_site
+
+    initialize_managed_site(site_dir)
 
     class Registry:
         def reload_tenant(self, *args, **kwargs):
@@ -129,6 +130,7 @@ def test_bootstrap_configures_generic_seo_provisioning_for_new_sites(tmp_path):
     import yaml
 
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    template_manifest = json.loads((site_dir / "template-manifest.json").read_text(encoding="utf-8"))
     assert config["site"]["public_url"] == "https://helloada-demo.workers.dev/"
     assert config["ga"]["enabled"] is True
     assert config["ga"]["source"] == "crawlseo"
@@ -136,3 +138,60 @@ def test_bootstrap_configures_generic_seo_provisioning_for_new_sites(tmp_path):
     assert config["seo"]["provisioning"]["auto"] is True
     assert config["seo"]["site_url"] == "https://helloada-demo.workers.dev/"
     assert config["seo"]["gsc_property"] == "https://helloada-demo.workers.dev/"
+    assert config["site"]["payload"]["contract"]["contract"] == "helloada-content-v2"
+    assert config["site"]["payload"]["contract"]["schemaIdentity"] == template_manifest["schemaIdentity"]
+    assert config["site"]["payload"]["contract"]["locales"] == ["en"]
+    wrangler = json.loads((site_dir / "wrangler.jsonc").read_text(encoding="utf-8"))
+    assert wrangler["vars"]["HELLOADA_TEMPLATE_SCHEMA"] == "4"
+    assert wrangler["vars"]["HELLOADA_PAYLOAD_SCHEMA_REVISION"] == "2"
+    assert wrangler["vars"]["HELLOADA_SCHEMA_IDENTITY"] == template_manifest["schemaIdentity"]
+    assert wrangler["vars"]["HELLOADA_PAYLOAD_MIGRATION_HEAD"] == template_manifest["migrationHead"]
+
+
+def test_bootstrap_refuses_to_guess_a_payload_contract(tmp_path):
+    site_dir = tmp_path / "site"
+    site_dir.mkdir()
+    service = WebsiteBootstrapService.__new__(WebsiteBootstrapService)
+    from site_agent.application.bootstrap import BootstrapError
+
+    import pytest
+
+    with pytest.raises(BootstrapError, match="canonical Payload capability contract"):
+        service._load_payload_contract(site_dir)
+
+
+def test_bootstrap_configures_one_explicit_tenant_ownership_marker(tmp_path):
+    from site_agent.site_scaffold import initialize_managed_site
+
+    site_dir = initialize_managed_site(tmp_path / "site")
+    WebsiteBootstrapService._configure_template(site_dir, "demo", "Demo")
+    marker = json.loads((site_dir / ".helloada-managed.json").read_text())
+    assert marker == {
+        "tenantId": "demo",
+        "templateSchema": 4,
+        "payloadAdmin": "0.8.7",
+        "payloadCore": "0.2.0",
+        "contentContract": "helloada-content-v2",
+        "schemaRevision": 2,
+        "schemaIdentity": json.loads((site_dir / "template-manifest.json").read_text())["schemaIdentity"],
+        "migrationHead": json.loads((site_dir / "template-manifest.json").read_text())["migrationHead"],
+    }
+    assert 'tenantId: "demo"' in (site_dir / "src/helloada.config.ts").read_text()
+
+
+def test_bootstrap_never_replaces_an_existing_site_directory(tmp_path):
+    from site_agent.application.bootstrap import BootstrapError
+
+    service = WebsiteBootstrapService.__new__(WebsiteBootstrapService)
+    service.config = {"bootstrap": {}}
+    service.env = {}
+    site_dir = tmp_path / "site"
+    site_dir.mkdir()
+    owner_file = site_dir / "owner-work.txt"
+    owner_file.write_text("preserve this")
+
+    import pytest
+
+    with pytest.raises(BootstrapError, match="refusing to replace"):
+        service._materialize_template(site_dir)
+    assert owner_file.read_text() == "preserve this"

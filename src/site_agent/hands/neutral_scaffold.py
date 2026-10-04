@@ -7,7 +7,6 @@ design merges on that local repository without inventing a network publisher.
 
 from __future__ import annotations
 
-import json
 import re
 import subprocess
 from pathlib import Path
@@ -30,7 +29,6 @@ class NeutralScaffold(SiteAdapter):
         super().__init__(config)
         self.clone_path = str(self.site.get("clone_path") or "").strip()
         self.branch = str(self.site.get("branch") or "main").strip()
-        self.content_path = str(self.site.get("content_path") or "content.json").strip()
 
     def _root(self) -> Path:
         if not self.clone_path:
@@ -167,18 +165,6 @@ class NeutralScaffold(SiteAdapter):
         raw = self._raw("show", f"{ref}:{relative}", timeout=30)
         blob_sha = self._run("rev-parse", f"{ref}:{relative}", timeout=30).strip()
         return blob_sha, raw
-
-    def get_content(self, branch: str | None = None) -> dict[str, Any]:
-        _, raw = self.get_file(self.content_path, branch=branch)
-        if raw is None:
-            raise AdapterError(f"{self.name}: {self.content_path} not found")
-        try:
-            value = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise AdapterError(f"{self.name}: {self.content_path} is not valid JSON") from exc
-        if not isinstance(value, dict):
-            raise AdapterError(f"{self.name}: {self.content_path} must contain an object")
-        return value
 
     def ensure_branch(self, name: str) -> dict[str, Any]:
         branch = self._branch_name(name)

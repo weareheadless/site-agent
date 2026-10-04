@@ -125,35 +125,39 @@ providers:
     max_response_bytes: 2097152
 
 site:
-  adapter: github_static            # switch to cloudflare_pages after the CF move
-  repository: "oceanicvibesfreediving/oceanicvibesfreediving.github.io"
+  adapter: payload_gateway
+  repository: "https://github.com/weareheadless/oceanicvibes.git"
   branch: main
-  writable_patterns: ["*.html", "*.css", "*.js", "content/articles/*.md", "images/*", "vendor/*", "themes/oceanicvibes/templates/*", "themes/oceanicvibes/static/*"]
-  content_path: content.json
+  preview_branch: preview
+  clone_path: /SOCIAL/sites/oceanicvibes
+  url: "https://oceanicvibes.com"
+  preview_url: "https://oceanicvibes.com"
+  public_url: "https://oceanicvibes.com/"
+  custom_domain: oceanicvibes.com
+  writable_patterns: ["src/app/(frontend)/site.css", "src/components/site/presentation/**", "src/components/site/TenantChrome.tsx", "public/site/**", "public/fonts/**"]
+  source_deployment:
+    clone_path: /SOCIAL/sites/oceanicvibes
+    worker_name: oceanicvibes
+    verification_timeout_seconds: 180
+    verification_request_timeout_seconds: 10
+  payload:
+    enabled: true
+    url: "https://oceanicvibes.com"
+    api_prefix: /api/workspace
+    token_env: PROVISIONED_OCEANICVIBES_TOKEN
+    contract:
+      collections:
+        pages: [sourceId, title, slug, summary, sections, body, featuredImage, canonicalUrl, seo, published]
+        posts: [sourceId, title, slug, summary, sections, body, featuredImage, gallery, author, publishedAt, modifiedAt, category, canonicalUrl, seo, published]
+        products: [sourceId, title, slug, summary, sections, body, featuredImage, price, currency, availability, gallery, category, canonicalUrl, seo, published]
+      globals:
+        siteSettings: [siteName, description, tagline, logo, email, telephone, facebookUrl, instagramUrl, tiktokUrl, promoText, promoHref, promoCta, footerKicker, footerTitle, footerNote, defaultSeoTitle, defaultSeoDescription, defaultSocialImage, journalTitle, journalDescription, address]
+        navigation: [items, footer, groups, footerGroups]
+      media_fields: [alt, sourceId, sourceUrl, originalUrl, description, tags, dominantColors, suggestedUses, qualityNotes, ocrText, proposedKnowledge, sourceKind, analysisStatus, analysisProvider, analysisModel, analysisVersion, analysisError, analysisUpdatedAt, analysis]
   brand:
     font_body: "'Manrope', sans-serif"
     font_display: "'Cormorant Garamond', Georgia, serif"
     fonts_url: "https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700&display=swap"
-  media:
-    enabled: false
-    account_id: ""
-    bucket: ""
-    private: true
-    vision_image_max_edge: 1600
-    vision_image_quality: 70
-  cloudflare:
-    account_id: ""
-    project_name: ""
-    mode: git
-
-# The site's blog is built by Pelican. The AI owns the theme and templates; Ada
-# only commits Markdown content into this collection.
-blog:
-  engine: pelican
-  articles_dir: content/articles
-  site_url: "https://oceanicvibes.com/"
-  build_command: "bash build.sh"
-
 design_engine:
   provider: entrim
   model: deepseek-ai/DeepSeek-V4-Flash
@@ -166,9 +170,6 @@ design_engine:
     gsap:
       enabled: true
   quality:
-    # Pelican emits these utility/archive pages alongside the stable public
-    # routes; they are not part of the customer-facing baseline comparison.
-    ignored_pages: [admin.html, "author/**", "category/**"]
     # Package manifests remain hard-denied by default; this explicit exception
     # lets the approved capability gate admit an exact, pinned runtime package.
     allowed_hard_denied_paths: [package.json]
@@ -200,25 +201,9 @@ vision:
   timeout_seconds: 90
   max_tokens: 4096
 
-admin:
-  host: 127.0.0.1
-  port: 3011
-  theme:            # Ada's luminous admin skin — brand seafoam kept as a small accent
-    bg: "#0b1017"
-    card: "#111a24"
-    panel: "#0d1520"
-    line: "rgba(126, 200, 255, 0.14)"
-    text: "#e8eef5"
-    dim: "#8b98a8"
-    accent: "#7ec8ff"      # luminous ice glow — the Ada signature
-    brand: "#9edbd1"       # OceanicVibes seafoam — used sparingly
-    ok: "#4ade80"
-    warn: "#f0c25e"
-    bad: "#ff7a8a"
-    radius: "18px"
-
 publish_mode: ask_first
 
 env:
   vision_api_key: SITE_AGENT_VISION_API_KEY
   crawlseo_service_token: CRAWLSEO_SERVICE_TOKEN
+  payload_gateway_token: PROVISIONED_OCEANICVIBES_TOKEN

@@ -46,7 +46,6 @@ from ..brain.page_strategy import native_homepage_request
 from ..hands.site_build import (
     NEXT_REACT_PROFILE,
     NEXT_REACT_TOOLCHAIN_DEPENDENCIES,
-    PELICAN_BASELINE_PROFILE,
     build_site,
 )
 
@@ -176,7 +175,7 @@ class DesignService:
         if profile:
             if profile != NEXT_REACT_PROFILE.name:
                 raise DesignServiceError(
-                    "design_engine.build_profile must be next_react; legacy site profiles are migration-only"
+                    "design_engine.build_profile must be next_react"
                 )
             return profile
         # Bare service instances and pre-profile tenant records are common in
@@ -503,6 +502,14 @@ class DesignService:
                 # capability.
                 artifact_required=callable(getattr(self.output_artifact_store, "publish", None)),
             )
+            # Bind the one supported website toolchain to the durable run at
+            # creation time. Intake assessment and brief compilation replace
+            # planning_json later, so the profile must be part of every
+            # planning projection rather than inferred when a worker resumes.
+            self.memory.update_design_run(
+                run_id,
+                planning_json={"build_profile": self._configured_build_profile()},
+            )
             self.memory.add_design_run_event(run_id, "created", "Design run created.", {
                 "mode": mode,
                 "intake_hash": site_intake.content_hash,
@@ -680,7 +687,6 @@ class DesignService:
                     )
                     if isinstance(item, Mapping)
                 ],
-                "build_command": quality_config.get("build_command"),
                 "build_timeout_seconds": int(quality_config.get("build_timeout_seconds", 120)),
                 "manifest_path": str(design_engine.get("manifest_path") or quality_config.get("manifest_path") or ""),
                 "ignored_pages": list(quality_config.get("ignored_pages") or ()),
@@ -930,9 +936,8 @@ class DesignService:
         if parent_profile:
             planning["build_profile"] = parent_profile
         planning["build_request"] = request.to_dict()
-        # Persist the inherited profile before resolving the target. The target
-        # owns the Next allowlist for local repairs, so resolving it against
-        # the pre-profile child would incorrectly fall back to Pelican paths.
+        # Persist the inherited profile before resolving the target so every
+        # repair remains bound to the same canonical source contract.
         self.memory.update_design_run(child_id, planning_json=planning)
         target = self.build_target_for_run(child_id)
         planning["build_target"] = target.to_dict()
@@ -1103,6 +1108,7 @@ class DesignService:
         assessment = assess_intake(intake)
         snapshot = DesignContextSnapshot.from_dict(run["context_snapshot"])
         self.memory.update_design_run(run_id, planning_json={
+            "build_profile": self.build_profile_for_run(run_id),
             "assessment": assessment.to_dict(),
             "design_skill_set": snapshot.design_skill_set.to_dict() if snapshot.design_skill_set else {},
         })
@@ -1123,6 +1129,7 @@ class DesignService:
         # native OpenCode session must own the visual direction and source.
         brief = compile_brief(intake, assessment)
         planning = {
+            "build_profile": self.build_profile_for_run(run_id),
             "assessment": assessment.to_dict(),
             "brief": brief.to_dict(),
             "design_skill_set": snapshot.design_skill_set.to_dict() if snapshot.design_skill_set else {},
@@ -1206,60 +1213,29 @@ class DesignService:
         })
 
     def build_profile_for_run(self, run_id: str) -> str:
-        """Resolve the host-owned profile used to render an immutable run."""
+        """Require the profile frozen by the canonical run contract."""
         run = self.get_run(run_id)
         planning = run.get("planning_json") if isinstance(run.get("planning_json"), Mapping) else {}
         profile = str((planning or {}).get("build_profile") or "").strip()
-        if profile:
-            if profile not in {NEXT_REACT_PROFILE.name, PELICAN_BASELINE_PROFILE.name}:
-                raise DesignServiceError(f"unsupported design build profile: {profile}")
-            return profile
         frozen_target = (planning or {}).get("build_target") if isinstance(planning, Mapping) else None
-        if isinstance(frozen_target, Mapping):
-            frozen_profile = str(frozen_target.get("build_profile") or "").strip().lower()
-            if frozen_profile in {NEXT_REACT_PROFILE.name, PELICAN_BASELINE_PROFILE.name}:
-                return frozen_profile
-            if frozen_profile:
-                raise DesignServiceError(f"unsupported design build profile: {frozen_profile}")
-            if "build_profile" in frozen_target:
-                # An explicitly empty profile is the durable marker used by
-                # legacy customer runs. Do not let a later context snapshot
-                # silently reinterpret that run as a Next build.
-                return ""
-            frozen_allowed = tuple(str(item) for item in (frozen_target.get("allowed_paths") or ()))
-            if frozen_allowed == NEXT_REACT_PROFILE.writable_patterns:
-                return NEXT_REACT_PROFILE.name
-        snapshot = run.get("context_snapshot")
-        if isinstance(snapshot, Mapping):
-            profile = str(snapshot.get("build_profile") or "").strip()
-            if profile:
-                if profile not in {NEXT_REACT_PROFILE.name, PELICAN_BASELINE_PROFILE.name}:
-                    raise DesignServiceError(f"unsupported design build profile: {profile}")
-                return profile
-            profile = str((snapshot.get("execution_profile") or {}).get("build_profile") or "").strip()
-            if profile:
-                if profile not in {NEXT_REACT_PROFILE.name, PELICAN_BASELINE_PROFILE.name}:
-                    raise DesignServiceError(f"unsupported design build profile: {profile}")
-                return profile
-            # Runs created before the explicit profile field was introduced
-            # still carry the frozen quality output directory. Use that durable
-            # evidence before applying the current default profile.
-            quality = (snapshot.get("execution_profile") or {}).get("quality_policy")
-            output_dir = str((quality or {}).get("output_dir") or "").strip().lower() if isinstance(quality, Mapping) else ""
-            if output_dir == PELICAN_BASELINE_PROFILE.output_dir:
-                return PELICAN_BASELINE_PROFILE.name
-            if output_dir == NEXT_REACT_PROFILE.output_dir:
-                return NEXT_REACT_PROFILE.name
-        if run.get("mode") == "local_experiment" and (run.get("operation_kind") or "initial_build") == "initial_build":
-            return self._configured_build_profile()
-        parent_id = str(run.get("parent_run_id") or "").strip()
-        if parent_id and parent_id != run_id:
-            return self.build_profile_for_run(parent_id)
-        # Older customer-facing runs predate the explicit profile field. An
-        # empty result deliberately keeps preview and quality recovery on the
-        # legacy Pelican/source-build path; new runs freeze their profile in
-        # the context snapshot before they reach this fallback.
-        return ""
+        frozen_profile = (
+            str(frozen_target.get("build_profile") or "").strip().lower()
+            if isinstance(frozen_target, Mapping)
+            else ""
+        )
+        snapshot = run.get("context_snapshot") if isinstance(run.get("context_snapshot"), Mapping) else {}
+        snapshot_profile = str(snapshot.get("build_profile") or "").strip().lower()
+        for value in (profile, frozen_profile, snapshot_profile):
+            if value and value != NEXT_REACT_PROFILE.name:
+                raise DesignServiceError(f"unsupported design build profile: {value}")
+        if len({value for value in (profile, frozen_profile, snapshot_profile) if value}) > 1:
+            raise DesignServiceError("design run profile does not match its frozen build target")
+        selected = profile or frozen_profile or snapshot_profile
+        if selected != NEXT_REACT_PROFILE.name:
+            raise DesignServiceError(
+                f"design run {run_id} has no canonical next_react profile; it cannot be built or previewed"
+            )
+        return selected
 
     def quality_policy_for_run(self, run_id: str) -> QualityPolicy:
         """Resolve site-specific validation settings for a persisted run."""
@@ -1321,8 +1297,17 @@ class DesignService:
             if isinstance(item, str) and not item.lower().startswith("provide the required page:")
         ) if isinstance(brief, Mapping) else ()
         try:
+            quality_config = dict(self.config)
+            engine = quality_config.get("design_engine")
+            engine = dict(engine) if isinstance(engine, Mapping) else {}
+            configured_profile = str(engine.get("build_profile") or "").strip().lower()
+            selected_profile = self.build_profile_for_run(run_id)
+            if configured_profile and configured_profile != selected_profile:
+                raise DesignServiceError("configured design profile does not match the run's frozen build profile")
+            engine["build_profile"] = selected_profile
+            quality_config["design_engine"] = engine
             policy = QualityPolicy.from_config(
-                self.config,
+                quality_config,
                 required_pages=required_pages,
                 required_content=required_content,
                 expected_intake_hash=str(run.get("intake_hash") or ""),
@@ -1365,7 +1350,6 @@ class DesignService:
                     allowed_patterns=NEXT_REACT_PROFILE.writable_patterns,
                     prohibited_paths=tuple(dict.fromkeys((*policy.prohibited_paths, *NEXT_REACT_PROFILE.prohibited_paths))),
                     approved_capabilities=tuple(approved.values()),
-                    build_command=None,
                     build_timeout_seconds=900,
                 )
             return policy
@@ -1610,6 +1594,13 @@ class DesignService:
         """Run one typed build and persist its immutable candidate identity."""
         if not isinstance(request, PageBuildRequest) or not isinstance(target, BuildTarget):
             raise DesignServiceError("execute_build requires typed request and target")
+        if (
+            target.build_profile != NEXT_REACT_PROFILE.name
+            or tuple(target.allowed_paths) != tuple(NEXT_REACT_PROFILE.writable_patterns)
+        ):
+            raise DesignServiceError(
+                "design target must use the canonical Next/Payload profile and tenant presentation allowlist"
+            )
         run = self.memory.get_design_run(run_id)
         if run is None:
             raise DesignRunNotFound(f"no such design run: {run_id}")
@@ -2452,6 +2443,7 @@ class DesignService:
         self._advance(child_id, DesignRunStatus.PLANNING, "Visual refinement request is ready to build.")
         planning_data = dict(planning) if isinstance(planning, Mapping) else {}
         planning_data.update({
+            "build_profile": self.build_profile_for_run(child_id),
             "build_request": request.to_dict(),
             "visual_refinement": critique.to_dict(),
         })
@@ -2558,6 +2550,21 @@ class DesignService:
             raise DesignServiceError("design run has no immutable build identities")
         try:
             effective_policy = policy or self.quality_policy_for_run(run_id)
+            frozen_planning = run.get("planning_json") if isinstance(run.get("planning_json"), Mapping) else {}
+            frozen_target = frozen_planning.get("build_target") if isinstance(frozen_planning, Mapping) else None
+            target_paths = (
+                tuple(str(item) for item in frozen_target.get("allowed_paths") or ())
+                if isinstance(frozen_target, Mapping)
+                else ()
+            )
+            if target_paths != tuple(NEXT_REACT_PROFILE.writable_patterns):
+                raise DesignServiceError(
+                    "design run has no canonical frozen tenant presentation allowlist"
+                )
+            # Owner-provided or test-specific quality settings may tune checks,
+            # but never widen the immutable path boundary selected at build
+            # planning. Keep source ownership identical at build and review.
+            effective_policy = replace(effective_policy, allowed_patterns=target_paths)
             build_runner = None
             if self.build_profile_for_run(run_id) == NEXT_REACT_PROFILE.name:
                 # Next/React output is generated rather than committed.  Run
@@ -2592,7 +2599,7 @@ class DesignService:
             output_artifact_publisher = None
             output_store = self.output_artifact_store
             if output_store is not None and callable(getattr(output_store, "publish", None)):
-                output_profile = self.build_profile_for_run(run_id) or PELICAN_BASELINE_PROFILE.name
+                output_profile = self.build_profile_for_run(run_id)
 
                 def output_artifact_publisher(output_dir: Path) -> Mapping[str, Any]:
                     published = dict(output_store.publish(
@@ -2637,7 +2644,6 @@ class DesignService:
                 policy=effective_policy,
                 browser=browser,
                 build_runner=build_runner,
-                build_env=build_env,
                 experience_plan=experience_plan,
                 temporal_evidence=temporal_evidence,
                 output_artifact_publisher=output_artifact_publisher,

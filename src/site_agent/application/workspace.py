@@ -48,24 +48,6 @@ _SAFE_NAME = re.compile(r"^[a-z][a-z0-9-]{1,62}$")
 _SAFE_ENV = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-def _normalize_edit_ops(meta: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Return the legacy and current draft shapes as editor operations."""
-    if isinstance(meta.get("ops"), list):
-        return [dict(item) for item in meta["ops"] if isinstance(item, Mapping)]
-    if meta.get("file_op"):
-        return [{
-            "op": "edit",
-            "path": meta.get("path"),
-            "find": meta.get("find"),
-            "replace": meta.get("replace"),
-        }]
-    return [
-        {"op": "set_field", "path": change.get("path", ""), "field": change["field"], "value": change["after"]}
-        for change in (meta.get("changes") or [])
-        if isinstance(change, Mapping) and change.get("field") is not None and "after" in change
-    ]
-
-
 @dataclass(frozen=True)
 class Journey:
     """The two independent facts that decide Ada's owner-facing phase."""
@@ -393,7 +375,7 @@ class TenantRegistry:
                 from ..hands.base import get_adapter
 
                 site_config = tenant_config.get("site") or {}
-                site_adapter_name = str(site_config.get("adapter") or "github_static").strip()
+                site_adapter_name = str(site_config.get("adapter") or "payload_gateway").strip()
                 context["source_editor"] = SourceEditorService(
                     tenant_config,
                     dict(env),
@@ -834,7 +816,7 @@ class TenantRegistry:
         from ..hands.base import get_adapter
 
         site = tenant.config.get("site") if isinstance(tenant.config.get("site"), Mapping) else {}
-        name = str(site.get("adapter") or "github_static").strip()
+        name = str(site.get("adapter") or "payload_gateway").strip()
         return get_adapter(name, tenant.config)
 
     @staticmethod
@@ -1155,7 +1137,7 @@ class ChatService:
 
         from ..hands.base import get_adapter
 
-        return get_adapter(str(site.get("adapter") or "github_static").strip(), dict(config))
+        return get_adapter(str(site.get("adapter") or "payload_gateway").strip(), dict(config))
 
     def _assert_reviewable_merge_candidate(
         self,
@@ -2310,22 +2292,9 @@ class ChatService:
                 except (TypeError, ValueError):
                     pass
         elif kind == "edit":
-            if tenant is not None and tenant.context.get("source_deployment") is not None:
-                raise BridgeError(
-                    "this is a legacy edit draft without a verified preview; ask Ada to create a fresh implementation preview"
-                )
-            adapter = self._merge_adapter(tenant)
-            from ..brain import editor as brain_editor
-
-            try:
-                results = brain_editor._apply_ops(adapter, _normalize_edit_ops(meta))
-            except Exception as exc:  # noqa: BLE001 — keep provider errors bounded
-                raise BridgeError(str(exc)[:500]) from exc
-            published = results[0] if results and isinstance(results[0], Mapping) else None
-            version_type = "edit"
-            summary = str(draft.get("title") or f"edit: {normalized_id}")
-            commit_message = str((published or {}).get("commit_message") or "")
-            memory.update_draft_status(normalized_id, "approved")
+            raise BridgeError(
+                "this file-only draft has no verified site build and cannot be approved; ask Ada to create a fresh implementation preview"
+            )
         elif kind == "payload_content":
             if tenant is None:
                 raise BridgeError("Payload content approval requires a tenant")
@@ -2412,7 +2381,10 @@ class ChatService:
             # receipt-backed transition below.
             memory.record_strategy_decision_for_draft(normalized_id, "approved", baseline=baseline)
             try:
-                payload.publish("posts", document_id)
+                payload.publish(
+                    "posts", document_id,
+                    expected_hash=str(sync.get("draft_hash") or ""),
+                )
                 published_document = payload.read("posts", identifier=document_id, identifier_kind="id", draft=False)
             except Exception as exc:  # noqa: BLE001 - approval stays blocked on an uncertain Payload result
                 for initiative in memory.list_strategy_initiatives(limit=500):
@@ -2630,6 +2602,9 @@ class ChatService:
             raise BridgeError("focus is too long")
         try:
             media = payload.read_media(media_id, identifier_kind="id", draft=True)
+            expected_media_hash = str(media.get("_helloadaRevision") or "").strip()
+            if not expected_media_hash:
+                raise BridgeError("Payload media draft has no revision hash; reload the media before analyzing it.")
             image_url = str(
                 media.get("url")
                 or ((media.get("sizes") or {}).get("large") or {}).get("url")
@@ -2665,18 +2640,21 @@ class ChatService:
                 "analysisError": "",
                 "analysisUpdatedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
                 "analysis": analysis,
-            })
+            }, expected_hash=expected_media_hash)
             return {"media": updated, "analysis": analysis, "draft": True}
         except BridgeError:
             raise
         except Exception as exc:  # noqa: BLE001 — keep provider failures bounded
-            try:
-                payload.update_media(media_id, {
-                    "analysisStatus": "failed",
-                    "analysisError": str(exc)[:500],
-                })
-            except Exception:
-                pass
+            if "media" in locals() and isinstance(media, Mapping):
+                try:
+                    payload.update_media(media_id, {
+                        "analysisStatus": "failed",
+                        "analysisError": str(exc)[:500],
+                    }, expected_hash=expected_media_hash)
+                except Exception as record_exc:  # noqa: BLE001 — do not hide a failed state write
+                    raise BridgeError(
+                        f"media analysis failed and its failure state could not be saved: {str(record_exc)[:300]}"
+                    ) from record_exc
             raise BridgeError(str(exc)[:500]) from exc
 
     def media(self, *, limit: int = 50, tenant: Tenant | None = None) -> dict[str, Any]:
@@ -2838,20 +2816,6 @@ class ChatService:
         try:
             return self._source_editor(tenant).preview_styles()
         except SourceEditorError as exc:
-            raise BridgeError(str(exc)[:500]) from exc
-
-    def source_preview_promote(
-        self,
-        job_id: str,
-        *,
-        tenant: Tenant | None = None,
-    ) -> dict[str, Any]:
-        """Deploy one previously validated source preview through the approval boundary."""
-        from .source_deployment import SourceDeploymentError
-
-        try:
-            return self._source_deployer(tenant).promote(job_id)
-        except SourceDeploymentError as exc:
             raise BridgeError(str(exc)[:500]) from exc
 
     @staticmethod

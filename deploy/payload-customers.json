@@ -12,20 +12,32 @@
     "oceanicvibes": {
       "repository": "https://github.com/weareheadless/oceanicvibes.git",
       "worker": "oceanicvibes",
+      "d1DatabaseId": "56d3f277-fbaf-43d4-91e5-b3a195653a05",
+      "d1DatabaseName": "oceanicvibes-content",
+      "r2BucketName": "helloada-oceanicvibes-media",
       "health": "https://oceanicvibes.com/api/health",
       "adminPath": "/api/helloada",
-      "payloadAdmin": "0.8.6",
-      "payloadCore": "0.1.0",
-      "contentContract": "helloada-content-v1"
+      "payloadAdmin": "0.8.7",
+      "payloadCore": "0.2.0",
+      "contentContract": "helloada-content-v2",
+      "schemaRevision": 2,
+      "schemaIdentity": "88efb2c6d810331060abdd4b85f4e19ee6b4ed913c91a8d363e8bfd996b02490",
+      "migrationHead": "a61a108e7f172f97c0bb4f1d483d469861743b716d83ada1ecd887b7ac002827"
     },
     "atelier-harmonie": {
       "repository": "https://github.com/weareheadless/atelier-harmonie-headless.git",
       "worker": "atelier-harmonie",
+      "d1DatabaseId": "9496d871-ab28-42ee-9d38-3f38471f953d",
+      "d1DatabaseName": "atelier-harmonie",
+      "r2BucketName": "atelier-harmonie-media",
       "health": "https://atelier-harmonie.weareheadless.workers.dev/api/health",
       "adminPath": "/api/helloada",
-      "payloadAdmin": "0.8.6",
-      "payloadCore": "0.1.0",
-      "contentContract": "helloada-content-v1"
+      "payloadAdmin": "0.8.7",
+      "payloadCore": "0.2.0",
+      "contentContract": "helloada-content-v2",
+      "schemaRevision": 2,
+      "schemaIdentity": "88efb2c6d810331060abdd4b85f4e19ee6b4ed913c91a8d363e8bfd996b02490",
+      "migrationHead": "f849d084e092d60aeb0995527a9d5e312009f09329bb530ea41e13df7c1eb1ac"
     }
   }
 }

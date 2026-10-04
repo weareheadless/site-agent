@@ -69,8 +69,12 @@ official `main`, uses Node 22 and `npm ci`, typechecks and builds OpenNext with
 local bindings. Production credentials are supplied only to Cloudflare calls,
 never to dependency installation or builds. The artifact is inspected, hashed
 and archived before upload. The pipeline checks production did not change during
-the build, uploads an immutable version and promotes that exact version to 100% traffic,
-checks the live SHA and tenant, then performs the authenticated connection gate.
+the build and uploads an immutable, unpromoted version. If the queue entry is an
+explicit tenant schema migration, it verifies the exact live ledger prefix,
+applies only the committed Payload migration, and verifies the full target
+ledger and Payload contract while the prior Worker remains active. It then
+promotes that exact uploaded version to 100% traffic, checks the live SHA and
+tenant, and performs the authenticated connection gate.
 
 Application releases use OpenNext `upload` and Wrangler `versions deploy`.
 Domain routes, DNS and cron triggers are provisioned separately and are never
@@ -79,9 +83,20 @@ Worker permissions sufficient. See [Cloudflare's deployment permissions](https:/
 and [OpenNext's upload command](https://opennext.js.org/cloudflare/cli).
 
 Artifacts, source, receipts and previous Cloudflare versions are retained under
-`/SOCIAL/payload-releases`. Customer content and databases are untouched. Schema
-migrations require a separate reviewed migration release; this command does not
-guess or apply them. Rollback uses the previous receipt's Cloudflare version with
+`/SOCIAL/payload-releases`. Ordinary application releases never mutate a Payload
+database. The sole exception is an explicit new-tenant bootstrap request carrying
+the exact manifest migration-chain hash: the pipeline confirms the registered
+D1 identity is empty, applies the committed Payload migration chain through the
+pinned Payload CLI, and verifies the complete migration ledger before upload.
+Any non-empty or partially initialized database fails closed. Existing-tenant
+schema upgrades require a separate exact queue request containing the old
+migration-ledger identity and registered target head. The pipeline accepts only
+a strict prefix of the committed target chain, never generates a migration or
+guesses SQL, and leaves the prior Worker serving until the migrated schema and
+candidate Payload contract pass. A missing ledger, drifted database or
+uncommitted migration stops the release. Source deployment cannot invent or
+silently apply a schema change.
+Rollback uses the previous receipt's Cloudflare version with
 `wrangler versions deploy <version>@100% --name <worker> --yes` through the
 declared credential profile, followed by live checks. It never rolls back data.
 
@@ -119,13 +134,15 @@ contract; the VPS performs the same validation before execution.
   its immutable release asset exists. Verify the exact tarball URLs/integrity
   and a clean `npm ci`/build before queuing any consumer.
 - Ordinary Worker releases never generate or apply Payload migrations. A schema
-  migration requires its own reviewed tenant/database identity, deterministic
-  artifact, protected backup and restoration rehearsal, dry-run evidence and
-  recorded cutover. Never aim `payload migrate` at whichever binding is active.
-- The current new-site `application/bootstrap.py` still contains a direct
-  `wrangler deploy`/automatic Payload migration path. Until it is replaced by an
-  exact release-queue request plus an approved initial migration artifact,
-  new-site bootstrap is not a production release path. A public health response
-  does not waive this stop.
+  migration requires its own queue request, exact tenant/database identity, old
+  ledger identity and registered target head. The live database must be an
+  exact strict prefix of the committed chain; only then does the VPS apply the
+  committed artifact and record the cutover. Never aim `payload migrate` at an
+  unspecified binding or use deployment to generate/guess schema changes.
+- New-site bootstrap records its exact canonical D1/R2 identities and requests
+  the committed initial migration chain by hash through the same central queue.
+  It cannot invoke Wrangler, create/apply ad hoc migrations, or declare the site
+  live; the receipt only establishes workspace readiness after schema, Worker,
+  health and authenticated connection checks pass.
 - Source, artifact, deployment and authenticated browser verification are
   separately recorded. Report only what those records prove.

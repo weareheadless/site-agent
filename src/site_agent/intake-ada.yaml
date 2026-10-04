@@ -57,7 +57,7 @@ site:
   clone_path: ""
   preview_url: ""
   preview_branch: ""
-  writable_patterns: ["*.html", "*.css", "*.js", "content/**", "themes/**", "images/**", "output/**", "*.xml", "pelicanconf.py", "build.sh"]
+  writable_patterns: ["src/components/site/presentation/**", "src/app/(frontend)/site.css", "public/images/ada-media/**"]
   cloudflare:
     account_id: ""
     project_name: ""

@@ -1,6 +1,8 @@
 import type { Block, CollectionConfig, GlobalConfig } from 'payload'
 
-export const HELLOADA_CONTENT_CONTRACT_VERSION = 'helloada-content-v1'
+export const HELLOADA_CONTENT_CONTRACT_VERSION = 'helloada-content-v2'
+export const HELLOADA_CORE_VERSION = '0.2.0'
+export const HELLOADA_SCHEMA_REVISION = 2
 
 export const validateHelloAdaLink = (value: unknown): true | string => {
   if (typeof value !== 'string' || !value.trim()) return 'Enter a destination for this link.'
@@ -16,11 +18,6 @@ export const validateHelloAdaLink = (value: unknown): true | string => {
     return 'Use a site path, anchor, email, phone, or secure website URL.'
   }
 }
-
-const supportedContentBlocks = new Set([
-  'helloAdaHeading', 'helloAdaParagraph', 'helloAdaRichText',
-  'helloAdaImage', 'helloAdaLink', 'helloAdaContentList',
-])
 
 const stableKey = (value: unknown): value is string =>
   typeof value === 'string' && value.trim().length > 0 && value.trim().length <= 120
@@ -180,6 +177,16 @@ const protectCollection = (slug: string, guard: NativeWriteGuard): CollectionCon
   }],
 })
 
+const sectionCollectionHooks = (slug: string, guard: NativeWriteGuard): CollectionConfig['hooks'] => ({
+  ...protectCollection(slug, guard),
+  beforeValidate: [async ({ data }) => {
+    const sections = assignHelloAdaPageKeys(data?.sections)
+    const result = validateHelloAdaPageSections(sections)
+    if (result !== true) throw new Error(result)
+    return sections === undefined ? data : { ...data, sections }
+  }],
+})
+
 const seoFields = () => ({
   name: 'seo' as const,
   type: 'group' as const,
@@ -233,7 +240,7 @@ const sectionBlocks: Block[] = [
       { name: 'key', type: 'text' as const, required: true, admin: { readOnly: true }, label: 'Stable content ID' },
       { name: 'label', type: 'text' as const, required: true, label: 'What this link is for' },
       { name: 'text', type: 'text' as const, required: true, maxLength: 160, localized: true, label: 'Button or link text' },
-      { name: 'href', type: 'text' as const, required: true, validate: validateHelloAdaLink, label: 'Page or URL' },
+      { name: 'href', type: 'text' as const, required: true, localized: true, validate: validateHelloAdaLink, label: 'Page or URL' },
       { name: 'external', type: 'checkbox' as const, defaultValue: false, label: 'External website' },
       { name: 'newTab', type: 'checkbox' as const, defaultValue: false, label: 'Open in a new tab' },
     ],
@@ -252,12 +259,24 @@ const sectionBlocks: Block[] = [
           { name: 'image', type: 'upload' as const, relationTo: 'media' as const, localized: true, label: 'Image' },
           { name: 'alt', type: 'text' as const, localized: true, label: 'Alternative text' },
           { name: 'linkText', type: 'text' as const, localized: true, label: 'Link text' },
-          { name: 'href', type: 'text' as const, validate: (value: unknown) => value == null || value === '' ? true : validateHelloAdaLink(value), label: 'Page or URL' },
+          { name: 'href', type: 'text' as const, localized: true, validate: (value: unknown) => value == null || value === '' ? true : validateHelloAdaLink(value), label: 'Page or URL' },
         ],
       },
     ],
   },
 ]
+
+const contentBlockSlugs = sectionBlocks.map((block) => block.slug)
+const supportedContentBlocks = new Set(contentBlockSlugs)
+
+/** Platform-owned capabilities consumed by scaffolding and release validation. */
+export const HELLOADA_CAPABILITIES = {
+  contract: HELLOADA_CONTENT_CONTRACT_VERSION,
+  schemaRevision: HELLOADA_SCHEMA_REVISION,
+  collections: ['pages', 'posts', 'postCategories', 'products', 'productCategories', 'media'],
+  globals: ['siteSettings', 'navigation'],
+  contentBlocks: contentBlockSlugs,
+} as const
 
 export const createPagesCollection = (guard: NativeWriteGuard): CollectionConfig => ({
   slug: 'pages',
@@ -283,15 +302,7 @@ export const createPagesCollection = (guard: NativeWriteGuard): CollectionConfig
     seoFields(),
     { name: 'published', type: 'checkbox', defaultValue: true, label: 'Visible on the website' },
   ],
-  hooks: {
-    ...protectCollection('pages', guard),
-    beforeValidate: [async ({ data }) => {
-      const sections = assignHelloAdaPageKeys(data?.sections)
-      const result = validateHelloAdaPageSections(sections)
-      if (result !== true) throw new Error(result)
-      return sections === undefined ? data : { ...data, sections }
-    }],
-  },
+  hooks: sectionCollectionHooks('pages', guard),
 })
 
 export const createPostsCollection = (guard: NativeWriteGuard): CollectionConfig => ({
@@ -303,18 +314,52 @@ export const createPostsCollection = (guard: NativeWriteGuard): CollectionConfig
     { name: 'title', type: 'text', required: true, localized: true, label: 'Article title' },
     { name: 'slug', type: 'text', required: true, unique: true, label: 'Article address' },
     { name: 'summary', type: 'textarea', localized: true, label: 'Article excerpt' },
+    {
+      name: 'sections', type: 'array', maxRows: 30, label: 'Article sections',
+      fields: [
+        { name: 'key', type: 'text', required: true, admin: { readOnly: true }, label: 'Stable section ID' },
+        { name: 'label', type: 'text', required: true, localized: true, label: 'Section name' },
+        { name: 'entries', type: 'blocks', maxRows: 40, blocks: sectionBlocks, label: 'Section content' },
+      ],
+    },
     { name: 'body', type: 'richText', localized: true, label: 'Article content' },
     { name: 'featuredImage', type: 'upload', relationTo: 'media', localized: true, label: 'Article cover image' },
     { name: 'gallery', type: 'upload', hasMany: true, relationTo: 'media', label: 'Article images' },
     { name: 'author', type: 'text', localized: true, label: 'Author' },
     { name: 'publishedAt', type: 'date', label: 'Publication date' },
     { name: 'modifiedAt', type: 'date', label: 'Last update' },
-    { name: 'category', type: 'text', localized: true, label: 'Category' },
+    { name: 'category', type: 'relationship', relationTo: 'postCategories', label: 'Journal category' },
     { name: 'canonicalUrl', type: 'text', label: 'Canonical URL override' },
     seoFields(),
     { name: 'published', type: 'checkbox', defaultValue: true, label: 'Visible on the website' },
   ],
-  hooks: protectCollection('posts', guard),
+  hooks: sectionCollectionHooks('posts', guard),
+})
+
+export const createPostCategoriesCollection = (guard: NativeWriteGuard): CollectionConfig => ({
+  slug: 'postCategories',
+  versions: { drafts: true, maxPerDoc: 10 },
+  admin: { useAsTitle: 'title' },
+  fields: [
+    { name: 'sourceId', type: 'text', index: true, unique: true, admin: { position: 'sidebar' } },
+    { name: 'title', type: 'text', required: true, localized: true },
+    { name: 'slug', type: 'text', required: true, unique: true },
+    { name: 'sourceUrl', type: 'text' },
+    { name: 'canonicalUrl', type: 'text' },
+    { name: 'summary', type: 'textarea', localized: true },
+    {
+      name: 'sections', type: 'array', maxRows: 30, label: 'Category content',
+      fields: [
+        { name: 'key', type: 'text', required: true, admin: { readOnly: true }, label: 'Stable section ID' },
+        { name: 'label', type: 'text', required: true, localized: true },
+        { name: 'entries', type: 'blocks', maxRows: 40, blocks: sectionBlocks },
+      ],
+    },
+    { name: 'featuredImage', type: 'upload', relationTo: 'media' },
+    seoFields(),
+    { name: 'published', type: 'checkbox', defaultValue: true },
+  ],
+  hooks: sectionCollectionHooks('postCategories', guard),
 })
 
 export const createProductsCollection = (guard: NativeWriteGuard): CollectionConfig => ({
@@ -326,13 +371,26 @@ export const createProductsCollection = (guard: NativeWriteGuard): CollectionCon
     { name: 'title', type: 'text', required: true, localized: true },
     { name: 'slug', type: 'text', required: true, unique: true },
     { name: 'summary', type: 'textarea', localized: true },
+    {
+      name: 'sections', type: 'array', maxRows: 30, label: 'Product content',
+      fields: [
+        { name: 'key', type: 'text', required: true, admin: { readOnly: true }, label: 'Stable section ID' },
+        { name: 'label', type: 'text', required: true, localized: true },
+        { name: 'entries', type: 'blocks', maxRows: 40, blocks: sectionBlocks },
+      ],
+    },
     { name: 'body', type: 'richText', localized: true },
     { name: 'featuredImage', type: 'upload', relationTo: 'media', localized: true },
     { name: 'price', type: 'number' },
+    { name: 'currency', type: 'text' },
+    { name: 'availability', type: 'text', localized: true },
+    { name: 'gallery', type: 'upload', relationTo: 'media', hasMany: true, localized: true },
     { name: 'category', type: 'relationship', relationTo: 'productCategories' },
+    { name: 'canonicalUrl', type: 'text' },
+    seoFields(),
     { name: 'published', type: 'checkbox', defaultValue: false },
   ],
-  hooks: protectCollection('products', guard),
+  hooks: sectionCollectionHooks('products', guard),
 })
 
 export const createProductCategoriesCollection = (guard: NativeWriteGuard): CollectionConfig => ({
@@ -340,13 +398,24 @@ export const createProductCategoriesCollection = (guard: NativeWriteGuard): Coll
   admin: { useAsTitle: 'title' },
   fields: [
     { name: 'sourceId', type: 'text', admin: { position: 'sidebar' } },
+    { name: 'sourceUrl', type: 'text' },
     { name: 'title', type: 'text', required: true, localized: true },
     { name: 'slug', type: 'text', required: true, unique: true },
     { name: 'description', type: 'textarea', localized: true },
     { name: 'featuredImage', type: 'upload', relationTo: 'media' },
+    {
+      name: 'sections', type: 'array', maxRows: 30, label: 'Category content',
+      fields: [
+        { name: 'key', type: 'text', required: true, admin: { readOnly: true }, label: 'Stable section ID' },
+        { name: 'label', type: 'text', required: true, localized: true },
+        { name: 'entries', type: 'blocks', maxRows: 40, blocks: sectionBlocks },
+      ],
+    },
+    { name: 'canonicalUrl', type: 'text' },
+    seoFields(),
     { name: 'published', type: 'checkbox', defaultValue: true },
   ],
-  hooks: protectCollection('productCategories', guard),
+  hooks: sectionCollectionHooks('productCategories', guard),
 })
 
 export const Users: CollectionConfig = {
@@ -364,9 +433,31 @@ export const Media: CollectionConfig = {
   upload: true,
   fields: [
     { name: 'alt', type: 'text', localized: true, label: 'Alternative text' },
+    { name: 'sourceId', type: 'text', required: true, index: true, unique: true, admin: { position: 'sidebar' } },
+    { name: 'sourceUrl', type: 'text' },
+    { name: 'originalUrl', type: 'text' },
     { name: 'description', type: 'textarea', localized: true, label: 'Description' },
     { name: 'tags', type: 'array', fields: [{ name: 'value', type: 'text', required: true }] },
+    { name: 'dominantColors', type: 'array', fields: [{ name: 'value', type: 'text', required: true }] },
+    { name: 'suggestedUses', type: 'array', fields: [{ name: 'value', type: 'text', required: true }] },
+    { name: 'qualityNotes', type: 'array', fields: [{ name: 'value', type: 'text', required: true }] },
+    { name: 'ocrText', type: 'textarea' },
+    { name: 'proposedKnowledge', type: 'textarea' },
+    { name: 'sourceKind', type: 'text' },
+    { name: 'analysisStatus', type: 'select', defaultValue: 'pending', options: ['pending', 'processing', 'ready', 'failed', 'skipped'] },
+    { name: 'analysisProvider', type: 'text' },
+    { name: 'analysisModel', type: 'text' },
+    { name: 'analysisVersion', type: 'number', defaultValue: 1 },
+    { name: 'analysisError', type: 'textarea' },
+    { name: 'analysisUpdatedAt', type: 'date' },
+    { name: 'analysis', type: 'json' },
   ],
+  hooks: {
+    beforeValidate: [async ({ data }) => {
+      const sourceId = String(data?.sourceId || '').trim()
+      return sourceId ? data : { ...data, sourceId: `media:${globalThis.crypto.randomUUID()}` }
+    }],
+  },
 }
 
 export const createNavigationGlobal = (guard: NativeWriteGuard): GlobalConfig => ({
@@ -376,14 +467,14 @@ export const createNavigationGlobal = (guard: NativeWriteGuard): GlobalConfig =>
     { name: 'items', type: 'array', label: 'Main menu', fields: [
       { name: 'key', type: 'text', required: true, admin: { readOnly: true }, label: 'Stable menu item ID' },
       { name: 'label', type: 'text', required: true, localized: true, label: 'Menu text' },
-      { name: 'href', type: 'text', required: true, validate: validateHelloAdaLink, label: 'Page or URL' },
+      { name: 'href', type: 'text', required: true, localized: true, validate: validateHelloAdaLink, label: 'Page or URL' },
       { name: 'external', type: 'checkbox', defaultValue: false },
       { name: 'visible', type: 'checkbox', defaultValue: true },
     ] },
     { name: 'footer', type: 'array', label: 'Footer menu', fields: [
       { name: 'key', type: 'text', required: true, admin: { readOnly: true }, label: 'Stable menu item ID' },
       { name: 'label', type: 'text', required: true, localized: true, label: 'Menu text' },
-      { name: 'href', type: 'text', required: true, validate: validateHelloAdaLink, label: 'Page or URL' },
+      { name: 'href', type: 'text', required: true, localized: true, validate: validateHelloAdaLink, label: 'Page or URL' },
       { name: 'external', type: 'checkbox', defaultValue: false },
       { name: 'visible', type: 'checkbox', defaultValue: true },
     ] },
@@ -393,7 +484,7 @@ export const createNavigationGlobal = (guard: NativeWriteGuard): GlobalConfig =>
       { name: 'items', type: 'array', fields: [
         { name: 'key', type: 'text', required: true, admin: { readOnly: true } },
         { name: 'label', type: 'text', required: true, localized: true },
-        { name: 'href', type: 'text', required: true, validate: validateHelloAdaLink },
+        { name: 'href', type: 'text', required: true, localized: true, validate: validateHelloAdaLink },
         { name: 'external', type: 'checkbox', defaultValue: false },
       ] },
     ] },
@@ -403,7 +494,7 @@ export const createNavigationGlobal = (guard: NativeWriteGuard): GlobalConfig =>
       { name: 'items', type: 'array', fields: [
         { name: 'key', type: 'text', required: true, admin: { readOnly: true } },
         { name: 'label', type: 'text', required: true, localized: true },
-        { name: 'href', type: 'text', required: true, validate: validateHelloAdaLink },
+        { name: 'href', type: 'text', required: true, localized: true, validate: validateHelloAdaLink },
         { name: 'external', type: 'checkbox', defaultValue: false },
       ] },
     ] },
@@ -431,8 +522,16 @@ export const createSiteSettingsGlobal = (guard: NativeWriteGuard): GlobalConfig 
     { name: 'logo', type: 'upload', relationTo: 'media' },
     { name: 'email', type: 'email', label: 'Contact email' },
     { name: 'telephone', type: 'text', label: 'Contact telephone' },
+    { name: 'contactLabel', type: 'text', localized: true, label: 'Contact call-to-action label' },
     { name: 'facebookUrl', type: 'text' },
     { name: 'instagramUrl', type: 'text' },
+    { name: 'tiktokUrl', type: 'text' },
+    { name: 'promoText', type: 'text', localized: true },
+    { name: 'promoHref', type: 'text', localized: true, validate: (value: unknown) => value == null || value === '' ? true : validateHelloAdaLink(value) },
+    { name: 'promoCta', type: 'text', localized: true },
+    { name: 'footerKicker', type: 'text', localized: true },
+    { name: 'footerTitle', type: 'textarea', localized: true },
+    { name: 'footerNote', type: 'text', localized: true },
     { name: 'defaultSeoTitle', type: 'text', localized: true, label: 'Default search title' },
     { name: 'defaultSeoDescription', type: 'textarea', localized: true, label: 'Default search description' },
     { name: 'defaultSocialImage', type: 'upload', relationTo: 'media', label: 'Default social preview image' },
@@ -454,6 +553,26 @@ export const createSiteSettingsGlobal = (guard: NativeWriteGuard): GlobalConfig 
 })
 
 export const createHelloAdaSchema = (guard: NativeWriteGuard) => ({
-  collections: [Users, createPagesCollection(guard), createPostsCollection(guard), createProductsCollection(guard), createProductCategoriesCollection(guard), Media],
+  collections: [Users, createPagesCollection(guard), createPostsCollection(guard), createPostCategoriesCollection(guard), createProductsCollection(guard), createProductCategoriesCollection(guard), Media],
   globals: [createSiteSettingsGlobal(guard), createNavigationGlobal(guard)],
 })
+
+/** Generate the machine-readable bootstrap contract from the real Payload config. */
+export const createHelloAdaContentContract = () => {
+  const schema = createHelloAdaSchema(async () => undefined)
+  const collectionConfigs = Object.fromEntries(schema.collections.map((collection) => [collection.slug, collection]))
+  const globalConfigs = Object.fromEntries(schema.globals.map((global) => [global.slug, global]))
+  const fields = (config: CollectionConfig | GlobalConfig) => config.fields.flatMap((field) =>
+    'name' in field && typeof field.name === 'string' ? [field.name] : [],
+  )
+
+  return {
+    contract: HELLOADA_CONTENT_CONTRACT_VERSION,
+    corePackage: '@weareheadless/helloada-payload-core',
+    coreVersion: HELLOADA_CORE_VERSION,
+    schemaRevision: HELLOADA_SCHEMA_REVISION,
+    collections: Object.fromEntries(HELLOADA_CAPABILITIES.collections.map((slug) => [slug, fields(collectionConfigs[slug])])),
+    globals: Object.fromEntries(HELLOADA_CAPABILITIES.globals.map((slug) => [slug, fields(globalConfigs[slug])])),
+    contentBlocks: HELLOADA_CAPABILITIES.contentBlocks,
+  }
+}

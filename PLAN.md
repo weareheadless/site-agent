@@ -1,5 +1,13 @@
 # Plan: `site-agent` — portable AI content manager
 
+> **Historical / superseded:** this document records an early product plan and
+> contains architecture that has since been retired. Do not use its Pelican,
+> `content.json`, or proposal-only editing descriptions as implementation
+> guidance. The active architecture is defined by [AGENTS.md](AGENTS.md), the
+> canonical consolidation plan at
+> [docs/site-agent-payload-platform-consolidation-implementation-plan.md](docs/site-agent-payload-platform-consolidation-implementation-plan.md),
+> and the shared Payload contract.
+
 **Goal:** Extract Ada's working core (memory, reflection, senses, LLM loop) plus FYE's website-editing concept into a fresh, installable Python package. Attach it to OCEANICVIBES first. Website-only in v1; no social posting. Commercialization-ready staging from day one.
 
 **Positioning:** see [POSITIONING.md](POSITIONING.md). Hero features in priority order: **(1) weekly plain-language report**, **(2) editor chat**. Audit/GA4 analysis feeds the report underneath.

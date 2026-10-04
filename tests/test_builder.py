@@ -589,33 +589,6 @@ def test_builder_allows_configured_site_files(tmp_path):
     runner._validate_build_paths(config, clone, "origin/preview")
 
 
-def test_journal_scope_allows_only_public_journal_navigation_on_homepage(tmp_path):
-    clone = _make_clone(tmp_path)
-    original = (clone / "index.html").read_text()
-    (clone / "index.html").write_text(
-        original.replace("</body>", '<a href="/articles.html">Journal</a></body>')
-    )
-
-    runner._validate_journal_scope(clone, "origin/main")
-
-
-def test_journal_scope_rejects_homepage_design_files(tmp_path):
-    clone = _make_clone(tmp_path)
-    (clone / "styles.css").write_text("body { color: red; }")
-
-    with pytest.raises(runner.RunnerError, match="outside its isolated scope"):
-        runner._validate_journal_scope(clone, "origin/main")
-
-
-def test_journal_scope_rejects_non_navigation_homepage_markup(tmp_path):
-    clone = _make_clone(tmp_path)
-    original = (clone / "index.html").read_text()
-    (clone / "index.html").write_text(original.replace("<p>live</p>", "<p>rewritten</p>"))
-
-    with pytest.raises(runner.RunnerError, match="outside public journal navigation"):
-        runner._validate_journal_scope(clone, "origin/main")
-
-
 def test_builder_origin_url_never_persists_token():
     url = runner._origin_url("acme/site")
     assert url == "https://github.com/acme/site.git"
@@ -852,7 +825,6 @@ def test_site_digest_builds_structural_summary(tmp_path):
         ".footer p { color: #333; }\n"
         "@media (max-width: 768px) { .hero { padding: 10px; } }\n"
     )
-    (clone / "content.json").write_text('{"heroTitle": "Breathe deep"}')
     _git(clone, "add", "-A")
     _git(clone, "commit", "-qm", "v1")
     _git(clone, "update-ref", "refs/remotes/origin/main",
@@ -866,7 +838,7 @@ def test_site_digest_builds_structural_summary(tmp_path):
     assert "--accent" in digest and "#7ec8ff" in digest
     assert "Manrope" in digest
     assert "media queries: 1" in digest
-    assert "content.json: yes" in digest
+    assert "content.json" not in digest
 
 
 def test_site_digest_cached_until_main_moves(tmp_path, monkeypatch):
@@ -917,9 +889,6 @@ def _content_clone(tmp_path):
         ".hero{padding:120px 0;background:#e6f1eb}\n"
         ".footer{margin:0;color:#6a817d}\n"
     )
-    (clone / "content.json").write_text(
-        '{"heroTitle":"Breathe deep","about":{"lead":"lead text"}}'
-    )
     _git(clone, "add", "-A")
     _git(clone, "commit", "-qm", "v1")
     _git(clone, "update-ref", "refs/remotes/origin/main",
@@ -928,7 +897,7 @@ def _content_clone(tmp_path):
     return clone
 
 
-def test_tweakmap_extracts_css_html_content(tmp_path):
+def test_tweakmap_extracts_only_frontend_css_and_html(tmp_path):
     from site_agent.hands import tweakmap
 
     clone = _content_clone(tmp_path)
@@ -943,9 +912,7 @@ def test_tweakmap_extracts_css_html_content(tmp_path):
     assert any("Breathe deep" in l for l in text)
     # '$1' placeholder filtered out
     assert not any("$1" in l for l in text)
-    fields = {e["field"]: e for e in files["content.json"]}
-    assert fields["heroTitle"]["current"] == "Breathe deep"
-    assert fields["about.lead"]["current"] == "lead text"
+    assert "content.json" not in files
 
 
 def test_tweakmap_ensure_caches_and_merges_builder_overlay(tmp_path, monkeypatch):
@@ -1014,27 +981,13 @@ def test_tweakmap_injected_into_tool_prompt(tmp_path):
 
         def chat_tools(self, messages, tools, temperature=None):
             self.calls.append(messages)
-            if len(self.calls) > 1:
-                return {"content": "Staged.", "tool_calls": None}
-            return {
-                "content": "Staged.",
-                "tool_calls": [
-                    {"id": "c1", "type": "function",
-                     "function": {"name": "propose_changes",
-                                  "arguments": json.dumps({
-                                      "summary": "footer margin",
-                                      "ops": [{"op": "edit", "path": "styles.css",
-                                               "find": "margin:0;", "replace": "margin:4px;"}]})}}
-                ],
-            }
+            return {"content": "I have the site context.", "tool_calls": None}
 
     from site_agent.brain.editor import handle_message
     from site_agent.hands.base import SiteAdapter
 
     class Adapter(SiteAdapter):
         name = "t"
-        site = {"content_path": "content.json"}
-        def get_content(self): return {"heroTitle": "Breathe deep"}
         def get_file(self, path, branch=None): return (None, None)
         def commit_file(self, path, data, message, branch=None): return {}
 
@@ -1042,7 +995,7 @@ def test_tweakmap_injected_into_tool_prompt(tmp_path):
     memory = Memory(tmp_path / "m.db")
     config = {
         "site": {"adapter": "github_static", "repository": "acme/site",
-                 "content_path": "content.json", "clone_path": str(clone),
+                 "clone_path": str(clone),
                  "writable_patterns": ["*.html", "*.css", "*.md"]},
         "llm": {"tool_calling": True},
         "persona": {"name": "Ada"},
@@ -1203,25 +1156,14 @@ def test_build_brief_carries_role_and_leaves_design_to_ada():
     assert "DESIGN SCOPE" not in brief
 
 
-def test_build_brief_journal_has_bounded_layout_contract():
+def test_build_brief_always_enforces_the_canonical_payload_source_contract():
     brief = runner.build_brief(
-        "set up the Pelican journal",
-        {"blog": {"engine": "pelican"}, "site": {"payload": {"enabled": False}}},
-    )
-    assert "JOURNAL REQUEST" in brief
-    assert "autonomously" in brief
-    assert "phased design" not in brief
-    assert "fixed-header" in brief
-
-
-def test_build_brief_payload_journal_uses_native_source_contract():
-    brief = runner.build_brief(
-        "fix the journal link",
-        {"blog": {"engine": "payload"}, "site": {"payload": {"enabled": True}}},
+        "update the articles navigation link",
+        {},
     )
     assert "NATIVE NEXT/PAYLOAD REQUEST" in brief
-    assert "JOURNAL REQUEST" not in brief
-    assert "Do not execute build.sh" in brief
+    assert "shared Payload schema" in brief
+    assert "alternate publishing path" in brief
 
 
 def test_install_agent_files_does_not_modify_site_files(tmp_path):
@@ -1415,26 +1357,13 @@ def test_template_tokens_injected_into_chat_tools_prompt(tmp_path):
 
         def chat_tools(self, messages, tools, temperature=None):
             self.calls.append(messages)
-            if len(self.calls) > 1:
-                return {"content": "Staged.", "tool_calls": None}
-            return {
-                "content": "Staged.",
-                "tool_calls": [
-                    {"id": "c1", "type": "function",
-                     "function": {"name": "propose_changes",
-                                  "arguments": json.dumps({
-                                      "summary": "new page",
-                                      "ops": []})}}
-                ],
-            }
+            return {"content": "I have the design context.", "tool_calls": None}
 
     from site_agent.brain.editor import handle_message
     from site_agent.hands.base import SiteAdapter
 
     class Adapter(SiteAdapter):
         name = "t"
-        site = {"content_path": "content.json"}
-        def get_content(self): return {}
         def get_file(self, path, branch=None): return (None, None)
         def commit_file(self, path, data, message, branch=None): return {}
 
@@ -1442,7 +1371,7 @@ def test_template_tokens_injected_into_chat_tools_prompt(tmp_path):
     memory = Memory(tmp_path / "m.db")
     config = {
         "site": {"adapter": "github_static", "repository": "acme/site",
-                 "content_path": "content.json", "clone_path": str(clone),
+                 "clone_path": str(clone),
                  "writable_patterns": ["*.html", "*.css", "*.md"]},
         "llm": {"tool_calling": True},
         "persona": {"name": "Ada"},

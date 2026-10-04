@@ -40,10 +40,16 @@ def _remote(tmp_path):
     _git(seed, "init", "-q", "-b", "main")
     _git(seed, "config", "user.email", "test@example.com")
     _git(seed, "config", "user.name", "Test")
-    (seed / "build.sh").write_text(
-        "#!/usr/bin/env bash\nset -euo pipefail\nrm -rf output\nmkdir -p output\ncat > output/index.html <<'EOF'\n<!doctype html><html lang=\"en\"><head><title>Baseline</title><meta name=\"description\" content=\"Baseline\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"></head><body><header>Header</header><main><h1>Baseline</h1><a href=\"/articles.html\">Journal</a></main><footer>Footer</footer></body></html>\nEOF\ncp output/index.html output/articles.html\n"
-    )
-    (seed / "build.sh").chmod(0o755)
+    (seed / "package.json").write_text(json.dumps({
+        "name": "baseline-next-payload",
+        "private": True,
+        "scripts": {"build": "next build"},
+        "dependencies": {"next": "16.3.4", "payload": "3.88.0", "react": "19.2.6", "react-dom": "19.2.6"},
+    }, sort_keys=True))
+    (seed / "next.config.mjs").write_text("export default { output: 'export' }\n")
+    (seed / "src/app").mkdir(parents=True)
+    (seed / "src/app/page.tsx").write_text("export default function Page(){return <main>Baseline</main>}\n")
+    (seed / "payload.config.ts").write_text("export default {}\n")
     _git(seed, "add", "-A")
     _git(seed, "commit", "-q", "-m", "baseline")
     _git(seed, "remote", "add", "origin", str(bare))
@@ -56,81 +62,18 @@ class _NativeBuilder:
 
     def build_design(self, request, target, progress=None):
         root = Path(target.clone_path)
-        (root / "src/app").mkdir(parents=True, exist_ok=True)
         (root / "design").mkdir(parents=True, exist_ok=True)
-        (root / "package.json").write_text(json.dumps({
-            "name": "native-candidate",
-            "private": True,
-            "type": "module",
-            "scripts": {"typecheck": "tsc --noEmit", "lint": "eslint .", "build": "next build"},
-            "dependencies": {
-                "@gsap/react": "2.1.2",
-                "@opennextjs/cloudflare": "1.20.6",
-                "@payloadcms/db-d1-sqlite": "3.88.0",
-                "@payloadcms/next": "3.88.0",
-                "@payloadcms/richtext-lexical": "3.88.0",
-                "@payloadcms/storage-r2": "3.88.0",
-                "@payloadcms/translations": "3.88.0",
-                "@payloadcms/ui": "3.88.0",
-                "cross-env": "7.0.3",
-                "dotenv": "16.6.1",
-                "graphql": "16.11.0",
-                "gsap": "3.12.5",
-                "next": "16.3.4",
-                "payload": "3.88.0",
-                "react": "19.2.6",
-                "react-dom": "19.2.6",
-            },
-            "devDependencies": {
-                "@eslint/eslintrc": "3.3.1",
-                "@types/node": "22.19.9",
-                "@types/react": "19.2.14",
-                "@types/react-dom": "19.2.3",
-                "eslint": "9.16.0",
-                "eslint-config-next": "16.3.4",
-                "prettier": "3.6.2",
-                "tsx": "4.22.4",
-                "typescript": "5.7.3",
-                "wrangler": "4.130.0",
-            },
-        }, sort_keys=True), encoding="utf-8")
-        (root / "next.config.mjs").write_text("export default { output: 'export' };\n", encoding="utf-8")
-        (root / "eslint.config.mjs").write_text("export default [];\n", encoding="utf-8")
-        (root / "tsconfig.json").write_text("{}\n", encoding="utf-8")
-        package = json.loads((root / "package.json").read_text(encoding="utf-8"))
-        locked = {**package["dependencies"], **package["devDependencies"]}
-        (root / "package-lock.json").write_text(
-            json.dumps({
-                "name": "native-candidate",
-                "version": "0.0.0",
-                "lockfileVersion": 3,
-                "packages": {
-                    "": {"name": "native-candidate", "dependencies": locked},
-                    **{f"node_modules/{name}": {"version": version} for name, version in locked.items()},
-                },
-            }),
-            encoding="utf-8",
-        )
-        homepage = root / "src/components/site/homepage.tsx"
+        homepage = root / "src/components/site/presentation/homepage.tsx"
         homepage.parent.mkdir(parents=True, exist_ok=True)
         homepage.write_text(
             "export function HomepageContent() { return <main><h1>A considered service</h1><p>A clear first step.</p></main> }\n",
             encoding="utf-8",
         )
-        # The host-owned toolchain and Next entrypoint are not Ada-authored
-        # candidate files; this test double retains only the tenant component.
-        for relative in (
-            "package.json", "package-lock.json", "next.config.mjs",
-            "eslint.config.mjs", "tsconfig.json", "src/app/page.tsx",
-        ):
-            (root / relative).unlink(missing_ok=True)
-        try:
-            (root / "src/app").rmdir()
-        except OSError:
-            pass
+        # Ada owns presentation source only; the shared Payload/Next shell and
+        # dependency graph must remain untouched by a tenant design.
         manifest = DesignManifest.from_dict({
             "schema_version": 1,
-            "source_homepage_path": "src/components/site/homepage.tsx",
+            "source_homepage_path": "src/components/site/presentation/homepage.tsx",
             "design_direction_id": "native-test",
             "intake_hash": request.site_intake_hash,
             "tokens": {},
@@ -158,7 +101,7 @@ class _NativeBuilder:
             "candidate_sha": candidate_sha,
             "candidate_ref": target.candidate_ref,
             "diff_summary": "native source authored",
-            "changed_paths": ["src/components/site/homepage.tsx", "design/ada-design-manifest.json"],
+            "changed_paths": ["src/components/site/presentation/homepage.tsx", "design/ada-design-manifest.json"],
             "manifest_path": "design/ada-design-manifest.json",
             "manifest_hash": canonical_hash(manifest.to_dict()),
             "opencode_session_id": "native-test-session",
@@ -187,7 +130,7 @@ def test_design_lab_retains_artifacts_without_live_or_remote_mutation(tmp_path, 
         (output / "articles.html").write_text(
             '<!doctype html><html lang="en"><head><title>Articles</title><meta name="description" content="Articles"><meta name="viewport" content="width=device-width, initial-scale=1"></head><body><header>Header</header><main><h1>Articles</h1><p>A considered service. A clear first step.</p></main><footer>Footer</footer></body></html>'
         )
-        return SiteBuildResult(profile.name, True, profile.output_dir, ({"command": list(profile.build_command), "status": "passed"},), ("index.html", "articles.html"))
+        return SiteBuildResult(profile.name, True, profile.output_dir, ({"command": list(profile.build_command), "status": "passed"},), ("index.html",))
 
     monkeypatch.setattr("site_agent.application.design_lab.build_site", fake_build)
     monkeypatch.setattr("site_agent.application.designs.build_site", fake_build)
@@ -204,7 +147,7 @@ def test_design_lab_retains_artifacts_without_live_or_remote_mutation(tmp_path, 
         builder=_NativeBuilder(),
     ).generate(_intake(), browser=False)
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result.get("error")
     assert result["baseline_sha"] == _git(tmp_path / "lab" / "source.git-or-clone", "rev-parse", "refs/remotes/origin/main").stdout.strip()
     assert result["candidate_ref"] == f"refs/ada-design-lab/{result['run_id']}"
     assert result["remote_refs_unchanged"] is True

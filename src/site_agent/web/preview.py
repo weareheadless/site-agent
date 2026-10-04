@@ -14,7 +14,6 @@ import re
 import secrets
 import shutil
 import subprocess
-import sys
 import tarfile
 import tempfile
 import threading
@@ -27,7 +26,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from ..core.intake_lab_contracts import LivePreviewSnapshot
 from ..core.design_contracts import canonical_json
-from ..hands.site_build import PELICAN_BASELINE_PROFILE, SiteBuildError, SiteBuildProfile, build_site, get_build_profile
+from ..hands.site_build import NEXT_REACT_PROFILE, SiteBuildError, SiteBuildProfile, build_site, get_build_profile
 
 
 PreviewScope = tuple[str, ...]
@@ -544,7 +543,7 @@ class PreviewBuildCache:
     @staticmethod
     def _resolve_profile(profile: SiteBuildProfile | str | None) -> SiteBuildProfile:
         if profile is None or (isinstance(profile, str) and not profile.strip()):
-            return PELICAN_BASELINE_PROFILE
+            return NEXT_REACT_PROFILE
         if isinstance(profile, SiteBuildProfile):
             return profile
         return get_build_profile(str(profile))
@@ -612,37 +611,18 @@ class PreviewBuildCache:
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_bytes(data)
             build_environment = dict(build_env) if build_env is not None else os.environ.copy()
-            if build_profile.name == PELICAN_BASELINE_PROFILE.name:
-                build = site / "build.sh"
-                if not build.is_file():
-                    raise RuntimeError("preview has no build.sh")
-                python_bin = Path(sys.executable).parent
-                build_environment["PATH"] = os.pathsep.join(
-                    part for part in (str(python_bin), build_environment.get("PATH", "")) if part
-                )
-                built = subprocess.run(
-                    ["bash", "build.sh"],
-                    cwd=site,
-                    capture_output=True,
-                    timeout=60,
-                    env=build_environment,
-                )
-                output = site / build_profile.output_dir
-                if built.returncode != 0 or not output.is_dir():
-                    raise RuntimeError("preview build failed")
-            else:
-                result = build_site(
-                    site,
-                    build_profile,
-                    npm_cache=tmp / "npm-cache",
-                    env=build_environment,
-                    timeout_seconds=60,
-                )
-                if not result.ok:
-                    raise RuntimeError("preview build failed")
-                output = site / build_profile.output_dir
-                if not output.is_dir():
-                    raise RuntimeError("preview build output is missing")
+            result = build_site(
+                site,
+                build_profile,
+                npm_cache=tmp / "npm-cache",
+                env=build_environment,
+                timeout_seconds=60,
+            )
+            if not result.ok:
+                raise RuntimeError("preview build failed")
+            output = site / build_profile.output_dir
+            if not output.is_dir():
+                raise RuntimeError("preview build output is missing")
             archive_path.unlink(missing_ok=True)
             return output
         except (OSError, RuntimeError, subprocess.SubprocessError, tarfile.TarError):

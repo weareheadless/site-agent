@@ -38,12 +38,46 @@ def validate_queue(queue: dict, registry: dict) -> None:
     for tenant, request in queue["releases"].items():
         if tenant not in registry["customers"] or not isinstance(request, dict):
             raise ValueError("unregistered tenant in release queue")
-        if set(request) != {"id", "sha"}:
-            raise ValueError("each release must contain only id and sha")
+        permitted = (
+            {"id", "sha"},
+            {"id", "sha", "approvalId"},
+            {"id", "sha", "initializeSchema"},
+            {"id", "sha", "schemaMigration"},
+        )
+        if set(request) not in permitted:
+            raise ValueError("release must be an owner approval, a schema initialization, or an exact tenant schema migration")
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", request["id"]):
             raise ValueError("unsafe release ID")
         if not re.fullmatch(r"[0-9a-f]{40}", request["sha"]):
             raise ValueError("release queue requires full immutable commit SHAs")
+        if "approvalId" in request and (
+            isinstance(request["approvalId"], bool)
+            or not isinstance(request["approvalId"], int)
+            or request["approvalId"] < 1
+        ):
+            raise ValueError("approval identity must be a positive integer")
+        if "initializeSchema" in request:
+            initialization = request["initializeSchema"]
+            expected_head = registry["customers"][tenant].get("migrationHead")
+            if (
+                not isinstance(initialization, dict)
+                or set(initialization) != {"migrationHead"}
+                or not re.fullmatch(r"[0-9a-f]{64}", str(initialization.get("migrationHead") or ""))
+                or initialization["migrationHead"] != expected_head
+            ):
+                raise ValueError("new-tenant schema initialization must match the registered migration chain")
+        if "schemaMigration" in request:
+            migration = request["schemaMigration"]
+            expected_head = registry["customers"][tenant].get("migrationHead")
+            if (
+                not isinstance(migration, dict)
+                or set(migration) != {"fromLedgerIdentity", "targetMigrationHead"}
+                or not re.fullmatch(r"[0-9a-f]{64}", str(migration.get("fromLedgerIdentity") or ""))
+                or not re.fullmatch(r"[0-9a-f]{64}", str(migration.get("targetMigrationHead") or ""))
+                or migration["targetMigrationHead"] != expected_head
+                or migration["fromLedgerIdentity"] == migration["targetMigrationHead"]
+            ):
+                raise ValueError("tenant schema migration must identify one prior ledger and the registered target head")
 
 
 def main() -> int:
@@ -110,8 +144,16 @@ def main() -> int:
                     failures += 1
                 continue
             print(f"[queue] release={tenant}/{request['id']} source={request['sha']} pipeline={sha}", flush=True)
-            code = subprocess.run([sys.executable, str(snapshot / "scripts/deploy-payload-customer.py"),
-                "--tenant", tenant, "--ref", request["sha"], "--release-id", request["id"]],
+            command = [sys.executable, str(snapshot / "scripts/deploy-payload-customer.py"),
+                "--tenant", tenant, "--ref", request["sha"], "--release-id", request["id"]]
+            if "approvalId" in request:
+                command.extend(["--approval-id", str(request["approvalId"])])
+            if "initializeSchema" in request:
+                command.extend(["--initialize-schema-head", request["initializeSchema"]["migrationHead"]])
+            if "schemaMigration" in request:
+                command.extend(["--schema-migration-from-ledger-identity",
+                                request["schemaMigration"]["fromLedgerIdentity"]])
+            code = subprocess.run(command,
                 env={**environment, "HELLOADA_PIPELINE_SHA": sha}).returncode
             failures += int(code != 0)
         return int(failures != 0)

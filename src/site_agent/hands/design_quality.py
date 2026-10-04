@@ -6,12 +6,9 @@ import html
 import hashlib
 import ipaddress
 import json
-import os
 import re
-import shlex
 import shutil
 import subprocess
-import sys
 import tempfile
 from fnmatch import fnmatch
 from dataclasses import dataclass, field
@@ -80,12 +77,11 @@ def _looks_like_source_path(value: str) -> bool:
 
 @dataclass(frozen=True)
 class QualityPolicy:
-    output_dir: str = "output"
+    output_dir: str = "out"
     required_pages: tuple[str, ...] = ()
     required_content: tuple[str, ...] = ()
     allowed_patterns: tuple[str, ...] = ()
     prohibited_paths: tuple[str, ...] = ()
-    build_command: tuple[str, ...] | str | None = ("bash", "build.sh")
     build_timeout_seconds: int = 120
     browser_required: bool = False
     visual_critic: bool = False
@@ -128,24 +124,15 @@ class QualityPolicy:
         quality = engine.get("quality") or {}
         if not isinstance(quality, Mapping):
             raise ValueError("design_engine.quality must be an object")
-        site = config.get("site") or {}
-        blog = config.get("blog") or {}
         build_profile = str(engine.get("build_profile") or "").strip().lower()
-        if build_profile == "next_react":
-            from .site_build import NEXT_REACT_PROFILE
+        if build_profile != "next_react":
+            raise ValueError("design_engine.build_profile must be next_react")
+        if "build_command" in quality:
+            raise ValueError("design_engine.quality.build_command is unsupported; builds use the canonical host toolchain")
+        from .site_build import NEXT_REACT_PROFILE
 
-            default_output_dir = NEXT_REACT_PROFILE.output_dir
-            default_allowed_patterns = NEXT_REACT_PROFILE.writable_patterns
-            default_build_command = None
-        else:
-            default_output_dir = "output"
-            default_allowed_patterns = site.get("writable_patterns") or ()
-            default_build_command = blog.get("build_command", cls.build_command)
-        command = quality.get("build_command", default_build_command)
-        if isinstance(command, (list, tuple)):
-            command = tuple(str(item) for item in command)
-        elif command is not None and not isinstance(command, str):
-            raise ValueError("design_engine.quality.build_command must be text, a list, or null")
+        default_output_dir = NEXT_REACT_PROFILE.output_dir
+        default_allowed_patterns = NEXT_REACT_PROFILE.writable_patterns
         raw_viewports = engine.get("required_viewports", quality.get("viewports", cls.viewports))
         viewports: list[dict[str, int]] = []
         for index, viewport in enumerate(raw_viewports or ()):
@@ -201,7 +188,6 @@ class QualityPolicy:
             required_content=tuple(str(item) for item in content if str(item).strip()),
             allowed_patterns=tuple(str(item) for item in (quality.get("allowed_patterns") or default_allowed_patterns or ())),
             prohibited_paths=tuple(str(item) for item in (quality.get("prohibited_paths") or ())),
-            build_command=command,
             build_timeout_seconds=int(quality.get("build_timeout_seconds", cls.build_timeout_seconds)),
             browser_required=bool(quality.get("browser", quality.get("browser_required", False))),
             visual_critic=bool(quality.get("visual_critic", False)),
@@ -945,9 +931,16 @@ def _native_source_findings(
         except RuntimeError:
             paths_to_scan = changed
     host_provisioned_paths = _host_provisioned_paths(repo, policy)
+    # Next/Payload runs only authorize tenant presentation files. The retained
+    # tree also contains the host-owned Next entrypoint, Payload routes and
+    # shared runtime; scanning those as tenant source makes a repair appear to
+    # have authored or need to preserve platform code. Use the same ownership
+    # contract as the editor and candidate write gate.
+    from ..frontend_ownership import is_frontend_owned_path
+
     source_paths = [
         path for path in _native_source_files(repo, paths_to_scan)
-        if path not in host_provisioned_paths
+        if path not in host_provisioned_paths and is_frontend_owned_path(path)
     ]
     findings: list[dict[str, Any]] = []
     if not source_paths:
@@ -1308,42 +1301,6 @@ def _originality_findings(
         "internal_marker_hits": marker_hits,
         "configured_fingerprint_match": structure_hash in set(policy.internal_scaffold_fingerprints),
     }, findings
-
-
-def _build(
-    repo: Path,
-    policy: QualityPolicy,
-    *,
-    env: Mapping[str, str] | None = None,
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    if policy.build_command is None:
-        return {"status": "skipped"}, []
-    command = shlex.split(policy.build_command) if isinstance(policy.build_command, str) else list(policy.build_command)
-    proc_env = dict(env) if env is not None else dict(os.environ)
-    # The venv python is a symlink to the base interpreter; resolve() would
-    # point at the system bin and hide the venv's own tooling (e.g. pelican).
-    runtime_bin = str(Path(sys.executable).parent)
-    proc_env["PATH"] = os.pathsep.join(
-        part for part in (runtime_bin, proc_env.get("PATH", os.defpath)) if part
-    )
-    try:
-        result = subprocess.run(
-            command,
-            cwd=repo,
-            capture_output=True,
-            text=True,
-            timeout=max(1, min(int(policy.build_timeout_seconds), 900)),
-            env=proc_env,
-        )
-    except subprocess.TimeoutExpired:
-        return {"status": "failed", "error": "build timed out"}, [_finding("build", "blocker", "build_timeout", "The configured build timed out.")]
-    stdout = safe_provider_message(result.stdout, max_chars=10_000)
-    stderr = safe_provider_message(result.stderr, max_chars=10_000)
-    evidence = {"status": "passed" if result.returncode == 0 else "failed", "command": command,
-                "returncode": result.returncode, "stdout": stdout, "stderr": stderr}
-    if result.returncode:
-        return evidence, [_finding("build", "blocker", "build_failed", "The configured site build failed.", evidence=evidence)]
-    return evidence, []
 
 
 def _output_findings(repo: Path, policy: QualityPolicy) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -2092,7 +2049,6 @@ def _run_quality_in_workspace(
     build_evidence: Mapping[str, Any] | None = None,
     build_runner=None,
     output_artifact_publisher=None,
-    build_env: Mapping[str, str] | None = None,
     experience_plan: Any | None = None,
     temporal_evidence: Sequence[Any] = (),
 ) -> QualityReport:
@@ -2116,14 +2072,18 @@ def _run_quality_in_workspace(
         except Exception as exc:  # noqa: BLE001 - convert adapter failures into gate evidence
             build_evidence = {"status": "failed", "error": safe_provider_message(str(exc))}
         build_findings = [] if build_evidence.get("ok", build_evidence.get("status") == "passed") else [
-            _finding("build", "blocker", "build_failed", "The configured site build failed.", evidence=build_evidence)
+            _finding("build", "blocker", "build_failed", "The canonical Next site build failed.", evidence=build_evidence)
         ]
     elif build_evidence is None:
-        build_evidence, build_findings = _build(workspace, policy, env=build_env)
+        build_evidence = {"status": "failed", "reason": "canonical_build_evidence_missing"}
+        build_findings = [_finding(
+            "build", "blocker", "build_evidence_missing",
+            "The canonical Next build must pass before design quality can be validated.",
+        )]
     else:
         build_evidence = dict(build_evidence)
         build_findings = [] if build_evidence.get("ok", build_evidence.get("status") == "passed") else [
-            _finding("build", "blocker", "build_failed", "The configured site build failed.", evidence=build_evidence)
+            _finding("build", "blocker", "build_failed", "The canonical Next site build failed.", evidence=build_evidence)
         ]
     findings.extend(build_findings)
     runtime_evidence, runtime_findings = _stage_host_runtime_files(workspace, policy)
@@ -2683,7 +2643,6 @@ def run_quality_gates(
     build_evidence: Mapping[str, Any] | None = None,
     build_runner=None,
     output_artifact_publisher=None,
-    build_env: Mapping[str, str] | None = None,
     experience_plan: Any | None = None,
     temporal_evidence: Sequence[Any] = (),
 ) -> QualityReport:
@@ -2728,7 +2687,6 @@ def run_quality_gates(
             build_evidence=build_evidence,
             build_runner=build_runner,
             output_artifact_publisher=output_artifact_publisher,
-            build_env=build_env,
             experience_plan=experience_plan,
             temporal_evidence=temporal_evidence,
         )
