@@ -18,6 +18,7 @@ def load_script(name):
 
 release = load_script("deploy-payload-customer")
 queue = load_script("reconcile-payload-releases")
+api_deploy = load_script("deploy-site-agent-api")
 SHA = "a" * 40
 REGISTRY = json.loads((ROOT / "deploy/payload-customers.json").read_text())
 TEMPLATE = ROOT / "src/site_agent/templates/next-payload"
@@ -33,6 +34,43 @@ CUSTOMER = {
 
 def test_committed_queue_is_valid():
     queue.validate_queue(json.loads((ROOT / "deploy/desired-releases.json").read_text()), REGISTRY)
+
+
+def test_api_release_queue_requires_one_immutable_source_identity():
+    assert api_deploy.validate_api_queue(json.loads((ROOT / "deploy/desired-api-release.json").read_text())) is None
+    assert api_deploy.validate_api_queue({"schema": 1, "release": {"id": "api-1", "sha": SHA}}) == {
+        "id": "api-1", "sha": SHA,
+    }
+    for invalid in (
+        {"schema": 1, "release": {"id": "../escape", "sha": SHA}},
+        {"schema": 1, "release": {"id": "api-1", "sha": "main"}},
+        {"schema": 1, "release": {"id": "api-1", "sha": SHA, "command": "restart"}},
+        {"schema": 2, "release": None},
+        {"schema": True, "release": None},
+    ):
+        with pytest.raises(ValueError):
+            api_deploy.validate_api_queue(invalid)
+
+
+def test_api_source_snapshot_is_immutable_and_sha_marked(tmp_path):
+    import subprocess
+
+    repository = tmp_path / "source"
+    repository.mkdir()
+    subprocess.run(["git", "init", "-q", str(repository)], check=True)
+    subprocess.run(["git", "-C", str(repository), "config", "user.email", "test@example.invalid"], check=True)
+    subprocess.run(["git", "-C", str(repository), "config", "user.name", "Test"], check=True)
+    (repository / "source.txt").write_text("first\n")
+    subprocess.run(["git", "-C", str(repository), "add", "source.txt"], check=True)
+    subprocess.run(["git", "-C", str(repository), "commit", "-qm", "first"], check=True)
+    first_sha = subprocess.check_output(["git", "-C", str(repository), "rev-parse", "HEAD"], text=True).strip()
+    bare = tmp_path / "control.git"
+    subprocess.run(["git", "clone", "-q", "--bare", str(repository), str(bare)], check=True)
+
+    snapshot = queue.snapshot_api_source(bare, tmp_path / "releases", first_sha)
+    assert (snapshot / ".site-agent-source-sha").read_text().strip() == first_sha
+    assert (snapshot / "source.txt").read_text() == "first\n"
+    assert queue.snapshot_api_source(bare, tmp_path / "releases", first_sha) == snapshot
 
 
 def test_release_toolchain_is_exact_and_absolute():

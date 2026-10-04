@@ -155,6 +155,15 @@ every possible concurrent Payload writer.
   They may not call Wrangler/OpenNext production deployment directly or replace
   an existing tenant checkout to “repair” its baseline. A mismatched or
   untracked baseline stops with an operator-visible diagnostic.
+- Shared Python API releases use `deploy/desired-api-release.json` and the same
+  VPS release timer. Queue one new release ID plus the full official `main` SHA;
+  the VPS tests that exact source, builds and smoke-checks one wheel, checks its
+  runtime dependencies against the service environment, installs it into an
+  immutable release slot, then restarts and checks `/healthz`. The current slot
+  changes atomically and a failed health gate restores the prior slot. Never
+  `pip install` from a checkout, `git pull` the running `/SOCIAL/site-agent`,
+  restart the API by hand, or deploy a moving branch. The current source checkout
+  may be dirty and is not the API release artifact.
 
 ## Module Ownership
 

@@ -1,5 +1,54 @@
 # HelloAda VPS deployment pipeline
 
+## Shared API release
+
+The shared Python API is released through the same VPS timer as tenant Workers;
+it is not updated by changing the local VPS checkout or by pushing a Git commit
+alone. After an API change has passed GitHub CI and is merged, set
+`deploy/desired-api-release.json` to one new request containing a unique release
+ID and the exact 40-character source SHA on official `main`, then commit that
+queue update. For example:
+
+```json
+{
+  "schema": 1,
+  "release": { "id": "20261004-api-1", "sha": "<full-40-character-main-SHA>" }
+}
+```
+
+The queue is deliberately separate from customer Worker requests.
+
+For the first release that enforces the canonical tenant registry, the one-time
+host adoption is a prerequisite: run `migrate-static-tenants-to-registry.py`
+against the exact reviewed source in dry-run mode, obtain explicit owner
+authorization for the listed tenant/config/secret changes, then apply it once
+and verify the registry before queuing the API release. Do not deploy code that
+rejects static host tenants while the VPS still has those declarations.
+
+The VPS snapshots the exact source commit from its official `site-agent/main`
+mirror, runs the complete Python test suite, builds one wheel, verifies that the
+wheel imports from its own isolated release directory, and refuses new runtime
+dependencies that are not already installed in the API environment. It then
+installs the unit from that same commit, atomically switches
+`/SOCIAL/payload-releases/api/current`, restarts `site-agent-api.service`, and
+requires `http://127.0.0.1:3014/healthz` to return exactly `{"ok":true}`.
+On failure the timer restores the prior immutable slot, restarts it, and writes
+a sanitized receipt. No tenant Worker requests run if the API release fails.
+
+Receipts and the built wheel live under
+`/SOCIAL/payload-releases/runs/api/<release-id>/receipt.json` and
+`/SOCIAL/payload-releases/api/releases/<release-id>/`. The previous API slot is
+retained as the rollback target. The protected `deployment.log` beside the
+receipt contains redacted build/test output for diagnosis. Failed or
+interrupted IDs are terminal; correct the cause and queue a new ID. The
+deployment never changes the running source checkout or prints service secrets.
+
+The API unit uses the existing venv for runtime dependencies and loads product
+code only from the current immutable release slot. If a code change requires a
+new dependency, first provision and validate that dependency in the service
+environment as an explicit dependency release; the API queue will not install
+packages ad hoc.
+
 ## Release command
 
 1. Review, test and push the customer source to its official GitHub `main`.

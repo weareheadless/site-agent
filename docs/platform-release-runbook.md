@@ -5,15 +5,21 @@ This is the current Payload/Next.js release path. The older worked example in
 
 ## Boundaries
 
-1. Shared Python API: exact `site-agent` commit, focused/full tests and wheel
-   smoke check, install/restart `site-agent-api.service`.
-2. Shared Payload admin: tested immutable `payload-admin-vX.Y.Z` GitHub release
+1. If the host still declares tenants statically, first dry-run
+   `scripts/migrate-static-tenants-to-registry.py` from the reviewed source,
+   obtain explicit owner authorization for its exact tenant/config/secret
+   changes, apply it once, and verify the canonical registry. Do not start the
+   registry-enforcing API release before this prerequisite is complete.
+2. Shared Python API: exact `site-agent` commit, full tests and isolated wheel
+   smoke check through `deploy/desired-api-release.json`; immutable package
+   slot, restart, `/healthz`, and rollback receipt are handled by the VPS timer.
+3. Shared Payload admin: tested immutable `payload-admin-vX.Y.Z` GitHub release
    asset from `packages/helloada-payload-admin`. New-site template pins the same
    release. Never overwrite a released tarball.
-3. Customer Workers: each frontend repository pins that release in both
+4. Customer Workers: each frontend repository pins that release in both
    `package.json` and the lockfile; the Wrangler version marker must match.
    One shared source does **not** mean a package publication redeploys consumers.
-4. Owner verification: authenticated connection, Growth, chat and preview on
+5. Owner verification: authenticated connection, Growth, chat and preview on
    each deployed tenant. Browser checks remain a distinct stage, not an
    implication of successful builds or public health responses.
 

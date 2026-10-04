@@ -1070,6 +1070,12 @@ def create_workspace_api_app(
         redoc_url=None,
         lifespan=lifespan,
     )
+
+    @app.get("/healthz")
+    def healthz():
+        """Expose only process readiness for the VPS API release gate."""
+        return {"ok": True}
+
     register_workspace_routes(
         app,
         config={},
