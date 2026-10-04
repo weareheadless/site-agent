@@ -303,12 +303,16 @@ def worker_secrets_file(directory: Path, values: dict[str, str]) -> Path:
         raise
 
 
-def upload_worker_version(checkout: Path, sha: str, release_id: str,
-                          secrets_path: Path, env: dict[str, str]) -> str:
-    output = run([str(checkout / "node_modules/.bin/opennextjs-cloudflare"), "upload",
-                  "--secrets-file", str(secrets_path), "--var",
-                  "HELLOADA_RELEASE_SHA:" + sha, "--tag", release_id], checkout, env)
-    return uploaded_version_id(output)
+def upload_worker_version(checkout: Path, sha: str, release_id: str, directory: Path,
+                          secrets: dict[str, str], env: dict[str, str]) -> str:
+    secrets_path = worker_secrets_file(directory, secrets)
+    try:
+        output = run([str(checkout / "node_modules/.bin/opennextjs-cloudflare"), "upload",
+                      "--secrets-file", str(secrets_path), "--var",
+                      "HELLOADA_RELEASE_SHA:" + sha, "--tag", release_id], checkout, env)
+        return uploaded_version_id(output)
+    finally:
+        secrets_path.unlink(missing_ok=True)
 
 def check_health(url: str, tenant: str, customer: dict[str, Any], sha: str) -> dict[str, Any]:
     separator = "&" if "?" in url else "?"
@@ -613,13 +617,9 @@ def main() -> int:
         if before_deploy.get("id") != receipt["previousDeployment"].get("id"):
             raise RuntimeError("production changed during the build; reconcile that deployment before retrying")
         runtime_secrets = tenant_runtime_secrets(manifest, args.tenant)
-        secrets_path = worker_secrets_file(directory, runtime_secrets)
-        try:
-            receipt["uploadedVersion"] = upload_worker_version(
-                checkout, args.ref, args.release_id, secrets_path, deploy_env,
-            )
-        finally:
-            secrets_path.unlink(missing_ok=True)
+        receipt["uploadedVersion"] = upload_worker_version(
+            checkout, args.ref, args.release_id, directory, runtime_secrets, deploy_env,
+        )
         if file_hashes(checkout / ".open-next") != receipt["artifactHashes"]:
             raise RuntimeError("upload changed the inspected artifact")
 
