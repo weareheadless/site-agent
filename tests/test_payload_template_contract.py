@@ -29,6 +29,7 @@ def test_payload_template_has_remote_payload_contract_gate():
         assert expected in verifier
     assert "const collections = ['pages', 'posts', 'postCategories', 'products', 'productCategories'] as const" in verifier
     assert "const versionedCollections = ['pages', 'posts', 'postCategories', 'products'] as const" in verifier
+    assert "await import('@payload-config')" in verifier
     assert 'for (const collection of versionedCollections)' in verifier
 
 

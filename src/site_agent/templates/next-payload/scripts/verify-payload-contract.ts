@@ -3,7 +3,7 @@ import type { CollectionSlug } from 'payload'
 process.env.PAYLOAD_CLI = '1'
 
 const { getPayload } = await import('payload')
-const { default: config } = await import('../payload.config.ts')
+const { default: config } = await import('@payload-config')
 
 const collections = ['pages', 'posts', 'postCategories', 'products', 'productCategories'] as const
 const versionedCollections = ['pages', 'posts', 'postCategories', 'products'] as const

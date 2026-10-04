@@ -42,6 +42,42 @@ def payload_migration_command(manifest: dict[str, Any]) -> list[str]:
     return [str(Path(manifest["npmBin"]) / "npm"), "run", "payload", "--", "migrate"]
 
 
+def validate_payload_verifier(checkout: Path) -> None:
+    """Require the exact site-agent verifier before any build or tenant D1 mutation."""
+    template = ROOT / "src/site_agent/templates/next-payload"
+    package_path = checkout / "package.json"
+    lock_path = checkout / "package-lock.json"
+    tsconfig_path = checkout / "tsconfig.json"
+    verifier_path = checkout / "scripts/verify-payload-contract.ts"
+    if not package_path.is_file() or not lock_path.is_file() or not tsconfig_path.is_file():
+        raise RuntimeError("tenant source must include its package manifest, lockfile, and tsconfig")
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    tsconfig = json.loads(tsconfig_path.read_text(encoding="utf-8"))
+    config_targets = tsconfig.get("compilerOptions", {}).get("paths", {}).get("@payload-config")
+    if not isinstance(config_targets, list) or len(config_targets) != 1 or not isinstance(config_targets[0], str):
+        raise RuntimeError("tenant tsconfig must map @payload-config to one existing Payload config")
+    config_path = checkout / config_targets[0]
+    try:
+        config_path.resolve().relative_to(checkout.resolve())
+    except ValueError as error:
+        raise RuntimeError("tenant @payload-config target must stay inside the source checkout") from error
+    if not config_path.is_file():
+        raise RuntimeError("tenant tsconfig @payload-config target does not exist")
+    expected_package = json.loads((template / "package.json").read_text(encoding="utf-8"))
+    expected_script = expected_package["scripts"]["verify:payload"]
+    expected_tsx = expected_package["devDependencies"]["tsx"]
+    if package.get("scripts", {}).get("verify:payload") != expected_script:
+        raise RuntimeError("tenant Payload verifier command must match the site-agent template")
+    if package.get("devDependencies", {}).get("tsx") != expected_tsx:
+        raise RuntimeError("tenant Payload verifier must declare the template's exact tsx version")
+    if lock.get("packages", {}).get("", {}).get("devDependencies", {}).get("tsx") != expected_tsx:
+        raise RuntimeError("tenant lockfile does not pin the template's exact Payload verifier runtime")
+    expected_source = (template / "scripts/verify-payload-contract.ts").read_bytes()
+    if not verifier_path.is_file() or verifier_path.read_bytes() != expected_source:
+        raise RuntimeError("tenant Payload verifier source must match the site-agent template exactly")
+
+
 def run(command: list[str], cwd: Path, env: dict[str, str]) -> str:
     print("[release] " + " ".join(command), flush=True)
     output: list[str] = []
@@ -571,6 +607,7 @@ def main() -> int:
             raise RuntimeError("checkout SHA mismatch")
         if run(["git", "status", "--porcelain"], checkout, base).strip():
             raise RuntimeError("fresh release checkout is dirty")
+        validate_payload_verifier(checkout)
         source = list((checkout / "src").rglob("*.ts")) + list((checkout / "src").rglob("*.tsx"))
         if any("/api/atelier" in p.read_text() for p in source):
             raise RuntimeError("obsolete /api/atelier source must be removed")
