@@ -20,3 +20,8 @@ test('rejects an unconfigured locale instead of forwarding an invalid Payload va
   assert.throws(() => resolvePayloadLocale('es', enabledLocales), /not enabled/)
   assert.throws(() => resolvePayloadLocale('all', []), /unavailable/)
 })
+
+test('rejects malformed explicit locale values rather than silently selecting the default', () => {
+  assert.throws(() => resolvePayloadLocale(42, enabledLocales), /must be a string/)
+  assert.throws(() => resolvePayloadLocale({ locale: 'fr' }, enabledLocales), /must be a string/)
+})

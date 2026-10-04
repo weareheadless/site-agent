@@ -52,7 +52,7 @@ export async function POST(request: Request) {
   if (!slug) return errorResponse('unsupported global')
   let locale: HelloAdaPayloadLocale | undefined
   try {
-    locale = resolvePayloadLocale(typeof body.locale === 'string' ? body.locale : null, helloAdaSite.locales)
+    locale = resolvePayloadLocale(body.locale, helloAdaSite.locales)
   } catch {
     return errorResponse('unsupported locale')
   }
