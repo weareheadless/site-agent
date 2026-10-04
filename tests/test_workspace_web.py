@@ -519,7 +519,7 @@ def test_payload_gateway_client_is_server_configured_and_schema_bounded():
                 "payload": {
                     "enabled": True,
                     "url": "https://workspace.example.test",
-                    "api_prefix": "/v1/content",
+                    "api_prefix": "/api/workspace",
                     "contract": {
                         "collections": {"pages": ["sourceId", "title"]},
                         "globals": {"navigation": ["items"]},
@@ -533,12 +533,29 @@ def test_payload_gateway_client_is_server_configured_and_schema_bounded():
     )
     assert client is not None
     assert client.base_url == "https://workspace.example.test"
-    assert client.gateway_prefix == "/v1/content"
+    assert client.gateway_prefix == "/api/workspace"
 
     with pytest.raises(PayloadGatewayError, match="outside the pages draft contract"):
         client._data("pages", {"password": "never"})
     with pytest.raises(PayloadGatewayError, match="outside the navigation global contract"):
         client._global_data("navigation", {"password": "never"})
+
+
+@pytest.mark.parametrize("prefix", ["/api", "/v1/content", ""])
+def test_payload_gateway_rejects_noncanonical_routes(prefix):
+    with pytest.raises(ConfigError, match="exactly /api/workspace"):
+        PayloadGatewayClient.from_config(
+            {
+                "site": {
+                    "payload": {
+                        "enabled": True,
+                        "url": "https://workspace.example.test",
+                        "api_prefix": prefix,
+                    }
+                }
+            },
+            {"PAYLOAD_GATEWAY_TOKEN": "workspace-secret"},
+        )
 
 
 def test_payload_gateway_contract_is_instance_configured_and_adapter_is_registered():
