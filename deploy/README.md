@@ -176,8 +176,8 @@ fetched by its timer:
 ```bash
 release_sha="$(git --git-dir=/SOCIAL/payload-releases/control.git rev-parse refs/heads/main)"
 /SOCIAL/site-agent/.venv/bin/python \
-  "/SOCIAL/payload-releases/control/$release_sha/scripts/bootstrap-release-pipeline.py" \
-  --source-dir "/SOCIAL/payload-releases/control/$release_sha"
+  "/SOCIAL/payload-releases/dispatch-control/$release_sha/scripts/bootstrap-release-pipeline.py" \
+  --source-dir "/SOCIAL/payload-releases/dispatch-control/$release_sha"
 ```
 
 The bootstrap fetches official `main`, verifies the dispatcher, controller and
