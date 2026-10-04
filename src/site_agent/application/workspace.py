@@ -404,7 +404,11 @@ class TenantRegistry:
                 context["source_editor"] = SourceEditorService(
                     tenant_config,
                     dict(env),
-                    adapter=get_adapter(site_adapter_name, tenant_config),
+                    adapter=get_adapter(
+                        site_adapter_name,
+                        tenant_config,
+                        payload_client=payload_client,
+                    ),
                 )
                 # A neutral scaffold is deliberately host-local.  Do not create
                 # the GitHub/Cloudflare deployment lane for it; approval merges
@@ -464,7 +468,11 @@ class TenantRegistry:
                         context["browser_quality_factory"] = browser_factory
                 if bool(isinstance(design_engine, Mapping) and design_engine.get("production_candidate")):
                     try:
-                        design_adapter = get_adapter(site_adapter_name, tenant_config)
+                        design_adapter = get_adapter(
+                            site_adapter_name,
+                            tenant_config,
+                            payload_client=payload_client,
+                        )
                         design_adapter.validate()
                     except Exception as exc:  # noqa: BLE001 — fail closed when approval cannot be safe
                         raise ConfigError(f"design approval adapter is unavailable: {exc}") from exc
