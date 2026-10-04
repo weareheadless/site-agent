@@ -57,11 +57,12 @@ def test_api_release_queue_requires_one_immutable_source_identity():
 def test_api_wheel_dependency_audit_is_independent_of_pip_install_flags(tmp_path):
     def wheel_with_requirement(filename, requirement):
         wheel = tmp_path / filename
+        requirements = "\n".join(f"Requires-Dist: {item}" for item in requirement.splitlines())
         metadata = (
             "Metadata-Version: 2.1\n"
             "Name: site-agent\n"
             "Version: 0.1.0\n"
-            f"Requires-Dist: {requirement}\n"
+            f"{requirements}\n"
         )
         with zipfile.ZipFile(wheel, "w") as archive:
             archive.writestr("site_agent-0.1.0.dist-info/METADATA", metadata)
@@ -69,7 +70,9 @@ def test_api_wheel_dependency_audit_is_independent_of_pip_install_flags(tmp_path
 
     env = {}
     log_path = tmp_path / "dependency-audit.log"
-    installed = wheel_with_requirement("installed.whl", "pip>=1")
+    installed = wheel_with_requirement(
+        "installed.whl", "pip>=1\nhelloada-release-test-extra; extra == 'optional'"
+    )
     api_deploy._verify_wheel_runtime_dependencies(
         sys.executable, installed, cwd=tmp_path, env=env, log_path=log_path
     )
