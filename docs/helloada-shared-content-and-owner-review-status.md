@@ -3,9 +3,10 @@
 This is the maintained architecture/status companion for
 `docs/site-agent-payload-platform-consolidation-implementation-plan.md` (20
 sections). Source changes are reported separately from release proof. Atelier
-Harmonie and OceanicVibes are validation tenants, not production/customer-data
-migration targets; final acceptance additionally requires a newly spawned
-HelloAda site to inherit the canonical schema and editable bindings.
+Harmonie and OceanicVibes are validation tenants with no production/customer
+data; they must be deployed and migrated to validate the shared system. Final
+acceptance additionally requires a newly spawned HelloAda site to inherit the
+canonical schema and editable bindings.
 
 ## Current candidate status — 2026-10-04
 
@@ -23,14 +24,17 @@ field bindings are inherited without manual repair.
 - Bootstrap now creates from the canonical template and queues the exact source
   SHA and migration identity through the central VPS release queue. It does not
   directly deploy Wrangler or apply an existing-tenant migration.
-- The local central repo's full Python suite previously passed **1,140 tests**;
-  a new focused release/migration queue suite passes **47 tests**. Core package
-  passed **13 tests + typecheck**, admin **30 tests + typecheck**, and template
-  **5 tests + typecheck**. A fresh full-suite run is currently in progress.
-- Existing tenant source snapshots have not yet been converted to the canonical
-  contract, deployed, or validated. They have different historical migration
-  ledgers, which must remain append-only; only the final schema identity should
-  match. Their D1 and R2 resources are not to be replaced.
+- Exact local candidate commit: `6089cab2f19a17c1af2313c18b9e59cba101c0d8`.
+  The VPS-isolated full Python suite passes **1,148 tests**. Core passes **15
+  tests + typecheck**, admin **30 + typecheck**, the canonical template **6 +
+  typecheck + lint**, Atelier **2 + typecheck + lint**, and OceanicVibes **1 +
+  typecheck + lint**. Production Next builds pass for the template and both
+  tenant sites.
+- Both tenant source snapshots now import the canonical core contract, use its
+  shared route resolver, and include append-only migrations to the same schema
+  identity. Their historical migration ledgers remain tenant-specific and
+  their D1/R2 identities are unchanged. These are local source/build results;
+  neither migration has been applied to a tenant Worker yet.
 - A durable, fail-closed release path exists locally. This change adds an
   explicit schema-migration queue request: the VPS verifies the exact starting
   ledger, uploads the candidate without promotion, applies only committed
@@ -39,10 +43,10 @@ field bindings are inherited without manual repair.
 - The legacy FastAPI-served owner UI/commands still exist pending the plan's
   migration/parity gates; Pelican runtime, importer and build paths have been
   removed from active code. Remaining historical references need cleanup.
-- No package release for core `0.2.0` or admin `0.8.7`, central source commit,
-  tenant release receipt, authenticated tenant browser proof, or fresh spawn
-  proof has yet been confirmed. Therefore the implementation remains **in
-  progress and not accepted**.
+- No central commit has been pushed to official GitHub `main`; no package
+  release for core `0.2.0` or admin `0.8.7`, tenant release receipt,
+  authenticated tenant browser proof, or fresh spawn proof has been confirmed.
+  Therefore the implementation remains **in progress and not accepted**.
 
 Acceptance order: convert and deploy both validation tenants from their existing
 source and migration histories; verify canonical Payload edits, frontend
@@ -123,12 +127,12 @@ either customer's deployed UI has passed a live end-to-end run.
 
 ### Tenant conversions and deployments
 
-Neither existing tenant repository yet imports the published canonical core or
-maps its public frontend to the stable editable fields. Each must retain its own
-append-only Payload history, gain a deterministic migration into the shared
-schema, and preserve its current D1/R2 identities. Source inspection or a build
-does not satisfy this gate: both must be deployed through the release queue and
-independently checked in Payload and on the public routes.
+The local tenant candidates import the canonical core and map their public
+frontends to stable editable fields, but neither has been pushed, migrated, or
+deployed. Each must retain its append-only Payload history and current D1/R2
+identity. Source inspection or a build does not satisfy this gate: both must be
+deployed through the release queue and independently checked in Payload and on
+the public routes.
 
 ### Shared package release and central source
 
@@ -167,19 +171,18 @@ without tenant-specific schema repair.
 
 ## Verification recorded on this candidate
 
-- Previous full local Python suite: **1,140 passed**. A new run is in progress
-  after the explicit existing-tenant schema-migration gate was added.
-- Focused release queue and schema migration tests: **47 passed**, including
-  exact old-ledger matching, strict-prefix enforcement, no implicit migration,
-  idempotent completed migration, and exact registered target-head checks.
-- Shared packages and canonical template previously passed their local Node
-  tests and TypeScript checks; template OpenNext build was blocked by sandbox
-  denial of its localhost platform-proxy bind. Re-run the build after package
-  artifacts are published and the tenant work is integrated.
+- Full Python suite on the isolated VPS candidate checkout: **1,148 passed**.
+- Core **15/15**, admin **30/30**, template **6/6**, Atelier **2/2**, and
+  OceanicVibes **1/1** Node contract tests pass; all five TypeScript checks and
+  lints pass (existing image and generated-migration warnings remain).
+- Production Next builds completed for the template, Atelier, and OceanicVibes.
+  These builds used the local package source links; a clean install from the
+  forthcoming immutable release tarballs is still required in the VPS release
+  pipeline.
 - The template has a lockfile and committed migration artifacts. These do not
   substitute for a clean package-consumer build or live tenant migration proof.
-- No candidate shared-package release, final source commit, tenant deployment
-  receipt, authenticated browser proof, or fresh spawn proof is recorded yet.
+- No official central push, shared-package release, tenant deployment receipt,
+  authenticated browser proof, or fresh spawn proof is recorded yet.
 
 Test status refers only to source-level candidate evidence. It does not validate
 the common Payload contract across live tenants; the release and new-site gates
@@ -187,11 +190,11 @@ above remain mandatory.
 
 ## Release order
 
-1. Finish and commit the exact local central-source candidate; publish and
-   verify the immutable core/admin assets from that commit.
-2. Convert Atelier and OceanicVibes repos to the core schema and explicit
-   editable-field/frontend bindings, appending migrations without replacing
-   either tenant's D1/R2 identity. Run tenant builds and migration checks.
+1. Push the tested central-source candidate; publish and verify immutable
+   core/admin assets from its exact SHA.
+2. Push the two converted tenant candidates after confirming the package
+   assets, then queue and apply their exact append-only migration heads without
+   replacing either tenant's D1/R2 identity.
 3. Queue and deploy each validation tenant separately; record exact source,
    artifact, migration and Worker receipts and verify Payload edits on actual
    pages, article cards/routes, SEO metadata and shared globals.
