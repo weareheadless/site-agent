@@ -1,14 +1,20 @@
 # Owner Experience And Capability Foundation
 
-**Status:** Implementation in progress; Phases 1-2 and the initial Home read slice are complete
+> **Historical / superseded:** this plan predates the Payload-only site architecture.
+> Its Pelican, static article, and raw-file preview requirements are retired and
+> must not be implemented. Use
+> [the Payload platform consolidation plan](site-agent-payload-platform-consolidation-implementation-plan.md)
+> and [AGENTS.md](../AGENTS.md) for active architecture and release rules.
+
+**Status:** Archived; historical UX and capability context only
 
 **Purpose:** Track the product and architecture work required to make Ada a
 calm, proactive assistant for non-technical small-business owners while
 preserving safe approvals and preparing narrow extension points for future MCP
 providers.
 
-This is the active implementation plan for the owner experience. `PLAN.md`
-remains the historical project development log.
+This document records the earlier owner-experience implementation plan. It is
+not an active architecture or implementation source.
 
 ## How To Use This Plan
 

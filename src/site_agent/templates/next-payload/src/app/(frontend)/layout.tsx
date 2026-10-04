@@ -5,6 +5,7 @@ import Script from 'next/script'
 import SiteChrome from '@/components/SiteChrome'
 import { getSiteSettings, seoFor } from '@/lib/content'
 import { runtimeValue } from '@/lib/runtime-env'
+import { helloAdaSite } from '@/helloada.config'
 
 import './site.css'
 
@@ -25,7 +26,7 @@ export async function generateMetadata(): Promise<Metadata> {
 export default async function RootLayout({ children }: { children: ReactNode }) {
   const gaMeasurementId = runtimeValue('GA_MEASUREMENT_ID')
   return (
-    <html lang="en">
+    <html lang={helloAdaSite.defaultLocale}>
       <body>
         {gaMeasurementId ? <>
           <Script async src={`https://www.googletagmanager.com/gtag/js?id=${encodeURIComponent(gaMeasurementId)}`} />

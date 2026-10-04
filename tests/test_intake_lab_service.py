@@ -40,8 +40,11 @@ def _git_repo(tmp_path):
     run("init", "-q", "-b", "main")
     run("config", "user.email", "test@example.test")
     run("config", "user.name", "test")
-    (repo / "build.sh").write_text("#!/bin/sh\nset -eu\nmkdir -p output\nprintf '<html><body><h1>Source</h1></body></html>' > output/index.html\n")
-    (repo / "index.html").write_text("source")
+    (repo / "package.json").write_text('{"scripts":{"build":"next build"}}\n')
+    (repo / "next.config.mjs").write_text("export default { output: 'export' };\n")
+    (repo / "src" / "app").mkdir(parents=True)
+    (repo / "src" / "app" / "page.tsx").write_text("export default function HomePage() { return null; }\n")
+    (repo / "payload.config.ts").write_text("export {};\n")
     run("add", "-A")
     run("commit", "-qm", "baseline")
     sha = subprocess.run(
@@ -217,7 +220,7 @@ def test_intake_lab_environment_is_an_allowlist(tmp_path):
         tmp_path / "build-lab",
     )
     assert "IMPLEMENTATION_KEY" not in build_env
-    assert str(Path(sys.executable).resolve().parent) in build_env["PATH"].split(os.pathsep)
+    assert str(Path(sys.executable).parent) in build_env["PATH"].split(os.pathsep)
 
 
 def test_intake_lab_build_environment_keeps_virtualenv_bin_before_resolved_python(tmp_path, monkeypatch):

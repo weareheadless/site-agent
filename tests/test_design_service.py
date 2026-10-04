@@ -20,7 +20,7 @@ from site_agent.hands.builder import BuilderError
 from site_agent.hands.site_build import (
     NEXT_REACT_PROFILE,
     NEXT_REACT_TOOLCHAIN_DEPENDENCIES,
-    PELICAN_BASELINE_PROFILE,
+    SiteBuildResult,
     SiteOutputArtifactStore,
 )
 from tests.test_design_contracts import _experience_plan
@@ -89,6 +89,28 @@ def _browser_screenshot_evidence(*routes: tuple[str, str, str]) -> dict:
             ]
         }
     }
+
+
+def _freeze_target(memory, run):
+    """Persist the exact host-created Next/Payload target used by review tests."""
+    target = BuildTarget.from_dict({
+        "mode": run["mode"],
+        "base_sha": run["base_sha"],
+        "candidate_ref": run["candidate_ref"],
+        "push_mode": "none",
+        "publishable": bool(run["publishable"]),
+        "operation_kind": run.get("operation_kind") or "initial_build",
+        "build_profile": NEXT_REACT_PROFILE.name,
+        "allowed_paths": list(NEXT_REACT_PROFILE.writable_patterns),
+    })
+    current = memory.get_design_run(run["run_id"])
+    planning = dict(current.get("planning_json") or {})
+    planning.update({
+        "build_profile": NEXT_REACT_PROFILE.name,
+        "build_target": target.to_dict(),
+    })
+    memory.update_design_run(run["run_id"], planning_json=planning)
+    return target
 
 
 def test_experiment_root_cannot_overlap_live_paths_before_work(tmp_path):
@@ -223,7 +245,7 @@ def test_local_initial_build_uses_next_target_and_quality_profile(tmp_path):
     assert policy.required_pages == ("home.html",)
     assert policy.allowed_patterns == NEXT_REACT_PROFILE.writable_patterns
     assert "package.json" not in policy.allowed_hard_denied_paths
-    assert "src/components/site/**" in policy.allowed_patterns
+    assert "src/components/site/presentation/**" in policy.allowed_patterns
     assert "src/app/(frontend)/[[...slug]]/page.tsx" in policy.prohibited_paths
     assert {
         (item.get("package"), item.get("version"))
@@ -232,7 +254,7 @@ def test_local_initial_build_uses_next_target_and_quality_profile(tmp_path):
         (item["package"], item["version"])
         for item in NEXT_REACT_TOOLCHAIN_DEPENDENCIES
     }
-    assert policy.build_command is None
+    assert not hasattr(policy, "build_command")
     memory.close()
 
 
@@ -490,7 +512,7 @@ def test_creative_run_reads_the_persisted_plan_from_planning_state(tmp_path):
         base_sha="a" * 40,
         context_snapshot_hash="c" * 64,
     )
-    memory.update_design_run(run["run_id"], planning_json={"experience_plan": raw_plan})
+    memory.update_design_run(run["run_id"], planning_json={"build_profile": "next_react", "experience_plan": raw_plan})
 
     plan = service._experience_plan_for_run(run["run_id"])
 
@@ -508,6 +530,7 @@ def test_creative_quality_validation_never_skips_a_missing_experience_plan(tmp_p
     )
     run = service.create_run(_intake(), run_id="creative-plan-required", base_sha="a" * 40)
     memory.update_design_run(run["run_id"], candidate_sha="b" * 40)
+    _freeze_target(memory, run)
     for status in ("assessing_intake", "planning", "building", "candidate_ready", "validating"):
         memory.transition_design_run(run["run_id"], status)
     captured = {}
@@ -524,7 +547,7 @@ def test_creative_quality_validation_never_skips_a_missing_experience_plan(tmp_p
         })
 
     monkeypatch.setattr("site_agent.application.designs.run_quality_gates", fake_quality)
-    service.validate_run(run["run_id"], tmp_path, policy=QualityPolicy(build_command=None))
+    service.validate_run(run["run_id"], tmp_path, policy=QualityPolicy())
 
     assert captured["experience_plan"] == {}
     memory.close()
@@ -579,6 +602,8 @@ def test_creative_execute_build_rejects_a_receipt_without_the_locked_plan(tmp_pa
         "candidate_ref": run["candidate_ref"],
         "push_mode": "none",
         "publishable": False,
+        "build_profile": NEXT_REACT_PROFILE.name,
+        "allowed_paths": list(NEXT_REACT_PROFILE.writable_patterns),
     })
 
     with pytest.raises(DesignServiceError, match="no hash-bound experience plan"):
@@ -600,8 +625,9 @@ def test_quality_validation_rejects_evidence_bound_to_a_different_plan_hash(tmp_
     memory.update_design_run(
         run["run_id"],
         candidate_sha="b" * 40,
-        planning_json={"experience_plan": raw_plan},
+        planning_json={"build_profile": "next_react", "experience_plan": raw_plan},
     )
+    _freeze_target(memory, run)
     for status in ("assessing_intake", "planning", "building", "candidate_ready", "validating"):
         memory.transition_design_run(run["run_id"], status)
 
@@ -617,7 +643,7 @@ def test_quality_validation_rejects_evidence_bound_to_a_different_plan_hash(tmp_
         }),
     )
 
-    report = service.validate_run(run["run_id"], tmp_path, policy=QualityPolicy(build_command=None))
+    report = service.validate_run(run["run_id"], tmp_path, policy=QualityPolicy())
 
     assert report.state == "incomplete"
     assert any(item["code"] == "experience_plan_identity_missing" for item in report.findings)
@@ -667,7 +693,7 @@ def test_local_visual_refinement_reuses_next_target_and_quality_profile(tmp_path
     assert policy.output_dir == NEXT_REACT_PROFILE.output_dir
     assert policy.allowed_patterns == NEXT_REACT_PROFILE.writable_patterns
     assert "package.json" not in policy.allowed_hard_denied_paths
-    assert "src/components/site/**" in policy.allowed_patterns
+    assert "src/components/site/presentation/**" in policy.allowed_patterns
     assert "src/app/(frontend)/[[...slug]]/page.tsx" in policy.prohibited_paths
     assert {
         (item.get("package"), item.get("version"))
@@ -683,7 +709,7 @@ def test_local_visual_refinement_reuses_next_target_and_quality_profile(tmp_path
     memory.close()
 
 
-def test_legacy_local_run_infers_pelican_profile_from_frozen_quality_policy(tmp_path):
+def test_design_run_without_a_frozen_canonical_profile_is_not_executable(tmp_path):
     memory = Memory(tmp_path / "service.db")
     clone = tmp_path / "legacy-clone"
     (clone / ".git").mkdir(parents=True)
@@ -700,24 +726,11 @@ def test_legacy_local_run_infers_pelican_profile_from_frozen_quality_policy(tmp_
         mode="local_experiment",
         publishable=False,
         base_sha="a" * 40,
-        run_id="legacy-pelican",
+        run_id="missing-frozen-profile",
     )
-    memory.add_design_run_event(run["run_id"], "experiment", "Legacy experiment clone.", {"root": str(clone)})
-    snapshot = service.capture_context_snapshot(run["run_id"]).to_dict()
-    # Recreate a persisted pre-profile run: the new default is Next, but an
-    # old immutable snapshot with the Pelican output contract must remain
-    # readable for review and recovery.
-    snapshot.pop("build_profile", None)
-    execution = snapshot["execution_profile"]
-    execution.pop("build_profile", None)
-    quality_policy = execution["quality_policy"]
-    quality_policy["build_profile"] = ""
-    quality_policy["output_dir"] = "output"
-    quality_identity = {key: value for key, value in quality_policy.items() if key != "hash"}
-    quality_policy["hash"] = canonical_hash(quality_identity)
-    memory.update_design_run(run["run_id"], context_snapshot=snapshot)
-
-    assert service.build_profile_for_run(run["run_id"]) == PELICAN_BASELINE_PROFILE.name
+    memory.update_design_run(run["run_id"], planning_json={})
+    with pytest.raises(DesignServiceError, match="no canonical next_react profile"):
+        service.build_profile_for_run(run["run_id"])
     memory.close()
 
 
@@ -762,6 +775,8 @@ def test_execute_build_persists_candidate_and_stops_before_quality_ready(tmp_pat
         "candidate_ref": "refs/ada-design/design-run-1",
         "push_mode": "none",
         "publishable": True,
+        "build_profile": NEXT_REACT_PROFILE.name,
+        "allowed_paths": list(NEXT_REACT_PROFILE.writable_patterns),
     })
 
     receipt = service.execute_build(run["run_id"], request, target)
@@ -817,6 +832,8 @@ def test_partial_build_receipt_retains_candidate_but_cannot_be_reviewed(tmp_path
         "candidate_ref": run["candidate_ref"],
         "push_mode": "none",
         "publishable": True,
+        "build_profile": NEXT_REACT_PROFILE.name,
+        "allowed_paths": list(NEXT_REACT_PROFILE.writable_patterns),
     })
 
     receipt = service.execute_build(run["run_id"], request, target)
@@ -861,6 +878,8 @@ def test_noop_builder_failure_retains_transcript_without_candidate(tmp_path):
         "candidate_ref": run["candidate_ref"],
         "push_mode": "none",
         "publishable": True,
+        "build_profile": NEXT_REACT_PROFILE.name,
+        "allowed_paths": list(NEXT_REACT_PROFILE.writable_patterns),
     })
 
     with pytest.raises(DesignServiceError, match="without implementation changes"):
@@ -875,35 +894,35 @@ def test_noop_builder_failure_retains_transcript_without_candidate(tmp_path):
     memory.close()
 
 
-def test_validate_run_persists_report_and_makes_passing_candidate_reviewable(tmp_path):
+def test_validate_run_persists_report_and_makes_passing_candidate_reviewable(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()
     subprocess.run(["git", "-C", str(repo), "init", "-q", "-b", "main"], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
-    (repo / "index.html").write_text("baseline")
+    (repo / "src" / "app").mkdir(parents=True)
+    (repo / "src" / "app" / "page.tsx").write_text("export default function Page(){return <main />}")
+    (repo / "src" / "components" / "site" / "presentation").mkdir(parents=True)
+    (repo / "src" / "components" / "site" / "presentation" / "Home.tsx").write_text(
+        "export function Home(){return <main>baseline</main>}"
+    )
+    (repo / "index.html").write_text("build output is generated, not authored")
     subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", "baseline"], check=True)
     base_sha = subprocess.run(
         ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
     ).stdout.strip()
-    (repo / "index.html").write_text("candidate")
-    output = repo / "output"
-    output.mkdir()
-    (output / "index.html").write_text(
-        '<html lang="en"><head><title>Candidate</title>'
-        '<meta name="description" content="A real page">'
-        '<meta name="viewport" content="width=device-width, initial-scale=1"></head>'
-        '<body><h1>Candidate</h1></body></html>'
+    (repo / "src" / "components" / "site" / "presentation" / "Home.tsx").write_text(
+        "export function Home(){return <main>candidate</main>}"
     )
     manifest = DesignManifest.from_dict({
         "schema_version": 1,
-        "source_homepage_path": "index.html",
+        "source_homepage_path": "src/components/site/presentation/Home.tsx",
         "design_direction_id": "test-direction",
         "intake_hash": "a" * 64,
         "tokens": {},
         "shared_regions": [],
-        "source_files": {"changed": ["index.html"]},
+        "source_files": {"changed": ["src/components/site/presentation/Home.tsx"]},
     })
     (repo / "design").mkdir()
     (repo / "design" / "ada-design-manifest.json").write_text(json.dumps(manifest.to_dict()))
@@ -924,7 +943,7 @@ def test_validate_run_persists_report_and_makes_passing_candidate_reviewable(tmp
                 "candidate_sha": candidate_sha,
                 "candidate_ref": target.candidate_ref,
                 "diff_summary": "1 file changed",
-                "changed_paths": ["index.html", "output/index.html"],
+                "changed_paths": ["src/components/site/presentation/Home.tsx", "design/ada-design-manifest.json"],
                 "manifest_path": "design/ada-design-manifest.json",
                 "manifest_hash": manifest.content_hash,
                 "opencode_session_id": "fake-session",
@@ -935,6 +954,19 @@ def test_validate_run_persists_report_and_makes_passing_candidate_reviewable(tmp
             })
 
     service = DesignService(memory, builder=FakeBuilder())
+
+    def fake_build(root, profile, **_kwargs):
+        output = root / profile.output_dir
+        output.mkdir(parents=True, exist_ok=True)
+        (output / "index.html").write_text(
+            '<html lang="en"><head><title>Candidate</title>'
+            '<meta name="description" content="A real page">'
+            '<meta name="viewport" content="width=device-width, initial-scale=1"></head>'
+            '<body><h1>Candidate</h1></body></html>'
+        )
+        return SiteBuildResult(profile.name, True, profile.output_dir, (), ("index.html",))
+
+    monkeypatch.setattr("site_agent.application.designs.build_site", fake_build)
     run = service.create_run(_intake(), run_id="design-run-quality", base_sha=base_sha)
     request = PageBuildRequest.from_dict({
         "schema_version": 1,
@@ -951,6 +983,8 @@ def test_validate_run_persists_report_and_makes_passing_candidate_reviewable(tmp
         "candidate_ref": "refs/ada-design/design-run-quality",
         "push_mode": "none",
         "publishable": True,
+        "build_profile": "next_react",
+        "allowed_paths": list(NEXT_REACT_PROFILE.writable_patterns),
     })
 
     service.execute_build(run["run_id"], request, target)
@@ -959,15 +993,14 @@ def test_validate_run_persists_report_and_makes_passing_candidate_reviewable(tmp
         run["run_id"],
         repo,
         policy=QualityPolicy(
-            build_command=None,
-            allowed_patterns=("index.html", "output/**"),
+            allowed_patterns=("index.html", "out/**"),
             required_pages=("index.html",),
             manifest_path="design/ada-design-manifest.json",
         ),
     )
 
     stored = service.get_run(run["run_id"])
-    assert report.state == "passed"
+    assert report.state == "passed", report.to_dict()
     assert stored["status"] == "ready_for_review"
     assert stored["quality_report_json"]["state"] == "passed"
     assert stored["quality_report_hash"]
@@ -986,9 +1019,10 @@ def test_validate_run_persists_output_identity_before_owner_surface_inspection(t
         run["run_id"],
         candidate_sha="b" * 40,
         candidate_ref=run["candidate_ref"],
-        planning_json={"build_profile": PELICAN_BASELINE_PROFILE.name},
+        planning_json={"build_profile": NEXT_REACT_PROFILE.name},
         error="stale quality-gate failure",
     )
+    _freeze_target(memory, run)
     for status in ("assessing_intake", "planning", "building", "candidate_ready", "validating"):
         memory.transition_design_run(run["run_id"], status)
 
@@ -1024,7 +1058,7 @@ def test_validate_run_persists_output_identity_before_owner_surface_inspection(t
     report = service.validate_run(
         run["run_id"],
         tmp_path,
-        policy=QualityPolicy(build_command=None),
+        policy=QualityPolicy(),
         browser=browser,
     )
 
@@ -1047,7 +1081,7 @@ def test_review_draft_requires_react_gsap_build_and_browser_evidence(tmp_path):
     output = tmp_path / "output"
     output.mkdir()
     (output / "index.html").write_text("<html><body><h1>Candidate</h1></body></html>", encoding="utf-8")
-    published = store.publish(output, profile=PELICAN_BASELINE_PROFILE, candidate_sha="b" * 40)
+    published = store.publish(output, profile=NEXT_REACT_PROFILE, candidate_sha="b" * 40)
     report = {
         "run_id": run["run_id"],
         "candidate_sha": "b" * 40,
@@ -1090,6 +1124,7 @@ def test_validate_run_retains_large_quality_report_with_bounded_artifact_preview
         candidate_sha="c" * 40,
         candidate_ref=run["candidate_ref"],
     )
+    _freeze_target(memory, run)
     for status in ("assessing_intake", "planning", "building", "candidate_ready", "validating"):
         memory.transition_design_run(run["run_id"], status)
 
@@ -1109,7 +1144,7 @@ def test_validate_run_retains_large_quality_report_with_bounded_artifact_preview
     report = service.validate_run(
         run["run_id"],
         repo,
-        policy=QualityPolicy(build_command=None),
+        policy=QualityPolicy(),
     )
 
     stored = service.get_run(run["run_id"])
@@ -1261,6 +1296,7 @@ def test_quality_failure_keeps_candidate_and_marks_run_needs_repair(tmp_path, mo
     service = DesignService(memory)
     run = service.create_run(_intake(), run_id="design-needs-repair", base_sha="a" * 40)
     memory.update_design_run(run["run_id"], candidate_sha="c" * 40, candidate_ref=run["candidate_ref"])
+    _freeze_target(memory, run)
     for status in ("assessing_intake", "planning", "building", "candidate_ready"):
         memory.transition_design_run(run["run_id"], status)
     monkeypatch.setattr(
@@ -1276,7 +1312,7 @@ def test_quality_failure_keeps_candidate_and_marks_run_needs_repair(tmp_path, mo
         }),
     )
 
-    report = service.validate_run(run["run_id"], tmp_path, policy=QualityPolicy(build_command=None))
+    report = service.validate_run(run["run_id"], tmp_path, policy=QualityPolicy())
 
     stored = service.get_run(run["run_id"])
     assert report.state == "failed"
@@ -1316,6 +1352,7 @@ def test_visual_refinement_requires_parent_screenshot_coverage(tmp_path, monkeyp
         operation_kind="visual_refinement",
     )
     memory.update_design_run(child["run_id"], candidate_sha="e" * 40)
+    _freeze_target(memory, child)
     for status in ("assessing_intake", "planning", "building", "candidate_ready", "validating"):
         memory.transition_design_run(child["run_id"], status)
     monkeypatch.setattr(
@@ -1329,7 +1366,7 @@ def test_visual_refinement_requires_parent_screenshot_coverage(tmp_path, monkeyp
         }),
     )
 
-    report = service.validate_run(child["run_id"], tmp_path, policy=QualityPolicy(build_command=None))
+    report = service.validate_run(child["run_id"], tmp_path, policy=QualityPolicy())
 
     stored = service.get_run(child["run_id"])
     assert report.state == "incomplete"
@@ -1368,6 +1405,7 @@ def test_visual_refinement_records_parent_screenshot_delta_when_coverage_matches
         operation_kind="visual_refinement",
     )
     memory.update_design_run(child["run_id"], candidate_sha="e" * 40)
+    _freeze_target(memory, child)
     for status in ("assessing_intake", "planning", "building", "candidate_ready", "validating"):
         memory.transition_design_run(child["run_id"], status)
     monkeypatch.setattr(
@@ -1384,7 +1422,7 @@ def test_visual_refinement_records_parent_screenshot_delta_when_coverage_matches
     report = service.validate_run(
         child["run_id"],
         tmp_path,
-        policy=QualityPolicy(build_command=None, visual_critic=True),
+        policy=QualityPolicy(visual_critic=True),
     )
 
     comparison = report.to_dict()["evidence"]["parent_visual_comparison"]
@@ -1476,7 +1514,7 @@ def test_visual_refinement_is_an_independent_child_from_parent_candidate(tmp_pat
     }
     assert "specialist_locked_plan" not in child["request"]["content"]
     child_policy = service.quality_policy_for_run(child_run["run_id"])
-    assert child_policy.required_pages == ("index.html", "articles.html")
+    assert child_policy.required_pages == ("index.html",)
     assert child_policy.required_content == ("North Star Studio", "Brand strategy")
     assert child["target"]["operation_kind"] == "visual_refinement"
     with pytest.raises(DesignServiceError, match="already exists"):

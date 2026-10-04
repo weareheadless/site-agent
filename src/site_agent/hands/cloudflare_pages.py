@@ -17,7 +17,6 @@ Config:
       adapter: cloudflare_pages
       repository: owner/repo        # source repo (same as github_static)
       branch: main
-      content_path: content.json
       cloudflare:
         account_id: "<cf account id>"
         project_name: "<pages project>"

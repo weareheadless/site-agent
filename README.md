@@ -8,7 +8,7 @@ Portable AI website content manager. One installable package, one instance direc
 - Platform release boundaries: [docs/platform-release-runbook.md](docs/platform-release-runbook.md) — shared API, admin package and customer Workers
 - Defining a new site's persona: [docs/persona.md](docs/persona.md) — the Ada personality contract for onboarding LLMs
 - Architecture: [docs/architecture.md](docs/architecture.md) — runtime boundaries and approval flow
-- Owner experience implementation: [docs/owner-experience-implementation-plan.md](docs/owner-experience-implementation-plan.md) — active product, UI, approval, and capability roadmap
+- Historical owner-experience plan: [docs/owner-experience-implementation-plan.md](docs/owner-experience-implementation-plan.md) — retained for context; its retired static-preview assumptions are not active architecture
 - Debugging: [docs/debugging.md](docs/debugging.md) — job, draft, and Design preview runbook
 - Extensions: [docs/extensions.md](docs/extensions.md) — adapter, builder, provider, and MCP rules
 - Ready-made instance config: [examples/oceanicvibes.config.yaml](examples/oceanicvibes.config.yaml)
@@ -34,9 +34,9 @@ Create `config.yaml` + `data/` per site. Secrets go in the environment (or a `.e
 | Variable | Purpose |
 |---|---|
 | `SITE_AGENT_LLM_API_KEY` | OpenRouter API key for the global DeepSeek model |
-| `GITHUB_TOKEN` | PAT used by the github_static / cloudflare_pages adapters to commit site changes |
+| `GITHUB_TOKEN` | Token used by the VPS release pipeline to version customer source in GitHub |
 | `SITE_AGENT_ADMIN_PASSWORD` | Admin UI login |
-| `CLOUDFLARE_API_TOKEN` | Cloudflare Pages deployment status (cloudflare_pages adapter) |
+| `CLOUDFLARE_API_TOKEN` | Token used by the VPS release pipeline to deploy and verify customer Workers |
 | `GA4_SERVICE_ACCOUNT` / `GA4_PROPERTY_ID` | Google Analytics 4 read access |
 | `CRAWLSEO_SERVICE_TOKEN` | Project-scoped CrawlSEO MCP bearer token |
 | `SITE_AGENT_MOTION_CACHE` | Shared server cache for provisioned browser motion libraries |
@@ -62,30 +62,19 @@ schedule:
 - Each job's `next_run` persists in the memory DB. A run that happens late still waits its full interval before the next one.
 - If the process was down past a job's `next_run`, it fires on the next cycle and the action log marks it `caught up, Nh late` — missed deliveries are never silently skipped.
 
-## Publish adapters
+## Production releases
 
-- `github_static` — site served from a GitHub repo branch (GitHub Pages model). Every change is a commit via the Contents API.
-- `cloudflare_pages` — same commit-based publishing, but the repo is connected to a Cloudflare Pages project (commercial use allowed, unlimited bandwidth). Set `site.cloudflare.account_id` + `project_name` and `CLOUDFLARE_API_TOKEN` to get live deployment status.
+Customer sites are versioned in GitHub and deployed as Cloudflare Workers by the
+VPS release pipeline. Use [deploy/README.md](deploy/README.md) for the release
+contract; do not deploy a customer Worker manually from an application process.
 
 ## Payload content contract
 
-New generated sites use the shared Payload content contract by default. Ada
-works through the same API and Payload records that the owner can edit in the
-HelloAda admin, so the public frontend, articles, featured images, SEO fields,
-navigation, and footer stay in sync:
-
-```yaml
-blog:
-  engine: payload
-  collection: posts
-  pages_collection: pages
-  media_collection: media
-```
-
-The AI can draft and publish through Payload, while owners retain direct control
-of page content, article content, featured images, SEO metadata, and shared
-navigation. Legacy Git-backed content is migration-only and is not the default
-for new tenants.
+Every generated site uses the shared Payload schema and the canonical Next.js
+frontend. Ada and the owner work with the same Payload records, so page content,
+articles, featured images, SEO metadata, navigation, and footer stay in sync.
+The schema is versioned in the shared HelloAda packages; customer-local schema
+definitions and parallel file-based content stores are not supported.
 
 ## New site CMS starting point
 

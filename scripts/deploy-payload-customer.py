@@ -20,6 +20,8 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
 def utc_now() -> str:
@@ -53,6 +55,11 @@ def file_hashes(root: Path) -> dict[str, str]:
             for p in sorted(root.rglob("*")) if p.is_file()}
 
 
+def migration_ledger_head(applied: list[str]) -> str:
+    """Stable identity for one ordered Payload migration ledger."""
+    return hashlib.sha256(json.dumps(applied, separators=(",", ":")).encode()).hexdigest()
+
+
 def uploaded_version_id(output: str) -> str:
     versions = re.findall(r"Worker Version ID:\s*([0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})", output)
     if len(versions) != 1:
@@ -72,30 +79,217 @@ def validate_target(customer: dict[str, Any], tenant: str, sha: str, release_id:
             raise ValueError(f"registered customer has no exact {field} version")
     if not re.fullmatch(r"helloada-content-v\d+", str(customer.get("contentContract") or "")):
         raise ValueError("registered customer has no exact content contract")
+    if not isinstance(customer.get("schemaRevision"), int) or customer["schemaRevision"] < 1:
+        raise ValueError("registered customer has no exact Payload schema revision")
+    if not re.fullmatch(r"[0-9a-f]{64}", str(customer.get("schemaIdentity") or "")):
+        raise ValueError("registered customer has no normalized Payload schema identity")
+    if not SHA256_RE.fullmatch(str(customer.get("migrationHead") or "")):
+        raise ValueError("registered customer has no verified Payload migration-chain identity")
+    if not UUID_RE.fullmatch(str(customer.get("d1DatabaseId") or "")):
+        raise ValueError("registered customer has no exact tenant D1 identity")
+    if customer["d1DatabaseId"].replace("-", "") == "0" * 32:
+        raise ValueError("registered customer cannot use the template D1 identity")
+    if not re.fullmatch(r"[a-z0-9-]{1,63}", str(customer.get("d1DatabaseName") or "")):
+        raise ValueError("registered customer has no exact tenant D1 name")
+    if not re.fullmatch(r"[a-z0-9-]{3,63}", str(customer.get("r2BucketName") or "")):
+        raise ValueError("registered customer has no exact tenant R2 bucket")
 
 
 def validate_worker_contract(worker_config: dict[str, Any], customer: dict[str, Any], tenant: str) -> None:
+    if worker_config.get("d1Count") != 1 or worker_config.get("r2Count") != 1:
+        raise RuntimeError("Worker must have exactly one canonical tenant D1 and R2 binding")
     if worker_config.get("name") != customer["worker"] or worker_config.get("tenant") != tenant:
         raise RuntimeError("Worker name or tenant binding does not match the registry")
     if worker_config.get("admin") != customer["payloadAdmin"]:
         raise RuntimeError("Worker admin version does not match the registry")
     if (worker_config.get("core") != customer["payloadCore"]
-            or worker_config.get("contract") != customer["contentContract"]):
+            or worker_config.get("contract") != customer["contentContract"]
+            or worker_config.get("schemaRevision") != customer["schemaRevision"]
+            or worker_config.get("schemaIdentity") != customer["schemaIdentity"]):
         raise RuntimeError("Worker shared Payload contract does not match the registry")
+    if (worker_config.get("migrationHead") != customer["migrationHead"]
+            or worker_config.get("d1DatabaseId") != customer["d1DatabaseId"]
+            or worker_config.get("d1DatabaseName") != customer["d1DatabaseName"]
+            or worker_config.get("r2BucketName") != customer["r2BucketName"]):
+        raise RuntimeError("Worker migration chain or tenant data-resource identity does not match the registry")
+
+
+def d1_query(customer: dict[str, Any], sql: str, env: dict[str, str]) -> list[dict[str, Any]]:
+    url = ("https://api.cloudflare.com/client/v4/accounts/" + urllib.parse.quote(env["CLOUDFLARE_ACCOUNT_ID"], safe="")
+           + "/d1/database/" + urllib.parse.quote(customer["d1DatabaseId"], safe="") + "/query")
+    request = urllib.request.Request(
+        url,
+        data=json.dumps({"sql": sql}).encode(),
+        method="POST",
+        headers={"Authorization": "Bearer " + env["CLOUDFLARE_API_TOKEN"],
+                 "Content-Type": "application/json", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            body = json.load(response)
+    except (OSError, urllib.error.URLError, TimeoutError) as error:
+        raise RuntimeError(f"tenant D1 schema inspection failed: {type(error).__name__}") from error
+    if body.get("success") is not True or not isinstance(body.get("result"), list) or len(body["result"]) != 1:
+        raise RuntimeError("Cloudflare did not return one successful tenant D1 query result")
+    result = body["result"][0]
+    if result.get("success") is not True or not isinstance(result.get("results"), list):
+        raise RuntimeError("Cloudflare tenant D1 query did not complete successfully")
+    return result["results"]
+
+
+def applied_payload_migrations(customer: dict[str, Any], env: dict[str, str]) -> tuple[list[str], list[str]]:
+    tables = d1_query(customer,
+        "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name", env)
+    table_names = [str(row.get("name") or "") for row in tables]
+    if "payload_migrations" not in table_names:
+        return table_names, []
+    rows = d1_query(customer, "SELECT name FROM payload_migrations ORDER BY batch ASC, id ASC", env)
+    return table_names, [str(row.get("name") or "") for row in rows]
+
+
+def enforce_payload_migrations(checkout: Path, customer: dict[str, Any], env: dict[str, str],
+                               initialization_head: str | None, migration_from_ledger: str | None,
+                               base: dict[str, str],
+                               manifest: dict[str, Any], tenant: str, stage: Any) -> list[str]:
+    from site_agent.payload_contract import PayloadContractError, validate_payload_migrations
+
+    try:
+        template = validate_payload_migrations(checkout)
+    except PayloadContractError as error:
+        raise RuntimeError(str(error)) from error
+    if template["migrationHead"] != customer["migrationHead"]:
+        raise RuntimeError("checked-out Payload migration chain differs from the registered tenant contract")
+    expected = [str(entry["name"]) for entry in template["migrations"]]
+    if initialization_head is not None and migration_from_ledger is not None:
+        raise RuntimeError("schema initialization and an existing-tenant migration are mutually exclusive")
+    tables, applied = applied_payload_migrations(customer, env)
+    if not tables:
+        if migration_from_ledger is not None:
+            raise RuntimeError("an existing-tenant migration cannot initialize an empty D1")
+        if initialization_head != template["migrationHead"]:
+            raise RuntimeError("empty tenant D1 requires the explicit bootstrap initialization receipt")
+        stage("initialize-schema")
+        runtime = tenant_runtime_secrets(manifest, tenant)
+        migration_env = {**base, **env, **runtime, "NODE_ENV": "production", "PAYLOAD_CLI": "1"}
+        run([str(checkout / "node_modules/.bin/payload"), "migrate"], checkout, migration_env)
+        tables, applied = applied_payload_migrations(customer, env)
+    elif "payload_migrations" not in tables:
+        raise RuntimeError("non-empty tenant D1 has no Payload migration ledger")
+    elif initialization_head is not None and applied != expected:
+        raise RuntimeError("bootstrap retry found a non-empty D1 without the exact completed initial migration chain")
+    elif applied != expected:
+        is_prefix = bool(applied) and len(applied) < len(expected) and expected[:len(applied)] == applied
+        if not is_prefix or migration_from_ledger is None:
+            raise RuntimeError("existing tenant D1 differs from the committed chain; an explicit exact schema-migration request is required")
+        if migration_ledger_head(applied) != migration_from_ledger:
+            raise RuntimeError("tenant D1 migration ledger changed after the schema-migration request was approved")
+        stage("migrate-schema")
+        runtime = tenant_runtime_secrets(manifest, tenant)
+        migration_env = {**base, **env, **runtime, "NODE_ENV": "production", "PAYLOAD_CLI": "1"}
+        run([str(checkout / "node_modules/.bin/payload"), "migrate"], checkout, migration_env)
+        tables, applied = applied_payload_migrations(customer, env)
+    elif migration_from_ledger is not None:
+        prefix_heads = {
+            migration_ledger_head(expected[:length])
+            for length in range(1, len(expected))
+        }
+        if migration_from_ledger not in prefix_heads:
+            raise RuntimeError("schema-migration request does not identify a strict prefix of the committed chain")
+    if "payload_migrations" not in tables or applied != expected:
+        raise RuntimeError("applied Payload migration ledger differs from the exact committed migration chain")
+    return applied
 
 
 def cloudflare_deployment(customer: dict[str, Any], env: dict[str, str]) -> dict[str, Any]:
     url = ("https://api.cloudflare.com/client/v4/accounts/" + env["CLOUDFLARE_ACCOUNT_ID"]
            + "/workers/scripts/" + customer["worker"] + "/deployments")
     req = urllib.request.Request(url, headers={"Authorization": "Bearer " + env["CLOUDFLARE_API_TOKEN"]})
-    with urllib.request.urlopen(req, timeout=30) as response:
-        body = json.load(response)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            body = json.load(response)
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            return {}
+        raise RuntimeError(f"Cloudflare deployment inspection failed with HTTP {error.code}") from error
     if body.get("success") is not True:
         raise RuntimeError("Cloudflare deployment inspection failed")
     deployments = body["result"]["deployments"]
     if not deployments:
-        raise RuntimeError("Worker has no production deployment to verify or roll back to")
+        return {}
     return max(deployments, key=lambda item: item["created_on"])
+
+
+def tenant_runtime_secrets(manifest: dict[str, Any], tenant: str) -> dict[str, str]:
+    """Load only this tenant's Worker secrets from the registered host workspace."""
+    try:
+        import yaml
+        from site_agent.application.tenant_registration import (
+            WORKER_SITE_AGENT_TOKEN_ENV,
+            provisioned_root,
+            tenant_token_env,
+        )
+
+        config_path = Path(manifest["connectionGate"]["config"]).resolve()
+        host_config = yaml.safe_load(config_path.read_text())
+        if not isinstance(host_config, dict):
+            raise ValueError("host API config root is invalid")
+        root = provisioned_root(host_config)
+        index = json.loads((root / "tenants.json").read_text())
+        entry = index.get(tenant)
+        if not isinstance(entry, dict):
+            raise ValueError("tenant is not registered on this VPS")
+        registered_config = Path(str(entry.get("config_path") or "")).resolve()
+        expected_config = (root / tenant / "config.yaml").resolve()
+        if registered_config != expected_config or root not in registered_config.parents:
+            raise ValueError("registered tenant config path is inconsistent")
+        env_path = root / tenant / "tenant.env"
+        values: dict[str, str] = {}
+        for line in env_path.read_text().splitlines():
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            if "=" not in line:
+                raise ValueError("tenant secret file contains a malformed line")
+            key, value = line.split("=", 1)
+            key = key.strip()
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) or key in values:
+                raise ValueError("tenant secret file contains an invalid or duplicate name")
+            values[key] = value.strip()
+        worker_manifest_path = ROOT / "src/site_agent/templates/next-payload/template-manifest.json"
+        worker_manifest = json.loads(worker_manifest_path.read_text(encoding="utf-8"))
+        worker_token_env = str(worker_manifest.get("workerTokenEnv") or "").strip()
+        if worker_token_env != WORKER_SITE_AGENT_TOKEN_ENV:
+            raise ValueError("canonical Worker token binding differs from the tenant registration contract")
+        required = {"PAYLOAD_SECRET", tenant_token_env(tenant)}
+        if any(not values.get(key) for key in required):
+            raise ValueError("registered tenant runtime secrets are incomplete")
+        # The site-agent keeps a tenant-specific environment name in its
+        # protected host file; the canonical Worker contract uses one stable
+        # binding name. This is an explicit mapping, not a second token.
+        return {
+            "PAYLOAD_SECRET": values["PAYLOAD_SECRET"],
+            worker_token_env: values[tenant_token_env(tenant)],
+        }
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise RuntimeError(f"tenant runtime secrets are unavailable: {str(error)[:240]}") from error
+
+
+def put_worker_secret(customer: dict[str, Any], name: str, value: str, env: dict[str, str]) -> None:
+    url = ("https://api.cloudflare.com/client/v4/accounts/" + env["CLOUDFLARE_ACCOUNT_ID"]
+           + "/workers/scripts/" + urllib.parse.quote(customer["worker"], safe="") + "/secrets")
+    request = urllib.request.Request(
+        url,
+        data=json.dumps({"name": name, "text": value, "type": "secret_text"}).encode(),
+        method="PUT",
+        headers={"Authorization": "Bearer " + env["CLOUDFLARE_API_TOKEN"],
+                 "Content-Type": "application/json", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            body = json.load(response)
+    except (OSError, urllib.error.URLError, TimeoutError) as error:
+        raise RuntimeError(f"Worker secret provisioning failed: {type(error).__name__}") from error
+    if body.get("success") is not True:
+        raise RuntimeError(f"Worker secret provisioning failed for {name}")
 
 
 def check_health(url: str, tenant: str, customer: dict[str, Any], sha: str) -> dict[str, Any]:
@@ -111,6 +305,9 @@ def check_health(url: str, tenant: str, customer: dict[str, Any], sha: str) -> d
         "payloadAdmin": customer["payloadAdmin"],
         "payloadCore": customer["payloadCore"],
         "contentContract": customer["contentContract"],
+        "schemaRevision": customer["schemaRevision"],
+        "schemaIdentity": customer["schemaIdentity"],
+        "migrationHead": customer["migrationHead"],
         "releaseSha": sha,
     }
     if any(body.get(key) != value for key, value in expected.items()):
@@ -150,12 +347,19 @@ def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dic
 
 
 def verification_receipt(directory: Path, tenant: str, sha: str, release_id: str,
-                         customer: dict[str, Any]) -> dict[str, Any]:
+                         customer: dict[str, Any], approval_id: int | None = None,
+                         initialization_head: str | None = None) -> dict[str, Any]:
     receipt = json.loads((directory / "receipt.json").read_text())
     expected = {"tenant": tenant, "sourceSha": sha, "releaseId": release_id,
                 "worker": customer["worker"], "repository": customer["repository"],
                 "payloadAdmin": customer["payloadAdmin"], "payloadCore": customer["payloadCore"],
-                "contentContract": customer["contentContract"]}
+                "contentContract": customer["contentContract"],
+                "schemaRevision": customer["schemaRevision"], "schemaIdentity": customer["schemaIdentity"],
+                "migrationHead": customer["migrationHead"]}
+    if approval_id is not None:
+        expected["approvalId"] = approval_id
+    if initialization_head is not None:
+        expected["initialSchemaHead"] = initialization_head
     if any(receipt.get(key) != value for key, value in expected.items()):
         raise ValueError("verification target differs from the recorded release")
     if receipt.get("status") not in ("failed", "deployed", "verified") or receipt.get("stage") not in (
@@ -177,8 +381,21 @@ def inspect_artifact(checkout: Path, customer: dict[str, Any], sha: str) -> dict
     artifact = checkout / ".open-next"
     if not (artifact / "worker.js").is_file():
         raise RuntimeError("OpenNext produced no Worker")
+    schema_configs = [path for path in (checkout / "payload.config.ts", checkout / "src/payload.config.ts") if path.is_file()]
+    if len(schema_configs) != 1:
+        raise RuntimeError("site must have exactly one canonical Payload configuration")
+    schema_source = schema_configs[0].read_text(encoding="utf-8")
+    if (not re.search(r"from\s+['\"]@weareheadless/helloada-payload-core/schema['\"]", schema_source)
+            or not re.search(r"\bcreateHelloAdaSchema\s*\(", schema_source)):
+        raise RuntimeError("Payload collections and globals must be instantiated from the shared site-agent schema factory")
     routes = json.loads((checkout / ".next/server/app-paths-manifest.json").read_text())
-    required = {"/api/helloada/[...path]/route", "/api/content/route", "/api/health/route"}
+    required = {
+        "/api/helloada/[...path]/route",
+        "/api/workspace/content/route",
+        "/api/workspace/global/route",
+        "/api/workspace/media/route",
+        "/api/health/route",
+    }
     if not required.issubset(routes):
         raise RuntimeError("artifact is missing a canonical workspace, service content or release health route")
     if any("/api/atelier" in route for route in routes):
@@ -192,6 +409,18 @@ def inspect_artifact(checkout: Path, customer: dict[str, Any], sha: str) -> dict
     content_contract = json.loads((checkout / "helloada-content-contract.json").read_text())
     if content_contract.get("contract") != customer["contentContract"]:
         raise RuntimeError("source content contract does not match the registry")
+    template_manifest = json.loads((checkout / "template-manifest.json").read_text())
+    sys.path.insert(0, str(ROOT / "src"))
+    from site_agent.payload_contract import PayloadContractError, validate_payload_migrations
+    try:
+        template_manifest = validate_payload_migrations(checkout, template_manifest)
+    except PayloadContractError as error:
+        raise RuntimeError(str(error)) from error
+    if (template_manifest.get("schemaRevision") != customer["schemaRevision"]
+            or template_manifest.get("schemaIdentity") != customer["schemaIdentity"]
+            or template_manifest.get("contentContract") != customer["contentContract"]
+            or template_manifest.get("migrationHead") != customer["migrationHead"]):
+        raise RuntimeError("source Payload schema identity does not match the registry")
     javascript = list((artifact / "server-functions").rglob("*.mjs")) + list((artifact / "server-functions").rglob("*.js"))
     if not any("/growth/contract" in path.read_text(errors="replace") for path in javascript):
         raise RuntimeError("compiled server is missing the Growth contract")
@@ -201,6 +430,9 @@ def inspect_artifact(checkout: Path, customer: dict[str, Any], sha: str) -> dict
         "payloadAdmin": customer["payloadAdmin"],
         "payloadCore": customer["payloadCore"],
         "contentContract": customer["contentContract"],
+        "schemaRevision": customer["schemaRevision"],
+        "schemaIdentity": customer["schemaIdentity"],
+        "migrationHead": customer["migrationHead"],
     }
     if any(marker.get(key) != value for key, value in expected_marker.items()):
         raise RuntimeError("built release marker does not match the pinned source")
@@ -212,6 +444,9 @@ def main() -> int:
     parser.add_argument("--tenant", required=True)
     parser.add_argument("--ref", required=True)
     parser.add_argument("--release-id", required=True)
+    parser.add_argument("--approval-id", type=int)
+    parser.add_argument("--initialize-schema-head", help="hash of the exact Payload migration chain for an empty new tenant")
+    parser.add_argument("--schema-migration-from-ledger-identity", help="exact identity of the current Payload ledger for an approved tenant schema migration")
     parser.add_argument("--verify-only", action="store_true",
                         help="Recheck an already promoted version; never build, upload or promote")
     parser.add_argument("--manifest", type=Path, default=ROOT / "deploy/payload-customers.json")
@@ -236,11 +471,30 @@ def main() -> int:
         "sourceSha": args.ref, "pipelineSha": os.environ.get("HELLOADA_PIPELINE_SHA"),
         "worker": customer["worker"], "repository": customer["repository"],
         "payloadAdmin": customer["payloadAdmin"], "payloadCore": customer["payloadCore"],
-        "contentContract": customer["contentContract"],
+        "contentContract": customer["contentContract"], "schemaRevision": customer["schemaRevision"],
+        "schemaIdentity": customer["schemaIdentity"], "migrationHead": customer["migrationHead"],
+        "d1DatabaseId": customer["d1DatabaseId"], "d1DatabaseName": customer["d1DatabaseName"],
+        "r2BucketName": customer["r2BucketName"],
         "startedAt": utc_now(), "status": "running", "stage": "preflight",
         "browserVerification": "pending"}
+    if args.approval_id is not None:
+        if args.approval_id < 1:
+            parser.error("approval identity must be a positive integer")
+        receipt["approvalId"] = args.approval_id
+    if args.initialize_schema_head is not None:
+        if (args.initialize_schema_head != customer["migrationHead"] or args.approval_id is not None
+                or args.schema_migration_from_ledger_identity is not None):
+            parser.error("schema initialization must match the registered migration chain and cannot be an owner approval")
+        receipt["initialSchemaHead"] = args.initialize_schema_head
+    if args.schema_migration_from_ledger_identity is not None:
+        if (not SHA256_RE.fullmatch(args.schema_migration_from_ledger_identity)
+                or args.approval_id is not None or args.initialize_schema_head is not None):
+            parser.error("schema migration requires one exact ledger identity and cannot be an owner approval or initialization")
+        receipt["schemaMigrationFromLedgerIdentity"] = args.schema_migration_from_ledger_identity
+        receipt["schemaMigrationTargetHead"] = customer["migrationHead"]
     if args.verify_only:
-        receipt = verification_receipt(directory, args.tenant, args.ref, args.release_id, customer)
+        receipt = verification_receipt(directory, args.tenant, args.ref, args.release_id, customer,
+                                       args.approval_id, args.initialize_schema_head)
 
     def stage(name: str) -> None:
         receipt["stage"] = name
@@ -297,8 +551,16 @@ def main() -> int:
                       "const r=ts.parseConfigFileTextToJson('wrangler.jsonc',fs.readFileSync('wrangler.jsonc','utf8'));"
                       "if(r.error)throw Error('Invalid Wrangler JSONC');const c=r.config;"
                       "process.stdout.write(JSON.stringify({name:c.name,tenant:c.vars?.HELLOADA_TENANT_ID,"
-                      "admin:c.vars?.HELLOADA_PAYLOAD_ADMIN_VERSION,core:c.vars?.HELLOADA_PAYLOAD_CORE_VERSION,"
-                      "contract:c.vars?.HELLOADA_CONTENT_CONTRACT_VERSION}));"], checkout, base)
+                "admin:c.vars?.HELLOADA_PAYLOAD_ADMIN_VERSION,core:c.vars?.HELLOADA_PAYLOAD_CORE_VERSION,"
+                      "contract:c.vars?.HELLOADA_CONTENT_CONTRACT_VERSION,"
+                      "schemaRevision:Number(c.vars?.HELLOADA_PAYLOAD_SCHEMA_REVISION||0),"
+                      "schemaIdentity:c.vars?.HELLOADA_SCHEMA_IDENTITY,"
+                      "migrationHead:c.vars?.HELLOADA_PAYLOAD_MIGRATION_HEAD,"
+                      "d1Count:Array.isArray(c.d1_databases)?c.d1_databases.length:0,"
+                      "d1DatabaseId:c.d1_databases?.[0]?.database_id,"
+                      "d1DatabaseName:c.d1_databases?.[0]?.database_name,"
+                      "r2Count:Array.isArray(c.r2_buckets)?c.r2_buckets.length:0,"
+                      "r2BucketName:c.r2_buckets?.[0]?.bucket_name}));"], checkout, base)
         wrangler = json.loads(parsed)
         validate_worker_contract(wrangler, customer, args.tenant)
         run(["npm", "run", "typecheck"], checkout, base)
@@ -308,7 +570,9 @@ def main() -> int:
         stage("build")
         marker = {"sourceSha": args.ref, "pipelineSha": receipt["pipelineSha"],
                   "tenant": args.tenant, "payloadAdmin": customer["payloadAdmin"],
-                  "payloadCore": customer["payloadCore"], "contentContract": customer["contentContract"]}
+                  "payloadCore": customer["payloadCore"], "contentContract": customer["contentContract"],
+                  "schemaRevision": customer["schemaRevision"], "schemaIdentity": customer["schemaIdentity"],
+                  "migrationHead": customer["migrationHead"]}
         atomic_json(checkout / "public/helloada-release.json", marker)
         build_env = {**base, "PAYLOAD_LOCAL_BUILD": "1", "HELLOADA_RELEASE_SHA": args.ref}
         run([str(checkout / "node_modules/.bin/opennextjs-cloudflare"), "build"], checkout, build_env)
@@ -322,7 +586,7 @@ def main() -> int:
 
         stage("upload")
         before_deploy = cloudflare_deployment(customer, deploy_env)
-        if before_deploy["id"] != receipt["previousDeployment"]["id"]:
+        if before_deploy.get("id") != receipt["previousDeployment"].get("id"):
             raise RuntimeError("production changed during the build; reconcile that deployment before retrying")
         uploaded = run([str(checkout / "node_modules/.bin/opennextjs-cloudflare"), "upload", "--var",
                         "HELLOADA_RELEASE_SHA:" + args.ref, "--tag", args.release_id], checkout, deploy_env)
@@ -330,15 +594,31 @@ def main() -> int:
         if file_hashes(checkout / ".open-next") != receipt["artifactHashes"]:
             raise RuntimeError("upload changed the inspected artifact")
 
+        # Keep the previous Worker serving while the exact candidate's committed
+        # migration is applied and checked. Only an explicitly queued migration
+        # request can advance an existing tenant ledger.
+        receipt["appliedMigrations"] = enforce_payload_migrations(
+            checkout, customer, deploy_env, args.initialize_schema_head,
+            args.schema_migration_from_ledger_identity, base, manifest, args.tenant, stage,
+        )
+        receipt["verifiedMigrationHead"] = customer["migrationHead"]
+        stage("verify-payload-contract")
+        run(["npm", "run", "verify:payload"], checkout, {**base, **deploy_env})
+        atomic_json(receipt_path, receipt)
+
         stage("promote")
-        if cloudflare_deployment(customer, deploy_env)["id"] != before_deploy["id"]:
+        if cloudflare_deployment(customer, deploy_env).get("id") != before_deploy.get("id"):
             raise RuntimeError("production changed during upload; reconcile before promotion")
         run([str(checkout / "node_modules/.bin/wrangler"), "versions", "deploy",
              receipt["uploadedVersion"] + "@100%", "--name", customer["worker"], "--yes"], checkout, deploy_env)
 
+        stage("provision-runtime-secrets")
+        for secret_name, secret_value in tenant_runtime_secrets(manifest, args.tenant).items():
+            put_worker_secret(customer, secret_name, secret_value, deploy_env)
+
         stage("verify-deployment")
         deployment = cloudflare_deployment(customer, deploy_env)
-        if deployment["id"] == before_deploy["id"]:
+        if not deployment or deployment.get("id") == before_deploy.get("id"):
             raise RuntimeError("Cloudflare did not create a new deployment")
         receipt["deployment"] = deployment
         verify_live(receipt, customer, manifest, deploy_env, base, stage)

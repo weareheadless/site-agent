@@ -209,22 +209,13 @@ def run_job(context: dict[str, Any], job: dict[str, Any], worker: str,
                 followup = after_turn(job, result)
                 if isinstance(followup, dict):
                     result["build_followup"] = followup
-        elif message.startswith("Set up the customer-facing journal for this website."):
-            # Journal activation is a native OpenCode Build session. The runner
-            # owns only the preview sandbox and objective validation.
-            from ..hands import opencode_runner
-            result = opencode_runner.stage_build(
-                context,
-                opencode_runner.normalize_journal_message(message, context.get("config") or {}),
-                progress,
-            )
         else:
             from ..brain import editor as brain_editor
 
             if adapter_factory is None:
                 from ..hands.base import get_adapter
 
-                name = str((context["config"].get("site") or {}).get("adapter", "github_static"))
+                name = str((context["config"].get("site") or {}).get("adapter", "payload_gateway"))
                 adapter = get_adapter(name, context["config"])
             else:
                 adapter = adapter_factory()

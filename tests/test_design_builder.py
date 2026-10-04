@@ -14,6 +14,41 @@ from site_agent.hands.site_build import NEXT_REACT_PROFILE, SiteBuildResult
 from tests.test_design_contracts import _experience_plan
 
 
+def _build_target(value):
+    value.setdefault("build_profile", NEXT_REACT_PROFILE.name)
+    value["allowed_paths"] = list(NEXT_REACT_PROFILE.writable_patterns)
+    return BuildTarget.from_dict(value)
+
+
+def _write_presentation(root, content):
+    path = root / "src" / "components" / "site" / "presentation" / "Home.tsx"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "export function Home(){return <main dangerouslySetInnerHTML={{__html: "
+        + json.dumps(content)
+        + "}} />}\n"
+    )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_host_toolchain_boundary(monkeypatch):
+    """Keep builder lifecycle tests independent of npm registry state."""
+    import site_agent.hands.site_build as site_build
+
+    monkeypatch.setattr(site_build, "prepare_site_toolchain", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(
+        site_build,
+        "build_site",
+        lambda _root, profile, **_kwargs: SiteBuildResult(
+            profile=profile.name,
+            ok=True,
+            output_dir=profile.output_dir,
+            commands=({"command": ["test"], "status": "passed"},),
+            route_inventory=("index.html",),
+        ),
+    )
+
+
 def test_stage_visual_evidence_writes_downscaled_jpgs_under_opencode(tmp_path):
     source_dir = tmp_path / "media"
     source_dir.mkdir()
@@ -158,7 +193,7 @@ def test_native_next_finalization_accepts_the_host_approved_package_manifest(tmp
     base_sha = _git(clone, "rev-parse", "HEAD").stdout.strip()
 
     (clone / "package.json").write_text('{"name":"candidate"}\n')
-    source = clone / "src" / "components" / "site"
+    source = clone / "src" / "components" / "site" / "presentation"
     source.mkdir(parents=True)
     (source / "homepage.tsx").write_text("export function HomepageContent() { return <h1>Candidate</h1> }\n")
 
@@ -172,7 +207,7 @@ def test_native_next_finalization_accepts_the_host_approved_package_manifest(tmp
         "site_intake_hash": "a" * 64,
         "acceptance_criteria": ["Keep the homepage accessible."],
     })
-    target = BuildTarget.from_dict({
+    target = _build_target({
         "mode": "local_experiment",
         "base_sha": base_sha,
         "candidate_ref": "refs/ada-design-lab/design-run-package-json",
@@ -224,7 +259,7 @@ def test_local_design_build_commits_exact_base_to_local_ref_without_push(tmp_pat
         "site_intake_hash": "a" * 64,
         "acceptance_criteria": ["Keep the homepage accessible."],
     })
-    target = BuildTarget.from_dict({
+    target = _build_target({
         "mode": "local_experiment",
         "base_sha": base_sha,
         "candidate_ref": "refs/ada-design-lab/design-run-1",
@@ -237,7 +272,7 @@ def test_local_design_build_commits_exact_base_to_local_ref_without_push(tmp_pat
 
     def fake_turn(worktree, prompt, config, progress=None, session_id=None, timeout_seconds=None, **kwargs):
         assert base_sha in prompt
-        (worktree / "index.html").write_text("<html><body><h1>Candidate</h1></body></html>")
+        _write_presentation(worktree, "<html><body><h1>Candidate</h1></body></html>")
         return {
             "session_id": "design-session",
             "reply": "implemented",
@@ -263,7 +298,7 @@ def test_local_design_build_commits_exact_base_to_local_ref_without_push(tmp_pat
     assert _git(clone, "status", "--porcelain").stdout == ""
     manifest = json.loads(_git(clone, "show", f"{receipt.candidate_sha}:design/ada-design-manifest.json").stdout)
     assert manifest["host_generated"] is True
-    assert manifest["source_files"] == {"changed": ["index.html"]}
+    assert manifest["source_files"] == {"changed": ["src/components/site/presentation/Home.tsx"]}
     assert receipt.transcript_path == "design-runs/design-run-1/opencode.jsonl"
     assert (tmp_path / "data" / receipt.transcript_path).read_text() == '{"type":"text","sessionID":"design-session"}\n'
     memory.close()
@@ -288,7 +323,7 @@ def test_native_initial_build_persists_direction_before_writable_build(tmp_path,
         "site_intake_hash": "a" * 64,
         "acceptance_criteria": ["Keep the homepage accessible."],
     })
-    target = BuildTarget.from_dict({
+    target = _build_target({
         "mode": "local_experiment",
         "base_sha": base_sha,
         "candidate_ref": "refs/ada-design-lab/native-direction-build",
@@ -309,7 +344,7 @@ def test_native_initial_build_persists_direction_before_writable_build(tmp_path,
                 "reply": "A quiet editorial threshold opens into a tactile story of the owner’s work.",
                 "transcript": '{"type":"text","sessionID":"direction-session"}\n',
             }
-        (worktree / "index.html").write_text("<html><body><h1>Candidate</h1></body></html>")
+        _write_presentation(worktree, "<html><body><h1>Candidate</h1></body></html>")
         return {
             "session_id": "build-session",
             "reply": "implemented",
@@ -350,7 +385,7 @@ def test_creative_technical_repair_skips_new_direction_turn(tmp_path, monkeypatc
         "acceptance_criteria": ["Preserve the native implementation."],
         "content": {"technical_repair": {"parent_run_id": "parent"}},
     })
-    target = BuildTarget.from_dict({
+    target = _build_target({
         "mode": "local_experiment",
         "base_sha": base_sha,
         "candidate_ref": "refs/ada-design-lab/technical-repair-no-direction",
@@ -366,7 +401,7 @@ def test_creative_technical_repair_skips_new_direction_turn(tmp_path, monkeypatc
 
     def fake_turn(worktree, prompt, config, **kwargs):
         calls.append({"agent_name": kwargs.get("agent_name"), "prompt": prompt})
-        (worktree / "index.html").write_text("<html><body><h1>Candidate</h1></body></html>")
+        _write_presentation(worktree, "<html><body><h1>Candidate</h1></body></html>")
         return {
             "session_id": "repair-session",
             "reply": "implemented",
@@ -394,7 +429,7 @@ def test_creative_direction_prompt_requires_typed_journey_shape(tmp_path):
         "site_intake_hash": "a" * 64,
         "acceptance_criteria": ["Keep the homepage accessible."],
     })
-    target = BuildTarget.from_dict({
+    target = _build_target({
         "mode": "local_experiment",
         "base_sha": base_sha,
         "candidate_ref": "refs/ada-design-lab/creative-direction-contract",
@@ -495,7 +530,7 @@ def test_native_direction_discards_subagent_warning_and_uses_final_text_event(tm
         "site_intake_hash": "a" * 64,
         "acceptance_criteria": ["Keep the homepage accessible."],
     })
-    target = BuildTarget.from_dict({
+    target = _build_target({
         "mode": "local_experiment",
         "base_sha": base_sha,
         "candidate_ref": "refs/ada-design-lab/native-direction-warning",
@@ -516,7 +551,7 @@ def test_native_direction_discards_subagent_warning_and_uses_final_text_event(tm
                 "raw_tail": [warning],
                 "transcript": json.dumps({"type": "text", "part": {"type": "text", "text": direction}}) + "\n",
             }
-        (worktree / "index.html").write_text("<html><body><h1>Candidate</h1></body></html>")
+        _write_presentation(worktree, "<html><body><h1>Candidate</h1></body></html>")
         return {
             "session_id": "build-session",
             "reply": "implemented",
@@ -582,7 +617,7 @@ def test_creative_build_turn_receives_a_compact_hash_bound_experience_plan(
         "context_snapshot": snapshot.to_dict(),
         "context_snapshot_hash": snapshot.content_hash,
     })
-    target = BuildTarget.from_dict({
+    target = _build_target({
         "mode": "local_experiment",
         "base_sha": base_sha,
         "candidate_ref": "refs/ada-design-lab/creative-direction-freeform",
@@ -637,7 +672,7 @@ def test_creative_build_turn_receives_a_compact_hash_bound_experience_plan(
                 "reply": text,
                 "transcript": json.dumps({"type": "text", "text": text}) + "\n",
             }
-        (worktree / "index.html").write_text("<html><body><h1>Candidate</h1></body></html>")
+        _write_presentation(worktree, "<html><body><h1>Candidate</h1></body></html>")
         return {
             "session_id": "build-session",
             "reply": "implemented",
@@ -683,13 +718,16 @@ def test_initial_homepage_preserves_existing_source_for_model_inspection(tmp_pat
     clone, _ = _clone(tmp_path)
     (clone / "styles.css").write_text("body { color: red; }")
     (clone / "app.js").write_text("document.body.dataset.source = 'old';")
-    _git(clone, "add", "styles.css", "app.js")
+    css = clone / "src" / "app" / "(frontend)" / "site.css"
+    css.parent.mkdir(parents=True)
+    css.write_text("body { color: red; }")
+    _git(clone, "add", "styles.css", "app.js", "src/app/(frontend)/site.css")
     _git(clone, "commit", "-qm", "homepage entrypoints")
     base_sha = _git(clone, "rev-parse", "HEAD").stdout.strip()
     memory = Memory(tmp_path / "data" / "memory.db")
     config = {
         "data_dir": str(tmp_path / "data"),
-        "site": {"clone_path": str(clone), "writable_patterns": ["*.html", "*.css", "*.js", "design/**"]},
+        "site": {"clone_path": str(clone)},
         "builder": {"enabled": True},
     }
     request = PageBuildRequest.from_dict({
@@ -702,7 +740,7 @@ def test_initial_homepage_preserves_existing_source_for_model_inspection(tmp_pat
         "site_intake_hash": "a" * 64,
         "acceptance_criteria": ["Keep the homepage accessible."],
     })
-    target = BuildTarget.from_dict({
+    target = _build_target({
         "mode": "local_experiment",
         "base_sha": base_sha,
         "candidate_ref": "refs/ada-design-lab/blank-homepage-source",
@@ -717,9 +755,8 @@ def test_initial_homepage_preserves_existing_source_for_model_inspection(tmp_pat
 
     def fake_turn(worktree, prompt, config, **kwargs):
         observed["old_files_present"] = any((worktree / name).exists() for name in ("index.html", "styles.css", "app.js"))
-        (worktree / "index.html").write_text("<html><body><h1>New</h1></body></html>")
-        (worktree / "styles.css").write_text("body { color: blue; }")
-        (worktree / "app.js").write_text("document.body.dataset.source = 'new';")
+        _write_presentation(worktree, "<html><body><h1>New</h1></body></html>")
+        (worktree / "src" / "app" / "(frontend)" / "site.css").write_text("body { color: blue; }")
         return {"session_id": "blank-session", "reply": "implemented"}
 
     monkeypatch.setattr(runner, "run_opencode_turn", fake_turn)
@@ -755,7 +792,7 @@ def test_design_manifest_omits_deleted_implementation_files(tmp_path, monkeypatc
         "site_intake_hash": "a" * 64,
         "acceptance_criteria": ["Keep the homepage accessible."],
     })
-    target = BuildTarget.from_dict({
+    target = _build_target({
         "mode": "local_experiment",
         "base_sha": base_sha,
         "candidate_ref": "refs/ada-design-lab/deleted-entrypoints",
@@ -768,7 +805,7 @@ def test_design_manifest_omits_deleted_implementation_files(tmp_path, monkeypatc
     monkeypatch.setattr(runner, "install_agent_files", lambda *args, **kwargs: None)
 
     def fake_turn(worktree, prompt, config, **kwargs):
-        (worktree / "index.html").write_text("<html><body><h1>New</h1></body></html>")
+        _write_presentation(worktree, "<html><body><h1>New</h1></body></html>")
         return {"session_id": "deleted-session", "reply": "implemented"}
 
     monkeypatch.setattr(runner, "run_opencode_turn", fake_turn)
@@ -776,7 +813,7 @@ def test_design_manifest_omits_deleted_implementation_files(tmp_path, monkeypatc
     receipt = runner.stage_design_build({"config": config, "memory": memory}, request, target)
 
     manifest = json.loads(_git(clone, "show", f"{receipt.candidate_sha}:design/ada-design-manifest.json").stdout)
-    assert manifest["source_files"] == {"changed": ["index.html"]}
+    assert manifest["source_files"] == {"changed": ["src/components/site/presentation/Home.tsx"]}
     memory.close()
 
 
@@ -806,7 +843,7 @@ def test_typed_build_uses_the_configured_provider_credential(tmp_path, monkeypat
         "site_intake_hash": "a" * 64,
         "acceptance_criteria": ["Keep the homepage accessible."],
     })
-    target = BuildTarget.from_dict({
+    target = _build_target({
         "mode": "local_experiment",
         "base_sha": base_sha,
         "candidate_ref": "refs/ada-design-lab/configured-provider-key",
@@ -824,7 +861,7 @@ def test_typed_build_uses_the_configured_provider_credential(tmp_path, monkeypat
 
     def fake_turn(worktree, prompt, config, **kwargs):
         called.update(kwargs)
-        (worktree / "index.html").write_text("<html><body><h1>Candidate</h1></body></html>")
+        _write_presentation(worktree, "<html><body><h1>Candidate</h1></body></html>")
         return {"session_id": "provider-key-session", "reply": "implemented"}
 
     monkeypatch.setattr(runner, "install_agent_files", fake_install)
@@ -860,7 +897,7 @@ def test_noop_design_turn_fails_without_hidden_continuation(tmp_path, monkeypatc
         "site_intake_hash": "a" * 64,
         "acceptance_criteria": ["Keep the homepage accessible."],
     })
-    target = BuildTarget.from_dict({
+    target = _build_target({
         "mode": "local_experiment",
         "base_sha": base_sha,
         "candidate_ref": "refs/ada-design-lab/design-nudge-1",
@@ -905,7 +942,7 @@ def test_failed_opencode_turn_can_retain_a_safe_partial_candidate(tmp_path, monk
         "site_intake_hash": "a" * 64,
         "acceptance_criteria": ["Keep the homepage accessible."],
     })
-    target = BuildTarget.from_dict({
+    target = _build_target({
         "mode": "local_experiment",
         "base_sha": base_sha,
         "candidate_ref": "refs/ada-design-lab/partial-design",
@@ -916,7 +953,7 @@ def test_failed_opencode_turn_can_retain_a_safe_partial_candidate(tmp_path, monk
     })
 
     def failed_turn(worktree, prompt, config, **kwargs):
-        (worktree / "index.html").write_text("<html><body><h1>Partial</h1></body></html>")
+        _write_presentation(worktree, "<html><body><h1>Partial</h1></body></html>")
         raise runner.RunnerError(
             "opencode exited 1: provider stopped",
             result={"session_id": "partial-session", "reply": "partial", "transcript": "partial event\n"},
@@ -954,7 +991,7 @@ def test_specialist_timeout_after_source_authoring_runs_host_gates_before_finali
         "site_intake_hash": "a" * 64,
         "acceptance_criteria": ["Keep the homepage accessible."],
     })
-    target = BuildTarget.from_dict({
+    target = _build_target({
         "mode": "local_experiment",
         "base_sha": base_sha,
         "candidate_ref": "refs/ada-design-lab/specialist-timeout-recovery",
@@ -982,7 +1019,7 @@ def test_specialist_timeout_after_source_authoring_runs_host_gates_before_finali
             return FidelityReport()
 
     def failed_turn(worktree, prompt, config, **kwargs):
-        (worktree / "index.html").write_text("<html><body><h1>Candidate</h1></body></html>")
+        _write_presentation(worktree, "<html><body><h1>Candidate</h1></body></html>")
         raise runner.RunnerError(
             "opencode timed out after 1800s",
             result={"session_id": "specialist-session", "reply": "implemented", "transcript": "timeout\n"},
@@ -1033,7 +1070,7 @@ def test_creative_host_repair_timeout_runs_plan_closure_before_finalizing(tmp_pa
             "specialist_repair_brief": {"source": "host_deterministic_evidence"},
         },
     })
-    target = BuildTarget.from_dict({
+    target = _build_target({
         "mode": "local_experiment",
         "base_sha": base_sha,
         "candidate_ref": "refs/ada-design-lab/creative-host-timeout-recovery",
@@ -1058,7 +1095,7 @@ def test_creative_host_repair_timeout_runs_plan_closure_before_finalizing(tmp_pa
             return FidelityReport()
 
     def failed_turn(worktree, prompt, config, **kwargs):
-        (worktree / "index.html").write_text("<html><body><h1>Repaired</h1></body></html>")
+        _write_presentation(worktree, "<html><body><h1>Repaired</h1></body></html>")
         raise runner.RunnerError(
             "opencode timed out after 900s",
             result={"session_id": "creative-host-session", "reply": "implemented", "transcript": "timeout\n"},
@@ -1116,7 +1153,7 @@ def test_initial_design_setup_excludes_site_context_but_keeps_capability_allowan
         "context_snapshot": snapshot.to_dict(),
         "context_snapshot_hash": snapshot.content_hash,
     })
-    target = BuildTarget.from_dict({
+    target = _build_target({
         "mode": "local_experiment",
         "base_sha": base_sha,
         "candidate_ref": "refs/ada-design-lab/initial-context-boundary",
@@ -1131,7 +1168,7 @@ def test_initial_design_setup_excludes_site_context_but_keeps_capability_allowan
         installed.update(kwargs)
 
     def fake_turn(worktree, prompt, config, **kwargs):
-        (worktree / "index.html").write_text("<html><body><h1>Independent</h1></body></html>")
+        _write_presentation(worktree, "<html><body><h1>Independent</h1></body></html>")
         return {"session_id": "design-session", "reply": "implemented"}
 
     monkeypatch.setattr(runner, "_typed_execution_config", lambda config, request, target: config)
@@ -1178,7 +1215,7 @@ def test_visual_refinement_setup_uses_parent_source_and_frozen_persona(tmp_path,
         "context_snapshot": snapshot.to_dict(),
         "context_snapshot_hash": snapshot.content_hash,
     })
-    target = BuildTarget.from_dict({
+    target = _build_target({
         "mode": "local_experiment",
         "base_sha": base_sha,
         "candidate_ref": "refs/ada-design-lab/visual-refinement-source",
@@ -1205,7 +1242,7 @@ def test_visual_refinement_setup_uses_parent_source_and_frozen_persona(tmp_path,
         assert "Do not redesign the site from scratch" in prompt
         assert kwargs["agent_name"] == "repair-implementer"
         assert (worktree / ".opencode/agent/repair-implementer.md").is_file()
-        (worktree / "index.html").write_text("<html><body><h1>Refined</h1></body></html>")
+        _write_presentation(worktree, "<html><body><h1>Refined</h1></body></html>")
         return {"session_id": "design-session", "reply": "implemented"}
 
     monkeypatch.setattr(runner, "_typed_execution_config", lambda config, request, target: config)
@@ -1239,7 +1276,6 @@ def test_typed_design_build_commits_before_host_quality(tmp_path, monkeypatch):
         "design_engine": {
             "manifest_path": "design/ada-design-manifest.json",
             "quality": {
-                "build_command": None,
                 "required_pages": ["index.html"],
             },
         },
@@ -1255,25 +1291,20 @@ def test_typed_design_build_commits_before_host_quality(tmp_path, monkeypatch):
         "site_intake_hash": "a" * 64,
         "acceptance_criteria": ["Keep the homepage accessible."],
     })
-    target = BuildTarget.from_dict({
+    target = _build_target({
         "mode": "local_experiment",
         "base_sha": base_sha,
         "candidate_ref": "refs/ada-design-lab/design-quality-repair",
         "push_mode": "none",
         "publishable": False,
         "clone_path": str(clone),
-        "allowed_paths": ["index.html", "output/**", "design/**"],
+        "allowed_paths": list(NEXT_REACT_PROFILE.writable_patterns),
     })
     turns = []
 
     def fake_turn(worktree, prompt, config, progress=None, session_id=None, timeout_seconds=None, **kwargs):
         turns.append(prompt)
-        (worktree / "index.html").write_text("<html><body><h1>Candidate</h1></body></html>")
-        (worktree / "output").mkdir(exist_ok=True)
-        (worktree / "output" / "index.html").write_text(
-            '<html lang="en"><head><title>Candidate</title></head>'
-            '<body><h1>Candidate</h1></body></html>'
-        )
+        _write_presentation(worktree, "<html><body><h1>Candidate</h1></body></html>")
         return {"session_id": "design-session", "reply": "implemented"}
 
     monkeypatch.setattr(runner, "run_opencode_turn", fake_turn)
@@ -1307,7 +1338,7 @@ def test_model_manifest_is_replaced_by_host_manifest(tmp_path, monkeypatch):
         "site_intake_hash": "a" * 64,
         "acceptance_criteria": ["Keep the homepage accessible."],
     })
-    target = BuildTarget.from_dict({
+    target = _build_target({
         "mode": "local_experiment",
         "base_sha": base_sha,
         "candidate_ref": "refs/ada-design-lab/invalid-manifest",
@@ -1318,7 +1349,7 @@ def test_model_manifest_is_replaced_by_host_manifest(tmp_path, monkeypatch):
     })
 
     def fake_turn(worktree, prompt, config, **kwargs):
-        (worktree / "index.html").write_text("<html><body><h1>Candidate</h1></body></html>")
+        _write_presentation(worktree, "<html><body><h1>Candidate</h1></body></html>")
         (worktree / "design").mkdir()
         (worktree / "design" / "ada-design-manifest.json").write_text('{"schema_version":1}')
         return {"session_id": "design-session", "reply": "implemented"}
@@ -1336,10 +1367,13 @@ def test_model_manifest_is_replaced_by_host_manifest(tmp_path, monkeypatch):
     memory.close()
 
 
-def test_host_manifest_maps_next_homepage_output_to_source_file(tmp_path):
+def test_host_manifest_maps_next_homepage_output_to_tenant_presentation_source(tmp_path):
     worktree = tmp_path / "next"
     (worktree / "src" / "app").mkdir(parents=True)
     (worktree / "src" / "app" / "page.tsx").write_text("export default function Page() { return <main /> }")
+    presentation = worktree / "src" / "components" / "site" / "presentation"
+    presentation.mkdir(parents=True)
+    (presentation / "Home.tsx").write_text("export function Home() { return <main /> }")
     request = PageBuildRequest.from_dict({
         "schema_version": 1,
         "run_id": "next-manifest",
@@ -1350,7 +1384,7 @@ def test_host_manifest_maps_next_homepage_output_to_source_file(tmp_path):
         "site_intake_hash": "b" * 64,
         "acceptance_criteria": ["Keep the homepage accessible."],
     })
-    target = BuildTarget.from_dict({
+    target = _build_target({
         "mode": "local_experiment",
         "base_sha": "a" * 40,
         "candidate_ref": "refs/ada-design-lab/next-manifest",
@@ -1368,10 +1402,10 @@ def test_host_manifest_maps_next_homepage_output_to_source_file(tmp_path):
         request,
         target,
         "a" * 40,
-        {"src/app/page.tsx"},
+        {"src/app/page.tsx", "src/components/site/presentation/Home.tsx"},
     )
 
-    assert manifest["source_homepage_path"] == "src/app/page.tsx"
+    assert manifest["source_homepage_path"] == "src/components/site/presentation/Home.tsx"
 
 
 def test_operation_router_uses_native_builder_for_every_design_operation():

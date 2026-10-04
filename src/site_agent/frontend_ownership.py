@@ -12,7 +12,8 @@ from pathlib import PurePosixPath
 
 FRONTEND_OWNED_PATTERNS: tuple[str, ...] = (
     "src/app/(frontend)/site.css",
-    "src/components/site/**",
+    "src/components/site/presentation/**",
+    "src/components/site/TenantChrome.tsx",
     "public/site/**",
     "public/fonts/**",
 )
@@ -26,7 +27,8 @@ PLATFORM_PROTECTED_PATHS: tuple[str, ...] = (
     "src/collections", "src/globals", "src/migrations", "src/lib/content.ts",
     "src/lib/helloada-auth.ts", "src/lib/helloada-upstream.ts", "src/lib/growth-contract.ts",
     "src/components/admin", "src/components/PublicDocument.tsx", "src/components/SiteChrome.tsx",
-    "src/components/BlogIndex.tsx", "src/payload-types.ts", "public/brand",
+    "src/components/BlogIndex.tsx", "src/components/platform", "src/components/site/TenantSections.tsx",
+    "src/payload-types.ts", "public/brand",
     "helloada-content-contract.json", "template-manifest.json",
 )
 

@@ -2,7 +2,7 @@ import subprocess
 from pathlib import Path
 
 from site_agent.web import preview
-from site_agent.hands.site_build import PELICAN_BASELINE_PROFILE, SiteBuildResult, SiteOutputArtifactStore
+from site_agent.hands.site_build import NEXT_REACT_PROFILE, SiteBuildResult, SiteOutputArtifactStore
 from site_agent.web.preview import (
     LivePreviewStore,
     PreviewAccess,
@@ -203,14 +203,14 @@ def test_site_output_artifact_store_keeps_one_content_addressed_build(tmp_path):
     (output / "index.html").write_text("<main>same bytes</main>\n", encoding="utf-8")
     store = SiteOutputArtifactStore(tmp_path / "artifacts")
 
-    published = store.publish(output, profile=PELICAN_BASELINE_PROFILE, candidate_sha="a" * 40)
+    published = store.publish(output, profile=NEXT_REACT_PROFILE, candidate_sha="a" * 40)
     resolved = store.resolve(published["artifact_id"])
 
     assert published["artifact_id"] == f"site-output-{published['tree_hash']}"
     assert published["candidate_sha"] == "a" * 40
     assert resolved.tree_hash == published["tree_hash"]
     assert (resolved.path / "index.html").read_text(encoding="utf-8") == "<main>same bytes</main>\n"
-    assert store.publish(output, profile=PELICAN_BASELINE_PROFILE)["artifact_id"] == published["artifact_id"]
+    assert store.publish(output, profile=NEXT_REACT_PROFILE)["artifact_id"] == published["artifact_id"]
 
     (resolved.path / "index.html").write_text("tampered", encoding="utf-8")
     try:
@@ -221,108 +221,9 @@ def test_site_output_artifact_store_keeps_one_content_addressed_build(tmp_path):
         raise AssertionError("a mutated output artifact must not resolve")
 
 
-def test_preview_build_cache_serves_generated_assets_once(tmp_path):
-    clone = tmp_path / "site"
-    clone.mkdir()
-    run = lambda *args: subprocess.run(["git", "-C", str(clone), *args], check=True, capture_output=True)
-    run("init", "-q", "-b", "preview")
-    run("config", "user.email", "test@example.test")
-    run("config", "user.name", "test")
-    (clone / "build.sh").write_text(
-        "#!/bin/sh\n"
-        "set -eu\n"
-        "mkdir -p output/theme/css\n"
-        "printf '<link href=\"https://example.test/theme/site.css\">' > output/articles.html\n"
-        "printf 'body { color: red; }' > output/theme/css/site.css\n"
-    )
-    (clone / "pelicanconf.py").write_text("SITEURL = 'https://example.test'\n")
-    run("add", "-A")
-    run("commit", "-qm", "preview")
-
-    cache = PreviewBuildCache()
-    assert cache.read_file(clone, "preview", "articles.html") == b'<link href="https://example.test/theme/site.css">'
-    assert cache.read_file(clone, "preview", "theme/css/site.css") == b"body { color: red; }"
-    cache.clear()
-
-
-def test_preview_build_uses_the_running_python_environment_for_site_tools(tmp_path, monkeypatch):
-    clone = tmp_path / "site"
-    clone.mkdir()
-    run = lambda *args: subprocess.run(["git", "-C", str(clone), *args], check=True, capture_output=True)
-    run("init", "-q", "-b", "main")
-    run("config", "user.email", "test@example.test")
-    run("config", "user.name", "test")
-    (clone / "build.sh").write_text(
-        "#!/bin/sh\n"
-        "set -eu\n"
-        "command -v pelican >/dev/null\n"
-        "mkdir -p output\n"
-        "printf 'generated' > output/articles.html\n"
-    )
-    run("add", "-A")
-    run("commit", "-qm", "preview")
-
-    venv_bin = tmp_path / "venv" / "bin"
-    venv_bin.mkdir(parents=True)
-    (venv_bin / "python").touch()
-    pelican = venv_bin / "pelican"
-    pelican.write_text("#!/bin/sh\nexit 0\n")
-    pelican.chmod(0o755)
-    monkeypatch.setattr("site_agent.web.preview.sys.executable", str(venv_bin / "python"))
-    monkeypatch.setenv("PATH", "/usr/bin:/bin")
-
-    cache = PreviewBuildCache()
-    assert cache.read_file(clone, "main", "articles.html") == b"generated"
-    cache.clear()
-
-
-def test_preview_build_uses_supplied_environment(tmp_path):
-    clone = tmp_path / "site"
-    clone.mkdir()
-    run = lambda *args: subprocess.run(["git", "-C", str(clone), *args], check=True, capture_output=True)
-    run("init", "-q", "-b", "main")
-    run("config", "user.email", "test@example.test")
-    run("config", "user.name", "test")
-    (clone / "build.sh").write_text(
-        "#!/bin/sh\n"
-        "set -eu\n"
-        "mkdir -p output\n"
-        "printf '%s' \"${INTAKE_LAB_MARKER:-missing}\" > output/env.txt\n"
-    )
-    run("add", "-A")
-    run("commit", "-qm", "preview")
-
-    cache = PreviewBuildCache(build_env={"PATH": "/usr/bin", "INTAKE_LAB_MARKER": "isolated"})
-    assert cache.read_file(clone, "main", "env.txt") == b"isolated"
-    cache.clear()
-
-
-def test_preview_build_cache_separates_overlay_builds(tmp_path):
-    clone = tmp_path / "site"
-    clone.mkdir()
-    run = lambda *args: subprocess.run(["git", "-C", str(clone), *args], check=True, capture_output=True)
-    run("init", "-q", "-b", "main")
-    run("config", "user.email", "test@example.test")
-    run("config", "user.name", "test")
-    (clone / "build.sh").write_text(
-        "#!/bin/sh\n"
-        "set -eu\n"
-        "mkdir -p output\n"
-        "if [ -f content/articles/draft.md ]; then cp content/articles/draft.md output/articles.html; else printf 'base' > output/articles.html; fi\n"
-    )
-    (clone / "pelicanconf.py").write_text("SITEURL = 'https://example.test'\n")
-    run("add", "-A")
-    run("commit", "-qm", "preview")
-
-    cache = PreviewBuildCache()
-    assert cache.read_file(clone, "main", "articles.html") == b"base"
-    assert cache.read_file(
-        clone, "main", "articles.html", overlays={"content/articles/draft.md": b"draft one"}
-    ) == b"draft one"
-    assert cache.read_file(
-        clone, "main", "articles.html", overlays={"content/articles/draft.md": b"draft two"}
-    ) == b"draft two"
-    cache.clear()
+def test_preview_defaults_to_the_single_canonical_profile():
+    assert PreviewBuildCache._resolve_profile(None) is NEXT_REACT_PROFILE
+    assert PreviewBuildCache._resolve_profile("") is NEXT_REACT_PROFILE
 
 
 def test_preview_build_cache_uses_explicit_next_profile_and_out(tmp_path, monkeypatch):

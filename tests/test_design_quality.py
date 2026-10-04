@@ -1,6 +1,7 @@
 import hashlib
 import json
 import subprocess
+import pytest
 
 from tests.test_design_contracts import _experience_plan
 from site_agent.core.design_contracts import DesignManifest, ExperiencePlanBundle
@@ -10,8 +11,19 @@ from site_agent.hands.design_quality import (
     _font_findings,
     _native_source_findings,
     _repository_findings,
-    run_quality_gates,
+    run_quality_gates as _run_quality_gates,
 )
+
+
+def run_quality_gates(*args, **kwargs):
+    # These tests exercise downstream gates against deliberately prebuilt
+    # fixture output. Production callers must provide canonical host-build evidence.
+    kwargs.setdefault("build_evidence", {
+        "status": "passed",
+        "profile": "next_react",
+        "source": "prebuilt_test_fixture",
+    })
+    return _run_quality_gates(*args, **kwargs)
 
 
 def test_browser_evidence_compaction_drops_repeated_dom_fingerprints():
@@ -58,7 +70,11 @@ def _repo(tmp_path):
     subprocess.run(["git", "-C", str(repo), "init", "-q", "-b", "main"], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.com"], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.name", "Test"], check=True)
-    (repo / "build.sh").write_text("#!/usr/bin/env bash\nset -e\n")
+    (repo / "package.json").write_text('{"scripts":{"build":"next build"}}\n')
+    (repo / "next.config.mjs").write_text("export default { output: 'export' };\n")
+    (repo / "src" / "app").mkdir(parents=True)
+    (repo / "src" / "app" / "page.tsx").write_text("export default function Page() { return null; }\n")
+    (repo / "payload.config.ts").write_text("export {};\n")
     (repo / "index.html").write_text("baseline")
     subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", "baseline"], check=True)
@@ -70,8 +86,8 @@ def _repo(tmp_path):
 
 def _policy(**overrides):
     values = {
-        "build_command": None,
-        "allowed_patterns": ("index.html", "output/**"),
+        "output_dir": "out",
+        "allowed_patterns": ("index.html", "out/**"),
         "required_pages": ("index.html",),
     }
     values.update(overrides)
@@ -95,7 +111,7 @@ def test_missing_output_page_blocks_quality(tmp_path):
 
 def test_experience_plan_gates_use_browser_composition_and_temporal_evidence(tmp_path):
     repo, sha = _repo(tmp_path)
-    output = repo / "output"
+    output = repo / "out"
     output.mkdir()
     (output / "index.html").write_text(
         '<html lang="en"><head><title>Home</title>'
@@ -235,8 +251,10 @@ def test_font_gate_requires_local_approved_woff2_and_face_declaration(tmp_path):
     digest = hashlib.sha256(data).hexdigest()
     (repo / "public" / "fonts").mkdir(parents=True)
     (repo / "public" / "fonts" / "owner.woff2").write_bytes(data)
-    (repo / "src").mkdir()
-    (repo / "src" / "site.css").write_text(
+    (repo / "src").mkdir(exist_ok=True)
+    css = repo / "src" / "app" / "(frontend)" / "site.css"
+    css.parent.mkdir(parents=True, exist_ok=True)
+    css.write_text(
         "@font-face { font-family: 'Owner Sans'; src: url('/fonts/owner.woff2') format('woff2'); }\n"
         "body { font-family: 'Owner Sans', sans-serif; }\n"
     )
@@ -286,33 +304,32 @@ def test_font_gate_allows_removed_font_assets(tmp_path):
     assert evidence["removed_font_files"] == ["public/fonts/removed.woff2"]
 
 
-def test_build_uses_supplied_environment_instead_of_operator_environment(tmp_path, monkeypatch):
-    repo, sha = _repo(tmp_path)
-    monkeypatch.setenv("INTAKE_LAB_OPERATOR_SECRET", "do-not-leak")
-    script = tmp_path / "write-output.sh"
-    script.write_text(
-        "#!/usr/bin/env bash\n"
-        "set -eu\n"
-        "mkdir -p output\n"
-        "printf '%s' \"${INTAKE_LAB_OPERATOR_SECRET:-missing}\" > output/index.html\n"
-    )
+def test_quality_policy_rejects_site_supplied_build_commands():
+    with pytest.raises(ValueError, match="canonical host toolchain"):
+        QualityPolicy.from_config({
+            "design_engine": {
+                "build_profile": "next_react",
+                "quality": {"build_command": ["npm", "run", "build"]},
+            },
+        })
 
-    report = run_quality_gates(
+
+def test_quality_requires_canonical_build_evidence(tmp_path):
+    repo, sha = _repo(tmp_path)
+    report = _run_quality_gates(
         repo,
         base_sha=sha,
         candidate_sha=sha,
-        run_id="run-build-env",
-        policy=_policy(build_command=("bash", str(script))),
-        build_env={"PATH": "/usr/bin:/bin"},
+        run_id="run-no-build-evidence",
+        policy=_policy(),
     )
-
-    assert report.to_dict()["evidence"]["build"]["status"] == "passed"
-    assert (repo / "output" / "index.html").read_text() == "missing"
+    assert report.state == "failed"
+    assert any(item["code"] == "build_evidence_missing" for item in report.to_dict()["findings"])
 
 
 def test_required_content_blocks_quality_when_brief_items_are_missing(tmp_path):
     repo, sha = _repo(tmp_path)
-    output = repo / "output"
+    output = repo / "out"
     output.mkdir()
     (output / "index.html").write_text(
         '<html lang="en"><head><title>Home</title>'
@@ -340,7 +357,7 @@ def test_required_content_blocks_quality_when_brief_items_are_missing(tmp_path):
 
 def test_required_content_ignores_hidden_text_and_normalizes_visible_markup(tmp_path):
     repo, sha = _repo(tmp_path)
-    output = repo / "output"
+    output = repo / "out"
     output.mkdir()
     (output / "index.html").write_text(
         '<html lang="en"><head><title>Home</title>'
@@ -364,7 +381,7 @@ def test_required_content_ignores_hidden_text_and_normalizes_visible_markup(tmp_
 
 def test_unavailable_contact_destination_blocks_contact_links(tmp_path):
     repo, sha = _repo(tmp_path)
-    output = repo / "output"
+    output = repo / "out"
     output.mkdir()
     (output / "index.html").write_text(
         '<html lang="en"><head><title>Home</title>'
@@ -389,7 +406,7 @@ def test_unavailable_contact_destination_blocks_contact_links(tmp_path):
 
 def test_unavailable_contact_destination_blocks_social_and_booking_links(tmp_path):
     repo, sha = _repo(tmp_path)
-    output = repo / "output"
+    output = repo / "out"
     output.mkdir()
     (output / "index.html").write_text(
         '<html lang="en"><head><title>Home</title>'
@@ -417,7 +434,7 @@ def test_unavailable_contact_destination_blocks_social_and_booking_links(tmp_pat
 
 def test_designed_quality_requires_author_styling_on_every_output_page(tmp_path):
     repo, sha = _repo(tmp_path)
-    output = repo / "output"
+    output = repo / "out"
     output.mkdir()
     (output / "index.html").write_text(
         '<html lang="en"><head><title>Home</title>'
@@ -439,7 +456,7 @@ def test_designed_quality_requires_author_styling_on_every_output_page(tmp_path)
 
 def test_leaked_source_and_secret_block_quality(tmp_path):
     repo, base_sha = _repo(tmp_path)
-    output = repo / "output"
+    output = repo / "out"
     output.mkdir()
     (output / "index.html").write_text(
         '<html lang="en"><head><title>Home</title>'
@@ -456,7 +473,7 @@ def test_leaked_source_and_secret_block_quality(tmp_path):
         base_sha=base_sha,
         candidate_sha=base_sha,
         run_id="run-2",
-        policy=_policy(allowed_patterns=("index.html", "output/**", "themes/**", "secrets.txt")),
+        policy=_policy(allowed_patterns=("index.html", "out/**", "themes/**", "secrets.txt")),
     )
 
     codes = {finding["code"] for finding in report.to_dict()["findings"]}
@@ -466,7 +483,7 @@ def test_leaked_source_and_secret_block_quality(tmp_path):
 
 def test_unavailable_browser_is_incomplete_not_passed(tmp_path):
     repo, sha = _repo(tmp_path)
-    output = repo / "output"
+    output = repo / "out"
     output.mkdir()
     (output / "index.html").write_text(
         '<html lang="en"><head><title>Home</title>'
@@ -489,7 +506,7 @@ def test_unavailable_browser_is_incomplete_not_passed(tmp_path):
 
 def test_root_relative_links_resolve_from_output_root(tmp_path):
     repo, sha = _repo(tmp_path)
-    output = repo / "output"
+    output = repo / "out"
     (output / "articles").mkdir(parents=True)
     page = lambda title, links: (
         '<html lang="en"><head><title>' + title + '</title>'
@@ -518,7 +535,7 @@ def test_root_relative_links_resolve_from_output_root(tmp_path):
 
 def test_output_warnings_do_not_block_retained_artifact(tmp_path):
     repo, sha = _repo(tmp_path)
-    output = repo / "output"
+    output = repo / "out"
     output.mkdir()
     (output / "index.html").write_text(
         '<html lang="en"><head><title>Home</title>'
@@ -550,7 +567,7 @@ def test_output_warnings_do_not_block_retained_artifact(tmp_path):
 def test_quality_reads_candidate_commit_not_persistent_clone_worktree(tmp_path):
     repo, base_sha = _repo(tmp_path)
     (repo / "index.html").write_text("candidate source")
-    output = repo / "output"
+    output = repo / "out"
     output.mkdir()
     (output / "index.html").write_text(
         '<html lang="en"><head><title>Candidate</title>'
@@ -588,7 +605,7 @@ def test_quality_candidate_worktree_is_created_next_to_repository(tmp_path):
 
     def build_runner(workspace):
         workspaces.append(workspace)
-        output = workspace / "output"
+        output = workspace / "out"
         output.mkdir()
         (output / "index.html").write_text(
             '<html lang="en"><head><title>Candidate</title>'
@@ -614,7 +631,7 @@ def test_quality_candidate_worktree_is_created_next_to_repository(tmp_path):
 
 def test_manifest_gate_checks_declared_source_files_and_intake(tmp_path):
     repo, base_sha = _repo(tmp_path)
-    output = repo / "output"
+    output = repo / "out"
     output.mkdir()
     (output / "index.html").write_text(
         '<html lang="en"><head><title>Home</title>'
@@ -640,7 +657,7 @@ def test_manifest_gate_checks_declared_source_files_and_intake(tmp_path):
         candidate_sha=base_sha,
         run_id="run-manifest",
         policy=_policy(
-            allowed_patterns=("index.html", "output/**", "design/**"),
+            allowed_patterns=("index.html", "out/**", "design/**"),
             required_pages=("index.html",),
             manifest_path="design/ada-design-manifest.json",
             expected_intake_hash="a" * 64,
@@ -653,7 +670,7 @@ def test_manifest_gate_checks_declared_source_files_and_intake(tmp_path):
 
 def test_manifest_gate_ignores_descriptions_in_source_file_metadata(tmp_path):
     repo, base_sha = _repo(tmp_path)
-    output = repo / "output"
+    output = repo / "out"
     output.mkdir()
     (output / "index.html").write_text(
         '<html lang="en"><head><title>Home</title>'
@@ -685,7 +702,7 @@ def test_manifest_gate_ignores_descriptions_in_source_file_metadata(tmp_path):
         candidate_sha=base_sha,
         run_id="run-manifest-descriptions",
         policy=_policy(
-            allowed_patterns=("index.html", "styles.css", "app.js", "output/**", "design/**"),
+            allowed_patterns=("index.html", "styles.css", "app.js", "out/**", "design/**"),
             required_pages=("index.html",),
             manifest_path="design/ada-design-manifest.json",
             expected_intake_hash="a" * 64,
@@ -698,7 +715,7 @@ def test_manifest_gate_ignores_descriptions_in_source_file_metadata(tmp_path):
 
 def test_host_runtime_files_are_staged_into_build_output(tmp_path):
     repo, sha = _repo(tmp_path)
-    output = repo / "output"
+    output = repo / "out"
     output.mkdir()
     (output / "index.html").write_text(
         '<html lang="en"><head><title>Home</title>'
@@ -728,7 +745,7 @@ def test_host_runtime_files_are_staged_into_build_output(tmp_path):
         candidate_sha=sha,
         run_id="run-host-runtime",
         policy=_policy(
-            allowed_patterns=("index.html", "output/**", "vendor/**", "design/**"),
+            allowed_patterns=("index.html", "out/**", "vendor/**", "design/**"),
             manifest_path="design/ada-design-manifest.json",
             expected_intake_hash="a" * 64,
         ),
@@ -779,7 +796,9 @@ def test_host_runtime_paths_from_host_manifest_are_exempt_from_source_allowlist(
 
 def test_native_source_gate_does_not_scan_host_provisioned_runtime_files(tmp_path):
     repo, base_sha = _repo(tmp_path)
-    (repo / "src").mkdir()
+    tenant_source = repo / "src" / "components" / "site" / "presentation" / "App.tsx"
+    tenant_source.parent.mkdir(parents=True)
+    tenant_source.write_text("export function App() { return <main />; }")
     (repo / "src" / "app.js").write_text("document.body.dataset.ready = 'true';")
     runtime = repo / "public" / "vendor" / "gsap" / "gsap.min.js"
     runtime.parent.mkdir(parents=True)
@@ -811,14 +830,15 @@ def test_native_source_gate_does_not_scan_host_provisioned_runtime_files(tmp_pat
     )
 
     assert findings == []
-    assert evidence["source_files"] == ["src/app.js"]
+    assert evidence["source_files"] == ["src/components/site/presentation/App.tsx"]
     assert evidence["host_provisioned_files"] == ["public/vendor/gsap/gsap.min.js"]
 
 
 def test_native_source_gate_ignores_urls_inside_inline_data_css(tmp_path):
     repo, base_sha = _repo(tmp_path)
-    (repo / "src").mkdir()
-    (repo / "src" / "styles.css").write_text(
+    css = repo / "src" / "app" / "(frontend)" / "site.css"
+    css.parent.mkdir(parents=True)
+    css.write_text(
         "body { background-image: url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3C/svg%3E\"); }\n"
     )
     subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
@@ -843,8 +863,9 @@ def test_native_source_gate_ignores_urls_inside_inline_data_css(tmp_path):
 
 def test_repair_native_source_gate_scans_retained_candidate_tree(tmp_path):
     repo, _ = _repo(tmp_path)
-    (repo / "src" / "components").mkdir(parents=True)
-    (repo / "src" / "components" / "LightDescent.tsx").write_text(
+    presentation = repo / "src" / "components" / "site" / "presentation"
+    presentation.mkdir(parents=True)
+    (presentation / "LightDescent.tsx").write_text(
         'import { useGSAP } from "@gsap/react";\n'
         'import gsap from "gsap";\n'
         'export default function LightDescent() {\n'
@@ -856,7 +877,9 @@ def test_repair_native_source_gate_scans_retained_candidate_tree(tmp_path):
         '  return <div />;\n'
         '}\n'
     )
-    (repo / "src" / "styles.css").write_text(
+    css = repo / "src" / "app" / "(frontend)" / "site.css"
+    css.parent.mkdir(parents=True)
+    css.write_text(
         '@media (prefers-reduced-motion: reduce) { * { transition: none; } }\n'
     )
     (repo / "package.json").write_text(json.dumps({
@@ -867,11 +890,11 @@ def test_repair_native_source_gate_scans_retained_candidate_tree(tmp_path):
     base_sha = subprocess.run(
         ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
     ).stdout.strip()
-    (repo / "src" / "styles.css").write_text(
+    css.write_text(
         '@media (prefers-reduced-motion: reduce) { * { transition: none; } }\n'
         '.hero { color: white; }\n'
     )
-    subprocess.run(["git", "-C", str(repo), "add", "src/styles.css"], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "src/app/(frontend)/site.css"], check=True)
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", "repair composition"], check=True)
     candidate_sha = subprocess.run(
         ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
@@ -890,14 +913,15 @@ def test_repair_native_source_gate_scans_retained_candidate_tree(tmp_path):
                 {"package": "@gsap/react", "version": "2.1.2"},
                 {"package": "gsap", "version": "3.12.5"},
             ),
-            allowed_patterns=("index.html", "src/**", "output/**"),
+            allowed_patterns=("index.html", "src/**", "out/**"),
         ),
     )
 
     assert findings == []
-    assert "src/components/LightDescent.tsx" in evidence["source_files"]
-    assert evidence["react_source_files"] == ["src/components/LightDescent.tsx"]
-    assert evidence["gsap_usage_files"] == ["src/components/LightDescent.tsx"]
+    expected = "src/components/site/presentation/LightDescent.tsx"
+    assert expected in evidence["source_files"]
+    assert evidence["react_source_files"] == [expected]
+    assert evidence["gsap_usage_files"] == [expected]
 
 
 def test_unapproved_dependency_change_is_blocked(tmp_path):
@@ -910,7 +934,7 @@ def test_unapproved_dependency_change_is_blocked(tmp_path):
         candidate_sha=base_sha,
         run_id="run-dependency-blocked",
         policy=_policy(
-            allowed_patterns=("index.html", "output/**", "package.json"),
+            allowed_patterns=("index.html", "out/**", "package.json"),
             approved_capabilities=({"package": "gsap", "version": "3.12.5"},),
         ),
     )
@@ -921,7 +945,7 @@ def test_unapproved_dependency_change_is_blocked(tmp_path):
 
 def test_approved_exact_dependency_and_lockfile_pass(tmp_path):
     repo, base_sha = _repo(tmp_path)
-    output = repo / "output"
+    output = repo / "out"
     output.mkdir()
     (output / "index.html").write_text(
         '<html lang="en"><head><title>Home</title>'
@@ -945,7 +969,7 @@ def test_approved_exact_dependency_and_lockfile_pass(tmp_path):
         candidate_sha=base_sha,
         run_id="run-dependency-approved",
         policy=_policy(
-            allowed_patterns=("index.html", "output/**", "package.json", "package-lock.json"),
+            allowed_patterns=("index.html", "out/**", "package.json", "package-lock.json"),
             approved_capabilities=({"package": "gsap", "version": "3.12.5"},),
             allowed_hard_denied_paths=("package.json",),
         ),
@@ -968,7 +992,7 @@ def test_dependency_version_must_match_approved_pin(tmp_path):
         candidate_sha=base_sha,
         run_id="run-dependency-unpinned",
         policy=_policy(
-            allowed_patterns=("index.html", "output/**", "package.json", "package-lock.json"),
+            allowed_patterns=("index.html", "out/**", "package.json", "package-lock.json"),
             approved_capabilities=({"package": "gsap", "version": "3.12.5"},),
             allowed_hard_denied_paths=("package.json",),
         ),
@@ -980,7 +1004,7 @@ def test_dependency_version_must_match_approved_pin(tmp_path):
 
 def test_browser_evidence_blocks_contrast_and_unreduced_motion(tmp_path):
     repo, sha = _repo(tmp_path)
-    output = repo / "output"
+    output = repo / "out"
     output.mkdir()
     (output / "index.html").write_text(
         '<html lang="en"><head><title>Home</title>'

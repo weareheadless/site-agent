@@ -64,8 +64,7 @@ def _safe_file_path(value: str) -> str:
 
 def _site_url(service: IntakeLabService) -> str:
     site = service.config.get("site") or {}
-    blog = service.config.get("blog") or {}
-    return str(site.get("url") or site.get("preview_url") or blog.get("site_url") or "").strip()
+    return str(site.get("url") or site.get("preview_url") or "").strip()
 
 
 def _preview_headers() -> dict[str, str]:

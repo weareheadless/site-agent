@@ -1,10 +1,8 @@
-"""Build an exact GitHub source revision and deploy the configured site.
+"""Build private previews and request production through the canonical VPS queue.
 
-GitHub is the version ledger for this proof of concept.  This service validates
-the requested commit in an isolated worktree and then deploys that exact
-checkout to the one configured Worker URL.  It deliberately does not create
-Cloudflare preview aliases or ask the owner to chase a new URL after every
-test.
+The service has no production Cloudflare deployment capability. Owner approval
+commits the exact customer SHA to site-agent's central GitOps queue; the VPS
+release service builds, promotes and records the only production artifact.
 """
 
 from __future__ import annotations
@@ -30,6 +28,7 @@ from typing import Any, Mapping
 
 from ..credentials import credential_environment, cloudflare_env_names, github_ssh_command
 from ..hands.github_static import GithubStatic
+from .release_queue import ReleaseQueueError, release_root, request_release
 
 
 class SourceDeploymentError(RuntimeError):
@@ -122,12 +121,7 @@ class SourceDeploymentService:
         self.memory.kv_set("source_preview_jobs", {str(row.get("id")): row for row in rows if row.get("id")})
 
     def _recover_production_jobs(self) -> None:
-        """Resume known pre-deploy work; reconcile ambiguous writes by GET only.
-
-        A process may die after Cloudflare accepts a deployment but before its
-        receipt is saved. Never replay that mutation automatically. Verification
-        either establishes the exact live revision or leaves a terminal failure.
-        """
+        """Reconcile approvals only from the central VPS release receipt."""
         seen: set[Any] = set()
         drafts = {row["id"]: row for row in self.memory.list_drafts(limit=100_000)} if self.memory else {}
         for job in sorted(self._jobs.values(), key=lambda j: str(j.get("created_at") or ""), reverse=True):
@@ -140,39 +134,84 @@ class SourceDeploymentService:
             draft = drafts.get(draft_id)
             if draft and draft.get("status") not in {"pending", "approved", "publishing", "publish_failed"}:
                 continue
-            status = job.get("status")
-            if status == "deployed":
-                self._record_production_publish(job, job)
-            elif status in {"queued", "running"} and (status == "queued" or job.get("phase") == "building"):
-                if re.fullmatch(r"[0-9a-f]{40}", str(job.get("commit") or "")):
-                    self._executor.submit(self._run_job, job["id"], job["branch"], job["commit"], _PRODUCTION)
-                else:
-                    self._fail_job(job["id"], "interrupted publish has no exact commit")
-            elif status in {"running", "verifying"} or (
-                status == "failed" and "verification did not confirm commit" in str(job.get("error") or "")
-            ):
-                job.update(status="verifying", updated_at=_now())
-                self._executor.submit(self._reconcile_production, job["id"])
-            elif status == "failed":
-                self._sync_publish_failure(job)
+            if not str(job.get("release_id") or "").strip() or not str(job.get("tenant_id") or "").strip():
+                job.update(
+                    status="failed",
+                    ok=False,
+                    error="approved change has no durable central release identity",
+                    updated_at=_now(),
+                )
+                if draft and draft.get("status") == "publishing":
+                    self.memory.update_draft_status(int(draft_id), "publish_failed")
+                continue
+            self._refresh_release_job(job)
         for draft_id, draft in drafts.items():
             if draft.get("status") == "publishing" and draft_id not in seen:
                 self.memory.update_draft_status(draft_id, "publish_failed")
                 self.memory.record_action("publish_failed", f"#{draft_id}: process restarted before deployment was durably queued")
 
-    def _reconcile_production(self, job_id: str) -> None:
-        job = self.status(job_id)
+    def _refresh_release_job(self, job: dict[str, Any]) -> dict[str, Any]:
+        """Project a VPS receipt; this service never builds or deploys production."""
+        release_id = str(job.get("release_id") or "")
+        tenant = str(job.get("tenant_id") or "")
+        if not release_id or not tenant:
+            return job
         try:
-            revision = self._verify_public_revision(self._runtime_url(), job["commit"], label="live site")
-            with self._lock:
-                job.update(status="deployed", ok=True, live=True, verified_commit=job["commit"],
-                           revision_verification=revision, updated_at=_now())
-                job.pop("error", None)
-                self._jobs[job_id] = job
-                self._persist()
-            self._record_production_publish(job, job)
-        except Exception as exc:  # noqa: BLE001 - recovery must reach a terminal state
-            self._fail_job(job_id, str(exc))
+            path = release_root(self.config) / "runs" / tenant / release_id / "receipt.json"
+            receipt = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return job
+        except (OSError, UnicodeError, ValueError, ReleaseQueueError) as exc:
+            job.update(status="failed", ok=False, error=f"central release receipt is invalid: {type(exc).__name__}", updated_at=_now())
+            self._sync_publish_failure(job)
+            self._persist()
+            return job
+        if (
+            receipt.get("tenant") != tenant
+            or receipt.get("releaseId") != release_id
+            or receipt.get("sourceSha") != job.get("commit")
+            or receipt.get("approvalId") != job.get("draft_id")
+        ):
+            job.update(status="failed", ok=False, error="central release receipt identity does not match this approval", updated_at=_now())
+            self._sync_publish_failure(job)
+        elif receipt.get("status") in {"deployed", "verified"}:
+            should_record = not bool(job.get("release_receipt_processed"))
+            job.update(
+                status="deployed",
+                phase="verified_by_vps",
+                ok=True,
+                live=True,
+                verified_commit=job.get("commit"),
+                release_receipt_processed=True,
+                release_receipt={
+                    key: receipt.get(key)
+                    for key in ("pipelineSha", "uploadedVersion", "connectionVerifiedAt", "finishedAt")
+                    if receipt.get(key) is not None
+                },
+                updated_at=_now(),
+            )
+            job.pop("error", None)
+            if should_record:
+                self._record_production_publish(job, job)
+        elif receipt.get("status") in {"failed", "interrupted"}:
+            job.update(
+                status="failed",
+                phase=str(receipt.get("stage") or "failed"),
+                ok=False,
+                error=str(receipt.get("error") or "central VPS release failed")[:1_000],
+                updated_at=_now(),
+            )
+            self._sync_publish_failure(job)
+        else:
+            job.update(
+                status="running",
+                phase=str(receipt.get("stage") or "queued_on_vps"),
+                pipeline_sha=str(receipt.get("pipelineSha") or ""),
+                updated_at=_now(),
+            )
+        self._jobs[str(job.get("id") or "")] = job
+        self._persist()
+        return job
 
     def _sync_publish_failure(self, job: Mapping[str, Any]) -> None:
         if self.memory is not None and job.get("mode") == _PRODUCTION and job.get("draft_id") is not None:
@@ -433,30 +472,12 @@ class SourceDeploymentService:
         return item
 
     def _inventory_command(self, checkout: Path, worktree: Path) -> list[str]:
-        """Resolve host-owned review tooling without requiring it in site source.
-
-        ``scripts/source-inventory.ts`` is an Ada review tool, not a runtime
-        asset. Older remote source revisions legitimately do not contain it, so
-        the exact site revision must not fail merely because the host tool is
-        absent from that revision. The scan root remains the detached revision.
-        """
-        configured = str(self.settings.get("inventory_script") or "scripts/source-inventory.ts").strip()
-        candidates = [Path(configured)] if Path(configured).is_absolute() else [worktree / configured, checkout / configured]
-        for candidate in candidates:
-            resolved = candidate.expanduser().resolve()
-            if resolved.is_file():
-                command = ["npx", "--no-install", "tsx", str(resolved)]
-                if resolved != worktree and worktree not in resolved.parents:
-                    command.extend(["--root", str(worktree)])
-                return command
-        # The source repo may predate the optional TypeScript inventory tool.
-        # Keep preview validation deterministic by using the host-owned
-        # Payload-aware fallback rather than making every customer repository
-        # carry site-agent's internal tooling.
-        fallback = Path(__file__).with_name("source_inventory.py").resolve()
-        if fallback.is_file():
-            return [sys.executable, str(fallback), "--root", str(worktree)]
-        raise SourceDeploymentError("source inventory tooling is not available on the host")
+        """Run the single host-owned inventory over the immutable preview tree."""
+        del checkout
+        inventory = Path(__file__).with_name("source_inventory.py").resolve()
+        if not inventory.is_file():
+            raise SourceDeploymentError("host source inventory is not installed")
+        return [sys.executable, str(inventory), "--root", str(worktree)]
 
     def _preview_port(self) -> int:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
@@ -500,12 +521,9 @@ class SourceDeploymentService:
                 self._stop_runtime(other_id)
 
         port = self._preview_port()
-        npm = str(self.settings.get("npm_command") or "npm")
         command = [
-            npm,
-            "exec",
-            "--no",
-            "--",
+            "npx",
+            "--no-install",
             "opennextjs-cloudflare",
             "preview",
             "--config",
@@ -513,23 +531,8 @@ class SourceDeploymentService:
             "--port",
             str(port),
         ]
-        # npm exec is not consistent across the pinned npm versions used by the
-        # existing deployment host. Fall back to the already-established npx
-        # invocation if it rejects the command before the worker binds. The
-        # Wrangler config marks D1 as a remote binding; using local Wrangler
-        # with that binding keeps the server-side runtime reachable, whereas
-        # OpenNext's global ``--remote`` tunnel rejects this host with 1010.
-        if npm == "npm":
-            command = [
-                "npx",
-                "--no-install",
-                "opennextjs-cloudflare",
-                "preview",
-                "--config",
-                "wrangler.jsonc",
-                "--port",
-                str(port),
-            ]
+        # The sole preview invocation uses the exact locally locked executable;
+        # missing dependencies are a failed build, never a registry download.
         try:
             process = subprocess.Popen(
                 command,
@@ -583,6 +586,8 @@ class SourceDeploymentService:
         }
 
     def _build(self, job: dict[str, Any], branch: str, commit: str, mode: str) -> dict[str, Any]:
+        if mode != _COMPILED_PREVIEW:
+            raise SourceDeploymentError("production builds and uploads are owned by the central VPS release pipeline")
         checkout = self._local_checkout()
         worktree, local_head = self._worktree(checkout, branch, commit)
         timeout = int(self.settings.get("build_timeout_seconds") or 1_800)
@@ -598,50 +603,15 @@ class SourceDeploymentService:
             checks.append(self._check([npm, "run", "build"], worktree, "next_build", timeout, production=True))
             checks.append(self._check(["npx", "--no-install", "opennextjs-cloudflare", "build"], worktree, "open_next_build", timeout, production=True))
 
-            if mode == _COMPILED_PREVIEW:
-                runtime = self._start_runtime(job, worktree, local_head)
-                keep_worktree = True
-                result = {
-                    "ok": True,
-                    "branch": branch,
-                    "commit": local_head,
-                    "checks": checks,
-                    **runtime,
-                }
-            else:
-                profile_token_name, profile_account_name = cloudflare_env_names(self.config)
-                token_name = self._env_name("cloudflare_api_token_env", profile_token_name)
-                account_name = self._env_name("cloudflare_account_id_env", profile_account_name)
-                resolved_env = self._resolved_env()
-                if not resolved_env.get(token_name) or not resolved_env.get(account_name):
-                    raise SourceDeploymentError("Cloudflare deployment credentials are not configured")
-                with self._lock:
-                    job.update(phase="deploying", updated_at=_now())
-                    self._persist()
-                deploy = self._check(
-                    ["npx", "--no-install", "opennextjs-cloudflare", "deploy", "--config", "wrangler.jsonc"],
-                    worktree,
-                    "cloudflare_worker_deploy",
-                    timeout,
-                    production=True,
-                )
-                with self._lock:
-                    job.update(phase="verifying", deployment_completed=True, checks=checks + [deploy], updated_at=_now())
-                    self._persist()
-                revision = self._verify_public_revision(self._runtime_url(), local_head, label="live site")
-                result = {
-                    "ok": True,
-                    "status": "deployed",
-                    "mode": _PRODUCTION,
-                    "branch": branch,
-                    "commit": local_head,
-                    "preview_url": self._runtime_url(),
-                    "deployment_mode": "single_worker",
-                    "checks": checks + [deploy],
-                    "live": True,
-                    "verified_commit": local_head,
-                    "revision_verification": revision,
-                }
+            runtime = self._start_runtime(job, worktree, local_head)
+            keep_worktree = True
+            result = {
+                "ok": True,
+                "branch": branch,
+                "commit": local_head,
+                "checks": checks,
+                **runtime,
+            }
             job.update(result)
             return result
         finally:
@@ -802,6 +772,8 @@ class SourceDeploymentService:
             raise SourceDeploymentError("production deployment requires explicit owner approval")
         if mode == _PRODUCTION and not re.fullmatch(r"[0-9a-f]{40}", requested_commit or ""):
             raise SourceDeploymentError("production deployment requires an exact commit")
+        if mode == _PRODUCTION and branch != "main":
+            raise SourceDeploymentError("production release must reference the official main branch")
         draft_id = body.get("draft_id")
         publish = _mapping(body.get("publish"))
         with self._lock:
@@ -838,11 +810,38 @@ class SourceDeploymentService:
         ):
             if publish.get(source_key) is not None:
                 job[job_key] = str(publish.get(source_key) or "")[:8_000]
+        if mode == _PRODUCTION:
+            if draft_id is None:
+                raise SourceDeploymentError("production release requires the exact approved decision identity")
+            try:
+                approval_id = int(draft_id)
+            except (TypeError, ValueError) as exc:
+                raise SourceDeploymentError("production release approval identity is invalid") from exc
+            if approval_id < 1:
+                raise SourceDeploymentError("production release approval identity is invalid")
+            if self._head(branch) != requested_commit:
+                raise SourceDeploymentError("approved source revision is no longer the exact main revision")
+            try:
+                receipt = request_release(self.config, self.env, requested_commit, approval_id=approval_id)
+                root = release_root(self.config)
+            except ReleaseQueueError as exc:
+                raise SourceDeploymentError(str(exc)) from exc
+            job.update({
+                "tenant_id": str(self.config.get("instance_name") or ""),
+                "release_id": receipt["release_id"],
+                "control_sha": receipt["control_sha"],
+                "release_root": str(root),
+                "status": "queued",
+                "phase": "queued_on_vps",
+            })
+            self._jobs[job_id] = job
+            self._persist()
+            if self.memory is not None:
+                self.memory.update_draft_status(approval_id, "publishing")
+            return dict(job)
         with self._lock:
             self._jobs[job_id] = job
             self._persist()
-            if mode == _PRODUCTION and self.memory is not None and draft_id is not None:
-                self.memory.update_draft_status(int(draft_id), "publishing")
         try:
             self._executor.submit(self._run_job, job_id, branch, requested_commit, mode)
         except Exception as exc:
@@ -855,6 +854,8 @@ class SourceDeploymentService:
             job = self._jobs.get(str(job_id))
             if job is None:
                 raise SourceDeploymentError("source deployment job not found")
+            if job.get("mode") == _PRODUCTION:
+                self._refresh_release_job(job)
             return dict(job)
 
     def latest_preview(self, branch: str | None = None) -> dict[str, Any]:
@@ -876,21 +877,6 @@ class SourceDeploymentService:
             if not candidates:
                 return {}
             return dict(max(candidates, key=lambda item: str(item.get("updated_at") or item.get("created_at") or "")))
-
-    def promote(self, job_id: str) -> dict[str, Any]:
-        """Return an already deployed job for backwards-compatible callers.
-
-        Direct Worker deployment happens as the final step of ``_build``.  The
-        old promote endpoint remains harmless for older clients, but it no
-        longer creates or shifts a separate Cloudflare version.
-        """
-        with self._lock:
-            job = self._jobs.get(str(job_id))
-            if job is None:
-                raise SourceDeploymentError("source deployment job not found")
-            if job.get("status") != "deployed":
-                raise SourceDeploymentError("this preview is not a deployed production revision")
-            return dict(job)
 
     def runtime(self, job_id: str, path: str, query: str = "", headers: Mapping[str, str] | None = None) -> dict[str, Any]:
         """Proxy one authenticated browser request to an isolated preview."""

@@ -1032,7 +1032,6 @@ function flashDone(btn){
 }
 
 let convId=null, busy=false, review=null, designRun=null, reviewDesignRun=null, reviewDesignRunId=null, designRuns=[], selectedDesignRunId=null, designPreviewVariant='deepseek', previewRequest=0, designRequest=0;
-let journalSetupJobId=null, journalSetupDraftId=null, journalLastStatus='';
 let backgroundJobs=new Set();
 let homeActionItems=[], homeApprovalId=null, activeActionId=null, feedbackResolve=null;
 let motionPlayed=false, thoughtTimeline=null;
@@ -1109,7 +1108,7 @@ function switchTab(name){
   document.getElementById('tab-design').style.display=name==='design'?'':'none';
   document.getElementById('tab-media').style.display=name==='media'?'':'none';
   animateTab(name);
-   if(name==='design'){setDesignButtons();if(!REQUESTED_DESIGN_RUN_ID)autoReview(request);loadApprovals();loadHistory();loadJournal();loadDesignRuns()}
+   if(name==='design'){setDesignButtons();if(!REQUESTED_DESIGN_RUN_ID)autoReview(request);loadApprovals();loadHistory();loadDesignRuns()}
   if(name==='media') loadMedia();
   if(name==='content') loadContent();
 }
@@ -1737,10 +1736,6 @@ function setReviewLead(){
    renderDesignVariantPicker();
 }
 function exitReview(){review=null;designRun=null;reviewDesignRun=null;reviewDesignRunId=null;selectedDesignRunId=null;designPreviewVariant='deepseek';setReviewLead();setDesignButtons()}
-function reviewJournal(){
-  if(journalSetupDraftId){enterReview(journalSetupDraftId);return}
-  switchTab('design');
-}
 async function reviewDecide(kind){
   if(!review)return;
   let body={};
@@ -1758,62 +1753,6 @@ async function reviewDecide(kind){
     setDesignButtons();loadPages();loadHistory();refresh();reloadPreview();
   }catch(e){unspin(btn);addMsg('ada','⚠ '+e.message)}
 }
-async function loadJournal(){
-  const card=document.getElementById('journalSetup'),note=document.getElementById('journalSetupNote'),text=document.getElementById('journalSetupText'),reviewBtn=document.getElementById('journalReviewBtn');
-  if(!card)return;
-  try{
-    const j=await api('/journal');
-     if(!j.pelican){card.style.display='none';return}
-     card.style.display='';
-     journalSetupJobId=j.setup_job_id;
-     journalSetupDraftId=j.setup_draft_id;
-     const statusKey=j.setup_status+':'+(j.setup_draft_status||'');
-     const statusChanged=statusKey!==journalLastStatus;
-     journalLastStatus=statusKey;
-     const designVisible=document.getElementById('tab-design').style.display!=='none';
-     if((j.setup_status==='queued'||j.setup_status==='running')&&j.setup_job_id)watchBackgroundJob(j.setup_job_id);
-     if(j.setup_status==='done'&&j.setup_draft_id&&j.setup_draft_status==='pending'&&designVisible&&(!review||review.draftId!==j.setup_draft_id)){
-       enterReview(j.setup_draft_id);
-     }
-     if(j.setup_status==='done'&&statusChanged){
-       try{await refresh()}catch(e){/* the Design tab still has the review state */}
-     }
-     const btn=document.getElementById('journalEnableBtn');
-    if(j.enabled){
-      if(text)text.textContent=j.setup_status==='running'||j.setup_status==='queued'
-        ?'Weekly journaling is active. Ada is preparing the journal design preview; nothing is published until you publish it.'+(j.setup_step?' Last update: '+j.setup_step+'.':'')
-        :j.setup_status==='failed'
-          ?(j.setup_error||'Ada could not create the journal design preview.')
-           :j.setup_status==='done'
-              ?'Ada has prepared the journal design preview. Review it in the Review tab before publishing.'
-             :'Weekly journaling is active, but the journal design has not been prepared yet.';
-       if(reviewBtn){
-         reviewBtn.style.display=j.setup_status==='done'&&j.setup_draft_id&&j.setup_draft_status==='pending'?'inline-block':'none';
-       }
-      if(btn)btn.style.display=(j.setup_status==='queued'||j.setup_status==='running'||j.setup_status==='done')?'none':'';
-       if(note)note.textContent=j.setup_status==='failed'?'Retry the journal design setup.':j.setup_status==='done'?'Preview ready in Review.':j.setup_status==='queued'||j.setup_status==='running'?'Setup in progress.':'Design the journal before Ada publishes weekly articles.';
-    }else{
-      if(text)text.textContent='Enable Ada’s weekly journal and she will prepare the article listing and article pages to match this website.';
-       if(reviewBtn)reviewBtn.style.display='none';
-      if(btn)btn.style.display='';
-      if(note)note.textContent='';
-    }
-  }catch(e){card.style.display='none'}
-}
-async function enableJournal(){
-  const btn=event&&event.target.closest('button')||null;
-  spin(btn,'Preparing…');
-  try{
-    const r=await api('/journal/enable',{method:'POST'});
-    flashDone(btn);
-     addMsg('sys','Ada is setting up the journal. Review the design preview when it is ready.');
-     if(r.conversation_id)convId=r.conversation_id;
-     journalSetupJobId=r.job_id;
-     watchBackgroundJob(r.job_id);
-     loadJournal();
-  }catch(e){unspin(btn);alert(e.message)}
-}
-setInterval(()=>{if(document.getElementById('journalSetup'))loadJournal()},5000);
 function currentPage(){
   const sel=document.getElementById('pageSel');
   return sel&&sel.value?sel.value:'index.html';
@@ -2280,17 +2219,11 @@ function watchBackgroundJob(jobId){
             setWorkStatus('', '', false);
             const r=j.result||{};
            const sameConversation=String(j.conversation_id)===String(convId);
-           const isJournalJob=String(jobId)===String(journalSetupJobId);
            const reviewId=r.merge_draft_id||r.proposal_id;
-           if(isJournalJob){
-             journalLastStatus='done';
-             journalSetupDraftId=r.merge_draft_id||null;
-           }
            if(sameConversation){
              addMsg('ada',r.reply||'Ada finished working.');
            }
-           if(reviewId&&(sameConversation||(isJournalJob&&document.getElementById('tab-design').style.display!=='none'))){
-             journalSetupDraftId=isJournalJob?reviewId:journalSetupDraftId;
+           if(reviewId&&sameConversation){
              enterReview(reviewId);
            }
            try{await refresh()}catch(e){}

@@ -19,7 +19,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '24.17.0'
+      - name: Pin the release packer
+        run: npm install --global npm@11.13.0
       - name: Install pinned dependencies
         working-directory: packages/helloada-payload-core
         run: npm ci --ignore-scripts

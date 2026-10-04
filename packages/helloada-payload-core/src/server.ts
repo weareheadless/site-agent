@@ -15,7 +15,16 @@ export const readHelloAdaPage = async (payload: HelloAdaContentReader, slug: str
     overrideAccess: true, locale: locale as never,
     where: { and: [{ slug: { equals: normalizedSlug(slug) } }, { published: { equals: true } }] },
   })
-  return result.docs[0] as ContentRecord | undefined
+  return result.docs[0] as unknown as ContentRecord | undefined
+}
+
+export const readHelloAdaProduct = async (payload: HelloAdaContentReader, slug: string, locale?: string) => {
+  const result = await payload.find({
+    collection: 'products', draft: false, depth: 2, limit: 1, pagination: false,
+    overrideAccess: true, locale: locale as never,
+    where: { and: [{ slug: { equals: normalizedSlug(slug) } }, { published: { equals: true } }] },
+  })
+  return result.docs[0] as unknown as ContentRecord | undefined
 }
 
 export const readHelloAdaPost = async (payload: HelloAdaContentReader, slug: string, locale?: string) => {
@@ -24,7 +33,7 @@ export const readHelloAdaPost = async (payload: HelloAdaContentReader, slug: str
     overrideAccess: true, locale: locale as never,
     where: { and: [{ slug: { equals: normalizedSlug(slug) } }, { published: { equals: true } }] },
   })
-  return result.docs[0] as ContentRecord | undefined
+  return result.docs[0] as unknown as ContentRecord | undefined
 }
 
 export const readHelloAdaPosts = async (payload: HelloAdaContentReader, locale?: string) => {
@@ -33,11 +42,11 @@ export const readHelloAdaPosts = async (payload: HelloAdaContentReader, locale?:
     overrideAccess: true, locale: locale as never, sort: '-publishedAt',
     where: { published: { equals: true } },
   })
-  return result.docs as ContentRecord[]
+  return result.docs as unknown as ContentRecord[]
 }
 
 export const readHelloAdaGlobal = async (payload: HelloAdaContentReader, slug: 'navigation' | 'siteSettings', locale?: string) =>
-  await payload.findGlobal({ slug, draft: false, depth: 2, overrideAccess: true, locale: locale as never }) as ContentRecord
+  await payload.findGlobal({ slug, draft: false, depth: 2, overrideAccess: true, locale: locale as never }) as unknown as ContentRecord
 
 export const helloAdaSeo = (document: ContentRecord | undefined, settings: ContentRecord) => {
   const seo = objectValue(document?.seo)

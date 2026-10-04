@@ -392,7 +392,7 @@ def test_source_preview_routes_require_auth_and_return_job_status():
             "/api/workspace/source/preview?branch=preview",
             headers={"Authorization": "Bearer workspace-secret"},
         )
-        deployed = client.post(
+        direct_deploy = client.post(
             "/api/workspace/source/preview/source-job-1/deploy",
             headers={"Authorization": "Bearer workspace-secret"},
         )
@@ -403,5 +403,4 @@ def test_source_preview_routes_require_auth_and_return_job_status():
     assert status.json()["preview_url"] == "https://draft.example"
     assert latest.status_code == 200
     assert latest.json()["branch"] == "preview"
-    assert deployed.status_code == 200
-    assert deployed.json()["status"] == "deployed"
+    assert direct_deploy.status_code == 404

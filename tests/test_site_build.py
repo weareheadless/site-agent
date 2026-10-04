@@ -1,11 +1,15 @@
 import json
 from pathlib import Path
 
+import pytest
+
 import site_agent.hands.site_build as site_build
 from site_agent.hands.site_build import (
     NEXT_REACT_PROFILE,
     NEXT_REACT_TOOLCHAIN_DEPENDENCIES,
+    SiteBuildError,
     build_site,
+    get_build_profile,
     prepare_native_workspace,
 )
 from site_agent.frontend_ownership import is_frontend_owned_path
@@ -18,13 +22,19 @@ def test_next_react_build_profile_is_explicit_and_safe():
     assert "npm" in " ".join(NEXT_REACT_PROFILE.build_command)
 
 
+def test_next_react_is_the_only_supported_build_profile():
+    assert set(site_build.PROFILES) == {"next_react"}
+    with pytest.raises(SiteBuildError, match="unknown site build profile"):
+        get_build_profile("unsupported")
+
+
 def test_shared_frontend_ownership_allows_presentation_and_rejects_platform_paths():
-    assert is_frontend_owned_path("src/components/site/Hero.tsx")
+    assert is_frontend_owned_path("src/components/site/presentation/Hero.tsx")
     assert is_frontend_owned_path("src/app/(frontend)/site.css")
     for path in (
         "src/collections/Pages.ts", "src/app/api/helloada/route.ts", "src/components/admin/Nav.tsx",
         "src/lib/content.ts", "payload.config.ts", "package.json", "public/brand/helloada.svg",
-        "src/components/site/../../collections/Pages.ts", "/src/components/site/Hero.tsx",
+        "src/components/site/presentation/../../collections/Pages.ts", "/src/components/site/presentation/Hero.tsx",
     ):
         assert not is_frontend_owned_path(path), path
 

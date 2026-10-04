@@ -1062,8 +1062,9 @@ def _design_prompt(
             + "owner-approved assets, accessibility requirements, and host policy when resolving any conflict. Do not "
             + "invent a second direction, turn the direction into a hidden manifest, or stop at a critique; realize it "
             + "in the actual source and rendered behavior.\n\n"
-        )
+    )
     build_profile = str(getattr(target, "build_profile", "") or "").strip().lower()
+    frontend_only = build_profile == "next_react"
     allowed_paths = set(getattr(target, "allowed_paths", ()) or ())
     native_framework_block = ""
     if build_profile == "next_react":
@@ -1074,12 +1075,13 @@ def _design_prompt(
         )
         native_framework_block = (
             "NATIVE NEXT/REACT/PAYLOAD TOOLCHAIN CONTRACT:\n"
-            "This target is the host-approved next_react source workspace. The existing checkout may contain a legacy "
-            "Pelican site, but that legacy implementation is not the target for this run. Do not execute build.sh or edit "
-            "pelicanconf.py, requirements.txt, content/, themes/, output/, root index.html, root main.js, root script.js, "
-            "root styles.css, or images/. Do not duplicate the host materialized media outside public/images/ada-media/. "
-            "Author the page in the Next App Router source boundary, with the homepage at src/app/page.tsx, and preserve "
-            "the Payload integration/configuration when present. Use only the exact host-approved dependencies in "
+            "This target is the host-approved next_react source workspace. Do not create alternate build entry points "
+            "or build scripts. Do not create a root index.html; public entry points remain inside the host-owned Next.js "
+            "App Router. Do not duplicate the host materialized media outside public/images/ada-media/. "
+            "Author public composition only inside the tenant presentation boundary under src/components/site/presentation/ "
+            "and src/app/(frontend)/site.css. The host-owned Payload route shell, content readers, media resolver, "
+            "shared navigation/footer data and typed content components are mandatory and must remain intact. Never create "
+            "business content as JSX literals when it belongs in Payload. Use only the exact host-approved dependencies in "
             "package.json. The approved direct dependency set and versions are: "
             + approved_dependencies
             + ". Do not use ranges or newer versions. Run the Next/React npm check/build commands only after the native "
@@ -1280,6 +1282,10 @@ def _validate_design_paths(
     patterns = list(target.allowed_paths) or [
         str(pattern) for pattern in ((config.get("site") or {}).get("writable_patterns") or [])
     ]
+    build_profile = str(getattr(target, "build_profile", "") or "").strip().lower()
+    frontend_only = build_profile == "next_react" or str(
+        ((config.get("design_engine") or {}).get("build_profile") or "")
+    ).strip().lower() == "next_react"
     quality = ((config.get("design_engine") or {}).get("quality") or {})
     exceptions = {
         normalize for normalize in (
@@ -1295,7 +1301,7 @@ def _validate_design_paths(
             return True
         if path == manifest_path and not any(denied in path and path not in exceptions for denied in HARD_DENY):
             return True
-        return writable(path, patterns, allowed_hard_denied_paths=exceptions)
+        return writable(path, patterns, allowed_hard_denied_paths=exceptions, frontend_only=frontend_only)
 
     refused = sorted(path for path in changed if not allowed(path))
     if refused:
@@ -1312,6 +1318,17 @@ def _typed_design_quality_policy(config: dict[str, Any], request, target):
     # that intentionally defer quality validation to DesignService.validate_run.
     if "design_engine" not in config:
         return None
+    target_profile = str(getattr(target, "build_profile", "") or "").strip().lower()
+    engine = config.get("design_engine") if isinstance(config.get("design_engine"), Mapping) else {}
+    configured_profile = str(engine.get("build_profile") or "").strip().lower()
+    if target_profile != NEXT_REACT_PROFILE.name:
+        raise ValueError("typed design target must use the canonical next_react profile")
+    if configured_profile and configured_profile != target_profile:
+        raise ValueError("design_engine.build_profile does not match the validated build target")
+    if not configured_profile:
+        # The immutable, host-validated target is the source of this value.
+        # Do not invent or select another build profile from site content.
+        config = {**config, "design_engine": {**engine, "build_profile": target_profile}}
     policy = QualityPolicy.from_config(
         config,
         required_pages=(request.page_path,),
@@ -1411,7 +1428,7 @@ def _typed_execution_config(config: dict[str, Any], request, target) -> dict[str
     quality = dict(engine.get("quality") or {})
     for key in (
         "output_dir", "required_pages", "required_content", "allowed_patterns", "allowed_hard_denied_paths",
-        "prohibited_paths", "browser_required", "visual_critic", "build_command",
+        "prohibited_paths", "browser_required", "visual_critic",
         "build_timeout_seconds", "manifest_path", "ignored_pages", "contact_destination_unavailable",
         "native_source_required", "originality_required", "internal_scaffold_fingerprints",
         "required_font_families", "approved_font_files",
@@ -1684,13 +1701,6 @@ def _write_host_design_manifest(
     if manifest_path.is_symlink() or (manifest_path.exists() and not manifest_path.is_file()):
         raise RunnerError("design manifest path is not a regular file")
 
-    homepage = "index.html"
-    if not (worktree / homepage).is_file():
-        next_homepage = worktree / "src" / "app" / "page.tsx"
-        if request.page_path == "index.html" and next_homepage.is_file():
-            homepage = "src/app/page.tsx"
-        else:
-            homepage = request.page_path
     source_files: list[str] = []
     for changed_path in sorted(implementation_changed):
         if changed_path == path or changed_path.startswith("design/"):
@@ -1698,6 +1708,17 @@ def _write_host_design_manifest(
         source = worktree / changed_path
         if source.is_file() and not source.is_symlink():
             source_files.append(changed_path)
+    tenant_sources = [
+        value for value in source_files
+        if value.startswith("src/components/site/presentation/")
+        or value.startswith("src/app/(frontend)/site.css")
+    ]
+    if str(getattr(target, "build_profile", "") or "").strip().lower() == "next_react":
+        if not tenant_sources:
+            raise RunnerError("a Next/Payload design manifest requires changed tenant-owned presentation source")
+        homepage = sorted(tenant_sources)[0]
+    else:
+        homepage = source_files[0] if source_files else request.page_path
     capabilities = []
     snapshot = getattr(request, "context_snapshot", None)
     if snapshot is not None:
@@ -2123,7 +2144,7 @@ def stage_design_build(
                     NEXT_REACT_PROFILE,
                     npm_cache=npm_cache,
                     env=design_lab_environment(
-                        execution_context.get("env") or {},
+                        execution_context.get("env"),
                         model_env_name=str((execution_config.get("env") or {}).get("llm_api_key") or ""),
                     ),
                     timeout_seconds=int((execution_config.get("builder") or {}).get("provider_timeout_seconds", 900)),
@@ -3211,24 +3232,13 @@ def build_brief(message: str, config: dict[str, Any]) -> str:
         "and summarize what you changed. If it is just conversation — a greeting, a "
         "question, small talk — answer as yourself in plain prose and change nothing."
     )
-    if _uses_payload_site(config):
-        lines.append(
-            "NATIVE NEXT/PAYLOAD REQUEST: this tenant's canonical website is the Next.js + Payload application. "
-            "Treat src/app, the Payload schema, and the Payload bridge as the source of truth for every content, "
-            "navigation, and link change. Do not execute build.sh or edit Pelican-era files such as pelicanconf.py, "
-            "requirements.txt, content/, themes/, output/, or root static HTML. For a link or content request, "
-            "inspect the actual Next route and Payload-backed document, update the smallest canonical source, and "
-            "run the native npm typecheck/build path when source changes. Keep preview and public routes consistent."
-        )
-    elif _is_journal_request(message, config):
-        lines.append(
-            "JOURNAL REQUEST: own the complete design and implementation autonomously in "
-            "this Build session. Inspect the existing Pelican templates and site chrome, "
-            "preserve Pelican behavior, keep journal styles scoped, respect the fixed-header "
-            "safe offset and the 1240px / 48px gutter system, do not invent article content, "
-            "run the site's build and inspect the generated pages, then leave the working "
-            "tree ready for the normal approval-gated preview flow."
-        )
+    lines.append(
+        "NATIVE NEXT/PAYLOAD REQUEST: this tenant's canonical website is the Next.js + Payload application. "
+        "Treat src/app, the shared Payload schema, and Payload-backed documents as the source of truth for content, "
+        "navigation, and links. Change only tenant-owned presentation or document content, run the native npm "
+        "typecheck/build path after source changes, and never create a local schema, static content store, or "
+        "alternate publishing path."
+    )
     return "\n".join(lines)
 
 
@@ -3959,206 +3969,18 @@ def _validate_build_paths(config: dict[str, Any], clone: Path, base_ref: str) ->
     from .repo_changes import writable
 
     patterns = [str(p) for p in ((config.get("site") or {}).get("writable_patterns") or [])]
-    refused = sorted(path for path in _changed_paths(clone, base_ref) if not writable(path, patterns))
+    profile = str(((config.get("design_engine") or {}).get("build_profile") or "")).strip().lower()
+    frontend_only = profile == "next_react"
+    refused = sorted(
+        path for path in _changed_paths(clone, base_ref)
+        if not writable(path, patterns, frontend_only=frontend_only)
+    )
     if refused:
         raise RunnerError("builder changed files outside the writable sandbox: " + ", ".join(refused[:10]))
 
 
-def _journal_template_paths(clone: Path, config: dict[str, Any] | None = None) -> tuple[str, ...]:
-    """Resolve the site's journal templates without assuming a theme name."""
-    blog = (config or {}).get("blog") or {}
-    configured = blog.get("journal_template_paths")
-    if isinstance(configured, (list, tuple)) and configured:
-        paths = tuple(str(item).strip().replace("\\", "/").lstrip("/") for item in configured)
-        if all(path and (clone / path).is_file() for path in paths):
-            return paths
-
-    candidates = []
-    themes = clone / "themes"
-    if themes.is_dir():
-        candidates.extend(sorted(themes.glob("*/templates")))
-    candidates.extend(path for path in (clone / "templates", clone / "theme" / "templates") if path.is_dir())
-    for root in candidates:
-        paths = tuple(str(root / name).replace(str(clone) + "/", "") for name in ("base.html", "index.html", "article.html"))
-        if all((clone / path).is_file() for path in paths):
-            return paths
-    return ()
-
-
-def _journal_css_root(template_paths: tuple[str, ...], config: dict[str, Any] | None = None) -> str:
-    blog = (config or {}).get("blog") or {}
-    configured = str(blog.get("journal_css_root") or "").strip().replace("\\", "/").lstrip("/")
-    if configured:
-        return configured.rstrip("/") + "/"
-    if template_paths:
-        prefix = template_paths[0].rsplit("/templates/", 1)[0]
-        return prefix + "/static/css/" if prefix != template_paths[0] else ""
-    return ""
-
-
-def _validate_journal_build(config: dict[str, Any], clone: Path, base_ref: str) -> None:
-    """Reject journal previews that changed templates without producing a
-    usable, styled public page. A merge draft is a customer-facing artifact, so
-    a successful agent exit is not sufficient evidence of a successful design.
-    """
-    import re
-    import subprocess
-
-    template_paths = _journal_template_paths(clone, config)
-    if not template_paths:
-        raise RunnerError("journal preview could not locate base, index, and article templates")
-    _validate_journal_scope(clone, base_ref, config=config)
-    changed = set(_changed_paths(clone, base_ref))
-    required = set(template_paths)
-    missing = sorted(required - changed)
-    if missing:
-        raise RunnerError("journal preview must redesign all journal templates: " + ", ".join(missing))
-
-    build = subprocess.run(
-        ["bash", "build.sh"], cwd=clone, capture_output=True, text=True, timeout=90,
-    )
-    if build.returncode != 0:
-        raise RunnerError(f"journal build failed: {(build.stderr or build.stdout)[-500:]}")
-    output = clone / "output"
-    listing = output / "articles.html"
-    if not listing.exists():
-        raise RunnerError("journal build did not produce output/articles.html")
-    leaked = [p for p in output.rglob("*") if p.is_file() and ("themes" in p.parts or p.suffix in {".jinja", ".jinja2"})]
-    if leaked:
-        raise RunnerError("journal build leaked source templates into public output")
-
-    templates = "\n".join(
-        (clone / path).read_text(errors="replace") for path in sorted(required)
-    )
-    styles = "\n".join(
-        p.read_text(errors="replace") for p in clone.rglob("*.css")
-        if ".git" not in p.parts and "output" not in p.parts
-    )
-    styles += "\n".join(
-        block for block in re.findall(r"<style[^>]*>(.*?)</style>", templates, re.I | re.S)
-    )
-    journal_classes = {
-        token for group in re.findall(r'class=["\']([^"\']*)["\']', templates)
-        for token in group.split() if token.startswith(("journal-", "j-"))
-    }
-    missing_styles = [
-        token for token in journal_classes
-        if f".{token}" not in styles and f"#{token}" not in styles
-    ]
-    if missing_styles:
-        raise RunnerError("journal templates reference unstyled classes: " + ", ".join(sorted(set(missing_styles))))
-    if "journal-body" in templates and "position:fixed" in styles and "journal-masthead" not in styles:
-        raise RunnerError("journal content has no scoped layout styles for the fixed homepage header")
-    if "article.content" not in templates and "article.content" not in templates.replace(" ", ""):
-        raise RunnerError("article template does not render Pelican article content")
-
-
-_JOURNAL_LINK_RE = _re.compile(
-    r'''<a\b[^>]*\bhref\s*=\s*(['"])(?:[^'"]*/)?articles'''
-    r'''(?:\.html(?:[?#][^'"]*)?|/[^'"]*)\1[^>]*>.*?</a>''',
-    _re.IGNORECASE | _re.DOTALL,
-)
-
-
-def _homepage_without_journal_links(text: str) -> str:
-    """Normalize the homepage while allowing only journal navigation additions."""
-    return _re.sub(r"\s+", " ", _JOURNAL_LINK_RE.sub("", text)).strip()
-
-
-def _validate_journal_scope(
-    clone: Path,
-    base_ref: str,
-    *,
-    config: dict[str, Any] | None = None,
-) -> None:
-    """Keep a journal build from becoming an accidental homepage redesign."""
-    import subprocess
-
-    changed = _changed_paths(clone, base_ref)
-    template_paths = _journal_template_paths(clone, config)
-    allowed = set(template_paths)
-    allowed.add("index.html")  # public navigation is the only homepage edit allowed
-    css_root = _journal_css_root(template_paths, config)
-    refused = sorted(
-        path for path in changed
-        if path not in allowed and (not css_root or not path.startswith(css_root))
-    )
-    if refused:
-        raise RunnerError(
-            "journal preview changed files outside its isolated scope: "
-            + ", ".join(refused[:10])
-        )
-
-    if "index.html" not in changed:
-        return
-    base = subprocess.run(
-        ["git", "-C", str(clone), "show", f"{base_ref}:index.html"],
-        capture_output=True,
-        timeout=30,
-    )
-    if base.returncode != 0:
-        raise RunnerError("journal preview could not establish the homepage baseline")
-    try:
-        current_text = (clone / "index.html").read_text()
-        base_text = base.stdout.decode("utf-8", "replace")
-    except OSError as exc:
-        raise RunnerError(f"journal preview could not read the homepage baseline: {exc}") from exc
-    if _homepage_without_journal_links(current_text) != _homepage_without_journal_links(base_text):
-        raise RunnerError(
-            "journal preview changed homepage markup outside public journal navigation"
-        )
-
-
-def _uses_payload_site(config: dict[str, Any] | None = None) -> bool:
-    """Return whether the tenant has migrated to the canonical Payload site."""
-    values = config or {}
-    blog = values.get("blog") or {}
-    engine = str(blog.get("engine") or "payload").strip().lower()
-    payload = (values.get("site") or {}).get("payload") or {}
-    return engine != "pelican" or bool(payload.get("enabled"))
-
-
-def _is_journal_request(message: str, config: dict[str, Any] | None = None) -> bool:
-    """Detect the legacy journal flow only for an explicitly Pelican tenant."""
-    if _uses_payload_site(config):
-        return False
-    lowered = message.lower()
-    return "journal" in lowered or "pelican" in lowered
-
-
-CANONICAL_JOURNAL_REQUEST = (
-    "Set up the customer-facing journal for this website. Inspect the existing homepage "
-    "and design language. Ada must personally design and implement the Pelican article "
-    "listing and article page so they feel like this website, not a generic CMS. Make the "
-    "journal discoverable from the existing navigation when appropriate, keep it responsive "
-    "and accessible, and limit code changes to the existing Pelican templates, journal-scoped "
-    "CSS, and public navigation; do not modify build.sh, pelicanconf.py, or deployment "
-    "configuration. The homepage header is fixed and uses the 1240px/48px gutter system: "
-    "keep every journal first-content block below the header safe offset, and do not reuse "
-    "homepage class names without supplying the required journal styles. Redesign base.html, "
-    "index.html, and article.html as one coherent system. Run build.sh, inspect "
-    "output/articles.html, and verify the article template before finishing. Work "
-    "autonomously in the native Build session; use native task delegation when it materially "
-    "helps, but keep final design decisions and implementation in the primary session. Do "
-    "not invent customer content. Work in the normal preview flow; do not publish directly. "
-    "When the design is ready, leave a preview for the owner to approve."
-)
-
-
-def normalize_journal_message(message: str, config: dict[str, Any] | None = None) -> str:
-    """Upgrade persisted pre-native-build journal jobs before execution."""
-    lowered = message.lower()
-    if _is_journal_request(message, config) and (
-        "spawn_build" in lowered or "background builder" in lowered or "phased" in lowered
-    ):
-        return CANONICAL_JOURNAL_REQUEST
-    return message
-
-
-def _validate_preview(config: dict[str, Any], clone: Path, base_ref: str, message: str) -> None:
+def _validate_preview(config: dict[str, Any], clone: Path, base_ref: str) -> None:
     _validate_build_paths(config, clone, base_ref)
-    if _is_journal_request(message, config):
-        _validate_journal_build(config, clone, base_ref)
 
 
 def _prepare_builder_context(context: dict[str, Any], progress=None,
@@ -4483,17 +4305,15 @@ def run_brief(context: dict[str, Any], message: str, progress=None) -> dict[str,
         if _change_state(clone) == prepared_state:
             if progress:
                 progress("the Build agent made no implementation changes")
-            if _is_journal_request(message, config):
-                raise RunnerError("Ada finished without implementation changes")
             return {"changed": False, "output": "\n\n".join(filter(None, output))}
 
         validation_error: RunnerError | None = None
         try:
             if progress:
                 progress("validating the generated preview")
-            _validate_preview(config, clone, base_ref, message)
+            _validate_preview(config, clone, base_ref)
             _bump_asset_versions(clone)
-            _validate_preview(config, clone, base_ref, message)
+            _validate_preview(config, clone, base_ref)
         except RunnerError as exc:
             validation_error = exc
         if validation_error is not None:

@@ -35,7 +35,6 @@ from ..hands.builder import NativeOpenCodeBuilder
 from ..hands.design_quality import QualityPolicy, run_quality_gates
 from ..hands.site_build import (
     NEXT_REACT_PROFILE,
-    PELICAN_BASELINE_PROFILE,
     SiteBuildResult,
     SiteOutputArtifactStore,
     build_site,
@@ -204,7 +203,6 @@ def _quality_policy(
         required_content=required_content,
         allowed_patterns=allowed_patterns,
         prohibited_paths=(".env", ".github", "node_modules", "dist"),
-        build_command=None,
         browser_required=browser_required,
         manifest_path=manifest_path,
         expected_intake_hash=expected_intake_hash,
@@ -414,18 +412,13 @@ class DesignLabService:
             else:
                 design_service.builder = self.builder
 
-            # Keep the old comparison surface, but make its baseline profile
-            # follow the source's actual toolchain.  Legacy Pelican repositories
-            # still compare with Pelican; canonical design candidates use Next.
+            # Compare only canonical Payload/Next sites; arbitrary static
+            # source trees are not a supported design baseline.
             worktrees.mkdir(parents=True, exist_ok=True)
             baseline_tree = add_worktree(source, worktrees / "baseline", base_sha, env=lab_env)
             baseline_profile_name = str(quality_config.get("baseline_profile") or "").strip()
             if not baseline_profile_name:
-                baseline_profile_name = (
-                    NEXT_REACT_PROFILE.name
-                    if (baseline_tree / "package.json").is_file()
-                    else PELICAN_BASELINE_PROFILE.name
-                )
+                baseline_profile_name = NEXT_REACT_PROFILE.name
             baseline_profile = get_build_profile(baseline_profile_name)
             baseline_build = build_site(
                 baseline_tree,

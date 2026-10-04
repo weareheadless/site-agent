@@ -1,9 +1,20 @@
 import { getCloudflareContext } from '@opennextjs/cloudflare'
+import { stableJson } from '@/lib/payload-hash'
+
+export { hashJson, stableJson } from '@/lib/payload-hash'
 
 type JsonObject = Record<string, unknown>
 
+type D1Statement = {
+  bind(...values: unknown[]): D1Statement
+  first<T = Record<string, unknown>>(): Promise<T | null>
+  run(): Promise<{ meta?: { changes?: number } }>
+}
+
+type D1Database = { prepare(sql: string): D1Statement }
+
 const database = async () => {
-  const context = await getCloudflareContext({ async: true }) as unknown as { env?: { D1?: any } }
+  const context = await getCloudflareContext({ async: true }) as unknown as { env?: { D1?: D1Database } }
   const binding = context.env?.D1
   if (!binding) throw new Error('The managed Growth contract requires the tenant D1 binding')
   return binding
@@ -16,53 +27,8 @@ export const tenantId = () => String(process.env.HELLOADA_TENANT_ID || '').trim(
 export const asObject = (value: unknown): JsonObject =>
   value && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : {}
 
-const normalizeJson = (value: unknown): unknown => {
-  if (value === undefined) return null
-  if (value === null || typeof value !== 'object') return value
-  if (Array.isArray(value)) return value.map(normalizeJson)
-  const object = value as Record<string, unknown>
-  return Object.fromEntries(Object.keys(object).sort().map((key) => [key, normalizeJson(object[key])]))
-}
-
-export const stableJson = (value: unknown) => JSON.stringify(normalizeJson(value))
-
-export const hashJson = async (value: unknown) => {
-  const encoded = new TextEncoder().encode(stableJson(value))
-  const digest = await crypto.subtle.digest('SHA-256', encoded)
-  return `sha256:${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')}`
-}
-
 export const projectDocument = (document: JsonObject, fields: string[]) =>
   Object.fromEntries([...new Set(fields)].sort().map((field) => [field, document[field] ?? null]))
-
-export const ensureGrowthTables = async () => {
-  const db = await database()
-  await db.prepare(`CREATE TABLE IF NOT EXISTS helloada_growth_candidates (
-    package_hash TEXT PRIMARY KEY,
-    tenant_id TEXT NOT NULL,
-    initiative_id TEXT NOT NULL,
-    collection_name TEXT NOT NULL,
-    document_id TEXT NOT NULL,
-    base_hash TEXT NOT NULL,
-    candidate_hash TEXT NOT NULL,
-    package_json TEXT NOT NULL,
-    state TEXT NOT NULL,
-    result_json TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  )`).run()
-  await db.prepare(`CREATE TABLE IF NOT EXISTS helloada_growth_operations (
-    operation_key TEXT PRIMARY KEY,
-    document_key TEXT NOT NULL,
-    tenant_id TEXT NOT NULL,
-    package_hash TEXT NOT NULL,
-    state TEXT NOT NULL,
-    result_json TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-  )`).run()
-  await db.prepare("CREATE UNIQUE INDEX IF NOT EXISTS helloada_growth_writing_document ON helloada_growth_operations(document_key) WHERE state = 'writing'").run()
-}
 
 export const candidateRow = async (packageHash: string) => {
   const db = await database()
@@ -168,7 +134,6 @@ export const operationContext = (req: { context?: Record<string, unknown> }, ope
 
 export const assertNativeWriteAllowed = async (collection: string, id: unknown, req: { context?: Record<string, unknown> } | undefined) => {
   if (!id) return
-  await ensureGrowthTables()
   const currentOperation = String(req?.context?.helloAdaGrowthOperation || '')
   const key = `${collection}:${String(id)}`
   const row = await activeOperation(key, currentOperation)

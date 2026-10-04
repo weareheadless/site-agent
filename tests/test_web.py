@@ -1,10 +1,9 @@
 import json
-from copy import deepcopy
 
 import pytest
 from fastapi.testclient import TestClient
 
-from site_agent.brain.editor import EditError, set_dotted, slugify
+from site_agent.brain.editor import slugify
 from site_agent.core.contracts import (
     ActionPriority,
     ActionRequirement,
@@ -22,20 +21,15 @@ from site_agent.web.server import create_app
 class FakeAdapter(SiteAdapter):
     name = "fake"
 
-    def __init__(self, content=None, files=None):
-        self.site = {"content_path": "content.json"}
-        self.content = content or {"heroTitle": "Old title", "about": {"lead": "lead text"}}
-        self.files = files or {"content.json": json.dumps({"heroTitle": "Old title", "about": {"lead": "lead text"}})}
+    def __init__(self, files=None):
+        self.site = {}
+        self.files = files or {}
         self.branch = "main"
         self.commits = []
         self._n = 0
 
     def validate(self):
         return None
-
-    def get_content(self, branch=None):
-        raw = self.files.get("content.json")
-        return json.loads(raw) if raw else deepcopy(self.content)
 
     def get_file(self, path, branch=None):
         raw = self.files.get(path)
@@ -45,7 +39,7 @@ class FakeAdapter(SiteAdapter):
         return {"created": True, "branch": name}
 
     def list_files(self):
-        return sorted(self.files) | {"index.html", "styles.css"}
+        return sorted(set(self.files) | {"index.html", "styles.css"})
 
     def commit_file(self, path, data, message, branch=None):
         self._n += 1
@@ -106,9 +100,9 @@ def runtime(tmp_path):
             "github_token": "GITHUB_TOKEN",
         },
         "instance_name": "testsite",
-        "site": {"adapter": "github_static", "repository": "acme/site", "content_path": "content.json",
+        "site": {"adapter": "github_static", "repository": "acme/site",
                  "preview_branch": "",
-                 "writable_patterns": ["*.html", "*.css", "*.js", "*.md", "articles/*", "content.json"]},
+                 "writable_patterns": ["src/app/(frontend)/site.css", "src/components/site/presentation/**"]},
         "persona": {"name": "Ada", "voice": "", "audience": "", "taboo": []},
         "admin": {"host": "127.0.0.1", "port": 3011},
     }
@@ -474,7 +468,7 @@ def test_restore_version_creates_pending_rollback(runtime):
     config["site"]["preview_branch"] = "preview"
     _login(client)
     did = memory.save_draft("Article X", "body", kind="article")
-    memory.log_publish("article: Article X", "articles/x.md", "abc123deadbeef", draft_id=did)
+    memory.log_publish("site update: frontend", "frontend", "a" * 40, draft_id=did, version_type="merge")
     versions = client.get("/api/versions")
     assert versions.status_code == 200 and versions.json()["versions"][0]["current"] is True
     version_id = versions.json()["versions"][0]["id"]
@@ -483,50 +477,6 @@ def test_restore_version_creates_pending_rollback(runtime):
     draft = memory.list_drafts(status="pending")[0]
     assert draft["kind"] == "rollback"
     assert resp.json()["draft_id"] == draft["id"]
-
-
-def test_journal_enable_starts_setup_job(runtime):
-    memory, config, adapter, context, client = runtime
-    context["llm"] = object()
-    _login(client)
-    assert client.get("/api/journal").json()["enabled"] is False
-    response = client.post("/api/journal/enable")
-    assert response.status_code == 200
-    assert response.json()["job_id"]
-    assert client.get("/api/journal").json()["enabled"] is True
-    assert client.get("/api/journal").json()["setup_requested"] is True
-
-
-def test_journal_status_exposes_pending_setup_draft(runtime):
-    memory, config, adapter, context, client = runtime
-    _login(client)
-    conversation_id = memory.create_conversation("Set up Ada's journal")
-    job_id = memory.enqueue_chat_job(
-        conversation_id,
-        "Set up the customer-facing journal for this website.",
-    )
-    job = memory.claim_chat_job("test-worker")
-    assert job and job["id"] == job_id
-    draft_id = memory.save_draft("Journal design", "diff", kind="merge")
-    assert memory.complete_chat_job(
-        job_id,
-        "test-worker",
-        {"changed": True, "merge_draft_id": draft_id, "reply": "ready"},
-    )
-    memory.kv_set("journal_enabled", True)
-    memory.kv_set("journal_setup_requested", True)
-    memory.kv_set("journal_setup_job_id", job_id)
-
-    payload = client.get("/api/journal").json()
-    assert payload["setup_status"] == "done"
-    assert payload["setup_draft_id"] == draft_id
-    assert payload["setup_draft_status"] == "pending"
-    assert "journal_preview_url" not in payload
-
-    memory.update_draft_status(draft_id, "approved")
-    payload = client.get("/api/journal").json()
-    assert payload["setup_draft_id"] == draft_id
-    assert payload["setup_draft_status"] == "approved"
 
 
 def test_design_ui_uses_internal_review_state(runtime):
@@ -544,7 +494,8 @@ def test_design_ui_uses_internal_review_state(runtime):
     assert "selectDesignRun(REQUESTED_DESIGN_RUN_ID)" in html
     assert "preview-token" in html
     assert "id=\"designBuildStatus\"" not in html
-    assert "id=\"journalSetup\"" not in html
+    assert "loadJournal" not in html
+    assert "enableJournal" not in html
     assert "id=\"designNote\"" not in html
     assert "loadBuildStatus" not in html
     assert "function watchBackgroundJob(jobId)" in html
@@ -628,22 +579,15 @@ def test_media_ui_has_visible_upload_queue_and_previews(runtime):
     assert "Processing" in html
 
 
-def test_content_get_and_save(runtime):
-    memory, config, adapter, _, client = runtime
+def test_file_backed_content_api_is_retired(runtime):
+    _memory, _config, adapter, _, client = runtime
     _login(client)
-    got = client.get("/api/content")
-    assert got.status_code == 200
-    assert got.json()["content"]["heroTitle"] == "Old title"
-
-    adapter.content["heroTitle"] = "New from admin"
-    resp = client.post("/api/content", json={"content": {"heroTitle": "New from admin", "about": {"lead": "lead"}}})
-    assert resp.status_code == 200
-    assert adapter.commits[-1]["path"] == "content.json"
-    assert client.get("/api/content").json()["content"]["heroTitle"] == "New from admin"
+    assert client.get("/api/content").status_code == 404
+    assert client.post("/api/content", json={"content": {"title": "not stored here"}}).status_code == 404
+    assert adapter.commits == []
 
 
-def test_review_endpoint_serves_preview_branch(tmp_path, monkeypatch):
-    """Review flow shows the staged preview-branch version without any Pages build."""
+def test_review_endpoint_never_serves_unbuilt_source_files(tmp_path, monkeypatch):
     import subprocess
 
     clone = tmp_path / "siterepo"
@@ -664,12 +608,13 @@ def test_review_endpoint_serves_preview_branch(tmp_path, monkeypatch):
     mem = Memory(tmp_path / "memory.db")
     config = {
         "env": {"admin_password": "SITE_AGENT_ADMIN_PASSWORD", "github_token": "GITHUB_TOKEN"},
-        "site": {"adapter": "github_static", "repository": "acme/site", "content_path": "content.json",
+        "site": {"adapter": "github_static", "repository": "acme/site",
                  "clone_path": str(clone)},
         "admin": {},
     }
     env = {"SITE_AGENT_ADMIN_PASSWORD": "sekret"}
     import site_agent.web.server as server_mod
+    monkeypatch.setattr(server_mod.PreviewBuildCache, "read_file", lambda *args, **kwargs: b"")
     from fastapi.testclient import TestClient
 
     app = server_mod.create_app({"config": config, "memory": mem, "llm": None, "scheduler": None}, env=env)
@@ -678,14 +623,12 @@ def test_review_endpoint_serves_preview_branch(tmp_path, monkeypatch):
     did = mem.save_draft("Staged change", "diff", kind="merge")
 
     r = client.get(f"/api/review/{did}/index.html")
-    assert r.status_code == 200
-    body = r.text
-    assert "new staged" in body and "old" not in body
+    assert r.status_code == 404
+    assert "canonical preview build" in r.json()["detail"]
     mem.close()
 
 
-def test_published_preview_does_not_fall_back_to_stale_local_main(tmp_path):
-    """A present origin/main ref must win over an older local main branch."""
+def test_published_preview_never_serves_unbuilt_source_files(tmp_path, monkeypatch):
     import subprocess
 
     clone = tmp_path / "siterepo"
@@ -695,11 +638,11 @@ def test_published_preview_does_not_fall_back_to_stale_local_main(tmp_path):
     run("config", "user.email", "t@t")
     run("config", "user.name", "t")
     (clone / "index.html").write_text("<html>published</html>")
-    (clone / "articles.html").write_text("<html>stale local page</html>")
+    (clone / "unbuilt-route.html").write_text("<html>stale local page</html>")
     run("add", "-A")
     run("commit", "-qm", "local main")
     run("switch", "-q", "-c", "remote-main")
-    (clone / "articles.html").unlink()
+    (clone / "unbuilt-route.html").unlink()
     run("add", "-A")
     run("commit", "-qm", "published ref")
     published_sha = subprocess.check_output(
@@ -714,139 +657,39 @@ def test_published_preview_does_not_fall_back_to_stale_local_main(tmp_path):
         "site": {
             "adapter": "github_static",
             "repository": "acme/site",
-            "content_path": "content.json",
             "clone_path": str(clone),
         },
         "admin": {},
     }
     env = {"SITE_AGENT_ADMIN_PASSWORD": "sekret"}
-    app = create_app({"config": config, "memory": mem, "llm": None, "scheduler": None}, env=env)
-    with TestClient(app, base_url="https://testserver") as client:
-        _login(client)
-        response = client.get("/api/preview/articles.html")
-        assert response.status_code == 404
-    mem.close()
-
-
-def test_review_endpoint_serves_generated_pelican_assets(tmp_path):
-    """The Design iframe can load generated pages and their theme assets."""
-    import subprocess
-
-    clone = tmp_path / "siterepo"
-    clone.mkdir()
-    run = lambda *args: subprocess.run(["git", "-C", str(clone), *args], check=True, capture_output=True)
-    run("init", "-q", "-b", "preview")
-    run("config", "user.email", "t@t")
-    run("config", "user.name", "t")
-    (clone / "build.sh").write_text(
-        "#!/bin/sh\n"
-        "set -eu\n"
-        "mkdir -p output/theme/css\n"
-        "printf '<link rel=\"stylesheet\" href=\"https://example.test/theme/site.css\">' > output/articles.html\n"
-        "printf 'body { color: red; }' > output/theme/css/site.css\n"
-    )
-    (clone / "pelicanconf.py").write_text("SITEURL = 'https://example.test'\n")
-    run("add", "-A")
-    run("commit", "-qm", "preview build")
-
-    mem = Memory(tmp_path / "memory.db")
-    config = {
-        "env": {"admin_password": "SITE_AGENT_ADMIN_PASSWORD", "github_token": "GITHUB_TOKEN"},
-        "site": {"adapter": "github_static", "repository": "acme/site", "content_path": "content.json",
-                 "clone_path": str(clone)},
-        "blog": {"site_url": "https://example.test"},
-        "admin": {},
-    }
-    env = {"SITE_AGENT_ADMIN_PASSWORD": "sekret"}
     import site_agent.web.server as server_mod
-    from fastapi import FastAPI
-    from fastapi.testclient import TestClient
-
-    app = FastAPI()
-    app.mount("/ada", server_mod.create_app({"config": config, "memory": mem, "llm": None, "scheduler": None}, env=env))
-    client = TestClient(app, base_url="https://testserver")
-    assert client.post("/ada/api/login", json={"password": "sekret"}).status_code == 200
-    draft_id = mem.save_draft("Staged journal", "diff", kind="merge")
-
-    page = client.get(f"/ada/api/review/{draft_id}/articles.html")
-    css = client.get(f"/ada/api/review/{draft_id}/theme/css/site.css")
-    assert page.status_code == 200
-    assert 'href="./theme/site.css"' in page.text
-    assert css.status_code == 200
-    assert css.text == "body { color: red; }"
-    mem.close()
-
-
-def test_review_endpoint_builds_pending_pelican_article_overlay(tmp_path):
-    """A pending article draft is rendered by Pelican before approval."""
-    import subprocess
-
-    clone = tmp_path / "siterepo"
-    clone.mkdir()
-    run = lambda *args: subprocess.run(["git", "-C", str(clone), *args], check=True, capture_output=True)
-    run("init", "-q", "-b", "main")
-    run("config", "user.email", "t@t")
-    run("config", "user.name", "t")
-    (clone / "build.sh").write_text(
-        "#!/bin/sh\n"
-        "set -eu\n"
-        "mkdir -p output/articles output/theme/css\n"
-        "printf '{\"courses\": [{\"title\": \"Preview course\"}]}' > output/content.json\n"
-        "printf 'window.previewAsset = true;' > output/app.js\n"
-        "printf 'body { color: red; }' > output/theme/css/journal.css\n"
-        "if [ -f content/articles/a-test-article.md ]; then\n"
-        "  printf '<html><body><a href=\"https://example.test/articles/a-test-article.html\">A Test Article</a></body></html>' > output/articles.html\n"
-        "  printf '<html><body>article body from overlay</body></html>' > output/articles/a-test-article.html\n"
-        "else\n"
-        "  printf '<html><body>empty journal</body></html>' > output/articles.html\n"
-        "fi\n"
-    )
-    (clone / "pelicanconf.py").write_text("SITEURL = 'https://example.test'\n")
-    (clone / "index.html").write_text("<html><body>homepage</body></html>\n")
-    run("add", "-A")
-    run("commit", "-qm", "published")
-
-    mem = Memory(tmp_path / "memory.db")
-    config = {
-        "env": {"admin_password": "SITE_AGENT_ADMIN_PASSWORD", "github_token": "GITHUB_TOKEN"},
-        "site": {"adapter": "github_static", "repository": "acme/site", "content_path": "content.json",
-                 "clone_path": str(clone)},
-        "blog": {"engine": "pelican", "site_url": "https://example.test", "articles_dir": "content/articles"},
-        "admin": {},
-    }
-    env = {"SITE_AGENT_ADMIN_PASSWORD": "sekret"}
+    monkeypatch.setattr(server_mod.PreviewBuildCache, "read_file", lambda *args, **kwargs: b"")
     app = create_app({"config": config, "memory": mem, "llm": None, "scheduler": None}, env=env)
     with TestClient(app, base_url="https://testserver") as client:
         _login(client)
-        draft_id = mem.save_draft("A Test Article", "article body from overlay", kind="article")
-        token = client.get(f"/api/preview-token?draft_id={draft_id}").json()["token"]
-        pages = client.get(f"/api/pages?draft_id={draft_id}")
-        assert pages.status_code == 200
-        assert f"articles/a-test-article.html" in pages.json()["new_pages"]
-
-        query = f"?preview_token={token}"
-        listing = client.get(f"/api/review/{draft_id}/articles.html{query}")
-        article = client.get(f"/api/review/{draft_id}/articles/a-test-article.html{query}")
-        css = client.get(f"/api/review/{draft_id}/theme/css/journal.css{query}")
-        content = client.get(f"/api/review/{draft_id}/content.json{query}")
-        script = client.get(f"/api/review/{draft_id}/app.js{query}")
-        assert listing.status_code == 200
-        assert "A Test Article" in listing.text
-        assert "homepage" not in listing.text
-        assert "data-site-agent-preview" in listing.text
-        assert article.status_code == 200
-        assert "article body from overlay" in article.text
-        assert css.status_code == 200
-        assert css.text == "body { color: red; }"
-        assert content.status_code == 200
-        assert content.json()["courses"][0]["title"] == "Preview course"
-        assert script.status_code == 200
-        assert script.text == "window.previewAsset = true;"
+        response = client.get("/api/preview/unbuilt-route.html")
+        assert response.status_code == 404
+        assert "canonical site build" in response.json()["detail"]
     mem.close()
 
 
-def test_review_endpoint_applies_edit_ops_to_main(tmp_path):
-    """Edit drafts show the base file (origin/main) with their find/replace ops applied."""
+def test_published_preview_serves_only_the_canonical_build_artifact(tmp_path, monkeypatch):
+    clone = _git_clone_with_pages(tmp_path, main_pages=["index.html"])
+    import site_agent.web.server as server_mod
+    monkeypatch.setattr(
+        server_mod.PreviewBuildCache,
+        "read_file",
+        lambda self, _clone, _ref, name, **_kwargs: b"<html>canonical output</html>" if name == "index.html" else b"",
+    )
+    mem, client = _pages_app(tmp_path, clone)
+    response = client.get("/api/preview/index.html")
+    assert response.status_code == 200
+    assert "canonical output" in response.text
+    mem.close()
+
+
+def test_review_endpoint_rejects_file_only_edit_drafts(tmp_path):
+    """A source diff is not reviewable without the canonical built candidate."""
     import subprocess
 
     clone = tmp_path / "siterepo"
@@ -865,7 +708,7 @@ def test_review_endpoint_applies_edit_ops_to_main(tmp_path):
     mem = Memory(tmp_path / "memory.db")
     config = {
         "env": {"admin_password": "SITE_AGENT_ADMIN_PASSWORD", "github_token": "GITHUB_TOKEN"},
-        "site": {"adapter": "github_static", "repository": "acme/site", "content_path": "content.json",
+        "site": {"adapter": "github_static", "repository": "acme/site",
                  "clone_path": str(clone)},
         "admin": {},
     }
@@ -885,37 +728,13 @@ def test_review_endpoint_applies_edit_ops_to_main(tmp_path):
         ]},
     )
 
-    r = client.get(f"/api/review/{did}/index.html")
-    assert r.status_code == 200
-    assert "Cenotes / Line training" in r.text
-    assert "Open water / Line training" not in r.text
-
-    token = client.get(f"/api/preview-token?draft_id={did}").json()["token"]
-    client.cookies.clear()
-    sandboxed = client.get(f"/api/review/{did}/index.html?preview_token={token}")
-    sandboxed_css = client.get(f"/api/review/{did}/styles.css?preview_token={token}")
-    assert sandboxed.status_code == 200
-    assert "data-site-agent-preview" in sandboxed.text
-    assert "preview_token=" in sandboxed.text
-    assert sandboxed_css.status_code == 200
-    assert sandboxed_css.text == "body { color: red; }\n"
-
-    # binary assets pass through untouched (no utf-8 decode corruption)
-    jpg = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01"
-    (clone / "images").mkdir(exist_ok=True)
-    (clone / "images" / "about.jpg").write_bytes(jpg)
-    subprocess.run(["git", "-C", str(clone), "add", "-A"], check=True)
-    subprocess.run(["git", "-C", str(clone), "commit", "-qm", "add image"], check=True)
-    rimg = client.get(f"/api/review/{did}/images/about.jpg?preview_token={token}")
-    assert rimg.status_code == 200
-    assert rimg.content == jpg
-    assert rimg.headers["content-type"] == "image/jpeg"
+    response = client.get(f"/api/review/{did}/index.html")
+    assert response.status_code == 409
+    assert "verified site build" in response.json()["detail"]
     mem.close()
 
 
-def test_review_endpoint_edit_draft_declined_shows_live_file(tmp_path):
-    """After an edit draft is declined, review serves origin/main (no ops), so
-    the visualizer rolls back to the live site instead of the rejected change."""
+def test_review_endpoint_never_renders_file_only_edit_drafts(tmp_path):
     import subprocess
 
     clone = tmp_path / "siterepo"
@@ -933,7 +752,7 @@ def test_review_endpoint_edit_draft_declined_shows_live_file(tmp_path):
     mem = Memory(tmp_path / "memory.db")
     config = {
         "env": {"admin_password": "SITE_AGENT_ADMIN_PASSWORD", "github_token": "GITHUB_TOKEN"},
-        "site": {"adapter": "github_static", "repository": "acme/site", "content_path": "content.json",
+        "site": {"adapter": "github_static", "repository": "acme/site",
                  "clone_path": str(clone)},
         "admin": {},
     }
@@ -953,15 +772,9 @@ def test_review_endpoint_edit_draft_declined_shows_live_file(tmp_path):
         ]},
     )
 
-    r = client.get(f"/api/review/{did}/index.html")
-    assert r.status_code == 200
-    assert "Rejected change" in r.text
-
-    mem.update_draft_status(did, "declined")
-    r2 = client.get(f"/api/review/{did}/index.html")
-    assert r2.status_code == 200
-    assert "Live version" in r2.text
-    assert "Rejected change" not in r2.text
+    response = client.get(f"/api/review/{did}/index.html")
+    assert response.status_code == 409
+    assert "verified site build" in response.json()["detail"]
     mem.close()
 
 
@@ -972,9 +785,8 @@ def test_review_endpoint_requires_auth_and_draft(runtime):
     assert client.get("/api/review/999/index.html").status_code == 404
 
 
-def test_preview_endpoint_serves_origin_main(tmp_path):
-    """The no-review fallback reads origin/main from the clone (the published
-    state), not the transient working tree / remote production URL."""
+def test_legacy_static_preview_does_not_fall_back_to_raw_origin_files(tmp_path):
+    """A managed Next/Payload preview must not serve a raw static clone as success."""
     import subprocess
 
     clone = tmp_path / "siterepo"
@@ -992,7 +804,7 @@ def test_preview_endpoint_serves_origin_main(tmp_path):
     mem = Memory(tmp_path / "memory.db")
     config = {
         "env": {"admin_password": "SITE_AGENT_ADMIN_PASSWORD", "github_token": "GITHUB_TOKEN"},
-        "site": {"adapter": "github_static", "repository": "acme/site", "content_path": "content.json",
+        "site": {"adapter": "github_static", "repository": "acme/site",
                  "clone_path": str(clone)},
         "admin": {},
     }
@@ -1005,8 +817,7 @@ def test_preview_endpoint_serves_origin_main(tmp_path):
     _login(client)
 
     r = client.get("/api/preview/index.html")
-    assert r.status_code == 200
-    assert "Published state" in r.text
+    assert r.status_code == 404
     mem.close()
 
 
@@ -1056,58 +867,33 @@ def test_incomplete_reflection_is_not_approvable(runtime):
     assert approved_notes(memory)["voice_notes"] == []
 
 
-def test_approve_edit_proposal_commits_content(runtime):
+def test_file_only_edit_draft_cannot_be_approved(runtime):
     memory, _, adapter, _, client = runtime
-    changes = [{"path": "content.json", "field": "heroTitle", "before": "Old title", "after": "New title"}]
     did = memory.save_draft(
-        "Proposed edit: hero", json.dumps(changes), kind="edit", meta={"changes": changes, "summary": "hero"}
+        "Legacy source edit", "", kind="edit", meta={"changes": [{"path": "src/app/page.tsx"}]}
     )
     _login(client)
     resp = client.post(f"/api/drafts/{did}/approve")
-    assert resp.status_code == 200
-    assert resp.json()["published"]["committed"] is True
-    committed = json.loads(adapter.commits[0]["body"])
-    assert committed["heroTitle"] == "New title"
-    assert adapter.commits[0]["path"] == "content.json"
+    assert resp.status_code == 409
+    assert "verified site build" in resp.json()["detail"]
+    assert adapter.commits == []
     draft = [d for d in memory.list_drafts(limit=10) if d["id"] == did][0]
-    assert draft["status"] == "approved"
+    assert draft["status"] == "pending"
 
 
-def test_approve_article_publishes_markdown_file(runtime):
+def test_retired_draft_endpoint_cannot_publish_payload_articles(runtime):
     memory, _, adapter, _, client = runtime
     did = memory.save_draft("Frenzel in four sessions", "# Frenzel\n\nBody.", kind="article")
     _login(client)
     resp = client.post(f"/api/drafts/{did}/approve")
-    assert resp.status_code == 200
-    assert adapter.commits[0]["path"] == "articles/frenzel-in-four-sessions.md"
-    assert "Body." in adapter.commits[0]["body"]
-    assert "Ada" in adapter.commits[0]["message"]
-
-
-def test_approve_pelican_article_commits_frontmatter_without_index(runtime):
-    memory, config, adapter, _, client = runtime
-    config["blog"] = {"engine": "pelican", "articles_dir": "content/articles"}
-    did = memory.save_draft(
-        "Pelican article", "## Body\n\nPublished content.", kind="article",
-        meta={"summary": "A concise summary.", "tags": ["test"]},
-    )
-    _login(client)
-
-    resp = client.post(f"/api/drafts/{did}/approve")
-
-    assert resp.status_code == 200
-    paths = [c["path"] for c in adapter.commits]
-    assert paths == ["content/articles/pelican-article.md"]
-    body = adapter.commits[0]["body"]
-    assert "Title: Pelican article" in body
-    assert "Slug: pelican-article" in body
-    assert "Summary: A concise summary." in body
-    assert "## Body" in body
+    assert resp.status_code == 409
+    assert "Payload" in resp.json()["detail"]
+    assert adapter.commits == []
+    assert next(item for item in memory.list_drafts(limit=10) if item["id"] == did)["status"] == "pending"
 
 
 def test_article_details_expose_research_and_publish_trace(runtime):
     memory, config, adapter, _, client = runtime
-    config["blog"] = {"engine": "pelican", "articles_dir": "content/articles"}
     did = memory.save_draft(
         "A useful guide",
         "## A useful guide\n\nPublished content.",
@@ -1173,117 +959,29 @@ def test_article_details_expose_research_and_publish_trace(runtime):
     assert decision["serp_research"]["run_id"] == "run-serp"
     assert decision["serp_research"]["organic_count"] == 1
 
-    published = client.post(f"/api/drafts/{did}/approve")
-    assert published.status_code == 200
-    message = adapter.commits[0]["message"]
-    assert "Selection rationale:" in message
-    assert "Audience need: Readers need clarity." in message
-    assert "Provider: CrawlSEO / DataForSEO" in message
-    assert "Cost: $0.05" in message
-    assert "Selected query: reader question basics" in message
-    assert "result rows: 1" in message
-    assert "SERP:" in message
-    assert "Research reasoning: The audience need is specific." in message
-    publish_row = memory.list_publishes()[0]
-    assert publish_row["commit_message"] == message
-    version = client.get("/api/versions").json()["versions"][0]
-    assert version["commit_message"] == message
-    assert version["draft_id"] == did
-
-
-def test_article_publish_requires_keyword_evidence_or_explicit_exception(runtime):
-    memory, config, adapter, _, client = runtime
-    config["blog"] = {"engine": "pelican", "articles_dir": "content/articles"}
-    did = memory.save_draft(
-        "A useful guide",
-        "## A useful guide\n\nPublished content.",
-        kind="article",
-        meta={"article_research": {"article_idea_id": 1, "keyword_research_run_id": "run-empty"}},
-    )
-    idea = memory.create_article_idea(
-        "article:2026-W33",
-        "empty-publish-hash",
-        {
-            "working_title": "A useful guide",
-            "audience_need": "Readers need clarity.",
-            "reader_question": "How do I make the right choice?",
-            "reader_situation": "The reader wants to compare options.",
-            "reader_intent": "Choose a next step.",
-            "business_relevance": "The business can clarify the decision.",
-            "market_context": "Readers compare alternatives before contacting the business.",
-            "expert_angle": "Explain the relevant conditions.",
-            "expertise_basis": ["Owner-confirmed practice."],
-            "thesis": "Explain the practical answer.",
-            "why_now": "A recurring community question",
-            "origin": "community_question",
-            "candidate_queries": ["reader question basics"],
-            "language": "en",
-            "market": "US",
-            "source_urls": [],
-        },
-    )
-    memory.update_article_idea(
-        idea["id"],
-        status="drafted",
-        research_run_id="run-empty",
-        serp_run_id="run-serp",
-        research_result_hash="empty-result",
-        research_result_json=[],
-        research_note_json={
-            "decision": "keep",
-            "selected_query": "reader question basics",
-            "reasoning": "No clear demand signal.",
-            "serp_evidence": {"query": "reader question basics", "organic": []},
-            "serp_receipt": {"run_id": "run-serp"},
-        },
-        draft_id=did,
-        researched_ts="2026-08-28T12:00:00+00:00",
-    )
-    _login(client)
-
-    response = client.post(f"/api/drafts/{did}/approve")
-
-    assert response.status_code == 409
-    assert "no keyword research rows" in response.json()["detail"]
+    rejected = client.post(f"/api/drafts/{did}/approve")
+    assert rejected.status_code == 409
     assert adapter.commits == []
 
 
-def test_chat_propose_edit_creates_pending_proposal(runtime):
-    memory, _, adapter, context, client = runtime
-
-    llm = FakeLLM([json.dumps({
-        "reply": "Done — here's the change.",
-        "action": {"type": "propose_changes", "summary": "new hero title",
-                   "ops": [{"op": "set_field", "path": "content.json", "field": "heroTitle",
-                            "value": "Master your depth"}]},
-    })])
-    context["llm"] = llm
-    context["persona_prompt"] = "You are Ada."
-    _login(client)
-    body = chat_and_wait(client, "change the hero title")
-    assert body["proposal_id"] > 0
-    drafts = client.get("/api/drafts").json()["drafts"]
-    edit_draft = [d for d in drafts if d["kind"] == "edit"][0]
-    assert edit_draft["meta"]["ops"][0]["value"] == "Master your depth"
-
-
-def test_chat_rejects_unknown_fields_gracefully(runtime):
+def test_chat_rejects_legacy_file_mutation_tool(runtime):
     memory, _, _, context, client = runtime
 
     context["llm"] = FakeLLM([
         json.dumps({
             "reply": "",
-            "action": {"type": "propose_changes", "summary": "x",
-                       "ops": [{"op": "set_field", "path": "content.json", "field": "nope.field", "value": 1}]},
+            "action": {"type": "propose_changes", "summary": "legacy attempt",
+                       "ops": [{"op": "write", "path": "src/app/page.tsx", "content": "unsafe"}]},
         }),
         json.dumps({
-            "reply": "I can't propose that: unknown field.",
+            "reply": "I need to prepare a proper implementation preview before changing the site.",
             "action": None,
         }),
     ])
     _login(client)
-    body = chat_and_wait(client, "break it")
-    assert "can't propose" in body["reply"]
+    body = chat_and_wait(client, "change the hero title")
+    assert "implementation preview" in body["reply"]
+    assert memory.list_drafts() == []
 
 
 def test_chat_with_builder_enabled_routes_source_tweak_to_builder(runtime, monkeypatch):
@@ -1364,14 +1062,7 @@ def test_chat_spawn_build_without_builder_is_graceful(runtime):
     assert "builder agent isn't enabled" in body["reply"]
 
 
-def test_set_dotted_and_slugify():
-    doc = {"a": {"b": 1}}
-    old = set_dotted(doc, "a.b", 2)
-    assert old == 1 and doc["a"]["b"] == 2
-    with pytest.raises(EditError):
-        set_dotted(doc, "a.nope", 3)
-    with pytest.raises(EditError):
-        set_dotted(doc, "", 3)
+def test_slugify():
     assert slugify("Frenzel — in Four Sessions!") == "frenzel-in-four-sessions"
 
 
@@ -1486,7 +1177,7 @@ def test_chat_job_enqueue_persists_message_and_explicit_retry(runtime):
 def test_incomplete_done_chat_job_can_be_retried(runtime):
     memory, _, _, _, _ = runtime
     conv = memory.create_conversation("task")
-    job_id = memory.enqueue_chat_job(conv, "journal build")
+    job_id = memory.enqueue_chat_job(conv, "content build")
     claimed = memory.claim_chat_job("worker")
     assert claimed is not None
     assert memory.complete_chat_job(
@@ -1532,16 +1223,13 @@ def test_chat_job_retry_endpoint_requires_failed_job(runtime):
 
 def test_publishes_are_listed_as_versions_and_restorable(runtime):
     memory, config, adapter, _, client = runtime
-    changes = [{"path": "content.json", "field": "heroTitle", "before": "A", "after": "B"}]
-    did = memory.save_draft("Proposed edit: hero", json.dumps(changes), kind="edit",
-                            meta={"changes": changes, "summary": "hero"})
-    adapter.commits.append({"path": "content.json", "body": "{}", "message": "x"})  # noop guard
+    did = memory.save_draft("Website update", "", kind="merge", meta={"summary": "Website update"})
+    memory.log_publish("Website update", "frontend", "a" * 40, draft_id=did, version_type="merge")
     _login(client)
-    client.post(f"/api/drafts/{did}/approve")
 
     pubs = client.get("/api/publishes").json()["publishes"]
     assert len(pubs) == 1
-    assert pubs[0]["path"] == "content.json"
+    assert pubs[0]["path"] == "frontend"
 
     config["site"]["preview_branch"] = "preview"
     restore = client.post(f"/api/versions/{pubs[0]['id']}/restore")
@@ -1549,44 +1237,26 @@ def test_publishes_are_listed_as_versions_and_restorable(runtime):
     assert memory.list_drafts(status="pending")[0]["kind"] == "rollback"
 
 
-def test_article_approve_updates_index_and_handles_new_files(runtime, monkeypatch):
-    memory, config, adapter, _, client = runtime
+def test_retired_article_file_publisher_fails_closed(runtime):
+    memory, _config, adapter, _, client = runtime
     _login(client)
 
     did = memory.save_draft("My First Article", "# Hi\n\nBody.", kind="article")
     resp = client.post(f"/api/drafts/{did}/approve")
-    assert resp.status_code == 200
-    paths = [c["path"] for c in adapter.commits]
-    assert "articles/my-first-article.md" in paths
-    assert "articles/index.json" in paths
-    index_body = json.loads([c for c in adapter.commits if c["path"].endswith("index.json")][0]["body"])
-    assert index_body[0]["slug"] == "my-first-article"
+    assert resp.status_code == 409
+    assert "Payload" in resp.json()["detail"]
+    assert adapter.commits == []
 
 
-def test_decline_article_unpublishes_and_records_feedback(runtime):
-    memory, config, adapter, _, client = runtime
+def test_retired_article_file_unpublisher_fails_closed(runtime):
+    memory, _config, adapter, _, client = runtime
     _login(client)
 
     did = memory.save_draft("Unsafe advice", "# Unsafe\n\nExhale underwater.", kind="article")
-    memory.update_draft_status(did, "approved")
-    adapter.files["articles/unsafe-advice.md"] = "# Unsafe\n\nExhale underwater."
-    adapter.files["articles/index.json"] = json.dumps([{"slug": "unsafe-advice", "title": "Unsafe advice"}])
-
     resp = client.post(f"/api/drafts/{did}/decline", json={"feedback": "Never advise exhaling underwater; it is dangerous."})
-    assert resp.status_code == 200
-
-    drafts = {d["id"]: d for d in memory.list_drafts(limit=10)}
-    assert drafts[did]["status"] == "declined"
-    assert "articles/unsafe-advice.md" not in adapter.files
-    index = json.loads(adapter.files.get("articles/index.json", "[]"))
-    assert index == []
-
-    feedback = [r["text"] for r in memory.recent_observations(source="feedback")]
-    assert len(feedback) == 1
-    assert "dangerous" in feedback[0]
-
-    actions = [a["detail"] for a in memory.recent_actions() if a["kind"] == "decline"]
-    assert any("removed unsafe-advice" in a for a in actions)
+    assert resp.status_code == 409
+    assert "Payload" in resp.json()["detail"]
+    assert adapter.commits == []
 
 
 def test_decline_without_feedback_still_records_decision(runtime):
@@ -1631,85 +1301,26 @@ def test_decline_without_feedback_still_ends_declined(runtime):
     assert not draft["meta"].get("feedback")
 
 
-def test_propose_changes_write_and_uniqueness(runtime):
-    from site_agent.brain.editor import handle_message
-
-    memory, config, adapter, context = runtime[0], runtime[1], runtime[2], runtime[3]
-    adapter.files["styles.css"] = ".footer { padding: 4px; }\n.footer p { color: #333; }"
-    llm = FakeLLM([json.dumps({
-        "reply": "",
-        "action": {"type": "propose_changes", "summary": "footer spacing + new page",
-                   "ops": [
-                       {"op": "edit", "path": "styles.css",
-                        "find": ".footer { padding: 4px; }", "replace": ".footer { padding: 24px 0; }"},
-                       {"op": "write", "path": "coaching.html", "content": "<!doctype html><title>Coaching</title>"},
-                   ]},
-    })])
-    context["llm"] = llm
-    r = handle_message(context, adapter, "footer spacing and create a coaching page")
-    assert r.get("proposal_id"), r
-    draft = [d for d in memory.list_drafts() if d["kind"] == "edit"][0]
-    assert len(draft["meta"]["ops"]) == 2
-
-    # outside writable area -> refused via tool result, no proposal staged
-    llm2 = FakeLLM([
-        json.dumps({"reply": "", "action": {"type": "propose_changes", "summary": "hack",
-                    "ops": [{"op": "write", "path": ".github/workflows/evil.yml", "content": "x"}]}}),
-        json.dumps({"reply": "Understood.", "action": None}),
-    ])
-    context["llm"] = llm2
-    r2 = handle_message(context, adapter, "hack")
-    assert r2["proposal_id"] is None
-    tool_results = [m["content"] for m in llm2.calls[0] if m.get("role") == "tool"]
-    assert any(c.startswith("REFUSED") for c in tool_results)
-
-    # duplicate snippet -> asked for unique version
-    adapter.files["styles.css"] = ".x{}\n.x{}"
-    llm3 = FakeLLM([
-        json.dumps({"reply": "", "action": {"type": "propose_changes", "summary": "dup",
-                    "ops": [{"op": "edit", "path": "styles.css", "find": ".x{}", "replace": ".y{}"}]}}),
-        json.dumps({"reply": "Understood.", "action": None}),
-    ])
-    context["llm"] = llm3
-    r3 = handle_message(context, adapter, "dup")
-    assert r3["proposal_id"] is None
-    tool_results = [m["content"] for m in llm3.calls[0] if m.get("role") == "tool"]
-    assert any("2 times" in c for c in tool_results)
-
-
-def test_approve_file_op_edit_commits_replaced_file(runtime):
+def test_file_only_edit_draft_cannot_be_approved(runtime):
     memory, config, adapter, _, client = runtime
-    adapter.files["styles.css"] = ".footer { padding: 4px; }"
-    ops = [{"op": "edit", "path": "styles.css", "find": "padding: 4px;", "replace": "padding: 24px;"}]
-    did = memory.save_draft("Proposed edit: footer spacing",
-                            json.dumps(ops), kind="edit",
-                            meta={"ops": ops, "summary": "footer spacing"})
+    did = memory.save_draft("Legacy file edit", "", kind="edit",
+                            meta={"ops": [{"op": "edit", "path": "styles.css"}]})
     _login(client)
     resp = client.post(f"/api/drafts/{did}/approve")
-    assert resp.status_code == 200
-    last = adapter.commits[-1]
-    assert last["path"] == "styles.css" and "padding: 24px;" in last["body"]
+    assert resp.status_code == 409
+    assert "verified site build" in resp.json()["detail"]
+    assert adapter.commits == []
 
 
-def test_preview_pushes_to_preview_branch(runtime):
-    memory, config, adapter, _, client = runtime
-    config["site"]["preview_branch"] = "preview"
-    changes = [{"path": "content.json", "field": "heroTitle", "before": "Old title", "after": "Preview title"}]
-    did = memory.save_draft("Proposed edit: hero preview", json.dumps(changes), kind="edit",
-                            meta={"changes": changes, "summary": "hero"})
+def test_file_only_edit_draft_cannot_be_previewed(runtime):
+    memory, _config, adapter, _, client = runtime
+    did = memory.save_draft("Legacy file edit", "", kind="edit",
+                            meta={"ops": [{"op": "edit", "path": "styles.css"}]})
     _login(client)
     resp = client.post(f"/api/drafts/{did}/preview")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["branch"] == "preview" and body["pushed"]["committed"]
-    pushed = [c for c in adapter.commits if c["branch"] == "preview"]
-    assert pushed and json.loads(pushed[-1]["body"])["heroTitle"] == "Preview title"
-    # production untouched
-    prod = [c for c in adapter.commits if c.get("branch") in (None, "main")]
-    assert not any("Preview title" in c["body"] for c in prod)
-    # status exposes it
-    status = client.get("/api/status").json()
-    assert status["preview_branch"] == "preview"
+    assert resp.status_code == 409
+    assert "verified site build" in resp.json()["detail"]
+    assert adapter.commits == []
 
 
 def test_preview_requires_branch_config(runtime):
@@ -1719,7 +1330,7 @@ def test_preview_requires_branch_config(runtime):
     did = memory.save_draft("e", "{}", kind="edit", meta={"changes": []})
     _login(client)
     resp = client.post(f"/api/drafts/{did}/preview")
-    assert resp.status_code == 400 and "preview_branch" in resp.json()["detail"]
+    assert resp.status_code == 409 and "verified site build" in resp.json()["detail"]
 
 
 def test_decline_merge_drops_tweakmap_overlay(runtime):
@@ -1809,32 +1420,14 @@ def test_history_endpoint_lists_lifecycle(runtime):
     assert by_id[e]["kind"] == "edit"
 
 
-def test_approve_supersedes_overlapping_pending_edit(runtime):
-    """Approving an edit discards other pending edits touching the same files."""
-    memory, config, adapter, _, client = runtime
+def test_approve_rejects_legacy_file_edit_draft(runtime):
+    memory, _config, adapter, _, client = runtime
     _login(client)
-    # fresh edit proposals both touch index.html
-    new = memory.save_draft(
-        "Move footer", "diff", kind="edit",
-        meta={"ops": [{"op": "edit", "path": "index.html", "find": "a", "replace": "b"},
-                      {"op": "edit", "path": "styles.css", "find": "c", "replace": "d"}]},
-    )
-    stale = memory.save_draft(
-        "Old hero move", "diff", kind="edit",
-        meta={"ops": [{"op": "edit", "path": "index.html", "find": "x", "replace": "y"}]},
-    )
-    independent = memory.save_draft(
-        "Other page", "diff", kind="edit",
-        meta={"ops": [{"op": "edit", "path": "about.html", "find": "x", "replace": "y"}]},
-    )
-    resp = client.post(f"/api/drafts/{new}/approve")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert set(body["superseded"]) == {stale}  # only the overlapping one
-    statuses = {d["id"]: d["status"] for d in memory.list_drafts(limit=10)}
-    assert statuses[new] == "approved"
-    assert statuses[stale] == "discarded"
-    assert statuses[independent] == "pending"  # untouched files survive
+    old = memory.save_draft("Old source proposal", "diff", kind="edit", meta={"ops": []})
+    response = client.post(f"/api/drafts/{old}/approve")
+    assert response.status_code == 409
+    assert adapter.commits == []
+    assert next(row for row in memory.list_drafts() if row["id"] == old)["status"] == "pending"
 
 
 def test_approve_merge_supersedes_all_pending_edits(runtime):
@@ -1889,7 +1482,7 @@ def _pages_app(tmp_path, clone):
     mem = Memory(tmp_path / "pages.db")
     config = {
         "env": {"admin_password": "SITE_AGENT_ADMIN_PASSWORD", "github_token": "GITHUB_TOKEN"},
-        "site": {"adapter": "github_static", "repository": "acme/site", "content_path": "content.json",
+        "site": {"adapter": "github_static", "repository": "acme/site",
                  "clone_path": str(clone)},
         "admin": {},
     }
@@ -1912,28 +1505,6 @@ def test_pages_endpoint_lists_published_pages(tmp_path):
     mem.close()
 
 
-def test_pages_endpoint_lists_published_pelican_listing(tmp_path):
-    import subprocess
-
-    clone = _git_clone_with_pages(tmp_path, main_pages=["index.html"])
-    (clone / "pelicanconf.py").write_text("SITEURL = 'https://example.test'\n")
-    subprocess.run(["git", "-C", str(clone), "add", "pelicanconf.py"], check=True)
-    subprocess.run(["git", "-C", str(clone), "commit", "-qm", "enable pelican"], check=True)
-    published_sha = subprocess.check_output(
-        ["git", "-C", str(clone), "rev-parse", "HEAD"], text=True
-    ).strip()
-    subprocess.run(
-        ["git", "-C", str(clone), "update-ref", "refs/remotes/origin/main", published_sha],
-        check=True,
-    )
-
-    mem, client = _pages_app(tmp_path, clone)
-    response = client.get("/api/pages")
-    assert response.status_code == 200
-    assert "articles.html" in response.json()["pages"]
-    mem.close()
-
-
 def test_pages_endpoint_merge_draft_shows_preview_pages(tmp_path):
     clone = _git_clone_with_pages(tmp_path, main_pages=["index.html"],
                                   preview_pages=["index.html", "newpage.html"])
@@ -1948,70 +1519,7 @@ def test_pages_endpoint_merge_draft_shows_preview_pages(tmp_path):
     mem.close()
 
 
-def test_published_preview_serves_generated_pelican_listing(tmp_path):
-    import subprocess
-
-    clone = tmp_path / "pelicanrepo"
-    clone.mkdir()
-    run = lambda *args: subprocess.run(["git", "-C", str(clone), *args], check=True, capture_output=True)
-    run("init", "-q", "-b", "main")
-    run("config", "user.email", "t@t")
-    run("config", "user.name", "t")
-    (clone / "build.sh").write_text(
-        "#!/bin/sh\n"
-        "set -eu\n"
-        "mkdir -p output/theme/css\n"
-        "printf '<link rel=\"stylesheet\" href=\"https://example.test/theme/site.css\">' > output/articles.html\n"
-        "printf 'body { color: red; }' > output/theme/css/site.css\n"
-    )
-    (clone / "pelicanconf.py").write_text("SITEURL = 'https://example.test'\n")
-    (clone / "index.html").write_text("<html>published</html>\n")
-    run("add", "-A")
-    run("commit", "-qm", "published pelican site")
-    published_sha = subprocess.check_output(
-        ["git", "-C", str(clone), "rev-parse", "HEAD"], text=True
-    ).strip()
-    run("update-ref", "refs/remotes/origin/main", published_sha)
-
-    mem = Memory(tmp_path / "memory.db")
-    config = {
-        "env": {"admin_password": "SITE_AGENT_ADMIN_PASSWORD", "github_token": "GITHUB_TOKEN"},
-        "site": {
-            "adapter": "github_static",
-            "repository": "acme/site",
-            "content_path": "content.json",
-            "clone_path": str(clone),
-        },
-        "blog": {"site_url": "https://example.test"},
-        "admin": {},
-    }
-    env = {"SITE_AGENT_ADMIN_PASSWORD": "sekret"}
-    app = create_app({"config": config, "memory": mem, "llm": None, "scheduler": None}, env=env)
-    with TestClient(app, base_url="https://testserver") as client:
-        _login(client)
-        page = client.get("/api/preview/articles.html")
-        css = client.get("/api/preview/theme/css/site.css")
-        assert page.status_code == 200
-        assert 'href="./theme/site.css"' in page.text
-        assert css.status_code == 200
-        assert css.text == "body { color: red; }"
-
-        token = client.get("/api/preview-token").json()["token"]
-        client.cookies.clear()
-        sandboxed_page = client.get(f"/api/preview/articles.html?preview_token={token}")
-        sandboxed_css = client.get(f"/api/preview/theme/css/site.css?preview_token={token}")
-        assert sandboxed_page.status_code == 200
-        assert "data-site-agent-preview" in sandboxed_page.text
-        assert "preview_token=" in sandboxed_page.text
-        assert sandboxed_page.headers["access-control-allow-origin"] == "*"
-        assert sandboxed_page.headers["content-security-policy"] == "sandbox allow-scripts allow-forms; frame-ancestors 'self'"
-        assert sandboxed_css.status_code == 200
-        assert sandboxed_css.headers["access-control-allow-origin"] == "*"
-        assert client.get(f"/api/home?preview_token={token}").status_code == 401
-    mem.close()
-
-
-def test_pages_endpoint_edit_draft_write_op_includes_new_page(tmp_path):
+def test_pages_endpoint_rejects_unbuilt_edit_draft(tmp_path):
     clone = _git_clone_with_pages(tmp_path, main_pages=["index.html"])
     mem, client = _pages_app(tmp_path, clone)
     did = mem.save_draft(
@@ -2019,8 +1527,6 @@ def test_pages_endpoint_edit_draft_write_op_includes_new_page(tmp_path):
         meta={"ops": [{"op": "write", "path": "coaching.html", "content": "<html>coaching</html>"}]},
     )
     r = client.get(f"/api/pages?draft_id={did}")
-    assert r.status_code == 200
-    body = r.json()
-    assert "coaching.html" in body["pages"]
-    assert "coaching.html" in body["new_pages"]
+    assert r.status_code == 409
+    assert "verified site build" in r.json()["detail"]
     mem.close()

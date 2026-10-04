@@ -1,10 +1,9 @@
 import { NextResponse } from 'next/server'
 import { getPayload } from 'payload'
 import type { CollectionSlug, PayloadRequest } from 'payload'
-import { createElement } from 'react'
-import { renderToStaticMarkup } from 'react-dom/server'
 
 import { authenticateHelloAdaRequest } from '@/lib/helloada-auth'
+import { createHelloAdaPreviewToken } from '@/lib/helloada-preview'
 import { fetchHelloAdaUpstream } from '@/lib/helloada-upstream'
 import {
   applyHelloAdaBindingEdits,
@@ -13,16 +12,15 @@ import {
 import type { HelloAdaBindingEdit } from '@weareheadless/helloada-payload-core/bindings'
 import { helloAdaConnection, helloAdaRuntimeStatus } from '@weareheadless/helloada-payload-admin/server'
 import { helloAdaSite } from '@/helloada.config'
-import PublicDocument from '@/components/PublicDocument'
+import { articleIndexPath, pathForDocument } from '@/lib/content-routes'
+import { hashJson, stableJson, withoutPayloadMetadata } from '@/lib/payload-hash'
 import {
   asObject as growthObject,
   candidateRow,
   claimOperation,
   completeOperation,
   contractCapabilities,
-  ensureGrowthTables,
   failOperation,
-  hashJson,
   operationByKey,
   operationContext,
   operationResult,
@@ -65,6 +63,16 @@ const contentRoute = (value: string) => {
   return route === '/' ? '/' : `/${route.replace(/^\/+/, '').replace(/\/+$/, '')}`
 }
 
+const routeForDocument = (collection: EditableCollection, document: Record<string, unknown>) => {
+  const route = text(document.route)
+  if (route) return contentRoute(route)
+  const slug = text(document.slug)
+  if (!slug) throw new Error(`Payload ${collection} document has no route slug.`)
+  return pathForDocument(collection, slug)
+}
+
+const htmlAttribute = (value: string) => value.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+
 const contentSlug = (route: string) => {
   const normalized = contentRoute(route)
   return normalized === '/' ? ['home', 'index', ''] : [normalized.slice(1)]
@@ -78,25 +86,86 @@ const collectionFieldNames = (payload: Awaited<ReturnType<typeof getPayload>>, c
 
 const equalJson = async (left: unknown, right: unknown) => (await hashJson(left)) === (await hashJson(right))
 
-const renderCandidate = async (
-  payload: Awaited<ReturnType<typeof getPayload>>,
+const verifyExactPreview = async (
+  request: Request,
+  ownerId: string,
   collection: EditableCollection,
   document: Record<string, unknown>,
   route: string,
+  state: 'draft' | 'published' = 'draft',
 ) => {
-  const settings = await payload.findGlobal({ slug: 'siteSettings', draft: false, depth: 2, overrideAccess: true }) as unknown as Record<string, unknown>
-  const markup = renderToStaticMarkup(
-    createElement(PublicDocument, { document, settings, kind: collection === 'posts' ? 'post' : 'page' }),
-  )
-  if (!markup.includes('content-page') || !markup.trim()) throw new Error('The public renderer returned no content')
-  return { status: 'passed', route, kind: collection === 'posts' ? 'post' : 'page', htmlHash: await hashJson(markup), markupBytes: new TextEncoder().encode(markup).byteLength }
+  const documentHash = await hashJson(withoutPayloadMetadata(document))
+  const token = await createHelloAdaPreviewToken({
+    tenantId: tenantId(),
+    ownerId,
+    collection,
+    documentId: text(document.id),
+    documentHash,
+    route,
+    state,
+  })
+  const previewUrl = new URL(`/helloada-preview/${token}`, request.url).toString()
+  const cookie = request.headers.get('cookie')
+  if (!cookie) throw new Error('The authenticated Payload session is missing for exact preview verification.')
+  const response = await fetch(previewUrl, {
+    cache: 'no-store',
+    redirect: 'manual',
+    headers: { accept: 'text/html', cookie, 'cache-control': 'no-cache' },
+  })
+  if (!response.ok) throw new Error(`The exact public page renderer returned HTTP ${response.status}.`)
+  const contentType = response.headers.get('content-type') || ''
+  if (!contentType.toLowerCase().includes('text/html')) throw new Error('The exact public page renderer did not return HTML.')
+  const html = await response.text()
+  const expectedMarkers = [
+    `data-helloada-preview-hash="${documentHash}"`,
+    `data-helloada-preview-route="${htmlAttribute(route)}"`,
+    'class="content-page',
+    `data-helloada-document-id="${htmlAttribute(text(document.id))}"`,
+  ]
+  if (expectedMarkers.some((marker) => !html.includes(marker))) throw new Error('The exact public page renderer did not return the approved document and route markers.')
+  return {
+    status: 'passed',
+    route,
+    kind: collection === 'posts' ? 'post' : collection === 'products' ? 'product' : 'page',
+    collection,
+    documentId: text(document.id),
+    documentHash,
+    verifiedAt: new Date().toISOString(),
+    previewUrl,
+    expiresAt: Math.floor(Date.now() / 1000) + 180,
+  }
+}
+
+const verifyLiveRoute = async (request: Request, route: string, document: Record<string, unknown>) => {
+  const url = new URL(route, request.url)
+  const response = await fetch(url, {
+    cache: 'no-store',
+    redirect: 'manual',
+    headers: { accept: 'text/html', 'cache-control': 'no-cache' },
+  })
+  if (!response.ok) throw new Error(`The published route ${route} returned HTTP ${response.status}.`)
+  if (!(response.headers.get('content-type') || '').toLowerCase().includes('text/html')) throw new Error(`The published route ${route} did not return HTML.`)
+  const html = await response.text()
+  const documentId = htmlAttribute(text(document.id))
+  const updatedAt = htmlAttribute(text(document.updatedAt))
+  if (!updatedAt || !html.includes(`data-helloada-document-id="${documentId}"`) || !html.includes(`data-helloada-updated-at="${updatedAt}"`)) {
+    throw new Error(`The published route ${route} does not render the exact Payload document revision.`)
+  }
+  return { route, status: response.status, documentId: text(document.id), updatedAt: text(document.updatedAt), verifiedAt: new Date().toISOString() }
+}
+
+const verifyLiveRoutes = async (request: Request, collection: EditableCollection, document: Record<string, unknown>, route: string) => {
+  const routes = [route]
+  if (collection === 'posts') routes.push(articleIndexPath())
+  const checks = []
+  for (const candidateRoute of routes) checks.push(await verifyLiveRoute(request, candidateRoute, document))
+  return { status: 'passed', checks }
 }
 
 const verifyGrowthPackage = async (
   payload: Awaited<ReturnType<typeof getPayload>>,
   packageData: Record<string, unknown>,
   packageHash: string,
-  request: Request,
   options: { requireDraftCandidate: boolean } = { requireDraftCandidate: true },
 ) => {
   if (await hashJson(packageData) !== packageHash) throw new Error('Growth package hash does not match its contents')
@@ -122,9 +191,8 @@ const verifyGrowthPackage = async (
   const expected = { ...liveProjection, ...changes }
   if (!await equalJson(after, expected)) throw new Error('Growth package after-state is not the exact base plus requested changes')
   if (options.requireDraftCandidate && await hashJson(draftProjection) !== text(packageData.candidateHash)) throw new Error('The exact Growth candidate is not the current Payload draft')
-  const route = contentRoute(text(packageData.route) || (text(live.slug) === 'home' ? '/' : `/${text(live.slug)}`))
-  const publicRenderer = await renderCandidate(payload, collection, after, route)
-  return { collection, documentId, fields, live, draft, liveProjection, draftProjection, before, after, changes, route, publicRenderer, request }
+  const route = contentRoute(text(packageData.route) || routeForDocument(collection, live))
+  return { collection, documentId, fields, live, draft, liveProjection, draftProjection, before, after, changes, route }
 }
 
 type EditableQueryOptions = {
@@ -133,12 +201,6 @@ type EditableQueryOptions = {
   overrideAccess: boolean
   req?: Partial<PayloadRequest>
   where?: { slug: { equals: string } }
-}
-
-type EditableDocumentsResult = {
-  documents: Record<string, unknown>[]
-  published: number
-  draft: number
 }
 
 const mergeEditableDocuments = (published: unknown[], draft: unknown[]) => {
@@ -233,12 +295,6 @@ const attachmentFrom = (value: Record<string, unknown>) => {
   }
 }
 
-const withoutPayloadMetadata = (value: Record<string, unknown>) => {
-  const result = { ...value }
-  for (const key of ['id', 'createdAt', 'updatedAt', '_status']) delete result[key]
-  return result
-}
-
 const contentFields = (document: Record<string, unknown>, route: string, collection: EditableCollection) =>
   helloAdaContentBindings(document, collection, route)
 
@@ -292,13 +348,14 @@ const readEditableDocuments = async (payload: Awaited<ReturnType<typeof getPaylo
 const siteSnapshot = async (request: Request, payload: Awaited<ReturnType<typeof getPayload>>) => {
   const documents = await readEditableDocuments(payload)
   const routes = documents.map((document) => ({
-    path: document.collection === 'posts'
-      ? `/articles/${document.slug.replace(/^\/+/, '')}`
-      : !document.slug || document.slug === 'home' || document.slug === 'index' ? '/' : `/${document.slug.replace(/^\/+/, '')}`,
-    kind: document.collection === 'posts' ? 'post' : 'page',
+    path: pathForDocument(document.collection, document.slug),
+    kind: document.collection === 'posts' ? 'post' : document.collection === 'products' ? 'product' : 'page',
     collection: document.collection,
     sourceId: document.sourceId,
   }))
+  if (documents.some((document) => document.collection === 'posts')) {
+    routes.push({ path: articleIndexPath(), kind: 'post_index', collection: 'posts', sourceId: '' })
+  }
   return {
     site: { name: process.env.HELLOADA_SITE_NAME || 'Your website', url: process.env.NEXT_PUBLIC_SITE_URL || new URL(request.url).origin },
     routes,
@@ -329,12 +386,10 @@ export async function GET(request: Request, { params }: RouteProps) {
     }
   }
   if (path === '/growth/contract') {
-    await ensureGrowthTables()
     const collections = editableCollections.filter((collection) => collectionFieldNames(auth.payload, collection).size)
     return NextResponse.json({ version: 1, tenant: tenantId(), capabilities: contractCapabilities, collections }, { headers: { 'Cache-Control': 'private, no-store' } })
   }
   if (path === '/growth/candidate') {
-    await ensureGrowthTables()
     const packageHash = text(new URL(request.url).searchParams.get('packageHash'))
     if (!packageHash) return errorResponse('packageHash is required')
     const candidate = await candidateRow(packageHash)
@@ -407,17 +462,17 @@ export async function POST(request: Request, { params }: RouteProps) {
     return response
   }
   if (path === '/growth/validate') {
-    await ensureGrowthTables()
     const body = growthObject(await request.json().catch(() => ({})))
     const packageData = growthObject(body.package)
     const packageHash = text(body.packageHash)
     if (!packageHash) return errorResponse('packageHash is required')
     try {
-      const verified = await verifyGrowthPackage(auth.payload, packageData, packageHash, request)
+      const verified = await verifyGrowthPackage(auth.payload, packageData, packageHash)
+      const preview = await verifyExactPreview(request, text(auth.user.id), verified.collection, verified.draft, verified.route)
       const result = {
         status: 'passed', packageHash, tenant: tenantId(),
         checks: { canonicalSchema: true, exactDraft: true, private: true, publicRenderer: true, approvalBoundary: true },
-        preview: verified.publicRenderer,
+        preview,
       }
       await saveCandidate(packageData, packageHash, result)
       return NextResponse.json({ validation: result }, { headers: { 'Cache-Control': 'private, no-store' } })
@@ -426,7 +481,6 @@ export async function POST(request: Request, { params }: RouteProps) {
     }
   }
   if (path === '/growth/apply') {
-    await ensureGrowthTables()
     const body = growthObject(await request.json().catch(() => ({})))
     const packageData = growthObject(body.package)
     const packageHash = text(body.packageHash)
@@ -441,7 +495,7 @@ export async function POST(request: Request, { params }: RouteProps) {
     const saved = operationResult(claimed.row)
     if (saved) return NextResponse.json(saved, { headers: { 'Cache-Control': 'private, no-store' } })
     try {
-      const verified = await verifyGrowthPackage(auth.payload, packageData, packageHash, request, { requireDraftCandidate: false })
+      const verified = await verifyGrowthPackage(auth.payload, packageData, packageHash, { requireDraftCandidate: false })
       const currentDraftHash = await hashJson(verified.draftProjection)
       if (currentDraftHash !== text(packageData.baseHash) && currentDraftHash !== text(packageData.candidateHash)) throw new Error('The Payload draft changed before Ada could prepare it')
       if (currentDraftHash !== text(packageData.candidateHash)) {
@@ -451,7 +505,8 @@ export async function POST(request: Request, { params }: RouteProps) {
       const afterWrite = await auth.payload.findByID({ collection: collection as CollectionSlug, depth: 2, draft: true, id: documentId, overrideAccess: false, req: auth.req, user: auth.user }) as unknown as Record<string, unknown>
       const afterProjection = projectDocument(afterWrite, verified.fields)
       if (await hashJson(afterProjection) !== text(packageData.candidateHash)) throw new Error('Payload did not retain the exact Growth candidate')
-      const proof = { ok: true, packageHash, candidateHash: packageData.candidateHash, validation: { status: 'passed', packageHash, checks: { canonicalSchema: true, exactDraft: true, private: true, publicRenderer: true, approvalBoundary: true }, preview: verified.publicRenderer } }
+      const preview = await verifyExactPreview(request, text(auth.user.id), verified.collection, afterWrite, verified.route)
+      const proof = { ok: true, packageHash, candidateHash: packageData.candidateHash, validation: { status: 'passed', packageHash, checks: { canonicalSchema: true, exactDraft: true, private: true, publicRenderer: true, approvalBoundary: true }, preview } }
       await saveCandidate(packageData, packageHash, proof.validation)
       await completeOperation(operationKey, proof)
       return NextResponse.json(proof, { headers: { 'Cache-Control': 'private, no-store' } })
@@ -461,7 +516,6 @@ export async function POST(request: Request, { params }: RouteProps) {
     }
   }
   if (path === '/growth/publish') {
-    await ensureGrowthTables()
     const body = growthObject(await request.json().catch(() => ({})))
     const packageHash = text(body.packageHash)
     const candidate = await candidateRow(packageHash)
@@ -478,14 +532,14 @@ export async function POST(request: Request, { params }: RouteProps) {
     const saved = operationResult(claimed.row)
     if (saved) return NextResponse.json(saved, { headers: { 'Cache-Control': 'private, no-store' } })
     try {
-      const verified = await verifyGrowthPackage(auth.payload, packageData, packageHash, request)
+      const verified = await verifyGrowthPackage(auth.payload, packageData, packageHash)
       operationContext(auth.req as { context?: Record<string, unknown> }, operationKey)
       await auth.payload.update({ collection: collection as CollectionSlug, data: withoutPayloadMetadata(verified.after) as never, draft: false, id: documentId, overrideAccess: false, req: auth.req, user: auth.user })
       const published = await auth.payload.findByID({ collection: collection as CollectionSlug, depth: 2, draft: false, id: documentId, overrideAccess: false, req: auth.req, user: auth.user }) as unknown as Record<string, unknown>
       const publicProjection = projectDocument(published, verified.fields)
       if (await hashJson(publicProjection) !== text(packageData.candidateHash)) throw new Error('The public Payload document does not match the approved candidate')
-      const publicRenderer = await renderCandidate(auth.payload, collection, published, verified.route)
-      const result = { ok: true, packageHash, candidateHash: packageData.candidateHash, status: 'published', published: { collection, documentId, updatedAt: text(published.updatedAt) }, liveVerification: { status: 'passed', publicRenderer } }
+      const liveVerification = await verifyLiveRoutes(request, collection, published, verified.route)
+      const result = { ok: true, packageHash, candidateHash: packageData.candidateHash, status: 'published', published: { collection, documentId, updatedAt: text(published.updatedAt) }, liveVerification }
       await completeOperation(operationKey, result)
       return NextResponse.json(result, { headers: { 'Cache-Control': 'private, no-store' } })
     } catch (cause) {

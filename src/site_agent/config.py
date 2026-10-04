@@ -277,7 +277,7 @@ def validate_design_config(config: dict[str, Any]) -> None:
         raise ConfigError("design_engine must be an object")
     profile = str(engine.get("build_profile") or "").strip().lower()
     if profile and profile != "next_react":
-        raise ConfigError("design_engine.build_profile must be next_react; legacy site profiles are migration-only")
+        raise ConfigError("design_engine.build_profile must be next_react")
     if engine.get("enabled", False) is True and profile != "next_react":
         raise ConfigError("design_engine.build_profile must be next_react when design_engine is enabled")
     version = engine.get("intake_schema_version", 1)
@@ -337,6 +337,8 @@ def validate_design_config(config: dict[str, Any]) -> None:
     quality = engine.get("quality") or {}
     if not isinstance(quality, dict):
         raise ConfigError("design_engine.quality must be an object")
+    if "build_command" in quality:
+        raise ConfigError("design_engine.quality.build_command is unsupported; builds use the canonical host toolchain")
     for name in (
         "browser",
         "accessibility",

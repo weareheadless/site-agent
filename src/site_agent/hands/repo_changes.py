@@ -5,6 +5,8 @@ from __future__ import annotations
 import fnmatch
 from pathlib import PurePosixPath
 
+from ..frontend_ownership import is_frontend_owned_path
+
 
 HARD_DENY = (
     "admin.html", ".env", ".github/", "CNAME", "package.json", "wrangler.",
@@ -23,9 +25,17 @@ def normalize_path(path: str) -> str:
     return "/".join(parts)
 
 
-def writable(path: str, patterns: list[str], *, allowed_hard_denied_paths: set[str] | None = None) -> bool:
+def writable(
+    path: str,
+    patterns: list[str],
+    *,
+    allowed_hard_denied_paths: set[str] | None = None,
+    frontend_only: bool = False,
+) -> bool:
     """Check the configured allowlist after path normalization."""
     clean = normalize_path(path)
+    if frontend_only and not is_frontend_owned_path(clean):
+        return False
     exceptions = allowed_hard_denied_paths or set()
     if not clean or any(denied in clean and clean not in exceptions for denied in HARD_DENY):
         return False

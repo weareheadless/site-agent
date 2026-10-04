@@ -160,19 +160,16 @@ def _with_inner_identity(context: dict[str, Any], fn: Any) -> Any:
     return fn(context)
 
 
-def _journal_enabled(context: dict[str, Any]) -> bool:
+def _editorial_enabled(context: dict[str, Any]) -> bool:
     config = context.get("config", {})
     editorial = config.get("editorial") if isinstance(config, dict) else {}
-    configured = bool(
-        (config.get("blog") or {}).get("journal_enabled", False)
-        or (isinstance(editorial, dict) and editorial.get("enabled", False))
-    )
-    return bool(context["memory"].kv_get("journal_enabled", configured))
+    configured = bool(isinstance(editorial, dict) and editorial.get("enabled", False))
+    return bool(context["memory"].kv_get("editorial_enabled", configured))
 
 
 def _article(context: dict[str, Any]) -> None:
-    if not _journal_enabled(context):
-        context["memory"].record_action("article", "journal is not enabled")
+    if not _editorial_enabled(context):
+        context["memory"].record_action("article", "editorial publishing is not enabled")
         return
     article_research = ((context.get("config", {}).get("seo") or {}).get("article_research") or {})
     if article_research.get("enabled"):
@@ -254,41 +251,6 @@ def _sync_strategy_initiative_for_draft(memory: Memory, draft_id: int) -> None:
                 memory.transition_strategy_initiative(initiative_id, state, validation=validation_manifest)
 
 
-def _mirror_keyword_research(context: dict[str, Any]) -> None:
-    """Keep the complete paid-research trail beside the owner-facing insight."""
-    payload = context.get("payload_gateway")
-    if payload is None:
-        return
-    memory = context["memory"]
-    tenant_id = context.get("tenant_id") or context["config"].get("instance_name")
-    for idea in memory.list_article_ideas(limit=100):
-        idea_data = idea.get("idea_json") if isinstance(idea.get("idea_json"), Mapping) else {}
-        note = idea.get("research_note_json") if isinstance(idea.get("research_note_json"), Mapping) else {}
-        try:
-            payload.upsert_seo_record(
-                "keyword_research",
-                {
-                    "sourceId": f"article-idea:{tenant_id}:{idea.get('id')}",
-                    "tenant_id": tenant_id,
-                    "idea_key": idea.get("cycle_key") or idea.get("idea_hash") or str(idea.get("id") or ""),
-                    "working_title": idea_data.get("working_title") or "",
-                    "status": idea.get("status") or "unknown",
-                    "selected_keyword": note.get("selected_query") or "",
-                    "language": idea_data.get("language") or "",
-                    "country": idea_data.get("market") or "",
-                    "requested_at": idea.get("created_ts"),
-                    "completed_at": idea.get("researched_ts"),
-                    "result": idea.get("research_result_json") or {},
-                    "serp_evidence": note.get("serp_evidence") or {},
-                    "draft_id": idea.get("draft_id"),
-                    "cost_micros": idea.get("research_cost_micros"),
-                    "error": idea.get("error") or "",
-                },
-            )
-        except Exception as exc:  # noqa: BLE001 - local research remains usable for retry
-            memory.record_action("article_research", f"Payload keyword mirror deferred: {str(exc)[:180]}")
-
-
 def _article_slug(title: str, draft_id: int) -> str:
     normalized = unicodedata.normalize("NFKD", str(title or ""))
     normalized = normalized.encode("ascii", "ignore").decode("ascii").lower()
@@ -297,16 +259,13 @@ def _article_slug(title: str, draft_id: int) -> str:
 
 
 def _article_html(markdown_body: str) -> str:
-    try:
-        import markdown
+    import markdown
 
-        return markdown.markdown(
-            str(markdown_body or ""),
-            extensions=["extra", "sane_lists"],
-            output_format="html5",
-        )
-    except Exception:  # noqa: BLE001 - a local draft remains useful if rendering is unavailable
-        return f"<p>{str(markdown_body or '').replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')}</p>"
+    return markdown.markdown(
+        str(markdown_body or ""),
+        extensions=["extra", "sane_lists"],
+        output_format="html5",
+    )
 
 
 def _mark_article_payload_blocked(memory: Memory, draft_id: int, reason: str) -> None:
@@ -329,15 +288,15 @@ def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -
     """Put one Ada article into Payload and validate the returned draft."""
     payload = context.get("payload_gateway")
     if payload is None:
-        return
+        raise RuntimeError("Payload gateway is required to prepare an editorial draft")
     memory = context["memory"]
     draft = next((item for item in memory.list_drafts(limit=100) if int(item.get("id") or 0) == draft_id), None)
     if not draft:
-        return
+        raise RuntimeError(f"editorial draft #{draft_id} is missing from the owner review ledger")
     title = str(draft.get("title") or "Ada draft").strip()[:300]
     slug = _article_slug(title, draft_id)
     site = context.get("config", {}).get("site") or {}
-    site_url = str(site.get("preview_url") or (context.get("config", {}).get("blog") or {}).get("site_url") or "").rstrip("/")
+    site_url = str(site.get("url") or site.get("preview_url") or "").rstrip("/")
     language = str(
         ((context.get("config", {}).get("customer_profile") or {}).get("brand") or {}).get("observed_language")
         or (context.get("config", {}).get("site") or {}).get("language")
@@ -389,7 +348,11 @@ def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -
         None,
     )
     if existing and existing.get("id") is not None:
-        document = payload.update("posts", str(existing["id"]), post, locale=language)
+        current = payload.read("posts", identifier=str(existing["id"]), identifier_kind="id", draft=True, locale=language)
+        document = payload.update(
+            "posts", str(existing["id"]), post, locale=language,
+            expected_hash=str(current.get("_helloadaRevision") or ""),
+        )
     else:
         document = payload.create("posts", post, locale=language)
     document_id = str(document.get("id") or "").strip()
@@ -415,6 +378,7 @@ def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -
             "state": state,
             "collection": "posts",
             "document_id": document_id,
+            "draft_hash": str(verified.get("_helloadaRevision") or ""),
             "source_id": source_id,
             "slug": slug,
             "validation": {"status": "passed" if state == "ready_for_review" else "blocked", "checks": checks, "reason": reason},
@@ -472,31 +436,7 @@ def _seo_insight(context: dict[str, Any]) -> None:
         return
     from ..brain.seo_insights import generate as generate_seo_insight
 
-    insight_id = _with_persona(context, generate_seo_insight, "editorial")
-    payload = context.get("payload_gateway")
-    if payload is not None and isinstance(insight_id, int):
-        _mirror_seo_insights(context, limit=1)
-
-
-def _mirror_seo_insights(context: dict[str, Any], *, limit: int = 12) -> None:
-    """Backfill local insight history into Payload after a bridge deploy."""
-    payload = context.get("payload_gateway")
-    if payload is None:
-        return
-    memory = context["memory"]
-    tenant_id = context.get("tenant_id") or context["config"].get("instance_name")
-    for insight in memory.list_seo_insights(limit=limit):
-        try:
-            payload.upsert_seo_record(
-                "insight",
-                {
-                    "sourceId": f"insight:{tenant_id}:{insight.get('id')}",
-                    **insight,
-                    "tenant_id": tenant_id,
-                },
-            )
-        except Exception as exc:  # noqa: BLE001 - local insight remains authoritative for retry
-            memory.record_action("seo_insight", f"Payload mirror deferred: {str(exc)[:240]}")
+    _with_persona(context, generate_seo_insight, "editorial")
 
 
 def _ga_snapshot(context: dict[str, Any]) -> None:
@@ -529,19 +469,6 @@ def _seo_snapshot(context: dict[str, Any]) -> None:
     memory.snapshot_metrics("gsc", summary)
 
 
-def _mirror_integration_sync(context: dict[str, Any], captured_at: str) -> None:
-    payload = context.get("payload_gateway")
-    if payload is None:
-        return
-    state = context.get("seo_provisioning_state") or context["memory"].kv_get("seo_provisioning_state", {})
-    if not isinstance(state, Mapping):
-        return
-    payload.upsert_seo_record(
-        "integration",
-        {**dict(state), "last_sync_at": captured_at, "tenant_id": context.get("tenant_id") or context["config"].get("instance_name")},
-    )
-
-
 def _seo_provisioning(context: dict[str, Any]) -> None:
     """Retry the automatic tenant bootstrap and attach a newly issued client."""
     from ..application.seo_bootstrap import auto_provision_seo
@@ -560,9 +487,6 @@ def _seo_provisioning(context: dict[str, Any]) -> None:
         context["crawlseo_client"] = runtime.crawlseo_client
         context["crawlseo_service"] = service
     context["seo_provisioning_state"] = state
-    payload = context.get("payload_gateway")
-    if payload is not None and state:
-        payload.upsert_seo_record("integration", state)
 
 
 def _strategist(context: dict[str, Any]) -> None:
@@ -584,7 +508,6 @@ def _article_research_cycle(context: dict[str, Any]) -> None:
     # complete editorial/business context as well as the research evidence.
     _with_persona(context, brain_article_research.reconcile, "article_research")
     _mirror_article_drafts(context)
-    _mirror_keyword_research(context)
 
 
 def register_growth_jobs(scheduler: Scheduler, config: dict[str, Any], context: dict[str, Any]) -> bool:
@@ -664,9 +587,7 @@ def register_jobs(scheduler: Scheduler, config: dict[str, Any], context: dict[st
             lambda: _seo_provisioning(context),
         )
     if context.get("payload_gateway") is not None:
-        _mirror_seo_insights(context)
         _mirror_article_drafts(context)
-        _mirror_keyword_research(context)
     if seo_enabled:
         scheduler.job(
             "ga_snapshot",

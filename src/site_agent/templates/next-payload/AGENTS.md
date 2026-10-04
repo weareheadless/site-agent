@@ -26,6 +26,23 @@ The VPS `helloada-release.timer` performs the release in a fresh checkout.
 Inspect its journal and `/SOCIAL/payload-releases/runs/<tenant>/<release-id>/receipt.json`.
 Failed or interrupted jobs stop until a corrected request has a new release ID.
 Never run ad-hoc production builds/uploads, reuse output, substitute credential
-files, or add legacy APIs as a repair. Schema migrations are a separate reviewed
-operation. A receipt must pass the authenticated browser check before reporting
-the owner-visible interface verified. Content publication requires owner approval.
+files, or add legacy APIs as a repair. Only first-site bootstrap may initialize
+the exact committed migration chain against a proven-empty tenant D1; ordinary
+releases verify that chain without changing the database. Existing-customer
+schema conversion requires its own reviewed migration release. A receipt must
+pass the authenticated browser check before reporting the owner-visible
+interface verified. Content publication requires owner approval.
+
+In a production Worker, tenant credentials come only from Cloudflare runtime
+bindings; never fall back to process variables. Run Payload CLI commands through
+the package-managed scripts so `PAYLOAD_CLI=1` selects Wrangler's platform
+proxy explicitly. A production CLI run requires the Cloudflare API token and
+must never be redirected to local D1 by an override flag.
+
+Payload is the only runtime content authority. Missing required documents,
+bindings, media, locale values, tenant identity, or contract versions are errors;
+do not substitute static files, hardcoded business copy, a second reader, or a
+different API. Customer schema definitions and production migration commands
+do not belong in this repository. New sites must preserve this exact scaffold
+and its package pins; a one-time migration must finish before any old reader is
+removed.

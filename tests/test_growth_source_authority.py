@@ -6,7 +6,7 @@ from site_agent.core.memory import Memory
 def test_successful_first_party_ingestion_has_one_authoritative_history(tmp_path, monkeypatch):
     from site_agent.senses import ga, seo
     class ContentOnlyPayload:
-        def upsert_seo_record(self, *args, **kwargs):
+        def __getattr__(self, name):
             raise AssertionError("Analytics must not be copied into a second content database")
     monkeypatch.setattr(ga, "weekly_summary", lambda *_args, **_kwargs: {"current": {"sessions": 0}, "period_days": 7})
     monkeypatch.setattr(seo, "summary", lambda *_args, **_kwargs: {"current": {"clicks": 0}, "period_days": 7})

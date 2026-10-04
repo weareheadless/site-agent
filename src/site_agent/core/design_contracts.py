@@ -1909,8 +1909,8 @@ class DesignContextSnapshot:
             "workspace_target", "asset_visual_evidence", "verified_facts", "unknowns", "prohibited_claims", "capabilities", "build_profile", "execution_profile", "design_skill_set",
         }
         build_profile = _text(value.get("build_profile"), "build_profile", required=False, maximum=80).lower()
-        if build_profile and build_profile not in {"next_react", "pelican_baseline"}:
-            raise ContractError("build_profile must be next_react or pelican_baseline")
+        if build_profile and build_profile != "next_react":
+            raise ContractError("build_profile must be next_react")
         result = cls(
             schema_version=version,
             captured_at=_text(value.get("captured_at"), "captured_at", maximum=100),
@@ -2396,8 +2396,8 @@ class BuildTarget:
         repository = _text(value.get("repository"), "repository", required=False, maximum=300)
         clone_path = _text(value.get("clone_path"), "clone_path", required=False, maximum=1_000)
         build_profile = _text(value.get("build_profile"), "build_profile", required=False, maximum=80).lower()
-        if build_profile and build_profile not in {"next_react", "pelican_baseline"}:
-            raise ContractError("build_profile must be next_react or pelican_baseline")
+        if build_profile and build_profile != "next_react":
+            raise ContractError("build_profile must be next_react")
         return cls(
             mode=mode,
             base_sha=_hash(value.get("base_sha"), "base_sha", _SHA1_RE),

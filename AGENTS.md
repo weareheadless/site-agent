@@ -107,6 +107,49 @@ Save and publish exact Payload document revisions separately. The Growth write
 receipt/guard is not a substitute for proving atomic compare-and-swap against
 every possible concurrent Payload writer.
 
+### No parallel architecture or silent recovery path
+
+- Every managed or publishable new site starts from
+  `src/site_agent/templates/next-payload` and imports the version-pinned shared
+  Payload admin/core packages. The isolated blank toolchain is an experiment
+  only; it cannot be adopted, provisioned, or deployed as a customer site.
+- Payload is the sole content/schema authority. Do not add customer-local
+  collection/global definitions, duplicate content JSON, static-site engines,
+  remote-vs-local readers, source-ID-as-relation behavior, or alternate CMS/API
+  paths. Data transformations must be explicit operator-run migrations into
+  the shared Payload contract; runtime content conversion is not supported.
+- Runtime reads and writes are fail-closed. Missing required documents, media,
+  configuration, bindings, locale data, package identity, or tenant identity
+  produce an explicit error; they must not switch to JSX copy, static files,
+  another endpoint, another credential, an empty success result, or a second
+  schema. Optional content is omitted only when the canonical schema declares
+  it optional.
+- A production Worker reads tenant secrets only from its Cloudflare runtime
+  bindings. Process variables are a local-development/test source only. Payload
+  CLI execution is explicit through package scripts; production CLI operations
+  require Cloudflare credentials and have no local-D1 override.
+- There is no legacy static-site engine, article file publisher, or parallel CMS
+  route. Website pages and articles use the shared Payload schema and the
+  canonical Next.js/React build profile only.
+- Pelican is retired: do not restore a dependency, build profile, scaffold,
+  importer, journal API, static article publisher, or compatibility branch.
+  Historical plan documents are archival context, not executable guidance.
+- Deployment never runs `payload migrate:create` or guesses SQL. A new-site
+  bootstrap request may apply the exact committed scaffold migration chain only
+  after the registered tenant D1 is proven empty. An existing-tenant schema
+  migration must be an explicit release-queue request naming the exact prior
+  ledger identity and registered target head. The pipeline verifies the live
+  ledger is that exact strict prefix of the candidate's committed chain, uploads
+  the candidate without promoting it, applies only the committed migration,
+  verifies the full target ledger and Payload contract, then promotes that exact
+  uploaded version. Ordinary Worker releases never apply migrations; any
+  mismatch, missing ledger, unrecognized prefix, or unrequested schema change
+  fails closed. No migration generation or SQL guessing occurs in deployment.
+- Bootstrap and source promotion must use the one canonical VPS release queue.
+  They may not call Wrangler/OpenNext production deployment directly or replace
+  an existing tenant checkout to “repair” its baseline. A mismatched or
+  untracked baseline stops with an operator-visible diagnostic.
+
 ## Module Ownership
 
 - `config.py`: config loading, validation, secret resolution.
@@ -129,9 +172,8 @@ For a design request, follow this chain in order:
 1. `GET /api/chat/jobs/{job_id}`: confirm queued, running, done, or error.
 2. For a completed result, read `result.merge_draft_id` or `result.proposal_id`.
 3. `GET /api/drafts`: confirm the referenced draft is pending.
-4. `GET /api/journal`: confirm journal setup state and draft ID when relevant.
-5. `GET /api/pages?draft_id={draft_id}`: confirm the Design page list.
-6. Load the iframe through `/ada/api/review/{draft_id}/{page}` and inspect
+4. `GET /api/pages?draft_id={draft_id}`: confirm the Design page list.
+5. Load the iframe through `/ada/api/review/{draft_id}/{page}` and inspect
    every CSS/image request under the same `/ada` prefix.
 7. Approve or decline only from the Design controls.
 

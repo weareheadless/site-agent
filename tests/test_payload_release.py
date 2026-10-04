@@ -1,6 +1,7 @@
 """Release safety boundaries: provenance, canonical routes and immutable requests."""
 import importlib.util
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -19,10 +20,47 @@ release = load_script("deploy-payload-customer")
 queue = load_script("reconcile-payload-releases")
 SHA = "a" * 40
 REGISTRY = json.loads((ROOT / "deploy/payload-customers.json").read_text())
+TEMPLATE = ROOT / "src/site_agent/templates/next-payload"
+TEMPLATE_MANIFEST = json.loads((TEMPLATE / "template-manifest.json").read_text())
+CUSTOMER = {
+    **REGISTRY["customers"]["oceanicvibes"],
+    "migrationHead": TEMPLATE_MANIFEST["migrationHead"],
+    "d1DatabaseId": "56d3f277-fbaf-43d4-91e5-b3a195653a05",
+    "d1DatabaseName": "oceanicvibes-content",
+    "r2BucketName": "helloada-oceanicvibes-media",
+}
 
 
 def test_committed_queue_is_valid():
     queue.validate_queue(json.loads((ROOT / "deploy/desired-releases.json").read_text()), REGISTRY)
+
+
+def test_schema_initialization_queue_is_exactly_registered_and_cannot_be_an_approval():
+    registry = {"customers": {"demo": {"migrationHead": "c" * 64}}}
+    request = {"id": "bootstrap-1", "sha": SHA, "initializeSchema": {"migrationHead": "c" * 64}}
+    queue.validate_queue({"schema": 1, "releases": {"demo": request}}, registry)
+    for invalid in (
+        {**request, "initializeSchema": {"migrationHead": "d" * 64}},
+        {**request, "approvalId": 7},
+    ):
+        with pytest.raises(ValueError, match="release|initialization"):
+            queue.validate_queue({"schema": 1, "releases": {"demo": invalid}}, registry)
+
+
+def test_schema_migration_queue_requires_exact_old_and_registered_target_heads():
+    registry = {"customers": {"demo": {"migrationHead": "c" * 64}}}
+    request = {"id": "schema-2", "sha": SHA, "schemaMigration": {
+        "fromLedgerIdentity": "b" * 64, "targetMigrationHead": "c" * 64,
+    }}
+    queue.validate_queue({"schema": 1, "releases": {"demo": request}}, registry)
+    for invalid in (
+        {**request, "schemaMigration": {"fromLedgerIdentity": "b" * 64, "targetMigrationHead": "d" * 64}},
+        {**request, "schemaMigration": {"fromLedgerIdentity": "c" * 64, "targetMigrationHead": "c" * 64}},
+        {**request, "approvalId": 9},
+        {**request, "schemaMigration": {"fromLedgerIdentity": "bad", "targetMigrationHead": "c" * 64}},
+    ):
+        with pytest.raises(ValueError, match="release|schema migration"):
+            queue.validate_queue({"schema": 1, "releases": {"demo": invalid}}, registry)
 
 
 def test_interrupted_receipts_are_terminal_even_after_the_queue_moves_on(tmp_path):
@@ -53,27 +91,35 @@ def test_invalid_requests_never_execute(tenant, release_request):
 
 
 def test_external_customer_repository_is_rejected():
-    customer = {**REGISTRY["customers"]["oceanicvibes"], "repository": "https://github.com/stranger/site.git"}
+    customer = {**CUSTOMER, "repository": "https://github.com/stranger/site.git"}
     with pytest.raises(ValueError, match="official"):
         release.validate_target(customer, "oceanicvibes", SHA, "release-1")
 
 
-@pytest.mark.parametrize("field", ["payloadAdmin", "payloadCore", "contentContract"])
+def test_customer_without_a_committed_migration_identity_cannot_be_released():
+    customer = {**REGISTRY["customers"]["oceanicvibes"], "migrationHead": ""}
+    with pytest.raises(ValueError, match="migration-chain identity"):
+        release.validate_target(customer, "oceanicvibes", SHA, "release-1")
+
+
+@pytest.mark.parametrize("field", ["payloadAdmin", "payloadCore", "contentContract", "schemaRevision", "schemaIdentity"])
 def test_release_registry_requires_exact_shared_payload_versions(field):
-    customer = {**REGISTRY["customers"]["oceanicvibes"], field: ""}
-    with pytest.raises(ValueError, match="version|contract"):
+    customer = {**CUSTOMER, field: ""}
+    with pytest.raises(ValueError, match="version|contract|schema"):
         release.validate_target(customer, "oceanicvibes", SHA, "release-1")
 
 
 def test_worker_contract_requires_the_registered_tenant_and_all_shared_versions():
-    customer = REGISTRY["customers"]["oceanicvibes"]
-    release.validate_worker_contract({"name": "oceanicvibes", "tenant": "oceanicvibes",
+    customer = CUSTOMER
+    worker = {"name": "oceanicvibes", "tenant": "oceanicvibes", "d1Count": 1, "r2Count": 1,
         "admin": customer["payloadAdmin"], "core": customer["payloadCore"],
-        "contract": customer["contentContract"]}, customer, "oceanicvibes")
+        "contract": customer["contentContract"], "schemaRevision": customer["schemaRevision"],
+        "schemaIdentity": customer["schemaIdentity"], "migrationHead": customer["migrationHead"],
+        "d1DatabaseId": customer["d1DatabaseId"], "d1DatabaseName": customer["d1DatabaseName"],
+        "r2BucketName": customer["r2BucketName"]}
+    release.validate_worker_contract(worker, customer, "oceanicvibes")
     with pytest.raises(RuntimeError, match="shared Payload contract"):
-        release.validate_worker_contract({"name": "oceanicvibes", "tenant": "oceanicvibes",
-            "admin": customer["payloadAdmin"], "core": "0.0.9",
-            "contract": customer["contentContract"]}, customer, "oceanicvibes")
+        release.validate_worker_contract({**worker, "core": "0.0.9"}, customer, "oceanicvibes")
 
 
 def test_promotion_uses_the_uploaded_version_and_rejects_ambiguous_output():
@@ -86,6 +132,7 @@ def test_promotion_uses_the_uploaded_version_and_rejects_ambiguous_output():
 
 
 def test_same_admin_version_does_not_prove_new_source(monkeypatch):
+    customer = CUSTOMER
     class Response:
         def __enter__(self):
             return self
@@ -94,24 +141,32 @@ def test_same_admin_version_does_not_prove_new_source(monkeypatch):
             pass
 
         def read(self):
-            return json.dumps({"ok": True, "tenant": "oceanicvibes", "payloadAdmin": "0.8.6",
-                               "payloadCore": "0.1.0", "contentContract": "helloada-content-v1",
+            return json.dumps({"ok": True, "tenant": "oceanicvibes", "payloadAdmin": customer["payloadAdmin"],
+                               "payloadCore": customer["payloadCore"], "contentContract": customer["contentContract"],
+                               "schemaRevision": customer["schemaRevision"], "schemaIdentity": customer["schemaIdentity"],
+                               "migrationHead": customer["migrationHead"],
                                "releaseSha": "b" * 40}).encode()
 
     monkeypatch.setattr(release.urllib.request, "urlopen", lambda *args, **kwargs: Response())
     with pytest.raises(RuntimeError, match="release SHA"):
         release.check_health("https://oceanicvibes.com/api/health", "oceanicvibes",
-                             REGISTRY["customers"]["oceanicvibes"], SHA)
+                             CUSTOMER, SHA)
 
 
 @pytest.mark.parametrize("key,value", [
     ("payloadAdmin", "0.8.5"),
     ("payloadCore", "0.0.9"),
     ("contentContract", "helloada-content-v0"),
+    ("schemaRevision", 99),
+    ("schemaIdentity", "f" * 64),
 ])
 def test_live_health_requires_the_exact_shared_payload_contract(monkeypatch, key, value):
-    body = {"ok": True, "tenant": "oceanicvibes", "payloadAdmin": "0.8.6",
-            "payloadCore": "0.1.0", "contentContract": "helloada-content-v1", "releaseSha": SHA}
+    customer = CUSTOMER
+    body = {"ok": True, "tenant": "oceanicvibes", "payloadAdmin": customer["payloadAdmin"],
+            "payloadCore": customer["payloadCore"], "contentContract": customer["contentContract"],
+            "schemaRevision": customer["schemaRevision"], "schemaIdentity": customer["schemaIdentity"],
+            "migrationHead": customer["migrationHead"],
+            "releaseSha": SHA}
     body[key] = value
 
     class Response:
@@ -122,21 +177,31 @@ def test_live_health_requires_the_exact_shared_payload_contract(monkeypatch, key
     monkeypatch.setattr(release.urllib.request, "urlopen", lambda *args, **kwargs: Response())
     with pytest.raises(RuntimeError, match="shared Payload contract"):
         release.check_health("https://oceanicvibes.com/api/health", "oceanicvibes",
-                             REGISTRY["customers"]["oceanicvibes"], SHA)
+                             CUSTOMER, SHA)
 
 
 def artifact(tmp_path):
-    customer = REGISTRY["customers"]["oceanicvibes"]
+    customer = CUSTOMER
+    shutil.copytree(TEMPLATE / "src/migrations", tmp_path / "src/migrations")
     files = {
+        "payload.config.ts": "import { createHelloAdaSchema } from '@weareheadless/helloada-payload-core/schema';\nconst schema = createHelloAdaSchema(guard);\n",
         ".open-next/worker.js": "import './server-functions/default/handler.mjs'",
         ".open-next/server-functions/default/handler.mjs": "route('/growth/contract')",
-        ".next/server/app-paths-manifest.json": json.dumps({"/api/helloada/[...path]/route": "helloada.js", "/api/content/route": "content.js", "/api/health/route": "health.js"}),
+        ".next/server/app-paths-manifest.json": json.dumps({
+            "/api/helloada/[...path]/route": "helloada.js",
+            "/api/workspace/content/route": "content.js",
+            "/api/workspace/global/route": "global.js",
+            "/api/workspace/media/route": "media.js",
+            "/api/health/route": "health.js",
+        }),
         "node_modules/@weareheadless/helloada-payload-admin/package.json": json.dumps({"version": customer["payloadAdmin"]}),
         "node_modules/@weareheadless/helloada-payload-core/package.json": json.dumps({"version": customer["payloadCore"]}),
         "helloada-content-contract.json": json.dumps({"contract": customer["contentContract"]}),
+        "template-manifest.json": json.dumps(TEMPLATE_MANIFEST),
         ".open-next/assets/helloada-release.json": json.dumps({"sourceSha": SHA,
             "payloadAdmin": customer["payloadAdmin"], "payloadCore": customer["payloadCore"],
-            "contentContract": customer["contentContract"]}),
+            "contentContract": customer["contentContract"], "schemaRevision": customer["schemaRevision"],
+            "schemaIdentity": customer["schemaIdentity"], "migrationHead": customer["migrationHead"]}),
     }
     for name, value in files.items():
         path = tmp_path / name
@@ -147,32 +212,39 @@ def artifact(tmp_path):
 
 def test_checks_compiled_server_instead_of_thin_worker_entry(tmp_path):
     checkout = artifact(tmp_path)
-    hashes = release.inspect_artifact(checkout, REGISTRY["customers"]["oceanicvibes"], SHA)
+    hashes = release.inspect_artifact(checkout, CUSTOMER, SHA)
     assert "server-functions/default/handler.mjs" in hashes
+
+
+def test_release_rejects_a_tenant_local_payload_schema(tmp_path):
+    checkout = artifact(tmp_path)
+    (checkout / "payload.config.ts").write_text("export default buildConfig({ collections: [TenantPages] });\n")
+    with pytest.raises(RuntimeError, match="shared site-agent schema factory"):
+        release.inspect_artifact(checkout, CUSTOMER, SHA)
 
 
 def test_stale_release_marker_is_rejected(tmp_path):
     checkout = artifact(tmp_path)
     (checkout / ".open-next/assets/helloada-release.json").write_text(json.dumps({"sourceSha": "b" * 40}))
     with pytest.raises(RuntimeError, match="marker"):
-        release.inspect_artifact(checkout, REGISTRY["customers"]["oceanicvibes"], SHA)
+        release.inspect_artifact(checkout, CUSTOMER, SHA)
 
 
 def test_shared_core_version_must_match_release_registry(tmp_path):
     checkout = artifact(tmp_path)
     (checkout / "node_modules/@weareheadless/helloada-payload-core/package.json").write_text(json.dumps({"version": "0.0.9"}))
     with pytest.raises(RuntimeError, match="core version"):
-        release.inspect_artifact(checkout, REGISTRY["customers"]["oceanicvibes"], SHA)
+        release.inspect_artifact(checkout, CUSTOMER, SHA)
 
 
 def test_browser_bridge_does_not_substitute_for_service_content_gateway(tmp_path):
     checkout = artifact(tmp_path)
     path = checkout / ".next/server/app-paths-manifest.json"
     routes = json.loads(path.read_text())
-    del routes["/api/content/route"]
+    del routes["/api/workspace/content/route"]
     path.write_text(json.dumps(routes))
     with pytest.raises(RuntimeError, match="service content"):
-        release.inspect_artifact(checkout, REGISTRY["customers"]["oceanicvibes"], SHA)
+        release.inspect_artifact(checkout, CUSTOMER, SHA)
 
 
 def test_obsolete_route_in_built_manifest_is_rejected(tmp_path):
@@ -182,17 +254,181 @@ def test_obsolete_route_in_built_manifest_is_rejected(tmp_path):
     routes["/api/atelier/ada/route"] = "old.js"
     path.write_text(json.dumps(routes))
     with pytest.raises(RuntimeError, match="obsolete"):
-        release.inspect_artifact(checkout, REGISTRY["customers"]["oceanicvibes"], SHA)
+        release.inspect_artifact(checkout, CUSTOMER, SHA)
+
+
+def test_empty_tenant_database_requires_explicit_bootstrap_initialization(monkeypatch):
+    calls = []
+    monkeypatch.setattr(release, "applied_payload_migrations", lambda *args: ([], []))
+    monkeypatch.setattr(release, "run", lambda *args: calls.append(args) or "")
+    monkeypatch.setattr(release, "tenant_runtime_secrets", lambda *args: {"PAYLOAD_SECRET": "secret"})
+    with pytest.raises(RuntimeError, match="explicit bootstrap initialization"):
+        release.enforce_payload_migrations(TEMPLATE, CUSTOMER, {}, None, None, {}, {}, "oceanicvibes", lambda _: None)
+    assert calls == []
+
+
+def test_existing_database_never_receives_a_schema_mutation(monkeypatch):
+    expected = [entry["name"] for entry in TEMPLATE_MANIFEST["migrations"]]
+    calls = []
+    monkeypatch.setattr(release, "applied_payload_migrations", lambda *args: (["pages", "payload_migrations"], expected))
+    monkeypatch.setattr(release, "run", lambda *args: calls.append(args) or "")
+    monkeypatch.setattr(release, "tenant_runtime_secrets", lambda *args: pytest.fail("existing D1 must not load migration secrets"))
+    result = release.enforce_payload_migrations(TEMPLATE, CUSTOMER, {}, None, None, {}, {}, "oceanicvibes", lambda _: None)
+    assert result == expected and calls == []
+
+
+def test_new_site_initialization_is_exact_and_idempotent(monkeypatch):
+    expected = [entry["name"] for entry in TEMPLATE_MANIFEST["migrations"]]
+    calls = []
+    queries = iter([([], []), (["pages", "payload_migrations"], expected)])
+    monkeypatch.setattr(release, "applied_payload_migrations", lambda *args: next(queries))
+    monkeypatch.setattr(release, "run", lambda command, *args: calls.append(command) or "migration complete")
+    monkeypatch.setattr(release, "tenant_runtime_secrets", lambda *args: {"PAYLOAD_SECRET": "secret"})
+    stages = []
+    result = release.enforce_payload_migrations(
+        TEMPLATE, CUSTOMER, {}, CUSTOMER["migrationHead"], None, {}, {}, "oceanicvibes", stages.append,
+    )
+    assert result == expected
+    assert stages == ["initialize-schema"]
+    assert calls == [[str(TEMPLATE / "node_modules/.bin/payload"), "migrate"]]
+
+
+def test_tenant_token_is_mapped_to_the_canonical_worker_binding(tmp_path):
+    tenant = "atelier-harmonie"
+    tenant_token_name = "PROVISIONED_ATELIER_HARMONIE_TOKEN"
+    provisioned_root = tmp_path / "websites"
+    tenant_dir = provisioned_root / tenant
+    tenant_dir.mkdir(parents=True)
+    config_path = tenant_dir / "config.yaml"
+    config_path.write_text(f"instance_name: {tenant}\n")
+    (tenant_dir / "tenant.env").write_text(
+        f"PAYLOAD_SECRET=payload-secret-for-test\n"
+        f"{tenant_token_name}=site-agent-token-for-test\n"
+    )
+    (provisioned_root / "tenants.json").write_text(json.dumps({
+        tenant: {"config_path": str(config_path), "api_token_env": tenant_token_name},
+    }))
+    host_config = tmp_path / "host.yaml"
+    host_config.write_text(f"workspace_api:\n  provisioned_root: {provisioned_root}\n")
+
+    secrets = release.tenant_runtime_secrets(
+        {"connectionGate": {"config": str(host_config)}}, tenant,
+    )
+
+    assert secrets == {
+        "PAYLOAD_SECRET": "payload-secret-for-test",
+        "HELLOADA_SITE_AGENT_TOKEN": "site-agent-token-for-test",
+    }
+
+
+def test_tenant_secret_mapping_rejects_a_noncanonical_worker_binding(tmp_path, monkeypatch):
+    tenant = "oceanicvibes"
+    token_name = "PROVISIONED_OCEANICVIBES_TOKEN"
+    provisioned_root = tmp_path / "websites"
+    tenant_dir = provisioned_root / tenant
+    tenant_dir.mkdir(parents=True)
+    config_path = tenant_dir / "config.yaml"
+    config_path.write_text(f"instance_name: {tenant}\n")
+    (tenant_dir / "tenant.env").write_text(
+        f"PAYLOAD_SECRET=payload-secret-for-test\n{token_name}=site-agent-token-for-test\n"
+    )
+    (provisioned_root / "tenants.json").write_text(json.dumps({
+        tenant: {"config_path": str(config_path), "api_token_env": token_name},
+    }))
+    host_config = tmp_path / "host.yaml"
+    host_config.write_text(f"workspace_api:\n  provisioned_root: {provisioned_root}\n")
+    worker_manifest = json.loads((TEMPLATE / "template-manifest.json").read_text())
+    monkeypatch.setattr(release, "ROOT", tmp_path)
+    (tmp_path / "src/site_agent/templates/next-payload").mkdir(parents=True)
+    (tmp_path / "src/site_agent/templates/next-payload/template-manifest.json").write_text(
+        json.dumps({**worker_manifest, "workerTokenEnv": "TENANT_SPECIFIC_TOKEN"})
+    )
+
+    with pytest.raises(RuntimeError, match="canonical Worker token binding"):
+        release.tenant_runtime_secrets(
+            {"connectionGate": {"config": str(host_config)}}, tenant,
+        )
+
+
+def test_partial_or_unexpected_database_never_triggers_a_migration(monkeypatch):
+    expected = [entry["name"] for entry in TEMPLATE_MANIFEST["migrations"]]
+    calls = []
+    monkeypatch.setattr(release, "applied_payload_migrations", lambda *args: (["users", "payload_migrations"], []))
+    monkeypatch.setattr(release, "run", lambda *args: calls.append(args) or "")
+    with pytest.raises(RuntimeError, match="non-empty D1"):
+        release.enforce_payload_migrations(
+            TEMPLATE, CUSTOMER, {}, CUSTOMER["migrationHead"], None, {}, {}, "oceanicvibes", lambda _: None,
+        )
+    assert calls == []
+
+
+def test_existing_tenant_migration_requires_the_exact_nonempty_ledger_prefix(monkeypatch):
+    expected = [entry["name"] for entry in TEMPLATE_MANIFEST["migrations"]]
+    applied = expected[:1]
+    from_head = release.migration_ledger_head(applied)
+    calls, stages = [], []
+    queries = iter([
+        (["pages", "payload_migrations"], applied),
+        (["pages", "payload_migrations"], expected),
+    ])
+    monkeypatch.setattr(release, "applied_payload_migrations", lambda *args: next(queries))
+    monkeypatch.setattr(release, "run", lambda command, *args: calls.append(command) or "migration complete")
+    monkeypatch.setattr(release, "tenant_runtime_secrets", lambda *args: {"PAYLOAD_SECRET": "secret"})
+
+    result = release.enforce_payload_migrations(
+        TEMPLATE, CUSTOMER, {}, None, from_head, {}, {}, "oceanicvibes", stages.append,
+    )
+
+    assert result == expected
+    assert stages == ["migrate-schema"]
+    assert calls == [[str(TEMPLATE / "node_modules/.bin/payload"), "migrate"]]
+
+
+@pytest.mark.parametrize("applied,requested_head", [
+    ([], release.migration_ledger_head([])),
+    (["unknown"], release.migration_ledger_head(["unknown"])),
+    ([TEMPLATE_MANIFEST["migrations"][0]["name"]], "f" * 64),
+])
+def test_existing_tenant_migration_rejects_missing_or_changed_ledger(monkeypatch, applied, requested_head):
+    calls = []
+    monkeypatch.setattr(release, "applied_payload_migrations", lambda *args: (["pages", "payload_migrations"], applied))
+    monkeypatch.setattr(release, "run", lambda *args: calls.append(args) or "")
+    with pytest.raises(RuntimeError, match="migration|ledger|existing tenant"):
+        release.enforce_payload_migrations(
+            TEMPLATE, CUSTOMER, {}, None, requested_head, {}, {}, "oceanicvibes", lambda _: None,
+        )
+    assert calls == []
+
+
+def test_existing_tenant_migration_refuses_to_mutate_without_an_explicit_request(monkeypatch):
+    expected = [entry["name"] for entry in TEMPLATE_MANIFEST["migrations"]]
+    monkeypatch.setattr(release, "applied_payload_migrations", lambda *args: (["pages", "payload_migrations"], expected[:1]))
+    monkeypatch.setattr(release, "run", lambda *args: pytest.fail("unexpected Payload migration"))
+    with pytest.raises(RuntimeError, match="explicit exact schema-migration request"):
+        release.enforce_payload_migrations(
+            TEMPLATE, CUSTOMER, {}, None, None, {}, {}, "oceanicvibes", lambda _: None,
+        )
+
+
+def test_completed_schema_migration_request_is_idempotent(monkeypatch):
+    expected = [entry["name"] for entry in TEMPLATE_MANIFEST["migrations"]]
+    from_head = release.migration_ledger_head(expected[:1])
+    monkeypatch.setattr(release, "applied_payload_migrations", lambda *args: (["pages", "payload_migrations"], expected))
+    monkeypatch.setattr(release, "run", lambda *args: pytest.fail("completed migration must not rerun"))
+    assert release.enforce_payload_migrations(
+        TEMPLATE, CUSTOMER, {}, None, from_head, {}, {}, "oceanicvibes", lambda _: None,
+    ) == expected
 
 
 def promoted_receipt(tmp_path):
-    customer = REGISTRY["customers"]["oceanicvibes"]
+    customer = CUSTOMER
     archive = tmp_path / "open-next.tar.gz"
     archive.write_bytes(b"immutable-artifact")
     result = {"tenant": "oceanicvibes", "sourceSha": SHA, "releaseId": "release-1",
               "worker": customer["worker"], "repository": customer["repository"],
               "payloadAdmin": customer["payloadAdmin"], "payloadCore": customer["payloadCore"],
-              "contentContract": customer["contentContract"],
+              "contentContract": customer["contentContract"], "schemaRevision": customer["schemaRevision"],
+              "schemaIdentity": customer["schemaIdentity"], "migrationHead": customer["migrationHead"],
               "status": "failed", "stage": "verify-connection", "error": "connection failed",
               "deployment": {"id": "deployment-1"}, "uploadedVersion": "version-1",
               "archiveSha256": release.hashlib.sha256(archive.read_bytes()).hexdigest()}
@@ -223,7 +459,7 @@ def test_read_only_continuation_rejects_unproven_release(tmp_path, changed):
 
 def test_edge_convergence_repeats_identical_checks_without_deploying(monkeypatch):
     result = {"tenant": "oceanicvibes", "sourceSha": SHA, "uploadedVersion": "version-1"}
-    customer = REGISTRY["customers"]["oceanicvibes"]
+    customer = CUSTOMER
     monkeypatch.setattr(release, "cloudflare_deployment", lambda *args: {
         "versions": [{"percentage": 100, "version_id": "version-1"}]})
     monkeypatch.setattr(release, "check_health", lambda *args: {"ok": True})
@@ -258,6 +494,6 @@ def test_failed_connection_gate_is_bounded_and_remains_failed(monkeypatch):
     monkeypatch.setattr(release.time, "sleep", lambda _: None)
     monkeypatch.setattr(release, "run", lambda *args: (_ for _ in ()).throw(RuntimeError("gate failed")))
     with pytest.raises(RuntimeError, match="gate failed"):
-        release.verify_live(result, REGISTRY["customers"]["oceanicvibes"], REGISTRY,
+        release.verify_live(result, CUSTOMER, REGISTRY,
                             {}, {}, lambda name: result.update(stage=name))
     assert len(result["gateAttempts"]) == 12 and "connectionVerifiedAt" not in result

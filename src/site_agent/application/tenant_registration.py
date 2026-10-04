@@ -200,7 +200,7 @@ class TenantRegistrationService:
 
         site_dir = path.parent / "site"
         try:
-            initialize_neutral_repository(site_dir)
+            _, baseline_sha = initialize_neutral_repository(site_dir)
         except (DesignExperimentError, OSError) as exc:
             raise TenantRegistrationError(
                 f"tenant source scaffold could not be created: {str(exc)[:300]}"
@@ -209,7 +209,7 @@ class TenantRegistrationService:
         upgraded = dict(raw)
         upgraded["site"] = {
             **dict(site),
-            **_neutral_site_overrides(site_dir),
+            **_neutral_site_overrides(site_dir, baseline_sha),
             "website_present": False,
         }
         upgraded["design_engine"] = deep_merge(
@@ -312,7 +312,7 @@ class TenantRegistrationService:
         data_dir.mkdir(parents=True, exist_ok=True)
 
         try:
-            initialize_neutral_repository(site_dir)
+            _, baseline_sha = initialize_neutral_repository(site_dir)
         except (DesignExperimentError, OSError) as exc:
             raise TenantRegistrationError(
                 f"tenant source scaffold could not be created: {str(exc)[:300]}"
@@ -320,7 +320,7 @@ class TenantRegistrationService:
 
         created = self._write_config(
             config_path,
-            _new_site_config(normalized, data_dir, display_name, site_dir),
+            _new_site_config(normalized, data_dir, display_name, site_dir, baseline_sha),
         )
         memory = Memory(data_dir / "memory.db")
         try:
@@ -396,6 +396,7 @@ def _new_site_config(
     data_dir: Path,
     display_name: str,
     site_dir: Path,
+    baseline_sha: str,
 ) -> dict[str, Any]:
     """Override block for a brand-new website tenant (merged with package defaults)."""
     return {
@@ -408,26 +409,24 @@ def _new_site_config(
             "research": {"enabled": False},
         },
         "site": {
-            **_neutral_site_overrides(site_dir),
+            **_neutral_site_overrides(site_dir, baseline_sha),
             "website_present": False,
         },
-        "blog": {
-            "engine": "payload",
-            "journal_enabled": True,
-        },
+        "editorial": {"enabled": True},
         "design_engine": _neutral_design_overrides(),
         "builder": _neutral_builder_overrides(),
         "publish_mode": "ask_first",
     }
 
 
-def _neutral_site_overrides(site_dir: Path) -> dict[str, Any]:
+def _neutral_site_overrides(site_dir: Path, baseline_sha: str) -> dict[str, Any]:
     from ..hands.site_build import NEXT_REACT_PROFILE
 
     return {
         "adapter": "neutral_scaffold",
         "repository": "",
         "clone_path": str(site_dir),
+        "platform_baseline_sha": baseline_sha,
         "branch": "main",
         "preview_branch": "",
         "writable_patterns": list(NEXT_REACT_PROFILE.writable_patterns),

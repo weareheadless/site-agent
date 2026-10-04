@@ -1,8 +1,41 @@
 # Site-Agent / Payload Platform Consolidation Plan
 
-**Status:** Proposed implementation contract for a coding AI
+**Status:** Active implementation contract — in progress; not accepted
 **Date:** 2026-09-30
 **Scope:** Make `site-agent` the central product code consumed by every customer website; make Payload the only customer administration interface; migrate Atelier Harmonie and OceanicVibes; remove the legacy human-facing FastAPI interfaces and all Pelican runtime paths.
+
+## Owner acceptance clarification — 2026-10-04
+
+This clarification supersedes any conflicting use of “production customer,”
+“customer data,” or production-cutover language below. Atelier Harmonie and
+OceanicVibes are validation tenants for the product architecture; they do not
+contain customer production data. Their purpose here is to validate that the
+same `site-agent` release and canonical Payload schema work across multiple
+tenants. Deployments for this task are validation deployments only: do not
+change DNS, claim a customer-data migration, or treat a successful build as
+acceptance.
+
+Acceptance must prove, in order:
+
+1. The canonical `site-agent` schema, admin package, and content bindings are
+   deployed and live on both Atelier and OceanicVibes validation tenants. Both
+   report the same schema identity. Their committed migration-history heads
+   are verified per tenant and may differ because their existing migration
+   histories differ.
+2. On each tenant, Payload can edit the canonical fields and those exact values
+   render on the correct public page/article routes; shared navigation/footer
+   globals and metadata are editable and render consistently. Record separate
+   build, release-receipt, health, and authenticated-browser evidence for each.
+3. The normal HelloAda new-site flow creates a brand-new tenant from the
+   canonical template without manual schema repair. The spawned site reports
+   the same schema identity, package versions, and migration head; its default
+   editable page/article fields and shared globals are present and mapped into
+   the generated frontend automatically.
+
+The third proof is the final acceptance test. Until all three pass, the
+implementation remains incomplete even if the two existing validation tenants
+pass. A source-only fixture, local unit test, manually prepared Payload site,
+or public health endpoint is not sufficient evidence.
 
 ## 1. Authority and reading order
 
@@ -24,16 +57,19 @@ It complements, and does not weaken:
 - `docs/helloada-multi-site-control-plane-implementation-plan.md`;
 - `docs/next-react-payload-correction-plan.md`;
 - `docs/brand-composition-and-behavior-system-implementation-plan.md`;
-- the immutable candidate, deterministic validation, owner review, and explicit production-approval rules.
+- the immutable candidate, deterministic validation, owner review, and explicit publication-approval rules.
 
 Where older documents describe `src/site_agent/web/static/admin.html`, the
 `site-agent serve` command, a FastAPI password session, Pelican, or a
 `pelican_baseline` build profile as supported product surfaces, this plan
 supersedes them.
 
-This plan does not authorize a production deployment, remote database
-migration, DNS change, repository push, or deletion of production resources.
-Those remain separate owner-approved operations.
+For this task, the owner has authorized release-queue deployments to the two
+validation tenants, their deterministic Payload schema migrations, and one
+fresh site created through the normal HelloAda flow. These are validation
+environments with no real customer or production data. Do not change DNS,
+target unrelated tenants, or delete the existing D1 databases or R2 buckets.
+Keep prior Worker versions and data resources available for rollback.
 
 ## 2. Executive decision
 
@@ -423,13 +459,16 @@ unshipped `devtools` extra with no production route or package data.
 
 Do not remove the old UI until all are true:
 
-- Atelier Harmonie uses the shared Payload workspace in production;
-- OceanicVibes uses the shared Payload workspace in production;
-- a newly provisioned test tenant completes the same owner journey;
+- Atelier Harmonie and OceanicVibes are deployed as validation tenants and
+  complete the shared Payload owner journey against their own Workers;
+- a newly provisioned validation tenant completes the same journey through the
+  normal HelloAda create-site flow;
 - every active legacy route has a parity test or an explicit deletion decision;
-- production access logs show no owner traffic to `/ada/` for a defined
-  observation window;
-- rollback instructions for both migrated customers are tested.
+- the Python service retains only required internal APIs, not a human-facing
+  admin or intake UI;
+- Worker rollback and exact deployment receipts are tested for both validation
+  tenants. No production-data or custom-domain gate is implied by this test
+  program.
 
 ## 9. Pelican removal
 
@@ -487,6 +526,14 @@ customer application containing:
 - typecheck, lint, test, build, OpenNext build, and smoke scripts;
 - a template schema marker consumed by the release/upgrade system.
 
+The shared schema identity is derived from collection/global/field/block
+definitions and is independent of each tenant's enabled locales. Locale and
+default-locale settings are tenant configuration. A newly spawned site uses
+the canonical template migration head; existing tenants keep their immutable
+prior migrations and append a tenant-specific canonical migration, so their
+migration heads need not be identical even though their final schema identity
+must be.
+
 The template contains no customer design beyond a safe bootstrap shell. Ada
 creates the customer-facing design from confirmed intake. The shared HelloAda
 admin is product code and is not regenerated by Ada.
@@ -499,13 +546,14 @@ Atelier is the first migration because it already proves the target runtime.
 
 - current public routes and frontend design;
 - all Payload collections and globals;
-- D1 data and Payload migrations;
+- the existing D1 identity and migration history; append a deterministic
+  canonical migration without rewriting earlier migration records;
 - R2 objects and media relationships;
 - Payload users and access controls;
 - localization behavior;
 - existing drafts, versions, and publication state;
 - customer-specific commerce/product behavior;
-- production Worker and domain.
+- existing validation Worker and hostnames (no DNS change).
 
 ### 11.2 Extract and replace
 
@@ -528,10 +576,15 @@ Steps:
 5. Keep `Atelier Harmonie` only as workspace context.
 6. Point Payload `Nav`, dashboard, Icon, and Logo wrappers at the shared
    package.
-7. Prove there is no Payload schema change before using an app-only deploy.
+7. Replace local collection/global definitions with the shared core package;
+   generate and commit a deterministic Payload migration from Atelier's
+   current migration snapshot. Do not claim the schema is shared until the
+   migration is applied and the live health contract reports its common schema
+   identity.
 8. Build and inspect authenticated `/admin` locally and on a version-preview
    deployment.
-9. Deploy the existing Worker only after explicit approval.
+9. Deploy the exact reviewed source and migration through the central release
+   queue to the validation Worker; retain the previous Worker version.
 10. Remove temporary aliases after logs show no use.
 
 ### 11.3 Atelier acceptance
@@ -543,19 +596,22 @@ Steps:
 - Recommendations, approval, publication, and history work.
 - Page and image editing create drafts, not silent production mutations.
 - Locale switching works.
-- D1 row counts and representative records are unchanged by an admin-only
-  release.
+- existing Payload users and representative fixture records remain readable;
+  the final schema identity matches the shared contract.
 - R2 media loads and no object is rewritten.
 - Unauthenticated content/Ada routes return `401`.
 - Browser console, network, hydration, and accessibility checks pass.
 
 ## 12. Customer migration: OceanicVibes
 
-OceanicVibes is a data and runtime migration, not an in-place Pelican cleanup.
+OceanicVibes is a Payload schema/owner-workspace validation, not a real
+customer-data migration or an opportunity to bring Pelican back into the
+runtime.
 
 ### 12.1 Inventory before writing
 
-Record from the deployed and source site:
+Record from the validation Worker and source site to select representative
+routes, locales, media and Payload records:
 
 - every public URL and status code;
 - page titles, descriptions, canonical tags, structured data, sitemap, robots,
@@ -566,33 +622,32 @@ Record from the deployed and source site:
 - image files, dimensions, alt text, origin, and content hash;
 - current Git SHA, deployment ID, DNS state, and rollback target.
 
-Do not infer missing business facts during migration.
+These tenants contain no real customer data. Do not build a Pelican importer or
+spend time preserving synthetic content solely to satisfy an old migration
+assumption. Use a small explicit Payload fixture set for route and editable
+field validation; do not invent public-facing business facts.
 
 ### 12.2 Build the Payload target
 
-1. Create an isolated migration branch or owner-approved target repository from
-   the canonical template.
-2. Define OceanicVibes collections/globals with migrations.
-3. Add the shared HelloAda admin package and OceanicVibes site configuration.
-4. Implement the public Next.js frontend from the approved current design or a
-   separately approved redesign; migration alone is not redesign approval.
-5. Provision a target D1 database and R2 bucket in a non-production namespace.
-6. Register the tenant with `site-agent` and configure the narrow Payload
+1. Replace local collection/global definitions with the shared core package
+   and add a deterministic migration after OceanicVibes' committed migration
+   history.
+2. Add the shared HelloAda admin package and OceanicVibes site configuration.
+3. Map the current public Next.js design to canonical page/article, SEO, media,
+   navigation and footer fields. Do not redesign the site as a side effect of
+   changing its schema.
+4. Keep the registered D1 and R2 identities; they are the validation fixtures
+   and must not be recreated or deleted.
+5. Register the tenant with `site-agent` and configure the narrow Payload
    contract.
 
 ### 12.3 Write an idempotent importer
 
-The importer must:
-
-- parse Pelican frontmatter and Markdown without using the Pelican runtime;
-- map stable source IDs to Payload documents;
-- preserve slug, publication date, title, summary, category, tags, and body;
-- upload media by content hash and preserve alt text;
-- rewrite internal media/document links deterministically;
-- support `--dry-run` and produce a bounded reconciliation report;
-- be safe to rerun without duplicate documents or media;
-- never publish drafts merely because they were imported;
-- produce source count, target count, skipped item, and mismatch evidence.
+Do not add an importer unless an actual source dataset needs conversion. Any
+conversion of existing synthetic Payload fixtures must have explicit field
+mapping, fail on ambiguous values, be deterministic, and be covered by a test.
+The schema migration itself preserves the existing D1 identity and appends to
+the tenant's own migration history; it never copies or replaces databases.
 
 ### 12.4 URL and SEO compatibility
 
@@ -605,31 +660,29 @@ The importer must:
 - Compare rendered titles, descriptions, canonicals, structured data, and
   status codes before cutover.
 
-### 12.5 Cutover
+### 12.5 Validation deployment
 
-1. Freeze legacy content writes for a short declared window.
-2. Run final importer and reconciliation.
-3. Build the exact reviewed commit.
-4. Run authenticated Payload/admin and public-site smoke tests.
-5. Deploy to a version-preview URL and crawl it.
-6. Obtain explicit production approval.
-7. Attach production traffic/domain to the new Worker.
-8. Verify critical URLs, admin login, D1, R2, forms, analytics, and SEO.
-9. Keep the previous deployment and source commit as rollback targets.
-10. Remove Pelican service/build configuration only after the observation
-    window passes.
+1. Build and validate the exact reviewed commit and committed migration chain.
+2. Deploy through the central release queue to the registered validation
+   Worker; do not change DNS or Worker routing.
+3. Verify authenticated Payload/admin and public routes against the deployed
+   Worker, including D1/R2 bindings and edited-field rendering.
+4. Keep the previous Worker version, source commit, and D1/R2 resources as
+   rollback targets.
+5. Record release-receipt and browser evidence before marking this tenant
+   validated.
 
 ### 12.6 OceanicVibes acceptance
 
-- All legacy content is represented in Payload or explicitly rejected with a
-  documented reason.
-- Re-running the importer creates no duplicates.
+- The common schema identity is active and the tenant's own migration head is
+  fully applied.
 - Critical public URLs return the expected status and content.
 - Redirect coverage is complete.
 - Media resolves from R2 with correct alt text.
 - `/admin` uses the shared HelloAda workspace.
 - Ada can read and prepare drafts through the configured Payload contract.
-- Production remains reversible to the recorded pre-cutover deployment.
+- Validation release rollback returns to the previous Worker version without
+  deleting or rewriting the D1/R2 fixtures.
 
 ## 13. New-customer path
 
@@ -864,7 +917,9 @@ output must be absent.
 - A package release is not a customer deployment.
 - A Git push is not a Cloudflare deployment.
 - A successful Worker upload is not proof that `/admin` works.
-- Database migrations are forward-only and backed up before production.
+- Database migrations are committed, deterministic, append-only, and identified
+  separately for each tenant. The common schema identity, not identical
+  migration history, proves both tenants implement the same schema.
 - Admin-only releases must not run customer schema migrations.
 - Every customer rollout records source commit, package version, Worker version,
   D1 migration state, and smoke-test result.
@@ -952,10 +1007,10 @@ After each phase, report:
 
 This consolidation is complete only when all are true:
 
-- Atelier Harmonie runs Next.js + Payload + D1 + R2 with the shared HelloAda
+- Atelier Harmonie's validation Worker runs Next.js + Payload + D1 + R2 with the shared HelloAda
   admin package.
-- OceanicVibes runs Next.js + Payload + D1 + R2 with the shared HelloAda admin
-  package and reconciled legacy content/URLs.
+- OceanicVibes' validation Worker runs Next.js + Payload + D1 + R2 with the shared HelloAda admin
+  package and canonical editable-field bindings.
 - A brand-new customer is provisioned from the canonical template and reaches
   the same admin without copied customer-specific workspace code.
 - `site-agent` is the single source for control-plane code, API contracts,
@@ -967,10 +1022,10 @@ This consolidation is complete only when all are true:
   production services are gone.
 - `next_react` is the only supported new-site build profile.
 - Payload is the only CMS and owner administration interface.
-- Customer content remains isolated, exportable, and recoverable.
+- Tenant data remains isolated, exportable, and recoverable.
 - Package/API/template drift is visible and upgrades are repeatable.
-- Owner approval remains the only production mutation boundary.
-- Real authenticated browser checks pass on both migrated customers and a new
+- Owner approval remains the only website-publication mutation boundary.
+- Authenticated browser checks pass on both validation tenants and a new
   tenant.
 
 Until every condition passes, describe the platform as **in migration**, not

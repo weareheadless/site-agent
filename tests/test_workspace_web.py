@@ -494,60 +494,6 @@ def test_payload_gateway_client_is_server_configured_and_schema_bounded():
         client._global_data("navigation", {"password": "never"})
 
 
-def test_payload_gateway_client_uses_declarative_editable_field_gateway(monkeypatch):
-    client = PayloadGatewayClient(
-        "https://workspace.example.test",
-        "workspace-secret",
-        PayloadContract({"pages": frozenset({"title"})}, {}, frozenset()),
-        gateway_prefix="/api/workspace",
-    )
-    requests = []
-
-    def request(_self, method, path, *, query=None, payload=None):
-        requests.append((method, path, query, payload))
-        return {"fields": [], "valid": True}
-
-    monkeypatch.setattr(PayloadGatewayClient, "_request", request)
-
-    client.inspect_editable_fields("pages", identifier="home")
-    client.define_editable_field(
-        "pages",
-        identifier="home",
-        key="home.hero.heading",
-        field_type="text",
-        label="Hero heading",
-        value="Une maison douce",
-    )
-    client.set_editable_field(
-        "pages",
-        identifier="home",
-        key="home.hero.heading",
-        value="Une maison joyeuse",
-        expected_value="Une maison douce",
-    )
-    client.migrate_editable_fields(
-        "pages",
-        identifier="home",
-        fields=[{
-            "key": "home.diy.body",
-            "type": "richText",
-            "label": "DIY introduction",
-            "value": "Une introduction.",
-        }],
-    )
-    client.validate_editable_fields("pages", identifier="home")
-
-    assert requests[0][0:2] == ("GET", "/api/workspace/editable-fields")
-    assert requests[0][2]["sourceId"] == "home"
-    assert requests[1][3]["operation"] == "define"
-    assert requests[1][3]["key"] == "home.hero.heading"
-    assert requests[2][3]["operation"] == "set_value"
-    assert requests[2][3]["expected_value"] == "Une maison douce"
-    assert requests[3][3]["operation"] == "migrate"
-    assert requests[3][3]["fields"][0]["key"] == "home.diy.body"
-    assert requests[4][3]["operation"] == "validate"
-
-
 def test_payload_gateway_contract_is_instance_configured_and_adapter_is_registered():
     client = PayloadGatewayClient(
         "https://example.test",
@@ -578,12 +524,11 @@ def test_payload_gateway_site_adapter_reads_source_without_granting_write_access
     payload = object()
     reader = ReadAdapter()
     adapter = PayloadGatewaySiteAdapter(
-        {"site": {"content_path": "content.json", "payload": {"enabled": True}}},
+        {"site": {"payload": {"enabled": True}}},
         payload_client=payload,
         read_adapter=reader,
     )
 
-    assert adapter.get_file("content.json", branch="preview") == (None, None)
     assert adapter.get_file("src/app/(frontend)/styles.css", branch="preview") == (
         "sha-1",
         b"source:src/app/(frontend)/styles.css",
@@ -1034,9 +979,10 @@ def test_shared_api_exposes_media_library_and_analysis(tmp_path):
             assert identifier == "media-1"
             assert identifier_kind == "id"
             assert draft is True
-            return {"id": identifier, "filename": "lamp.jpg", "url": "/media/lamp.jpg"}
+            return {"id": identifier, "filename": "lamp.jpg", "url": "/media/lamp.jpg", "_helloadaRevision": "revision-1"}
 
-        def update_media(self, identifier, data):
+        def update_media(self, identifier, data, *, expected_hash):
+            assert expected_hash == "revision-1"
             self.updated.append((identifier, data))
             return {"id": identifier, **data}
 

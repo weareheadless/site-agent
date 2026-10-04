@@ -475,7 +475,7 @@ def register_workspace_routes(
                 variant=variant,
                 access_token=token,
                 preview_root=f"{prefix}/design/runs/{run_id}/preview/",
-                site_url=str(((tenant.config.get("blog") or {}).get("site_url") or "")),
+                site_url=str(((tenant.config.get("site") or {}).get("url") or (tenant.config.get("site") or {}).get("preview_url") or "")),
                 preview_cache=preview_cache,
             )
         except ValueError as exc:
@@ -809,14 +809,6 @@ def register_workspace_routes(
                 "X-Workspace-Preview-Commit": str(result.get("commit") or ""),
             },
         )
-
-    @app.post(f"{prefix}/source/preview/{{job_id}}/deploy")
-    def workspace_source_preview_deploy(job_id: str, request: Request):
-        tenant = require_service(request)
-        try:
-            return service.source_preview_promote(job_id, tenant=tenant)
-        except BridgeError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.get(f"{prefix}/chat/jobs/{{job_id}}")
     def workspace_chat_job(job_id: str, request: Request):

@@ -35,24 +35,27 @@ from ..application.social_posts import (
     SocialPostError,
     SocialPostBrief,
 )
-from ..brain import editor as brain_editor
 from ..brain.self_model import current_self
 from ..config import resolve_secret
 from ..credentials import credential_environment
 from ..core.contracts import ActionState, ApprovalStatus
 from ..core.design_contracts import DesignRunStatus
 from ..core.reflect import approve_reflection, effective_persona
-from ..hands import file_cache, pelican_blog
-from ..hands.base import AdapterError, DesignMergeAdapter, MergeAdapter, PreviewAdapter, SiteAdapter, get_adapter
+from ..hands import file_cache
+from ..hands.base import AdapterError, DesignMergeAdapter, MergeAdapter, SiteAdapter, get_adapter
 from ..hands.cicero import CiceroClientError
 from ..hands.site_build import SiteOutputArtifactStore
-from .journal import setup_job, status as journal_status
 from .workspace import register_workspace_routes
 from .preview import PreviewAccess, PreviewBuildCache, rewrite_preview_css, rewrite_preview_html, rewrite_preview_js
 
 SESSION_TTL = 12 * 3600
 COOKIE = "sa_session"
 STATIC_DIR = Path(__file__).parent / "static"
+
+
+def _site_url(config: dict[str, Any]) -> str:
+    site = config.get("site") if isinstance(config.get("site"), dict) else {}
+    return str(site.get("url") or site.get("preview_url") or "").rstrip("/")
 
 
 class Sessions:
@@ -147,27 +150,23 @@ def _design_preview_ref(run: dict[str, Any], variant: str = "deepseek") -> tuple
 
 
 def _design_build_profile(design_service: Any, run: dict[str, Any], variant: str) -> str:
-    """Resolve the candidate profile without assigning Next to an old baseline."""
-    if variant == "original" and str(run.get("operation_kind") or "initial_build") == "initial_build":
-        return ""
+    """Resolve the only supported design build profile from its frozen run."""
     resolver = getattr(design_service, "build_profile_for_run", None)
     if not callable(resolver):
-        return ""
+        raise HTTPException(status_code=409, detail="design service cannot resolve the frozen build profile")
     try:
-        return str(resolver(str(run.get("run_id") or "")) or "").strip()
-    except Exception:
-        return ""
+        profile = str(resolver(str(run.get("run_id") or "")) or "").strip()
+    except DesignServiceError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if profile != "next_react":
+        raise HTTPException(status_code=409, detail="design run has no canonical next_react profile")
+    return profile
 
 
 def _design_output_artifact(design_service: Any, run: dict[str, Any]) -> Path | None:
-    """Resolve the immutable candidate output for new design runs.
-
-    Historical rows deliberately return ``None`` and retain their legacy
-    source-build path. New rows are artifact-required and fail closed instead
-    of rebuilding a potentially different site while the owner is reviewing it.
-    """
+    """Resolve the immutable candidate output required by owner review."""
     if not bool(run.get("artifact_required")):
-        return None
+        raise HTTPException(status_code=409, detail="design run has no retained canonical output artifact")
     artifact_id = str(run.get("output_artifact_id") or "").strip()
     tree_hash = str(run.get("output_tree_hash") or "").strip().lower()
     if not artifact_id or not tree_hash:
@@ -186,18 +185,6 @@ def _design_output_artifact(design_service: Any, run: dict[str, Any]) -> Path | 
     if not path.is_dir():
         raise HTTPException(status_code=409, detail="design output artifact is unavailable")
     return path
-
-
-def _normalize_ops(meta: dict[str, Any]) -> list[dict[str, Any]]:
-    """New-style ops list; tolerates the older single-file / dotted-field shapes."""
-    if isinstance(meta.get("ops"), list):
-        return meta["ops"]
-    if meta.get("file_op"):
-        return [{"op": "edit", "path": meta["path"], "find": meta["find"], "replace": meta["replace"]}]
-    return [
-        {"op": "set_field", "path": c.get("path", ""), "field": c["field"], "value": c["after"]}
-        for c in (meta.get("changes") or [])
-    ]
 
 
 DEFAULT_ADMIN_THEME = {
@@ -775,8 +762,6 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
             raise HTTPException(status_code=404, detail="design candidate clone is unavailable")
         selected_variant, selected_sha = _design_preview_ref(run, variant)
         pages = _list_html_at(clone, selected_sha)
-        if _git_ref_file_exists(clone, selected_sha, "pelicanconf.py"):
-            pages.append("articles.html")
         return {
             "pages": list(dict.fromkeys(pages)),
             "variant": selected_variant,
@@ -969,41 +954,6 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
         except (ActionServiceError, KeyError, ValueError) as exc:
             raise _action_error(exc)
 
-    @app.get("/api/content")
-    def get_content(request: Request):
-        """Read the site's content.json for the Content editor tab."""
-        require_auth(request)
-        try:
-            ad = adapter()
-            return {"content": ad.get_content()}
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=400, detail=f"read content failed: {exc}")
-
-    @app.post("/api/content")
-    async def put_content(request: Request):
-        """Save edited content.json straight to the site (same as the old studio editor)."""
-        require_auth(request)
-        file_cache.clear()
-        try:
-            body = await request.json()
-        except Exception:  # noqa: BLE001
-            raise HTTPException(status_code=400, detail="invalid json")
-        content = (body or {}).get("content")
-        if not isinstance(content, dict):
-            raise HTTPException(status_code=400, detail="content must be a JSON object")
-        ad = adapter()
-        try:
-            payload = json.dumps(content, indent=2, ensure_ascii=False) + "\n"
-            result = ad.commit_file(
-                str(config.get("site", {}).get("content_path", "content.json")),
-                payload.encode(),
-                "Website content edit (admin)",
-            )
-        except AdapterError as exc:
-            raise HTTPException(status_code=400, detail=f"save failed: {exc}")
-        memory.record_action("content", "content.json edited and published")
-        return {"ok": True, "published": result}
-
     @app.get("/api/media")
     def media_list(request: Request, status: str | None = None, kind: str | None = None,
                    include_archived: bool = False, limit: int = 50, offset: int = 0):
@@ -1182,13 +1132,9 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
 
     @app.get("/api/preview/{file_path:path}")
     async def preview_file(file_path: str, request: Request):
-        """Serve the site's published state (origin/main) from the local clone —
-        instant visual reference with zero dependence on Cloudflare build times.
-        The clone's working tree is transient (the builder checks out the preview
-        branch), so we read straight from git instead of the checked-out files."""
+        """Serve the canonical framework build of the published Git revision."""
         preview_token = require_preview_auth(request, ("published", 0))
         import mimetypes
-        import subprocess
 
         clone = Path(str(config.get("site", {}).get("clone_path", "")).strip())
         if not clone.exists():
@@ -1197,44 +1143,19 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
         if not name:
             name = "index.html"
         published_ref = _published_ref(clone)
-        if _git_ref_file_exists(clone, published_ref, "pelicanconf.py"):
-            built = preview_cache.read_file(clone, published_ref, name)
-            if built:
-                if name.lower().endswith((".html", ".htm")):
-                    built = rewrite_preview_html(
-                        built,
-                        0,
-                        name,
-                        str((config.get("blog") or {}).get("site_url") or ""),
-                        preview_token or "",
-                    )
-                elif name.lower().endswith(".css"):
-                    built = rewrite_preview_css(built, name, preview_token or "")
-                elif name.lower().endswith((".js", ".mjs")):
-                    built = rewrite_preview_js(built, preview_token or "")
-                mt = mimetypes.guess_type(name)[0] or "application/octet-stream"
-                return Response(content=built, media_type=mt,
-                                headers=preview_headers(preview_token))
-        proc = subprocess.run(
-            ["git", "-C", str(clone), "show", f"{published_ref}:{name}"],
-            capture_output=True, timeout=30,
-        )
-        if proc.returncode != 0 and "." not in Path(name).name:
-            proc = subprocess.run(
-                ["git", "-C", str(clone), "show", f"{published_ref}:index.html"],
-                capture_output=True, timeout=30,
-            )
+        content = preview_cache.read_file(clone, published_ref, name)
+        if not content and "." not in Path(name).name:
             name = "index.html"
-        if proc.returncode != 0:
-            raise HTTPException(status_code=404, detail=f"{name} not on main")
+            content = preview_cache.read_file(clone, published_ref, name)
+        if not content:
+            raise HTTPException(status_code=404, detail=f"{name} is not in the canonical site build")
         mt = mimetypes.guess_type(name)[0] or "application/octet-stream"
-        content = proc.stdout
         if name.lower().endswith((".html", ".htm")):
             content = rewrite_preview_html(
                 content,
                 0,
                 name,
-                str((config.get("blog") or {}).get("site_url") or ""),
+                _site_url(config),
                 preview_token or "",
             )
         elif name.lower().endswith(".css"):
@@ -1245,11 +1166,7 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
 
     @app.get("/api/review/{draft_id}/{file_path:path}")
     async def review_file(draft_id: int, file_path: str, request: Request, variant: str = "deepseek"):
-        """Review a staged draft — no GitHub Pages build needed.
-
-        merge drafts: served straight out of git (origin/preview) so the
-        builder's working tree is never disturbed. edit drafts: the base file
-        (origin/main) with this draft's find/replace ops applied live."""
+        """Review a staged frontend draft from its canonical build output."""
         import mimetypes
         import subprocess
 
@@ -1257,6 +1174,8 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
         draft = next((d for d in memory.list_drafts(limit=100) if d["id"] == draft_id), None)
         if draft is None:
             raise HTTPException(status_code=404, detail="no such draft")
+        if draft["kind"] == "article":
+            raise HTTPException(status_code=409, detail="Review Payload articles in the tenant owner workspace")
         clone = Path(str(config.get("site", {}).get("clone_path", "")).strip())
         if not clone.exists():
             raise HTTPException(status_code=404, detail="no clone configured")
@@ -1328,7 +1247,7 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
                     built,
                     draft_id,
                     name,
-                    str((config.get("blog") or {}).get("site_url") or ""),
+                    _site_url(config),
                     preview_token or "",
                     selected_variant,
                 )
@@ -1337,81 +1256,13 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
             )
             return _serve(name, rendered, selected_variant)
 
-        if kind == "article" and pelican_blog.enabled(config):
-            # Pending article drafts live in Ada's ledger until approval. Build
-            # a private Pelican overlay so review shows the exact article
-            # without committing it to either Git branch. Once approved, the
-            # same path renders the newly published source from main.
-            overlays = None
-            if draft["status"] == "pending":
-                slug = brain_editor.slugify(draft["title"])
-                meta = dict(draft.get("meta") or {})
-                meta["slug"] = slug
-                overlays = {
-                    pelican_blog.article_path(config, slug): pelican_blog.document(
-                        config, draft["title"], draft["body"], meta
-                    )
-                }
-            built = preview_cache.read_file(
-                clone, _published_ref(clone), name, overlays=overlays
-            )
-            if built:
-                rendered = (
-                    rewrite_preview_html(
-                        built,
-                        draft_id,
-                        name,
-                        str((config.get("blog") or {}).get("site_url") or ""),
-                        preview_token or "",
-                    )
-                    if name.lower().endswith((".html", ".htm"))
-                    else built
-                )
-                return _serve(
-                    name,
-                    rendered,
-                )
-
         if kind == "edit":
-            # Apply this draft's ops onto the base file (origin/main) live.
-            # Once decided (approved/declined/discarded) the ops no longer apply:
-            # the visualizer falls back to the live file, so reject genuinely rolls back.
-            ops = _normalize_ops(draft["meta"]) if draft["status"] == "pending" else []
-            content = _show_at("origin/main", name) or _show_at("main", name)
-            if not content and "." not in Path(name).name:
-                content = _show_at("origin/main", "index.html") or _show_at("main", "index.html")
-                name = "index.html"
-            if not content:
-                raise HTTPException(status_code=404, detail=f"{name} not on main")
-            # Binary assets (images, fonts, …) pass through untouched — ops only
-            # target text files, and decoding them would corrupt the bytes.
-            if Path(name).suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".gif", ".svg", ".ico", ".avif", ".woff", ".woff2", ".eot", ".ttf", ".otf"}:
-                return _serve(name, content)
-            text = content.decode("utf-8", "replace")
-            for op in ops:
-                opath = str(op.get("path", "")).lstrip("/").split("?")[0]
-                if opath != name:
-                    continue
-                if op.get("op") == "edit":
-                    text = text.replace(op.get("find", ""), op.get("replace", ""))
-                elif op.get("op") == "write":
-                    text = str(op.get("content", ""))
-            rendered = text.encode()
-            return _serve(
-                name,
-                rewrite_preview_html(
-                    rendered,
-                    draft_id,
-                    name,
-                    str((config.get("blog") or {}).get("site_url") or ""),
-                    preview_token or "",
-                )
-                if name.lower().endswith((".html", ".htm"))
-                else rendered,
+            raise HTTPException(
+                status_code=409,
+                detail="This file-only draft has no verified site build. Ask Ada to create a fresh implementation preview.",
             )
 
-        # Prefer generated output for staged builds. This covers Pelican pages
-        # and theme assets while falling back to committed files for legacy sites.
+        # Serve staged output from the canonical framework build.
         if kind in ("merge", "rollback"):
             built = preview_cache.read_file(clone, "origin/preview", name)
             if not built:
@@ -1423,38 +1274,14 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
                         built,
                         draft_id,
                         name,
-                        str((config.get("blog") or {}).get("site_url") or ""),
+                    _site_url(config),
                         preview_token or "",
                     )
                     if name.lower().endswith((".html", ".htm"))
                     else built,
                 )
 
-        # merge / rollback / article drafts: read the staged preview-branch file.
-        content = _show_at("origin/preview", name)
-        if not content:
-            content = _show_at("preview", name)
-        if not content:
-            if "." not in Path(name).name:
-                content = _show_at("origin/preview", "index.html")
-                name = "index.html"
-            if not content:
-                content = _show_at("preview", "index.html")
-                name = "index.html"
-        if not content:
-            raise HTTPException(status_code=404, detail=f"{name} not on preview branch")
-        return _serve(
-            name,
-            rewrite_preview_html(
-                content,
-                draft_id,
-                name,
-                str((config.get("blog") or {}).get("site_url") or ""),
-                preview_token or "",
-            )
-            if name.lower().endswith((".html", ".htm"))
-            else content,
-        )
+        raise HTTPException(status_code=404, detail=f"{name} is not in the canonical preview build")
 
     @app.get("/api/design/runs/{run_id}/review/{file_path:path}")
     async def design_review_file(run_id: str, file_path: str, request: Request, variant: str = "deepseek"):
@@ -1490,13 +1317,6 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
             if artifact_root is not None
             else preview_cache.read_file(clone, selected_sha, name, profile=build_profile)
         )
-        if not content and artifact_root is None:
-            proc = subprocess.run(
-                ["git", "-C", str(clone), "show", f"{selected_sha}:{name}"],
-                capture_output=True,
-                timeout=30,
-            )
-            content = proc.stdout if proc.returncode == 0 else b""
         if not content:
             raise HTTPException(status_code=404, detail=f"{name} not in design candidate")
         if name.lower().endswith((".html", ".htm")):
@@ -1504,7 +1324,7 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
                 content,
                 run_id,
                 name,
-                str((config.get("blog") or {}).get("site_url") or ""),
+                _site_url(config),
                 preview_token or "",
                 selected_variant,
             )
@@ -1571,28 +1391,16 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
                 # Pages the staged build adds beyond what's already published.
                 preview_ref = "origin/preview" if _git_ref_exists(clone, "origin/preview") else "preview"
                 preview_pages = _list_html_at(clone, preview_ref)
-                if _git_ref_file_exists(clone, preview_ref, "pelicanconf.py"):
-                    preview_pages.append("articles.html")
                 ref = preview_ref
                 draft_new = [p for p in preview_pages if p not in main_pages]
-            elif draft["kind"] == "article" and pelican_blog.enabled(config):
-                slug = brain_editor.slugify(draft["title"])
-                ref = published_ref
-                draft_new = [f"articles/{slug}.html"]
-            else:  # edit draft: base pages + any write-ops (new pages) + edit-ops targets
-                ops = _normalize_ops(draft["meta"])
-                write_pages = {
-                    str(op["path"]).lstrip("/").split("?")[0]
-                    for op in ops
-                    if op.get("op") == "write"
-                    and str(op["path"]).lstrip("/").split("?")[0].lower().endswith((".html", ".htm"))
-                }
-                draft_new = sorted(write_pages, key=lambda p: (p != "index.html", p))
+            elif draft["kind"] == "edit":
+                raise HTTPException(
+                    status_code=409,
+                    detail="This file-only draft has no verified site build. Ask Ada to create a fresh implementation preview.",
+                )
         pages_list = _list_html_at(clone, ref)
         if not pages_list:
             pages_list = main_pages
-        if _git_ref_file_exists(clone, ref, "pelicanconf.py"):
-            pages_list.append("articles.html")
         pages_list = list(dict.fromkeys(pages_list + draft_new))
         result = {"pages": pages_list, "new_pages": draft_new}
         if design_variant:
@@ -1740,43 +1548,6 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
             rows[0]["current"] = True
         return {"versions": rows}
 
-    @app.get("/api/journal")
-    def journal(request: Request):
-        require_auth(request)
-        return journal_status(config, memory)
-
-    @app.post("/api/journal/enable")
-    def enable_journal(request: Request):
-        require_auth(request)
-        blog = config.get("blog") or {}
-        if str(blog.get("engine", "pelican")).lower() != "pelican":
-            raise HTTPException(status_code=400, detail="Pelican is not enabled for this site")
-        llm = context.get("llm")
-        if llm is None or (hasattr(llm, "api_key") and not llm.api_key):
-            raise HTTPException(status_code=503, detail="LLM not configured")
-        if memory.kv_get("journal_setup_requested", False):
-            existing = setup_job(memory)
-            if existing and existing["status"] in {"queued", "running"}:
-                return {"ok": True, "enabled": True, "already_requested": True, "job_id": existing["id"]}
-        memory.kv_set("journal_enabled", True)
-        memory.kv_set("journal_setup_requested", True)
-        conv_id = memory.create_conversation("Set up Ada's journal")
-        message = (
-            "Set up the customer-facing journal for this website. Inspect the existing homepage and design language. "
-            "Ada must personally design and implement the Pelican article listing and article page so they feel like this website, not a generic CMS. "
-            "Make the journal discoverable from the existing navigation when appropriate, keep it responsive and accessible, "
-            "and limit code changes to the existing Pelican templates, journal-scoped CSS, and public navigation; do not modify build.sh, pelicanconf.py, or deployment configuration. "
-            "The homepage header is fixed and uses the 1240px/48px gutter system: keep every journal first-content block below the header safe offset, and do not reuse homepage class names without supplying the required journal styles. "
-            "Redesign base.html, index.html, and article.html as one coherent system. Run build.sh, inspect output/articles.html, and verify the article template before finishing. "
-            "Work autonomously in the native Build session; use native task delegation when it materially helps, but keep final design decisions and implementation in the primary session. "
-            "Do not modify build.sh, pelicanconf.py, deployment configuration, or invent customer content. Work in the normal preview flow; do not publish directly. "
-            "When the design is ready, leave a preview for the owner to approve."
-        )
-        job_id = memory.enqueue_chat_job(conv_id, message)
-        memory.kv_set("journal_setup_job_id", job_id)
-        memory.record_action("journal_enabled", f"journal enabled; setup job #{job_id}")
-        return {"ok": True, "enabled": True, "conversation_id": conv_id, "job_id": job_id}
-
     @app.post("/api/drafts/{draft_id}/preview")
     def preview(draft_id: int, request: Request):
         require_auth(request)
@@ -1784,35 +1555,12 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
         draft = next((d for d in memory.list_drafts(limit=100) if d["id"] == draft_id), None)
         if draft is None:
             raise HTTPException(status_code=404, detail="no such draft")
-        if draft["kind"] != "edit" or draft["status"] != "pending":
-            raise HTTPException(status_code=400, detail="only pending edit drafts can be previewed")
-        ad = adapter_validated()
-        pbranch = str(config.get("site", {}).get("preview_branch") or "")
-        if not pbranch:
-            raise HTTPException(status_code=400, detail="set site.preview_branch (Cloudflare Pages builds it automatically)")
-        if not isinstance(ad, PreviewAdapter):
-            raise HTTPException(status_code=400, detail="adapter does not support previews")
-        try:
-            ad.ensure_branch(pbranch)
-            results = brain_editor._apply_ops(ad, _normalize_ops(draft["meta"]), branch=pbranch)
-            pushed = results[0] if results else {"committed": False}
-        except AdapterError as exc:
-            raise HTTPException(status_code=400, detail=f"preview push failed: {exc}")
-
-        preview_url = None
-        cf_token = resolve_secret(config, "cloudflare_api_token", env)
-        cf = config.get("site", {}).get("cloudflare") or {}
-        if cf_token and cf.get("account_id") and cf.get("project_name"):
-            try:
-                from ..senses import cloudflare as cf_sense
-                preview_url = cf_sense.latest_preview_url(
-                    str(cf["account_id"]), str(cf["project_name"]), pbranch, cf_token
-                )
-            except Exception:  # noqa: BLE001 — URL lookup must not fail the push
-                preview_url = None
-        memory.kv_set("last_preview_url", preview_url)
-        memory.record_action("preview", f"draft #{draft_id} -> branch {pbranch}")
-        return {"ok": bool(pushed.get("committed")), "branch": pbranch, "pushed": pushed, "preview_url": preview_url}
+        if draft["kind"] == "article":
+            raise HTTPException(status_code=409, detail="Review Payload articles in the tenant owner workspace")
+        raise HTTPException(
+            status_code=409,
+            detail="This file-only draft has no verified site build. Ask Ada to create a fresh implementation preview.",
+        )
 
     @app.post("/api/versions/{version_id}/restore")
     def restore_version(version_id: int, request: Request):
@@ -2056,129 +1804,26 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
             },
         }
 
-    def _commit_text(value: Any, limit: int = 360) -> str:
-        return " ".join(str(value or "").split())[:limit]
-
-    def _article_commit_message(draft: dict[str, Any]) -> str:
-        details = _article_decision_details(draft)
-        selection = details["selection"]
-        research = details["keyword_research"]
-        cost = research.get("cost_micros")
-        cost_label = "not reported" if cost is None else f"${float(cost) / 1_000_000:.2f}"
-        lines = [
-            f"article: {_commit_text(draft.get('title'))} (by {config.get('persona', {}).get('name', 'Ada')})",
-            "",
-            "Selection rationale:",
-            f"Audience need: {_commit_text(selection.get('audience_need')) or 'not recorded'}",
-            f"Reader question: {_commit_text(selection.get('reader_question')) or 'not recorded'}",
-            f"Reader intent: {_commit_text(selection.get('reader_intent')) or 'not recorded'}",
-            f"Business relevance: {_commit_text(selection.get('business_relevance')) or 'not recorded'}",
-            f"Market context: {_commit_text(selection.get('market_context')) or 'not recorded'}",
-            f"Expert angle: {_commit_text(selection.get('expert_angle')) or 'not recorded'}",
-            f"Why now: {_commit_text(selection.get('why_now')) or 'not recorded'}",
-            f"Thesis: {_commit_text(selection.get('thesis')) or 'not recorded'}",
-            f"Origin: {_commit_text(selection.get('origin')) or 'not recorded'}",
-            "",
-            "Keyword research:",
-            f"Provider: {research.get('provider')}; status: {research.get('status')}; Cost: {cost_label}",
-            f"Selected query: {_commit_text(selection.get('selected_query')) or 'not recorded'}",
-            f"Run ID: {_commit_text(research.get('run_id')) or 'not recorded'}; result rows: {research.get('result_count', 0)}",
-        ]
-        serp = details["serp_research"]
-        if serp.get("run_id"):
-            lines.append(
-                f"SERP: status: {serp.get('status')}; run: {_commit_text(serp.get('run_id'))}"
-                + (f"; organic results: {serp.get('organic_count', 0)}" if serp.get("organic_count") is not None else "")
-            )
-        note = research.get("note") if isinstance(research.get("note"), dict) else {}
-        if note.get("decision"):
-            lines.append(f"Research decision: {_commit_text(note.get('decision'))}")
-        if note.get("reasoning"):
-            lines.append(f"Research reasoning: {_commit_text(note.get('reasoning'))}")
-        if selection.get("source_urls"):
-            lines.append(f"Source: {_commit_text(selection['source_urls'][0], 500)}")
-        return "\n".join(lines)
-
-    def _article_publish_block(draft: dict[str, Any]) -> str | None:
-        if draft.get("kind") != "article":
-            return None
-        meta = draft.get("meta") if isinstance(draft.get("meta"), dict) else {}
-        lineage = meta.get("article_research") if isinstance(meta.get("article_research"), dict) else None
-        if lineage is None:
-            return None
-        details = _article_decision_details(draft)
-        research = details["keyword_research"]
-        serp = details["serp_research"]
-        if research.get("status") != "completed":
-            return "article keyword research is not complete"
-        if serp.get("status") != "completed":
-            return "article SERP research is not complete"
-        if int(research.get("result_count") or 0) == 0:
-            note = research.get("note") if isinstance(research.get("note"), dict) else {}
-            if (
-                str(note.get("decision") or "").strip().lower() != "editorial_despite_low_demand"
-                or not str(note.get("reasoning") or "").strip()
-            ):
-                return "article has no keyword research rows; an explicit editorial_despite_low_demand reason is required"
-        selection = details["selection"]
-        required_brief = {
-            "reader question": selection.get("reader_question"),
-            "reader situation": selection.get("reader_situation"),
-            "reader intent": selection.get("reader_intent"),
-            "business relevance": selection.get("business_relevance"),
-            "market context": selection.get("market_context"),
-            "expert angle": selection.get("expert_angle"),
-            "expertise basis": selection.get("expertise_basis"),
-        }
-        missing = [label for label, value in required_brief.items() if not value]
-        if missing:
-            return "article editorial brief is incomplete: missing " + ", ".join(missing)
-        return None
-
-    def _publish_article(ad: SiteAdapter, draft: dict[str, Any]) -> dict[str, Any]:
-        slug = brain_editor.slugify(draft["title"])
-        commit_message = _article_commit_message(draft)
-        if pelican_blog.enabled(config):
-            meta = dict(draft.get("meta") or {})
-            meta["slug"] = slug
-            payload = pelican_blog.document(config, draft["title"], draft["body"], meta)
-            path = pelican_blog.article_path(config, slug)
-        else:
-            payload = draft["body"].encode()
-            path = f"articles/{slug}.md"
-        result = ad.commit_file(
-            path,
-            payload,
-            commit_message,
-        )
-        if isinstance(result, dict):
-            result["commit_message"] = commit_message
-        return result
-
     def _draft_ops_paths(draft: dict[str, Any]) -> set[str] | None:
-        """The files a pending edit/merge draft would touch (for overlap checks).
-        A merge replaces the whole preview branch -> returns None meaning
-        'overlaps everything'."""
-        if draft["kind"] in ("merge", "rollback"):
+        """Return source overlap for canonical whole-site candidates."""
+        if draft["kind"] in ("design", "merge", "rollback"):
             return None
-        return {
-            str(op.get("path", "")).lstrip("/").split("?")[0]
-            for op in _normalize_ops(draft["meta"])
-            if op.get("path")
-        }
+        return set()
 
     def _supersede_overlapping_pending(draft: dict[str, Any]) -> list[int]:
-        """After approving a change, any other pending edit/merge draft touching
-        the same files can no longer apply cleanly to the published site — mark
-        them discarded so stale work never reappears in the review UI."""
-        if draft["kind"] not in ("edit", "merge", "rollback"):
+        """After approval, retire older whole-site candidates from review."""
+        if draft["kind"] not in ("design", "merge", "rollback"):
             return []
         approved_paths = _draft_ops_paths(draft)
         superseded = []
         for other in memory.list_drafts(status="pending"):
             if other["id"] == draft["id"]:
                 continue
-            if other["kind"] not in ("edit", "merge", "rollback"):
+            if other["kind"] == "edit":
+                memory.update_draft_status(other["id"], "discarded")
+                superseded.append(other["id"])
+                continue
+            if other["kind"] not in ("design", "merge", "rollback"):
                 continue
             other_paths = _draft_ops_paths(other)
             overlaps = (
@@ -2200,9 +1845,8 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
             raise HTTPException(status_code=404, detail="no such draft")
         if draft["status"] != "pending":
             raise HTTPException(status_code=409, detail=f"draft already {draft['status']}")
-        publish_block = _article_publish_block(draft)
-        if publish_block:
-            raise HTTPException(status_code=409, detail=publish_block)
+        if draft["kind"] == "article":
+            raise HTTPException(status_code=409, detail="Publish Payload articles in the tenant owner workspace")
 
         published = None
         if draft["kind"] == "reflection":
@@ -2215,15 +1859,10 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
             if not approve_reflection(memory, draft_id, str(meta.get("review_package_hash") or "")):
                 raise HTTPException(status_code=400, detail="could not merge reflection")
         elif draft["kind"] == "edit":
-            ad = adapter_validated()
-            try:
-                results = brain_editor._apply_ops(ad, _normalize_ops(draft["meta"]))
-                published = results[0] if results else None
-                if len(results) > 1:
-                    memory.record_action("approve_detail", json.dumps(results)[:400])
-            except (AdapterError, brain_editor.EditError, KeyError) as exc:
-                raise HTTPException(status_code=400, detail=f"apply failed: {exc}")
-            memory.update_draft_status(draft_id, "approved")
+            raise HTTPException(
+                status_code=409,
+                detail="This file-only draft has no verified site build and cannot be approved. Ask Ada to create a fresh implementation preview.",
+            )
         elif draft["kind"] == "design":
             ad = adapter_validated()
             if not isinstance(ad, DesignMergeAdapter):
@@ -2254,29 +1893,6 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
                     status_code=400,
                     detail=f"GitHub rejected the merge (status {published.get('status')})",
                 )
-            memory.update_draft_status(draft_id, "approved")
-        elif draft["kind"] == "article":
-            ad = adapter_validated()
-            try:
-                published = _publish_article(ad, draft)
-                if not pelican_blog.enabled(config):
-                    slug = brain_editor.slugify(draft["title"])
-                    _, raw_index = ad.get_file("articles/index.json")
-                    index = json.loads(raw_index) if raw_index else []
-                    entry = {
-                        "slug": slug,
-                        "title": draft["title"],
-                        "date": datetime.date.today().isoformat(),
-                    }
-                    if entry["slug"] not in [e.get("slug") for e in index]:
-                        index.insert(0, entry)
-                    ad.commit_file(
-                        "articles/index.json",
-                        (json.dumps(index, indent=2, ensure_ascii=False) + "\n").encode(),
-                        f"article index: {slug}",
-                    )
-            except AdapterError as exc:
-                raise HTTPException(status_code=400, detail=f"publish failed: {exc}")
             memory.update_draft_status(draft_id, "approved")
         else:
             memory.update_draft_status(draft_id, "approved")
@@ -2333,30 +1949,6 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
         memory.record_action("discard", f"#{draft_id}")
         return {"ok": True}
 
-    def _unpublish_article(ad: SiteAdapter, draft: dict[str, Any]) -> dict[str, Any]:
-        """Remove a mistakenly approved article from the site: delete its file and
-        drop its entry from the index. Used by decline."""
-        if not hasattr(ad, "delete_file"):
-            raise AdapterError("adapter does not support deleting files")
-        slug = brain_editor.slugify(draft["title"])
-        path = pelican_blog.article_path(config, slug) if pelican_blog.enabled(config) else f"articles/{slug}.md"
-        deleted = ad.delete_file(
-            path,
-            f"Decline article draft #{draft['id']}: remove {slug}",
-        )
-        if pelican_blog.enabled(config):
-            return {"removed": slug, "deleted": bool(deleted.get("deleted"))}
-        _, raw_index = ad.get_file("articles/index.json")
-        index = json.loads(raw_index) if raw_index else []
-        pruned = [e for e in index if e.get("slug") != slug]
-        if len(pruned) != len(index):
-            ad.commit_file(
-                "articles/index.json",
-                (json.dumps(pruned, indent=2, ensure_ascii=False) + "\n").encode(),
-                f"article index: remove {slug}",
-            )
-        return {"removed": slug, "deleted": bool(deleted.get("deleted"))}
-
     @app.post("/api/drafts/{draft_id}/decline")
     async def decline(draft_id: int, request: Request):
         """Owner rejects a draft with optional feedback. An approved article is
@@ -2367,6 +1959,8 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
         draft = next((d for d in memory.list_drafts(limit=100) if d["id"] == draft_id), None)
         if draft is None:
             raise HTTPException(status_code=404, detail="no such draft")
+        if draft["kind"] == "article":
+            raise HTTPException(status_code=409, detail="Decline Payload articles in the tenant owner workspace")
         try:
             body = await request.json()
         except Exception:  # noqa: BLE001
@@ -2375,14 +1969,7 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
 
         unpublished = None
         reset = None
-        if draft["kind"] == "article" and draft["status"] == "approved":
-            ad = adapter()
-            try:
-                unpublished = _unpublish_article(ad, draft)
-                memory.mark_publish_reverted(draft_id=draft_id)
-            except (AdapterError, ValueError) as exc:
-                raise HTTPException(status_code=400, detail=f"unpublish failed: {exc}")
-        elif draft["kind"] in ("merge", "rollback"):
+        if draft["kind"] in ("merge", "rollback"):
             # Rejected build: roll the preview branch back to main so the
             # visualizer stops showing the rejected design and the next build
             # starts from a clean main. Its tweak-map overlay is stale too.

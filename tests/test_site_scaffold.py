@@ -1,4 +1,8 @@
-from site_agent.site_scaffold import initialize_payload_site, initialize_site
+from site_agent.site_scaffold import (
+    initialize_managed_site,
+    initialize_payload_site,
+    payload_template_copy_ignore,
+)
 
 
 def test_initialize_payload_site_creates_canonical_helloada_template(tmp_path):
@@ -17,14 +21,19 @@ def test_initialize_payload_site_creates_canonical_helloada_template(tmp_path):
     assert "__SITE_AGENT_VERSION__" not in wrangler
 
     manifest = (root / "template-manifest.json").read_text()
-    assert '"contentContract": "helloada-content-v1"' in manifest
+    assert '"contentContract": "helloada-content-v2"' in manifest
     assert "createHelloAdaSchema" in (root / "payload.config.ts").read_text()
     assert not (root / "src/collections/Posts.ts").exists()
     assert not (root / "src/collections/Pages.ts").exists()
     assert not (root / "src/globals/Navigation.ts").exists()
     assert (root / "helloada-content-contract.json").exists()
-    assert (root / "src/app/(frontend)/articles/[slug]/page.tsx").exists()
-    assert (root / "src/app/(frontend)/articles.html/page.tsx").exists()
+    assert (root / "src/app/(frontend)/[[...slug]]/page.tsx").exists()
+    assert (root / "src/lib/content-routes.ts").exists()
+    assert not (root / "src/app/(frontend)/articles/[slug]/page.tsx").exists()
+    assert not (root / "src/app/(frontend)/articles.html/page.tsx").exists()
+    routes = (root / "src/helloada.config.ts").read_text()
+    assert "postsIndex: '/articles'" in routes
+    assert "postDetail: '/articles'" in routes
 
 
 def test_payload_navigation_keeps_server_only_props_out_of_client_boundary(tmp_path):
@@ -38,6 +47,23 @@ def test_payload_navigation_keeps_server_only_props_out_of_client_boundary(tmp_p
     assert "{..." not in nav
 
 
+def test_managed_site_baseline_keeps_tenant_identity_unbound_until_bootstrap(tmp_path):
+    root = initialize_managed_site(tmp_path / "site")
+    config = (root / "src/helloada.config.ts").read_text()
+    assert "'__HELLOADA_TENANT_ID__'" in config
+    assert "'__HELLOADA_SITE_NAME__'" in config
+    assert not (root / "public/content.json").exists()
+    assert not (root / "node_modules").exists()
+    assert not (root / ".next").exists()
+    assert not (root / ".open-next").exists()
+
+
+def test_payload_template_copy_policy_excludes_caches_and_local_secrets():
+    names = [".next", ".open-next", ".wrangler", "node_modules", ".env", ".env.local", "src", "package.json"]
+
+    assert payload_template_copy_ignore("/template", names) == set(names[:6])
+
+
 def test_payload_page_blocks_use_canonical_payload_block_types_and_stable_ids(tmp_path):
     root = initialize_payload_site(tmp_path / "site", "North Star Studio", "https://north.example")
     renderer = (root / "src/components/site/TenantSections.tsx").read_text()
@@ -46,61 +72,3 @@ def test_payload_page_blocks_use_canonical_payload_block_types_and_stable_ids(tm
     assert "section-${sectionIndex}" not in renderer
     assert "${sectionKey}-${entryIndex}" not in renderer
     assert "stableKey(section.key" in renderer
-
-
-def test_initialize_site_creates_pelican_pages_and_cms(tmp_path):
-    root = initialize_site(tmp_path / "site", "North Star Studio", "https://north.example")
-
-    assert (root / "pelicanconf.py").exists()
-    assert (root / "content/pages/index.md").exists()
-    assert (root / "content/pages/about.md").exists()
-    assert (root / "content/pages/contact.md").exists()
-    assert (root / "content/articles/.gitkeep").exists()
-    assert (root / "themes/ada/templates/index.html").exists()
-    assert (root / "build.sh").stat().st_mode & 0o111
-    assert "North Star Studio" in (root / "pelicanconf.py").read_text()
-    build = (root / "build.sh").read_text()
-    assert "cp \"$relative\" \"output/$relative\"" in build
-    assert "index.html" in build
-    assert "vendor" in build
-    assert "images" in build
-
-
-def test_initialize_site_build_stages_the_root_homepage_into_output(tmp_path):
-    import os
-    import subprocess
-
-    root = initialize_site(tmp_path / "site", "North Star Studio", "https://north.example")
-    (root / "index.html").write_text("<html><body><h1>Homepage</h1></body></html>", encoding="utf-8")
-    (root / "styles.css").write_text("body { color: #000; }", encoding="utf-8")
-    (root / "modified").mkdir(parents=True)
-    (root / "modified" / "leak.txt").write_text("leak", encoding="utf-8")
-    fake_bin = tmp_path / "fake-bin"
-    fake_bin.mkdir()
-    pelican = fake_bin / "pelican"
-    pelican.write_text("#!/bin/sh\nmkdir -p output\nprintf '<html>pelican</html>' > output/index.html\n", encoding="utf-8")
-    pelican.chmod(0o755)
-
-    built = subprocess.run(
-        ["bash", "build.sh"], cwd=root, capture_output=True, text=True,
-        env={**os.environ, "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}"},
-    )
-
-    assert built.returncode == 0, built.stderr
-    assert (root / "output/index.html").read_text(encoding="utf-8") == "<html><body><h1>Homepage</h1></body></html>"
-    assert (root / "output/styles.css").exists()
-    assert not (root / "output/modified").exists()
-    assert not (root / "output/themes").exists()
-
-
-def test_initialize_site_refuses_non_empty_directory(tmp_path):
-    root = tmp_path / "site"
-    root.mkdir()
-    (root / "existing.html").write_text("owned by customer")
-
-    try:
-        initialize_site(root)
-    except FileExistsError:
-        pass
-    else:
-        raise AssertionError("overwrote a non-empty customer site")

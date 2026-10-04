@@ -15,8 +15,6 @@ import re
 import shutil
 import subprocess
 import threading
-import urllib.error
-import urllib.request
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -31,12 +29,15 @@ from ..credentials import (
     github_api_token,
     github_ssh_command,
 )
+from ..config import deep_merge
 from .. import __version__
 from ..hands.cloudflare_resources import CloudflareResourceProvisioner
 from ..hands.cloudflare_r2 import CloudflareR2Provisioner
 from ..hands.github_provisioning import GitHubRepositoryProvisioner, GitHubRepositoryReceipt
+from ..payload_contract import PayloadContractError, validate_payload_migrations
+from ..site_scaffold import payload_template_copy_ignore
+from .release_queue import ReleaseQueueError, request_release, release_root
 from .tenant_registration import (
-    WORKER_SITE_AGENT_TOKEN_ENV,
     TenantRegistrationError,
     TenantRegistrationService,
     tenant_token_env,
@@ -148,6 +149,8 @@ class WebsiteBootstrapService:
             "status": state.get("status", "queued"),
             "step": state.get("step", "requested"),
             "diagnostic": state.get("diagnostic", ""),
+            "workspace_ready": bool(state.get("workspace_ready", False)),
+            "website_live": bool(state.get("website_live", False)),
             "resource_receipts": public_value(state.get("resource_receipts", {})),
             "steps": {
                 str(key): {
@@ -164,7 +167,9 @@ class WebsiteBootstrapService:
     def status(self, tenant_id: str) -> dict[str, Any]:
         normalized = _component(tenant_id, "website id")
         with self._lock:
-            return self._public_state(self._read_state(normalized))
+            state = self._read_state(normalized)
+            self._refresh_release_state(state)
+            return self._public_state(state)
 
     def start(self, tenant_id: str, *, display_name: str = "") -> dict[str, Any]:
         normalized = _component(tenant_id, "website id")
@@ -240,21 +245,19 @@ class WebsiteBootstrapService:
                 "creating_worker",
                 lambda: self._configure_source(tenant_id, display_name, config_path, repository, data),
             )
-            deployment = self._run_step(
+            release = self._run_step(
                 state,
-                "deploying_shell",
-                lambda: self._deploy(tenant_id, config_path, worker),
+                "queueing_shell_release",
+                lambda: self._queue_release(tenant_id, config_path, worker),
             )
-            self._run_step(
-                state,
-                "ready",
-                lambda: self._verify(deployment.get("worker_url") or worker.get("worker_url")),
-            )
-            state["status"] = "done"
-            state["step"] = "ready"
-            state["diagnostic"] = ""
+            state["status"] = "awaiting_release"
+            state["step"] = "deploying_shell"
+            state["release"] = release
+            state["workspace_ready"] = False
+            state["website_live"] = False
             state["updated_at"] = _now()
             self._write_state(state)
+            self._refresh_release_state(state)
         except Exception:
             # _run_step already records the useful failure.  This guard handles
             # failures before the first step and keeps the async future quiet.
@@ -268,6 +271,61 @@ class WebsiteBootstrapService:
         finally:
             with self._lock:
                 self._futures.pop(tenant_id, None)
+
+    def _refresh_release_state(self, state: dict[str, Any]) -> None:
+        if state.get("step") not in {"deploying_shell", "ready"}:
+            return
+        release = state.get("release")
+        if not isinstance(release, Mapping):
+            return
+        tenant_id = str(state.get("tenant_id") or "")
+        release_id = str(release.get("release_id") or "")
+        source_sha = str(release.get("source_sha") or "")
+        if not tenant_id or not release_id or not re.fullmatch(r"[0-9a-f]{40}", source_sha):
+            state.update(status="failed", step="needs_attention", diagnostic="release request identity is invalid", updated_at=_now())
+            self._write_state(state)
+            return
+        try:
+            receipt_path = release_root(self.config) / "runs" / tenant_id / release_id / "receipt.json"
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            state.update(status="awaiting_release", workspace_ready=False, website_live=False)
+            return
+        except (OSError, UnicodeError, ValueError, ReleaseQueueError):
+            state.update(status="failed", step="needs_attention", diagnostic="central release receipt is unreadable", updated_at=_now())
+            self._write_state(state)
+            return
+        if (
+            receipt.get("tenant") != tenant_id
+            or receipt.get("releaseId") != release_id
+            or receipt.get("sourceSha") != source_sha
+            or receipt.get("approvalId") is not None
+        ):
+            state.update(status="failed", step="needs_attention", diagnostic="central release receipt does not match this bootstrap", updated_at=_now())
+        elif receipt.get("status") in {"deployed", "verified"} and receipt.get("connectionVerifiedAt"):
+            state.update(
+                status="done",
+                step="ready",
+                diagnostic="",
+                workspace_ready=True,
+                website_live=False,
+                deployment_receipt={
+                    key: receipt.get(key)
+                    for key in ("pipelineSha", "uploadedVersion", "connectionVerifiedAt", "finishedAt")
+                    if receipt.get(key) is not None
+                },
+                updated_at=_now(),
+            )
+        elif receipt.get("status") in {"failed", "interrupted"}:
+            state.update(
+                status="failed",
+                step="needs_attention",
+                diagnostic=str(receipt.get("error") or "central VPS release failed")[:1_000],
+                updated_at=_now(),
+            )
+        else:
+            state.update(status="awaiting_release", workspace_ready=False, website_live=False)
+        self._write_state(state)
 
     def _credentials(self) -> tuple[dict[str, str], str, str, str]:
         env = credential_environment(self.config, self.env)
@@ -303,10 +361,55 @@ class WebsiteBootstrapService:
         )
         tenant_dir = config_path.parent
         site_dir = tenant_dir / "site"
-        self._materialize_template(site_dir)
+        if site_dir.exists() and (site_dir / ".git").is_dir():
+            remotes = self._git(site_dir, "remote").splitlines()
+            if "origin" in remotes:
+                origin = self._git(site_dir, "remote", "get-url", "origin")
+                if origin != receipt.ssh_url:
+                    raise BootstrapError("existing site checkout points at a different repository; refusing to change it")
+                self._verify_existing_repository(site_dir, tenant_id)
+                return {**receipt.to_dict(), "site_dir": str(site_dir), "worker_name": names["worker"]}
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            site_config = _mapping(raw.get("site"))
+            baseline_sha = str(site_config.get("platform_baseline_sha") or "")
+            if not re.fullmatch(r"[0-9a-f]{40}", baseline_sha):
+                raise BootstrapError("tenant has no recorded canonical Payload baseline; refusing scaffold replacement")
+            if self._git(site_dir, "status", "--porcelain"):
+                raise BootstrapError("remote-free site workspace contains edits; refusing to replace or publish them")
+            if self._git(site_dir, "rev-parse", "HEAD") != baseline_sha:
+                raise BootstrapError("remote-free site workspace differs from its recorded baseline; reconcile it before bootstrap")
+            self._load_payload_contract(site_dir)
+        elif site_dir.exists() and any(site_dir.iterdir()):
+            raise BootstrapError("site path contains files but no managed Git baseline; refusing to overwrite it")
+        else:
+            self._materialize_template(site_dir)
+        self._load_payload_contract(site_dir)
         self._configure_template(site_dir, tenant_id, display_name)
         self._git_init_and_push(site_dir, receipt)
         return {**receipt.to_dict(), "site_dir": str(site_dir), "worker_name": names["worker"]}
+
+    def _verify_existing_repository(self, site_dir: Path, tenant_id: str) -> None:
+        if self._git(site_dir, "status", "--porcelain"):
+            raise BootstrapError("existing customer repository has uncommitted files; refusing to modify it")
+        if self._git(site_dir, "branch", "--show-current") != "main":
+            raise BootstrapError("existing customer checkout is not on main; refusing implicit branch changes")
+        try:
+            marker = json.loads((site_dir / ".helloada-managed.json").read_text(encoding="utf-8"))
+            manifest = json.loads((site_dir / "template-manifest.json").read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise BootstrapError("existing customer repository has no valid HelloAda ownership marker") from exc
+        expected = {
+            "tenantId": tenant_id,
+            "templateSchema": manifest.get("templateSchema"),
+            "payloadAdmin": manifest.get("payloadAdmin"),
+            "payloadCore": manifest.get("payloadCore"),
+            "contentContract": manifest.get("contentContract"),
+            "schemaRevision": manifest.get("schemaRevision"),
+            "schemaIdentity": manifest.get("schemaIdentity"),
+            "migrationHead": manifest.get("migrationHead"),
+        }
+        if marker != expected:
+            raise BootstrapError("existing customer repository belongs to a different tenant or Payload contract")
 
     def _data_resources(self, tenant_id: str) -> Mapping[str, Any]:
         _env, _github_token, cloudflare_token, account_id = self._credentials()
@@ -341,24 +444,15 @@ class WebsiteBootstrapService:
         template = Path(template_raw).expanduser().resolve()
         if not template.is_dir() or not (template / "package.json").is_file():
             raise BootstrapError(f"Payload site template is unavailable: {template}")
-        if site_dir.exists() and (site_dir / ".git").is_dir():
-            # A neutral registration scaffold is replaced exactly once. A real
-            # bootstrap checkout is left alone so retries do not destroy edits.
-            try:
-                proc = subprocess.run(
-                    ["git", "-C", str(site_dir), "remote"],
-                    capture_output=True,
-                    text=True,
-                    timeout=15,
-                    check=False,
-                )
-                if proc.returncode == 0 and proc.stdout.strip():
-                    return
-            except (OSError, subprocess.TimeoutExpired):
-                pass
-            shutil.rmtree(site_dir)
+        if site_dir.exists() and any(site_dir.iterdir()):
+            raise BootstrapError("refusing to replace an existing site workspace; use its recorded canonical baseline")
         site_dir.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(template, site_dir, dirs_exist_ok=False)
+        shutil.copytree(
+            template,
+            site_dir,
+            dirs_exist_ok=True,
+            ignore=payload_template_copy_ignore,
+        )
 
     @staticmethod
     def _configure_template(site_dir: Path, tenant_id: str, display_name: str) -> None:
@@ -376,6 +470,8 @@ class WebsiteBootstrapService:
             raise BootstrapError("Payload template is missing src/helloada.config.ts") from exc
         encoded_tenant = json.dumps(str(tenant_id).strip())
         encoded_name = json.dumps(str(display_name or tenant_id).strip())
+        if source.count("'__HELLOADA_TENANT_ID__'") != 1 or source.count("'__HELLOADA_SITE_NAME__'") != 1:
+            raise BootstrapError("tenant identity can only be bound to an unconfigured canonical template")
         source = source.replace("'__HELLOADA_TENANT_ID__'", encoded_tenant)
         source = source.replace("'__HELLOADA_SITE_NAME__'", encoded_name)
         wrangler = site_dir / "wrangler.jsonc"
@@ -387,6 +483,21 @@ class WebsiteBootstrapService:
             wrangler.write_text(wrangler_source, encoding="utf-8")
         if "__HELLOADA_" in source:
             raise BootstrapError("Payload template identity placeholders were not fully configured")
+        try:
+            manifest = json.loads((site_dir / "template-manifest.json").read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise BootstrapError("Payload template identity manifest is missing or invalid") from exc
+        marker = {
+            "tenantId": str(tenant_id),
+            "templateSchema": manifest["templateSchema"],
+            "payloadAdmin": manifest["payloadAdmin"],
+            "payloadCore": manifest["payloadCore"],
+            "contentContract": manifest["contentContract"],
+            "schemaRevision": manifest["schemaRevision"],
+            "schemaIdentity": manifest["schemaIdentity"],
+            "migrationHead": manifest["migrationHead"],
+        }
+        (site_dir / ".helloada-managed.json").write_text(json.dumps(marker, indent=2) + "\n", encoding="utf-8")
         path.write_text(source, encoding="utf-8")
 
     def _git_env(self) -> dict[str, str]:
@@ -479,6 +590,7 @@ class WebsiteBootstrapService:
         ).strip().rstrip("/")
         if not re.fullmatch(r"https://[^/?#]+(?:/[^?#]*)?", site_agent_url):
             raise BootstrapError("bootstrap site_agent_url must be an HTTPS URL")
+        payload_contract = self._load_payload_contract(site_dir)
         raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
         if not isinstance(raw, dict):
             raise BootstrapError("tenant config root must be an object")
@@ -487,7 +599,7 @@ class WebsiteBootstrapService:
         if not isinstance(site, dict):
             raise BootstrapError("tenant site config must be an object")
         site.update({
-            "adapter": "github_static",
+            "adapter": "payload_gateway",
             "repository": str(repository.get("full_name") or ""),
             "clone_path": str(site_dir),
             "branch": "main",
@@ -496,26 +608,13 @@ class WebsiteBootstrapService:
             "preview_url": worker_url,
             "public_url": public_origin,
             "custom_domain": "",
-            "website_present": True,
+            "website_present": False,
             "payload": {
                 "enabled": True,
                 "url": worker_url,
                 "token_env": token_env,
-                "api_prefix": "/api",
-                "contract": {
-                    "version": "helloada-content-v1",
-                    "collections": {
-                        "pages": ["sourceId", "title", "slug", "summary", "body", "sections", "featuredImage", "canonicalUrl", "seo", "published"],
-                        "posts": ["sourceId", "title", "slug", "summary", "body", "featuredImage", "gallery", "author", "publishedAt", "modifiedAt", "category", "canonicalUrl", "seo", "published"],
-                        "products": ["sourceId", "title", "slug", "summary", "body", "featuredImage", "price", "category", "published"],
-                        "productCategories": ["sourceId", "title", "slug", "description", "featuredImage", "published"],
-                    },
-                    "globals": {
-                        "navigation": ["items", "groups", "footer", "footerGroups"],
-                        "siteSettings": ["siteName", "description", "tagline", "logo", "email", "telephone", "facebookUrl", "instagramUrl", "defaultSeoTitle", "defaultSeoDescription", "defaultSocialImage", "journalTitle", "journalDescription", "address"],
-                    },
-                    "media_fields": ["alt", "description", "tags", "dominantColors", "suggestedUses", "qualityNotes", "analysisStatus", "analysis", "sourceId"],
-                },
+                "api_prefix": "/api/workspace",
+                "contract": payload_contract,
             },
             "source_deployment": {
                 "clone_path": str(site_dir),
@@ -526,7 +625,7 @@ class WebsiteBootstrapService:
         })
         raw["display_name"] = display_name or raw.get("display_name") or tenant_id
         raw["scheduler"] = {**_mapping(raw.get("scheduler")), "enabled": True}
-        raw["blog"] = {**_mapping(raw.get("blog")), "engine": "payload", "journal_enabled": True}
+        raw["editorial"] = {**_mapping(raw.get("editorial")), "enabled": True}
         raw["ga"] = {
             **_mapping(raw.get("ga")),
             "enabled": True,
@@ -554,7 +653,7 @@ class WebsiteBootstrapService:
         values.setdefault("PAYLOAD_SECRET", os.urandom(36).hex())
         self._write_env(env_path, values)
 
-        self._configure_wranger(site_dir, names, worker_url, site_agent_url, data, display_name, tenant_id)
+        self._configure_wranger(site_dir, names, worker_url, site_agent_url, data, display_name, tenant_id, payload_contract)
         try:
             self.registry.reload_tenant(
                 tenant_id,
@@ -568,6 +667,56 @@ class WebsiteBootstrapService:
         return {"worker_name": names["worker"], "worker_url": worker_url, "repository": repository.get("full_name", "")}
 
     @staticmethod
+    def _load_payload_contract(site_dir: Path) -> Mapping[str, Any]:
+        contract_path = site_dir / "helloada-content-contract.json"
+        try:
+            contract = json.loads(contract_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise BootstrapError("canonical Payload capability contract is missing or invalid") from exc
+        if (
+            not isinstance(contract, dict)
+            or not re.fullmatch(r"helloada-content-v\d+", str(contract.get("contract") or ""))
+            or not re.fullmatch(r"\d+\.\d+\.\d+", str(contract.get("coreVersion") or ""))
+            or not isinstance(contract.get("schemaRevision"), int)
+            or not isinstance(contract.get("collections"), dict)
+            or not isinstance(contract.get("globals"), dict)
+            or not isinstance(contract.get("contentBlocks"), list)
+            or not {"pages", "posts", "media"}.issubset(contract["collections"])
+            or not {"siteSettings", "navigation"}.issubset(contract["globals"])
+        ):
+            raise BootstrapError("canonical Payload capability contract is incomplete")
+        try:
+            template = validate_payload_migrations(site_dir)
+        except (OSError, UnicodeError, ValueError, PayloadContractError) as exc:
+            raise BootstrapError("canonical Payload template manifest is missing or invalid") from exc
+        if (
+            not isinstance(template, dict)
+            or template.get("payloadCore") != contract["coreVersion"]
+            or template.get("contentContract") != contract["contract"]
+            or template.get("schemaRevision") != contract["schemaRevision"]
+            or not isinstance(template.get("templateSchema"), int)
+            or not isinstance(template.get("payloadAdmin"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", str(template.get("schemaIdentity") or ""))
+            or not isinstance(template.get("locales"), list)
+            or not template["locales"]
+            or any(not isinstance(locale, str) or not re.fullmatch(r"[a-z]{2,3}(?:-[A-Za-z0-9]{2,8})*", locale) for locale in template["locales"])
+            or len(set(template["locales"])) != len(template["locales"])
+            or template.get("defaultLocale") not in template["locales"]
+            or not isinstance(template.get("migrations"), list)
+            or not template["migrations"]
+            or not re.fullmatch(r"[0-9a-f]{64}", str(template.get("migrationHead") or ""))
+        ):
+            raise BootstrapError("Payload package, template, and schema identities do not agree")
+        return {
+            **contract,
+            "adminVersion": template["payloadAdmin"],
+            "locales": template["locales"],
+            "defaultLocale": template["defaultLocale"],
+            "schemaIdentity": template["schemaIdentity"],
+            "migrationHead": template["migrationHead"],
+        }
+
+    @staticmethod
     def _configure_wranger(
         site_dir: Path,
         names: Mapping[str, str],
@@ -576,10 +725,12 @@ class WebsiteBootstrapService:
         data: Mapping[str, Any],
         display_name: str,
         tenant_id: str,
+        payload_contract: Mapping[str, Any],
     ) -> None:
         path = site_dir / "wrangler.jsonc"
         try:
             document = json.loads(path.read_text(encoding="utf-8"))
+            template = json.loads((site_dir / "template-manifest.json").read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             raise BootstrapError("Payload site wrangler.jsonc is invalid") from exc
         vars_section = document.setdefault("vars", {})
@@ -590,10 +741,13 @@ class WebsiteBootstrapService:
             "HELLOADA_SITE_NAME": display_name or tenant_id,
             "HELLOADA_TENANT_ID": tenant_id,
             "HELLOADA_SITE_AGENT_VERSION": __version__,
-            "HELLOADA_TEMPLATE_SCHEMA": "4",
-            "HELLOADA_PAYLOAD_ADMIN_VERSION": "0.8.6",
-            "HELLOADA_PAYLOAD_CORE_VERSION": "0.1.0",
-            "HELLOADA_CONTENT_CONTRACT_VERSION": "helloada-content-v1",
+            "HELLOADA_TEMPLATE_SCHEMA": str(template.get("templateSchema") or ""),
+            "HELLOADA_PAYLOAD_ADMIN_VERSION": str(template.get("payloadAdmin") or ""),
+            "HELLOADA_PAYLOAD_CORE_VERSION": str(payload_contract.get("coreVersion") or ""),
+            "HELLOADA_PAYLOAD_SCHEMA_REVISION": str(payload_contract.get("schemaRevision") or ""),
+            "HELLOADA_CONTENT_CONTRACT_VERSION": str(payload_contract.get("contract") or ""),
+            "HELLOADA_SCHEMA_IDENTITY": str(template.get("schemaIdentity") or ""),
+            "HELLOADA_PAYLOAD_MIGRATION_HEAD": str(template.get("migrationHead") or ""),
         })
         document["name"] = names["worker"]
         document["d1_databases"] = [{
@@ -604,87 +758,52 @@ class WebsiteBootstrapService:
         document["r2_buckets"] = [{"binding": "R2", "bucket_name": names["r2"]}]
         path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
 
-    def _command(
+    def _queue_release(
         self,
-        site_dir: Path,
-        command: list[str],
-        *,
-        input_text: str | None = None,
-        production: bool = False,
-        local_build: bool = True,
-    ) -> str:
-        env = credential_environment(self.config, self.env)
-        values = self._read_env(site_dir.parent / "tenant.env")
-        env.update(values)
-        env["CLOUDFLARE_API_TOKEN"] = cloudflare_api_token(self.config, env)
-        _token_name, account_name = cloudflare_env_names(self.config)
-        env["CLOUDFLARE_ACCOUNT_ID"] = env.get(account_name, "")
-        if local_build:
-            env["PAYLOAD_LOCAL_BUILD"] = "1"
-        else:
-            env.pop("PAYLOAD_LOCAL_BUILD", None)
-        if production:
-            env["NODE_ENV"] = "production"
-        try:
-            result = subprocess.run(
-                command,
-                cwd=str(site_dir),
-                env=env,
-                input=input_text,
-                capture_output=True,
-                text=True,
-                timeout=1_800,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            raise BootstrapError(f"command failed: {' '.join(command[:3])}: {type(exc).__name__}") from exc
-        if result.returncode:
-            detail = (result.stderr or result.stdout or "command failed").strip()[-1_500:]
-            raise BootstrapError(f"{' '.join(command[:3])}: {detail}")
-        return result.stdout.strip()
-
-    def _deploy(self, tenant_id: str, config_path: Path, worker: Mapping[str, Any]) -> Mapping[str, Any]:
+        tenant_id: str,
+        config_path: Path,
+        worker: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
         site_dir = Path(str(worker.get("site_dir") or config_path.parent / "site"))
-        self._command(site_dir, ["npm", "install", "--no-audit", "--no-fund"])
-        migrations = site_dir / "src" / "migrations"
-        has_migration = migrations.exists() and any(
-            path.suffix in {".ts", ".json"} and path.name != "index.ts"
-            for path in migrations.glob("*")
-        )
-        if not has_migration:
-            self._command(site_dir, ["npx", "payload", "migrate:create", "initial"], production=True)
-        self._command(site_dir, ["npx", "payload", "migrate"], production=True, local_build=False)
-        self._command(site_dir, ["npm", "run", "typecheck"])
-        self._command(site_dir, ["npm", "run", "build"])
-        self._command(site_dir, ["npx", "opennextjs-cloudflare", "build"])
-        self._git(site_dir, "add", "-A")
-        if self._git(site_dir, "status", "--porcelain"):
-            self._git(site_dir, "commit", "-qm", "Configure managed Payload runtime")
-            self._git(site_dir, "push", "origin", "main")
-        env_values = self._read_env(config_path.parent / "tenant.env")
-        payload_secret = env_values.get("PAYLOAD_SECRET")
-        tenant_token = env_values.get(tenant_token_env(tenant_id))
-        if not payload_secret or not tenant_token:
-            raise BootstrapError("runtime secrets are unavailable")
-        for name, value in (("PAYLOAD_SECRET", payload_secret), (WORKER_SITE_AGENT_TOKEN_ENV, tenant_token)):
-            self._command(site_dir, ["npx", "wrangler", "secret", "put", name, "--config", "wrangler.jsonc"], input_text=value + "\n")
-        self._command(site_dir, ["npx", "wrangler", "deploy", "--config", "wrangler.jsonc"], production=True)
-        return {"worker_name": worker.get("worker_name"), "worker_url": worker.get("worker_url"), "commit": self._git(site_dir, "rev-parse", "HEAD")}
-
-    @staticmethod
-    def _verify(worker_url: Any) -> Mapping[str, Any]:
-        url = str(worker_url or "").rstrip("/") + "/api/health"
-        request = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "helloada-bootstrap"})
         try:
-            with urllib.request.urlopen(request, timeout=20) as response:
-                body = response.read(32 * 1024).decode("utf-8", "replace")
-                if int(response.status) != 200:
-                    raise BootstrapError(f"live site health check returned {response.status}")
-                return {"worker_url": str(worker_url), "status": int(response.status), "body": body[:500]}
-        except urllib.error.HTTPError as exc:
-            raise BootstrapError(f"live site health check returned {exc.code}") from exc
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            raise BootstrapError(f"live site health check failed: {type(exc).__name__}") from exc
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            if not isinstance(raw, Mapping) or str(raw.get("instance_name") or "") != tenant_id:
+                raise BootstrapError("tenant source identity does not match its registration")
+            site = _mapping(raw.get("site"))
+            repository = str(site.get("repository") or "")
+            match = re.fullmatch(r"https://github\.com/(weareheadless/[A-Za-z0-9_.-]+)\.git", repository)
+            if not match:
+                raise BootstrapError("managed tenant repository identity is invalid")
+            expected_remote = f"git@github.com:{match.group(1)}.git"
+            if self._git(site_dir, "remote", "get-url", "origin") != expected_remote:
+                raise BootstrapError("managed tenant checkout remote differs from its registered GitHub repository")
+            if self._git(site_dir, "branch", "--show-current") != "main":
+                raise BootstrapError("managed tenant checkout must be on main before bootstrap release")
+            changed = self._git(site_dir, "status", "--porcelain").splitlines()
+            if any(line[3:] != "wrangler.jsonc" for line in changed):
+                raise BootstrapError("bootstrap found source changes outside the declared Worker configuration")
+            if changed:
+                self._git(site_dir, "add", "--", "wrangler.jsonc")
+                staged = self._git(site_dir, "diff", "--cached", "--name-only").splitlines()
+                if staged != ["wrangler.jsonc"]:
+                    raise BootstrapError("bootstrap staging contains files outside the declared Worker configuration")
+                self._git(site_dir, "commit", "-qm", "Configure canonical Payload Worker bindings")
+                self._git(site_dir, "push", "origin", "main")
+            commit = self._git(site_dir, "rev-parse", "HEAD").lower()
+            if not re.fullmatch(r"[0-9a-f]{40}", commit):
+                raise BootstrapError("canonical site source has no exact Git revision")
+            request_config = deep_merge(self.config, dict(raw))
+            request = request_release(request_config, self.env, commit, initialize_schema=True)
+            root = release_root(self.config)
+        except (OSError, UnicodeError, yaml.YAMLError, ReleaseQueueError) as exc:
+            raise BootstrapError(str(exc)[:500]) from exc
+        return {
+            **request,
+            "tenant_id": tenant_id,
+            "worker_name": worker.get("worker_name"),
+            "worker_url": worker.get("worker_url"),
+            "release_root": str(root),
+        }
 
 
 __all__ = ["BootstrapError", "WebsiteBootstrapService"]

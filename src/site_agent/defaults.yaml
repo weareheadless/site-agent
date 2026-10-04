@@ -18,6 +18,12 @@ credentials:
   # deployment.
   profile_file: /SOCIAL/configs/host-credentials.yaml
 
+# All managed production releases are committed to the source-controlled VPS
+# queue and executed by its systemd pipeline. No application service deploys a
+# Worker directly.
+deployment_pipeline:
+  release_root: /SOCIAL/payload-releases
+
 design_engine:
   enabled: false
   build_profile: next_react
@@ -191,15 +197,20 @@ seo:
     market: ""
 
 site:
-  adapter: github_static
+  adapter: payload_gateway
   repository: ""
   branch: main
-  content_path: content.json
+  url: ""
   preview_url: ""   # shown in the admin Design tab
   preview_branch: ""   # e.g. "preview": proposals render here before approval (Cloudflare Pages)
   clone_path: ""     # local git clone for the builder agent (optional)
-  writable_patterns: ["*.css", "*.md", "articles/*", "content/articles/*"]   # fnmatch patterns Ada may write/edit/delete
-  readonly_note: "admin.html, secrets and CI files are always denied"
+  writable_patterns:
+    - src/app/(frontend)/site.css
+    - src/components/site/presentation/**
+    - src/components/site/TenantChrome.tsx
+    - public/site/**
+    - public/fonts/**
+  readonly_note: "Payload schema, authentication, platform bridges and runtime configuration are always denied"
   brand:
     font_body: ""       # optional: admin UI body font stack (e.g. "'Manrope', sans-serif")
     font_display: ""    # optional: admin UI display/heading font stack
@@ -256,14 +267,8 @@ providers:
     timeout_seconds: 30
     max_response_bytes: 2097152
 
-blog:
-  # Payload is the canonical CMS for new sites. Pelican remains available only
-  # when an existing instance explicitly sets blog.engine: pelican.
-  engine: payload
-  articles_dir: content/articles
-  site_url: ""
-  build_command: ""
-  journal_enabled: true
+editorial:
+  enabled: true
 
 llm:
   base_url: https://openrouter.ai/api/v1

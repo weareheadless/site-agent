@@ -222,7 +222,7 @@ def test_article_job_requests_research_when_provider_present(tmp_path, monkeypat
     from site_agent.core import jobs
 
     memory = Memory(tmp_path / "memory.db")
-    memory.kv_set("journal_enabled", True)
+    memory.kv_set("editorial_enabled", True)
     called = {"research": False, "draft": False}
 
     def fake_select(_context):
@@ -252,7 +252,7 @@ def test_article_job_blocks_research_dependent_draft_without_provider(tmp_path, 
     from site_agent.core import jobs
 
     memory = Memory(tmp_path / "memory.db")
-    memory.kv_set("journal_enabled", True)
+    memory.kv_set("editorial_enabled", True)
     drafted = {"called": False}
 
     def fake_draft(_context, *_args, **_kwargs):

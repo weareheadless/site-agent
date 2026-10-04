@@ -2,16 +2,14 @@
 
 When the builder finishes a page she writes a semantic map of the knobs she
 made tweakable; a deterministic extractor backfills every page so the fast
-tier always has one. The map lets the chat model stage a small tweak (one CSS
-property, a heading's text, a content field) from a compact reference instead
-of re-reading whole files: each entry carries the exact current snippet, so
-propose_changes can be issued blind and the existing validation still catches
-staleness.
+tier always has one. The map gives the builder concise source context for
+focused visual changes without re-reading whole files. It contains only
+frontend CSS declarations and rendered HTML text; editable business content
+belongs to Payload's declared fields.
 
 Entry kinds:
   css   {"kind":"css",   "label","file","selector","prop","current","find"}
   text  {"kind":"text",  "label","file","selector","current","find"}
-  field {"kind":"field", "label","file","field","current"}
 
 The map is cached in the memory DB keyed on the origin/main commit, so it
 regenerates only when the published site changes. The builder's semantic
@@ -31,7 +29,6 @@ BUILDER_KEY = "tweakmap_builder_v1"
 _MAX_PER_FILE = 24
 _MAX_TOTAL = 90
 _MAX_TEXT = 140
-_MAX_FIELD = 80
 
 _CSS_RULE_RE = re.compile(r"([^{}]+)\{([^{}]*)\}", re.S)
 _CSS_DECL_RE = re.compile(r"([\w-]+)\s*:\s*([^;}]+);")
@@ -145,24 +142,6 @@ def _text_entries(html: str, file: str) -> list[dict[str, Any]]:
     return entries
 
 
-def _field_entries(content: dict[str, Any], file: str) -> list[dict[str, Any]]:
-    entries: list[dict[str, Any]] = []
-
-    def walk(node: Any, prefix: str) -> None:
-        if isinstance(node, dict):
-            for key, value in node.items():
-                path = f"{prefix}.{key}" if prefix else str(key)
-                walk(value, path)
-        elif isinstance(node, (str, int, float, bool)) and node != "" and prefix:
-            entries.append({
-                "kind": "field", "label": f"content {prefix}", "file": file,
-                "field": prefix, "current": str(node)[:_MAX_FIELD],
-            })
-
-    walk(content, "")
-    return entries[:_MAX_PER_FILE]
-
-
 def build(clone: Path, ref: str = "origin/main") -> dict[str, list[dict[str, Any]]]:
     """Deterministic map keyed by file, straight out of the git ref."""
     files = [f for f in _git(clone, "ls-tree", "-r", "--name-only", ref).splitlines() if f.strip()]
@@ -189,13 +168,6 @@ def build(clone: Path, ref: str = "origin/main") -> dict[str, list[dict[str, Any
         text = _show(clone, ref, page)
         if text:
             result[page] = _text_entries(text, page)
-    if "content.json" in files:
-        try:
-            content = json.loads(_show(clone, ref, "content.json") or "{}")
-            if isinstance(content, dict):
-                result["content.json"] = _field_entries(content, "content.json")
-        except (json.JSONDecodeError, TypeError):
-            pass
     return result
 
 

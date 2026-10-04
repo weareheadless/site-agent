@@ -72,6 +72,7 @@ test('media relations use Payload IDs and owners cannot edit schema identity', (
   }
   const fields = helloAdaContentBindings(document, 'pages', '/')
   assert.equal(fields.find((field) => field.label === 'Main image').value, '17')
+  assert.equal(helloAdaContentBindings({ id: 'page-2', featuredImage: { sourceId: 'import-asset' } }, 'pages', '/').find((field) => field.label === 'Main image').value, '')
   assert.equal(fields.find((field) => field.label === 'Social preview image').value, '23')
   const updated = applyHelloAdaBindingEdits(document, [
     { collection: 'pages', documentId: 'page-1', field: 'seoImage', expectedValue: '23', newValue: 31 },

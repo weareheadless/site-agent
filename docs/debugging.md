@@ -9,21 +9,14 @@ not start by rerunning the builder.
 GET /api/chat/jobs/{job_id}
 GET /api/conversations/{conversation_id}
 GET /api/drafts
-GET /api/journal
 ```
 
 The active-job endpoint, `GET /api/chat/jobs`, intentionally omits completed
 jobs. A `done` job remains available by ID and in its conversation.
 
-For a journal setup, the expected relationship is:
-
-```text
-job.status = done
-job.result.merge_draft_id = N
-```
-
-If this relationship is broken, investigate the executor and persistence
-before touching the browser.
+Editorial drafts are managed through the tenant's Payload workspace. A failed
+Payload validation is an explicit task failure; there is no parallel article
+file publisher.
 
 ## Verify Design
 
@@ -32,8 +25,7 @@ draft. For a draft ID `N`:
 
 ```text
 GET /ada/api/pages?draft_id=N
-GET /ada/api/review/N/articles.html
-GET /ada/api/review/N/theme/css/journal.css
+GET /ada/api/review/N/<built-page-or-asset-path>
 ```
 
 All iframe assets must remain under `/ada/api/review/N/`. A request to bare
