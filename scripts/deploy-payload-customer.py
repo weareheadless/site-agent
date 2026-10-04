@@ -37,6 +37,11 @@ def atomic_json(path: Path, value: Any) -> None:
     temporary.replace(path)
 
 
+def payload_migration_command(manifest: dict[str, Any]) -> list[str]:
+    """Run migrations through the site's pinned, package-managed Payload entrypoint."""
+    return [str(Path(manifest["npmBin"]) / "npm"), "run", "payload", "--", "migrate"]
+
+
 def run(command: list[str], cwd: Path, env: dict[str, str]) -> str:
     print("[release] " + " ".join(command), flush=True)
     output: list[str] = []
@@ -182,7 +187,7 @@ def enforce_payload_migrations(checkout: Path, customer: dict[str, Any], env: di
         stage("initialize-schema")
         runtime = tenant_runtime_secrets(manifest, tenant)
         migration_env = {**base, **env, **runtime, "NODE_ENV": "production", "PAYLOAD_CLI": "1"}
-        run([str(checkout / "node_modules/.bin/payload"), "migrate"], checkout, migration_env)
+        run(payload_migration_command(manifest), checkout, migration_env)
         tables, applied = applied_payload_migrations(customer, env)
     elif "payload_migrations" not in tables:
         raise RuntimeError("non-empty tenant D1 has no Payload migration ledger")
