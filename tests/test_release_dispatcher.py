@@ -151,8 +151,8 @@ def test_api_restart_broker_accepts_only_fixed_restart_request():
         return SimpleNamespace(returncode=0, stderr="")
 
     output = io.BytesIO()
-    assert helper.serve(io.BytesIO(b"restart\\n"), output, run_command=fake_run) == 0
-    assert output.getvalue() == b"restarted\\n"
+    assert helper.serve(io.BytesIO(b"restart\n"), output, run_command=fake_run) == 0
+    assert output.getvalue() == b"restarted\n"
     assert calls[0][0] == ["/usr/bin/systemctl", "restart", "site-agent-api.service"]
     assert calls[0][1]["shell"] is False
     assert calls[0][1]["timeout"] == 120
@@ -175,9 +175,9 @@ def test_api_restart_broker_rejects_arbitrary_commands_without_execution():
         raise AssertionError("untrusted request reached command runner")
 
     output = io.BytesIO()
-    assert helper.serve(io.BytesIO(b"restart site-agent-api.service\\n"), output,
+    assert helper.serve(io.BytesIO(b"restart site-agent-api.service\n"), output,
                         run_command=forbidden) == 2
-    assert output.getvalue() == b"invalid\\n"
+    assert output.getvalue() == b"invalid\n"
     assert called is False
 
 
