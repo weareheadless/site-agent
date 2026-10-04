@@ -2,7 +2,9 @@ import { NextResponse } from 'next/server'
 import { getPayload } from 'payload'
 
 import config from '@payload-config'
+import { helloAdaSite } from '@/helloada.config'
 import { hashJson, withoutPayloadMetadata } from '@/lib/payload-hash'
+import { resolvePayloadLocale, type HelloAdaPayloadLocale } from '@/lib/payload-locale'
 import { serviceAuthorized } from '@/lib/service-auth'
 
 const collections = ['pages', 'posts', 'products'] as const
@@ -17,9 +19,14 @@ export async function GET(request: Request) {
   const params = new URL(request.url).searchParams
   const collection = collectionFor(params.get('collection') || 'pages')
   if (!collection) return errorResponse('unsupported collection', 400)
+  let locale: HelloAdaPayloadLocale | undefined
+  try {
+    locale = resolvePayloadLocale(params.get('locale'), helloAdaSite.locales)
+  } catch {
+    return errorResponse('unsupported locale', 400)
+  }
   const payload = await getPayload({ config })
   const draft = params.get('draft') === 'true'
-  const locale = params.get('locale') || undefined
   const identifier = params.get('id') || params.get('sourceId') || params.get('slug')
   if (!identifier) {
     const requestedLimit = Number(params.get('limit') || '100')
