@@ -116,10 +116,11 @@ snapshot's tests, manifest and pipeline, so later Git changes cannot alter an
 in-flight run. The dispatcher never points at the mutable `/SOCIAL/site-agent`
 checkout; it validates an install manifest and synchronizes only its dispatcher
 code from official-main snapshots. Its service keeps `NoNewPrivileges=true`
-because customer builds execute code from tenant repositories. The reviewed
-bootstrap installs host systemd units and a Polkit rule permitting `admin` to
-restart only `site-agent-api.service`. Routine release code cannot run `sudo`,
-write system units, or reload systemd. Host unit changes require the explicit
+because customer builds execute code from tenant repositories. The reviewed bootstrap installs host systemd units and a root-owned,
+fixed-function socket broker. The release dispatcher can request only a restart
+of `site-agent-api.service`; it cannot select a command or another unit. The
+broker socket is restricted to the deployment account. Routine release code
+cannot run `sudo`, write system units, or reload systemd. Host unit changes require the explicit
 bootstrap from the exact official-main snapshot. The timer persists across
 SSH/chat disconnects and machine restarts. A systemd timeout kills the complete
 process group; the next poll records an interrupted attempt.
@@ -180,8 +181,10 @@ release_sha="$(git --git-dir=/SOCIAL/payload-releases/control.git rev-parse refs
 ```
 
 The bootstrap fetches official `main`, verifies the dispatcher, controller and
-host policy files against Git objects, then installs the dispatcher, API and
-release systemd units, timer and scoped Polkit rule from that snapshot. On a new host, run the same script from a clean
+host files against Git objects, then installs the dispatcher, API and release
+systemd units, timer, fixed-function restart broker, and broker socket from that
+snapshot. It removes the exact obsolete Polkit rule path used by earlier
+bootstrap versions. On a new host, run the same script from a clean
 `/SOCIAL/site-agent` checkout whose `main` SHA matches official `main`:
 
 ```bash
