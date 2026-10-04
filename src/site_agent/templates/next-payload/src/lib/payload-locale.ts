@@ -1,6 +1,6 @@
-import type { Config } from '@/payload-types'
+import type { TypedLocale } from 'payload'
 
-export type HelloAdaPayloadLocale = Config['locale'] | 'all'
+export type HelloAdaPayloadLocale = TypedLocale | 'all'
 
 /** Validate request locales before passing them to Payload's generated API types. */
 export const resolvePayloadLocale = (
@@ -15,5 +15,5 @@ export const resolvePayloadLocale = (
     return 'all'
   }
   if (!enabledLocales.includes(value)) throw new Error('The requested locale is not enabled for this website.')
-  return value as Config['locale']
+  return value as TypedLocale
 }
