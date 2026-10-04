@@ -104,3 +104,14 @@ test('a clean scaffold inherits Payload-bound pages, posts, settings, navigation
   assert.match(siteChrome, /getNavigation/)
   assert.match(siteChrome, /getSiteSettings/)
 })
+
+test('release verification rejects tenants whose shared Payload content cannot render', () => {
+  const verifier = read('scripts/verify-payload-contract.ts')
+  assert.match(verifier, /siteSettings publishable name/)
+  assert.match(verifier, /navigation has shared header and footer links/)
+  assert.match(verifier, /published home page is complete enough to render/)
+  assert.match(verifier, /seo\.title/)
+  assert.match(verifier, /seo\.description/)
+  assert.match(verifier, /home\.summary/)
+  assert.match(verifier, /home\.sections/)
+})
