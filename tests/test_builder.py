@@ -596,6 +596,7 @@ def test_builder_origin_url_never_persists_token():
 
 
 def test_ensure_clone_upgrades_https_origin_before_fetching_with_host_ssh(tmp_path, monkeypatch):
+    monkeypatch.delenv("GIT_SSH_COMMAND", raising=False)
     clone = tmp_path / "clone"
     (clone / ".git").mkdir(parents=True)
     key = tmp_path / "github_ed25519"
