@@ -37,7 +37,7 @@ def test_committed_queue_is_valid():
 
 
 def test_api_release_queue_requires_one_immutable_source_identity():
-    assert api_deploy.validate_api_queue(json.loads((ROOT / "deploy/desired-api-release.json").read_text())) is None
+    api_deploy.validate_api_queue(json.loads((ROOT / "deploy/desired-api-release.json").read_text()))
     assert api_deploy.validate_api_queue({"schema": 1, "release": {"id": "api-1", "sha": SHA}}) == {
         "id": "api-1", "sha": SHA,
     }
