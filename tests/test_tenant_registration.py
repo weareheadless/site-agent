@@ -108,6 +108,7 @@ def test_control_plane_registers_a_tenant_without_leaking_the_token(tmp_path):
     )
 
     with TestClient(app) as client:
+        assert client.get("/healthz").json() == {"ok": True}
         assert client.post(
             "/v1/control-plane/websites/new-site/register",
             json={"display_name": "New Site"},

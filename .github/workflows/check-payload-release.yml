@@ -4,25 +4,33 @@ on:
   pull_request:
     paths:
       - 'deploy/**'
+      - 'pyproject.toml'
       - 'scripts/*payload*'
       - 'scripts/migrate-static-tenants-to-registry.py'
+      - 'scripts/deploy-site-agent-api.py'
       - 'src/site_agent/application/workspace.py'
       - 'src/site_agent/application/tenant_registration.py'
+      - 'src/site_agent/web/server.py'
       - 'tests/test_payload_release.py'
       - 'tests/test_tenant_registry_migration.py'
       - 'tests/test_tenant_registration.py'
+      - 'tests/test_web.py'
       - 'tests/test_workspace_web.py'
   push:
     branches: [main]
     paths:
       - 'deploy/**'
+      - 'pyproject.toml'
       - 'scripts/*payload*'
       - 'scripts/migrate-static-tenants-to-registry.py'
+      - 'scripts/deploy-site-agent-api.py'
       - 'src/site_agent/application/workspace.py'
       - 'src/site_agent/application/tenant_registration.py'
+      - 'src/site_agent/web/server.py'
       - 'tests/test_payload_release.py'
       - 'tests/test_tenant_registry_migration.py'
       - 'tests/test_tenant_registration.py'
+      - 'tests/test_web.py'
       - 'tests/test_workspace_web.py'
 
 permissions:
