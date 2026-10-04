@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -21,6 +22,7 @@ from typing import Any
 SHA_RE = re.compile(r"[0-9a-f]{40}")
 RELEASE_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,79}")
 SERVICE = "site-agent-api.service"
+RESTART_SOCKET = "/run/helloada-api-restart.sock"
 HEALTH_URL = "http://127.0.0.1:3014/healthz"
 
 
@@ -141,6 +143,28 @@ def _health_check(url: str, attempts: int = 60) -> None:
     raise RuntimeError("API /healthz did not pass after restart")
 
 
+def _restart_api(socket_path: str = RESTART_SOCKET) -> None:
+    """Request the one host-authorized action through its fixed-function broker."""
+    response = bytearray()
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+            connection.settimeout(150)
+            connection.connect(socket_path)
+            connection.sendall(b"restart\\n")
+            connection.shutdown(socket.SHUT_WR)
+            while True:
+                chunk = connection.recv(64)
+                if not chunk:
+                    break
+                response.extend(chunk)
+                if len(response) > 64:
+                    raise RuntimeError("API restart broker returned an invalid response")
+    except OSError as exc:
+        raise RuntimeError("API restart broker request failed") from exc
+    if response != b"restarted\\n":
+        raise RuntimeError("API restart broker rejected the fixed API restart request")
+
+
 def _installed_package_identity(python: str) -> dict[str, str]:
     code = (
         "import importlib.metadata as m, importlib.util, json, pathlib; "
@@ -197,7 +221,7 @@ def _recover_interrupted(receipt_path: Path, receipt: dict[str, Any], current: P
     if previous_path.parent != releases.resolve() or not previous_path.is_dir():
         raise RuntimeError("interrupted API release has no valid rollback slot")
     _set_current(current, previous_path)
-    _run(["systemctl", "restart", SERVICE])
+    _restart_api()
     _health_check(health_url)
     _record(receipt_path, receipt, "recovered", "interrupted",
             recovery="restored previous immutable API slot")
@@ -308,7 +332,7 @@ def deploy(source_dir: Path, source_sha: str, release_id: str, root: Path,
         _record(receipt_path, receipt, "switching")
         _set_current(current, release_dir)
         _record(receipt_path, receipt, "activated")
-        _run(["systemctl", "restart", SERVICE])
+        _restart_api()
         _health_check(health_url)
         _record(receipt_path, receipt, "health-passed", "deployed",
                 finishedAt=datetime.now(timezone.utc).isoformat())
@@ -319,7 +343,7 @@ def deploy(source_dir: Path, source_sha: str, release_id: str, root: Path,
         if activated and prior_path and prior_path.is_dir():
             try:
                 _set_current(current, prior_path)
-                _run(["systemctl", "restart", SERVICE])
+                _restart_api()
                 _health_check(health_url)
                 _record(receipt_path, receipt, "rolled-back", "rolled-back",
                         failure=type(exc).__name__, failureMessage=str(exc),
