@@ -141,9 +141,9 @@ class PayloadGatewayClient:
             raise ConfigError("site.payload.timeout_seconds must be a positive number") from exc
         if not 0 < timeout <= 120:
             raise ConfigError("site.payload.timeout_seconds must be between 0 and 120")
-        gateway_prefix = str(settings.get("api_prefix") or "/api/workspace").strip().rstrip("/")
-        if not gateway_prefix.startswith("/") or "?" in gateway_prefix or "#" in gateway_prefix:
-            raise ConfigError("site.payload.api_prefix must be an absolute path without query data")
+        gateway_prefix = str(settings.get("api_prefix") or "").strip()
+        if gateway_prefix != "/api/workspace":
+            raise ConfigError("site.payload.api_prefix must be exactly /api/workspace")
         contract = PayloadContract.from_settings(settings)
         return cls(url, token, contract, timeout, gateway_prefix)
 
