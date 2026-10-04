@@ -128,8 +128,10 @@ process group; the next poll records an interrupted attempt.
 Each customer gets a fresh Git clone. Before dependency installation, build, or
 remote database mutation, the pipeline requires the tenant verifier command,
 `tsx` runtime and lock entry, and verifier source to match the canonical
-site-agent template exactly. Missing or drifted verification code stops the
-release before D1 can change. The pipeline then checks its source SHA is on
+site-agent template exactly, and the declared `@payload-config` alias must
+resolve to one Payload config inside the checkout. Missing or drifted
+verification code stops the release before D1 can change. The pipeline then
+checks its source SHA is on
 official `main`, verifies the exact Node/npm versions in
 `deploy/payload-customers.json`, runs `npm ci` with that absolute npm executable,
 then typechecks and builds OpenNext with local bindings. The shared site-agent
