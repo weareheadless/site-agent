@@ -186,6 +186,7 @@ def test_api_restart_host_policy_is_fixed_and_release_scripts_do_not_use_sudo():
     service_unit = (ROOT / "deploy/helloada-api-restart@.service").read_text()
     helper = (ROOT / "scripts/helloada-api-restart-helper.py").read_text()
     assert "Accept=yes" in socket_unit
+    assert "\nService=" not in socket_unit
     assert "SocketUser=admin" in socket_unit
     assert "SocketMode=0600" in socket_unit
     assert "User=root" in service_unit and "StandardInput=socket" in service_unit
