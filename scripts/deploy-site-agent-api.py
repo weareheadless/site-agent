@@ -75,13 +75,6 @@ def _run(command: list[str], *, cwd: Path | None = None, env: dict[str, str] | N
     return result
 
 
-def _privileged(command: list[str]) -> None:
-    if os.geteuid() == 0:
-        _run(command)
-    else:
-        _run(["sudo", "-n", *command])
-
-
 def _set_current(current: Path, destination: Path) -> None:
     if current.exists() and not current.is_symlink():
         raise RuntimeError("API current release path is not a managed symlink")
@@ -160,7 +153,7 @@ def _recover_interrupted(receipt_path: Path, receipt: dict[str, Any], current: P
     if previous_path.parent != releases.resolve() or not previous_path.is_dir():
         raise RuntimeError("interrupted API release has no valid rollback slot")
     _set_current(current, previous_path)
-    _privileged(["systemctl", "restart", SERVICE])
+    _run(["systemctl", "restart", SERVICE])
     _health_check(health_url)
     _record(receipt_path, receipt, "recovered", "interrupted",
             recovery="restored previous immutable API slot")
@@ -270,15 +263,16 @@ def deploy(source_dir: Path, source_sha: str, release_id: str, root: Path,
         unit_source = source_dir / "deploy/site-agent-api.service"
         if not unit_source.is_file():
             raise RuntimeError("API service unit is missing from the exact source release")
-        _privileged(["install", "-m", "0644", str(unit_source), "/etc/systemd/system/site-agent-api.service"])
-        _privileged(["systemd-analyze", "verify", "/etc/systemd/system/site-agent-api.service"])
-        _privileged(["systemctl", "daemon-reload"])
+        installed_unit = Path("/etc/systemd/system/site-agent-api.service")
+        _run(["systemd-analyze", "verify", str(unit_source)])
+        if not installed_unit.is_file() or installed_unit.read_bytes() != unit_source.read_bytes():
+            raise RuntimeError("API service unit differs from the bootstrapped host contract")
 
         receipt["previousRelease"] = prior_path.name
         _record(receipt_path, receipt, "switching")
         _set_current(current, release_dir)
         _record(receipt_path, receipt, "activated")
-        _privileged(["systemctl", "restart", SERVICE])
+        _run(["systemctl", "restart", SERVICE])
         _health_check(health_url)
         _record(receipt_path, receipt, "health-passed", "deployed",
                 finishedAt=datetime.now(timezone.utc).isoformat())
@@ -289,7 +283,7 @@ def deploy(source_dir: Path, source_sha: str, release_id: str, root: Path,
         if activated and prior_path and prior_path.is_dir():
             try:
                 _set_current(current, prior_path)
-                _privileged(["systemctl", "restart", SERVICE])
+                _run(["systemctl", "restart", SERVICE])
                 _health_check(health_url)
                 _record(receipt_path, receipt, "rolled-back", "rolled-back",
                         failure=type(exc).__name__, failureMessage=str(exc),

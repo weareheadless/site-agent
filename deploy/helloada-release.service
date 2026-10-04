@@ -8,12 +8,14 @@ Type=oneshot
 User=admin
 Group=admin
 UMask=0077
-WorkingDirectory=/SOCIAL/site-agent
-ExecStart=/SOCIAL/site-agent/.venv/bin/python /SOCIAL/site-agent/scripts/reconcile-payload-releases.py
+WorkingDirectory=/SOCIAL/payload-releases
+ExecStart=/SOCIAL/site-agent/.venv/bin/python /SOCIAL/payload-releases/bin/current/dispatch-payload-releases.py
 TimeoutStartSec=90min
 KillMode=control-group
+# Customer build scripts run as the deployment account, so privilege escalation
+# remains disabled. Polkit grants only the API service restart requested by the
+# reviewed API release queue.
 NoNewPrivileges=true
 PrivateTmp=true
 StandardOutput=journal
 StandardError=journal
-

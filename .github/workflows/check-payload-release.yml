@@ -6,12 +6,14 @@ on:
       - 'deploy/**'
       - 'pyproject.toml'
       - 'scripts/*payload*'
+      - 'scripts/bootstrap-release-pipeline.py'
       - 'scripts/migrate-static-tenants-to-registry.py'
       - 'scripts/deploy-site-agent-api.py'
       - 'src/site_agent/application/workspace.py'
       - 'src/site_agent/application/tenant_registration.py'
       - 'src/site_agent/web/server.py'
       - 'tests/test_payload_release.py'
+      - 'tests/test_release_dispatcher.py'
       - 'tests/test_tenant_registry_migration.py'
       - 'tests/test_tenant_registration.py'
       - 'tests/test_web.py'
@@ -22,12 +24,14 @@ on:
       - 'deploy/**'
       - 'pyproject.toml'
       - 'scripts/*payload*'
+      - 'scripts/bootstrap-release-pipeline.py'
       - 'scripts/migrate-static-tenants-to-registry.py'
       - 'scripts/deploy-site-agent-api.py'
       - 'src/site_agent/application/workspace.py'
       - 'src/site_agent/application/tenant_registration.py'
       - 'src/site_agent/web/server.py'
       - 'tests/test_payload_release.py'
+      - 'tests/test_release_dispatcher.py'
       - 'tests/test_tenant_registry_migration.py'
       - 'tests/test_tenant_registration.py'
       - 'tests/test_web.py'
@@ -48,6 +52,7 @@ jobs:
       - run: >-
           python -m pytest -q
           tests/test_payload_release.py
+          tests/test_release_dispatcher.py
           tests/test_tenant_registry_migration.py
           tests/test_tenant_registration.py
           tests/test_workspace_web.py

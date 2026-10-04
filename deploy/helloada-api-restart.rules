@@ -1,0 +1,10 @@
+polkit.addRule(function (action, subject) {
+    if (
+        action.id === "org.freedesktop.systemd1.manage-units" &&
+        subject.user === "admin" &&
+        action.lookup("unit") === "site-agent-api.service" &&
+        action.lookup("verb") === "restart"
+    ) {
+        return polkit.Result.YES;
+    }
+});
