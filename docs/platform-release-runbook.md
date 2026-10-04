@@ -32,8 +32,9 @@ commands. See `deploy/README.md` for the operator procedure.
   Load that profile's protected environment, not the R2 bootstrap environment.
   Run `wrangler whoami` and `wrangler deployments list --name <worker>` before
   spending time on a build. Never print credential values.
-- Use Node 22 from the configured runtime and `npm ci` with the committed
-  lockfile. Confirm the installed shared package version. Run typecheck/lint.
+- Use the exact Node/npm versions from the release manifest and `npm ci` with
+  the committed lockfile. Confirm the installed shared package version. Run
+  typecheck/lint.
 - Run the **full** `opennextjs-cloudflare build` with `PAYLOAD_LOCAL_BUILD=1`.
   Wait for its successful terminal state and retain the process/session ID if
   the command is asynchronous.

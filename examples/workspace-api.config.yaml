@@ -3,6 +3,14 @@
 instance_name: site-agent-api
 data_dir: /SOCIAL/site-agent-api
 
+# Shared, exact build tools inherited by every tenant, including sites created
+# later through HelloAda. Replace these paths with the host's pinned installs.
+source_deployment:
+  node_path: /path/to/pinned-node/bin
+  node_version: "22.14.0"
+  npm_command: /path/to/pinned-npm/bin/npm
+  npm_version: "11.13.0"
+
 workspace_api:
   enabled: true
   host: 127.0.0.1

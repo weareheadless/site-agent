@@ -278,8 +278,9 @@ The central script is a hard gate, not a repair or fallback layer. It must:
    immutable SHA is on official `main`, and use a detached checkout;
 3. resolve Cloudflare through `/SOCIAL/configs/host-credentials.yaml` using
    `site_agent.credentials`, never by sourcing `/SOCIAL/site-agent/.env`;
-4. verify Cloudflare deployment access, run `npm ci`, typecheck and the full
-   OpenNext build with isolated local bindings and no production credentials;
+4. verify the exact Node/npm versions from the release manifest, then run
+   `npm ci`, typecheck and the full OpenNext build with isolated local bindings
+   and no production credentials;
 5. inspect the generated `.open-next` artifact and reject legacy `/api/atelier`
    source, missing Growth contract markers, or stale Payload admin markers;
 6. archive and upload that exact inspected artifact, verify Cloudflare gives
@@ -288,6 +289,14 @@ The central script is a hard gate, not a repair or fallback layer. It must:
 7. persist a secret-free receipt in `/SOCIAL/payload-releases/runs`. Failed or
    interrupted releases stop. Fix their cause and commit a new release ID to
    retry; never repeat failed builds automatically or bypass their gate.
+
+The shared site-agent preview builder uses the same explicit toolchain policy.
+The API root config's `source_deployment` section must specify `node_path`,
+`node_version`, `npm_command`, and `npm_version`; `TenantRegistry` carries that
+policy into every declared and newly registered tenant. Both versions are
+checked before a preview build. Missing configuration, an unavailable
+executable, or a version mismatch is a hard failure; never fall back to the
+machine's system `PATH` or a shell-installed Node/npm.
 
 For a promoted version whose live gate failed during rollout, the documented
 `--verify-only` command may repeat the exact read-only checks under the queue

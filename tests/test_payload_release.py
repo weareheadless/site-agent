@@ -35,6 +35,18 @@ def test_committed_queue_is_valid():
     queue.validate_queue(json.loads((ROOT / "deploy/desired-releases.json").read_text()), REGISTRY)
 
 
+def test_release_toolchain_is_exact_and_absolute():
+    release.validate_toolchain_manifest(REGISTRY)
+    for invalid in (
+        {**REGISTRY, "npmVersion": "latest"},
+        {**REGISTRY, "nodeVersion": "22"},
+        {**REGISTRY, "npmBin": "npm"},
+        {key: value for key, value in REGISTRY.items() if key != "npmVersion"},
+    ):
+        with pytest.raises(ValueError, match="toolchain"):
+            release.validate_toolchain_manifest(invalid)
+
+
 def test_schema_initialization_queue_is_exactly_registered_and_cannot_be_an_approval():
     registry = {"customers": {"demo": {"migrationHead": "c" * 64}}}
     request = {"id": "bootstrap-1", "sha": SHA, "initializeSchema": {"migrationHead": "c" * 64}}

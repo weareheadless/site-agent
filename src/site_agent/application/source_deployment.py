@@ -269,15 +269,13 @@ class SourceDeploymentService:
         if production:
             child["NODE_ENV"] = "production"
         node_path = str(self.settings.get("node_path") or "").strip()
-        if not node_path:
-            # The managed host keeps a supported Node runtime alongside the
-            # service. Prefer it when present so Wrangler/OpenNext does not
-            # silently resolve an older system Node for new tenants.
-            managed_node_path = Path.home() / ".hermes" / "node" / "bin"
-            if (managed_node_path / "node").is_file():
-                node_path = str(managed_node_path)
+        npm_command = str(self.settings.get("npm_command") or "").strip()
+        tool_paths = [str(Path(npm_command).expanduser().parent)] if npm_command else []
         if node_path:
-            child["PATH"] = f"{node_path}:{child.get('PATH') or os.environ.get('PATH', '')}"
+            tool_paths.append(node_path)
+        if tool_paths:
+            inherited_path = child.get("PATH") or os.environ.get("PATH", "")
+            child["PATH"] = os.pathsep.join([*tool_paths, inherited_path])
         ssh_command = str(self.settings.get("git_ssh_command") or "").strip()
         if ssh_command:
             child["GIT_SSH_COMMAND"] = ssh_command
@@ -308,6 +306,35 @@ class SourceDeploymentService:
             if secret:
                 child["PAYLOAD_SECRET"] = secret
         return child
+
+    def _verify_toolchain(self, cwd: Path) -> str:
+        node_path = str(self.settings.get("node_path") or "").strip()
+        npm_command = str(self.settings.get("npm_command") or "").strip()
+        node_version = str(self.settings.get("node_version") or "").strip()
+        npm_version = str(self.settings.get("npm_version") or "").strip()
+        if not node_path or not npm_command or not node_version or not npm_version:
+            raise SourceDeploymentError(
+                "source builds require the shared node_path, node_version, npm_command and npm_version contract"
+            )
+        node_bin = Path(node_path).expanduser()
+        npm = Path(npm_command).expanduser()
+        if not node_bin.is_absolute() or not npm.is_absolute():
+            raise SourceDeploymentError("shared source-build toolchain paths must be absolute")
+        for name, version in (("Node", node_version), ("npm", npm_version)):
+            if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+                raise SourceDeploymentError(f"shared source-build toolchain requires an exact {name} version")
+        node = node_bin / "node"
+        if not node.is_file() or not node.stat().st_mode & 0o111:
+            raise SourceDeploymentError("configured Node executable is missing or not executable")
+        if not npm.is_file() or not npm.stat().st_mode & 0o111:
+            raise SourceDeploymentError("configured npm executable is missing or not executable")
+        actual_node = self._run([str(node), "--version"], cwd, timeout=30).stdout.strip().removeprefix("v")
+        if actual_node != node_version:
+            raise SourceDeploymentError(f"source builds require Node {node_version}; found {actual_node or 'no version'}")
+        actual_npm = self._run([str(npm), "--version"], cwd, timeout=30).stdout.strip()
+        if actual_npm != npm_version:
+            raise SourceDeploymentError(f"source builds require npm {npm_version}; found {actual_npm or 'no version'}")
+        return str(npm)
 
     def _run(self, command: list[str], cwd: Path, *, timeout: int) -> subprocess.CompletedProcess[str]:
         try:
@@ -595,7 +622,7 @@ class SourceDeploymentService:
         keep_worktree = False
         try:
             self._write_revision_marker(worktree, local_head)
-            npm = str(self.settings.get("npm_command") or "npm")
+            npm = self._verify_toolchain(worktree)
             checks.append(self._check([npm, "ci", "--no-audit", "--no-fund"], worktree, "dependencies", timeout))
             checks.append(self._check([npm, "run", "typecheck"], worktree, "typecheck", timeout))
             checks.append(self._check([npm, "run", "lint"], worktree, "lint", timeout))
