@@ -93,7 +93,10 @@ def test_registry_reuses_loaded_payload_client_for_source_adapter(tmp_path):
         "  payload:\n"
         "    enabled: true\n"
         "    url: https://demo.example.test\n"
-        f"    token_env: {tenant_token_env}\n",
+        f"    token_env: {tenant_token_env}\n"
+        "    contract:\n"
+        "      collections:\n"
+        "        pages: [title]\n",
         encoding="utf-8",
     )
     registry = TenantRegistry.from_config(
