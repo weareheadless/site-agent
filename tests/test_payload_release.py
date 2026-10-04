@@ -424,7 +424,7 @@ def test_worker_upload_bundles_secrets_with_immutable_candidate_and_cleans_file(
 
     def fake_run(command, cwd, env):
         commands.append(command)
-        return f"Worker Version ID: {version_id}\\n"
+        return f"Worker Version ID: {version_id}\n"
 
     monkeypatch.setattr(release, "run", fake_run)
     result = release.upload_worker_version(TEMPLATE, SHA, "release-1", tmp_path, secrets, {})
