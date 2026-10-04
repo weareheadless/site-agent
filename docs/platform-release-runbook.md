@@ -75,9 +75,11 @@ exact pinned release and its own deployment/verification receipt.
 ## VPS-owned release automation
 
 The only supported customer promotion is a committed request in
-`deploy/desired-releases.json` on official `main`. The VPS systemd timer polls
-GitHub using the existing SSH identity, snapshots the exact control commit and
-executes its release script. GitHub CI validates queue changes on hosted runners;
+`deploy/desired-releases.json` on official `main`. The VPS systemd timer invokes
+a stable dispatcher that polls GitHub using the existing SSH identity,
+snapshots the exact control commit and executes its release script. The
+dispatcher never executes a mutable checkout; it synchronizes only from
+official-main snapshots. GitHub CI validates queue changes on hosted runners;
 the VPS also runs the focused contract tests before processing requests. See
 [`deploy/README.md`](../deploy/README.md) for the command and service setup.
 

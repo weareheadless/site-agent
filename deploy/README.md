@@ -107,11 +107,14 @@ in the queue. Never edit the canceled source directory or resume its upload.
 ## What executes
 
 `helloada-release.timer` starts a systemd service every minute after the previous
-run finishes. The service fetches official `site-agent/main` via the existing
-host GitHub SSH identity and snapshots the control commit. It runs that snapshot's
-tests, manifest and pipeline, so later Git changes cannot alter an in-flight run.
-It persists across SSH/chat disconnects and machine restarts. A systemd timeout
-kills the complete process group; the next poll records an interrupted attempt.
+run finishes. Its stable dispatcher fetches official `site-agent/main` via the
+existing host GitHub SSH identity and snapshots the control commit. It runs that
+snapshot's tests, manifest and pipeline, so later Git changes cannot alter an
+in-flight run. The dispatcher never points at the mutable `/SOCIAL/site-agent`
+checkout; it validates an install manifest and synchronizes its code and systemd
+unit only from official-main snapshots. It persists across SSH/chat disconnects
+and machine restarts. A systemd timeout kills the complete process group; the
+next poll records an interrupted attempt.
 
 Each customer gets a fresh Git clone. The pipeline checks its source SHA is on
 official `main`, verifies the exact Node/npm versions in
@@ -156,19 +159,35 @@ declared credential profile, followed by live checks. It never rolls back data.
 
 ## Install/update the service
 
-From a reviewed, clean `/SOCIAL/site-agent` checkout on the VPS:
+The systemd timer invokes a stable dispatcher at
+`/SOCIAL/payload-releases/bin/current/dispatch-payload-releases.py`. On an
+initialized host, run the bootstrap from the exact current snapshot already
+fetched by its timer:
 
 ```bash
-sudo install -m 0644 deploy/helloada-release.service /etc/systemd/system/helloada-release.service
-sudo install -m 0644 deploy/helloada-release.timer /etc/systemd/system/helloada-release.timer
-sudo systemctl daemon-reload
-sudo systemctl enable --now helloada-release.timer
+release_sha="$(git --git-dir=/SOCIAL/payload-releases/control.git rev-parse refs/heads/main)"
+/SOCIAL/site-agent/.venv/bin/python \
+  "/SOCIAL/payload-releases/control/$release_sha/scripts/bootstrap-release-pipeline.py" \
+  --source-dir "/SOCIAL/payload-releases/control/$release_sha"
 ```
 
-The service uses `/SOCIAL/site-agent/.venv/bin/python`. The host profile at
+The bootstrap fetches official `main`, verifies the dispatcher, controller and
+systemd files against Git objects, then installs the dispatcher and both
+systemd files from that snapshot. On a new host, run the same script from a clean
+`/SOCIAL/site-agent` checkout whose `main` SHA matches official `main`:
+
+```bash
+/SOCIAL/site-agent/.venv/bin/python /SOCIAL/site-agent/scripts/bootstrap-release-pipeline.py
+```
+
+Future dispatcher and service-unit changes self-synchronize
+from official main into versioned slots, with the active dispatcher switched
+atomically. The service uses
+`/SOCIAL/site-agent/.venv/bin/python`; only this interpreter and the protected
+host credential profile are reused from the host setup. The profile at
 `/SOCIAL/configs/host-credentials.yaml` supplies GitHub SSH wiring and the
-Cloudflare credential file. No GitHub PAT, runner registration, webhook secret or
-inbound deployment endpoint is needed. GitHub's hosted CI validates the release
+Cloudflare credential file. No GitHub PAT, runner registration, webhook secret
+or inbound deployment endpoint is needed. GitHub CI validates the release
 contract; the VPS performs the same validation before execution.
 
 The API's shared root config must declare the exact preview toolchain under
