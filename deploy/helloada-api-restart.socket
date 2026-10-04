@@ -1,0 +1,14 @@
+[Unit]
+Description=Fixed-function site-agent API restart broker socket
+
+[Socket]
+ListenStream=/run/helloada-api-restart.sock
+SocketUser=admin
+SocketGroup=admin
+SocketMode=0600
+Accept=yes
+Service=helloada-api-restart@.service
+RemoveOnStop=true
+
+[Install]
+WantedBy=sockets.target
