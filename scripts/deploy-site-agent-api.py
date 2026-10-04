@@ -150,7 +150,7 @@ def _restart_api(socket_path: str = RESTART_SOCKET) -> None:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
             connection.settimeout(150)
             connection.connect(socket_path)
-            connection.sendall(b"restart\\n")
+            connection.sendall(b"restart\n")
             connection.shutdown(socket.SHUT_WR)
             while True:
                 chunk = connection.recv(64)
@@ -161,7 +161,7 @@ def _restart_api(socket_path: str = RESTART_SOCKET) -> None:
                     raise RuntimeError("API restart broker returned an invalid response")
     except OSError as exc:
         raise RuntimeError("API restart broker request failed") from exc
-    if response != b"restarted\\n":
+    if response != b"restarted\n":
         raise RuntimeError("API restart broker rejected the fixed API restart request")
 
 
