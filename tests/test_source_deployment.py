@@ -65,6 +65,63 @@ def test_source_deployment_prefers_configured_supported_node_runtime(tmp_path):
         service.close()
 
 
+def test_source_deployment_requires_exact_shared_node_and_npm_toolchain(tmp_path, monkeypatch):
+    node_bin = tmp_path / "node-bin"
+    node_bin.mkdir()
+    node = node_bin / "node"
+    node.touch()
+    node.chmod(0o755)
+    npm = tmp_path / "npm"
+    npm.touch()
+    npm.chmod(0o755)
+    service = source_deployment.SourceDeploymentService(
+        {
+            "source_deployment": {
+                "node_path": str(node_bin),
+                "node_version": "22.14.0",
+                "npm_command": str(npm),
+                "npm_version": "11.13.0",
+            }
+        },
+        env={"PATH": "/usr/bin:/bin"},
+    )
+    calls = []
+
+    def run(command, _cwd, *, timeout):
+        calls.append((command, timeout))
+        version = "v22.14.0\n" if command[-1] == "--version" and command[0] == str(node) else "11.13.0\n"
+        return source_deployment.subprocess.CompletedProcess(command, 0, version, "")
+
+    monkeypatch.setattr(service, "_run", run)
+    try:
+        assert service._verify_toolchain(tmp_path) == str(npm)
+        assert [call[0][0] for call in calls] == [str(node), str(npm)]
+        assert service._child_env()["PATH"].split(source_deployment.os.pathsep)[:2] == [
+            str(tmp_path), str(node_bin)
+        ]
+
+        def mismatched_npm(command, _cwd, *, timeout):
+            version = "v22.14.0\n" if command[0] == str(node) else "10.9.2\n"
+            return source_deployment.subprocess.CompletedProcess(command, 0, version, "")
+
+        monkeypatch.setattr(service, "_run", mismatched_npm)
+        with pytest.raises(source_deployment.SourceDeploymentError, match="npm 11.13.0"):
+            service._verify_toolchain(tmp_path)
+    finally:
+        service.close()
+
+
+def test_source_deployment_does_not_fall_back_to_system_toolchain(tmp_path):
+    service = source_deployment.SourceDeploymentService(
+        {"source_deployment": {}}, env={"PATH": "/usr/bin:/bin"}
+    )
+    try:
+        with pytest.raises(source_deployment.SourceDeploymentError, match="shared.*contract"):
+            service._verify_toolchain(tmp_path)
+    finally:
+        service.close()
+
+
 def test_public_revision_verification_requires_the_exact_commit(monkeypatch, tmp_path):
     expected = "b" * 40
 

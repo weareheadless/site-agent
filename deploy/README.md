@@ -65,8 +65,13 @@ It persists across SSH/chat disconnects and machine restarts. A systemd timeout
 kills the complete process group; the next poll records an interrupted attempt.
 
 Each customer gets a fresh Git clone. The pipeline checks its source SHA is on
-official `main`, uses Node 22 and `npm ci`, typechecks and builds OpenNext with
-local bindings. Production credentials are supplied only to Cloudflare calls,
+official `main`, verifies the exact Node/npm versions in
+`deploy/payload-customers.json`, runs `npm ci` with that absolute npm executable,
+then typechecks and builds OpenNext with local bindings. The shared site-agent
+preview builder receives the same four-value toolchain contract (`node_path`,
+`node_version`, `npm_command`, `npm_version`) from the host config; tenant
+registrations inherit it centrally. Missing or mismatched versions stop the
+build before dependency installation. Production credentials are supplied only to Cloudflare calls,
 never to dependency installation or builds. The artifact is inspected, hashed
 and archived before upload. The pipeline checks production did not change during
 the build and uploads an immutable, unpromoted version. If the queue entry is an
@@ -116,6 +121,13 @@ The service uses `/SOCIAL/site-agent/.venv/bin/python`. The host profile at
 Cloudflare credential file. No GitHub PAT, runner registration, webhook secret or
 inbound deployment endpoint is needed. GitHub's hosted CI validates the release
 contract; the VPS performs the same validation before execution.
+
+The API's shared root config must declare the exact preview toolchain under
+`source_deployment` (`node_path`, `node_version`, `npm_command`, and
+`npm_version`). The release registry pins the same versions and executable
+directories. Do not rely on the system `PATH`, a user-shell profile, or an
+implicit Node/npm fallback; changing either version requires updating the
+contract and regenerating tenant lockfiles with that version.
 
 ## Rules for coding agents
 

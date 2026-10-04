@@ -2,6 +2,9 @@
   "schema": 1,
   "credentialProfile": "/SOCIAL/configs/host-credentials.yaml",
   "nodeBin": "/home/admin/.local/share/site-agent-node22/bin",
+  "nodeVersion": "22.14.0",
+  "npmBin": "/home/admin/.local/share/site-agent-npm11-global/bin",
+  "npmVersion": "11.13.0",
   "releaseRoot": "/SOCIAL/payload-releases",
   "connectionGate": {
     "config": "/SOCIAL/configs/site-agent-api/config.yaml",

@@ -95,6 +95,16 @@ def validate_target(customer: dict[str, Any], tenant: str, sha: str, release_id:
         raise ValueError("registered customer has no exact tenant R2 bucket")
 
 
+def validate_toolchain_manifest(manifest: dict[str, Any]) -> None:
+    for field in ("nodeBin", "npmBin"):
+        value = str(manifest.get(field) or "")
+        if not value or not Path(value).is_absolute():
+            raise ValueError(f"release toolchain requires an absolute {field}")
+    for field in ("nodeVersion", "npmVersion"):
+        if not re.fullmatch(r"\d+\.\d+\.\d+", str(manifest.get(field) or "")):
+            raise ValueError(f"release toolchain requires an exact {field}")
+
+
 def validate_worker_contract(worker_config: dict[str, Any], customer: dict[str, Any], tenant: str) -> None:
     if worker_config.get("d1Count") != 1 or worker_config.get("r2Count") != 1:
         raise RuntimeError("Worker must have exactly one canonical tenant D1 and R2 binding")
@@ -452,6 +462,7 @@ def main() -> int:
     parser.add_argument("--manifest", type=Path, default=ROOT / "deploy/payload-customers.json")
     args = parser.parse_args()
     manifest = json.loads(args.manifest.read_text())
+    validate_toolchain_manifest(manifest)
     customer = manifest["customers"].get(args.tenant)
     if customer is None:
         parser.error("tenant is not registered")
@@ -469,6 +480,7 @@ def main() -> int:
     checkout = directory / "source"
     receipt: dict[str, Any] = {"schema": 2, "tenant": args.tenant, "releaseId": args.release_id,
         "sourceSha": args.ref, "pipelineSha": os.environ.get("HELLOADA_PIPELINE_SHA"),
+        "nodeVersion": manifest["nodeVersion"], "npmVersion": manifest["npmVersion"],
         "worker": customer["worker"], "repository": customer["repository"],
         "payloadAdmin": customer["payloadAdmin"], "payloadCore": customer["payloadCore"],
         "contentContract": customer["contentContract"], "schemaRevision": customer["schemaRevision"],
@@ -510,7 +522,7 @@ def main() -> int:
         if not cloudflare.get("env_file") or not Path(cloudflare["env_file"]).is_file():
             raise RuntimeError("declared Cloudflare credential file is missing")
         base = {k: os.environ[k] for k in ("HOME", "USER", "LANG", "TZ", "TMPDIR") if k in os.environ}
-        base.update({"PATH": manifest["nodeBin"] + ":/usr/local/bin:/usr/bin:/bin", "CI": "1",
+        base.update({"PATH": manifest["npmBin"] + ":" + manifest["nodeBin"] + ":/usr/local/bin:/usr/bin:/bin", "CI": "1",
                      "npm_config_cache": str(Path(manifest["releaseRoot"]) / "npm-cache")})
         deploy_env = credential_environment({"credentials": {"cloudflare": cloudflare}}, base)
         if not deploy_env.get("CLOUDFLARE_API_TOKEN") or not deploy_env.get("CLOUDFLARE_ACCOUNT_ID"):
@@ -521,10 +533,13 @@ def main() -> int:
             atomic_json(receipt_path, receipt)
             print(f"[release] REVERIFIED receipt={receipt_path}", flush=True)
             return 0
-        if not Path(manifest["nodeBin"], "node").is_file():
-            raise RuntimeError("configured Node runtime is missing")
-        if run(["node", "--version"], directory, base).strip().split(".")[0] != "v22":
-            raise RuntimeError("release requires Node 22")
+        for executable in (Path(manifest["nodeBin"], "node"), Path(manifest["npmBin"], "npm")):
+            if not executable.is_file() or not os.access(executable, os.X_OK):
+                raise RuntimeError(f"configured release executable is missing or not executable: {executable.name}")
+        if run(["node", "--version"], directory, base).strip().removeprefix("v") != manifest["nodeVersion"]:
+            raise RuntimeError(f"release requires Node {manifest['nodeVersion']}")
+        if run([str(Path(manifest["npmBin"], "npm")), "--version"], directory, base).strip() != manifest["npmVersion"]:
+            raise RuntimeError(f"release requires npm {manifest['npmVersion']}")
         receipt["previousDeployment"] = cloudflare_deployment(customer, deploy_env)
 
         stage("checkout")
@@ -545,7 +560,8 @@ def main() -> int:
         receipt["lockfileSha256"] = hashlib.sha256((checkout / "package-lock.json").read_bytes()).hexdigest()
 
         stage("dependencies")
-        run(["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"], checkout, base)
+        npm = str(Path(manifest["npmBin"], "npm"))
+        run([npm, "ci", "--ignore-scripts", "--no-audit", "--no-fund"], checkout, base)
         # TypeScript's pinned JSONC parser accepts comments and trailing commas.
         parsed = run(["node", "-e", "const fs=require('node:fs');const ts=require('typescript');"
                       "const r=ts.parseConfigFileTextToJson('wrangler.jsonc',fs.readFileSync('wrangler.jsonc','utf8'));"

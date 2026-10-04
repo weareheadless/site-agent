@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from site_agent.application.tenant_registration import (
@@ -70,6 +72,32 @@ def test_registration_creates_an_isolated_idempotent_tenant(tmp_path):
         declared, extra_env = load_provisioned_tenants(config, env)
         assert declared["new-site"]["config_path"].endswith("new-site/config.yaml")
         assert extra_env[first["api_token_env"]]
+    finally:
+        registry.close()
+
+
+def test_shared_build_toolchain_is_inherited_by_new_site_tenants(tmp_path):
+    config, env = _host(tmp_path)
+    config["source_deployment"] = {
+        "node_path": "/opt/helloada/node/bin",
+        "node_version": "22.14.0",
+        "npm_command": "/opt/helloada/npm/bin/npm",
+        "npm_version": "11.13.0",
+    }
+    host_config_path = config["workspace_api"]["tenants"]["host"]["config_path"]
+    Path(host_config_path).write_text(
+        f"instance_name: host\ndata_dir: {tmp_path / 'host-data'}\n"
+        "source_deployment:\n  npm_command: /tenant-specific/npm\n",
+        encoding="utf-8",
+    )
+    registry = TenantRegistry.from_config(config, env)
+    service = TenantRegistrationService(config, env, registry=registry)
+    try:
+        service.register("new-site", display_name="New Site")
+        tenant = registry.for_tenant_id("new-site")
+        assert tenant is not None
+        assert tenant.config["source_deployment"] == config["source_deployment"]
+        assert registry.for_tenant_id("host").config["source_deployment"]["npm_command"] == "/opt/helloada/npm/bin/npm"
     finally:
         registry.close()
 

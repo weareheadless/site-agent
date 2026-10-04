@@ -199,11 +199,13 @@ class TenantRegistry:
         env: Mapping[str, str] | None = None,
         shared_credentials: Mapping[str, Any] | None = None,
         shared_observability: Mapping[str, Any] | None = None,
+        shared_source_deployment: Mapping[str, Any] | None = None,
     ) -> None:
         self.tenants = dict(tenants)
         self._env = dict(env or {})
         self._shared_credentials = dict(shared_credentials or {})
         self._shared_observability = dict(shared_observability or {})
+        self._shared_source_deployment = dict(shared_source_deployment or {})
         self._started = False
 
     @classmethod
@@ -234,6 +236,11 @@ class TenantRegistry:
         section_credentials = section.get("credentials") if isinstance(section.get("credentials"), Mapping) else {}
         shared_credentials = deep_merge(dict(root_credentials), dict(section_credentials))
         shared_observability = config.get("observability") if isinstance(config.get("observability"), Mapping) else {}
+        shared_source_deployment = (
+            config.get("source_deployment")
+            if isinstance(config.get("source_deployment"), Mapping)
+            else {}
+        )
         try:
             for raw_tenant_id, raw_spec in declared.items():
                 tenant_id = str(raw_tenant_id or "").strip().lower()
@@ -271,6 +278,15 @@ class TenantRegistry:
                 tenant_config["observability"] = deep_merge(
                     dict(shared_observability),
                     dict(raw_tenant_observability),
+                )
+                tenant_source_deployment = (
+                    tenant_config.get("source_deployment")
+                    if isinstance(tenant_config.get("source_deployment"), Mapping)
+                    else {}
+                )
+                tenant_config["source_deployment"] = deep_merge(
+                    dict(tenant_source_deployment),
+                    dict(shared_source_deployment),
                 )
 
                 data_dir = Path(str(tenant_config.get("data_dir") or "")).expanduser().resolve()
@@ -501,6 +517,7 @@ class TenantRegistry:
             env=dict(env),
             shared_credentials=shared_credentials,
             shared_observability=shared_observability,
+            shared_source_deployment=shared_source_deployment,
         )
 
     def for_token(self, token: str) -> Tenant | None:
@@ -613,6 +630,7 @@ class TenantRegistry:
         proxy = {
             "credentials": dict(self._shared_credentials),
             "observability": dict(self._shared_observability),
+            "source_deployment": dict(self._shared_source_deployment),
             "workspace_api": {
                 "enabled": True,
                 "provisioned_root": str(
