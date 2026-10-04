@@ -75,6 +75,47 @@ def _run(command: list[str], *, cwd: Path | None = None, env: dict[str, str] | N
     return result
 
 
+def _verify_wheel_runtime_dependencies(python: str, wheel: Path, *, cwd: Path,
+                                       env: dict[str, str], log_path: Path) -> None:
+    """Check the built wheel against the service interpreter without pip CLI feature drift."""
+    code = "\n".join((
+        "import importlib.metadata as metadata",
+        "import json, sys, zipfile",
+        "from email.parser import BytesParser",
+        "from pip._vendor.packaging.requirements import Requirement",
+        "with zipfile.ZipFile(sys.argv[1]) as archive:",
+        "    names = [name for name in archive.namelist() if name.endswith('.dist-info/METADATA')]",
+        "    if len(names) != 1:",
+        "        raise RuntimeError('wheel must contain exactly one distribution metadata file')",
+        "    distribution = BytesParser().parsebytes(archive.read(names[0]))",
+        "missing = []",
+        "for raw in distribution.get_all('Requires-Dist', []):",
+        "    requirement = Requirement(raw)",
+        "    if requirement.marker and not requirement.marker.evaluate():",
+        "        continue",
+        "    try:",
+        "        installed = metadata.version(requirement.name)",
+        "    except metadata.PackageNotFoundError:",
+        "        missing.append(requirement.name)",
+        "    else:",
+        "        if requirement.specifier and not requirement.specifier.contains(installed, prereleases=True):",
+        "            missing.append(f'{requirement.name}{requirement.specifier} (installed {installed})')",
+        "print(json.dumps(sorted(set(missing))))",
+    ))
+    result = _run([python, "-c", code, str(wheel)], cwd=cwd, env=env, log_path=log_path)
+    try:
+        missing = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("API dependency audit returned invalid output") from exc
+    if not isinstance(missing, list) or any(not isinstance(item, str) for item in missing):
+        raise RuntimeError("API dependency audit returned invalid output")
+    if missing:
+        raise RuntimeError(
+            "API release requires runtime dependencies not present in the service environment: "
+            + ", ".join(missing)
+        )
+
+
 def _set_current(current: Path, destination: Path) -> None:
     if current.exists() and not current.is_symlink():
         raise RuntimeError("API current release path is not a managed symlink")
@@ -226,16 +267,8 @@ def deploy(source_dir: Path, source_sha: str, release_id: str, root: Path,
         wheel = wheels[0]
         wheel_hash = hashlib.sha256(wheel.read_bytes()).hexdigest()
 
-        dependency_report = staging / "dependency-report.json"
-        _run([python, "-m", "pip", "install", "--dry-run", "--no-index",
-              "--report", str(dependency_report), str(wheel)], cwd=source_dir, env=clean_env,
-             log_path=log_path)
-        planned = json.loads(dependency_report.read_text(encoding="utf-8")).get("install", [])
-        missing = sorted({str(item.get("metadata", {}).get("name") or "").lower()
-                          for item in planned
-                          if str(item.get("metadata", {}).get("name") or "").lower() != "site-agent"})
-        if missing:
-            raise RuntimeError("API release requires runtime dependencies not present in the service environment")
+        _verify_wheel_runtime_dependencies(python, wheel, cwd=source_dir, env=clean_env,
+                                           log_path=log_path)
 
         site_packages = staging / "site-packages"
         _run([python, "-m", "pip", "install", "--no-deps", "--no-index", "--target",

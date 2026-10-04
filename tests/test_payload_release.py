@@ -1,6 +1,8 @@
 """Release safety boundaries: provenance, canonical routes and immutable requests."""
 import importlib.util
 import json
+import sys
+import zipfile
 import shutil
 from pathlib import Path
 
@@ -50,6 +52,33 @@ def test_api_release_queue_requires_one_immutable_source_identity():
     ):
         with pytest.raises(ValueError):
             api_deploy.validate_api_queue(invalid)
+
+
+def test_api_wheel_dependency_audit_is_independent_of_pip_install_flags(tmp_path):
+    def wheel_with_requirement(filename, requirement):
+        wheel = tmp_path / filename
+        metadata = (
+            "Metadata-Version: 2.1\n"
+            "Name: site-agent\n"
+            "Version: 0.1.0\n"
+            f"Requires-Dist: {requirement}\n"
+        )
+        with zipfile.ZipFile(wheel, "w") as archive:
+            archive.writestr("site_agent-0.1.0.dist-info/METADATA", metadata)
+        return wheel
+
+    env = {}
+    log_path = tmp_path / "dependency-audit.log"
+    installed = wheel_with_requirement("installed.whl", "pip>=1")
+    api_deploy._verify_wheel_runtime_dependencies(
+        sys.executable, installed, cwd=tmp_path, env=env, log_path=log_path
+    )
+
+    missing = wheel_with_requirement("missing.whl", "helloada-release-test-missing>=1")
+    with pytest.raises(RuntimeError, match="helloada-release-test-missing"):
+        api_deploy._verify_wheel_runtime_dependencies(
+            sys.executable, missing, cwd=tmp_path, env=env, log_path=log_path
+        )
 
 
 def test_api_source_snapshot_is_immutable_and_sha_marked(tmp_path):
