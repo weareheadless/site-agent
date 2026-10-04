@@ -220,7 +220,7 @@ def test_api_release_client_uses_newline_framed_broker_protocol(tmp_path):
                 while chunk := connection.recv(32):
                     request.extend(chunk)
                 received.append(bytes(request))
-                connection.sendall(b"restarted\\n")
+                connection.sendall(b"restarted\n")
 
         worker = threading.Thread(target=serve_one_request, daemon=True)
         worker.start()
@@ -228,4 +228,4 @@ def test_api_release_client_uses_newline_framed_broker_protocol(tmp_path):
         worker.join(timeout=2)
 
     assert not worker.is_alive()
-    assert received == [b"restart\\n"]
+    assert received == [b"restart\n"]
