@@ -13,8 +13,8 @@ ExecStart=/SOCIAL/site-agent/.venv/bin/python /SOCIAL/payload-releases/bin/curre
 TimeoutStartSec=90min
 KillMode=control-group
 # Customer build scripts run as the deployment account, so privilege escalation
-# remains disabled. Polkit grants only the API service restart requested by the
-# reviewed API release queue.
+# remains disabled. The API release uses a fixed-function socket broker; it
+# cannot choose arbitrary privileged commands or restart other services.
 NoNewPrivileges=true
 PrivateTmp=true
 StandardOutput=journal
