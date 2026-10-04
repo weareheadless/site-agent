@@ -5,7 +5,8 @@ process.env.PAYLOAD_CLI = '1'
 const { getPayload } = await import('payload')
 const { default: config } = await import('../payload.config.ts')
 
-const collections = ['pages', 'posts', 'products', 'productCategories'] as const
+const collections = ['pages', 'posts', 'postCategories', 'products', 'productCategories'] as const
+const versionedCollections = ['pages', 'posts', 'postCategories', 'products'] as const
 const failures: string[] = []
 
 const check = async (label: string, operation: () => Promise<unknown>) => {
@@ -25,6 +26,9 @@ try {
   for (const collection of collections) {
     await check(`${collection} published read`, () => payload.find({ collection: collection as CollectionSlug, draft: false, depth: 0, limit: 1, pagination: false, overrideAccess: true }))
     await check(`${collection} draft read`, () => payload.find({ collection: collection as CollectionSlug, draft: true, depth: 0, limit: 1, pagination: false, overrideAccess: true }))
+  }
+
+  for (const collection of versionedCollections) {
     await check(`${collection} version read`, () => payload.findVersions({ collection: collection as CollectionSlug, depth: 0, limit: 1, overrideAccess: true }))
   }
 

@@ -27,6 +27,9 @@ def test_payload_template_has_remote_payload_contract_gate():
     verifier = (TEMPLATE / 'scripts' / 'verify-payload-contract.ts').read_text(encoding='utf-8')
     for expected in ['draft: false', 'draft: true', 'findVersions', 'findGlobal', "collection: 'media'"]:
         assert expected in verifier
+    assert "const collections = ['pages', 'posts', 'postCategories', 'products', 'productCategories'] as const" in verifier
+    assert "const versionedCollections = ['pages', 'posts', 'postCategories', 'products'] as const" in verifier
+    assert 'for (const collection of versionedCollections)' in verifier
 
 
 def test_all_server_side_payload_gateway_resources_have_exact_route_handlers():

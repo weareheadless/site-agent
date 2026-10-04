@@ -3,6 +3,11 @@ name: Validate Payload release queue
 on:
   pull_request:
     paths:
+      - '.github/workflows/**'
+      - 'src/site_agent/templates/next-payload/**'
+      - 'tests/test_payload_template_contract.py'
+      - 'tests/test_payload_contract.py'
+      - 'tests/test_site_scaffold.py'
       - 'deploy/**'
       - 'pyproject.toml'
       - 'scripts/*payload*'
@@ -22,6 +27,11 @@ on:
   push:
     branches: [main]
     paths:
+      - '.github/workflows/**'
+      - 'src/site_agent/templates/next-payload/**'
+      - 'tests/test_payload_template_contract.py'
+      - 'tests/test_payload_contract.py'
+      - 'tests/test_site_scaffold.py'
       - 'deploy/**'
       - 'pyproject.toml'
       - 'scripts/*payload*'
@@ -59,3 +69,6 @@ jobs:
           tests/test_tenant_registry_migration.py
           tests/test_tenant_registration.py
           tests/test_workspace_web.py
+          tests/test_payload_template_contract.py
+          tests/test_payload_contract.py
+          tests/test_site_scaffold.py
