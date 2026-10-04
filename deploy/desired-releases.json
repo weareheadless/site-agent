@@ -2,20 +2,12 @@
   "schema": 1,
   "releases": {
     "oceanicvibes": {
-      "id": "20261004-oceanic-canonical-schema-5",
-      "sha": "2a3172918f5d14b11e1dcd13ca12dea81ad284f0",
-      "schemaMigration": {
-        "fromLedgerIdentity": "464d4fea2c7584a96b0694ffb6743bd137b5d210de59528bd63584234edfd152",
-        "targetMigrationHead": "a61a108e7f172f97c0bb4f1d483d469861743b716d83ada1ecd887b7ac002827"
-      }
+      "id": "20261004-oceanic-canonical-schema-6",
+      "sha": "b584eb79cf1583364f929b740880a2e112126d3e"
     },
     "atelier-harmonie": {
-      "id": "20261004-atelier-canonical-schema-9",
-      "sha": "1a49bfb8583dfb47ec58878cee60045fe8f36260",
-      "schemaMigration": {
-        "fromLedgerIdentity": "8f08d0bbcccbe59a22d485354a91823da8ee16c3c478a7170bee05c5456e6ff4",
-        "targetMigrationHead": "d84206f592c2a3eadfb60553656f82010e390752447b474266829c62a906d22d"
-      }
+      "id": "20261004-atelier-canonical-schema-10",
+      "sha": "9ade2016c5c1f8f8731603b461a03a0f899f4f7e"
     }
   }
 }
