@@ -30,7 +30,8 @@ def test_dispatcher_resolves_only_the_configured_github_ssh_identity(tmp_path):
     assert "TOKEN" not in command
 
 
-def test_dispatcher_rejects_missing_or_invalid_host_identity(tmp_path):
+def test_dispatcher_rejects_missing_or_invalid_host_identity(tmp_path, monkeypatch):
+    monkeypatch.setattr(dispatcher, "DEFAULT_GITHUB_KEY", tmp_path / "missing-key")
     profile = tmp_path / "host-credentials.yaml"
     profile.write_text("credentials:\n  github: {}\n")
     with pytest.raises(RuntimeError, match="identity is unavailable"):
