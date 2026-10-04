@@ -2,7 +2,7 @@
   "schema": 1,
   "releases": {
     "oceanicvibes": {
-      "id": "20261004-oceanic-canonical-schema-4",
+      "id": "20261004-oceanic-canonical-schema-5",
       "sha": "2a3172918f5d14b11e1dcd13ca12dea81ad284f0",
       "schemaMigration": {
         "fromLedgerIdentity": "464d4fea2c7584a96b0694ffb6743bd137b5d210de59528bd63584234edfd152",
@@ -10,7 +10,7 @@
       }
     },
     "atelier-harmonie": {
-      "id": "20261004-atelier-canonical-schema-4",
+      "id": "20261004-atelier-canonical-schema-5",
       "sha": "9a2202b6a9bf597d6edc8a0e7d2234587546ac74",
       "schemaMigration": {
         "fromLedgerIdentity": "8f08d0bbcccbe59a22d485354a91823da8ee16c3c478a7170bee05c5456e6ff4",
