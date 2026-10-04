@@ -149,10 +149,10 @@ def bootstrap(root: Path = ROOT, source_dir: Path | None = None) -> dict[str, st
     run(["sudo", "-n", "rm", "-f",
          "/etc/polkit-1/rules.d/60-helloada-api-restart.rules"], env=environment)
     run(["sudo", "-n", "systemctl", "daemon-reload"], env=environment)
-    run(["sudo", "-n", "systemctl", "enable", "--now",
-         "helloada-api-restart.socket"], env=environment)
-    run(["sudo", "-n", "systemctl", "enable", "--now",
-         "helloada-release.timer"], env=environment)
+    run(["sudo", "-n", "systemctl", "enable", "helloada-api-restart.socket"], env=environment)
+    run(["sudo", "-n", "systemctl", "restart", "helloada-api-restart.socket"], env=environment)
+    run(["sudo", "-n", "systemctl", "enable", "helloada-release.timer"], env=environment)
+    run(["sudo", "-n", "systemctl", "restart", "helloada-release.timer"], env=environment)
     return {"sourceSha": source_sha, "mirror": str(mirror), "snapshot": str(snapshot)}
 
 

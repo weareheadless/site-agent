@@ -230,3 +230,8 @@ def test_api_release_client_uses_newline_framed_broker_protocol(tmp_path):
 
     assert not worker.is_alive()
     assert received == [b"restart\n"]
+ 
+def test_host_bootstrap_restarts_updated_socket_and_timer_units():
+    bootstrap = (ROOT / "scripts/bootstrap-release-pipeline.py").read_text()
+    assert '"systemctl", "restart", "helloada-api-restart.socket"' in bootstrap
+    assert '"systemctl", "restart", "helloada-release.timer"' in bootstrap
