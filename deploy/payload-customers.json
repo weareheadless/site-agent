@@ -40,7 +40,7 @@
       "contentContract": "helloada-content-v2",
       "schemaRevision": 2,
       "schemaIdentity": "88efb2c6d810331060abdd4b85f4e19ee6b4ed913c91a8d363e8bfd996b02490",
-      "migrationHead": "f849d084e092d60aeb0995527a9d5e312009f09329bb530ea41e13df7c1eb1ac"
+      "migrationHead": "6bbf76a26c7f3d01b1533b5b665d226c7a2a2586b9f60edd5bade4964c9dee13"
     }
   }
 }
