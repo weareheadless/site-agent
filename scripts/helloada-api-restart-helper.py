@@ -9,15 +9,15 @@ from typing import BinaryIO, Callable
 
 
 COMMAND = ["/usr/bin/systemctl", "restart", "site-agent-api.service"]
-REQUEST = b"restart\\n"
-RESPONSE_OK = b"restarted\\n"
+REQUEST = b"restart\n"
+RESPONSE_OK = b"restarted\n"
 
 
 def serve(reader: BinaryIO, writer: BinaryIO, *,
           run_command: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run) -> int:
     request = reader.readline(16)
     if request != REQUEST or reader.read(1):
-        writer.write(b"invalid\\n")
+        writer.write(b"invalid\n")
         writer.flush()
         return 2
 
@@ -34,14 +34,14 @@ def serve(reader: BinaryIO, writer: BinaryIO, *,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         print(f"fixed API restart failed: {type(exc).__name__}", file=sys.stderr, flush=True)
-        writer.write(b"error\\n")
+        writer.write(b"error\n")
         writer.flush()
         return 1
 
     if result.returncode:
         if result.stderr:
             print(result.stderr[:2048], file=sys.stderr, end="", flush=True)
-        writer.write(b"error\\n")
+        writer.write(b"error\n")
         writer.flush()
         return 1
 
