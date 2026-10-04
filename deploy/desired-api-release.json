@@ -1,4 +1,7 @@
 {
   "schema": 1,
-  "release": null
+  "release": {
+    "id": "20261004-api-registry-1",
+    "sha": "897090d50049592650a7bbd653ac9a1ed31998ed"
+  }
 }
