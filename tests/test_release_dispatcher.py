@@ -134,11 +134,98 @@ def test_dispatcher_requires_the_bootstrapped_service_unit_to_match_main(tmp_pat
         dispatcher.verify_host_service_unit(snapshot, installed)
 
 
-def test_api_restart_policy_is_scoped_and_release_scripts_do_not_use_sudo():
-    policy = (ROOT / "deploy/helloada-api-restart.rules").read_text()
-    assert 'action.id === "org.freedesktop.systemd1.manage-units"' in policy
-    assert 'subject.user === "admin"' in policy
-    assert 'action.lookup("unit") === "site-agent-api.service"' in policy
-    assert 'action.lookup("verb") === "restart"' in policy
+def test_api_restart_broker_accepts_only_fixed_restart_request():
+    import importlib.util
+    import io
+    from types import SimpleNamespace
+
+    spec = importlib.util.spec_from_file_location(
+        "helloada_api_restart_helper", ROOT / "scripts/helloada-api-restart-helper.py"
+    )
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stderr="")
+
+    output = io.BytesIO()
+    assert helper.serve(io.BytesIO(b"restart\n"), output, run_command=fake_run) == 0
+    assert output.getvalue() == b"restarted\n"
+    assert calls[0][0] == ["/usr/bin/systemctl", "restart", "site-agent-api.service"]
+    assert calls[0][1]["shell"] is False
+    assert calls[0][1]["timeout"] == 120
+
+
+def test_api_restart_broker_rejects_arbitrary_commands_without_execution():
+    import importlib.util
+    import io
+
+    spec = importlib.util.spec_from_file_location(
+        "helloada_api_restart_helper_reject", ROOT / "scripts/helloada-api-restart-helper.py"
+    )
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    called = False
+
+    def forbidden(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("untrusted request reached command runner")
+
+    output = io.BytesIO()
+    assert helper.serve(io.BytesIO(b"restart site-agent-api.service\n"), output,
+                        run_command=forbidden) == 2
+    assert output.getvalue() == b"invalid\n"
+    assert called is False
+
+
+def test_api_restart_host_policy_is_fixed_and_release_scripts_do_not_use_sudo():
+    socket_unit = (ROOT / "deploy/helloada-api-restart.socket").read_text()
+    service_unit = (ROOT / "deploy/helloada-api-restart@.service").read_text()
+    helper = (ROOT / "scripts/helloada-api-restart-helper.py").read_text()
+    assert "Accept=yes" in socket_unit
+    assert "SocketUser=admin" in socket_unit
+    assert "SocketMode=0600" in socket_unit
+    assert "User=root" in service_unit and "StandardInput=socket" in service_unit
+    assert '"/usr/bin/systemctl", "restart", "site-agent-api.service"' in helper
+    assert "shell=True" not in helper
+    assert "NoNewPrivileges=true" in (ROOT / "deploy/helloada-release.service").read_text()
     assert "sudo" not in (ROOT / "scripts/dispatch-payload-releases.py").read_text()
     assert "sudo" not in (ROOT / "scripts/deploy-site-agent-api.py").read_text()
+
+
+def test_api_release_client_uses_newline_framed_broker_protocol(tmp_path):
+    import importlib.util
+    import socket
+    import threading
+
+    spec = importlib.util.spec_from_file_location(
+        "deploy_site_agent_api_broker_test", ROOT / "scripts/deploy-site-agent-api.py"
+    )
+    api_deploy = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(api_deploy)
+
+    broker_path = str(tmp_path / "restart.sock")
+    received = []
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+        listener.bind(broker_path)
+        listener.listen(1)
+
+        def serve_one_request():
+            connection, _address = listener.accept()
+            with connection:
+                request = bytearray()
+                while chunk := connection.recv(32):
+                    request.extend(chunk)
+                received.append(bytes(request))
+                connection.sendall(b"restarted\n")
+
+        worker = threading.Thread(target=serve_one_request, daemon=True)
+        worker.start()
+        api_deploy._restart_api(broker_path)
+        worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert received == [b"restart\n"]

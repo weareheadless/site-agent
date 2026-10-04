@@ -1,0 +1,25 @@
+[Unit]
+Description=Restart the shared site-agent API for one approved release action
+After=site-agent-api.service
+
+[Service]
+Type=exec
+User=root
+Group=root
+ExecStart=/usr/local/libexec/helloada-api-restart-helper
+StandardInput=socket
+StandardOutput=socket
+StandardError=journal
+TimeoutStartSec=150
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native

@@ -108,7 +108,9 @@ def bootstrap(root: Path = ROOT, source_dir: Path | None = None) -> dict[str, st
         "deploy/site-agent-api.service",
         "deploy/helloada-release.service",
         "deploy/helloada-release.timer",
-        "deploy/helloada-api-restart.rules",
+        "scripts/helloada-api-restart-helper.py",
+        "deploy/helloada-api-restart.socket",
+        "deploy/helloada-api-restart@.service",
     ):
         committed = subprocess.check_output(
             ["git", "-C", str(mirror), "show", f"{source_sha}:{relative}"]
@@ -125,22 +127,31 @@ def bootstrap(root: Path = ROOT, source_dir: Path | None = None) -> dict[str, st
     dispatcher.ensure_dispatcher_slot(snapshot, source_sha, root / "bin")
 
     system_unit_dir = Path("/etc/systemd/system")
-    policy_dir = Path("/etc/polkit-1/rules.d")
-    if not policy_dir.is_dir() or not shutil.which("pkaction"):
-        raise RuntimeError("polkit is required for narrowly scoped API restart authorization")
-    run(["systemctl", "is-active", "--quiet", "polkit.service"], env=environment)
-    for name in ("site-agent-api.service", "helloada-release.service", "helloada-release.timer"):
+    unit_names = (
+        "site-agent-api.service",
+        "helloada-release.service",
+        "helloada-release.timer",
+        "helloada-api-restart.socket",
+        "helloada-api-restart@.service",
+    )
+    helper = snapshot / "scripts/helloada-api-restart-helper.py"
+    if not helper.is_file():
+        raise RuntimeError("official-main snapshot is missing the API restart broker")
+    run(["sudo", "-n", "install", "-o", "root", "-g", "root", "-m", "0755",
+         str(helper), "/usr/local/libexec/helloada-api-restart-helper"], env=environment)
+    for name in unit_names:
         unit = snapshot / "deploy" / name
         run(["systemd-analyze", "verify", str(unit)], env=environment)
         run(["sudo", "-n", "install", "-m", "0644", str(unit),
              str(system_unit_dir / name)], env=environment)
-    policy = snapshot / "deploy/helloada-api-restart.rules"
-    if not policy.is_file():
-        raise RuntimeError("official-main snapshot is missing the scoped API restart policy")
-    run(["sudo", "-n", "install", "-m", "0644", str(policy),
-         str(policy_dir / "60-helloada-api-restart.rules")], env=environment)
+    # Remove only the obsolete file installed by the previous reviewed bootstrap.
+    run(["sudo", "-n", "rm", "-f",
+         "/etc/polkit-1/rules.d/60-helloada-api-restart.rules"], env=environment)
     run(["sudo", "-n", "systemctl", "daemon-reload"], env=environment)
-    run(["sudo", "-n", "systemctl", "enable", "--now", "helloada-release.timer"], env=environment)
+    run(["sudo", "-n", "systemctl", "enable", "--now",
+         "helloada-api-restart.socket"], env=environment)
+    run(["sudo", "-n", "systemctl", "enable", "--now",
+         "helloada-release.timer"], env=environment)
     return {"sourceSha": source_sha, "mirror": str(mirror), "snapshot": str(snapshot)}
 
 
