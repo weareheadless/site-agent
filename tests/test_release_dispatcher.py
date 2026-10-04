@@ -194,3 +194,38 @@ def test_api_restart_host_policy_is_fixed_and_release_scripts_do_not_use_sudo():
     assert "NoNewPrivileges=true" in (ROOT / "deploy/helloada-release.service").read_text()
     assert "sudo" not in (ROOT / "scripts/dispatch-payload-releases.py").read_text()
     assert "sudo" not in (ROOT / "scripts/deploy-site-agent-api.py").read_text()
+
+
+def test_api_release_client_uses_newline_framed_broker_protocol(tmp_path):
+    import importlib.util
+    import socket
+    import threading
+
+    spec = importlib.util.spec_from_file_location(
+        "deploy_site_agent_api_broker_test", ROOT / "scripts/deploy-site-agent-api.py"
+    )
+    api_deploy = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(api_deploy)
+
+    broker_path = str(tmp_path / "restart.sock")
+    received = []
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+        listener.bind(broker_path)
+        listener.listen(1)
+
+        def serve_one_request():
+            connection, _address = listener.accept()
+            with connection:
+                request = bytearray()
+                while chunk := connection.recv(32):
+                    request.extend(chunk)
+                received.append(bytes(request))
+                connection.sendall(b"restarted\\n")
+
+        worker = threading.Thread(target=serve_one_request, daemon=True)
+        worker.start()
+        api_deploy._restart_api(broker_path)
+        worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert received == [b"restart\\n"]
