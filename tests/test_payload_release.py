@@ -377,6 +377,7 @@ def test_tenant_payload_verifier_matches_the_site_agent_contract_before_mutation
     lock = json.loads((TEMPLATE / "package-lock.json").read_text())
     lock_path.write_text(json.dumps(lock))
     shutil.copyfile(TEMPLATE / "tsconfig.json", tmp_path / "tsconfig.json")
+    shutil.copyfile(TEMPLATE / "payload.config.ts", tmp_path / "payload.config.ts")
     verifier = scripts / "verify-payload-contract.ts"
     shutil.copyfile(TEMPLATE / "scripts/verify-payload-contract.ts", verifier)
 
