@@ -312,10 +312,17 @@ The central script is a hard gate, not a repair or fallback layer. It must:
    and no production credentials;
 5. inspect the generated `.open-next` artifact and reject legacy `/api/atelier`
    source, missing Growth contract markers, or stale Payload admin markers;
-6. archive and upload that exact inspected artifact, verify Cloudflare gives
-   the new version 100% traffic, check the live source SHA, and perform the
-   authenticated Ada/Payload connection gate; and
-7. persist a secret-free receipt in `/SOCIAL/payload-releases/runs`. Failed or
+6. resolve the tenant's registered runtime secrets and attach them to the
+   exact candidate through a private, mode-`0600`, short-lived `--secrets-file`
+   passed through OpenNext `upload`; remove that file immediately after upload,
+   promote that immutable version, then verify that exact version receives 100%
+   of traffic, check the live source SHA, and perform the authenticated
+   Ada/Payload connection gate; and
+7. persist a secret-free receipt in `/SOCIAL/payload-releases/runs`. Never
+   mutate Worker secrets after promotion through Cloudflare's script-secrets
+   endpoint or `wrangler secret put`: those operations create a different
+   version, and `wrangler secret put` deploys it immediately, invalidating the
+   exact-version release receipt. Failed or
    interrupted releases stop. Fix their cause and commit a new release ID to
    retry; never repeat failed builds automatically or bypass their gate.
 

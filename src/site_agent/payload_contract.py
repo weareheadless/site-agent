@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 
-_MIGRATION_NAME = re.compile(r"^\d{8}_\d{6}_[A-Za-z0-9_]+$")
+_MIGRATION_NAME = re.compile(r"^\d{8}_\d{6}(?:_[A-Za-z0-9_]+)?$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _IMPORT = re.compile(r"import\s+\*\s+as\s+migration_(\w+)\s+from\s+'\.\/([^']+)'\s*;?")
 

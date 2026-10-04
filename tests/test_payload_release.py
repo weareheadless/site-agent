@@ -403,6 +403,62 @@ def test_tenant_token_is_mapped_to_the_canonical_worker_binding(tmp_path):
     }
 
 
+
+def test_worker_secrets_file_is_private_and_contains_only_explicit_bindings(tmp_path):
+    expected = {
+        "PAYLOAD_SECRET": "payload-secret-for-test",
+        "HELLOADA_SITE_AGENT_TOKEN": "site-agent-token-for-test",
+    }
+    path = release.worker_secrets_file(tmp_path, expected)
+    try:
+        assert path.stat().st_mode & 0o777 == 0o600
+        assert json.loads(path.read_text()) == expected
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_worker_upload_bundles_secrets_with_immutable_candidate_and_cleans_file(monkeypatch, tmp_path):
+    version_id = "01234567-89ab-cdef-0123-456789abcdef"
+    secrets = {"PAYLOAD_SECRET": "payload-secret-for-test"}
+    commands = []
+
+    def fake_run(command, cwd, env):
+        commands.append(command)
+        return f"Worker Version ID: {version_id}\n"
+
+    monkeypatch.setattr(release, "run", fake_run)
+    result = release.upload_worker_version(TEMPLATE, SHA, "release-1", tmp_path, secrets, {})
+
+    assert result == version_id
+    command = commands[0]
+    secret_path = Path(command[command.index("--secrets-file") + 1])
+    assert command == [
+        str(TEMPLATE / "node_modules/.bin/opennextjs-cloudflare"), "upload",
+        "--secrets-file", str(secret_path), "--var", f"HELLOADA_RELEASE_SHA:{SHA}",
+        "--tag", "release-1",
+    ]
+    assert not secret_path.exists()
+    assert "payload-secret-for-test" not in " ".join(command)
+
+
+def test_worker_upload_cleans_secrets_file_when_upload_fails(monkeypatch, tmp_path):
+    commands = []
+
+    def fake_run(command, cwd, env):
+        commands.append(command)
+        raise RuntimeError("upload failed")
+
+    monkeypatch.setattr(release, "run", fake_run)
+    with pytest.raises(RuntimeError, match="upload failed"):
+        release.upload_worker_version(
+            TEMPLATE, SHA, "release-1", tmp_path,
+            {"PAYLOAD_SECRET": "payload-secret-for-test"}, {},
+        )
+
+    secret_path = Path(commands[0][commands[0].index("--secrets-file") + 1])
+    assert not secret_path.exists()
+
+
 def test_tenant_secret_mapping_rejects_a_noncanonical_worker_binding(tmp_path, monkeypatch):
     tenant = "oceanicvibes"
     token_name = "PROVISIONED_OCEANICVIBES_TOKEN"
