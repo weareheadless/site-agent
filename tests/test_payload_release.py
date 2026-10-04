@@ -376,6 +376,7 @@ def test_tenant_payload_verifier_matches_the_site_agent_contract_before_mutation
     package_path.write_text(json.dumps(package))
     lock = json.loads((TEMPLATE / "package-lock.json").read_text())
     lock_path.write_text(json.dumps(lock))
+    shutil.copyfile(TEMPLATE / "tsconfig.json", tmp_path / "tsconfig.json")
     verifier = scripts / "verify-payload-contract.ts"
     shutil.copyfile(TEMPLATE / "scripts/verify-payload-contract.ts", verifier)
 
@@ -394,7 +395,23 @@ def test_tenant_payload_verifier_matches_the_site_agent_contract_before_mutation
 
     package = json.loads((TEMPLATE / "package.json").read_text())
     package_path.write_text(json.dumps(package))
-    verifier.write_text(verifier.read_text() + "// drift\\n")
+    lock = json.loads((TEMPLATE / "package-lock.json").read_text())
+    lock["packages"][""]["devDependencies"]["tsx"] = "4.22.3"
+    lock_path.write_text(json.dumps(lock))
+    with pytest.raises(RuntimeError, match="does not pin"):
+        release.validate_payload_verifier(tmp_path)
+
+    lock = json.loads((TEMPLATE / "package-lock.json").read_text())
+    lock_path.write_text(json.dumps(lock))
+    tsconfig_path = tmp_path / "tsconfig.json"
+    tsconfig = json.loads(tsconfig_path.read_text())
+    tsconfig["compilerOptions"]["paths"].pop("@payload-config")
+    tsconfig_path.write_text(json.dumps(tsconfig))
+    with pytest.raises(RuntimeError, match="map @payload-config"):
+        release.validate_payload_verifier(tmp_path)
+
+    tsconfig_path.write_text((TEMPLATE / "tsconfig.json").read_text())
+    verifier.write_text(verifier.read_text() + "\\n// drift\\n")
     with pytest.raises(RuntimeError, match="match the site-agent template exactly"):
         release.validate_payload_verifier(tmp_path)
 
