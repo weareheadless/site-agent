@@ -41,8 +41,12 @@ def bootstrap(root: Path = ROOT, source_dir: Path | None = None) -> dict[str, st
         if bootstrap_source != SITE_AGENT_SOURCE.resolve():
             raise RuntimeError("bootstrap must execute from the exact supplied source snapshot")
         source_sha_hint = bootstrap_source.name
-        if not SHA_RE.fullmatch(source_sha_hint) or bootstrap_source.parent != (root / "control").resolve():
-            raise RuntimeError("bootstrap snapshot must be the full-SHA child of the release control root")
+        allowed_snapshot_roots = {
+            (root / "control").resolve(),
+            (root / "dispatch-control").resolve(),
+        }
+        if not SHA_RE.fullmatch(source_sha_hint) or bootstrap_source.parent not in allowed_snapshot_roots:
+            raise RuntimeError("bootstrap snapshot must be a full-SHA child of an official release-control snapshot root")
     else:
         local_remote = run(["git", "-C", str(bootstrap_source), "remote", "get-url", "origin"],
                            env=os.environ.copy(), capture=True)
