@@ -137,7 +137,7 @@ never to dependency installation or builds. The artifact is inspected, hashed
 and archived before upload. The pipeline checks production did not change during
 the build and uploads an immutable, unpromoted version. If the queue entry is an
 explicit tenant schema migration, it verifies the exact live ledger prefix,
-applies only the committed Payload migration, and verifies the full target
+applies only the committed Payload migration with `npm run payload -- migrate` through the tenant's pinned package script (`PAYLOAD_CLI=1`), then verifies the full target
 ledger and Payload contract while the prior Worker remains active. It then
 promotes that exact uploaded version to 100% traffic, checks the live SHA and
 tenant, and performs the authenticated connection gate.
@@ -152,8 +152,9 @@ Artifacts, source, receipts and previous Cloudflare versions are retained under
 `/SOCIAL/payload-releases`. Ordinary application releases never mutate a Payload
 database. The sole exception is an explicit new-tenant bootstrap request carrying
 the exact manifest migration-chain hash: the pipeline confirms the registered
-D1 identity is empty, applies the committed Payload migration chain through the
-pinned Payload CLI, and verifies the complete migration ledger before upload.
+D1 identity is empty, applies the committed Payload migration chain through `npm run payload -- migrate`
+in the generated site's package-managed Payload CLI entrypoint, and verifies the
+complete migration ledger before upload.
 Any non-empty or partially initialized database fails closed. Existing-tenant
 schema upgrades require a separate exact queue request containing the old
 migration-ledger identity and registered target head. The pipeline accepts only
