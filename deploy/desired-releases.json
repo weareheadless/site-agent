@@ -2,16 +2,12 @@
   "schema": 1,
   "releases": {
     "oceanicvibes": {
-      "id": "20261005-oceanic-navigation-repair-8",
-      "sha": "7932405e4be17e4b53c86dc24ee74b47eaaf58ea",
-      "schemaMigration": {
-        "fromLedgerIdentity": "deda7954b152602671ea70d438650446f936756abc9b0dd4e99e95410d1ac136",
-        "targetMigrationHead": "adcbd6979e8839086cea1b62f92aa32fc8f93518067fb44ea5065181418b6888"
-      }
+      "id": "20261005-oceanic-admin-context-9",
+      "sha": "c0843cdf35b33ab3d14296ec9f584314a37ad103"
     },
     "atelier-harmonie": {
-      "id": "20261005-atelier-approved-design-3",
-      "sha": "dfbb2ac33e1f01067bac4e48b3a2bcfddfb65428"
+      "id": "20261005-atelier-admin-context-4",
+      "sha": "b8e6ac9418f0e1fb42b3ee196a57f506f66350dc"
     }
   }
 }

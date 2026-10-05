@@ -569,7 +569,7 @@ def main() -> int:
     try:
         stage("credentials")
         sys.path.insert(0, str(ROOT / "src"))
-        from site_agent.credentials import credential_environment, credential_profile, github_remote, github_ssh_command
+        from site_agent.credentials import credential_environment, credential_profile, github_remote, github_ssh_command, github_api_token
         profile = {"credentials": {"profile_file": manifest["credentialProfile"]}}
         cloudflare = dict(credential_profile(profile, "cloudflare"))
         if not cloudflare.get("env_file") or not Path(cloudflare["env_file"]).is_file():
@@ -615,7 +615,9 @@ def main() -> int:
 
         stage("dependencies")
         npm = str(Path(manifest["npmBin"], "npm"))
-        run([npm, "ci", "--ignore-scripts", "--no-audit", "--no-fund"], checkout, base)
+        from github_release_assets import prepare_release_dependencies
+        receipt["sharedPackageAssets"] = prepare_release_dependencies(checkout, github_api_token(profile, base), npm, base, run)
+        run([npm, "ci", "--ignore-scripts", "--no-audit", "--no-fund", "--prefer-offline"], checkout, base)
         # TypeScript's pinned JSONC parser accepts comments and trailing commas.
         parsed = run(["node", "-e", "const fs=require('node:fs');const ts=require('typescript');"
                       "const r=ts.parseConfigFileTextToJson('wrangler.jsonc',fs.readFileSync('wrangler.jsonc','utf8'));"
