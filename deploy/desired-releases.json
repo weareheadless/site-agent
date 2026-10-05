@@ -2,19 +2,19 @@
   "schema": 1,
   "releases": {
     "oceanicvibes": {
-      "id": "20261005-oceanic-blog-payload-3",
-      "sha": "8bdc7f6e897ca8b6698a9776bf823f12b3a3c65d",
+      "id": "20261005-oceanic-blog-payload-4",
+      "sha": "a94f1138643281a2154d4432c585e13197a53d4e",
       "schemaMigration": {
         "fromLedgerIdentity": "e12073895b2d85632dfb67a40916da55b3a9308408202272d5bc18aefe6d11fd",
-        "targetMigrationHead": "ec48d7987a3bac4035175f3202d283fc6ac4604901b2404ce87bc3ac71bc22fb"
+        "targetMigrationHead": "7d730a19e33bbd03ae1cb592384059a16fc83053a187374dea4b8fad47348434"
       }
     },
     "atelier-harmonie": {
-      "id": "20261005-atelier-blog-payload-3",
-      "sha": "b029e0c72c5cdb7eb50d264907dd61f140744bd3",
+      "id": "20261005-atelier-blog-payload-4",
+      "sha": "753c831418f94a15a115e5a2f469fae5d7312854",
       "schemaMigration": {
         "fromLedgerIdentity": "b8f2a081a0b93d3404b1af2bc631e75fb92638ef28f9659bae2494c7cd22e4bc",
-        "targetMigrationHead": "0a42fa43726abe28274ab5de3721bbace9f24b1fd2df6bc18b94fc9ce30f83c9"
+        "targetMigrationHead": "33bb84aacf60973ed4cdf7637ba454096929941efb6ff6a9c3595b28a3672a8c"
       }
     }
   }
