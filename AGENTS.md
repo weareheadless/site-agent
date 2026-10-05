@@ -97,6 +97,10 @@ For growth orchestration, SEO/AEO, goals and owner review, follow
 evidence, candidate, approval and outcome path; do not introduce silent
 degradation or independent customer-specific workflows.
 
+For customer schema migrations, also follow
+`docs/customer-presentation-migration-repair.md`: preserve the approved frontend
+composition and motion; a canonical schema is not a generic presentation.
+
 For shared Payload content and owner review, follow
 `docs/helloada-shared-content-and-owner-review-status.md` and the canonical
 `packages/helloada-payload-core` contract. `site-agent` owns the schema, field
