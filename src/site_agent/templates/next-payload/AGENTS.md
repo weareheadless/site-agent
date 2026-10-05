@@ -16,6 +16,12 @@ Payload schema and migration files remain platform-owned, not Ada-editable.
 Routine Ada website work cannot change schema, migrations, admin, auth, server
 bridges, package pins or runtime configuration.
 
+Public article URLs have one canonical contract: `/blog` is the index and
+`/blog/{slug}` is an article. Both bases are declared in
+`src/helloada.config.ts`; cards, previews, sitemaps and the API bridge use the
+shared route resolver. Do not add `/post` or `/articles` route handlers,
+redirect aliases, or tenant-specific article URL conventions.
+
 Production deployments are owned by the central `weareheadless/site-agent`
 VPS pipeline. Push reviewed customer source to official `main`, register the
 tenant in its `deploy/payload-customers.json`, then commit the full customer

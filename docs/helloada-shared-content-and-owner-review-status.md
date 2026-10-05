@@ -103,9 +103,11 @@ present and rendered automatically. No DNS changes are part of acceptance.
   requests consult the receipt instead of automatically replaying an uncertain
   write. This verifies Payload state; it is not yet proof of the full public
   route, customer-specific renderer or edge cache.
-- Article workspace routes use `/articles/<slug>` and use the same Payload post
-  for article content and listing-card bindings. Workspace inventory now pages
-  through all Payload results rather than stopping at the first 100.
+- All public article routes use one shared convention: `/blog` for the index
+  and `/blog/<slug>` for article details. Atelier, OceanicVibes and the default
+  scaffold use the same route resolver and Payload post bindings.
+  Workspace inventory pages through all Payload results rather than stopping
+  at the first 100.
 - Growth and Activity source changes from the approved plan consolidate owner
   decisions into one review-first list; separate planned/completed filters and
   execution history remain. Reports are not presented as publishable website

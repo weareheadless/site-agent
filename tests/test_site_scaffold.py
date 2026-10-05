@@ -27,13 +27,18 @@ def test_initialize_payload_site_creates_canonical_helloada_template(tmp_path):
     assert not (root / "src/collections/Pages.ts").exists()
     assert not (root / "src/globals/Navigation.ts").exists()
     assert (root / "helloada-content-contract.json").exists()
+    template_instructions = (root / "AGENTS.md").read_text()
+    assert "`/blog` is the index and" in template_instructions
+    preview = (root / "src/app/(frontend)/helloada-preview/[token]/page.tsx").read_text()
+    assert "pathForDocument(collection, slug)" in preview
     assert (root / "src/app/(frontend)/[[...slug]]/page.tsx").exists()
     assert (root / "src/lib/content-routes.ts").exists()
     assert not (root / "src/app/(frontend)/articles/[slug]/page.tsx").exists()
     assert not (root / "src/app/(frontend)/articles.html/page.tsx").exists()
+    assert not (root / "src/app/(frontend)/post/[slug]/page.tsx").exists()
     routes = (root / "src/helloada.config.ts").read_text()
-    assert "postsIndex: '/articles'" in routes
-    assert "postDetail: '/articles'" in routes
+    assert "postsIndex: '/blog'" in routes
+    assert "postDetail: '/blog'" in routes
 
 
 def test_payload_navigation_keeps_server_only_props_out_of_client_boundary(tmp_path):
