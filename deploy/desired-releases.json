@@ -2,11 +2,11 @@
   "schema": 1,
   "releases": {
     "oceanicvibes": {
-      "id": "20261005-oceanic-blog-payload-6",
-      "sha": "7d5f81f69d96f3232f863d973e12e0149e274172",
+      "id": "20261005-oceanic-blog-payload-7",
+      "sha": "fc3c76ba509d62cdeb105948fa11fdc3bed6efd3",
       "schemaMigration": {
-        "fromLedgerIdentity": "e12073895b2d85632dfb67a40916da55b3a9308408202272d5bc18aefe6d11fd",
-        "targetMigrationHead": "ee6d99b1865945e90abf0aef3b1f4098872dc07f87442ac1c2db318b72bd953b"
+        "fromLedgerIdentity": "deda7954b152602671ea70d438650446f936756abc9b0dd4e99e95410d1ac136",
+        "targetMigrationHead": "8521aee8e832fcb20692af8a2bf19e7a62dd1567b9a1f27205f262338d08017b"
       }
     },
     "atelier-harmonie": {
