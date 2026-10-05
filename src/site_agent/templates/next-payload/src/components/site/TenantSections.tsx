@@ -2,6 +2,8 @@ import { RichText } from '@payloadcms/richtext-lexical/react'
 import type { SerializedEditorState } from 'lexical'
 import { helloAdaBindingId } from '@weareheadless/helloada-payload-core/bindings'
 import { mediaAlt, mediaUrl } from '@/lib/content'
+import ContactForm from './ContactForm'
+import { runtimeValue } from '@/lib/runtime-env'
 
 type ContentEntry = Record<string, unknown> & { key: string; blockType: string }
 type Section = Record<string, unknown> & { key: string; label: string }
@@ -34,11 +36,12 @@ const requiredMediaUrl = (value: unknown) => {
   return url
 }
 
-function ContentEntryView({ entry, collection, documentId, sectionKey }: {
+function ContentEntryView({ entry, collection, documentId, sectionKey, preview }: {
   entry: ContentEntry
   collection: string
   documentId: string
   sectionKey: string
+  preview: boolean
 }) {
   const key = stableKey(entry.key, 'Content')
   const target = { collection, documentId, sectionKey, entryKey: key }
@@ -96,15 +99,40 @@ function ContentEntryView({ entry, collection, documentId, sectionKey }: {
         })}
       </ul>
     }
+    case 'helloAdaContactForm': {
+      const form = entry.form && typeof entry.form === 'object' && !Array.isArray(entry.form)
+        ? entry.form as Record<string, unknown>
+        : undefined
+      if (!form || !String(form.slug || '')) throw new Error(`Published page contact form “${key}” has no valid Payload form relation.`)
+      if (preview) return <p className="helloada-form-unavailable" key={key}>Preview only — no real messages will be sent.</p>
+      if (form._status !== 'published' || form.enabled !== true) {
+        return <p className="helloada-form-unavailable" key={key}>This contact form is temporarily unavailable.</p>
+      }
+      const siteKey = runtimeValue('HELLOADA_TURNSTILE_SITE_KEY')
+      if (!siteKey) return <p className="helloada-form-unavailable" key={key}>This contact form is not configured yet.</p>
+      const fields = Array.isArray(form.fields) ? form.fields as Array<Record<string, unknown>> : []
+      if (!fields.length) throw new Error(`Published contact form “${String(form.slug)}” has no configured fields.`)
+      return <ContactForm key={key} siteKey={siteKey} form={{
+        slug: String(form.slug), title: String(form.title || ''), intro: String(form.intro || ''),
+        submitLabel: String(form.submitLabel || 'Send message'), successMessage: String(form.successMessage || 'Thank you. Your message has been received.'),
+        fields: fields.map((field) => ({
+          key: String(field.key || ''), label: String(field.label || ''), type: field.type as 'text' | 'email' | 'phone' | 'textarea' | 'select' | 'consent',
+          placeholder: String(field.placeholder || ''), required: field.required === true,
+          maxLength: Number(field.maxLength) || undefined,
+          choices: Array.isArray(field.choices) ? (field.choices as Array<Record<string, unknown>>).map((choice) => ({ key: String(choice.key || ''), label: String(choice.label || '') })) : [],
+        })),
+      }} />
+    }
     default:
       throw new Error(`Payload content “${key}” uses unsupported block type “${entry.blockType}”.`)
   }
 }
 
-export default function TenantSections({ sections, collection, documentId }: {
+export default function TenantSections({ sections, collection, documentId, preview = false }: {
   sections: Record<string, unknown>[]
   collection: string
   documentId: string
+  preview?: boolean
 }) {
   return <>
     {sections.map((sectionValue) => {
@@ -118,7 +146,7 @@ export default function TenantSections({ sections, collection, documentId }: {
         <h2 data-helloada-field={sectionBinding}>{label}</h2>
         {entries.map((rawEntry: unknown) => {
           const entry = rawEntry as ContentEntry
-          return <ContentEntryView key={stableKey(entry.key, 'Content')} entry={entry} collection={collection} documentId={documentId} sectionKey={sectionKey} />
+          return <ContentEntryView key={stableKey(entry.key, 'Content')} entry={entry} collection={collection} documentId={documentId} sectionKey={sectionKey} preview={preview} />
         })}
       </section>
     })}

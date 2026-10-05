@@ -346,7 +346,13 @@ class WebsiteBootstrapService:
         repo = _component(f"{prefix}-{tenant_id}", "repository name")
         d1 = _component(f"{prefix}-{tenant_id}", "D1 database name")
         r2 = _component(f"{prefix}-{tenant_id}-media", "R2 bucket name")
-        return {"worker": worker, "repo": repo, "d1": d1, "r2": r2}
+        email_r2 = _component(f"{prefix}-{tenant_id}-email", "private email bucket name")
+        messages_queue = _component(f"{prefix}-{tenant_id}-messages", "message Queue name")
+        messages_dlq = _component(f"{prefix}-{tenant_id}-messages-dlq", "message dead-letter Queue name")
+        return {
+            "worker": worker, "repo": repo, "d1": d1, "r2": r2,
+            "email_r2": email_r2, "messages_queue": messages_queue, "messages_dlq": messages_dlq,
+        }
 
     def _repository(self, tenant_id: str, display_name: str, config_path: Path) -> Mapping[str, Any]:
         _env, github_token, _cloudflare_token, _account_id = self._credentials()
@@ -416,11 +422,16 @@ class WebsiteBootstrapService:
         names = self._names(tenant_id)
         cloudflare = CloudflareResourceProvisioner(account_id, cloudflare_token)
         d1 = cloudflare.ensure_d1(names["d1"], location=str(self.settings.get("d1_location") or "") or None)
+        messages_queue = cloudflare.ensure_queue(names["messages_queue"])
+        messages_dlq = cloudflare.ensure_queue(names["messages_dlq"])
         r2 = CloudflareR2Provisioner(account_id, cloudflare_token)
         r2_created = r2.ensure_bucket(names["r2"], location=str(self.settings.get("r2_location") or "") or None)
+        email_bucket_created = r2.ensure_bucket(names["email_r2"], location=str(self.settings.get("r2_location") or "") or None)
         return {
             "d1": d1.to_dict(),
             "r2": {"bucket": names["r2"], "created": bool(r2_created)},
+            "private_email_r2": {"bucket": names["email_r2"], "created": bool(email_bucket_created)},
+            "queues": {"messages": messages_queue.to_dict(), "dead_letter": messages_dlq.to_dict()},
             "account_id": account_id,
         }
 
@@ -735,9 +746,15 @@ class WebsiteBootstrapService:
             raise BootstrapError("Payload site wrangler.jsonc is invalid") from exc
         vars_section = document.setdefault("vars", {})
         d1 = _mapping(data.get("d1"))
+        queues = _mapping(data.get("queues"))
+        messages_queue = _mapping(queues.get("messages"))
+        messages_dlq = _mapping(queues.get("dead_letter"))
+        private_email = _mapping(data.get("private_email_r2"))
         vars_section.update({
             "SITE_AGENT_URL": site_agent_url,
             "NEXT_PUBLIC_SITE_URL": worker_url,
+            "HELLOADA_MESSAGES_QUEUE_NAME": str(messages_queue.get("name") or names["messages_queue"]),
+            "HELLOADA_MESSAGES_DLQ_NAME": str(messages_dlq.get("name") or names["messages_dlq"]),
             "HELLOADA_SITE_NAME": display_name or tenant_id,
             "HELLOADA_TENANT_ID": tenant_id,
             "HELLOADA_SITE_AGENT_VERSION": __version__,
@@ -755,7 +772,29 @@ class WebsiteBootstrapService:
             "database_id": str(d1.get("database_id") or ""),
             "database_name": str(d1.get("name") or ""),
         }]
-        document["r2_buckets"] = [{"binding": "R2", "bucket_name": names["r2"]}]
+        document["r2_buckets"] = [
+            {"binding": "R2", "bucket_name": names["r2"]},
+            {"binding": "PRIVATE_EMAIL", "bucket_name": str(private_email.get("bucket") or names["email_r2"]), "preview_bucket_name": str(private_email.get("bucket") or names["email_r2"])},
+        ]
+        document["queues"] = {
+            "producers": [{"binding": "HELLOADA_MESSAGES_QUEUE", "queue": str(messages_queue.get("name") or names["messages_queue"])}],
+            "consumers": [{
+                "queue": str(messages_queue.get("name") or names["messages_queue"]),
+                "max_batch_size": 1,
+                "max_batch_timeout": 5,
+                "max_retries": 8,
+                "retry_delay": 30,
+                "max_concurrency": 1,
+                "dead_letter_queue": str(messages_dlq.get("name") or names["messages_dlq"]),
+            }, {
+                "queue": str(messages_dlq.get("name") or names["messages_dlq"]),
+                "max_batch_size": 1,
+                "max_batch_timeout": 5,
+                "max_retries": 3,
+                "retry_delay": 30,
+                "max_concurrency": 1,
+            }],
+        }
         path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
 
     def _queue_release(

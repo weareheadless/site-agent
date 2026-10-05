@@ -6,9 +6,10 @@ type Props = {
   settings: RecordValue
   kind: 'page' | 'post' | 'product'
   collection?: 'pages' | 'posts' | 'products'
+  preview?: boolean
 }
 
-export default function PublicDocument({ document, settings, kind, collection: requestedCollection }: Props) {
+export default function PublicDocument({ document, settings, kind, collection: requestedCollection, preview = false }: Props) {
   const collection = requestedCollection || (kind === 'post' ? 'posts' : kind === 'product' ? 'products' : 'pages')
-  return <PagePresentation document={document} settings={settings} kind={kind} collection={collection} />
+  return <PagePresentation document={document} settings={settings} kind={kind} collection={collection} preview={preview} />
 }

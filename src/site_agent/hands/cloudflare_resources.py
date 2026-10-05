@@ -28,8 +28,18 @@ class D1DatabaseReceipt:
         return {"database_id": self.database_id, "name": self.name, "created": self.created}
 
 
+@dataclass(frozen=True)
+class QueueReceipt:
+    queue_id: str
+    name: str
+    created: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"queue_id": self.queue_id, "name": self.name, "created": self.created}
+
+
 class CloudflareResourceProvisioner:
-    """Small idempotent client for account-level D1 resources."""
+    """Small idempotent client for account-level D1 and Queue resources."""
 
     def __init__(self, account_id: str, api_token: str, *, timeout_seconds: float = 30.0) -> None:
         self.account_id = str(account_id or "").strip().lower()
@@ -129,5 +139,51 @@ class CloudflareResourceProvisioner:
                     return D1DatabaseReceipt(database_id, database_name, False)
         return None
 
+    def ensure_queue(self, name: str) -> QueueReceipt:
+        queue_name = str(name or "").strip().lower()
+        if not re.fullmatch(r"[a-z][a-z0-9-]{2,62}", queue_name):
+            raise CloudflareResourceError("Queue name is invalid")
+        existing = self._find_queue(queue_name)
+        if existing is not None:
+            return existing
+        status, created = self._request(
+            "POST", f"/accounts/{self.account_id}/queues", payload={"queue_name": queue_name},
+        )
+        if status in {200, 201} and created.get("success"):
+            row = created.get("result") or {}
+            queue_id = str(row.get("queue_id") or row.get("id") or "").strip()
+            if queue_id:
+                return QueueReceipt(queue_id, queue_name, True)
+        if status in {400, 409, 422}:
+            existing = self._find_queue(queue_name)
+            if existing is not None:
+                return existing
+            raise CloudflareResourceError("Queue creation raced another owner and could not be reconciled")
+        raise CloudflareResourceError(self._error(created))
 
-__all__ = ["CloudflareResourceError", "CloudflareResourceProvisioner", "D1DatabaseReceipt"]
+    def _find_queue(self, queue_name: str) -> QueueReceipt | None:
+        page = 1
+        while page <= 20:
+            query = urllib.parse.urlencode({"page": page, "per_page": 100})
+            status, body = self._request("GET", f"/accounts/{self.account_id}/queues?{query}")
+            if status != 200 or not body.get("success"):
+                if status not in {200, 404}:
+                    raise CloudflareResourceError(self._error(body))
+                return None
+            rows = body.get("result") or []
+            if not isinstance(rows, list):
+                raise CloudflareResourceError("Cloudflare returned an invalid Queue listing")
+            for row in rows:
+                if isinstance(row, Mapping) and str(row.get("queue_name") or "") == queue_name:
+                    queue_id = str(row.get("queue_id") or row.get("id") or "").strip()
+                    if queue_id:
+                        return QueueReceipt(queue_id, queue_name, False)
+            info = body.get("result_info") or {}
+            total_pages = int(info.get("total_pages") or page)
+            if page >= total_pages or len(rows) < 100:
+                return None
+            page += 1
+        raise CloudflareResourceError("Cloudflare Queue listing exceeded the supported page limit")
+
+
+__all__ = ["CloudflareResourceError", "CloudflareResourceProvisioner", "D1DatabaseReceipt", "QueueReceipt"]

@@ -133,9 +133,13 @@ preview builder receives the same four-value toolchain contract (`node_path`,
 `node_version`, `npm_command`, `npm_version`) from the host config; tenant
 registrations inherit it centrally. Missing or mismatched versions stop the
 build before dependency installation. Production credentials are supplied only to Cloudflare calls,
-never to dependency installation or builds. The artifact is inspected, hashed
-and archived before upload. The pipeline checks production did not change during
-the build and uploads an immutable, unpromoted version. If the queue entry is an
+never to dependency installation or builds. The full OpenNext output and the
+custom Worker entry are both part of the artifact contract: the pipeline runs a
+Wrangler dry-run against the configured `main`, hashes and archives its compiled
+Worker with `.open-next`, `worker.ts`, `wrangler.jsonc` and the lockfile, then
+uses the unchanged source/configuration for OpenNext `upload`. Upload fails if
+any inspected input changed. The pipeline checks production did not change
+during the build and uploads an immutable, unpromoted version. If the queue entry is an
 explicit tenant schema migration, it verifies the exact live ledger prefix,
 applies only the committed Payload migration, and verifies the full target
 ledger and Payload contract while the prior Worker remains active. It then

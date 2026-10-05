@@ -5,6 +5,7 @@ export function helloAdaWorkspacePath(path: string, method: string, search = "")
   const suffix = path.replace(/^\/api\/helloada(?=\/|$)/, "") || "/";
   if (method === "GET" && ["/connection", "/growth", "/seo/analytics", "/seo/insights", "/seo/evidence"].includes(suffix)) return `/workspace${suffix}${search}`;
   if (method === "POST" && suffix === "/growth/check") return `/workspace/growth/check${search}`;
+  if (method === "POST" && /^\/messages\/[0-9]+\/draft-with-ada$/.test(suffix)) return `/workspace/messages/reply-draft${search}`;
   if (suffix === "/ada" && method === "POST") return `/workspace/chat${search}`;
   if (suffix === "/ada" && method === "GET") {
     const jobId = new URLSearchParams(search).get("job_id");

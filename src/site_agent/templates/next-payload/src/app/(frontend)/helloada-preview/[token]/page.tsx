@@ -79,6 +79,6 @@ export default async function HelloAdaExactPreview({ params }: Props) {
   const { collection, document, settings, route } = await loadPreview(token)
   const kind = collection === 'posts' ? 'post' : collection === 'products' ? 'product' : 'page'
   return <div data-helloada-preview-hash={await hashJson(withoutPayloadMetadata(document))} data-helloada-preview-route={route}>
-    <SiteChrome><PublicDocument document={document} settings={settings} kind={kind} collection={collection} /></SiteChrome>
+    <SiteChrome><PublicDocument document={document} settings={settings} kind={kind} collection={collection} preview /></SiteChrome>
   </div>
 }

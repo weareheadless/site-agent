@@ -56,6 +56,31 @@ def file_hashes(root: Path) -> dict[str, str]:
             for p in sorted(root.rglob("*")) if p.is_file()}
 
 
+def worker_artifact_hashes(checkout: Path, custom_worker_bundle: Path | None = None) -> dict[str, str]:
+    """Hash the generated app plus every source/config input OpenNext uploads."""
+    generated = {f".open-next/{path}": digest for path, digest in file_hashes(checkout / ".open-next").items()}
+    for relative in ("worker.ts", "wrangler.jsonc", "package.json", "package-lock.json"):
+        path = checkout / relative
+        if not path.is_file():
+            raise RuntimeError(f"custom Worker release input is missing: {relative}")
+        generated[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+    if custom_worker_bundle is not None:
+        if not (custom_worker_bundle / "worker.js").is_file():
+            raise RuntimeError("Wrangler dry-run produced no compiled custom Worker")
+        generated.update({
+            f"custom-worker/{path}": digest
+            for path, digest in file_hashes(custom_worker_bundle).items()
+        })
+    return generated
+
+
+def worker_handlers(source: str) -> set[str]:
+    return {name for name, pattern in {
+        "fetch": r"\bfetch\s*:", "email": r"\basync\s+email\s*\(",
+        "queue": r"\basync\s+queue\s*\(", "scheduled": r"\bscheduled\s*\(",
+    }.items() if re.search(pattern, source)}
+
+
 def migration_ledger_head(applied: list[str]) -> str:
     """Stable identity for one ordered Payload migration ledger."""
     return hashlib.sha256(json.dumps(applied, separators=(",", ":")).encode()).hexdigest()
@@ -94,6 +119,9 @@ def validate_target(customer: dict[str, Any], tenant: str, sha: str, release_id:
         raise ValueError("registered customer has no exact tenant D1 name")
     if not re.fullmatch(r"[a-z0-9-]{3,63}", str(customer.get("r2BucketName") or "")):
         raise ValueError("registered customer has no exact tenant R2 bucket")
+    for field in ("privateEmailR2BucketName", "messagesQueueName", "messagesDlqName"):
+        if not re.fullmatch(r"[a-z0-9-]{3,63}", str(customer.get(field) or "")):
+            raise ValueError(f"registered customer has no exact {field} resource name")
 
 
 def validate_toolchain_manifest(manifest: dict[str, Any]) -> None:
@@ -107,8 +135,8 @@ def validate_toolchain_manifest(manifest: dict[str, Any]) -> None:
 
 
 def validate_worker_contract(worker_config: dict[str, Any], customer: dict[str, Any], tenant: str) -> None:
-    if worker_config.get("d1Count") != 1 or worker_config.get("r2Count") != 1:
-        raise RuntimeError("Worker must have exactly one canonical tenant D1 and R2 binding")
+    if worker_config.get("d1Count") != 1 or worker_config.get("r2Count") != 2:
+        raise RuntimeError("Worker must have exactly one tenant D1, public-media R2, and private-email R2 binding")
     if worker_config.get("name") != customer["worker"] or worker_config.get("tenant") != tenant:
         raise RuntimeError("Worker name or tenant binding does not match the registry")
     if worker_config.get("admin") != customer["payloadAdmin"]:
@@ -123,6 +151,21 @@ def validate_worker_contract(worker_config: dict[str, Any], customer: dict[str, 
             or worker_config.get("d1DatabaseName") != customer["d1DatabaseName"]
             or worker_config.get("r2BucketName") != customer["r2BucketName"]):
         raise RuntimeError("Worker migration chain or tenant data-resource identity does not match the registry")
+    if worker_config.get("privateEmailR2BucketName") != customer["privateEmailR2BucketName"]:
+        raise RuntimeError("Worker private email storage does not match the registered tenant resource")
+    if (worker_config.get("messagesQueueName") != customer["messagesQueueName"]
+            or worker_config.get("messagesDlqName") != customer["messagesDlqName"]):
+        raise RuntimeError("Worker message Queues do not match the registered tenant resources")
+    if not worker_config.get("messagesQueueConsumer") or not worker_config.get("messagesDlqConsumer"):
+        raise RuntimeError("Worker must consume both the message Queue and its dead-letter Queue")
+    if worker_config.get("main") != "worker.ts" or not worker_config.get("sendEmailBinding"):
+        raise RuntimeError("Worker must upload the canonical custom entrypoint and Cloudflare email binding")
+    site_key = str(worker_config.get("turnstileSiteKey") or "").strip()
+    if not site_key or site_key.startswith("__HELLOADA_") or not worker_config.get("rateLimitBinding"):
+        raise RuntimeError("Worker form protection is not provisioned with Turnstile and rate limiting")
+    required_handlers = {"fetch", "email", "queue", "scheduled"}
+    if not required_handlers.issubset(set(worker_config.get("handlers") or [])):
+        raise RuntimeError("Worker custom entrypoint is missing a required event handler")
 
 
 def d1_query(customer: dict[str, Any], sql: str, env: dict[str, str]) -> list[dict[str, Any]]:
@@ -389,7 +432,7 @@ def verification_receipt(directory: Path, tenant: str, sha: str, release_id: str
         raise ValueError("only a promoted release may resume read-only verification")
     if not receipt.get("uploadedVersion") or not receipt.get("deployment"):
         raise ValueError("release has no recorded immutable production promotion")
-    archive = directory / "open-next.tar.gz"
+    archive = directory / "worker-artifact.tar.gz"
     if hashlib.sha256(archive.read_bytes()).hexdigest() != receipt.get("archiveSha256"):
         raise ValueError("recorded release artifact is missing or changed")
     receipt.setdefault("verificationHistory", []).append({key: receipt.get(key) for key in
@@ -399,10 +442,17 @@ def verification_receipt(directory: Path, tenant: str, sha: str, release_id: str
     return receipt
 
 
-def inspect_artifact(checkout: Path, customer: dict[str, Any], sha: str) -> dict[str, str]:
+def inspect_artifact(checkout: Path, customer: dict[str, Any], sha: str,
+                     custom_worker_bundle: Path | None = None) -> dict[str, str]:
     artifact = checkout / ".open-next"
     if not (artifact / "worker.js").is_file():
         raise RuntimeError("OpenNext produced no Worker")
+    worker_source = (checkout / "worker.ts").read_text(encoding="utf-8")
+    wrangler_source = (checkout / "wrangler.jsonc").read_text(encoding="utf-8")
+    if not re.search(r'"main"\s*:\s*"worker\.ts"', wrangler_source):
+        raise RuntimeError("Wrangler is not configured to upload the canonical custom Worker entrypoint")
+    if not {"fetch", "email", "queue", "scheduled"}.issubset(worker_handlers(worker_source)):
+        raise RuntimeError("custom Worker artifact is missing an HTTP, email, Queue or scheduled handler")
     schema_configs = [path for path in (checkout / "payload.config.ts", checkout / "src/payload.config.ts") if path.is_file()]
     if len(schema_configs) != 1:
         raise RuntimeError("site must have exactly one canonical Payload configuration")
@@ -458,7 +508,7 @@ def inspect_artifact(checkout: Path, customer: dict[str, Any], sha: str) -> dict
     }
     if any(marker.get(key) != value for key, value in expected_marker.items()):
         raise RuntimeError("built release marker does not match the pinned source")
-    return file_hashes(artifact)
+    return worker_artifact_hashes(checkout, custom_worker_bundle)
 
 
 def main() -> int:
@@ -579,7 +629,8 @@ def main() -> int:
                       "const r=ts.parseConfigFileTextToJson('wrangler.jsonc',fs.readFileSync('wrangler.jsonc','utf8'));"
                       "if(r.error)throw Error('Invalid Wrangler JSONC');const c=r.config;"
                       "process.stdout.write(JSON.stringify({name:c.name,tenant:c.vars?.HELLOADA_TENANT_ID,"
-                "admin:c.vars?.HELLOADA_PAYLOAD_ADMIN_VERSION,core:c.vars?.HELLOADA_PAYLOAD_CORE_VERSION,"
+                      "main:c.main,"
+                      "admin:c.vars?.HELLOADA_PAYLOAD_ADMIN_VERSION,core:c.vars?.HELLOADA_PAYLOAD_CORE_VERSION,"
                       "contract:c.vars?.HELLOADA_CONTENT_CONTRACT_VERSION,"
                       "schemaRevision:Number(c.vars?.HELLOADA_PAYLOAD_SCHEMA_REVISION||0),"
                       "schemaIdentity:c.vars?.HELLOADA_SCHEMA_IDENTITY,"
@@ -588,8 +639,18 @@ def main() -> int:
                       "d1DatabaseId:c.d1_databases?.[0]?.database_id,"
                       "d1DatabaseName:c.d1_databases?.[0]?.database_name,"
                       "r2Count:Array.isArray(c.r2_buckets)?c.r2_buckets.length:0,"
-                      "r2BucketName:c.r2_buckets?.[0]?.bucket_name}));"], checkout, base)
+                      "r2BucketName:c.r2_buckets?.find(x=>x.binding==='R2')?.bucket_name,"
+                      "privateEmailR2BucketName:c.r2_buckets?.find(x=>x.binding==='PRIVATE_EMAIL')?.bucket_name,"
+                      "messagesQueueName:c.queues?.producers?.find(x=>x.binding==='HELLOADA_MESSAGES_QUEUE')?.queue,"
+                      "messagesDlqName:c.queues?.consumers?.find(x=>x.dead_letter_queue)?.dead_letter_queue,"
+                      "messagesQueueConsumer:Array.isArray(c.queues?.consumers)&&c.queues.consumers.some(x=>x.queue===c.queues.producers?.find(p=>p.binding==='HELLOADA_MESSAGES_QUEUE')?.queue),"
+                      "messagesDlqConsumer:Array.isArray(c.queues?.consumers)&&c.queues.consumers.some(x=>x.queue===c.queues.consumers?.find(p=>p.dead_letter_queue)?.dead_letter_queue),"
+                      "turnstileSiteKey:c.vars?.HELLOADA_TURNSTILE_SITE_KEY,"
+                      "rateLimitBinding:Array.isArray(c.ratelimits)&&c.ratelimits.some(x=>x.name==='HELLOADA_FORM_RATE_LIMIT'),"
+                      "sendEmailBinding:Array.isArray(c.send_email)&&c.send_email.some(x=>x.name==='EMAIL')}));"], checkout, base)
         wrangler = json.loads(parsed)
+        worker_entry = (checkout / "worker.ts").read_text(encoding="utf-8")
+        wrangler["handlers"] = worker_handlers(worker_entry)
         validate_worker_contract(wrangler, customer, args.tenant)
         run(["npm", "run", "typecheck"], checkout, base)
         if run(["git", "status", "--porcelain"], checkout, base).strip():
@@ -604,13 +665,18 @@ def main() -> int:
         atomic_json(checkout / "public/helloada-release.json", marker)
         build_env = {**base, "PAYLOAD_LOCAL_BUILD": "1", "HELLOADA_RELEASE_SHA": args.ref}
         run([str(checkout / "node_modules/.bin/opennextjs-cloudflare"), "build"], checkout, build_env)
-        receipt["artifactHashes"] = inspect_artifact(checkout, customer, args.ref)
+        custom_worker_bundle = directory / "custom-worker-dry-run"
+        run([str(checkout / "node_modules/.bin/wrangler"), "deploy", "--dry-run",
+             "--outdir", str(custom_worker_bundle)], checkout, base)
+        receipt["artifactHashes"] = inspect_artifact(checkout, customer, args.ref, custom_worker_bundle)
         changed = run(["git", "diff", "--name-only"], checkout, base).strip()
         if changed:
             raise RuntimeError("build changed tracked source: " + changed)
         stage("artifact-verified")
-        run(["tar", "-czf", str(directory / "open-next.tar.gz"), "-C", str(checkout), ".open-next"], directory, base)
-        receipt["archiveSha256"] = hashlib.sha256((directory / "open-next.tar.gz").read_bytes()).hexdigest()
+        run(["tar", "-czf", str(directory / "worker-artifact.tar.gz"), "-C", str(checkout),
+             ".open-next", "worker.ts", "wrangler.jsonc", "package.json", "package-lock.json",
+             "-C", str(directory), "custom-worker-dry-run"], directory, base)
+        receipt["archiveSha256"] = hashlib.sha256((directory / "worker-artifact.tar.gz").read_bytes()).hexdigest()
 
         stage("upload")
         before_deploy = cloudflare_deployment(customer, deploy_env)
@@ -620,8 +686,8 @@ def main() -> int:
         receipt["uploadedVersion"] = upload_worker_version(
             checkout, args.ref, args.release_id, directory, runtime_secrets, deploy_env,
         )
-        if file_hashes(checkout / ".open-next") != receipt["artifactHashes"]:
-            raise RuntimeError("upload changed the inspected artifact")
+        if worker_artifact_hashes(checkout, custom_worker_bundle) != receipt["artifactHashes"]:
+            raise RuntimeError("upload changed an inspected custom Worker release input")
 
         # Keep the previous Worker serving while the exact candidate's committed
         # migration is applied and checked. Only an explicitly queued migration

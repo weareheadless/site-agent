@@ -14,6 +14,7 @@ import { helloAdaConnection, helloAdaRuntimeStatus } from '@weareheadless/helloa
 import { helloAdaSite } from '@/helloada.config'
 import { articleIndexPath, pathForDocument } from '@/lib/content-routes'
 import { hashJson, stableJson, withoutPayloadMetadata } from '@/lib/payload-hash'
+import { internalMessagesRoute, ownerMessagesRoute } from '@/lib/messages-api'
 import {
   asObject as growthObject,
   candidateRow,
@@ -365,9 +366,12 @@ const siteSnapshot = async (request: Request, payload: Awaited<ReturnType<typeof
 }
 
 export async function GET(request: Request, { params }: RouteProps) {
+  const path = `/${(await params).path?.join('/') || ''}`.replace(/\/$/, '') || '/'
+  if (path.startsWith('/internal/messages/')) return internalMessagesRoute(request, path)
   const auth = await authenticateHelloAdaRequest(request)
   if (!auth) return errorResponse('authentication_required', 401)
-  const path = `/${(await params).path?.join('/') || ''}`.replace(/\/$/, '') || '/'
+  if (path === '/messages' || path.startsWith('/messages/')) return ownerMessagesRoute(request, path, auth)
+  if (path === '/contacts' || path.startsWith('/contacts/')) return ownerMessagesRoute(request, path, auth)
   if (path === '/connection') {
     const upstream = await fetchHelloAdaUpstream('/api/helloada/connection', request)
     const result = helloAdaConnection(helloAdaSite.tenantId, upstream ? { status: upstream.status, body: await upstream.json().catch(() => ({})) } : undefined)
@@ -451,9 +455,11 @@ export async function GET(request: Request, { params }: RouteProps) {
 }
 
 export async function POST(request: Request, { params }: RouteProps) {
+  const path = `/${(await params).path?.join('/') || ''}`.replace(/\/$/, '') || '/'
+  if (path.startsWith('/internal/messages/')) return internalMessagesRoute(request, path)
   const auth = await authenticateHelloAdaRequest(request)
   if (!auth) return errorResponse('authentication_required', 401)
-  const path = `/${(await params).path?.join('/') || ''}`.replace(/\/$/, '') || '/'
+  if (path.startsWith('/messages/') || path.startsWith('/contacts/')) return ownerMessagesRoute(request, path, auth)
   if (path === '/language') {
     const body = await request.json().catch(() => ({})) as { language?: string }
     const language = ['en', 'es', 'fr'].includes(String(body.language || '')) ? String(body.language) : 'en'

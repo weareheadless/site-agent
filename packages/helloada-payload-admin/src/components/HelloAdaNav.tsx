@@ -17,13 +17,15 @@ import { useHelloAdaSite } from '../config/provider'
 const collectionLabels: Record<string, string> = {
   pages: 'collection.pages', posts: 'collection.posts', products: 'collection.products',
   media: 'collection.media', postCategories: 'collection.postCategories',
-  productCategories: 'collection.productCategories', users: 'collection.users',
+  productCategories: 'collection.productCategories', contactForms: 'owner.messagesForms', users: 'collection.users',
 }
 const globalLabels: Record<string, string> = { siteSettings: 'global.siteSettings', navigation: 'global.navigation' }
 const titleize = (slug: string) => slug.replace(/([a-z])([A-Z])/g, '$1 $2').replace(/[-_]/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase())
 const languageLabel = (code: string, locale: string) => {
   try { return new Intl.DisplayNames([locale, 'en'], { type: 'language' }).of(code) || code } catch { return code }
 }
+const isHidden = (item: { admin?: unknown }) =>
+  (item.admin as { hidden?: boolean } | undefined)?.hidden === true
 
 export function HelloAdaNav({ user }: { user?: TypedUser | null }) {
   const pathname = usePathname()
@@ -38,13 +40,14 @@ export function HelloAdaNav({ user }: { user?: TypedUser | null }) {
   const drawerRef = useRef<HTMLDialogElement>(null)
   const connection = useAdaConnection()
   const languages = useMemo(() => [...HELLOADA_LANGUAGES].sort((a, b) => languageLabel(a, language).localeCompare(languageLabel(b, language))), [language])
-  const collections = config.collections.map((item) => ({ slug: item.slug, label: t(collectionLabels[item.slug] || titleize(item.slug)), href: `/admin/collections/${item.slug}` }))
-  const globals = config.globals.map((item) => ({ slug: item.slug, label: t(globalLabels[item.slug] || titleize(item.slug)), href: `/admin/globals/${item.slug}` }))
+  const collections = config.collections.filter((item) => !isHidden(item)).map((item) => ({ slug: item.slug, label: t(collectionLabels[item.slug] || titleize(item.slug)), href: `/admin/collections/${item.slug}` }))
+  const globals = config.globals.filter((item) => !isHidden(item)).map((item) => ({ slug: item.slug, label: t(globalLabels[item.slug] || titleize(item.slug)), href: `/admin/globals/${item.slug}` }))
   const primary = collections.filter((item) => site.content.primaryCollections.includes(item.slug))
   const advanced = collections.filter((item) => !site.content.primaryCollections.includes(item.slug))
   const isHistory = pathname === '/admin' && searchParams.get('view') === 'history'
   const isGrowth = pathname === '/admin' && searchParams.get('view') === 'growth'
   const isGallery = pathname === '/admin' && searchParams.get('view') === 'gallery'
+  const isMessages = pathname === '/admin' && searchParams.get('view') === 'messages'
   const isActive = (href: string) => pathname.startsWith(href)
   const managing = pathname.startsWith('/admin/collections') || pathname.startsWith('/admin/globals') || pathname.startsWith('/admin/account')
 
@@ -77,8 +80,9 @@ export function HelloAdaNav({ user }: { user?: TypedUser | null }) {
       <span className="helloada-nav-divider" aria-hidden="true" />
       <span className="helloada-nav-site" title={site.siteName}>{site.siteName}</span>
       <div className="helloada-payload-links">
-        <Link className={pathname === '/admin' && !isHistory && !isGrowth && !isGallery ? 'is-active' : undefined} href="/admin" aria-current={pathname === '/admin' && !isHistory && !isGrowth && !isGallery ? 'page' : undefined}>{t('owner.workspace')}</Link>
+        <Link className={pathname === '/admin' && !isHistory && !isGrowth && !isGallery && !isMessages ? 'is-active' : undefined} href="/admin" aria-current={pathname === '/admin' && !isHistory && !isGrowth && !isGallery && !isMessages ? 'page' : undefined}>{t('owner.workspace')}</Link>
         <Link className={isGrowth ? 'is-active' : undefined} href="/admin?view=growth" aria-current={isGrowth ? 'page' : undefined}>{t('growth.title')}</Link>
+        <Link className={isMessages ? 'is-active' : undefined} href="/admin?view=messages" aria-current={isMessages ? 'page' : undefined}>{t('owner.messages')}</Link>
         <Link className={isGallery ? 'is-active' : undefined} href="/admin?view=gallery" aria-current={isGallery ? 'page' : undefined}>{t('owner.gallery')}</Link>
         <Link className={isHistory ? 'is-active' : undefined} href="/admin?view=history" aria-current={isHistory ? 'page' : undefined}>{t('owner.activity')}</Link>
       </div>

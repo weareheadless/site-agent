@@ -107,6 +107,15 @@ Save and publish exact Payload document revisions separately. The Growth write
 receipt/guard is not a substitute for proving atomic compare-and-swap against
 every possible concurrent Payload writer.
 
+For website forms, Messages, Contacts and domain email, follow
+`docs/helloada-messages-contacts-production-implementation-plan.md`. These are
+one shared Payload capability and one tenant Worker, not a customer-specific
+mail app. Preserve explicit owner approval before sending, private message
+storage, tenant-scoped access, durable idempotent processing and the existing
+VPS release/migration contract. Do not report production readiness until the
+plan's OceanicVibes and Atelier live evidence, provisioning, licensing and
+authenticated-browser gates are complete.
+
 ### No parallel architecture or silent recovery path
 
 - Every managed or publishable new site starts from

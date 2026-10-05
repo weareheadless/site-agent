@@ -12,7 +12,7 @@ const sourceTree = (relativePath) => {
     const fullPath = path.join(directory, entry.name)
     return entry.isDirectory() ? collect(fullPath) : /\.(?:ts|tsx|js|mjs)$/.test(entry.name) ? readFileSync(fullPath, 'utf8') : []
   })
-  return collect(root.pathname).join('\n')
+  return collect(fileURLToPath(root)).join('\n')
 }
 const manifest = JSON.parse(read('template-manifest.json'))
 const contract = JSON.parse(read('helloada-content-contract.json'))

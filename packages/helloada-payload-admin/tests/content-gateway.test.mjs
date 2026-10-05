@@ -18,6 +18,8 @@ test('the default content gateway bounds requested lists and requires service au
     payload: { getPayload: async () => payload },
     '@payload-config': { default: {} },
     '@/lib/service-auth': { serviceAuthorized: () => authorized },
+    '@/helloada.config': { helloAdaSite: { locales: ['en'] } },
+    '@/lib/payload-locale': { resolvePayloadLocale: () => undefined },
   }
   const sandbox = { exports: {}, URL, require: name => modules[name] }
   vm.runInNewContext(compiled, sandbox)
@@ -48,6 +50,8 @@ test('draft updates require the exact current Payload revision', async () => {
     payload: { getPayload: async () => payload },
     '@payload-config': { default: {} },
     '@/lib/service-auth': { serviceAuthorized: () => true },
+    '@/helloada.config': { helloAdaSite: { locales: ['en'] } },
+    '@/lib/payload-locale': { resolvePayloadLocale: () => undefined },
     '@/lib/payload-hash': {
       hashJson: async () => revision,
       withoutPayloadMetadata: ({ id, title }) => ({ id, title }),

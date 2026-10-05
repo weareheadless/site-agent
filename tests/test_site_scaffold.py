@@ -21,7 +21,7 @@ def test_initialize_payload_site_creates_canonical_helloada_template(tmp_path):
     assert "__SITE_AGENT_VERSION__" not in wrangler
 
     manifest = (root / "template-manifest.json").read_text()
-    assert '"contentContract": "helloada-content-v2"' in manifest
+    assert '"contentContract": "helloada-content-v3"' in manifest
     assert "createHelloAdaSchema" in (root / "payload.config.ts").read_text()
     assert not (root / "src/collections/Posts.ts").exists()
     assert not (root / "src/collections/Pages.ts").exists()

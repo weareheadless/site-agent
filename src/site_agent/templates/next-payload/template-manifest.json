@@ -1,10 +1,10 @@
 {
-  "templateSchema": 4,
+  "templateSchema": 5,
   "workspaceApi": "v1",
-  "payloadAdmin": "0.8.7",
-  "payloadCore": "0.2.0",
-  "schemaRevision": 2,
-  "contentContract": "helloada-content-v2",
+  "payloadAdmin": "0.9.0",
+  "payloadCore": "0.3.0",
+  "schemaRevision": 3,
+  "contentContract": "helloada-content-v3",
   "defaultLocale": "en",
   "locales": [
     "en"
@@ -14,7 +14,7 @@
     "node": ">=20.9.0",
     "payload": ">=3.88.0 <4"
   },
-  "schemaIdentity": "88efb2c6d810331060abdd4b85f4e19ee6b4ed913c91a8d363e8bfd996b02490",
+  "schemaIdentity": "a639f89df844075bcd230729b7ca603fdacafeffcdee0816f3b3e61df6394679",
   "migrations": [
     {
       "name": "20261004_021536_helloada_initial",
@@ -25,8 +25,13 @@
       "name": "20261004_221500_growth_operations",
       "fileSha256": "8829370cf9cbadf2e883a5fba3050396dd6558cabf951f055fe2e79c64a3ca0d",
       "snapshotSha256": "f4eeb2fddcc81087f80ec1e78fce273c511bdedc36ffd1a6da51e9865a993f85"
+    },
+    {
+      "name": "20261004_232326_helloada_messages_contacts",
+      "fileSha256": "9fb9b5506abae73b04c67485f10348ea763fe9e2971e018af27fcbdf14655a43",
+      "snapshotSha256": "b367c35243775ab6751d48000dc11877a3e6b8e941ec7178d0bb2e5b8e805b7b"
     }
   ],
-  "migrationHead": "3c9685e3d903ac5e3f63bbc9355cfe6c3381ffbd0afdfd34180c4fbbdc94e942",
-  "migrationIndexSha256": "6e1a3e3aff4352bfa738caa2cb35d76dfe49422b1cd2c1a8ddd615ba05979e0b"
+  "migrationHead": "f87debcf7d1638fd9d92a8afe5ba5847d4eccb8775fdaa1e380591a26cabd9b4",
+  "migrationIndexSha256": "61208d3de0b9d69f8d6ed0774faa2f57365249ab0aa6cdbc6b65b472e6d35fc4"
 }

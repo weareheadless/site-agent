@@ -2,7 +2,9 @@
 
 Date: 2026-10-04
 
-Status: production implementation and rollout specification, not implemented or deployed.
+Status: implementation is in progress on an isolated feature branch; required
+implementation, provisioning and live evidence remain incomplete. Nothing has
+been deployed.
 
 Audience: the coding AI implementing the shared `weareheadless/site-agent` platform.
 

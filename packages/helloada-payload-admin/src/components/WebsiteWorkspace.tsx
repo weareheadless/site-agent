@@ -8,6 +8,7 @@ import { HelloAdaChatMessage } from './HelloAdaChatMessage'
 import { HelloAdaHistory } from './HelloAdaHistory'
 import { HelloAdaGrowth } from './HelloAdaGrowth'
 import { HelloAdaGallery } from './HelloAdaGallery'
+import { HelloAdaMessages } from './HelloAdaMessages'
 import { EditableRichTextEditor } from './EditableRichTextEditor'
 import { fetchHelloAda } from '../api/fetchHelloAda'
 import { useHelloAdaTranslations } from '../api/useHelloAdaTranslations'
@@ -666,6 +667,7 @@ export function WebsiteWorkspace() {
   if (searchParams.get('view') === 'history') return <HelloAdaHistory />
   if (searchParams.get('view') === 'growth') return <HelloAdaGrowth />
   if (searchParams.get('view') === 'gallery') return <HelloAdaGallery />
+  if (searchParams.get('view') === 'messages') return <HelloAdaMessages />
   return <ReviewWorkspace />
 }
 

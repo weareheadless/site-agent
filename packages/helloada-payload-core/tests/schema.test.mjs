@@ -7,6 +7,7 @@ import {
   createHelloAdaContentContract,
   createHelloAdaSchema,
   validateHelloAdaLink,
+  validateHelloAdaFormFields,
   validateHelloAdaNavigation,
   validateHelloAdaPageSections,
 } from '../src/schema/index.ts'
@@ -16,8 +17,8 @@ test('all standard tenant schemas come from one contract and share the native mu
   const schema = createHelloAdaSchema(async (...args) => guarded.push(args))
   const collections = Object.fromEntries(schema.collections.map((item) => [item.slug, item]))
   const globals = Object.fromEntries(schema.globals.map((item) => [item.slug, item]))
-  assert.deepEqual(Object.keys(collections), ['users', 'pages', 'posts', 'postCategories', 'products', 'productCategories', 'media'])
-  assert.deepEqual(Object.keys(globals), ['siteSettings', 'navigation'])
+  assert.deepEqual(Object.keys(collections), ['users', 'pages', 'posts', 'postCategories', 'products', 'productCategories', 'media', 'contactForms', 'contacts', 'conversations', 'messages', 'messageOperations'])
+  assert.deepEqual(Object.keys(globals), ['siteSettings', 'navigation', 'messageMailbox'])
   assert.ok(collections.pages.fields.some((field) => field.name === 'sections' && field.type === 'array'))
   assert.ok(collections.posts.fields.some((field) => field.name === 'featuredImage' && field.type === 'upload'))
   assert.ok(collections.posts.fields.some((field) => field.name === 'category' && field.type === 'relationship' && field.relationTo === 'postCategories'))
@@ -33,14 +34,34 @@ test('all standard tenant schemas come from one contract and share the native mu
   assert.equal(typeof collections.media.hooks.beforeValidate[0], 'function')
   const newMedia = await collections.media.hooks.beforeValidate[0]({ data: { alt: 'An image' } })
   assert.match(newMedia.sourceId, /^media:/)
-  assert.deepEqual(HELLOADA_CAPABILITIES.collections, ['pages', 'posts', 'postCategories', 'products', 'productCategories', 'media'])
+  assert.deepEqual(HELLOADA_CAPABILITIES.collections, ['pages', 'posts', 'postCategories', 'products', 'productCategories', 'media', 'contactForms', 'contacts', 'conversations', 'messages', 'messageOperations'])
   assert.ok(globals.navigation.fields.some((field) => field.name === 'footerGroups'))
   assert.ok(globals.siteSettings.fields.some((field) => field.name === 'defaultSeoDescription'))
   assert.ok(globals.siteSettings.fields.some((field) => field.name === 'contactLabel'))
+  assert.ok(collections.pages.fields.some((field) => field.name === 'sections' && field.fields[2].blocks.some((block) => block.slug === 'helloAdaContactForm')))
+  assert.deepEqual(HELLOADA_CAPABILITIES.globals, ['siteSettings', 'navigation', 'messageMailbox'])
+  assert.equal(collections.contactForms.access.create, collections.contactForms.access.update)
+  assert.equal(collections.contacts.access.create({ req: { user: { id: 'owner' } } }), false)
+  assert.equal(collections.messages.access.create({ req: { user: { id: 'owner' } } }), false)
+  assert.equal(collections.messages.access.read({ req: { user: { id: 'owner' } } }), true)
+  assert.equal(collections.conversations.fields.find((field) => field.name === 'state').access.update({ req: { user: { id: 'owner' } } }), true)
+  assert.equal(collections.conversations.fields.find((field) => field.name === 'subject').access.update({ req: { user: { id: 'owner' } } }), false)
   assert.equal(typeof collections.pages.hooks.beforeOperation[0], 'function')
   assert.equal(typeof collections.pages.hooks.beforeValidate[0], 'function')
   assert.equal(typeof globals.navigation.hooks.beforeOperation[0], 'function')
   assert.equal(typeof globals.navigation.hooks.beforeValidate[0], 'function')
+})
+
+test('contact forms require stable field IDs, a required email and enquiry, and compatible mappings', () => {
+  const valid = [
+    { key: 'contact.name', label: 'Your name', type: 'text', mapsTo: 'name' },
+    { key: 'contact.email', label: 'Email', type: 'email', mapsTo: 'email', required: true },
+    { key: 'contact.message', label: 'How can we help?', type: 'textarea', mapsTo: 'message', required: true, maxLength: 4000 },
+  ]
+  assert.equal(validateHelloAdaFormFields(valid), true)
+  assert.match(validateHelloAdaFormFields(valid.map((field) => field.key === 'contact.email' ? { ...field, required: false } : field)), /must require an email/)
+  assert.match(validateHelloAdaFormFields(valid.map((field) => field.key === 'contact.message' ? { ...field, type: 'select' } : field)), /text input/)
+  assert.match(validateHelloAdaFormFields(valid.map((field) => field.key === 'contact.name' ? { ...field, key: '' } : field)), /stable ID/)
 })
 
 test('bootstrap capability manifest is generated from the exact Payload collections, globals and blocks', () => {

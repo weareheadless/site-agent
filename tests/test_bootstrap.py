@@ -138,12 +138,12 @@ def test_bootstrap_configures_generic_seo_provisioning_for_new_sites(tmp_path):
     assert config["seo"]["provisioning"]["auto"] is True
     assert config["seo"]["site_url"] == "https://helloada-demo.workers.dev/"
     assert config["seo"]["gsc_property"] == "https://helloada-demo.workers.dev/"
-    assert config["site"]["payload"]["contract"]["contract"] == "helloada-content-v2"
+    assert config["site"]["payload"]["contract"]["contract"] == "helloada-content-v3"
     assert config["site"]["payload"]["contract"]["schemaIdentity"] == template_manifest["schemaIdentity"]
     assert config["site"]["payload"]["contract"]["locales"] == ["en"]
     wrangler = json.loads((site_dir / "wrangler.jsonc").read_text(encoding="utf-8"))
-    assert wrangler["vars"]["HELLOADA_TEMPLATE_SCHEMA"] == "4"
-    assert wrangler["vars"]["HELLOADA_PAYLOAD_SCHEMA_REVISION"] == "2"
+    assert wrangler["vars"]["HELLOADA_TEMPLATE_SCHEMA"] == "5"
+    assert wrangler["vars"]["HELLOADA_PAYLOAD_SCHEMA_REVISION"] == "3"
     assert wrangler["vars"]["HELLOADA_SCHEMA_IDENTITY"] == template_manifest["schemaIdentity"]
     assert wrangler["vars"]["HELLOADA_PAYLOAD_MIGRATION_HEAD"] == template_manifest["migrationHead"]
 
@@ -168,15 +168,48 @@ def test_bootstrap_configures_one_explicit_tenant_ownership_marker(tmp_path):
     marker = json.loads((site_dir / ".helloada-managed.json").read_text())
     assert marker == {
         "tenantId": "demo",
-        "templateSchema": 4,
-        "payloadAdmin": "0.8.7",
-        "payloadCore": "0.2.0",
-        "contentContract": "helloada-content-v2",
-        "schemaRevision": 2,
+        "templateSchema": 5,
+        "payloadAdmin": "0.9.0",
+        "payloadCore": "0.3.0",
+        "contentContract": "helloada-content-v3",
+        "schemaRevision": 3,
         "schemaIdentity": json.loads((site_dir / "template-manifest.json").read_text())["schemaIdentity"],
         "migrationHead": json.loads((site_dir / "template-manifest.json").read_text())["migrationHead"],
     }
     assert 'tenantId: "demo"' in (site_dir / "src/helloada.config.ts").read_text()
+
+
+def test_bootstrap_pins_message_queues_and_consumes_the_dead_letter_queue(tmp_path):
+    from site_agent.site_scaffold import initialize_managed_site
+
+    site_dir = initialize_managed_site(tmp_path / "site")
+    WebsiteBootstrapService._configure_template(site_dir, "demo", "Demo")
+    template = json.loads((site_dir / "template-manifest.json").read_text())
+    service = WebsiteBootstrapService.__new__(WebsiteBootstrapService)
+    service.config = {"bootstrap": {"resource_prefix": "helloada"}}
+    names = service._names("demo")
+    WebsiteBootstrapService._configure_wranger(
+        site_dir, names, "https://helloada-demo.workers.dev", "https://site-agent.test",
+        {
+            "d1": {"database_id": "d1-id", "name": names["d1"]},
+            "queues": {
+                "messages": {"name": names["messages_queue"]},
+                "dead_letter": {"name": names["messages_dlq"]},
+            },
+            "private_email_r2": {"bucket": names["email_r2"]},
+        },
+        "Demo", "demo", {
+            "coreVersion": template["payloadCore"],
+            "schemaRevision": template["schemaRevision"],
+            "contract": template["contentContract"],
+        },
+    )
+    wrangler = json.loads((site_dir / "wrangler.jsonc").read_text())
+    assert wrangler["vars"]["HELLOADA_MESSAGES_QUEUE_NAME"] == names["messages_queue"]
+    assert wrangler["vars"]["HELLOADA_MESSAGES_DLQ_NAME"] == names["messages_dlq"]
+    assert [consumer["queue"] for consumer in wrangler["queues"]["consumers"]] == [
+        names["messages_queue"], names["messages_dlq"],
+    ]
 
 
 def test_bootstrap_never_replaces_an_existing_site_directory(tmp_path):
