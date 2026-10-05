@@ -98,6 +98,8 @@ evidence, candidate, approval and outcome path; do not introduce silent
 degradation or independent customer-specific workflows.
 
 For customer schema migrations, also follow
+`docs/workspace-preview-repair.md` for the configured preview mount and its
+distinction from exact unpublished-revision verification;
 `docs/customer-presentation-migration-repair.md`: preserve the approved frontend
 composition and motion; a canonical schema is not a generic presentation.
 

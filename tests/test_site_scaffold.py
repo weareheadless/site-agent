@@ -33,6 +33,11 @@ def test_initialize_payload_site_creates_canonical_helloada_template(tmp_path):
     assert "pathForDocument(collection, slug)" in preview
     assert (root / "src/app/(frontend)/[[...slug]]/page.tsx").exists()
     assert (root / "src/lib/content-routes.ts").exists()
+    middleware = (root / "src/middleware.ts").read_text()
+    assert "helloAdaSite.routes.preview" in middleware
+    assert "NextResponse.rewrite(destination)" in middleware
+    assert (root / "src/lib/workspace-preview-path.ts").exists()
+    assert (root / "tests/workspace-preview.test.mjs").exists()
     assert not (root / "src/app/(frontend)/articles/[slug]/page.tsx").exists()
     assert not (root / "src/app/(frontend)/articles.html/page.tsx").exists()
     assert not (root / "src/app/(frontend)/post/[slug]/page.tsx").exists()
