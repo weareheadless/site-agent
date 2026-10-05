@@ -2,16 +2,16 @@
   "schema": 1,
   "releases": {
     "oceanicvibes": {
-      "id": "20261005-oceanic-blog-payload-2",
-      "sha": "816f1c0c8cf5ef6eff6a02820524326068aa46ad",
+      "id": "20261005-oceanic-blog-payload-3",
+      "sha": "8bdc7f6e897ca8b6698a9776bf823f12b3a3c65d",
       "schemaMigration": {
         "fromLedgerIdentity": "e12073895b2d85632dfb67a40916da55b3a9308408202272d5bc18aefe6d11fd",
         "targetMigrationHead": "ec48d7987a3bac4035175f3202d283fc6ac4604901b2404ce87bc3ac71bc22fb"
       }
     },
     "atelier-harmonie": {
-      "id": "20261005-atelier-blog-payload-2",
-      "sha": "ea47ead06140ff0a66c1162b30ce103c5cc17909",
+      "id": "20261005-atelier-blog-payload-3",
+      "sha": "b029e0c72c5cdb7eb50d264907dd61f140744bd3",
       "schemaMigration": {
         "fromLedgerIdentity": "b8f2a081a0b93d3404b1af2bc631e75fb92638ef28f9659bae2494c7cd22e4bc",
         "targetMigrationHead": "0a42fa43726abe28274ab5de3721bbace9f24b1fd2df6bc18b94fc9ce30f83c9"
