@@ -25,7 +25,7 @@
       "contentContract": "helloada-content-v2",
       "schemaRevision": 2,
       "schemaIdentity": "88efb2c6d810331060abdd4b85f4e19ee6b4ed913c91a8d363e8bfd996b02490",
-      "migrationHead": "7d730a19e33bbd03ae1cb592384059a16fc83053a187374dea4b8fad47348434"
+      "migrationHead": "ee6d99b1865945e90abf0aef3b1f4098872dc07f87442ac1c2db318b72bd953b"
     },
     "atelier-harmonie": {
       "repository": "https://github.com/weareheadless/atelier-harmonie-headless.git",
@@ -40,7 +40,7 @@
       "contentContract": "helloada-content-v2",
       "schemaRevision": 2,
       "schemaIdentity": "88efb2c6d810331060abdd4b85f4e19ee6b4ed913c91a8d363e8bfd996b02490",
-      "migrationHead": "33bb84aacf60973ed4cdf7637ba454096929941efb6ff6a9c3595b28a3672a8c"
+      "migrationHead": "42f3252c0d3097bea7c821e388bc880f019882d779bf7ba62af162d078f27765"
     }
   }
 }
