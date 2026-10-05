@@ -2,12 +2,12 @@
   "schema": 1,
   "releases": {
     "oceanicvibes": {
-      "id": "20261005-oceanic-admin-context-10",
-      "sha": "d8a1ef9cbb82d2ca82918593a4363eac47f58e48"
+      "id": "20261005-oceanic-admin-context-11",
+      "sha": "6b674ee975c76b90e6daa9885a39b4eafe5b299f"
     },
     "atelier-harmonie": {
-      "id": "20261005-atelier-admin-context-5",
-      "sha": "a3f1d64d8582ff5c5c638c2d34d4c87c6eb3a683"
+      "id": "20261005-atelier-admin-context-6",
+      "sha": "84248a9ec8dcaf27df5fa30bfbfbaea93c5cb2af"
     }
   }
 }

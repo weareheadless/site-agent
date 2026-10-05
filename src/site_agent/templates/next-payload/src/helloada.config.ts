@@ -1,4 +1,4 @@
-import { defineHelloAdaSite, setHelloAdaSite } from '@weareheadless/helloada-payload-admin'
+import { defineHelloAdaSite, setHelloAdaSite } from '@weareheadless/helloada-payload-admin/config'
 
 export const helloAdaPublicContentRoutes = {
   postsIndex: '/blog',

@@ -12,6 +12,8 @@ then seeds npm's content-addressed cache. Cross-host redirects strip the token.
 The clean `npm ci --prefer-offline` still installs the committed lockfile;
 there is no alternate artifact, local-source replacement, or silent recovery.
 Missing credentials, assets, or integrity matches stop the deployment.
+Deployment subprocesses and release-asset staging use the release's own
+disk-backed `temporary` directory, not the host's shared memory-backed `/tmp`.
 
 Keep new-site scaffold pins, registry pins, tenant manifests and lockfiles in
 sync. A published package is not a deployed tenant. Use the unique-ID/full-SHA

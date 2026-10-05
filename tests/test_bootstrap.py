@@ -169,7 +169,7 @@ def test_bootstrap_configures_one_explicit_tenant_ownership_marker(tmp_path):
     assert marker == {
         "tenantId": "demo",
         "templateSchema": 4,
-        "payloadAdmin": "0.8.8",
+        "payloadAdmin": "0.8.10",
         "payloadCore": "0.2.0",
         "contentContract": "helloada-content-v2",
         "schemaRevision": 2,

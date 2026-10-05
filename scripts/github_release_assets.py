@@ -47,7 +47,7 @@ def prepare_release_dependencies(checkout, token, npm, environment, run):
     package = json.loads((checkout / 'package.json').read_text())
     lock = json.loads((checkout / 'package-lock.json').read_text())
     evidence = []
-    with tempfile.TemporaryDirectory(prefix='helloada-release-assets-') as temporary:
+    with tempfile.TemporaryDirectory(prefix='helloada-release-assets-', dir=environment.get('TMPDIR')) as temporary:
         for name in ('@weareheadless/helloada-payload-admin', '@weareheadless/helloada-payload-core'):
             url = package['dependencies'][name]
             match = ASSET.fullmatch(url)

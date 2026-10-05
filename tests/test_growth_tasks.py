@@ -4,6 +4,18 @@ from site_agent.core.memory import Memory
 from site_agent.application.approvals import ApprovalService
 from site_agent.application.actions import OwnerActionService
 from site_agent.core.contracts import Artifact, ArtifactKind, EffectClass
+from datetime import datetime, timezone
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def fixed_schedule_clock(monkeypatch):
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            instant = datetime(2026, 10, 5, 12, 0, tzinfo=timezone.utc)
+            return instant.astimezone(tz) if tz else instant.replace(tzinfo=None)
+    monkeypatch.setattr('site_agent.application.growth_tasks.datetime', FixedDateTime)
 
 
 def test_linked_improvement_is_one_task_not_three_cards(tmp_path):

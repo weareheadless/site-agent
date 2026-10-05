@@ -577,6 +577,9 @@ def main() -> int:
         base = {k: os.environ[k] for k in ("HOME", "USER", "LANG", "TZ", "TMPDIR") if k in os.environ}
         base.update({"PATH": manifest["npmBin"] + ":" + manifest["nodeBin"] + ":/usr/local/bin:/usr/bin:/bin", "CI": "1",
                      "npm_config_cache": str(Path(manifest["releaseRoot"]) / "npm-cache")})
+        temporary_root = directory / "temporary"
+        temporary_root.mkdir(mode=0o700, exist_ok=True)
+        base["TMPDIR"] = str(temporary_root)
         deploy_env = credential_environment({"credentials": {"cloudflare": cloudflare}}, base)
         if not deploy_env.get("CLOUDFLARE_API_TOKEN") or not deploy_env.get("CLOUDFLARE_ACCOUNT_ID"):
             raise RuntimeError("declared Cloudflare profile is incomplete")
