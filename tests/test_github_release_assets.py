@@ -25,3 +25,19 @@ def test_signed_download_does_not_receive_api_credential():
     assert redirected.get_header('Authorization') is None
     with pytest.raises(RuntimeError, match='redirect host'):
         module.ReleaseRedirect().redirect_request(request, None, 302, 'Found', {}, 'https://other.test/asset')
+
+
+def test_default_worker_and_manifest_use_the_released_shared_versions():
+    import json
+    import re
+    root = Path(__file__).parents[1]
+    template = root / 'src/site_agent/templates/next-payload'
+    manifest = json.loads((template / 'template-manifest.json').read_text())
+    worker = (template / 'wrangler.jsonc').read_text()
+    for package, field, variable in (
+        ('helloada-payload-admin', 'payloadAdmin', 'HELLOADA_PAYLOAD_ADMIN_VERSION'),
+        ('helloada-payload-core', 'payloadCore', 'HELLOADA_PAYLOAD_CORE_VERSION'),
+    ):
+        version = json.loads((root / 'packages' / package / 'package.json').read_text())['version']
+        assert manifest[field] == version
+        assert re.search('"' + variable + '":\\s*"' + re.escape(version) + '"', worker)
