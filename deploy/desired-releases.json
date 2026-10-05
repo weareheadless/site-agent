@@ -10,12 +10,8 @@
       }
     },
     "atelier-harmonie": {
-      "id": "20261005-atelier-blog-payload-6",
-      "sha": "ecfb59c7852ca4c525c8fa1ead335885e9da3acd",
-      "schemaMigration": {
-        "fromLedgerIdentity": "b8f2a081a0b93d3404b1af2bc631e75fb92638ef28f9659bae2494c7cd22e4bc",
-        "targetMigrationHead": "42f3252c0d3097bea7c821e388bc880f019882d779bf7ba62af162d078f27765"
-      }
+      "id": "20261005-atelier-site-origin-1",
+      "sha": "91cf67ceef73278bf777bec99544730ed83ac583"
     }
   }
 }
