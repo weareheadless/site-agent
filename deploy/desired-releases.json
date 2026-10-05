@@ -2,16 +2,16 @@
   "schema": 1,
   "releases": {
     "oceanicvibes": {
-      "id": "20261005-oceanic-blog-payload-7",
-      "sha": "fc3c76ba509d62cdeb105948fa11fdc3bed6efd3",
+      "id": "20261005-oceanic-navigation-repair-8",
+      "sha": "7932405e4be17e4b53c86dc24ee74b47eaaf58ea",
       "schemaMigration": {
         "fromLedgerIdentity": "deda7954b152602671ea70d438650446f936756abc9b0dd4e99e95410d1ac136",
-        "targetMigrationHead": "8521aee8e832fcb20692af8a2bf19e7a62dd1567b9a1f27205f262338d08017b"
+        "targetMigrationHead": "adcbd6979e8839086cea1b62f92aa32fc8f93518067fb44ea5065181418b6888"
       }
     },
     "atelier-harmonie": {
-      "id": "20261005-atelier-site-origin-1",
-      "sha": "91cf67ceef73278bf777bec99544730ed83ac583"
+      "id": "20261005-atelier-approved-design-2",
+      "sha": "b60a3430c48b32fc1112c1d1459dd50bbd7bd4a2"
     }
   }
 }

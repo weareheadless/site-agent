@@ -25,7 +25,7 @@
       "contentContract": "helloada-content-v2",
       "schemaRevision": 2,
       "schemaIdentity": "88efb2c6d810331060abdd4b85f4e19ee6b4ed913c91a8d363e8bfd996b02490",
-      "migrationHead": "8521aee8e832fcb20692af8a2bf19e7a62dd1567b9a1f27205f262338d08017b"
+      "migrationHead": "adcbd6979e8839086cea1b62f92aa32fc8f93518067fb44ea5065181418b6888"
     },
     "atelier-harmonie": {
       "repository": "https://github.com/weareheadless/atelier-harmonie-headless.git",
