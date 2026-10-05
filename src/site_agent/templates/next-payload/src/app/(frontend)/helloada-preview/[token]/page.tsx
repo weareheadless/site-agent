@@ -11,6 +11,7 @@ import { getSiteSettings, seoFor } from '@/lib/content'
 import { hashJson, withoutPayloadMetadata } from '@/lib/payload-hash'
 import { verifyHelloAdaPreviewToken } from '@/lib/helloada-preview'
 import { helloAdaSite } from '@/helloada.config'
+import { pathForDocument } from '@/lib/content-routes'
 
 export const dynamic = 'force-dynamic'
 export const revalidate = 0
@@ -26,9 +27,7 @@ type PreviewData = {
 const expectedPublicRoute = (collection: PreviewData['collection'], document: Record<string, unknown>) => {
   const slug = String(document.slug || '').trim().replace(/^\/+|\/+$/g, '')
   if (!slug) return undefined
-  if (collection === 'posts') return `/articles/${slug.split('/').map(encodeURIComponent).join('/')}`
-  if (slug === 'home' || slug === 'index') return '/'
-  return `/${slug.split('/').map(encodeURIComponent).join('/')}`
+  return pathForDocument(collection, slug)
 }
 
 const loadPreview = cache(async (token: string): Promise<PreviewData> => {
