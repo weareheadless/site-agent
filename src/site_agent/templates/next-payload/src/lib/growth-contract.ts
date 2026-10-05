@@ -1,4 +1,4 @@
-import { getCloudflareContext } from '@opennextjs/cloudflare'
+import { getPayloadCloudflareContext } from '@/lib/cloudflare-context'
 import { stableJson } from '@/lib/payload-hash'
 
 export { hashJson, stableJson } from '@/lib/payload-hash'
@@ -14,7 +14,7 @@ type D1Statement = {
 type D1Database = { prepare(sql: string): D1Statement }
 
 const database = async () => {
-  const context = await getCloudflareContext({ async: true }) as unknown as { env?: { D1?: D1Database } }
+  const context = await getPayloadCloudflareContext() as unknown as { env?: { D1?: D1Database } }
   const binding = context.env?.D1
   if (!binding) throw new Error('The managed Growth contract requires the tenant D1 binding')
   return binding
