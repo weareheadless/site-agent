@@ -86,7 +86,7 @@ def test_payload_template_has_one_managed_growth_write_and_renderer_boundary():
     assert 'assertNativeWriteAllowed' in contract
     assert 'ensureGrowthTables' not in contract
     assert 'CREATE TABLE' not in contract
-    migration = (TEMPLATE / 'src/migrations/20261004_221500_growth_operations.ts').read_text(encoding='utf-8')
+    migration = (TEMPLATE / 'src/migrations/20261004_090000_growth_operations.ts').read_text(encoding='utf-8')
     assert 'CREATE TABLE' in migration
     assert 'CREATE UNIQUE INDEX' in migration
     assert 'function PublicDocument' in renderer
