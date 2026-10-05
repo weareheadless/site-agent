@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import { usePathname, useSearchParams } from 'next/navigation'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useConfig } from '@payloadcms/ui/providers/Config'
+import { useConfig } from '@payloadcms/ui'
 import type { TypedUser } from 'payload'
 
 import { HELLOADA_LANGUAGES, isHelloAdaLanguage } from '../lib/languages'

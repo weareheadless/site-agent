@@ -8,6 +8,11 @@ const source = readFileSync(new URL('../../../src/site_agent/templates/next-payl
 const compiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText
+const localeSource = readFileSync(new URL('../../../src/site_agent/templates/next-payload/src/lib/payload-locale.ts', import.meta.url), 'utf8')
+const localeSandbox = { exports: {} }
+vm.runInNewContext(ts.transpileModule(localeSource, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText, localeSandbox)
 
 test('the default content gateway bounds requested lists and requires service authentication', async () => {
   let authorized = true
@@ -17,6 +22,8 @@ test('the default content gateway bounds requested lists and requires service au
     'next/server': { NextResponse: { json: (body, options) => ({ body, status: options?.status || 200 }) } },
     payload: { getPayload: async () => payload },
     '@payload-config': { default: {} },
+    '@/helloada.config': { helloAdaSite: { locales: ['en', 'fr'] } },
+    '@/lib/payload-locale': localeSandbox.exports,
     '@/lib/service-auth': { serviceAuthorized: () => authorized },
   }
   const sandbox = { exports: {}, URL, require: name => modules[name] }
@@ -27,6 +34,9 @@ test('the default content gateway bounds requested lists and requires service au
     assert.equal(queries.at(-1).limit, expected)
     assert.equal(response.body.documents.length, 1)
   }
+  assert.equal((await sandbox.exports.GET({ url: 'https://tenant.test/api/workspace/content?locale=xx' })).status, 400)
+  assert.equal((await sandbox.exports.GET({ url: 'https://tenant.test/api/workspace/content?locale=fr' })).status, 200)
+  assert.equal(queries.at(-1).locale, 'fr')
   authorized = false
   const count = queries.length
   assert.equal((await sandbox.exports.GET({ url: 'https://tenant.test/api/workspace/content' })).status, 401)

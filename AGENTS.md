@@ -102,6 +102,7 @@ For customer schema migrations, also follow
 composition and motion; a canonical schema is not a generic presentation.
 
 For shared Payload content and owner review, follow
+`docs/payload-context-repair.md` for the shared client-context boundary and
 `docs/helloada-shared-content-and-owner-review-status.md` and the canonical
 `packages/helloada-payload-core` contract. `site-agent` owns the schema, field
 bindings, admin and default scaffold; customer sites own only tenant data and
