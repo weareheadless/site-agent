@@ -65,6 +65,7 @@ _JOB_DEFAULTS: dict[str, str | int | dict[str, Any]] = {
     "health_check": {"every": "daily", "at": "12:00"},
     "seo_snapshot": {"every": "daily", "at": "11:30"},
     "seo_provisioning": {"every": "6h"},
+    "email_provisioning": {"every": "1h"},
     "seo_insight": {"every": 7, "weekday": "monday", "at": "08:45"},
     "reindex_memory": {"every": "daily", "at": "03:30"},
     "strategist": {"every": 7, "weekday": "sunday", "at": "18:00"},
@@ -489,6 +490,36 @@ def _seo_provisioning(context: dict[str, Any]) -> None:
     context["seo_provisioning_state"] = state
 
 
+def _email_provisioning_enabled(config: Mapping[str, Any]) -> bool:
+    messages = config.get("messages") if isinstance(config.get("messages"), Mapping) else {}
+    email = messages.get("email") if isinstance(messages, Mapping) else {}
+    provisioning = email.get("provisioning") if isinstance(email, Mapping) else {}
+    return bool(
+        isinstance(email, Mapping)
+        and email.get("enabled") is True
+        and isinstance(provisioning, Mapping)
+        and provisioning.get("auto") is True
+    )
+
+
+def _email_provisioning(context: dict[str, Any]) -> dict[str, str]:
+    """Retry tenant email setup after a newly released Worker becomes ready."""
+    from ..application.email_bootstrap import auto_provision_email
+
+    tenant_id = str(context.get("tenant_id") or context["config"].get("instance_name") or "")
+    state, env = auto_provision_email(
+        context["config"],
+        tenant_id=tenant_id,
+        memory=context["memory"],
+        env=context.get("env"),
+    )
+    context["email_provisioning_state"] = state
+    context["env"] = env
+    if state.get("state") == "failed":
+        raise RuntimeError(str(state.get("error") or "email provisioning failed")[:300])
+    return {"status": "pending" if state.get("state") in {"domain_required", "waiting_for_worker_release"} else "ok"}
+
+
 def _strategist(context: dict[str, Any]) -> None:
     from ..brain.strategist import run as strategist_run
 
@@ -543,6 +574,8 @@ def register_growth_jobs(scheduler: Scheduler, config: dict[str, Any], context: 
     maintenance = []
     if _seo_provisioning_enabled(config):
         maintenance.append(("seo_provisioning", {"every": "6h"}, lambda: _seo_provisioning(context)))
+    if _email_provisioning_enabled(config):
+        maintenance.append(("email_provisioning", _JOB_DEFAULTS["email_provisioning"], lambda: _email_provisioning(context)))
     if context.get("llm") is not None:
         maintenance.append(("seo_outcomes", {"every": "daily", "at": "13:00"}, lambda: _with_persona(context, brain_seo_outcomes.run, "seo_outcomes")))
     for name, spec, operation in maintenance:
@@ -585,6 +618,12 @@ def register_jobs(scheduler: Scheduler, config: dict[str, Any], context: dict[st
             "seo_provisioning",
             schedule.get("seo_provisioning", {"every": "6h"}),
             lambda: _seo_provisioning(context),
+        )
+    if _email_provisioning_enabled(config):
+        scheduler.job(
+            "email_provisioning",
+            schedule.get("email_provisioning", _JOB_DEFAULTS["email_provisioning"]),
+            lambda: _email_provisioning(context),
         )
     if context.get("payload_gateway") is not None:
         _mirror_article_drafts(context)

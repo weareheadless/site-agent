@@ -107,6 +107,46 @@ the corrected source and a new release ID, then start the timer again. The next
 poll records unfinished receipts as `interrupted`, including requests superseded
 in the queue. Never edit the canceled source directory or resume its upload.
 
+## Domain email provisioning
+
+Domain email is provisioned by the shared site-agent API from the canonical
+tenant config. New-site bootstrap enables it with the stable `hello` local
+part; changing a tenant's registered custom origin updates the email domain
+and triggers the same reconciliation after the exact Worker health contract is
+ready. A tenant scheduler retries automatically every hour after a new Worker
+release becomes ready; it does not need a dashboard visit or a manual API
+restart. Provider secrets remain in the protected Cloudflare credential profile.
+Unknown existing MX, SPF, DMARC or routing state stops before Cloudflare writes.
+The protected Cloudflare API token must be able to inspect the registered zone
+and manage only the DNS and Email Routing/Sending resources this provisioner
+uses. Keep it restricted to the zones site-agent manages. Missing permissions,
+an unavailable account entitlement, or an unsupported provider response is a
+hard error; the workflow never asks an operator to finish onboarding in the
+dashboard or silently substitutes a manual DNS recipe.
+
+For a one-time existing-tenant setup, run the installed site-agent CLI on the
+VPS using the API's protected host config:
+
+```sh
+site-agent --config /SOCIAL/configs/site-agent-api/config.yaml provision-email --tenant <registered-tenant-id>
+```
+
+That invocation is read-only and resolves the tenant only from the canonical
+`provisioned_root/tenants.json`; it prints the intended mailbox and operations
+without exposing a forwarding destination. After reviewing that exact plan,
+apply it with `--apply`. A legacy Mailgun transition requires the narrow
+`--approve-mailgun-cutover` allowlist (only the known apex Mailgun MX pair and
+standard SPF value); replacing an exact-address Cloudflare forwarding rule
+additionally requires `--allow-forwarding-cutover`. Each apply writes a
+mode-0600 before/after receipt beneath the tenant data directory before
+provider mutations. Do not make corresponding dashboard changes by hand.
+
+Cloudflare Email Routing delivers inbound messages to the registered tenant
+Worker; Cloudflare Email Sending supports transactional replies. This
+provisions an application-managed business inbox, not a general mailbox or a
+Gmail replacement. The Payload mailbox is marked active only after both
+Cloudflare and the exact Worker confirm the same address.
+
 ## What executes
 
 `helloada-release.timer` starts a systemd service every minute after the previous

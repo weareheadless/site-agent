@@ -135,6 +135,19 @@ def test_builtin_registry_retries_default_seo_provisioning(tmp_path):
     memory.close()
 
 
+def test_builtin_registry_retries_email_after_customer_worker_release(tmp_path):
+    config = _config(subreddits=[])
+    config["scheduler"] = {"enabled": True}
+    config["messages"] = {"email": {"enabled": True, "local_part": "hello", "provisioning": {"auto": True}}}
+    memory, _clock, scheduler = _runtime(tmp_path, config)
+
+    jobs_by_name = {name: spec for name, spec, _fn in scheduler.jobs}
+
+    assert "email_provisioning" in jobs_by_name
+    assert jobs_by_name["email_provisioning"]["interval_seconds"] == 3600
+    memory.close()
+
+
 def test_builtin_registry_includes_private_inner_life_jobs(tmp_path):
     memory = Memory(tmp_path / "memory.db")
     scheduler = Scheduler(memory, lock_path=tmp_path / "lock", clock=FakeClock())

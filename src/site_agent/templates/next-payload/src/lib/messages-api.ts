@@ -401,8 +401,37 @@ const deadLetterOperation = async (request: Request) => {
   }
 }
 
+const configureMailbox = async (request: Request) => {
+  if (!serviceAuthorized(request) || !hasCorrectTenant(request)) return fail('service authentication required', 401)
+  let input: Record<string, unknown>
+  try { input = await bodyOf(request, 4_096) }
+  catch { return fail('The mailbox configuration is invalid.', 400) }
+  const domain = text(input.domain).toLowerCase().replace(/\.$/, '')
+  let address: string
+  try { address = normalizeHelloAdaEmail(input.address) }
+  catch { return fail('The mailbox address is invalid.', 400) }
+  if (!/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(domain)
+    || address.split('@')[1] !== domain) return fail('The mailbox address must belong to its registered domain.', 400)
+  try {
+    const { payload } = await messageRuntime()
+    const mailbox = await payload.updateGlobal({
+      slug: 'messageMailbox' as never,
+      data: { domain, address, state: 'active', statusDetail: '', activatedAt: new Date().toISOString() } as never,
+      overrideAccess: true,
+    }) as unknown as MessageRecord
+    if (String(mailbox.state) !== 'active' || String(mailbox.address).toLowerCase() !== address) {
+      throw new Error('Payload did not confirm the active mailbox')
+    }
+    return NextResponse.json({ state: 'active', domain, address }, { headers: noStore })
+  } catch (error) {
+    console.error('helloada_mailbox_configuration_failed', { tenant: tenantIdentity(), error: error instanceof Error ? error.message : 'unknown' })
+    return fail('Payload could not confirm the provisioned mailbox.', 503)
+  }
+}
+
 export async function internalMessagesRoute(request: Request, path: string) {
   if (request.method !== 'POST') return fail('method not allowed', 405)
+  if (path === '/internal/messages/configure-mailbox') return configureMailbox(request)
   if (path === '/internal/messages/accept-inbound') return acceptInbound(request)
   if (path === '/internal/messages/process') return processOperation(request)
   if (path === '/internal/messages/sweep') return sweepOperations(request)

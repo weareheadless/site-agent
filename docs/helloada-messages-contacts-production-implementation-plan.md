@@ -35,11 +35,11 @@ The scope is deliberately small, but the implementation must be production-quali
 | OceanicVibes — `https://oceanicvibes.com`, admin `/admin` | First production rollout; full form → inbox → Ada draft → owner-approved domain reply → external reply roundtrip, plus direct incoming email |
 | Atelier Harmonie — resolve its current registered Worker/admin identity | Second production rollout; same schema/packages, forms, Contacts, Messages, Ada drafting and tenant isolation; custom-domain email only if a supported domain is actually registered and approved |
 
-OceanicVibes's custom domain is supplied by the owner as the intended email-validation target. Its current DNS/mail provider configuration has not been audited by this document. Resolve its Worker, repository, D1 and resource identities through the canonical tenant registry and release manifest; inspect MX and account eligibility before activation.
+OceanicVibes's custom domain is supplied by the owner as the intended email-validation target. The owner has confirmed the domain is managed in their Cloudflare account, that the visible Mailgun setup is retired Squarespace-era configuration, and authorized temporarily disabling any personal-email forwarding rule that conflicts with the test. The signed-in Cloudflare inspection on 2026-10-04 found the OceanicVibes zone and website Worker, two apex Mailgun MX records, a Mailgun-only apex SPF record, and legacy Mailgun DMARC/DKIM values; Email Routing and Email Sending are not yet onboarded for OceanicVibes. The Email Routing account view did not show an OceanicVibes routing rule. Capture the exact live state through the provisioning script before mutation; if the script discovers a forwarding rule or DNS/provider state different from this documented legacy set, stop and preserve it rather than guessing.
 
 Do not replace either existing tenant or rebuild its site from scratch. Preserve existing content, editable field mappings, owner access and tenant identifiers. Do not infer an external Atelier domain from its business name.
 
-OceanicVibes live mail validation is mandatory. If its current domain has an existing mail provider or a required activation/permission is missing, report that exact blocking prerequisite and request the necessary decision. Do not substitute a new tenant or different domain and declare OceanicVibes validated.
+OceanicVibes live mail validation is mandatory. Its owner-approved first-run exception is a narrowly scoped, auditable cutover of the exact legacy Mailgun records listed above. Only the platform provisioning script may perform it. Any unrelated or unrecognized record/rule, missing Cloudflare entitlement, or missing API permission is a hard stop. Do not substitute a new tenant or different domain and declare OceanicVibes validated.
 
 No additional site/domain is to be provisioned for acceptance in this rollout. Future-site defaults remain a required shared-platform implementation and are verified through scaffold/provisioning tests; creating a new live site is a separate future validation task.
 
@@ -352,20 +352,20 @@ Extend the existing provisioning service and canonical tenant registry, not a Ma
 ### Supported route
 
 - The tenant's website and forms can exist on a Workers domain without custom email.
-- Custom-domain email activates only for a supported domain controlled by the configured Cloudflare account, with no conflicting existing email service.
+- Custom-domain email activates only for a supported domain controlled by the configured Cloudflare account. It is prepared by the same idempotent, receipt-producing platform provisioning service used for GA4/GSC; it is not a dashboard checklist or a manually applied DNS recipe.
 - Provision one explicitly chosen business address, such as the owner's selected contact address. Do not guess an existing company's address or take over an occupied mailbox.
 - Inspect actual Email Service availability, account entitlements and API permissions. Record external/manual activation steps honestly when Cloudflare requires them; “automatic” cannot mean fabricated readiness.
 
 ### Idempotent sequence
 
 1. Validate registered tenant, exact Worker/D1 identities, domain ownership and the approved address.
-2. Inspect existing MX, SPF, DKIM, DMARC and routing configuration without changing it.
-3. If MX/provider conflicts exist, stop email activation, preserve all records and explain that this release does not migrate existing email. Do not expose an automatic force-replace control. OceanicVibes's custom website domain alone does not establish that its email configuration is available to replace.
+2. Inspect existing MX, SPF, DKIM, DMARC and routing configuration without changing it. In the explicit CLI apply path, persist the exact before-state (including any exact-address forwarding destination) only in a tenant-private mode-0600 receipt; summaries and logs are sanitized.
+3. For ordinary tenants, if MX/provider conflicts exist, stop email activation and preserve all records; do not expose a generic force-replace control. OceanicVibes may use the owner-authorized CLI cutover flags, which accept only the exact apex Mailgun MX/SPF values approved for this test. The script must re-read the provider state immediately before destructive DNS writes and stop if it differs. It must not touch website A/AAAA/CNAME/Worker records, Google Search Console verification TXT, or unrecognized mail records. It must preserve and reconcile existing DMARC policy deliberately, not replace reporting policy as an incidental side effect. A personal-forwarding rule may be disabled only for the exact mailbox matcher after its exact rule identity and destination are captured in the protected mode-0600 before-state receipt; never disable a catch-all or unrelated mailbox rule implicitly. The receipt must include enough state to restore it and must never print the destination to logs/terminal output.
 4. Create/reuse the tenant-private email bucket and Queues from registry identities, record ownership and bind the correct resources.
 5. Apply the canonical committed schema upgrade/bootstrap through the release contract.
 6. Release the inspected Worker with its email/queue handlers through the VPS queue.
-7. Configure receiving and sending for the selected domain/address using protected control-plane credentials. This is a separate recorded provisioning operation, not an ordinary application release side effect.
-8. Verify routing targets the exact registered Worker and sender authentication is valid. Do not create duplicate SPF records or overwrite an existing policy without review.
+7. Configure receiving and sending for the selected domain/address through the platform's idempotent Cloudflare Email provisioning service and protected control-plane credentials. Its read-only plan and apply operations share the same script/API contract as GA4/GSC provisioning; it records the exact Cloudflare resources, DNS mutations, forwarding-rule state, and resulting verification checks. No operator has to click through Cloudflare or manually copy DNS values.
+8. Verify routing targets the exact registered Worker and sender authentication is valid. Do not create duplicate SPF records or overwrite an existing policy without review. On OceanicVibes, once the canonical inbox passes the agreed real-message check, retain the new platform route; any old forwarding behavior may be restored only if it is non-conflicting and the owner requests it. Do not leave a shadow/duplicate destination route.
 9. Run inbound and outbound controlled real-email checks; record the mailbox's verified activation status.
 10. Mark the mailbox active only after required gates pass. Re-running the operation must reconcile the same resource identities, not create new mailboxes or buckets.
 
@@ -379,7 +379,7 @@ Upstream's updater replaces tracked application source. Do not import it or let 
 
 Mailbox identity is not the current public website URL. Adding a website domain must not silently replace an existing mail identity.
 
-For a tenant with no active mailbox, a newly approved supported domain can enter the provisioning route. For a tenant that already has a mailbox, changing the sending/receiving domain is an explicit separate configuration operation. Preserve historical addresses and message identifiers. Do not delete old routing or migrate historical email automatically.
+The shared domain-origin operation enables the default mailbox local part (initially `hello`) for a supported custom domain and reruns the idempotent provider reconciliation after the exact tenant Worker is ready. The full address is derived from the current registered domain rather than copied from an old origin. Preserve historical addresses and message identifiers; never transfer stored mail. Do not silently delete an old domain's route or change the local part. An unsupported zone, existing provider conflict or non-ready Worker produces an explicit provisioning state without a substitute route.
 
 Existing-domain email migrations, domain renames and multiple active domains are outside this release. Explain that boundary clearly rather than adding special-case compatibility paths.
 
@@ -619,7 +619,7 @@ The production rollout is complete only when:
 - The required migrations and application release pass through the established VPS pipeline with verifiable receipts.
 - Tested replays/failures do not lose accepted enquiries or create preventable duplicate sends; ambiguous external delivery is reported honestly.
 - Supported domain provisioning is reproducible and never takes over an existing mail provider silently.
-- Licensing/source-offer handling for the production deployment is documented and approved.
+- Reused upstream code has a recorded source commit and provenance. Licensing is not a deployment gate for this owner-authorized implementation.
 - Existing website content, editable field mapping, preview, owner sessions, Ada connectivity and Growth functionality remain working on both current tenants.
 - Retention, private backup/restore, failed-job monitoring and recovery are implemented and documented as durable product operations, not left for a later cleanup.
 - No secrets or inbox data are committed to source; no old admin surface, unused Mailflare agent/updater or fallback provider remain in the implementation.

@@ -62,7 +62,7 @@ export async function GET() {
     migrationHead: process.env.HELLOADA_PAYLOAD_MIGRATION_HEAD || '',
   }
   const compatible = Boolean(tenant)
-    && templateSchema === 4
+    && templateSchema === 5
     && Object.entries(loaded).every(([key, value]) => configured[key as keyof typeof configured] === value)
   if (!compatible) {
     return Response.json({ ok: false, error: 'payload_contract_mismatch', tenant: tenant || null, loaded, configured, templateSchema },
@@ -86,5 +86,6 @@ export async function GET() {
     workspaceApi: process.env.HELLOADA_WORKSPACE_API_VERSION || null,
     siteAgent: process.env.HELLOADA_SITE_AGENT_VERSION || null,
     releaseSha: process.env.HELLOADA_RELEASE_SHA || null,
+    emailProvisioningVersion: 1,
   }, { status: compatible ? 200 : 503, headers: { 'Cache-Control': 'no-store' } })
 }

@@ -138,6 +138,9 @@ def test_bootstrap_configures_generic_seo_provisioning_for_new_sites(tmp_path):
     assert config["seo"]["provisioning"]["auto"] is True
     assert config["seo"]["site_url"] == "https://helloada-demo.workers.dev/"
     assert config["seo"]["gsc_property"] == "https://helloada-demo.workers.dev/"
+    assert config["messages"]["email"]["enabled"] is True
+    assert config["messages"]["email"]["local_part"] == "hello"
+    assert config["messages"]["email"]["provisioning"]["auto"] is True
     assert config["site"]["payload"]["contract"]["contract"] == "helloada-content-v3"
     assert config["site"]["payload"]["contract"]["schemaIdentity"] == template_manifest["schemaIdentity"]
     assert config["site"]["payload"]["contract"]["locales"] == ["en"]

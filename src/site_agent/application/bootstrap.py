@@ -635,6 +635,21 @@ class WebsiteBootstrapService:
             },
         })
         raw["display_name"] = display_name or raw.get("display_name") or tenant_id
+        messages = _mapping(raw.get("messages"))
+        email_settings = _mapping(messages.get("email"))
+        messages = {
+            **messages,
+            "email": {
+                **email_settings,
+                "enabled": True,
+                "local_part": str(email_settings.get("local_part") or "hello"),
+                "provisioning": {
+                    **_mapping(email_settings.get("provisioning")),
+                    "auto": True,
+                },
+            },
+        }
+        raw["messages"] = messages
         raw["scheduler"] = {**_mapping(raw.get("scheduler")), "enabled": True}
         raw["editorial"] = {**_mapping(raw.get("editorial")), "enabled": True}
         raw["ga"] = {
