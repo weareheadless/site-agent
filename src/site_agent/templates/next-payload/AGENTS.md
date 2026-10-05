@@ -16,6 +16,14 @@ Payload schema and migration files remain platform-owned, not Ada-editable.
 Routine Ada website work cannot change schema, migrations, admin, auth, server
 bridges, package pins or runtime configuration.
 
+Incoming form and domain-email messages may trigger owner notifications only to
+an externally configured, verified address. Keep the verification challenge
+HMAC-protected with the tenant service token, short-lived, attempt-limited and
+rate-limited. Deliver alerts through the durable tenant outbox as a bounded
+plain-text preview with a link to the authenticated Messages inbox. Do not send
+attachments or automatic visitor replies, and never expose message data without
+owner authentication.
+
 Production deployments are owned by the central `weareheadless/site-agent`
 VPS pipeline. Push reviewed customer source to official `main`, register the
 tenant in its `deploy/payload-customers.json`, then commit the full customer

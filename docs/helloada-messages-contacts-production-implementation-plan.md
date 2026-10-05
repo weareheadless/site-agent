@@ -285,7 +285,9 @@ Distinguish provisioning readiness from inbox contents. Example machine states: 
 
 Public responses expose only the submission's receipt and safe status; they must not reveal contacts or conversations. Idempotency tokens must not function as public inbox-read credentials.
 
-This release sends no automatic visitor acknowledgement and no external owner notification. The owner reads the enquiry in HelloAda. These can be separately approved later, without changing the acceptance boundary.
+There is no automatic visitor acknowledgement or automatic reply. An owner may configure an external notification address in Messages; the address must be verified before use. Form and domain-email enquiries accepted after verification create an idempotent owner-notification operation in the same tenant outbox. The notification is a bounded plain-text preview with a link to the authenticated HelloAda conversation; it does not include attachments. The full message remains in the tenant inbox, and the owner replies there through the existing reviewed-send flow. Alert delivery failure or ambiguity never removes or duplicates the accepted enquiry.
+
+Notification preference and verification state are fields on the shared `messageMailbox` global, not a second settings store. The challenge is short-lived, HMAC-protected with the tenant service token, limited to five attempts, and rate-limited by the tenant's Cloudflare binding. A replacement address does not receive alerts until verified; the previously verified address remains active until then. Turning alerts off clears the active and pending settings. Challenge hashes and codes are never returned to the UI or written to operational logs.
 
 Forms in the ordinary design-preview surface must be visibly marked as preview and must not create real leads or send real email. Live acceptance checks submit clearly identifiable validation enquiries through OceanicVibes's published form and its canonical inbox; they do not use a separate live tenant, shadow schema or alternate ingestion path. Local tests use fixtures with the same canonical contracts.
 

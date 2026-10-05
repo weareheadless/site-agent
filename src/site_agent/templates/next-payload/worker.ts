@@ -14,6 +14,7 @@ type PrivateEmailBucket = {
 type TenantEnv = {
   HELLOADA_TENANT_ID: string
   HELLOADA_SITE_AGENT_TOKEN: string
+  HELLOADA_NOTIFICATION_RATE_LIMIT: { limit: (input: { key: string }) => Promise<{ success: boolean }> }
   HELLOADA_MESSAGES_QUEUE_NAME: string
   HELLOADA_MESSAGES_DLQ_NAME: string
   PRIVATE_EMAIL: PrivateEmailBucket

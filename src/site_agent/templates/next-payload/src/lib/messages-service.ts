@@ -6,7 +6,7 @@ import config from '@payload-config'
 import { hashJson } from '@/lib/payload-hash'
 
 export type MessageRecord = Record<string, unknown>
-export type MessageOperationType = 'form_accept' | 'inbound_email' | 'save_draft' | 'send_reply'
+export type MessageOperationType = 'form_accept' | 'inbound_email' | 'owner_notification' | 'save_draft' | 'send_reply'
 export const MAX_MESSAGE_PROCESSING_ATTEMPTS = 5
 
 type Payload = Awaited<ReturnType<typeof getPayload>>
@@ -26,9 +26,11 @@ type D1Database = { prepare(sql: string): D1Statement }
 
 export type MessageBindings = {
   HELLOADA_MESSAGES_QUEUE?: Queue
+  HELLOADA_SITE_AGENT_TOKEN?: string
   PRIVATE_EMAIL?: PrivateBucket
   EMAIL?: EmailSender
   HELLOADA_FORM_RATE_LIMIT?: RateLimiter
+  HELLOADA_NOTIFICATION_RATE_LIMIT?: RateLimiter
   HELLOADA_TURNSTILE_SECRET_KEY?: string
   D1?: D1Database
 }
@@ -232,7 +234,7 @@ export const enqueueDueMessageOperations = async (payload: Payload, env: Message
     WHERE state = 'processing' AND lease_until IS NOT NULL AND lease_until < ?1
     ORDER BY updated_at ASC LIMIT 100`).bind(now).all<MessageRecord>()
   for (const row of stale.results || []) {
-    if (row.operation_type === 'send_reply') {
+    if (['send_reply', 'owner_notification'].includes(String(row.operation_type))) {
       await env.D1.prepare(`UPDATE message_operations SET state = 'uncertain', lease_until = NULL,
         error_code = 'delivery_uncertain', updated_at = ?1 WHERE operation_id = ?2 AND state = 'processing'`)
         .bind(now, row.operation_id).run()
@@ -289,7 +291,7 @@ export const markDeadLetterMessageOperation = async (
     .bind(operationId).all<MessageRecord>()
   const row = result.results?.[0]
   if (!row || ['completed', 'failed', 'uncertain'].includes(String(row.state))) return String(row?.state || 'missing')
-  const finalState = row.operation_type === 'send_reply' && row.state === 'processing' ? 'uncertain' : 'failed'
+  const finalState = ['send_reply', 'owner_notification'].includes(String(row.operation_type)) && row.state === 'processing' ? 'uncertain' : 'failed'
   const errorCode = finalState === 'uncertain' ? 'delivery_uncertain' : 'queue_dead_letter'
   const now = nowIso()
   const changed = await env.D1.prepare(`UPDATE message_operations SET state = ?1, lease_until = NULL,

@@ -62,7 +62,7 @@ export async function GET() {
     migrationHead: process.env.HELLOADA_PAYLOAD_MIGRATION_HEAD || '',
   }
   const compatible = Boolean(tenant)
-    && templateSchema === 5
+    && templateSchema === 6
     && Object.entries(loaded).every(([key, value]) => configured[key as keyof typeof configured] === value)
   if (!compatible) {
     return Response.json({ ok: false, error: 'payload_contract_mismatch', tenant: tenant || null, loaded, configured, templateSchema },

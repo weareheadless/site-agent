@@ -1,8 +1,8 @@
 import type { Block, CollectionConfig, GlobalConfig } from 'payload'
 
 export const HELLOADA_CONTENT_CONTRACT_VERSION = 'helloada-content-v3'
-export const HELLOADA_CORE_VERSION = '0.3.0'
-export const HELLOADA_SCHEMA_REVISION = 3
+export const HELLOADA_CORE_VERSION = '0.4.0'
+export const HELLOADA_SCHEMA_REVISION = 4
 
 export const validateHelloAdaLink = (value: unknown): true | string => {
   if (typeof value !== 'string' || !value.trim()) return 'Enter a destination for this link.'
@@ -499,9 +499,9 @@ export const createMessageOperationsCollection = (): CollectionConfig => ({
   access: serviceOwnedAccess,
   fields: [
     { name: 'operationId', type: 'text', required: true, unique: true, index: true, access: { update: serviceOnly } },
-    { name: 'operationType', type: 'select', required: true, options: ['form_accept', 'inbound_email', 'save_draft', 'send_reply'], access: { update: serviceOnly } },
+    { name: 'operationType', type: 'select', required: true, options: ['form_accept', 'inbound_email', 'owner_notification', 'save_draft', 'send_reply'], access: { update: serviceOnly } },
     { name: 'idempotencyKey', type: 'text', required: true, unique: true, index: true, access: { update: serviceOnly } },
-    { name: 'requestHash', type: 'text', required: true, index: true, access: { update: serviceOnly } },
+    { name: 'requestHash', type: 'text', required: true, defaultValue: '', index: true, access: { update: serviceOnly } },
     { name: 'state', type: 'select', required: true, defaultValue: 'accepted', options: ['accepted', 'queued', 'processing', 'completed', 'failed', 'uncertain'], access: { update: serviceOnly } },
     { name: 'attempts', type: 'number', defaultValue: 0, access: { update: serviceOnly } },
     { name: 'nextAttemptAt', type: 'date', access: { update: serviceOnly } },
@@ -523,6 +523,13 @@ export const createMessageMailboxGlobal = (): GlobalConfig => ({
     { name: 'state', type: 'select', required: true, defaultValue: 'domain_required', options: ['domain_required', 'provisioning', 'action_required', 'active', 'failed'], access: { update: serviceOnly } },
     { name: 'statusDetail', type: 'textarea', access: { update: serviceOnly } },
     { name: 'activatedAt', type: 'date', access: { update: serviceOnly } },
+    { name: 'notificationAddress', type: 'email', label: 'Verified notification email', access: { update: serviceOnly } },
+    { name: 'notificationVerifiedAt', type: 'date', access: { update: serviceOnly } },
+    { name: 'notificationPendingAddress', type: 'email', admin: { hidden: true }, access: { update: serviceOnly } },
+    { name: 'notificationCodeHash', type: 'text', admin: { hidden: true }, access: { update: serviceOnly } },
+    { name: 'notificationCodeExpiresAt', type: 'date', admin: { hidden: true }, access: { update: serviceOnly } },
+    { name: 'notificationCodeSentAt', type: 'date', admin: { hidden: true }, access: { update: serviceOnly } },
+    { name: 'notificationCodeAttempts', type: 'number', defaultValue: 0, admin: { hidden: true }, access: { update: serviceOnly } },
   ],
 })
 

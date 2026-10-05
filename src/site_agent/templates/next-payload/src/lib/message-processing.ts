@@ -3,9 +3,11 @@ import { normalizeHelloAdaEmail } from '@weareheadless/helloada-payload-core/mes
 
 import {
   claimMessageOperation,
+  createMessageOperation,
   createMessageOnce,
   createOrFindConversation,
   createOrUpdateContact,
+  enqueueAndMark,
   findMailbox,
   findMessageRecord,
   markMessageOperation,
@@ -17,12 +19,16 @@ import {
   updateMessageOperation,
 } from '@/lib/messages-service'
 import type { MessageBindings, MessageRecord } from '@/lib/messages-service'
+import { hashJson } from '@/lib/payload-hash'
+import { helloAdaSite } from '@/helloada.config'
+import { buildOwnerMessageNotification } from '@/lib/message-notifications'
 
 const safeHeader = (value: unknown, max = 998) => String(value || '').replace(/[\r\n\0]/g, ' ').trim().slice(0, max)
 const safeSubject = (value: unknown) => safeHeader(value, 180) || 'No subject'
 const cleanBody = (value: unknown, max = 50_000) => String(value || '').replace(/\0/g, '').slice(0, max)
 const relationId = (value: unknown) => value && typeof value === 'object' ? String((value as MessageRecord).id || '') : String(value || '')
 const referencesOf = (value: unknown) => String(value || '').split(/\s+/).map((item) => safeHeader(item, 998)).filter(Boolean).slice(-30)
+const permanentOperationError = (message: string) => Object.assign(new Error(message), { permanent: true })
 
 const htmlToText = (html: string) => html
   .replace(/<(script|style|head|title|svg)[^>]*>[\s\S]*?<\/\1\s*>/gi, ' ')
@@ -40,7 +46,35 @@ const getRaw = async (env: MessageBindings, key: string) => {
   return object.arrayBuffer()
 }
 
-const applyFormAcceptance = async (operation: MessageRecord, payload: Awaited<ReturnType<typeof messageRuntime>>['payload']) => {
+const enqueueOwnerMessageNotification = async (
+  operation: MessageRecord,
+  payload: Awaited<ReturnType<typeof messageRuntime>>['payload'],
+  env: MessageBindings,
+  message: MessageRecord,
+  conversation: MessageRecord,
+) => {
+  const body = operationBody(operation)
+  const preference = body.ownerNotification && typeof body.ownerNotification === 'object'
+    ? body.ownerNotification as MessageRecord
+    : undefined
+  if (!preference?.recipientAddress || !preference.verifiedAt) return
+  const recipientAddress = normalizeHelloAdaEmail(preference.recipientAddress)
+  const id = String(message.id || '')
+  const conversationId = String(conversation.id || '')
+  if (!id || !conversationId) throw new Error('The accepted message has no stable notification identity.')
+  const idempotencyKey = `owner-notification:${tenantIdentity()}:${id}`
+  const notificationPayload = { messageId: id, conversationId, recipientAddress }
+  const created = await createMessageOperation(
+    payload, 'owner_notification', idempotencyKey, notificationPayload, await hashJson(notificationPayload),
+  )
+  await enqueueAndMark(payload, env, created.operation)
+}
+
+const applyFormAcceptance = async (
+  operation: MessageRecord,
+  payload: Awaited<ReturnType<typeof messageRuntime>>['payload'],
+  env: MessageBindings,
+) => {
   const body = operationBody(operation)
   const submission = body.submission as MessageRecord
   const contact = submission.contact as MessageRecord
@@ -88,6 +122,7 @@ const applyFormAcceptance = async (operation: MessageRecord, payload: Awaited<Re
   await payload.update({ collection: 'conversations', id: conversation.id as string, data: {
     lastMessagePreview: String(submission.message || '').slice(0, 500), lastActivityAt: now,
   } as never, overrideAccess: true })
+  await enqueueOwnerMessageNotification(operation, payload, env, message, conversation)
   return message
 }
 
@@ -197,7 +232,55 @@ const applyInboundEmail = async (
   await payload.update({ collection: 'conversations', id: conversation.id as string, data: {
     state: 'needs_reply', unread: true, lastActivityAt: timestamp, lastMessagePreview: text.slice(0, 500),
   } as never, overrideAccess: true })
+  await enqueueOwnerMessageNotification(operation, payload, env, message, conversation)
   return message
+}
+
+const sendOwnerMessageNotification = async (
+  operation: MessageRecord,
+  payload: Awaited<ReturnType<typeof messageRuntime>>['payload'],
+  env: MessageBindings,
+) => {
+  const body = operationBody(operation)
+  const message = await findMessageRecord(payload, 'messages', { id: { equals: body.messageId } })
+  const conversation = await findMessageRecord(payload, 'conversations', { id: { equals: body.conversationId } })
+  if (!message || !conversation || !['form_enquiry', 'received_email'].includes(String(message.direction))) {
+    throw permanentOperationError('The source enquiry for this notification no longer exists.')
+  }
+  const mailbox = await findMailbox(payload)
+  let recipient: string
+  let verifiedRecipient: string
+  try { recipient = normalizeHelloAdaEmail(body.recipientAddress) }
+  catch { throw permanentOperationError('The notification recipient is no longer valid.') }
+  try { verifiedRecipient = normalizeHelloAdaEmail(mailbox.notificationAddress) }
+  catch { throw permanentOperationError('This notification address is no longer verified.') }
+  if (mailbox.state !== 'active' || !mailbox.notificationVerifiedAt || verifiedRecipient !== recipient) {
+    throw permanentOperationError('This notification address is no longer verified.')
+  }
+  const sender = env.EMAIL
+  if (!sender) throw new Error('The tenant email sending binding is unavailable.')
+  const content = buildOwnerMessageNotification({
+    mailboxAddress: normalizeHelloAdaEmail(mailbox.address),
+    domain: String(mailbox.domain || ''),
+    conversationId: String(conversation.id),
+    sender: String(message.from || ''),
+    subject: String(message.subject || ''),
+    preview: String(message.text || ''),
+    locale: helloAdaSite.defaultLocale,
+  })
+  try {
+    const result = await sender.send({
+      from: normalizeHelloAdaEmail(mailbox.address), to: recipient,
+      subject: content.subject, text: content.text,
+    })
+    const providerId = safeHeader(result.messageId, 998)
+    if (!providerId) throw new Error('Email service acceptance did not include a message ID.')
+    return providerId
+  } catch (error) {
+    // The provider may have accepted the message before a timeout. Do not retry
+    // an ambiguous send and risk sending duplicate owner notifications.
+    throw Object.assign(new Error('Notification delivery could not be confirmed.'), { uncertain: true, cause: error })
+  }
 }
 
 const sendApprovedReply = async (
@@ -260,14 +343,19 @@ export async function processHelloAdaMessageOperation(operationId: string, env: 
   if (['completed', 'failed', 'uncertain'].includes(String(operation.state))) {
     return { accepted: true, state: String(operation.state) }
   }
-  if (!['form_accept', 'inbound_email', 'save_draft', 'send_reply'].includes(type)) throw new Error('The message operation type is unsupported.')
-  const claimed = await claimMessageOperation(env, operationId, type as 'form_accept' | 'inbound_email' | 'save_draft' | 'send_reply')
+  if (!['form_accept', 'inbound_email', 'owner_notification', 'save_draft', 'send_reply'].includes(type)) throw new Error('The message operation type is unsupported.')
+  const claimed = await claimMessageOperation(env, operationId, type as 'form_accept' | 'inbound_email' | 'owner_notification' | 'save_draft' | 'send_reply')
   if (!claimed) return { accepted: true, state: String(operation.state) }
+  let providerAttempted = false
   try {
     let providerReference: string | undefined
-    if (type === 'form_accept') await applyFormAcceptance(operation, payload)
+    if (type === 'form_accept') await applyFormAcceptance(operation, payload, env)
     else if (type === 'inbound_email') await applyInboundEmail(operation, payload, env)
     else if (type === 'send_reply') providerReference = await sendApprovedReply(operation, payload, env)
+    else if (type === 'owner_notification') {
+      providerReference = await sendOwnerMessageNotification(operation, payload, env)
+      providerAttempted = true
+    }
     else if (type === 'save_draft') {
       const body = operationBody(operation)
       const target = await findMessageRecord(payload, 'messages', { id: { equals: body.messageId } })
@@ -284,7 +372,12 @@ export async function processHelloAdaMessageOperation(operationId: string, env: 
     return { accepted: true, state: 'completed' }
   } catch (error) {
     const uncertain = Boolean(error && typeof error === 'object' && (error as { uncertain?: unknown }).uncertain)
-    if (type === 'send_reply' && uncertain) {
+    const permanent = Boolean(error && typeof error === 'object' && (error as { permanent?: unknown }).permanent)
+    if (type === 'owner_notification' && permanent) {
+      await markMessageOperation(payload, operation, 'failed', { errorCode: 'notification_cancelled' })
+      return { accepted: true, state: 'failed' }
+    }
+    if ((type === 'send_reply' || type === 'owner_notification') && (uncertain || providerAttempted)) {
       await markMessageOperation(payload, operation, 'uncertain', { errorCode: 'delivery_uncertain' })
       return { accepted: true, state: 'uncertain' }
     }

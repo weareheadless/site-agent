@@ -5,6 +5,12 @@ import type { HelloAdaAuth } from '@/lib/helloada-auth'
 import { helloAdaSite } from '@/helloada.config'
 import { processHelloAdaMessageOperation } from '@/lib/message-processing'
 import {
+  buildNotificationVerificationEmail,
+  createMessageNotificationCode,
+  equalMessageNotificationCodeHash,
+  hashMessageNotificationCode,
+} from '@/lib/message-notifications'
+import {
   createMessageOperation,
   dispatchMessageOperation,
   enqueueDueMessageOperations,
@@ -52,7 +58,16 @@ const readInbox = async (request: Request, auth: HelloAdaAuth) => {
   const view = url.searchParams.get('view') === 'contacts' ? 'contacts' : 'inbox'
   const state = text(url.searchParams.get('state') || 'needs_reply')
   const query = text(url.searchParams.get('q')).slice(0, 120)
-  const mailbox = await auth.payload.findGlobal({ slug: 'messageMailbox' as never, depth: 0, overrideAccess: false, req: auth.req, user: auth.user })
+  const requestedConversation = text(url.searchParams.get('conversation')).slice(0, 120)
+  const rawMailbox = await auth.payload.findGlobal({ slug: 'messageMailbox' as never, depth: 0, overrideAccess: false, req: auth.req, user: auth.user }) as unknown as MessageRecord
+  const mailbox = {
+    address: rawMailbox.address, domain: rawMailbox.domain, state: rawMailbox.state,
+    statusDetail: rawMailbox.statusDetail,
+    notificationAddress: rawMailbox.notificationAddress,
+    notificationVerifiedAt: rawMailbox.notificationVerifiedAt,
+    notificationPendingAddress: rawMailbox.notificationPendingAddress,
+    notificationCodeExpiresAt: rawMailbox.notificationCodeExpiresAt,
+  }
   if (view === 'contacts') {
     const where = query ? { or: [{ name: { like: query } }, { email: { like: query } }, { company: { like: query } }] } : {}
     const result = await auth.payload.find({ collection: 'contacts', depth: 0, limit: 100, pagination: false, sort: 'name', overrideAccess: false, req: auth.req, user: auth.user, where: where as never })
@@ -63,7 +78,15 @@ const readInbox = async (request: Request, auth: HelloAdaAuth) => {
     overrideAccess: false, req: auth.req, user: auth.user,
     where: listConversationWhere(state, query) as never,
   })
-  return NextResponse.json({ conversations: result.docs, mailbox }, { headers: noStore })
+  const rows = [...result.docs]
+  if (requestedConversation && !rows.some((item) => String(item.id) === requestedConversation)) {
+    const linked = await auth.payload.findByID({
+      collection: 'conversations', id: requestedConversation, depth: 1,
+      overrideAccess: false, req: auth.req, user: auth.user,
+    }).catch(() => undefined)
+    if (linked) rows.unshift(linked)
+  }
+  return NextResponse.json({ conversations: rows.slice(0, 100), mailbox }, { headers: noStore })
 }
 
 const readConversation = async (id: string, auth: HelloAdaAuth) => {
@@ -309,9 +332,172 @@ const updateContact = async (contactId: string, request: Request, auth: HelloAda
   } catch { return fail('The contact could not be updated.', 503) }
 }
 
+const saveMailboxNotifications = async (
+  auth: HelloAdaAuth,
+  data: Record<string, unknown>,
+) => auth.payload.updateGlobal({
+  slug: 'messageMailbox' as never,
+  data: data as never,
+  overrideAccess: true,
+  req: auth.req,
+  user: auth.user,
+})
+
+const startNotificationVerification = async (request: Request, auth: HelloAdaAuth) => {
+  if (!hasOwnerOrigin(request)) return fail('The request could not be verified.', 403)
+  const input = await bodyOf(request, 2_048)
+  let address: string
+  try { address = normalizeHelloAdaEmail(input.address) }
+  catch (error) { return fail(error instanceof Error ? error.message : 'Enter a valid notification email address.') }
+  const { payload, env } = await messageRuntime()
+  const tenant = tenantIdentity()
+  if (!tenant) return fail('This website is not ready to configure message notifications.', 503)
+  const rateLimit = env.HELLOADA_NOTIFICATION_RATE_LIMIT
+  if (!rateLimit) return fail('Notification verification is not configured for this website.', 503)
+  try {
+    const allowed = await rateLimit.limit({ key: `${tenant}:notification-start` })
+    if (!allowed.success) return fail('Wait a minute before requesting another verification email.', 429)
+  } catch (error) {
+    console.error('helloada_notification_rate_limit_unavailable', { tenant: tenantIdentity(), error: error instanceof Error ? error.name : 'unknown' })
+    return fail('Notification verification is temporarily unavailable.', 503)
+  }
+  const mailbox = await findMailbox(payload)
+  if (mailbox.state !== 'active' || !mailbox.address) return fail('Domain email must be active before notifications can be configured.', 409)
+  if (!env.EMAIL || !env.HELLOADA_SITE_AGENT_TOKEN) return fail('The tenant email service is not ready to verify this address.', 503)
+  if (String(mailbox.notificationAddress || '') === address && mailbox.notificationVerifiedAt) {
+    return NextResponse.json({ state: 'verified', mailbox: {
+      notificationAddress: mailbox.notificationAddress, notificationVerifiedAt: mailbox.notificationVerifiedAt,
+      notificationPendingAddress: mailbox.notificationPendingAddress, notificationCodeExpiresAt: mailbox.notificationCodeExpiresAt,
+    } }, { headers: noStore })
+  }
+  const sentAt = Date.now()
+  const previousSentAt = Date.parse(String(mailbox.notificationCodeSentAt || ''))
+  if (Number.isFinite(previousSentAt) && sentAt - previousSentAt < 60_000) {
+    return fail('Wait a minute before requesting another verification email.', 429)
+  }
+  const code = createMessageNotificationCode()
+  const expiresAt = new Date(sentAt + 10 * 60_000).toISOString()
+  const codeHash = await hashMessageNotificationCode(env.HELLOADA_SITE_AGENT_TOKEN, tenantIdentity(), address, code)
+  await saveMailboxNotifications(auth, {
+    notificationPendingAddress: address,
+    notificationCodeHash: codeHash,
+    notificationCodeExpiresAt: expiresAt,
+    notificationCodeSentAt: new Date(sentAt).toISOString(),
+    notificationCodeAttempts: 0,
+  })
+  const verification = buildNotificationVerificationEmail(address, code, helloAdaSite.defaultLocale)
+  try {
+    const result = await env.EMAIL.send({
+      from: normalizeHelloAdaEmail(mailbox.address),
+      ...verification,
+    })
+    if (!text(result.messageId)) throw new Error('Email service acceptance did not include a message ID.')
+  } catch (error) {
+    // Delivery may have been accepted before a provider timeout. Keep the
+    // challenge usable and rate-limited instead of sending duplicate codes.
+    console.error('helloada_notification_verification_delivery_uncertain', { tenant: tenantIdentity(), error: error instanceof Error ? error.name : 'unknown' })
+    return NextResponse.json({
+      error: 'helloada_messages_error',
+      message: 'Delivery could not be confirmed. The code may still arrive; wait before requesting another.',
+      state: 'delivery_uncertain',
+      mailbox: {
+        notificationAddress: mailbox.notificationAddress,
+        notificationVerifiedAt: mailbox.notificationVerifiedAt,
+        notificationPendingAddress: address,
+        notificationCodeExpiresAt: expiresAt,
+      },
+    }, { status: 503, headers: noStore })
+  }
+  return NextResponse.json({ state: 'verification_sent', mailbox: {
+    notificationAddress: mailbox.notificationAddress,
+    notificationVerifiedAt: mailbox.notificationVerifiedAt,
+    notificationPendingAddress: address,
+    notificationCodeExpiresAt: expiresAt,
+  } }, { headers: noStore })
+}
+
+const verifyNotificationAddress = async (request: Request, auth: HelloAdaAuth) => {
+  if (!hasOwnerOrigin(request)) return fail('The request could not be verified.', 403)
+  const input = await bodyOf(request, 2_048)
+  const code = text(input.code)
+  if (!/^\d{8}$/.test(code)) return fail('Enter the eight-digit code from the verification email.')
+  const { payload, env } = await messageRuntime()
+  const tenant = tenantIdentity()
+  if (!tenant) return fail('This website is not ready to verify message notifications.', 503)
+  const rateLimit = env.HELLOADA_NOTIFICATION_RATE_LIMIT
+  if (!rateLimit) return fail('Notification verification is not configured for this website.', 503)
+  try {
+    const allowed = await rateLimit.limit({ key: `${tenant}:notification-verify` })
+    if (!allowed.success) return fail('Too many attempts. Wait a minute and try again.', 429)
+  } catch (error) {
+    console.error('helloada_notification_rate_limit_unavailable', { tenant: tenantIdentity(), error: error instanceof Error ? error.name : 'unknown' })
+    return fail('Notification verification is temporarily unavailable.', 503)
+  }
+  const mailbox = await findMailbox(payload)
+  const pendingAddress = String(mailbox.notificationPendingAddress || '')
+  const expiresAt = Date.parse(String(mailbox.notificationCodeExpiresAt || ''))
+  const attempts = Number(mailbox.notificationCodeAttempts || 0)
+  const codeHash = String(mailbox.notificationCodeHash || '')
+  if (!pendingAddress || !Number.isFinite(expiresAt) || expiresAt <= Date.now() || attempts >= 5 || !codeHash) {
+    return fail('This code has expired or reached its attempt limit. Request a new one.', 409)
+  }
+  if (!env.HELLOADA_SITE_AGENT_TOKEN) return fail('The tenant verification service is not ready.', 503)
+  const submittedHash = await hashMessageNotificationCode(env.HELLOADA_SITE_AGENT_TOKEN, tenantIdentity(), pendingAddress, code)
+  if (!equalMessageNotificationCodeHash(submittedHash, codeHash)) {
+    const nextAttempts = attempts + 1
+    await saveMailboxNotifications(auth, {
+      notificationCodeAttempts: nextAttempts,
+      ...(nextAttempts >= 5 ? {
+        notificationPendingAddress: null,
+        notificationCodeHash: null,
+        notificationCodeExpiresAt: null,
+        notificationCodeSentAt: null,
+        notificationCodeAttempts: 0,
+      } : {}),
+    })
+    return fail(nextAttempts >= 5 ? 'The code was not accepted. Request a new verification code.' : 'That code is not correct.', 400)
+  }
+  const verifiedAt = nowIso()
+  await saveMailboxNotifications(auth, {
+    notificationAddress: pendingAddress,
+    notificationVerifiedAt: verifiedAt,
+    notificationPendingAddress: null,
+    notificationCodeHash: null,
+    notificationCodeExpiresAt: null,
+    notificationCodeSentAt: null,
+    notificationCodeAttempts: 0,
+  })
+  return NextResponse.json({ state: 'verified', mailbox: {
+    notificationAddress: pendingAddress, notificationVerifiedAt: verifiedAt,
+    notificationPendingAddress: null, notificationCodeExpiresAt: null,
+  } }, { headers: noStore })
+}
+
+const disableMessageNotifications = async (request: Request, auth: HelloAdaAuth) => {
+  if (!hasOwnerOrigin(request)) return fail('The request could not be verified.', 403)
+  const mailbox = await saveMailboxNotifications(auth, {
+    notificationAddress: null,
+    notificationVerifiedAt: null,
+    notificationPendingAddress: null,
+    notificationCodeHash: null,
+    notificationCodeExpiresAt: null,
+    notificationCodeSentAt: null,
+    notificationCodeAttempts: 0,
+  }) as unknown as MessageRecord
+  return NextResponse.json({ state: 'disabled', mailbox: {
+    notificationAddress: mailbox.notificationAddress,
+    notificationVerifiedAt: mailbox.notificationVerifiedAt,
+    notificationPendingAddress: mailbox.notificationPendingAddress,
+    notificationCodeExpiresAt: mailbox.notificationCodeExpiresAt,
+  } }, { headers: noStore })
+}
+
 export async function ownerMessagesRoute(request: Request, path: string, auth: HelloAdaAuth) {
   try {
     if (request.method === 'GET' && path === '/messages') return await readInbox(request, auth)
+    if (request.method === 'POST' && path === '/messages/notifications/start') return await startNotificationVerification(request, auth)
+    if (request.method === 'POST' && path === '/messages/notifications/verify') return await verifyNotificationAddress(request, auth)
+    if (request.method === 'POST' && path === '/messages/notifications/disable') return await disableMessageNotifications(request, auth)
     const attachmentRoute = path.match(/^\/messages\/([^/]+)\/attachments\/([0-9]{1,2})$/)
     if (request.method === 'GET' && attachmentRoute) return await downloadAttachment(decodeURIComponent(attachmentRoute[1]), Number(attachmentRoute[2]), auth)
     if (request.method === 'GET' && path.startsWith('/messages/')) return await readConversation(decodeURIComponent(path.slice('/messages/'.length)), auth)
@@ -349,7 +535,12 @@ const acceptInbound = async (request: Request) => {
   if (mailbox.state !== 'active' || normalizeHelloAdaEmail(mailbox.address) !== to) return fail('The receiving mailbox is not active for this address.', 409)
   const headers = object(input.headers)
   const idempotencyKey = `inbound:${tenantIdentity()}:${rawSha256}`
-  const data = { rawObjectKey, rawSha256, from, to, headers }
+  const notificationAddress = String(mailbox.notificationAddress || '')
+  const notificationVerifiedAt = String(mailbox.notificationVerifiedAt || '')
+  const ownerNotification = notificationAddress && notificationVerifiedAt
+    ? { recipientAddress: notificationAddress, verifiedAt: notificationVerifiedAt }
+    : undefined
+  const data = { rawObjectKey, rawSha256, from, to, headers, ...(ownerNotification ? { ownerNotification } : {}) }
   let result: Awaited<ReturnType<typeof createMessageOperation>>
   try { result = await createMessageOperation(payload, 'inbound_email', idempotencyKey, data, await hashJson({ rawSha256, from, to })) }
   catch (error) { return fail(error instanceof Error ? error.message : 'The inbound receipt could not be accepted.', 409) }

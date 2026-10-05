@@ -19,6 +19,20 @@ test('all standard tenant schemas come from one contract and share the native mu
   const globals = Object.fromEntries(schema.globals.map((item) => [item.slug, item]))
   assert.deepEqual(Object.keys(collections), ['users', 'pages', 'posts', 'postCategories', 'products', 'productCategories', 'media', 'contactForms', 'contacts', 'conversations', 'messages', 'messageOperations'])
   assert.deepEqual(Object.keys(globals), ['siteSettings', 'navigation', 'messageMailbox'])
+  const messageOperations = collections.messageOperations.fields.find((field) => field.name === 'operationType')
+  assert.ok(messageOperations.options.includes('owner_notification'))
+  assert.equal(collections.messageOperations.fields.find((field) => field.name === 'requestHash').defaultValue, '')
+  for (const fieldName of [
+    'notificationAddress', 'notificationVerifiedAt', 'notificationPendingAddress', 'notificationCodeHash',
+    'notificationCodeExpiresAt', 'notificationCodeSentAt', 'notificationCodeAttempts',
+  ]) {
+    const field = globals.messageMailbox.fields.find((item) => item.name === fieldName)
+    assert.ok(field, `messageMailbox.${fieldName} is in the canonical schema`)
+    assert.equal(field.access.update(), false, `messageMailbox.${fieldName} is service-only`)
+  }
+  for (const fieldName of ['notificationCodeHash', 'notificationPendingAddress', 'notificationCodeExpiresAt', 'notificationCodeSentAt', 'notificationCodeAttempts']) {
+    assert.equal(globals.messageMailbox.fields.find((field) => field.name === fieldName).admin.hidden, true)
+  }
   assert.ok(collections.pages.fields.some((field) => field.name === 'sections' && field.type === 'array'))
   assert.ok(collections.posts.fields.some((field) => field.name === 'featuredImage' && field.type === 'upload'))
   assert.ok(collections.posts.fields.some((field) => field.name === 'category' && field.type === 'relationship' && field.relationTo === 'postCategories'))

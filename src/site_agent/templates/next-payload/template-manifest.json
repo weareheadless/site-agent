@@ -1,9 +1,9 @@
 {
-  "templateSchema": 5,
+  "templateSchema": 6,
   "workspaceApi": "v1",
-  "payloadAdmin": "0.9.0",
-  "payloadCore": "0.3.0",
-  "schemaRevision": 3,
+  "payloadAdmin": "0.10.0",
+  "payloadCore": "0.4.0",
+  "schemaRevision": 4,
   "contentContract": "helloada-content-v3",
   "defaultLocale": "en",
   "locales": [
@@ -14,7 +14,7 @@
     "node": ">=20.9.0",
     "payload": ">=3.88.0 <4"
   },
-  "schemaIdentity": "a639f89df844075bcd230729b7ca603fdacafeffcdee0816f3b3e61df6394679",
+  "schemaIdentity": "5907db1edc755b03bb2882ba87bea7912f0120889407dc74ac0569662250c3ba",
   "migrations": [
     {
       "name": "20261004_021536_helloada_initial",
@@ -30,8 +30,13 @@
       "name": "20261004_232326_helloada_messages_contacts",
       "fileSha256": "9fb9b5506abae73b04c67485f10348ea763fe9e2971e018af27fcbdf14655a43",
       "snapshotSha256": "b367c35243775ab6751d48000dc11877a3e6b8e941ec7178d0bb2e5b8e805b7b"
+    },
+    {
+      "name": "20261005_173359_helloada_owner_notifications",
+      "fileSha256": "d7213d632616b9b515a24051b899c438a0619652b18467e45ec6debabff22d7a",
+      "snapshotSha256": "8ca7789610ea2d0d2cf9b0cac670309eac9411023c53ae32a5c20f2b9355d46f"
     }
   ],
-  "migrationHead": "f87debcf7d1638fd9d92a8afe5ba5847d4eccb8775fdaa1e380591a26cabd9b4",
-  "migrationIndexSha256": "61208d3de0b9d69f8d6ed0774faa2f57365249ab0aa6cdbc6b65b472e6d35fc4"
+  "migrationHead": "5ae91044f05177e0fb50bab33ebc951f96e015394962ca0966c8c11b5bb1d721",
+  "migrationIndexSha256": "56f6b1dd932251c6f1b2174bec20fa346796fa8f2940e5a608dd84eeecf4e3af"
 }

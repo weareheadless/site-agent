@@ -32,7 +32,16 @@ type Message = {
   createdAt?: string
   attachmentManifest?: Array<{ index: number; filename: string; mimeType: string; size: number; allowed: boolean }>
 }
-type Mailbox = { address?: string; domain?: string; state: string; statusDetail?: string }
+type Mailbox = {
+  address?: string
+  domain?: string
+  state: string
+  statusDetail?: string
+  notificationAddress?: string
+  notificationVerifiedAt?: string
+  notificationPendingAddress?: string
+  notificationCodeExpiresAt?: string
+}
 type ResponseData = { conversations?: Conversation[]; contacts?: Contact[]; conversation?: Conversation; messages?: Message[]; mailbox?: Mailbox }
 
 const contactOf = (value: Conversation['contact']): Contact | undefined =>
@@ -49,6 +58,9 @@ export function HelloAdaMessages() {
   const [activeContactId, setActiveContactId] = useState<string>()
   const [detail, setDetail] = useState<ResponseData>()
   const [mailbox, setMailbox] = useState<Mailbox>()
+  const [notificationAddress, setNotificationAddress] = useState('')
+  const [notificationCode, setNotificationCode] = useState('')
+  const [savingNotification, setSavingNotification] = useState(false)
   const [draft, setDraft] = useState('')
   const [draftHash, setDraftHash] = useState('')
   const [draftRevision, setDraftRevision] = useState(0)
@@ -61,6 +73,8 @@ export function HelloAdaMessages() {
   const [notice, setNotice] = useState('')
   const sendRequestRef = useRef<{ draftHash: string; requestId: string } | undefined>(undefined)
   const draftDirtyRef = useRef(false)
+  const notificationAddressTouched = useRef(false)
+  const [deepLinkConversation, setDeepLinkConversation] = useState('')
   const [sessionAvailable, setSessionAvailable] = useState(true)
 
   const load = useCallback(async (quiet = false) => {
@@ -68,6 +82,7 @@ export function HelloAdaMessages() {
     try {
       const query = new URLSearchParams({ view: tab, state: filter })
       if (search.trim()) query.set('q', search.trim())
+      if (deepLinkConversation) query.set('conversation', deepLinkConversation)
       const response = await fetchHelloAda(`/api/helloada/messages?${query}`, { cache: 'no-store' })
       const body = await response.json() as ResponseData & { message?: string }
       if (response.status === 401) setSessionAvailable(false)
@@ -78,14 +93,31 @@ export function HelloAdaMessages() {
       else {
         const rows = body.conversations || []
         setConversations(rows)
-        setActiveId((current) => current && rows.some((item) => String(item.id) === current) ? current : String(rows[0]?.id || ''))
+        setActiveId((current) => current && rows.some((item) => String(item.id) === current)
+          ? current
+          : rows.some((item) => String(item.id) === deepLinkConversation)
+            ? deepLinkConversation
+            : String(rows[0]?.id || ''))
       }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t('owner.messagesFailure'))
     } finally { if (!quiet) setLoading(false) }
-  }, [filter, search, t, tab])
+  }, [deepLinkConversation, filter, search, t, tab])
 
   useEffect(() => { void load() }, [load])
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const conversationId = params.get('conversation') || ''
+    if (!conversationId) return
+    setDeepLinkConversation(conversationId)
+    setFilter('all')
+  }, [])
+
+  useEffect(() => {
+    if (notificationAddressTouched.current || !mailbox) return
+    setNotificationAddress(mailbox.notificationPendingAddress || mailbox.notificationAddress || '')
+  }, [mailbox?.notificationAddress, mailbox?.notificationPendingAddress])
 
   useEffect(() => {
     if (tab !== 'inbox' || !activeId) { setDetail(undefined); return }
@@ -205,6 +237,62 @@ export function HelloAdaMessages() {
     } catch (cause) { setError(cause instanceof Error ? cause.message : t('owner.messagesFailure')) }
   }
 
+  const updateNotificationMailbox = (value: unknown) => {
+    const next = value && typeof value === 'object' ? value as Partial<Mailbox> : {}
+    setMailbox((current) => current ? { ...current, ...next } : { state: 'active', ...next })
+  }
+
+  const requestNotificationCode = async () => {
+    if (!notificationAddress.trim() || savingNotification) return
+    setSavingNotification(true); setError(''); setNotice('')
+    try {
+      const response = await fetchHelloAda('/api/helloada/messages/notifications/start', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ address: notificationAddress.trim() }),
+      })
+      const body = await response.json() as { state?: string; mailbox?: Partial<Mailbox>; message?: string }
+      updateNotificationMailbox(body.mailbox)
+      if (!response.ok) throw new Error(body.message || t('owner.messagesNotificationFailure'))
+      if (body.state === 'verification_sent') setNotice(t('owner.messagesNotificationCodeSent'))
+      else setNotice(t('owner.messagesNotificationVerified'))
+    } catch (cause) { setError(cause instanceof Error ? cause.message : t('owner.messagesNotificationFailure')) }
+    finally { setSavingNotification(false) }
+  }
+
+  const verifyNotificationCode = async () => {
+    if (!/^\d{8}$/.test(notificationCode) || savingNotification) return
+    setSavingNotification(true); setError(''); setNotice('')
+    try {
+      const response = await fetchHelloAda('/api/helloada/messages/notifications/verify', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ code: notificationCode }),
+      })
+      const body = await response.json() as { mailbox?: Partial<Mailbox>; message?: string }
+      if (!response.ok) throw new Error(body.message || t('owner.messagesNotificationFailure'))
+      updateNotificationMailbox(body.mailbox)
+      notificationAddressTouched.current = false
+      setNotificationAddress(String(body.mailbox?.notificationAddress || notificationAddress.trim()))
+      setNotificationCode('')
+      setNotice(t('owner.messagesNotificationVerified'))
+    } catch (cause) { setError(cause instanceof Error ? cause.message : t('owner.messagesNotificationFailure')) }
+    finally { setSavingNotification(false) }
+  }
+
+  const disableNotifications = async () => {
+    if (savingNotification) return
+    setSavingNotification(true); setError(''); setNotice('')
+    try {
+      const response = await fetchHelloAda('/api/helloada/messages/notifications/disable', { method: 'POST' })
+      const body = await response.json() as { mailbox?: Partial<Mailbox>; message?: string }
+      if (!response.ok) throw new Error(body.message || t('owner.messagesNotificationFailure'))
+      updateNotificationMailbox(body.mailbox)
+      notificationAddressTouched.current = false
+      setNotificationAddress(''); setNotificationCode('')
+      setNotice(t('owner.messagesNotificationDisabled'))
+    } catch (cause) { setError(cause instanceof Error ? cause.message : t('owner.messagesNotificationFailure')) }
+    finally { setSavingNotification(false) }
+  }
+
   const activeContact = detail?.conversation ? contactOf(detail.conversation.contact) : undefined
   const canSend = mailbox?.state === 'active' && Boolean(mailbox.address)
 
@@ -218,6 +306,31 @@ export function HelloAdaMessages() {
       <span>{canSend ? t('owner.messagesMailboxActive') : t('owner.messagesMailboxSetup')}</span>
       {canSend ? <strong>{mailbox?.address}</strong> : null}
     </div>
+    <section className="helloada-message-notifications" aria-labelledby="helloada-notification-title">
+      <div className="helloada-message-notifications-copy">
+        <h2 id="helloada-notification-title">{t('owner.messagesNotificationTitle')}</h2>
+        <p>{t('owner.messagesNotificationIntro')}</p>
+        {mailbox?.notificationVerifiedAt && mailbox.notificationAddress
+          ? <small>{t('owner.messagesNotificationActive')} <strong>{mailbox.notificationAddress}</strong></small>
+          : <small>{t('owner.messagesNotificationOff')}</small>}
+        {mailbox?.notificationPendingAddress ? <small>{t('owner.messagesNotificationPending')} <strong>{mailbox.notificationPendingAddress}</strong></small> : null}
+      </div>
+      <div className="helloada-message-notification-controls">
+        <label>
+          <span>{t('owner.messagesNotificationAddress')}</span>
+          <input type="email" autoComplete="email" maxLength={254} value={notificationAddress} onChange={(event) => { notificationAddressTouched.current = true; setNotificationAddress(event.target.value) }} placeholder={t('owner.messagesNotificationPlaceholder')} />
+        </label>
+        <button type="button" onClick={() => void requestNotificationCode()} disabled={!notificationAddress.trim() || savingNotification || !canSend}>{savingNotification ? t('owner.messagesLoading') : t('owner.messagesNotificationSendCode')}</button>
+        {mailbox?.notificationPendingAddress ? <>
+          <label>
+            <span>{t('owner.messagesNotificationCode')}</span>
+            <input type="text" inputMode="numeric" autoComplete="one-time-code" maxLength={8} pattern="[0-9]{8}" value={notificationCode} onChange={(event) => setNotificationCode(event.target.value.replace(/\D/g, '').slice(0, 8))} placeholder="00000000" />
+          </label>
+          <button type="button" onClick={() => void verifyNotificationCode()} disabled={!/^\d{8}$/.test(notificationCode) || savingNotification}>{t('owner.messagesNotificationVerify')}</button>
+        </> : null}
+        {mailbox?.notificationVerifiedAt ? <button type="button" className="is-secondary" onClick={() => void disableNotifications()} disabled={savingNotification}>{t('owner.messagesNotificationDisable')}</button> : null}
+      </div>
+    </section>
     <div className="helloada-messages-toolbar">
       <div className="helloada-messages-tabs" role="tablist" aria-label={t('owner.messages')}>
         <button type="button" role="tab" aria-selected={tab === 'inbox'} className={tab === 'inbox' ? 'is-active' : ''} onClick={() => setTab('inbox')}>{t('owner.messagesInbox')}</button>

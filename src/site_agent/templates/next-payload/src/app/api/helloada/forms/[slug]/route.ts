@@ -5,6 +5,7 @@ import { hashJson } from '@/lib/payload-hash'
 import {
   createMessageOperation,
   dispatchMessageOperation,
+  findMailbox,
   findMessageRecord,
   messageRuntime,
   tenantIdentity,
@@ -101,7 +102,13 @@ export async function POST(request: Request, { params }: RouteProps) {
     title: String(definition.title || slug).slice(0, 160),
     updatedAt: String(definition.updatedAt || ''),
   }
-  const body = { submission, formSnapshot, sourcePage, clientFingerprint }
+  const mailbox = await findMailbox(payload)
+  const notificationAddress = String(mailbox.notificationAddress || '')
+  const notificationVerifiedAt = String(mailbox.notificationVerifiedAt || '')
+  const ownerNotification = notificationAddress && notificationVerifiedAt
+    ? { recipientAddress: notificationAddress, verifiedAt: notificationVerifiedAt }
+    : undefined
+  const body = { submission, formSnapshot, sourcePage, clientFingerprint, ...(ownerNotification ? { ownerNotification } : {}) }
   let operation: Record<string, unknown>
   try {
     ({ operation } = await createMessageOperation(payload, 'form_accept', idempotencyKey, body, clientFingerprint))

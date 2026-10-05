@@ -79,6 +79,37 @@ test('the default contract includes editable articles, SEO, media, navigation an
   assert.ok(contract.contentBlocks.includes('helloAdaImage'))
 })
 
+test('external message alerts use one verified, tenant-scoped outbox path in every new site', () => {
+  const coreSchema = readFileSync(path.join(ROOT, 'packages/helloada-payload-core/src/schema/index.ts'), 'utf8')
+  const api = read('src/lib/messages-api.ts')
+  const processing = read('src/lib/message-processing.ts')
+  const formRoute = read('src/app/api/helloada/forms/[slug]/route.ts')
+  const ownerRoute = read('src/app/api/helloada/[...path]/route.ts')
+  const migration = read('src/migrations/20261005_173359_helloada_owner_notifications.ts')
+  const workerConfig = read('wrangler.jsonc')
+  assert.match(coreSchema, /'owner_notification'/)
+  for (const field of ['notificationAddress', 'notificationVerifiedAt', 'notificationPendingAddress', 'notificationCodeHash', 'notificationCodeExpiresAt', 'notificationCodeSentAt', 'notificationCodeAttempts']) {
+    assert.match(coreSchema, new RegExp(`name: '${field}'`))
+    assert.match(migration, new RegExp(field.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)))
+  }
+  assert.match(ownerRoute, /authenticateHelloAdaRequest/)
+  assert.match(api, /hasOwnerOrigin\(request\)/)
+  assert.match(api, /hashMessageNotificationCode/)
+  assert.match(api, /notificationCodeAttempts: nextAttempts/)
+  assert.match(api, /notificationCodeAttempts: 0/)
+  assert.match(api, /\/messages\/notifications\/start/)
+  assert.match(api, /\/messages\/notifications\/verify/)
+  assert.match(api, /\/messages\/notifications\/disable/)
+  assert.match(processing, /owner-notification:\$\{tenantIdentity\(\)\}:\$\{id\}/)
+  assert.match(processing, /mailbox\.notificationVerifiedAt/)
+  assert.match(processing, /buildOwnerMessageNotification/)
+  assert.match(processing, /providerAttempted = true/)
+  assert.match(processing, /uncertain \|\| providerAttempted/)
+  assert.match(formRoute, /ownerNotification/)
+  assert.match(workerConfig, /HELLOADA_NOTIFICATION_RATE_LIMIT/)
+  assert.match(workerConfig, /"limit": 5, "period": 60/)
+})
+
 test('the canonical public runtime reads article content through Payload only', () => {
   const source = sourceTree('src').toLowerCase()
   assert.doesNotMatch(source, /articles\/index\.json|\.mdx?['"`]/)

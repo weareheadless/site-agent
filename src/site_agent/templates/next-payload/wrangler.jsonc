@@ -10,16 +10,16 @@
     "NEXT_PUBLIC_SITE_URL": "__WORKER_URL__",
     "HELLOADA_TENANT_ID": "__TENANT_ID__",
     "HELLOADA_SITE_NAME": "__SITE_NAME__",
-    "HELLOADA_TEMPLATE_SCHEMA": "5",
+    "HELLOADA_TEMPLATE_SCHEMA": "6",
     "HELLOADA_WORKSPACE_API_VERSION": "v1",
-    "HELLOADA_PAYLOAD_ADMIN_VERSION": "0.9.0",
-    "HELLOADA_PAYLOAD_CORE_VERSION": "0.3.0",
-    "HELLOADA_PAYLOAD_SCHEMA_REVISION": "3",
+    "HELLOADA_PAYLOAD_ADMIN_VERSION": "0.10.0",
+    "HELLOADA_PAYLOAD_CORE_VERSION": "0.4.0",
+    "HELLOADA_PAYLOAD_SCHEMA_REVISION": "4",
     "HELLOADA_CONTENT_CONTRACT_VERSION": "helloada-content-v3",
     "HELLOADA_MESSAGES_QUEUE_NAME": "helloada-template-messages",
     "HELLOADA_MESSAGES_DLQ_NAME": "helloada-template-messages-dlq",
-    "HELLOADA_SCHEMA_IDENTITY": "a639f89df844075bcd230729b7ca603fdacafeffcdee0816f3b3e61df6394679",
-    "HELLOADA_PAYLOAD_MIGRATION_HEAD": "f87debcf7d1638fd9d92a8afe5ba5847d4eccb8775fdaa1e380591a26cabd9b4",
+    "HELLOADA_SCHEMA_IDENTITY": "5907db1edc755b03bb2882ba87bea7912f0120889407dc74ac0569662250c3ba",
+    "HELLOADA_PAYLOAD_MIGRATION_HEAD": "5ae91044f05177e0fb50bab33ebc951f96e015394962ca0966c8c11b5bb1d721",
     "HELLOADA_TURNSTILE_SITE_KEY": "__HELLOADA_TURNSTILE_SITE_KEY__",
     "HELLOADA_SITE_AGENT_VERSION": "__SITE_AGENT_VERSION__"
   },
@@ -35,7 +35,10 @@
     { "binding": "PRIVATE_EMAIL", "bucket_name": "helloada-template-email", "preview_bucket_name": "helloada-template-email" }
   ],
   "send_email": [{ "name": "EMAIL" }],
-  "ratelimits": [{ "name": "HELLOADA_FORM_RATE_LIMIT", "namespace_id": "2701", "simple": { "limit": 10, "period": 60 } }],
+  "ratelimits": [
+    { "name": "HELLOADA_FORM_RATE_LIMIT", "namespace_id": "2701", "simple": { "limit": 10, "period": 60 } },
+    { "name": "HELLOADA_NOTIFICATION_RATE_LIMIT", "namespace_id": "2702", "simple": { "limit": 5, "period": 60 } }
+  ],
   "queues": {
     "producers": [{ "binding": "HELLOADA_MESSAGES_QUEUE", "queue": "helloada-template-messages" }],
     "consumers": [

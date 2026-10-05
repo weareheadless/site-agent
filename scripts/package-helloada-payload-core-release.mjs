@@ -23,15 +23,18 @@ for (const file of ['src/schema/index.ts', 'src/server.ts', 'src/routes.ts', 'sr
 }
 const packedText = file => execFileSync('tar', ['-xOf', archive, `package/${file}`], { encoding: 'utf8' })
 const schema = packedText('src/schema/index.ts')
-if (!schema.includes("'helloada-content-v2'")) throw new Error('Packed schema has no content-contract version')
+const contentContract = schema.match(/HELLOADA_CONTENT_CONTRACT_VERSION\s*=\s*'([^']+)'/)?.[1]
+const schemaRevision = Number(schema.match(/HELLOADA_SCHEMA_REVISION\s*=\s*(\d+)/)?.[1])
+if (!contentContract || !Number.isInteger(schemaRevision)) throw new Error('Packed schema has no valid contract identity')
 if (!schema.includes('createPagesCollection') || !schema.includes('createNavigationGlobal')) throw new Error('Packed core is missing canonical collections or globals')
 const packageJson = JSON.parse(packedText('package.json'))
 if (packageJson.name !== pkg.name || packageJson.version !== pkg.version) throw new Error('Packed package identity mismatch')
+if (!schema.includes(`HELLOADA_CORE_VERSION = '${pkg.version}'`)) throw new Error('Packed schema core version does not match package.json')
 const digest = bytes => createHash('sha256').update(bytes).digest('hex')
 const manifest = {
   schemaVersion: 1, sourceCommit, releaseTag: tag, packageName: pkg.name, packageVersion: pkg.version,
-  contentContract: 'helloada-content-v2',
-  schemaRevision: 2,
+  contentContract,
+  schemaRevision,
   artifact: { filename: packed.filename, sha256: digest(readFileSync(archive)), integrity: packed.integrity },
   artifactInspection: 'passed', tenantMigration: 'not_performed', deployment: 'not_performed',
 }
