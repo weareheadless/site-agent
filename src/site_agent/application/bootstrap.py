@@ -33,7 +33,7 @@ from ..credentials import (
 )
 from ..config import deep_merge
 from .. import __version__
-from ..hands.cloudflare_resources import CloudflareResourceProvisioner
+from ..hands.cloudflare_resources import CloudflareResourceError, CloudflareResourceProvisioner
 from ..hands.cloudflare_r2 import CloudflareR2Provisioner
 from ..hands.github_provisioning import GitHubRepositoryProvisioner, GitHubRepositoryReceipt
 from ..payload_contract import PayloadContractError, validate_payload_migrations
@@ -620,15 +620,11 @@ class WebsiteBootstrapService:
         return receipt.to_dict()
 
     def _worker_url(self, worker_name: str) -> str:
-        configured = str(self.settings.get("worker_url_template") or "").strip()
-        template = configured or "https://{worker_name}.workers.dev"
         try:
-            url = template.format(worker_name=worker_name).rstrip("/")
-        except (KeyError, ValueError) as exc:
-            raise BootstrapError("bootstrap worker_url_template is invalid") from exc
-        if not re.fullmatch(r"https://[^/?#]+", url):
-            raise BootstrapError("bootstrap worker URL must be an HTTPS origin")
-        return url
+            _env, _github_token, cloudflare_token, account_id = self._credentials()
+            return CloudflareResourceProvisioner(account_id, cloudflare_token).workers_dev_url(worker_name)
+        except CloudflareResourceError as exc:
+            raise BootstrapError(f"Cloudflare Workers URL could not be resolved: {exc}") from exc
 
     def _materialize_template(self, site_dir: Path) -> None:
         template_raw = str(

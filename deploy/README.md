@@ -236,6 +236,16 @@ rewritten by an application release. This keeps the existing deployment token's
 Worker permissions sufficient. See [Cloudflare's deployment permissions](https://developers.cloudflare.com/workers/authorization/workers/)
 and [OpenNext's upload command](https://opennext.js.org/cloudflare/cli).
 
+For a `workers.dev` health target, the account subdomain is read from Cloudflare
+and the registered health URL must be exactly
+`https://<worker>.<account-subdomain>.workers.dev/api/health`. The release
+pipeline first verifies that the exact uploaded Worker version receives 100%
+of traffic, then enables that script's production workers.dev route and runs
+the health and authenticated connection gates. A missing account subdomain or
+URL mismatch fails closed. Custom-domain health targets do not change the
+workers.dev route. Do not construct or register a bare `<worker>.workers.dev`
+hostname.
+
 The durable release record under `/SOCIAL/payload-releases/runs` contains the
 receipt and small browser-verification evidence. Exact source remains in
 GitHub; Cloudflare retains uploaded Worker versions for promotion and rollback.

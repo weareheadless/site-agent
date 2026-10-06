@@ -313,7 +313,7 @@ def test_customer_release_identity_serializes_the_canonical_owner_repository(tmp
         "instance_name": "demo",
         "site": {
             "repository": "weareheadless/helloada-demo",
-            "public_url": "https://helloada-demo.workers.dev",
+            "public_url": "https://helloada-demo.weareheadless.workers.dev",
             "source_deployment": {
                 "worker_name": "helloada-demo",
                 "clone_path": str(site_dir),
@@ -948,3 +948,64 @@ def test_failed_connection_gate_is_bounded_and_remains_failed(monkeypatch):
         release.verify_live(result, CUSTOMER, REGISTRY,
                             {}, {}, lambda name: result.update(stage=name))
     assert len(result["gateAttempts"]) == 12 and "connectionVerifiedAt" not in result
+
+
+def test_workers_dev_health_url_must_match_the_cloudflare_account_subdomain(monkeypatch):
+    from site_agent.hands import cloudflare_resources
+
+    class Provisioner:
+        def __init__(self, account_id, token):
+            assert account_id == "a" * 32
+            assert token == "token"
+
+        def workers_dev_url(self, worker):
+            assert worker == "helloada-demo"
+            return "https://helloada-demo.weareheadless.workers.dev"
+
+    monkeypatch.setattr(cloudflare_resources, "CloudflareResourceProvisioner", Provisioner)
+    env = {"CLOUDFLARE_ACCOUNT_ID": "a" * 32, "CLOUDFLARE_API_TOKEN": "token"}
+    customer = {
+        "worker": "helloada-demo",
+        "health": "https://helloada-demo.weareheadless.workers.dev/api/health",
+    }
+    assert isinstance(release.workers_dev_provisioner(customer, env), Provisioner)
+    with pytest.raises(RuntimeError, match="does not match the Cloudflare account subdomain"):
+        release.workers_dev_provisioner({
+            **customer,
+            "health": "https://helloada-demo.workers.dev/api/health",
+        }, env)
+    assert release.workers_dev_provisioner({
+        **customer,
+        "health": "https://example.com/api/health",
+    }, env) is None
+
+
+def test_live_verification_enables_only_the_exact_promoted_workers_dev_route(monkeypatch):
+    result = {"tenant": "demo", "sourceSha": SHA, "uploadedVersion": "version-1"}
+    customer = {
+        **CUSTOMER,
+        "worker": "helloada-demo",
+        "health": "https://helloada-demo.weareheadless.workers.dev/api/health",
+    }
+    calls = []
+
+    class Provisioner:
+        def ensure_workers_dev_route(self, worker):
+            calls.append(worker)
+
+    monkeypatch.setattr(release, "workers_dev_provisioner", lambda *_args: Provisioner())
+    monkeypatch.setattr(release, "cloudflare_deployment", lambda *_args: {
+        "versions": [{"percentage": 100, "version_id": "version-1"}],
+    })
+    monkeypatch.setattr(release, "check_health", lambda *_args: {"ok": True})
+    monkeypatch.setattr(release, "run", lambda *_args: None)
+    stages = []
+
+    release.verify_live(
+        result, customer, REGISTRY,
+        {"CLOUDFLARE_API_TOKEN": "token", "CLOUDFLARE_ACCOUNT_ID": "a" * 32}, {}, stages.append,
+    )
+
+    assert calls == ["helloada-demo"]
+    assert stages.index("enable-workers-dev") < stages.index("verify-connection")
+    assert result["connectionVerifiedAt"]

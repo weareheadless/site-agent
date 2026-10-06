@@ -148,6 +148,45 @@ class CloudflareResourceProvisioner:
             raise CloudflareResourceError("Worker creation raced another owner and could not be reconciled")
         raise CloudflareResourceError(self._error(created))
 
+    def workers_dev_url(self, worker_name: str) -> str:
+        """Return the Worker URL using the subdomain configured on this account."""
+        worker = str(worker_name or "").strip().lower()
+        if not re.fullmatch(r"[a-z][a-z0-9-]{1,62}", worker):
+            raise CloudflareResourceError("Worker name is invalid")
+        status, body = self._request(
+            "GET",
+            f"/accounts/{self.account_id}/workers/subdomain",
+        )
+        result = body.get("result")
+        subdomain = str(result.get("subdomain") or "").strip().lower() if isinstance(result, Mapping) else ""
+        if status != 200 or not body.get("success") or not re.fullmatch(
+            r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", subdomain,
+        ):
+            raise CloudflareResourceError("Cloudflare account workers.dev subdomain is not configured")
+        return f"https://{worker}.{subdomain}.workers.dev"
+
+    def ensure_workers_dev_route(self, worker_name: str) -> None:
+        """Enable this script's production workers.dev route, preserving preview settings."""
+        worker = str(worker_name or "").strip().lower()
+        if not re.fullmatch(r"[a-z][a-z0-9-]{1,62}", worker):
+            raise CloudflareResourceError("Worker name is invalid")
+        path = (
+            f"/accounts/{self.account_id}/workers/scripts/"
+            f"{urllib.parse.quote(worker, safe='')}/subdomain"
+        )
+        status, body = self._request("GET", path)
+        current = body.get("result")
+        if status != 200 or not body.get("success") or not isinstance(current, Mapping):
+            raise CloudflareResourceError(self._error(body))
+        if not isinstance(current.get("enabled"), bool):
+            raise CloudflareResourceError("Cloudflare Worker subdomain response is invalid")
+        if current["enabled"]:
+            return
+        status, updated = self._request("POST", path, payload={"enabled": True})
+        result = updated.get("result")
+        if status != 200 or not updated.get("success") or not isinstance(result, Mapping) or result.get("enabled") is not True:
+            raise CloudflareResourceError(self._error(updated))
+
     def _find_worker(self, worker_name: str) -> CloudflareWorkerReceipt | None:
         page = 1
         per_page = 100

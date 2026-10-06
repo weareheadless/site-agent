@@ -176,7 +176,12 @@ every possible concurrent Payload writer.
   resource. Use the idempotent Cloudflare resource provisioner and the same
   version-upload/verified-promotion pipeline used for later releases. Do not
   seed a placeholder Worker or bypass the VPS release queue with a first-deploy
-  `wrangler deploy` path.
+  `wrangler deploy` path. A workers.dev origin must be built from the account's
+  Workers subdomain returned by Cloudflare, never guessed as
+  `<worker>.workers.dev`. The canonical release enables that script's
+  workers.dev route only after the exact version is promoted and before live
+  health/connection verification; a custom-domain release does not change the
+  workers.dev route.
 - Shared Python API releases use `deploy/desired-api-release.json` and the same
   VPS release timer. Queue one new release ID plus the full official `main` SHA;
   the VPS tests that exact source, builds and smoke-checks one wheel, checks its

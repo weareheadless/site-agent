@@ -166,6 +166,70 @@ def test_cloudflare_worker_provisioner_rejects_incomplete_pagination(monkeypatch
         provisioner.ensure_worker("helloada-demo")
 
 
+def test_cloudflare_worker_url_uses_the_configured_account_subdomain(monkeypatch):
+    provisioner = CloudflareResourceProvisioner("a" * 32, "secret-token")
+    calls = []
+
+    def fake_request(method, path, *, payload=None):
+        calls.append((method, path, payload))
+        assert method == "GET"
+        assert path == f"/accounts/{'a' * 32}/workers/subdomain"
+        assert payload is None
+        return 200, {"success": True, "result": {"subdomain": "weareheadless"}}
+
+    monkeypatch.setattr(provisioner, "_request", fake_request)
+    assert provisioner.workers_dev_url("helloada-demo") == (
+        "https://helloada-demo.weareheadless.workers.dev"
+    )
+    assert len(calls) == 1
+
+
+def test_cloudflare_worker_url_fails_closed_without_account_subdomain(monkeypatch):
+    import pytest
+
+    from site_agent.hands.cloudflare_resources import CloudflareResourceError
+
+    provisioner = CloudflareResourceProvisioner("a" * 32, "secret-token")
+    monkeypatch.setattr(
+        provisioner,
+        "_request",
+        lambda *_args, **_kwargs: (200, {"success": True, "result": {"subdomain": ""}}),
+    )
+    with pytest.raises(CloudflareResourceError, match="subdomain is not configured"):
+        provisioner.workers_dev_url("helloada-demo")
+
+
+def test_cloudflare_worker_route_is_enabled_after_upload_and_idempotent(monkeypatch):
+    provisioner = CloudflareResourceProvisioner("a" * 32, "secret-token")
+    calls = []
+    path = f"/accounts/{'a' * 32}/workers/scripts/helloada-demo/subdomain"
+
+    def fake_request(method, request_path, *, payload=None):
+        calls.append((method, request_path, payload))
+        if method == "GET":
+            return 200, {"success": True, "result": {"enabled": False, "previews_enabled": False}}
+        assert method == "POST"
+        assert payload == {"enabled": True}
+        return 200, {"success": True, "result": {"enabled": True, "previews_enabled": False}}
+
+    monkeypatch.setattr(provisioner, "_request", fake_request)
+    provisioner.ensure_workers_dev_route("helloada-demo")
+    assert calls == [("GET", path, None), ("POST", path, {"enabled": True})]
+
+
+def test_cloudflare_worker_route_does_not_change_an_enabled_subdomain(monkeypatch):
+    provisioner = CloudflareResourceProvisioner("a" * 32, "secret-token")
+    calls = []
+
+    def fake_request(method, path, *, payload=None):
+        calls.append((method, path, payload))
+        return 200, {"success": True, "result": {"enabled": True, "previews_enabled": True}}
+
+    monkeypatch.setattr(provisioner, "_request", fake_request)
+    provisioner.ensure_workers_dev_route("helloada-demo")
+    assert len(calls) == 1 and calls[0][0] == "GET"
+
+
 def test_bootstrap_control_route_is_explicit_when_external_bootstrap_is_not_wired(tmp_path):
     config, _unused, env = _host(tmp_path)
     registry = TenantRegistry.from_config(config, env)
@@ -251,6 +315,9 @@ def test_bootstrap_configures_generic_seo_provisioning_for_new_sites(tmp_path):
     service.config = {"bootstrap": {"resource_prefix": "helloada"}}
     service.env = {"HELLOADA_HANDOFF_PUBLIC_KEY": _TEST_HANDOFF_PUBLIC_KEY}
     service.registry = Registry()
+    service._worker_url = lambda worker_name: (
+        f"https://{worker_name}.weareheadless.workers.dev"
+    )
 
     service._configure_source(
         "demo",
@@ -270,13 +337,13 @@ def test_bootstrap_configures_generic_seo_provisioning_for_new_sites(tmp_path):
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert config["site"]["repository"] == "weareheadless/helloada-demo"
     template_manifest = json.loads((site_dir / "template-manifest.json").read_text(encoding="utf-8"))
-    assert config["site"]["public_url"] == "https://helloada-demo.workers.dev/"
+    assert config["site"]["public_url"] == "https://helloada-demo.weareheadless.workers.dev/"
     assert config["ga"]["enabled"] is True
     assert config["ga"]["source"] == "crawlseo"
     assert config["seo"]["enabled"] is True
     assert config["seo"]["provisioning"]["auto"] is True
-    assert config["seo"]["site_url"] == "https://helloada-demo.workers.dev/"
-    assert config["seo"]["gsc_property"] == "https://helloada-demo.workers.dev/"
+    assert config["seo"]["site_url"] == "https://helloada-demo.weareheadless.workers.dev/"
+    assert config["seo"]["gsc_property"] == "https://helloada-demo.weareheadless.workers.dev/"
     assert config["site"]["payload"]["contract"]["adminVersion"] == template_manifest["payloadAdmin"]
     assert config["site"]["payload"]["contract"]["contract"] == template_manifest["contentContract"]
     assert config["site"]["payload"]["contract"]["schemaIdentity"] == template_manifest["schemaIdentity"]
@@ -349,7 +416,7 @@ def test_bootstrap_release_accepts_the_canonical_owner_repository_identity(tmp_p
         {
             "site_dir": str(site_dir),
             "worker_name": "helloada-demo",
-            "worker_url": "https://helloada-demo.workers.dev",
+            "worker_url": "https://helloada-demo.weareheadless.workers.dev",
         },
         release_id="rel-20261006000000-1234abcd",
     )
@@ -382,7 +449,7 @@ def test_bootstrap_release_accepts_the_canonical_owner_repository_identity(tmp_p
             {
                 "site_dir": str(site_dir),
                 "worker_name": "helloada-demo",
-                "worker_url": "https://helloada-demo.workers.dev",
+                "worker_url": "https://helloada-demo.weareheadless.workers.dev",
             },
         )
 
