@@ -229,12 +229,6 @@ def test_interrupted_receipts_are_terminal_even_after_the_queue_moves_on(tmp_pat
     assert interrupted.read_bytes() == first
 
 
-@pytest.mark.parametrize("tenant,release_request", [
-    ("unknown", {"id": "release-1", "sha": SHA}),
-    ("oceanicvibes", {"id": "../escape", "sha": SHA}),
-    ("oceanicvibes", {"id": "release-1", "sha": "main"}),
-    ("oceanicvibes", {"id": "release-1", "sha": SHA, "command": "arbitrary"}),
-])
 def test_stale_build_workspaces_are_removed_only_from_the_dedicated_root(tmp_path):
     work_root = tmp_path / "work"
     workspace = work_root / "oceanicvibes-release-123"
@@ -251,6 +245,12 @@ def test_stale_build_workspaces_are_removed_only_from_the_dedicated_root(tmp_pat
     assert json.loads(receipt.read_text())["status"] == "deployed"
 
 
+@pytest.mark.parametrize("tenant,release_request", [
+    ("unknown", {"id": "release-1", "sha": SHA}),
+    ("oceanicvibes", {"id": "../escape", "sha": SHA}),
+    ("oceanicvibes", {"id": "release-1", "sha": "main"}),
+    ("oceanicvibes", {"id": "release-1", "sha": SHA, "command": "arbitrary"}),
+])
 def test_invalid_requests_never_execute(tenant, release_request):
     with pytest.raises(ValueError):
         queue.validate_queue({"schema": 1, "releases": {tenant: release_request}}, REGISTRY)
