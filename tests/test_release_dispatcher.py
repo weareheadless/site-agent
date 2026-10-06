@@ -75,8 +75,12 @@ def test_dispatcher_archives_only_the_requested_immutable_commit(tmp_path):
     first_sha = subprocess.check_output(["git", "-C", str(repository), "rev-parse", "HEAD"], text=True).strip()
     bare = tmp_path / "control.git"
     subprocess.run(["git", "clone", "-q", "--bare", str(repository), str(bare)], check=True)
+    stale = tmp_path / "releases" / "dispatch-control" / ("b" * 40)
+    stale.mkdir(parents=True)
+    (stale / "old-checkout.txt").write_text("superseded")
 
     snapshot = dispatcher.snapshot_main(bare, tmp_path / "releases", first_sha, {})
+    assert not stale.exists()
     assert (snapshot / dispatcher.SOURCE_MARKER).read_text().strip() == first_sha
     assert (snapshot / "copy.txt").read_text() == "first\n"
     assert dispatcher.snapshot_main(bare, tmp_path / "releases", first_sha, {}) == snapshot
