@@ -49,7 +49,7 @@ export async function GET() {
       locales: helloAdaSite.locales,
       defaultLocale: helloAdaSite.defaultLocale,
       collections: HELLOADA_CAPABILITIES.collections,
-      globals: helloAdaSite.content.settingsGlobals,
+      globals: HELLOADA_CAPABILITIES.globals,
     }).schemaIdentity,
     migrationHead: templateManifest.migrationHead,
   }
