@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261006-api-bootstrap-resume-reconcile-1",
-    "sha": "6f95f14f798d6853945906880ee957e016b45625"
+    "id": "20261006-api-bootstrap-retry-fix-1",
+    "sha": "2155e1adb927d3abd78e30dec419d155d0ebc695"
   }
 }
