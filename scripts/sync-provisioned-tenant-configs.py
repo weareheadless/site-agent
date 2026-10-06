@@ -222,26 +222,31 @@ def validate_runtime_configs(config_path: Path, manifest_path: Path, env: Mappin
         if not isinstance(website_present, bool):
             raise ValueError(f"tenant {tenant_id} must explicitly configure website_present")
 
-        payload = raw_site.get("payload")
-        if not isinstance(payload, Mapping):
-            raise ValueError(f"tenant {tenant_id} must explicitly configure Payload settings")
+        raw_payload = raw_site.get("payload")
+        if raw_payload is not None and not isinstance(raw_payload, Mapping):
+            raise ValueError(f"tenant {tenant_id} Payload settings must be an object")
+        effective_payload = site.get("payload")
+        if not isinstance(effective_payload, Mapping):
+            raise ValueError(f"tenant {tenant_id} effective Payload settings are invalid")
         adapter = str(raw_site.get("adapter") or "").strip()
         if not adapter:
             raise ValueError(f"tenant {tenant_id} must explicitly configure its site adapter")
-        enabled = payload.get("enabled") is True
+        enabled_value = effective_payload.get("enabled")
+        if not isinstance(enabled_value, bool):
+            raise ValueError(f"tenant {tenant_id} Payload enabled state must be a boolean")
+        enabled = enabled_value
         customer = customers.get(tenant_id)
         if isinstance(customer, Mapping):
             if adapter != "payload_gateway" or not enabled:
                 raise ValueError(f"manifest tenant {tenant_id} must use the enabled canonical Payload gateway")
             if website_present is not customer.get("websitePresent"):
                 raise ValueError(f"tenant {tenant_id} website_present does not match the release manifest")
-        if adapter == "payload_gateway" and not enabled:
-            if isinstance(customer, Mapping):
-                raise ValueError(f"manifest tenant {tenant_id} Payload gateway must be explicitly enabled")
         if enabled and adapter != "payload_gateway":
             raise ValueError(f"tenant {tenant_id} enables Payload without the canonical gateway adapter")
         if not enabled:
             continue
+        if not isinstance(raw_payload, Mapping) or raw_payload.get("enabled") is not True:
+            raise ValueError(f"tenant {tenant_id} enabled Payload settings must be explicit")
 
         client = PayloadGatewayClient.from_config(tenant_config, runtime_env)
         if client is None:

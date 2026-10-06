@@ -53,10 +53,13 @@ environment as an explicit dependency release; the API queue will not install
 packages ad hoc.
 
 Before an API release, the same snapshot validates every ready tenant in the
-single provisioned registry against its runtime contract. It checks each
-tenant's explicit website state, Payload adapter, token, and exact contract,
-core version, schema revision, and schema identity from this manifest. A
-failure stops before tests, slot activation, or service restart. Existing
+single provisioned registry. Every tenant must declare its website state and
+adapter. A tenant with Payload enabled must explicitly configure the canonical
+gateway, token and pinned contract identity. Every customer in the release
+manifest must have that gateway enabled and match its exact contract, core
+version, schema revision, and schema identity. A dormant tenant with Payload
+disabled does not need a Payload instance. A failure stops before tests, slot
+activation, or service restart. Existing
 tenant configs are migrated explicitly with
 `scripts/sync-provisioned-tenant-configs.py`: run `--sync --tenant <id>` first
 to inspect a dry-run, then repeat with `--apply` only for the reviewed tenant
