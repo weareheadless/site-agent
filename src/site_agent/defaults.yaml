@@ -315,7 +315,6 @@ bootstrap:
   resource_prefix: helloada
   site_agent_url: https://api.helloada.app/v1
   template_path: ""
-  worker_url_template: "https://{worker_name}.workers.dev"
   d1_location: ""
   r2_location: ""
 

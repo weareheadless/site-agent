@@ -17,9 +17,12 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 ROOT = Path(__file__).resolve().parents[1]
+if TYPE_CHECKING:
+    from site_agent.hands.cloudflare_resources import CloudflareResourceProvisioner
+
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -508,6 +511,27 @@ def check_health(url: str, tenant: str, customer: dict[str, Any], sha: str) -> d
     return body
 
 
+def workers_dev_provisioner(
+    customer: dict[str, Any], deploy_env: dict[str, str],
+) -> CloudflareResourceProvisioner | None:
+    """Resolve and validate the account-qualified workers.dev health origin."""
+    health = str(customer.get("health") or "")
+    hostname = urllib.parse.urlsplit(health).hostname or ""
+    if not hostname.endswith(".workers.dev"):
+        return None
+    token = str(deploy_env.get("CLOUDFLARE_API_TOKEN") or "").strip()
+    account_id = str(deploy_env.get("CLOUDFLARE_ACCOUNT_ID") or "").strip()
+    if not token or not account_id:
+        raise RuntimeError("Cloudflare credentials are required to validate the workers.dev origin")
+    from site_agent.hands.cloudflare_resources import CloudflareResourceProvisioner
+
+    provisioner = CloudflareResourceProvisioner(account_id, token)
+    expected = provisioner.workers_dev_url(str(customer.get("worker") or "")) + "/api/health"
+    if health != expected:
+        raise RuntimeError("registered workers.dev health endpoint does not match the Cloudflare account subdomain")
+    return provisioner
+
+
 def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dict[str, Any],
                 deploy_env: dict[str, str], base: dict[str, str], stage: Any) -> None:
     stage("verify-deployment")
@@ -517,6 +541,11 @@ def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dic
             or versions[0]["version_id"] != receipt["uploadedVersion"]):
         raise RuntimeError("the exact uploaded Worker version does not receive 100% of production traffic")
     receipt["deployment"] = deployment
+    workers_dev = workers_dev_provisioner(customer, deploy_env)
+    if workers_dev is not None:
+        stage("enable-workers-dev")
+        workers_dev.ensure_workers_dev_route(str(customer["worker"]))
+        stage("verify-deployment")
     gate = manifest["connectionGate"]
     # Edge rollout is asynchronous. Repeat the same strict read-only gates;
     # never change the version, identity, endpoint or success criteria.
@@ -742,6 +771,7 @@ def main() -> int:
         deploy_env = credential_environment({"credentials": {"cloudflare": cloudflare}}, base)
         if not deploy_env.get("CLOUDFLARE_API_TOKEN") or not deploy_env.get("CLOUDFLARE_ACCOUNT_ID"):
             raise RuntimeError("declared Cloudflare profile is incomplete")
+        workers_dev_provisioner(customer, deploy_env)
         if args.verify_only:
             verify_live(receipt, customer, manifest, deploy_env, base, stage)
             receipt.update({"status": "deployed", "stage": "awaiting-browser-verification", "finishedAt": utc_now()})
