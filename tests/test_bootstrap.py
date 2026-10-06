@@ -315,8 +315,10 @@ def test_bootstrap_worker_names_fit_the_workers_dev_preview_limit():
 def test_bootstrap_resource_names_remain_bounded_for_maximum_tenant_ids():
     service = WebsiteBootstrapService.__new__(WebsiteBootstrapService)
     service.config = {"bootstrap": {"resource_prefix": "helloada"}}
+    tenant_id = "northstar-coffee-e2e-validation-" + "a" * 31
 
-    names = service._names("n" + "orthstar-coffee-e2e-validation-" + "a" * 32)
+    assert len(tenant_id) == 63
+    names = service._names(tenant_id)
 
     assert len(names["worker"]) <= 54
     assert len(names["repo"]) <= 63
