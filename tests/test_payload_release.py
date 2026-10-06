@@ -294,7 +294,7 @@ def test_worker_contract_requires_the_registered_tenant_and_all_shared_versions(
         "contract": customer["contentContract"], "schemaRevision": customer["schemaRevision"],
         "schemaIdentity": customer["schemaIdentity"], "migrationHead": customer["migrationHead"],
         "d1DatabaseId": customer["d1DatabaseId"], "d1DatabaseName": customer["d1DatabaseName"],
-        "r2BucketName": customer["r2BucketName"]}
+        "r2BucketName": customer["r2BucketName"], "compatibilityDate": "2025-08-15", "compatibilityFlags": ["nodejs_compat", "global_fetch_strictly_public"]}
     release.validate_worker_contract(worker, customer, "oceanicvibes")
     with pytest.raises(RuntimeError, match="shared Payload contract"):
         release.validate_worker_contract({**worker, "core": "0.0.9"}, customer, "oceanicvibes")
