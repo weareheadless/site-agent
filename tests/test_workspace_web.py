@@ -30,7 +30,7 @@ from site_agent.web.workspace import register_workspace_routes
 
 _PAYLOAD_CONTRACT = {
     "contract": "helloada-content-v3",
-    "coreVersion": "0.5.0",
+    "coreVersion": "0.5.1",
     "schemaRevision": 5,
     "schemaIdentity": "a" * 64,
 }
@@ -584,7 +584,7 @@ def test_payload_gateway_contract_is_instance_configured_and_adapter_is_register
     client = PayloadGatewayClient(
         "https://example.test",
         "secret",
-        PayloadContract(frozenset({"alt"}), "helloada-content-v3", "0.5.0", 5, "a" * 64),
+        PayloadContract(frozenset({"alt"}), "helloada-content-v3", "0.5.1", 5, "a" * 64),
     )
 
     assert client._collection("pages") == "pages"

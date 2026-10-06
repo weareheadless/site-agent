@@ -1,7 +1,7 @@
 {
   "contract": "helloada-content-v3",
   "corePackage": "@weareheadless/helloada-payload-core",
-  "coreVersion": "0.5.0",
+  "coreVersion": "0.5.1",
   "schemaRevision": 5,
   "collections": {
     "pages": [
