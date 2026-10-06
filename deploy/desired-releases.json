@@ -16,11 +16,11 @@
       "sha": "fd9910cb176cd3cc3b19aa6d9ef67785dd8c509a"
     },
     "northstar-coffee-house-afd6a0232bf10fd4": {
-      "id": "rel-20261006204411-124ba3b8",
+      "id": "rel-20261006212816-11d97f91",
       "initializeSchema": {
         "migrationHead": "75064eaeb5a035afc8977d39a59742dfa8bfb5e94d344ca9090e29e516bb2534"
       },
-      "sha": "89833f3023489eb366c5f756cf956e652cac9e91"
+      "sha": "1b888270300d25d0f66ef99e7b75b2e0cce206f9"
     },
     "oceanicvibes": {
       "id": "20261005-oceanic-presentation-repair-13",
