@@ -43,7 +43,7 @@ def payload_migration_command(manifest: dict[str, Any]) -> list[str]:
     return [str(Path(manifest["npmBin"]) / "npm"), "run", "payload", "--", "migrate"]
 
 
-def payload_migration_config_file(temporary_directory: Path, customer: dict[str, Any],
+def payload_remote_bindings_config_file(temporary_directory: Path, customer: dict[str, Any],
                                   worker_config: dict[str, Any]) -> Path:
     """Build a private Wrangler config that explicitly targets this tenant's remote bindings."""
     compatibility_date = str(worker_config.get("compatibilityDate") or "")
@@ -261,7 +261,7 @@ def applied_payload_migrations(customer: dict[str, Any], env: dict[str, str]) ->
 def run_payload_migration(checkout: Path, customer: dict[str, Any], worker_config: dict[str, Any],
                           env: dict[str, str], base: dict[str, str], manifest: dict[str, Any],
                           tenant: str, temporary_directory: Path) -> str:
-    config_path = payload_migration_config_file(temporary_directory, customer, worker_config)
+    config_path = payload_remote_bindings_config_file(temporary_directory, customer, worker_config)
     try:
         runtime = tenant_runtime_secrets(manifest, tenant)
         migration_env = {
@@ -271,6 +271,20 @@ def run_payload_migration(checkout: Path, customer: dict[str, Any], worker_confi
             "HELLOADA_CLOUDFLARE_CONFIG_PATH": str(config_path),
         }
         return run(payload_migration_command(manifest), checkout, migration_env)
+    finally:
+        config_path.unlink(missing_ok=True)
+
+
+def run_payload_contract_verifier(checkout: Path, customer: dict[str, Any],
+                                   worker_config: dict[str, Any], env: dict[str, str],
+                                   base: dict[str, str], temporary_directory: Path) -> str:
+    config_path = payload_remote_bindings_config_file(temporary_directory, customer, worker_config)
+    try:
+        verifier_env = {
+            **base, **env,
+            "HELLOADA_CLOUDFLARE_CONFIG_PATH": str(config_path),
+        }
+        return run(["npm", "run", "verify:payload"], checkout, verifier_env)
     finally:
         config_path.unlink(missing_ok=True)
 
@@ -754,7 +768,7 @@ def main() -> int:
         )
         receipt["verifiedMigrationHead"] = customer["migrationHead"]
         stage("verify-payload-contract")
-        run(["npm", "run", "verify:payload"], checkout, {**base, **deploy_env})
+        run_payload_contract_verifier(checkout, customer, wrangler, deploy_env, base, temporary_root)
         atomic_json(receipt_path, receipt)
 
         stage("promote")
