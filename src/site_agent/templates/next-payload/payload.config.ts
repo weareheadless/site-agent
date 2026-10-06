@@ -17,6 +17,7 @@ const payloadCliEntrypoint = process.argv.some((value) =>
   /(?:^|[\\/])payload(?:\.cmd|\.js)?$/i.test(value) || /[\\/]payload[\\/]bin\.js$/i.test(value),
 )
 const isCLI = process.env.PAYLOAD_CLI === '1'
+const isProduction = process.env.NODE_ENV === 'production'
 const schema = createHelloAdaSchema(assertNativeWriteAllowed)
 
 if (payloadCliEntrypoint && !isCLI) {
