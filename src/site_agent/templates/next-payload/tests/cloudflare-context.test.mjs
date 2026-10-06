@@ -41,6 +41,11 @@ test('production Payload CLI uses Wrangler remote bindings, while Worker request
     PAYLOAD_CLI: '1',
     HELLOADA_CLOUDFLARE_CONFIG_PATH: '/release/temporary/wrangler.jsonc',
   }, ['migrate']), /Cloudflare credential/)
+  assert.throws(() => payloadCloudflareContextPlan({
+    NODE_ENV: 'production',
+    PAYLOAD_CLI: '1',
+    CLOUDFLARE_API_TOKEN: 'configured',
+  }, ['/project/scripts/verify-payload-contract.ts']), /remote-binding Wrangler config/)
   assert.deepEqual(payloadCloudflareContextPlan({ NODE_ENV: 'production' }, []), {
     provider: 'opennext', remoteBindings: false,
   })
