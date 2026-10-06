@@ -28,8 +28,18 @@ class D1DatabaseReceipt:
         return {"database_id": self.database_id, "name": self.name, "created": self.created}
 
 
+@dataclass(frozen=True)
+class CloudflareWorkerReceipt:
+    worker_id: str
+    name: str
+    created: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"worker_id": self.worker_id, "name": self.name, "created": self.created}
+
+
 class CloudflareResourceProvisioner:
-    """Small idempotent client for account-level D1 resources."""
+    """Small idempotent client for account-level Cloudflare resources."""
 
     def __init__(self, account_id: str, api_token: str, *, timeout_seconds: float = 30.0) -> None:
         self.account_id = str(account_id or "").strip().lower()
@@ -112,6 +122,67 @@ class CloudflareResourceProvisioner:
             raise CloudflareResourceError("D1 database creation raced another owner and could not be reconciled")
         raise CloudflareResourceError(self._error(created))
 
+    def ensure_worker(self, name: str) -> CloudflareWorkerReceipt:
+        worker_name = str(name or "").strip().lower()
+        if not re.fullmatch(r"[a-z][a-z0-9-]{1,62}", worker_name):
+            raise CloudflareResourceError("Worker name is invalid")
+        existing = self._find_worker(worker_name)
+        if existing is not None:
+            return existing
+        status, created = self._request(
+            "POST",
+            f"/accounts/{self.account_id}/workers/workers",
+            payload={"name": worker_name},
+        )
+        if status in {200, 201} and created.get("success"):
+            result = created.get("result") or {}
+            worker_id = str(result.get("id") or "").strip()
+            returned_name = str(result.get("name") or "").strip()
+            if worker_id and returned_name == worker_name:
+                return CloudflareWorkerReceipt(worker_id, worker_name, True)
+            raise CloudflareResourceError("Cloudflare created a Worker without the expected identity")
+        if status in {400, 409, 422}:
+            existing = self._find_worker(worker_name)
+            if existing is not None:
+                return existing
+            raise CloudflareResourceError("Worker creation raced another owner and could not be reconciled")
+        raise CloudflareResourceError(self._error(created))
+
+    def _find_worker(self, worker_name: str) -> CloudflareWorkerReceipt | None:
+        page = 1
+        per_page = 100
+        while True:
+            query = urllib.parse.urlencode({"page": page, "per_page": per_page})
+            status, body = self._request(
+                "GET",
+                f"/accounts/{self.account_id}/workers/workers?{query}",
+            )
+            if status != 200 or not body.get("success"):
+                raise CloudflareResourceError(self._error(body))
+            rows = body.get("result")
+            if not isinstance(rows, list):
+                raise CloudflareResourceError("Cloudflare Worker list response is invalid")
+            for row in rows:
+                if not isinstance(row, Mapping) or str(row.get("name") or "") != worker_name:
+                    continue
+                worker_id = str(row.get("id") or "").strip()
+                if not worker_id:
+                    raise CloudflareResourceError("Cloudflare Worker identity is missing its ID")
+                return CloudflareWorkerReceipt(worker_id, worker_name, False)
+            info = body.get("result_info")
+            total_pages = info.get("total_pages") if isinstance(info, Mapping) else None
+            if total_pages is not None:
+                try:
+                    if page >= int(total_pages):
+                        return None
+                except (TypeError, ValueError) as exc:
+                    raise CloudflareResourceError("Cloudflare Worker pagination metadata is invalid") from exc
+            elif len(rows) < per_page:
+                return None
+            else:
+                raise CloudflareResourceError("Cloudflare Worker list omitted pagination metadata")
+            page += 1
+
     def _find_d1(self, database_name: str) -> D1DatabaseReceipt | None:
         query = urllib.parse.urlencode({"name": database_name})
         status, body = self._request("GET", f"/accounts/{self.account_id}/d1/database?{query}")
@@ -130,4 +201,9 @@ class CloudflareResourceProvisioner:
         return None
 
 
-__all__ = ["CloudflareResourceError", "CloudflareResourceProvisioner", "D1DatabaseReceipt"]
+__all__ = [
+    "CloudflareResourceError",
+    "CloudflareResourceProvisioner",
+    "CloudflareWorkerReceipt",
+    "D1DatabaseReceipt",
+]

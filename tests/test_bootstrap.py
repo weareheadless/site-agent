@@ -71,6 +71,101 @@ def test_cloudflare_d1_provisioner_reuses_existing_database(monkeypatch):
     assert receipt.created is False
 
 
+def test_cloudflare_worker_provisioner_reuses_existing_identity(monkeypatch):
+    provisioner = CloudflareResourceProvisioner("a" * 32, "secret-token")
+
+    def fake_request(method, path, *, payload=None):
+        assert method == "GET"
+        assert path.endswith("/workers/workers?page=1&per_page=100")
+        assert payload is None
+        return 200, {"success": True, "result": [{"id": "worker-123", "name": "helloada-demo"}]}
+
+    monkeypatch.setattr(provisioner, "_request", fake_request)
+    receipt = provisioner.ensure_worker("helloada-demo")
+    assert receipt.to_dict() == {"worker_id": "worker-123", "name": "helloada-demo", "created": False}
+
+
+def test_cloudflare_worker_provisioner_creates_identity_before_version_upload(monkeypatch):
+    provisioner = CloudflareResourceProvisioner("a" * 32, "secret-token")
+    calls: list[tuple[str, str]] = []
+
+    def fake_request(method, path, *, payload=None):
+        calls.append((method, path))
+        if method == "GET":
+            return 200, {"success": True, "result": []}
+        assert method == "POST"
+        assert path == f"/accounts/{'a' * 32}/workers/workers"
+        assert payload == {"name": "helloada-demo"}
+        return 200, {"success": True, "result": {"id": "worker-123", "name": "helloada-demo"}}
+
+    monkeypatch.setattr(provisioner, "_request", fake_request)
+    receipt = provisioner.ensure_worker("helloada-demo")
+    assert receipt.to_dict() == {"worker_id": "worker-123", "name": "helloada-demo", "created": True}
+    assert [method for method, _path in calls] == ["GET", "POST"]
+
+
+def test_cloudflare_worker_provisioner_reconciles_concurrent_creation(monkeypatch):
+    provisioner = CloudflareResourceProvisioner("a" * 32, "secret-token")
+    list_calls = 0
+
+    def fake_request(method, path, *, payload=None):
+        nonlocal list_calls
+        if method == "GET":
+            list_calls += 1
+            rows = [] if list_calls == 1 else [{"id": "worker-123", "name": "helloada-demo"}]
+            return 200, {"success": True, "result": rows}
+        assert method == "POST"
+        return 409, {"success": False, "errors": [{"message": "already exists"}]}
+
+    monkeypatch.setattr(provisioner, "_request", fake_request)
+    receipt = provisioner.ensure_worker("helloada-demo")
+    assert receipt.worker_id == "worker-123"
+    assert receipt.created is False
+    assert list_calls == 2
+
+
+def test_cloudflare_worker_provisioner_searches_every_list_page(monkeypatch):
+    provisioner = CloudflareResourceProvisioner("a" * 32, "secret-token")
+    paths: list[str] = []
+
+    def fake_request(method, path, *, payload=None):
+        assert method == "GET"
+        assert payload is None
+        paths.append(path)
+        page = int(path.split("page=", 1)[1].split("&", 1)[0])
+        if page == 1:
+            return 200, {
+                "success": True,
+                "result": [{"id": str(i), "name": f"worker-{i}"} for i in range(100)],
+                "result_info": {"total_pages": 2},
+            }
+        return 200, {
+            "success": True,
+            "result": [{"id": "worker-123", "name": "helloada-demo"}],
+            "result_info": {"total_pages": 2},
+        }
+
+    monkeypatch.setattr(provisioner, "_request", fake_request)
+    receipt = provisioner.ensure_worker("helloada-demo")
+    assert receipt.worker_id == "worker-123"
+    assert len(paths) == 2
+
+
+def test_cloudflare_worker_provisioner_rejects_incomplete_pagination(monkeypatch):
+    from site_agent.hands.cloudflare_resources import CloudflareResourceError
+    import pytest
+
+    provisioner = CloudflareResourceProvisioner("a" * 32, "secret-token")
+
+    def fake_request(_method, _path, *, payload=None):
+        assert payload is None
+        return 200, {"success": True, "result": [{"id": str(i), "name": f"worker-{i}"} for i in range(100)]}
+
+    monkeypatch.setattr(provisioner, "_request", fake_request)
+    with pytest.raises(CloudflareResourceError, match="omitted pagination metadata"):
+        provisioner.ensure_worker("helloada-demo")
+
+
 def test_bootstrap_control_route_is_explicit_when_external_bootstrap_is_not_wired(tmp_path):
     config, _unused, env = _host(tmp_path)
     registry = TenantRegistry.from_config(config, env)
@@ -434,6 +529,7 @@ def test_bootstrap_verified_failed_retry_persists_and_requests_a_fresh_release_i
     monkeypatch.setattr(service, "_write_state", lambda _state: None)
     monkeypatch.setattr(service, "_repository", lambda *_args: {"repository": "demo"})
     monkeypatch.setattr(service, "_data_resources", lambda *_args: {"resources": "ready"})
+    monkeypatch.setattr(service, "_worker_resource", lambda *_args: {"worker_id": "worker-123"})
     monkeypatch.setattr(service, "_configure_source", lambda *_args: {"worker_name": "helloada-demo"})
     monkeypatch.setattr(service, "_refresh_release_state", lambda _state: None)
     queued = {}
@@ -447,6 +543,7 @@ def test_bootstrap_verified_failed_retry_persists_and_requests_a_fresh_release_i
     service._run("demo", "Demo")
 
     assert queued["release_id"] is not None
+    assert state["steps"]["creating_worker_identity"]["receipt"] == {"worker_id": "worker-123"}
     assert state["release"]["release_id"] == queued["release_id"]
     assert state["status"] == "awaiting_release"
     assert "release_retry_id" not in state
