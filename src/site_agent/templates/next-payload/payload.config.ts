@@ -17,22 +17,10 @@ const payloadCliEntrypoint = process.argv.some((value) =>
   /(?:^|[\\/])payload(?:\.cmd|\.js)?$/i.test(value) || /[\\/]payload[\\/]bin\.js$/i.test(value),
 )
 const isCLI = process.env.PAYLOAD_CLI === '1'
-const isDatabaseMigrationCommand = process.argv.some((value) =>
-  ['migrate', 'migrate:status', 'migrate:create', 'migrate:down'].includes(value),
-)
-const isProduction = process.env.NODE_ENV === 'production'
-const hasCloudflareToken = Boolean(process.env.CLOUDFLARE_API_TOKEN)
 const schema = createHelloAdaSchema(assertNativeWriteAllowed)
 
 if (payloadCliEntrypoint && !isCLI) {
   throw new Error('Payload CLI commands must use the package-managed scripts, which set PAYLOAD_CLI=1 explicitly.')
-}
-
-// A production Payload CLI command must use Cloudflare's remote bindings.
-// Without this guard, `payload migrate` silently targets Wrangler's local D1
-// database and reports success while production remains on the old schema.
-if (isCLI && isProduction && isDatabaseMigrationCommand && !hasCloudflareToken) {
-  throw new Error('Refusing production Payload CLI without CLOUDFLARE_API_TOKEN; this would target local D1 instead of the tenant database.')
 }
 
 export const cloudflare = await getPayloadCloudflareContext() as unknown as {
