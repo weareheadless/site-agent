@@ -62,7 +62,7 @@ export default function TenantChrome({ children, navigation, settings }: {
       </div>
       <nav aria-label="Footer navigation"><NavItems items={footer} global="navigation" /></nav>
       {footerGroups.map((group) => <div key={String(group.key || '')}>
-        <h2>{String(group.label || '')}</h2>
+        <h2 data-helloada-field={helloAdaGlobalBindingId('navigation', String(group.key || ''), 'label')}>{String(group.label || '')}</h2>
         <NavItems items={navList(group.items)} global="navigation" />
       </div>)}
     </footer>

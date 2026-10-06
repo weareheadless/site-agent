@@ -60,6 +60,23 @@ def test_owner_safe_reply_leaves_normal_owner_update_unchanged():
     assert _owner_safe_reply(reply) == reply
 
 
+def test_payload_locale_is_explicit_and_must_match_the_tenant_contract():
+    from site_agent.brain.editor import _payload_locale
+
+    class Payload:
+        def require_authoring_contract(self):
+            return {"locales": ["en", "es-MX"], "defaultLocale": "en"}
+
+    payload = Payload()
+    context = {}
+    assert _payload_locale(payload, context) == "en"
+    context["_workspace_language"] = "ES-mx"
+    assert _payload_locale(payload, context) == "es-MX"
+    context["_workspace_language"] = "fr"
+    with pytest.raises(ValueError, match="not enabled"):
+        _payload_locale(payload, context)
+
+
 def _tc(name, **args):
     return [{"id": "call_1", "type": "function",
              "function": {"name": name, "arguments": json.dumps(args)}}]
@@ -190,6 +207,8 @@ def test_existing_source_site_routes_focused_visual_edits_to_builder(env, monkey
         },
     )
     llm = FakeToolsLLM([
+        {"content": None, "tool_calls": _tc(
+            "plan_website_change", content_effects=[], source_brief=request, response_only=False)},
         {"content": None, "tool_calls": _tc("spawn_build", brief=request)},
     ])
     result = handle_message({**context, "llm": llm}, Adapter(), request)
@@ -238,16 +257,22 @@ def test_unoffered_mutation_tool_cannot_create_a_draft_on_source_sites(env):
 def test_payload_tool_schema_uses_the_gateway_contract(env):
     from site_agent.brain.editor import _tools_spec
 
-    class Contract:
-        collections = ("articles",)
-        globals = ("settings",)
-
     class Payload:
-        contract = Contract()
+        @staticmethod
+        def require_authoring_contract():
+            return {
+                "enabled": {"collections": ["pages"], "globals": ["settings"]},
+                "authoring": {
+                    "collections": {"pages": [{"name": "title", "type": "text"}]},
+                    "globals": {"settings": [{"name": "siteName", "type": "text"}]},
+                },
+            }
 
-    tools = _tools_spec({**env[2], "payload_gateway": Payload()})
+    payload = Payload()
+    contract = payload.require_authoring_contract()
+    tools = _tools_spec({**env[2], "payload_gateway": payload}, authoring_contract=contract)
     by_name = {tool["function"]["name"]: tool for tool in tools}
-    assert by_name["read_payload_content"]["function"]["parameters"]["properties"]["collection"]["enum"] == ["articles"]
+    assert by_name["read_payload_content"]["function"]["parameters"]["properties"]["collection"]["enum"] == ["pages"]
     assert by_name["read_payload_global"]["function"]["parameters"]["properties"]["global"]["enum"] == ["settings"]
     assert "publish_payload_document" not in by_name
     assert "publish_payload_global" not in by_name
@@ -261,12 +286,21 @@ def test_payload_gateway_tools_read_then_update_draft(env):
         def __init__(self):
             self.updates = []
 
+        def require_authoring_contract(self):
+            return {
+                "enabled": {"collections": ["pages"], "globals": []},
+                "authoring": {"collections": {"pages": [{"name": "title", "type": "text"}]}, "globals": {}},
+                "locales": ["en"],
+                "defaultLocale": "en",
+            }
+
         def read(self, collection, **kwargs):
             assert collection == "pages"
             assert kwargs["identifier"] == "home"
             return {"id": "7", "sourceId": "home", "title": "Old heading", "content": {"heading": "Old heading"}, "_helloadaRevision": "sha256:" + "a" * 64}
 
-        def update(self, collection, document_id, data, *, expected_hash):
+        def update(self, collection, document_id, data, *, expected_hash, locale):
+            assert locale == "en"
             self.updates.append((collection, document_id, data, expected_hash))
             return {"id": document_id, "sourceId": "home", "title": data["title"], "_status": "draft", "_helloadaRevision": "sha256:" + "b" * 64}
 
@@ -279,18 +313,28 @@ def test_payload_gateway_tools_read_then_update_draft(env):
             return {}
 
     payload = Payload()
-    context = {**env[2], "llm": FakeToolsLLM([
+    llm = FakeToolsLLM([
+        {"content": None, "tool_calls": _tc(
+            "plan_website_change",
+            content_effects=[{
+                "kind": "collection", "operation": "update", "collection": "pages",
+                "identifier": "home", "identifier_kind": "sourceId", "fields": ["title"],
+                "summary": "Change the homepage heading",
+            }],
+            source_brief="", response_only=False)},
         {"content": None, "tool_calls": _tc(
             "read_payload_content", collection="pages", identifier="home", identifier_kind="sourceId")},
         {"content": None, "tool_calls": _tc(
             "update_payload_draft", collection="pages", id="7", expected_hash="sha256:" + "a" * 64,
             data={"title": "New heading"})},
-    ]), "payload_gateway": payload}
+        {"content": "The homepage heading is saved as a draft.", "tool_calls": None},
+    ])
+    context = {**env[2], "llm": llm, "payload_gateway": payload}
     result = handle_message(context, Adapter(), "Change the heading on the homepage")
 
-    assert result["reply"].startswith("Payload draft updated:")
+    assert result["reply"] == "The homepage heading is saved as a draft."
     assert payload.updates == [("pages", "7", {"title": "New heading"}, "sha256:" + "a" * 64)]
-    assert "read_payload_content" in json.dumps(_tools_spec(context))
+    assert "read_payload_content" in json.dumps(llm.calls[1]["tools"])
 
 
 def test_reads_pending_build_from_preview_branch(env):
@@ -334,16 +378,18 @@ def test_spawn_build_tool_runs_staged_builder_and_surfaces_draft(env, monkeypatc
         def commit_file(self, path, data, message, branch=None): return {}
 
     llm = FakeToolsLLM([
+        {"content": None, "tool_calls": _tc(
+            "plan_website_change", content_effects=[], source_brief="Build a coaching page", response_only=False)},
         {"content": None, "tool_calls": _tc("spawn_build", brief="coaching page")},
     ])
     r = handle_message({"config": config, "memory": memory, "llm": llm},
                        Adapter(), "build a coaching page")
     assert r["merge_draft_id"] == 7
     assert r["proposal_id"] is None
-    assert len(llm.calls) == 1
+    assert len(llm.calls) == 2
 
 
-def test_builder_route_sends_creative_request_directly_to_builder(env, monkeypatch):
+def test_builder_route_validates_creative_request_before_builder(env, monkeypatch):
     from site_agent.hands import opencode_runner as runner
     from site_agent.hands.base import SiteAdapter
 
@@ -352,33 +398,27 @@ def test_builder_route_sends_creative_request_directly_to_builder(env, monkeypat
         def get_file(self, path, branch=None): return (None, None)
         def commit_file(self, path, data, message, branch=None): return {}
 
-    class RoutedLLM:
-        def __init__(self):
-            self.calls = []
-            self.last_resp = None
-        def chat_tools(self, messages, tools, **kwargs):
-            self.calls.append(messages)
-            self.last_resp = {"content": None, "tool_calls": [
-                {"id": "c1", "type": "function",
-                 "function": {"name": "spawn_build",
-                              "arguments": json.dumps({"brief": "make the homepage feel alive with a restrained GSAP descent"})}}
-            ]}
-            return self.last_resp
-
     memory, config, context = env
     config["builder"] = {"enabled": True}
     config["site"]["clone_path"] = "/tmp/site-clone"
-    llm = RoutedLLM()
+    request = "make the homepage feel alive and show what the new motion tools can do"
+    llm = FakeToolsLLM([
+        {"content": None, "tool_calls": _tc(
+            "plan_website_change", content_effects=[], source_brief=request, response_only=False)},
+        {"content": None, "tool_calls": _tc(
+            "spawn_build", brief="make the homepage feel alive with a restrained GSAP descent")},
+    ])
     context["llm"] = llm
     monkeypatch.setattr(runner, "stage_build", lambda ctx, brief, progress=None: {
         "reply": f"staged: {brief}", "merge_draft_id": 99, "changed": True,
     })
 
-    result = handle_message(context, Adapter(), "make the homepage feel alive and show what the new motion tools can do")
+    result = handle_message(context, Adapter(), request)
     assert result["merge_draft_id"] == 99
     assert result["reply"].startswith("staged:")
-    assert len(llm.calls) == 1
-    assert "spawn_build" == llm.last_resp["tool_calls"][0]["function"]["name"]
+    assert len(llm.calls) == 2
+    assert "plan_website_change" in json.dumps(llm.calls[0]["tools"])
+    assert "spawn_build" in json.dumps(llm.calls[1]["tools"])
 
 
 def test_spawn_build_absent_when_builder_disabled(env):
@@ -387,7 +427,8 @@ def test_spawn_build_absent_when_builder_disabled(env):
     assert "spawn_build" not in spec
 
 
-def test_canonical_design_intent_uses_typed_handoff_instead_of_legacy_builder(env):
+def test_existing_source_design_intent_uses_planned_builder_not_typed_handoff(env, monkeypatch):
+    from site_agent.hands import opencode_runner as runner
     from site_agent.hands.base import SiteAdapter
 
     class Adapter(SiteAdapter):
@@ -401,39 +442,27 @@ def test_canonical_design_intent_uses_typed_handoff_instead_of_legacy_builder(en
     memory, config, context = env
     config["builder"] = {"enabled": True}
     config["site"]["clone_path"] = "/tmp/design-clone"
-    context["design_service"] = object()
-    intake = {
-        "schema_version": 1,
-        "business": {
-            "name": "OceanicVibes",
-            "offer_summary": "Freediving instruction.",
-            "primary_services": ["Training"],
-        },
-        "audience": {"primary": "Freedivers"},
-        "conversion": {"primary_action": "Start a conversation", "not_available": True},
-        "brand": {"voice": "Calm and precise."},
-        "site": {"required_pages": ["index.html"]},
-    }
+    monkeypatch.setattr(runner, "stage_build", lambda *_args, **_kwargs: {
+        "reply": "Candidate prepared for review.", "merge_draft_id": 18, "changed": True,
+    })
+    request = "redesign the homepage around depth"
     llm = FakeToolsLLM([{
         "content": None,
-        "tool_calls": _tc(
-            "design_request",
-            intent="redesign",
-            intake=intake,
-            owner_summary="I will prepare one reviewable redesign.",
-        ),
+        "tool_calls": _tc("plan_website_change", content_effects=[], source_brief=request, response_only=False),
+    }, {
+        "content": None,
+        "tool_calls": _tc("spawn_build", brief="Redesign the homepage around depth."),
     }])
 
     result = handle_message(
         {**context, "llm": llm},
         Adapter(),
-        "redesign the homepage around depth",
-        source_message_id=17,
+        request,
     )
 
-    assert result["design_request"]["intent"] == "redesign"
-    assert result["design_request"]["source_message_id"] == 17
-    assert "spawn_build" not in json.dumps(llm.calls[0]["tools"])
+    assert result["merge_draft_id"] == 18
+    assert "design_request" not in json.dumps(llm.calls[0]["tools"])
+    assert "spawn_build" in json.dumps(llm.calls[1]["tools"])
 
 
 def test_site_source_changes_have_no_proposal_only_tool(env):

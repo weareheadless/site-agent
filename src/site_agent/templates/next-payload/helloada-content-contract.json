@@ -1,8 +1,8 @@
 {
-  "contract": "helloada-content-v2",
+  "contract": "helloada-content-v3",
   "corePackage": "@weareheadless/helloada-payload-core",
-  "coreVersion": "0.2.0",
-  "schemaRevision": 2,
+  "coreVersion": "0.5.0",
+  "schemaRevision": 5,
   "collections": {
     "pages": [
       "sourceId",
@@ -94,6 +94,75 @@
       "analysisError",
       "analysisUpdatedAt",
       "analysis"
+    ],
+    "contactForms": [
+      "title",
+      "slug",
+      "intro",
+      "submitLabel",
+      "successMessage",
+      "fields",
+      "enabled"
+    ],
+    "contacts": [
+      "emailKey",
+      "email",
+      "name",
+      "phone",
+      "company",
+      "notes",
+      "source",
+      "lastSeenAt"
+    ],
+    "conversations": [
+      "subject",
+      "contact",
+      "participantEmail",
+      "mailboxKey",
+      "threadKey",
+      "state",
+      "unread",
+      "source",
+      "sourcePage",
+      "lastActivityAt",
+      "lastMessagePreview"
+    ],
+    "messages": [
+      "conversation",
+      "direction",
+      "from",
+      "to",
+      "subject",
+      "text",
+      "draftText",
+      "draftRevision",
+      "deliveryState",
+      "form",
+      "formSnapshot",
+      "receiptId",
+      "externalMessageId",
+      "inReplyTo",
+      "references",
+      "rawObjectKey",
+      "attachmentManifest",
+      "approvalHash",
+      "approvedBy",
+      "approvedAt",
+      "operationId"
+    ],
+    "messageOperations": [
+      "operationId",
+      "operationType",
+      "idempotencyKey",
+      "requestHash",
+      "state",
+      "attempts",
+      "nextAttemptAt",
+      "leaseUntil",
+      "payload",
+      "privateObjectKey",
+      "providerReference",
+      "errorCode"
     ]
   },
   "globals": {
@@ -126,6 +195,20 @@
       "footer",
       "groups",
       "footerGroups"
+    ],
+    "messageMailbox": [
+      "domain",
+      "address",
+      "state",
+      "statusDetail",
+      "activatedAt",
+      "notificationAddress",
+      "notificationVerifiedAt",
+      "notificationPendingAddress",
+      "notificationCodeHash",
+      "notificationCodeExpiresAt",
+      "notificationCodeSentAt",
+      "notificationCodeAttempts"
     ]
   },
   "contentBlocks": [
@@ -134,6 +217,7 @@
     "helloAdaRichText",
     "helloAdaImage",
     "helloAdaLink",
-    "helloAdaContentList"
+    "helloAdaContentList",
+    "helloAdaContactForm"
   ]
 }

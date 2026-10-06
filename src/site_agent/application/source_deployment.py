@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import shutil
 import signal
 import socket
@@ -38,6 +39,11 @@ class SourceDeploymentError(RuntimeError):
 _BRANCH = re.compile(r"^[A-Za-z0-9._/-]+$")
 _COMPILED_PREVIEW = "compiled_preview"
 _PRODUCTION = "production"
+_PREVIEW_ENV_ALLOWLIST = frozenset({
+    "PATH", "LANG", "LC_ALL", "CI", "TZ",
+    "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "NPM_CONFIG_CACHE",
+    "NEXT_TELEMETRY_DISABLED",
+})
 
 
 def _now() -> str:
@@ -51,10 +57,22 @@ def _mapping(value: Any) -> Mapping[str, Any]:
 class SourceDeploymentService:
     """Run source validation and deploy one exact GitHub revision."""
 
-    def __init__(self, config: Mapping[str, Any], env: Mapping[str, str] | None = None, *, memory: Any | None = None) -> None:
+    def __init__(
+        self,
+        config: Mapping[str, Any],
+        env: Mapping[str, str] | None = None,
+        *,
+        memory: Any | None = None,
+        payload_gateway: Any | None = None,
+    ) -> None:
         self.config = dict(config)
         self.env = dict(os.environ if env is None else env)
         self.memory = memory
+        self.payload_gateway = payload_gateway
+        self._preview_home = Path(tempfile.mkdtemp(prefix="site-agent-preview-home-"))
+        self._preview_home.chmod(0o700)
+        for directory in (self._preview_home / "tmp", self._preview_home / ".npm"):
+            directory.mkdir(mode=0o700)
         self.adapter = GithubStatic(self.config, self.env)
         saved = memory.kv_get("source_preview_jobs", {}) if memory is not None else {}
         self._jobs = dict(saved) if isinstance(saved, Mapping) else {}
@@ -224,6 +242,51 @@ class SourceDeploymentService:
             self._persist()
         self._sync_publish_failure(job)
 
+    def _reviewed_payload_effects(self, draft_id: Any, request: Mapping[str, Any]) -> tuple[list[dict[str, Any]], str]:
+        try:
+            numeric_id = int(draft_id)
+        except (TypeError, ValueError):
+            if request.get("payload_effects") or request.get("payload_revision_set_hash"):
+                raise SourceDeploymentError("the exact Payload dependency set requires an owner review draft identity")
+            return [], ""
+        draft = self.memory.get_draft(numeric_id) if self.memory is not None and callable(getattr(self.memory, "get_draft", None)) else None
+        if not isinstance(draft, Mapping):
+            if request.get("payload_effects") or request.get("payload_revision_set_hash"):
+                raise SourceDeploymentError("the exact Payload dependency set has no persisted owner review draft")
+            return [], ""
+        meta = draft.get("meta") if isinstance(draft.get("meta"), Mapping) else {}
+        effects = meta.get("payload_effects") if isinstance(meta.get("payload_effects"), list) else []
+        if not effects:
+            if request.get("payload_effects") or request.get("payload_revision_set_hash"):
+                raise SourceDeploymentError("the review draft does not contain the requested exact Payload dependency set")
+            return [], ""
+        from ..core.payload_receipts import payload_revision_manifest
+
+        try:
+            normalized, digest = payload_revision_manifest(effects)
+        except ValueError as exc:
+            raise SourceDeploymentError(f"the review draft's Payload dependency set is invalid: {exc}") from exc
+        if normalized != effects:
+            raise SourceDeploymentError("the review draft's Payload dependency set is not in canonical form")
+        recorded = str(meta.get("payload_revision_set_hash") or "")
+        if recorded != digest:
+            raise SourceDeploymentError("the review draft's Payload dependency hash does not match its receipts")
+        supplied = str(request.get("payload_revision_set_hash") or "")
+        if supplied and supplied != digest:
+            raise SourceDeploymentError("the requested preview does not match the reviewed Payload revisions")
+        for effect in normalized:
+            if (
+                effect.get("kind") not in {"collection", "global"}
+                or not str(effect.get("target") or "").strip()
+                or not str(effect.get("document_id") or "").strip()
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(effect.get("revision") or ""))
+                or not str(effect.get("locale") or "").strip()
+            ):
+                raise SourceDeploymentError("the review draft contains an incomplete Payload revision receipt")
+        if request.get("payload_effects") and request.get("payload_effects") != normalized:
+            raise SourceDeploymentError("the requested preview's Payload receipts differ from the owner review")
+        return normalized, digest
+
     @property
     def site(self) -> Mapping[str, Any]:
         return _mapping(self.config.get("site"))
@@ -306,6 +369,36 @@ class SourceDeploymentService:
             if secret:
                 child["PAYLOAD_SECRET"] = secret
         return child
+
+    def _preview_env(self, *, production: bool = False, payload_secret: str | None = None) -> dict[str, str]:
+        """Give untrusted candidate code only an isolated local-preview environment."""
+        preview = {
+            name: str(self.env[name])
+            for name in _PREVIEW_ENV_ALLOWLIST
+            if str(self.env.get(name) or "")
+        }
+        node_path = str(self.settings.get("node_path") or "").strip()
+        npm_command = str(self.settings.get("npm_command") or "").strip()
+        tool_paths = [str(Path(npm_command).expanduser().parent)] if npm_command else []
+        if node_path:
+            tool_paths.append(node_path)
+        if tool_paths:
+            preview["PATH"] = os.pathsep.join([*tool_paths, preview.get("PATH", "")])
+        preview["HOME"] = str(self._preview_home)
+        preview["TMPDIR"] = str(self._preview_home / "tmp")
+        preview["TMP"] = preview["TMPDIR"]
+        preview["TEMP"] = preview["TMPDIR"]
+        preview["NPM_CONFIG_CACHE"] = str(self._preview_home / ".npm")
+        if production:
+            preview["NODE_ENV"] = "production"
+        elif self.env.get("NODE_ENV"):
+            preview["NODE_ENV"] = str(self.env["NODE_ENV"])
+        preview["NEXT_TELEMETRY_DISABLED"] = "1"
+        # Payload needs a secret to initialize in the local Worker. Never pass
+        # the tenant's signing key into a candidate build or preview process.
+        preview["PAYLOAD_SECRET"] = payload_secret or secrets.token_urlsafe(48)
+        preview["HELLOADA_PREVIEW_MODE"] = "1"
+        return preview
 
     def _verify_toolchain(self, cwd: Path) -> str:
         node_path = str(self.settings.get("node_path") or "").strip()
@@ -464,12 +557,13 @@ class SourceDeploymentService:
         *,
         parse_json: bool = False,
         production: bool = False,
+        preview_secret: str | None = None,
     ) -> dict[str, Any]:
         try:
             result = subprocess.run(
                 command,
                 cwd=str(cwd),
-                env=self._child_env(production=production),
+                env=self._preview_env(production=production, payload_secret=preview_secret),
                 capture_output=True,
                 text=True,
                 timeout=timeout,
@@ -489,7 +583,7 @@ class SourceDeploymentService:
             if isinstance(inventory, Mapping):
                 item["inventory"] = {
                     key: inventory.get(key)
-                    for key in ("root", "filesScanned", "editableCount", "dynamicCount", "warnings")
+                    for key in ("root", "filesScanned", "editableCount", "dynamicCount", "bindingCount", "editableImages", "imageElements", "violations")
                     if key in inventory
                 }
             else:
@@ -506,10 +600,61 @@ class SourceDeploymentService:
             raise SourceDeploymentError("host source inventory is not installed")
         return [sys.executable, str(inventory), "--root", str(worktree)]
 
+    def _verify_candidate_source_boundary(self, worktree: Path, commit: str, draft_id: Any) -> dict[str, Any]:
+        """Reject source outside the tenant presentation allowlist before any candidate code runs."""
+        try:
+            numeric_id = int(draft_id)
+        except (TypeError, ValueError) as exc:
+            raise SourceDeploymentError("compiled source preview requires its exact owner review draft") from exc
+        draft = self.memory.get_draft(numeric_id) if self.memory is not None else None
+        if not isinstance(draft, Mapping):
+            raise SourceDeploymentError("compiled source preview has no persisted owner review draft")
+        if draft.get("kind") not in {"merge", "rollback", "design"} or draft.get("status") != "pending":
+            raise SourceDeploymentError("compiled source preview requires a pending source review decision")
+        meta = draft.get("meta") if isinstance(draft.get("meta"), Mapping) else {}
+        base_sha = str(meta.get("base_sha") or "").strip().lower()
+        candidate_sha = str(meta.get("candidate_sha") or meta.get("head_sha") or "").strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{40}", base_sha):
+            raise SourceDeploymentError("owner review draft has no immutable source base SHA")
+        if candidate_sha != commit:
+            raise SourceDeploymentError("owner review draft does not identify the exact compiled source commit")
+        if not re.fullmatch(r"[0-9a-f]{40}", commit):
+            raise SourceDeploymentError("compiled source boundary requires a full candidate SHA")
+
+        try:
+            from ..frontend_ownership import is_frontend_owned_path
+
+            output = self._run(
+                ["git", "diff", "--name-only", "-z", f"{base_sha}...{commit}"],
+                worktree,
+                timeout=60,
+            ).stdout
+        except SourceDeploymentError as exc:
+            raise SourceDeploymentError(f"candidate source boundary could not be verified: {exc}") from exc
+        paths = [path for path in output.split("\0") if path]
+        if not paths:
+            raise SourceDeploymentError("candidate has no presentation source changes relative to its reviewed base")
+        prohibited = [path for path in paths if not is_frontend_owned_path(path)]
+        if prohibited:
+            names = ", ".join(prohibited[:8])
+            suffix = f" and {len(prohibited) - 8} more" if len(prohibited) > 8 else ""
+            raise SourceDeploymentError(
+                "candidate changed platform-owned or non-presentation files before build: " + names + suffix
+            )
+        return {"name": "presentation_source_boundary", "ok": True, "changed_files": len(paths)}
+
     def _preview_port(self) -> int:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
             probe.bind(("127.0.0.1", 0))
             return int(probe.getsockname()[1])
+
+    @staticmethod
+    def _preview_root_is_ready(status: int) -> bool:
+        if int(status) == 404:
+            raise SourceDeploymentError(
+                "compiled preview homepage returned HTTP 404; refusing to mark an unrendered site ready"
+            )
+        return int(status) == 200
 
     def _stop_runtime(self, job_id: str) -> None:
         runtime = self._runtimes.pop(str(job_id), None)
@@ -536,7 +681,14 @@ class SourceDeploymentService:
                         pass
         shutil.rmtree(worktree, ignore_errors=True)
 
-    def _start_runtime(self, job: dict[str, Any], worktree: Path, expected_commit: str | None = None) -> dict[str, Any]:
+    def _start_runtime(
+        self,
+        job: dict[str, Any],
+        worktree: Path,
+        expected_commit: str | None = None,
+        *,
+        preview_secret: str,
+    ) -> dict[str, Any]:
         """Start the exact OpenNext build behind the tenant-scoped API proxy.
 
         The browser never receives the loopback address.  Keeping the process on
@@ -564,7 +716,7 @@ class SourceDeploymentService:
             process = subprocess.Popen(
                 command,
                 cwd=str(worktree),
-                env=self._child_env(production=True),
+                env=self._preview_env(production=True, payload_secret=preview_secret),
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -584,13 +736,15 @@ class SourceDeploymentService:
                 raise SourceDeploymentError("compiled preview process exited before it was ready")
             try:
                 with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=3) as response:
-                    if int(response.status) < 500:
+                    if self._preview_root_is_ready(int(response.status)):
                         ready = True
                         break
             except urllib.error.HTTPError as exc:
-                if exc.code < 500:
-                    ready = True
-                    break
+                try:
+                    self._preview_root_is_ready(exc.code)
+                except SourceDeploymentError:
+                    self._stop_runtime(str(job["id"]))
+                    raise SourceDeploymentError(str(exc)) from exc
             except (OSError, urllib.error.URLError):
                 pass
             time.sleep(1)
@@ -620,17 +774,19 @@ class SourceDeploymentService:
         timeout = int(self.settings.get("build_timeout_seconds") or 1_800)
         checks: list[dict[str, Any]] = []
         keep_worktree = False
+        preview_secret = secrets.token_urlsafe(48)
         try:
             self._write_revision_marker(worktree, local_head)
+            checks.append(self._verify_candidate_source_boundary(worktree, local_head, job.get("draft_id")))
             npm = self._verify_toolchain(worktree)
-            checks.append(self._check([npm, "ci", "--no-audit", "--no-fund"], worktree, "dependencies", timeout))
-            checks.append(self._check([npm, "run", "typecheck"], worktree, "typecheck", timeout))
-            checks.append(self._check([npm, "run", "lint"], worktree, "lint", timeout))
-            checks.append(self._check(self._inventory_command(checkout, worktree), worktree, "source_inventory", timeout, parse_json=True))
-            checks.append(self._check([npm, "run", "build"], worktree, "next_build", timeout, production=True))
-            checks.append(self._check(["npx", "--no-install", "opennextjs-cloudflare", "build"], worktree, "open_next_build", timeout, production=True))
+            checks.append(self._check([npm, "ci", "--no-audit", "--no-fund"], worktree, "dependencies", timeout, preview_secret=preview_secret))
+            checks.append(self._check(self._inventory_command(checkout, worktree), worktree, "source_inventory", timeout, parse_json=True, preview_secret=preview_secret))
+            checks.append(self._check([npm, "run", "typecheck"], worktree, "typecheck", timeout, preview_secret=preview_secret))
+            checks.append(self._check([npm, "run", "lint"], worktree, "lint", timeout, preview_secret=preview_secret))
+            checks.append(self._check([npm, "run", "build"], worktree, "next_build", timeout, production=True, preview_secret=preview_secret))
+            checks.append(self._check(["npx", "--no-install", "opennextjs-cloudflare", "build"], worktree, "open_next_build", timeout, production=True, preview_secret=preview_secret))
 
-            runtime = self._start_runtime(job, worktree, local_head)
+            runtime = self._start_runtime(job, worktree, local_head, preview_secret=preview_secret)
             keep_worktree = True
             result = {
                 "ok": True,
@@ -803,6 +959,7 @@ class SourceDeploymentService:
             raise SourceDeploymentError("production release must reference the official main branch")
         draft_id = body.get("draft_id")
         publish = _mapping(body.get("publish"))
+        payload_effects, payload_revision_set_hash = self._reviewed_payload_effects(draft_id, body)
         with self._lock:
             for existing in self._jobs.values():
                 if not isinstance(existing, Mapping):
@@ -828,6 +985,9 @@ class SourceDeploymentService:
         }
         if draft_id is not None:
             job["draft_id"] = draft_id
+        if payload_effects:
+            job["payload_effects"] = payload_effects
+            job["payload_revision_set_hash"] = payload_revision_set_hash
         for source_key, job_key in (
             ("summary", "publish_summary"),
             ("path", "publish_path"),
@@ -952,6 +1112,7 @@ class SourceDeploymentService:
         for job_id in list(self._runtimes):
             self._stop_runtime(job_id)
         self._executor.shutdown(wait=False, cancel_futures=True)
+        shutil.rmtree(self._preview_home, ignore_errors=True)
 
 
 __all__ = ["SourceDeploymentError", "SourceDeploymentService"]

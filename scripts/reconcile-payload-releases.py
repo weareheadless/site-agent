@@ -27,6 +27,16 @@ API_DEPLOYMENT = importlib.util.module_from_spec(API_DEPLOYMENT_SPEC)
 API_DEPLOYMENT_SPEC.loader.exec_module(API_DEPLOYMENT)
 validate_api_queue = API_DEPLOYMENT.validate_api_queue
 
+HELLOADA_APP_DEPLOYMENT_MODULE = Path(__file__).with_name("deploy-helloada-app.py")
+HELLOADA_APP_DEPLOYMENT_SPEC = importlib.util.spec_from_file_location(
+    "helloada_app_deployment", HELLOADA_APP_DEPLOYMENT_MODULE,
+)
+if HELLOADA_APP_DEPLOYMENT_SPEC is None or HELLOADA_APP_DEPLOYMENT_SPEC.loader is None:
+    raise RuntimeError("HelloAda app deployment contract is unavailable")
+HELLOADA_APP_DEPLOYMENT = importlib.util.module_from_spec(HELLOADA_APP_DEPLOYMENT_SPEC)
+HELLOADA_APP_DEPLOYMENT_SPEC.loader.exec_module(HELLOADA_APP_DEPLOYMENT)
+validate_helloada_app_queue = HELLOADA_APP_DEPLOYMENT.validate_helloada_app_queue
+
 
 def mark_interrupted_runs(root: Path) -> None:
     # The caller owns the global lock; no previous service process can still run.
@@ -112,6 +122,29 @@ def snapshot_api_source(mirror: Path, root: Path, source_sha: str) -> Path:
     return snapshot
 
 
+def snapshot_helloada_source(mirror: Path, root: Path, source_sha: str) -> Path:
+    snapshot = root / "helloada-sources" / source_sha
+    marker = snapshot / ".helloada-source-sha"
+    if snapshot.exists():
+        if not marker.is_file() or marker.read_text(encoding="ascii").strip() != source_sha:
+            raise RuntimeError("cached HelloAda source snapshot identity mismatch")
+        return snapshot
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix="helloada-source-", dir=snapshot.parent))
+    try:
+        with subprocess.Popen(["git", "-C", str(mirror), "archive", source_sha], stdout=subprocess.PIPE) as archive:
+            subprocess.run(["tar", "-x", "-C", str(staging)], stdin=archive.stdout, check=True)
+            if archive.wait():
+                raise RuntimeError("could not snapshot HelloAda source commit")
+        marker_path = staging / ".helloada-source-sha"
+        marker_path.write_text(source_sha + "\n", encoding="ascii")
+        staging.rename(snapshot)
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return snapshot
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path("/SOCIAL/payload-releases"))
@@ -144,6 +177,8 @@ def main() -> int:
         registry = document("deploy/payload-customers.json")
         queue = document("deploy/desired-releases.json")
         api_request = validate_api_queue(document("deploy/desired-api-release.json"))
+        app_request = validate_helloada_app_queue(document("deploy/desired-helloada-app-release.json"))
+        app_config = document("deploy/helloada-app.json")
         validate_queue(queue, registry)
         if Path(registry["releaseRoot"]) != args.root:
             raise RuntimeError("release root differs from installed systemd configuration")
@@ -180,6 +215,41 @@ def main() -> int:
             if code:
                 print("[queue] API release failed; customer releases are held", flush=True)
                 return 1
+        if app_request:
+            app_repository = str(app_config.get("repository") or "")
+            expected_repository = "git@github.com:weareheadless/helloada.git"
+            if app_config.get("schema") != 1 or app_repository != expected_repository:
+                raise ValueError("HelloAda app release registry must identify the official immutable source")
+            app_mirror = args.root / "helloada-control.git"
+            if not app_mirror.exists():
+                subprocess.run(["git", "clone", "--bare", app_repository, str(app_mirror)],
+                               env=environment, check=True)
+            actual_app_remote = subprocess.check_output(
+                ["git", "-C", str(app_mirror), "remote", "get-url", "origin"], text=True,
+            ).strip()
+            if actual_app_remote != app_repository:
+                raise RuntimeError("HelloAda source mirror remote mismatch")
+            subprocess.run(["git", "-C", str(app_mirror), "fetch", "origin",
+                            "+refs/heads/main:refs/heads/main"], env=environment, check=True)
+            ancestry = subprocess.run(
+                ["git", "-C", str(app_mirror), "merge-base", "--is-ancestor",
+                 app_request["sha"], "refs/heads/main"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            if ancestry.returncode:
+                raise ValueError("HelloAda app release SHA is not an ancestor of official main")
+            app_source = snapshot_helloada_source(app_mirror, args.root, app_request["sha"])
+            app_tool = snapshot / "scripts" / "deploy-helloada-app.py"
+            if not app_tool.is_file():
+                raise RuntimeError("control snapshot does not contain the HelloAda app release contract")
+            print(f"[queue] HelloAda app release={app_request['id']} source={app_request['sha']}", flush=True)
+            code = subprocess.run(
+                [sys.executable, str(app_tool), "--source-dir", str(app_source),
+                 "--source-sha", app_request["sha"], "--release-id", app_request["id"],
+                 "--root", str(args.root)],
+                env={**environment, "HELLOADA_PIPELINE_SHA": sha},
+            ).returncode
+            failures += int(code != 0)
         pending = any(not (args.root / "runs" / tenant / request["id"]).exists()
                       for tenant, request in queue["releases"].items())
         if pending:

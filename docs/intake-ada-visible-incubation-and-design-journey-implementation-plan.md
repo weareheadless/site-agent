@@ -1,6 +1,6 @@
 # Intake Ada Visible Incubation and Design Journey Implementation Plan
 
-**Status:** Proposed implementation contract
+**Status:** Superseded for new-site journey and UI topology
 
 **Date:** 2026-09-03
 
@@ -15,6 +15,17 @@ The production mutation, draft review, and explicit approval invariants in
 `AGENTS.md` remain authoritative. This plan does not permit Intake Ada to
 publish, merge, deploy, provision, or activate a customer instance without the
 existing explicit owner operation.
+
+> **Architecture update (2026-10-06):** The proposed pre-provisioning Intake
+> Lab, separate design room, and HelloAda-to-customer provisioning handoff in
+> this historical plan are no longer the product flow. Follow
+> `docs/helloada-project-selector-to-payload-intake-contract.md` instead:
+> HelloAda only selects or creates projects, Site-Agent bootstraps the canonical
+> Payload workspace, and all business intake, Ada conversation, design, review,
+> growth, and publication happen in that tenant's Payload admin. Do not build a
+> second owner-facing intake or design UI from the phases below. Research,
+> activity provenance, design-quality, and approval principles here remain
+> useful only where compatible with the active contract and current `AGENTS.md`.
 
 ## How To Use This Plan
 

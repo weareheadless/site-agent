@@ -70,15 +70,14 @@ def _journey_for_config(config: Mapping[str, Any]) -> Journey:
     journey = journey if isinstance(journey, Mapping) else {}
 
     if "website_present" in journey:
-        website_present = bool(journey.get("website_present"))
+        website_present_value = journey.get("website_present")
     elif "website_present" in site:
-        website_present = bool(site.get("website_present"))
+        website_present_value = site.get("website_present")
     else:
-        payload = site.get("payload") if isinstance(site.get("payload"), Mapping) else {}
-        profile = config.get("customer_profile") if isinstance(config.get("customer_profile"), Mapping) else {}
-        business = profile.get("business") if isinstance(profile.get("business"), Mapping) else {}
-        observed_settings = business.get("observed_site_settings") if isinstance(business.get("observed_site_settings"), Mapping) else {}
-        website_present = bool(payload.get("enabled") or observed_settings.get("website_url"))
+        raise ConfigError("website_present must be explicitly configured in site or ada_journey; Payload capability and observed URLs do not prove a launched website")
+    if not isinstance(website_present_value, bool):
+        raise ConfigError("website_present must be an explicit boolean in site or ada_journey")
+    website_present = website_present_value
 
     intake = intake_settings(config)
     if "incubation_needed" in journey:
@@ -417,7 +416,12 @@ class TenantRegistry:
                 context["source_deployment"] = (
                     None
                     if site_adapter_name == "neutral_scaffold"
-                    else SourceDeploymentService(tenant_config, dict(env), memory=memory)
+                    else SourceDeploymentService(
+                        tenant_config,
+                        dict(env),
+                        memory=memory,
+                        payload_gateway=payload_client,
+                    )
                 )
                 if payload_client is not None:
                     from ..hands.payload_gateway import PayloadMediaService
@@ -1408,6 +1412,7 @@ class ChatService:
         incubation_needed = journey.incubation_needed if journey is not None else intake_enabled
         active_jobs = memory.list_active_chat_jobs(conversation_id=normalized_id, limit=1)
         active_job = active_jobs[0] if active_jobs else None
+        onboarding = self._new_site_onboarding(memory, intake_status, tenant) if not website_present else None
         return {
             "tenant": tenant_id,
             "mode": mode,
@@ -1417,6 +1422,7 @@ class ChatService:
             "incubation_needed": incubation_needed,
             "journey": "incubation" if mode == "incubation" else "full_intake" if mode == "intake" else "workspace",
             "intake_enabled": intake_enabled,
+            "onboarding": onboarding,
             "conversation_id": normalized_id or intake_status.get("conversation_id"),
             "intake": intake_status,
             "active_job": {
@@ -1426,6 +1432,109 @@ class ChatService:
                 "created_ts": active_job.get("created_ts"),
                 "updated_ts": active_job.get("updated_ts"),
             } if active_job else None,
+        }
+
+    @staticmethod
+    def _new_site_onboarding(
+        memory: Memory,
+        intake_status: Mapping[str, Any],
+        tenant: Tenant | None,
+    ) -> dict[str, Any] | None:
+        """Project the new-site milestones from its brief, run, and report records."""
+        journey = tenant.context.get("journey") if tenant is not None else None
+        if not isinstance(journey, Journey) and tenant is not None:
+            journey = _journey_for_config(tenant.config)
+        if journey is None or journey.website_present or tenant is None:
+            return None
+
+        confirmed = bool(intake_status.get("confirmed"))
+        session_id = str(intake_status.get("session_id") or "")
+        revision_id = intake_status.get("confirmed_revision_id")
+        initial_run = None
+        if confirmed and session_id and revision_id:
+            try:
+                revision_id = int(revision_id)
+            except (TypeError, ValueError):
+                revision_id = None
+            if revision_id is not None:
+                initial_run = next((
+                    run for run in memory.list_design_runs(mode="production_candidate", limit=500)
+                    if str(run.get("operation_kind") or "initial_build") == "initial_build"
+                    and str(run.get("intake_session_id") or "") == session_id
+                    and run.get("intake_revision_id") == revision_id
+                ), None)
+
+        candidate_ready = False
+        report_state = "not_started"
+        report = None
+        if initial_run is not None:
+            from ..core.design_contracts import canonical_hash
+            from .designs import owner_review_requirements_met
+
+            candidate_ready = owner_review_requirements_met(initial_run)
+            quality = initial_run.get("quality_report_json") if isinstance(initial_run.get("quality_report_json"), Mapping) else {}
+            quality_hash = canonical_hash(dict(quality))
+            context_hash = str(initial_run.get("context_snapshot_hash") or "").strip().lower()
+            expected_variant = "-".join((
+                str(initial_run.get("candidate_sha") or "")[:12],
+                str(initial_run.get("intake_hash") or "")[:12],
+                quality_hash[:12],
+                context_hash[:12] or "no-context",
+            ))
+            phases = memory.list_design_phase_artifacts(
+                str(initial_run["run_id"]),
+                phase="onboarding_report",
+            )
+            matching = [
+                phase for phase in phases
+                if phase.get("variant_key") == expected_variant
+                and phase.get("base_sha") == initial_run.get("candidate_sha")
+                and phase.get("status") == "completed"
+                and isinstance(phase.get("payload"), Mapping)
+                and phase["payload"].get("brief_hash") == initial_run.get("intake_hash")
+                and phase["payload"].get("candidate_sha") == initial_run.get("candidate_sha")
+                and phase["payload"].get("quality_evidence_hash") == quality_hash
+                and phase["payload"].get("context_snapshot_hash") == context_hash
+            ]
+            if matching and candidate_ready:
+                phase = matching[-1]
+                report_state = "ready"
+                report = dict(phase["payload"])
+                artifact_id = phase.get("artifact_id")
+                artifact = memory.get_artifact(artifact_id) if isinstance(artifact_id, int) and artifact_id > 0 else None
+                if (
+                    artifact is None
+                    or artifact.content_hash != phase.get("output_hash")
+                    or canonical_hash(report) != phase.get("output_hash")
+                ):
+                    report_state = "failed"
+                    report = None
+            elif any(phase.get("variant_key") == expected_variant and phase.get("status") == "failed" for phase in phases):
+                report_state = "failed"
+            elif candidate_ready or any(phase.get("variant_key") == expected_variant and phase.get("status") == "running" for phase in phases):
+                report_state = "preparing"
+
+        follow_on_started = bool(
+            initial_run
+            and memory.list_design_run_children(str(initial_run["run_id"]), limit=1)
+        )
+        if follow_on_started:
+            return None
+
+        completed = []
+        if confirmed:
+            completed.append(1)
+        if candidate_ready:
+            completed.append(2)
+        if report_state == "ready":
+            completed.append(3)
+        current_stage = 1 if not confirmed else 2 if not candidate_ready else 3 if report_state != "ready" else 4
+        return {
+            "enabled": True,
+            "current_stage": current_stage,
+            "completed_stages": completed,
+            "report_state": report_state,
+            "report": report,
         }
 
     def confirm_intake(
@@ -2425,9 +2534,16 @@ class ChatService:
             try:
                 payload.publish(
                     "posts", document_id,
+                    locale=str(sync.get("locale") or "").strip() or None,
                     expected_hash=str(sync.get("draft_hash") or ""),
                 )
-                published_document = payload.read("posts", identifier=document_id, identifier_kind="id", draft=False)
+                published_document = payload.read(
+                    "posts",
+                    identifier=document_id,
+                    identifier_kind="id",
+                    draft=False,
+                    locale=str(sync.get("locale") or "").strip() or None,
+                )
             except Exception as exc:  # noqa: BLE001 - approval stays blocked on an uncertain Payload result
                 for initiative in memory.list_strategy_initiatives(limit=500):
                     if int(initiative.get("draft_id") or 0) == normalized_id and initiative.get("state") == "publishing":
@@ -2750,7 +2866,10 @@ class ChatService:
             raise BridgeError("tenant source deployment is not configured")
         from .source_deployment import SourceDeploymentService
 
-        return SourceDeploymentService(config, env)
+        from ..hands.payload_gateway import PayloadGatewayClient
+
+        payload_client = PayloadGatewayClient.from_config(config, env)
+        return SourceDeploymentService(config, env, payload_gateway=payload_client)
 
     def source_inventory(
         self,

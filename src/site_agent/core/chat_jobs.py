@@ -138,6 +138,8 @@ def run_job(context: dict[str, Any], job: dict[str, Any], worker: str,
     from ..config import timing_enabled
 
     timings_on = timing_enabled(context.get("config") or {}, context.get("env"))
+    context["_chat_job_id"] = int(job_id)
+    context["_chat_job_worker"] = str(worker)
 
     def record_job_timing(*, succeeded: bool) -> None:
         if not timings_on or not hasattr(memory, "record_timing"):
@@ -268,6 +270,9 @@ def run_job(context: dict[str, Any], job: dict[str, Any], worker: str,
         record_job_timing(succeeded=False)
         _reconcile_owner_action(context, job_id, succeeded=False)
         return {"error": str(exc)[:300]}
+    finally:
+        context.pop("_chat_job_id", None)
+        context.pop("_chat_job_worker", None)
 
 
 class ChatJobExecutor:

@@ -91,6 +91,12 @@ realization, autonomous repair, or end-to-end acceptance requirements.
 - HelloAda connection changes must follow `docs/helloada-connection-contract.md`.
   Never claim a customer release ready from a public health response or local
   fixture: verify the correct tenant in an authenticated production session.
+- New-site onboarding follows `docs/helloada-project-selector-to-payload-intake-contract.md`:
+  HelloAda is only the multi-project selector/create entry; Site-Agent prepares
+  the canonical Payload workspace, and the owner is handed into that admin
+  before Ada intake or design begins. The older Intake Lab journey plan is
+  superseded for UI topology; it must not be used to reintroduce a second
+  owner-facing intake/design surface.
 
 For growth orchestration, SEO/AEO, goals and owner review, follow
 `docs/ada-growth-seo-aeo-pipeline-implementation-plan.md`. Reuse the canonical
@@ -173,6 +179,17 @@ every possible concurrent Payload writer.
   `pip install` from a checkout, `git pull` the running `/SOCIAL/site-agent`,
   restart the API by hand, or deploy a moving branch. The current source checkout
   may be dirty and is not the API release artifact.
+- HelloAda's project-selector Worker is also released through that one VPS
+  dispatcher, using `deploy/desired-helloada-app-release.json` with a unique ID
+  and exact full SHA on `weareheadless/helloada/main`. It must pass the pinned
+  Node/npm checks, tests, lint, typecheck, Next build and local-binding OpenNext
+  build before the dispatcher uploads and promotes the exact Worker version.
+  `/api/health` must report the same SHA after promotion or the pipeline restores
+  the exact prior Worker version. The owner-handoff private key is read only from
+  the protected mode-`0600` VPS secret file and injected only into the Worker
+  upload; it must never enter Git, build processes, logs, browser bundles or
+  chat. No direct Wrangler release, manual Worker upload, or separate release
+  path is permitted. See `deploy/README.md` for queue and receipt procedure.
 - The VPS release service executes only
   `/SOCIAL/payload-releases/bin/current/dispatch-payload-releases.py`. The dispatcher
   fetches official `site-agent/main`, snapshots its exact full SHA, and runs the

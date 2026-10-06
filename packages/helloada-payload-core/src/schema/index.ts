@@ -1,8 +1,8 @@
 import type { Block, CollectionConfig, GlobalConfig } from 'payload'
 
-export const HELLOADA_CONTENT_CONTRACT_VERSION = 'helloada-content-v2'
-export const HELLOADA_CORE_VERSION = '0.2.0'
-export const HELLOADA_SCHEMA_REVISION = 2
+export const HELLOADA_CONTENT_CONTRACT_VERSION = 'helloada-content-v3'
+export const HELLOADA_CORE_VERSION = '0.5.0'
+export const HELLOADA_SCHEMA_REVISION = 5
 
 export const validateHelloAdaLink = (value: unknown): true | string => {
   if (typeof value !== 'string' || !value.trim()) return 'Enter a destination for this link.'
@@ -23,6 +23,83 @@ const stableKey = (value: unknown): value is string =>
   typeof value === 'string' && value.trim().length > 0 && value.trim().length <= 120
 
 const newStableKey = () => `ha-${globalThis.crypto.randomUUID()}`
+
+const ownerCanRead = ({ req }: { req: { user?: unknown } }) => Boolean(req.user)
+const ownerCanWrite = ({ req }: { req: { user?: unknown } }) => Boolean(req.user)
+const serviceOnly = () => false
+
+const assignFormFieldKeys = (value: unknown, createId: () => string = newStableKey): unknown => {
+  if (!Array.isArray(value)) return value
+  return value.map((rawField) => {
+    if (!rawField || typeof rawField !== 'object' || Array.isArray(rawField)) return rawField
+    const field = rawField as Record<string, unknown>
+    const choices = Array.isArray(field.choices) ? field.choices.map((rawChoice) => {
+      if (!rawChoice || typeof rawChoice !== 'object' || Array.isArray(rawChoice)) return rawChoice
+      const choice = rawChoice as Record<string, unknown>
+      return { ...choice, key: stableKey(choice.key) ? choice.key : createId() }
+    }) : field.choices
+    return {
+      ...field,
+      key: stableKey(field.key) ? field.key : createId(),
+      ...(Array.isArray(choices) ? { choices } : {}),
+    }
+  })
+}
+
+export const validateHelloAdaFormFields = (value: unknown): true | string => {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 12) return 'A form needs between 1 and 12 fields.'
+  const keys = new Set<string>()
+  const mappings = new Set<string>()
+  const supportedTypes = new Set(['text', 'email', 'phone', 'textarea', 'select', 'consent'])
+  const supportedMappings = new Set(['none', 'name', 'email', 'phone', 'company', 'message'])
+  for (const [index, rawField] of value.entries()) {
+    const field = rawField && typeof rawField === 'object' && !Array.isArray(rawField)
+      ? rawField as Record<string, unknown>
+      : {}
+    if (!stableKey(field.key)) return `Form field ${index + 1} needs a stable ID.`
+    if (keys.has(field.key)) return `Form field ID “${field.key}” is used more than once.`
+    keys.add(field.key)
+    if (!supportedTypes.has(String(field.type || ''))) return `Form field ${index + 1} has an unsupported type.`
+    if (!String(field.label || '').trim()) return `Form field ${index + 1} needs a label.`
+    if (String(field.label).length > 160) return `Form field ${index + 1} label is too long.`
+    const mapping = String(field.mapsTo || 'none')
+    if (!supportedMappings.has(mapping)) return `Form field ${index + 1} has an unsupported contact mapping.`
+    if (mapping !== 'none') {
+      if (mappings.has(mapping)) return `Only one form field can provide the ${mapping} value.`
+      mappings.add(mapping)
+    }
+    if (mapping === 'email' && field.type !== 'email') return `Form field ${index + 1} must use the email input type.`
+    if (mapping === 'email' && field.required !== true) return `Form field ${index + 1} must require an email address.`
+    if (mapping === 'message' && !['text', 'textarea'].includes(String(field.type))) {
+      return `Form field ${index + 1} must use a text input for the enquiry message.`
+    }
+    if (mapping === 'message' && field.required !== true) return `Form field ${index + 1} must require an enquiry message.`
+    if (['name', 'company'].includes(mapping) && field.type !== 'text') return `Form field ${index + 1} must use a short text input.`
+    if (mapping === 'phone' && field.type !== 'phone') return `Form field ${index + 1} must use the phone input type.`
+    if (field.type === 'consent' && field.required !== true) return `Acknowledgement field ${index + 1} must be required.`
+    if (field.maxLength !== undefined && field.maxLength !== null) {
+      const maxLength = Number(field.maxLength)
+      if (!Number.isInteger(maxLength) || maxLength < 1 || maxLength > 4000) return `Form field ${index + 1} has an invalid length limit.`
+    }
+    if (field.type === 'select') {
+      if (!Array.isArray(field.choices) || field.choices.length < 1 || field.choices.length > 20) {
+        return `Select field ${index + 1} needs between 1 and 20 choices.`
+      }
+      const choiceKeys = new Set<string>()
+      for (const choice of field.choices) {
+        const row = choice && typeof choice === 'object' && !Array.isArray(choice)
+          ? choice as Record<string, unknown>
+          : {}
+        if (!stableKey(row.key) || choiceKeys.has(row.key) || !String(row.label || '').trim()) {
+          return `Select field ${index + 1} has an invalid or duplicate choice.`
+        }
+        choiceKeys.add(row.key)
+      }
+    }
+  }
+  if (!mappings.has('email') || !mappings.has('message')) return 'A contact form must map one email field and one enquiry message.'
+  return true
+}
 
 /**
  * Payload's read-only semantic IDs are generated once when a new record is
@@ -117,6 +194,9 @@ export const validateHelloAdaPageSections = (value: unknown): true | string => {
         return `Section ${sectionIndex + 1}, item ${entryIndex + 1} uses an unsupported content type.`
       }
       if (!String(entry.label || '').trim()) return `Section ${sectionIndex + 1}, item ${entryIndex + 1} needs an editor label.`
+      if (entry.blockType === 'helloAdaContactForm' && !entry.form) {
+        return `The contact form in section ${sectionIndex + 1} needs a published form selection.`
+      }
       if (entry.blockType !== 'helloAdaContentList') continue
       if (entry.items === undefined || entry.items === null) continue
       if (!Array.isArray(entry.items)) return `The list in section ${sectionIndex + 1} is invalid.`
@@ -166,24 +246,42 @@ export type NativeWriteGuard = (
   scope: string,
   documentId: unknown,
   req: { context?: Record<string, unknown> } | undefined,
+  operation?: string,
+  data?: unknown,
 ) => Promise<void>
 
-const protectCollection = (slug: string, guard: NativeWriteGuard): CollectionConfig['hooks'] => ({
-  beforeOperation: [async ({ args, operation }) => {
-    if (operation === 'update' || operation === 'delete') {
-      const operationArgs = args as unknown as { id?: unknown; req?: { context?: Record<string, unknown> } }
-      await guard(slug, operationArgs.id, operationArgs.req)
-    }
-  }],
-})
+const protectCollection = (slug: string, guard: NativeWriteGuard): CollectionConfig['hooks'] => {
+  const isWrite = (operation: string) => ['create', 'update', 'updateByID', 'delete', 'deleteByID'].includes(operation)
+  return {
+    beforeOperation: [async ({ args, operation }) => {
+      if (isWrite(operation)) {
+        const operationArgs = args as unknown as { id?: unknown; data?: unknown; req?: { context?: Record<string, unknown> } }
+        await guard(slug, operationArgs.id, operationArgs.req, operation, operationArgs.data)
+      }
+    }],
+    afterOperation: [async ({ req, operation, result }) => {
+      if (isWrite(operation)) await guard(slug, undefined, req, 'complete')
+      return result
+    }],
+    afterError: [async ({ req }) => {
+      await guard(slug, undefined, req, 'failed')
+    }],
+  }
+}
 
 const sectionCollectionHooks = (slug: string, guard: NativeWriteGuard): CollectionConfig['hooks'] => ({
   ...protectCollection(slug, guard),
-  beforeValidate: [async ({ data }) => {
+  beforeValidate: [async ({ data, originalDoc }) => {
     const sections = assignHelloAdaPageKeys(data?.sections)
     const result = validateHelloAdaPageSections(sections)
     if (result !== true) throw new Error(result)
-    return sections === undefined ? data : { ...data, sections }
+    const routeSlug = String(data?.slug || originalDoc?.slug || '').trim()
+    const sourceId = String(originalDoc?.sourceId || (routeSlug ? `${slug}:${routeSlug}` : '')).trim()
+    return {
+      ...data,
+      ...(sourceId ? { sourceId } : {}),
+      ...(sections === undefined ? {} : { sections }),
+    }
   }],
 })
 
@@ -264,6 +362,14 @@ const sectionBlocks: Block[] = [
       },
     ],
   },
+  {
+    slug: 'helloAdaContactForm', labels: { singular: 'Contact form', plural: 'Contact forms' },
+    fields: [
+      { name: 'key', type: 'text' as const, required: true, admin: { readOnly: true }, label: 'Stable content ID' },
+      { name: 'label', type: 'text' as const, required: true, label: 'What this form is for' },
+      { name: 'form', type: 'relationship' as const, relationTo: 'contactForms' as const, required: true, label: 'Form' },
+    ],
+  },
 ]
 
 const contentBlockSlugs = sectionBlocks.map((block) => block.slug)
@@ -273,17 +379,453 @@ const supportedContentBlocks = new Set(contentBlockSlugs)
 export const HELLOADA_CAPABILITIES = {
   contract: HELLOADA_CONTENT_CONTRACT_VERSION,
   schemaRevision: HELLOADA_SCHEMA_REVISION,
-  collections: ['pages', 'posts', 'postCategories', 'products', 'productCategories', 'media'],
-  globals: ['siteSettings', 'navigation'],
+  collections: ['pages', 'posts', 'postCategories', 'products', 'productCategories', 'media', 'contactForms', 'contacts', 'conversations', 'messages', 'messageOperations'],
+  globals: ['siteSettings', 'navigation', 'messageMailbox'],
   contentBlocks: contentBlockSlugs,
 } as const
+
+/** Website content an Ada design operation may author. Operational collections
+ * and service-owned globals are intentionally excluded even when they are part
+ * of the wider Payload schema. */
+export const HELLOADA_AUTHORING_CAPABILITIES = {
+  collections: ['pages', 'posts', 'products'],
+  globals: ['siteSettings', 'navigation'],
+} as const
+
+const AUTHORING_RESERVED_FIELDS = new Set([
+  'sourceId', 'published', 'createdAt', 'updatedAt', 'deletedAt', '_status',
+  'id', 'version', 'version__parent', 'version__publishedAt',
+])
+
+type AuthoringField = {
+  name?: string
+  type?: string
+  fields?: AuthoringField[]
+  blocks?: Array<{ slug?: string; fields?: AuthoringField[] }>
+  options?: unknown[]
+  relationTo?: string | string[]
+  hasMany?: boolean
+  localized?: boolean
+  required?: boolean
+  min?: number
+  max?: number
+  minLength?: number
+  maxLength?: number
+  minRows?: number
+  maxRows?: number
+}
+
+type AuthoringFieldShape = {
+  name: string
+  type: string
+  options?: unknown[]
+  fields?: AuthoringFieldShape[]
+  blocks?: Array<{ slug: string; fields: AuthoringFieldShape[] }>
+  [key: string]: unknown
+}
+
+const asRow = (value: unknown): Record<string, unknown> =>
+  value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+
+const authoringFieldTypes = new Set([
+  'array', 'blocks', 'checkbox', 'date', 'email', 'group', 'json', 'number',
+  'relationship', 'richText', 'select', 'text', 'textarea', 'upload',
+])
+
+const authoringFieldShape = (field: AuthoringField): AuthoringFieldShape => {
+  const type = String(field.type || '')
+  if (!authoringFieldTypes.has(type)) {
+    throw new Error(`Payload field ${String(field.name || '(unnamed)')} uses unsupported authoring type “${type}”.`)
+  }
+  if (type === 'select' && !Array.isArray(field.options)) {
+    throw new Error(`Payload select field ${String(field.name || '(unnamed)')} has no declared options.`)
+  }
+  if ((type === 'group' || type === 'array') && !Array.isArray(field.fields)) {
+    throw new Error(`Payload ${type} field ${String(field.name || '(unnamed)')} has no declared child fields.`)
+  }
+  if (type === 'blocks' && !Array.isArray(field.blocks)) {
+    throw new Error(`Payload blocks field ${String(field.name || '(unnamed)')} has no declared blocks.`)
+  }
+  return ({
+  name: String(field.name || ''),
+  type: String(field.type || ''),
+  ...(field.required ? { required: true } : {}),
+  ...(field.localized ? { localized: true } : {}),
+  ...(field.min !== undefined ? { min: field.min } : {}),
+  ...(field.max !== undefined ? { max: field.max } : {}),
+  ...(field.minLength !== undefined ? { minLength: field.minLength } : {}),
+  ...(field.maxLength !== undefined ? { maxLength: field.maxLength } : {}),
+  ...(field.minRows !== undefined ? { minRows: field.minRows } : {}),
+  ...(field.maxRows !== undefined ? { maxRows: field.maxRows } : {}),
+  ...(field.relationTo ? { relationTo: field.relationTo } : {}),
+  ...(field.hasMany ? { hasMany: true } : {}),
+  ...(Array.isArray(field.options) ? {
+    options: field.options.map((option) => {
+      if (typeof option === 'string' || typeof option === 'number') return option
+      const row = asRow(option)
+      return { label: String(row.label || row.value || ''), value: row.value }
+    }),
+  } : {}),
+  ...(Array.isArray(field.fields) ? { fields: field.fields.map(authoringFieldShape) } : {}),
+  ...(Array.isArray(field.blocks) ? {
+    blocks: field.blocks.map((block) => ({
+      slug: String(block.slug || ''),
+      fields: (block.fields || []).map(authoringFieldShape),
+    })),
+  } : {}),
+  })
+}
+
+const validateLexical = (value: unknown, path: string): void => {
+  const row = asRow(value)
+  const root = asRow(row.root)
+  const extraDocumentFields = Object.keys(row).filter((key) => !['root', 'version'].includes(key))
+  if (extraDocumentFields.length) throw new Error(`${path} contains unsupported rich-text fields: ${extraDocumentFields.join(', ')}.`)
+  if (row.version !== undefined && typeof row.version !== 'string') throw new Error(`${path}.version must be text.`)
+  if (root.type !== 'root' || !Array.isArray(root.children)) throw new Error(`${path} must be a Payload Lexical document.`)
+  const walk = (nodeValue: unknown, nodePath: string, depth: number): void => {
+    if (depth > 40) throw new Error(`${nodePath} exceeds the supported rich-text depth.`)
+    const node = asRow(nodeValue)
+    if (!node || typeof node.type !== 'string') throw new Error(`${nodePath} has an invalid Lexical node.`)
+    const common = new Set(['type', 'version', 'format', 'indent', 'direction', 'textFormat', 'textStyle', 'children'])
+    const byType: Record<string, readonly string[]> = {
+      root: [], paragraph: [], heading: ['tag'], quote: [], list: ['listType', 'start', 'tag'],
+      listitem: ['value', 'checked'], text: ['text', 'mode', 'detail', 'style'],
+      linebreak: [], link: ['fields', 'url', 'newTab', 'linkType', 'doc'],
+      autolink: ['fields', 'url', 'newTab', 'linkType', 'doc'], upload: ['value', 'relationTo'],
+      horizontalrule: [], tab: [],
+    }
+    const known = byType[node.type]
+    if (!known) throw new Error(`${nodePath} uses unsupported Lexical node “${node.type}”.`)
+    const allowed = new Set([...common, ...known])
+    const extra = Object.keys(node).filter((key) => !allowed.has(key))
+    if (extra.length) throw new Error(`${nodePath} contains unsupported properties: ${extra.join(', ')}.`)
+    if (node.type === 'text' && typeof node.text !== 'string') throw new Error(`${nodePath}.text must be text.`)
+    if (node.type === 'heading' && !['h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(String(node.tag || ''))) {
+      throw new Error(`${nodePath}.tag is not a supported heading level.`)
+    }
+    if (node.type === 'list' && !['bullet', 'number', 'check'].includes(String(node.listType || ''))) {
+      throw new Error(`${nodePath}.listType is unsupported.`)
+    }
+    if (node.fields !== undefined) {
+      const fields = asRow(node.fields)
+      const allowedFields = new Set(['url', 'newTab', 'linkType', 'doc'])
+      const extras = Object.keys(fields).filter((key) => !allowedFields.has(key))
+      if (extras.length) throw new Error(`${nodePath}.fields contains unsupported properties: ${extras.join(', ')}.`)
+    }
+    if (Array.isArray(node.children)) node.children.forEach((child, index) => walk(child, `${nodePath}.children[${index}]`, depth + 1))
+  }
+  walk({ ...root, type: 'root' }, `${path}.root`, 0)
+}
+
+const validateFieldValue = (field: AuthoringField, value: unknown, path: string): void => {
+  const type = String(field.type || '')
+  const invalid = (expected: string): never => { throw new Error(`${path} must be ${expected}.`) }
+  if (!authoringFieldTypes.has(type)) throw new Error(`${path} uses unsupported Payload field type “${type}”.`)
+  if (value === null && !field.required) return
+  if (type === 'array' || type === 'blocks') {
+    if (!Array.isArray(value)) return invalid('a list')
+    const items = value as unknown[]
+    if (field.minRows !== undefined && items.length < field.minRows) invalid(`a list with at least ${field.minRows} items`)
+    if (field.maxRows !== undefined && items.length > field.maxRows) invalid(`a list with at most ${field.maxRows} items`)
+    items.forEach((itemValue: unknown, index: number) => {
+      const item = itemValue && typeof itemValue === 'object' && !Array.isArray(itemValue)
+        ? itemValue as Record<string, unknown>
+        : undefined
+      if (!item) throw new Error(`${path}[${index}] must be an object.`)
+      let children = field.fields || []
+      if (type === 'blocks') {
+        const block = (field.blocks || []).find((candidate) => candidate.slug === item.blockType)
+        if (!block) throw new Error(`${path}[${index}] uses an unsupported content block.`)
+        children = block.fields || []
+      }
+      validateAuthoringRecord(
+        item,
+        children,
+        `${path}[${index}]`,
+        type === 'blocks' ? String(item.blockType) : undefined,
+        true,
+        true,
+      )
+    })
+    return
+  }
+  if (type === 'group') {
+    validateAuthoringRecord(value, field.fields || [], path, undefined, false, true)
+    return
+  }
+  if (type === 'richText') {
+    validateLexical(value, path)
+    return
+  }
+  if (type === 'upload' || type === 'relationship') {
+    if (field.hasMany) {
+      if (!Array.isArray(value) || value.some((item) => !isRelationIdentity(item))) invalid('a list of Payload relationship IDs')
+    } else if (!isRelationIdentity(value)) invalid('a Payload relationship ID')
+    return
+  }
+  if (['text', 'textarea', 'email', 'date', 'code', 'radio'].includes(type)) {
+    if (typeof value !== 'string') return invalid('text')
+    const textValue = value as string
+    if (field.required && !textValue.trim()) invalid('non-empty text')
+    if (field.minLength !== undefined && textValue.length < field.minLength) invalid(`text with at least ${field.minLength} characters`)
+    if (field.maxLength !== undefined && textValue.length > field.maxLength) invalid(`text with at most ${field.maxLength} characters`)
+    if (['href', 'promoHref', 'canonicalUrl'].includes(String(field.name)) && textValue.trim()) {
+      const result = validateHelloAdaLink(textValue)
+      if (result !== true) throw new Error(`${path} is not a safe link.`)
+    }
+  }
+  if (type === 'number') {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return invalid('a finite number')
+    const numberValue = value as number
+    if (field.min !== undefined && numberValue < field.min) invalid(`at least ${field.min}`)
+    if (field.max !== undefined && numberValue > field.max) invalid(`at most ${field.max}`)
+  }
+  if (type === 'checkbox' && typeof value !== 'boolean') invalid('true or false')
+  if (type === 'select' && Array.isArray(field.options)) {
+    const options = field.options.map((option) => typeof option === 'string' ? option : asRow(option).value)
+    if (!options.includes(value)) invalid('a supported option')
+  }
+  if (type === 'date' && (typeof value !== 'string' || !Number.isFinite(Date.parse(value)))) invalid('a valid date')
+  if (type === 'email' && (typeof value !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value))) invalid('a valid email address')
+  if (type === 'json') validateJsonValue(value, path)
+}
+
+const validateJsonValue = (value: unknown, path: string, depth = 0): void => {
+  if (depth > 40) throw new Error(`${path} exceeds the supported JSON depth.`)
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new Error(`${path} must contain finite JSON numbers.`)
+    return
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => validateJsonValue(item, `${path}[${index}]`, depth + 1))
+    return
+  }
+  if (value && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype) {
+    for (const [key, child] of Object.entries(value)) validateJsonValue(child, `${path}.${key}`, depth + 1)
+    return
+  }
+  throw new Error(`${path} must contain JSON-compatible data.`)
+}
+
+const isRelationIdentity = (value: unknown): boolean =>
+  (typeof value === 'string' && value.trim().length > 0)
+  || (typeof value === 'number' && Number.isSafeInteger(value) && value > 0)
+
+const validateAuthoringRecord = (
+  value: unknown,
+  fields: AuthoringField[],
+  path: string,
+  blockType?: string,
+  allowPayloadRowId = false,
+  requireRequiredFields = false,
+): void => {
+  const row = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined
+  if (!row) throw new Error(`${path} must be an object.`)
+  const allowed = new Map(fields
+    .filter((field) => typeof field.name === 'string' && !AUTHORING_RESERVED_FIELDS.has(field.name))
+    .map((field) => [field.name as string, field]))
+  for (const field of allowed.values()) {
+    if (!authoringFieldTypes.has(String(field.type || ''))) {
+      throw new Error(`${path}.${String(field.name)} uses unsupported Payload field type “${String(field.type || '')}”.`)
+    }
+  }
+  // Payload's own stable IDs are retained on existing array rows/blocks.
+  const unknown = Object.keys(row).filter((key) =>
+    !(allowPayloadRowId && key === 'id')
+    && !(blockType && key === 'blockType')
+    && !allowed.has(key),
+  )
+  if (unknown.length) throw new Error(`${path} contains unsupported fields: ${unknown.join(', ')}.`)
+  if (blockType && row.blockType !== blockType) throw new Error(`${path}.blockType does not match its declared Payload block.`)
+  if (requireRequiredFields) for (const field of allowed.values()) {
+    if (field.required && !Object.hasOwn(row, String(field.name))) {
+      throw new Error(`${path}.${String(field.name)} is required.`)
+    }
+  }
+  if (allowPayloadRowId && Object.hasOwn(row, 'id') && !isRelationIdentity(row.id)) {
+    throw new Error(`${path}.id must be a Payload row ID.`)
+  }
+  for (const [key, child] of Object.entries(row)) {
+    const field = allowed.get(key)
+    if (field) validateFieldValue(field, child, `${path}.${key}`)
+  }
+}
+
+const privateOwnerAccess = {
+  read: ownerCanRead,
+  create: ownerCanWrite,
+  update: ownerCanWrite,
+  delete: serviceOnly,
+}
+
+const serviceOwnedAccess = {
+  read: ownerCanRead,
+  create: serviceOnly,
+  update: serviceOnly,
+  delete: serviceOnly,
+}
+
+export const createContactFormsCollection = (): CollectionConfig => ({
+  slug: 'contactForms',
+  admin: { useAsTitle: 'title', defaultColumns: ['title', 'slug', 'enabled', 'updatedAt'] },
+  versions: { drafts: true, maxPerDoc: 20 },
+  access: privateOwnerAccess,
+  fields: [
+    { name: 'title', type: 'text', required: true, localized: true, label: 'Form name' },
+    { name: 'slug', type: 'text', required: true, unique: true, label: 'Form ID' },
+    { name: 'intro', type: 'textarea', localized: true, label: 'Introduction' },
+    { name: 'submitLabel', type: 'text', required: true, localized: true, defaultValue: 'Send message', label: 'Button text' },
+    { name: 'successMessage', type: 'textarea', required: true, localized: true, defaultValue: 'Thank you. Your message has been received.', label: 'Confirmation' },
+    {
+      name: 'fields', type: 'array', required: true, maxRows: 12, label: 'Questions',
+      fields: [
+        { name: 'key', type: 'text', required: true, admin: { readOnly: true }, label: 'Stable field ID' },
+        { name: 'label', type: 'text', required: true, localized: true, label: 'Question' },
+        { name: 'type', type: 'select', required: true, options: ['text', 'email', 'phone', 'textarea', 'select', 'consent'], label: 'Answer type' },
+        { name: 'mapsTo', type: 'select', required: true, defaultValue: 'none', options: ['none', 'name', 'email', 'phone', 'company', 'message'], label: 'Save as contact or enquiry detail' },
+        { name: 'placeholder', type: 'text', localized: true, label: 'Example text' },
+        { name: 'required', type: 'checkbox', defaultValue: false, label: 'Required' },
+        { name: 'maxLength', type: 'number', min: 1, max: 4000, defaultValue: 500, label: 'Maximum length' },
+        { name: 'choices', type: 'array', maxRows: 20, admin: { condition: (_data: unknown, siblingData: Record<string, unknown>) => siblingData?.type === 'select' }, fields: [
+          { name: 'key', type: 'text', required: true, admin: { readOnly: true }, label: 'Stable choice ID' },
+          { name: 'label', type: 'text', required: true, localized: true, label: 'Choice' },
+        ] },
+      ],
+    },
+    { name: 'enabled', type: 'checkbox', defaultValue: false, label: 'Accept responses' },
+  ],
+  hooks: {
+    beforeValidate: [async ({ data, originalDoc }) => {
+      const fields = assignFormFieldKeys(data?.fields ?? originalDoc?.fields)
+      const result = validateHelloAdaFormFields(fields)
+      if (result !== true) throw new Error(result)
+      return { ...data, fields }
+    }],
+  },
+})
+
+export const createContactsCollection = (): CollectionConfig => ({
+  slug: 'contacts',
+  admin: { useAsTitle: 'name', defaultColumns: ['name', 'email', 'source', 'updatedAt'], hidden: true },
+  access: {
+    read: ownerCanRead,
+    create: serviceOnly,
+    update: ownerCanWrite,
+    delete: serviceOnly,
+  },
+  fields: [
+    { name: 'emailKey', type: 'text', required: true, unique: true, index: true, admin: { hidden: true }, access: { update: serviceOnly } },
+    { name: 'email', type: 'email', required: true, access: { update: serviceOnly } },
+    { name: 'name', type: 'text', access: { update: ownerCanWrite } },
+    { name: 'phone', type: 'text', access: { update: ownerCanWrite } },
+    { name: 'company', type: 'text', access: { update: ownerCanWrite } },
+    { name: 'notes', type: 'textarea', access: { update: ownerCanWrite } },
+    { name: 'source', type: 'select', required: true, options: ['form', 'email', 'owner'], access: { update: serviceOnly } },
+    { name: 'lastSeenAt', type: 'date', access: { update: serviceOnly } },
+  ],
+})
+
+export const createConversationsCollection = (): CollectionConfig => ({
+  slug: 'conversations',
+  admin: { useAsTitle: 'subject', defaultColumns: ['subject', 'participantEmail', 'state', 'lastActivityAt'], hidden: true },
+  access: {
+    read: ownerCanRead,
+    create: serviceOnly,
+    update: ownerCanWrite,
+    delete: serviceOnly,
+  },
+  fields: [
+    { name: 'subject', type: 'text', required: true, access: { update: serviceOnly } },
+    { name: 'contact', type: 'relationship', relationTo: 'contacts', required: true, access: { update: serviceOnly } },
+    { name: 'participantEmail', type: 'email', required: true, access: { update: serviceOnly } },
+    { name: 'mailboxKey', type: 'text', required: true, index: true, admin: { hidden: true }, access: { update: serviceOnly } },
+    { name: 'threadKey', type: 'text', required: true, unique: true, index: true, admin: { hidden: true }, access: { update: serviceOnly } },
+    { name: 'state', type: 'select', required: true, defaultValue: 'needs_reply', options: ['needs_reply', 'done', 'archived', 'spam'], access: { update: ownerCanWrite } },
+    { name: 'unread', type: 'checkbox', defaultValue: true, access: { update: ownerCanWrite } },
+    { name: 'source', type: 'select', required: true, options: ['form', 'email'], access: { update: serviceOnly } },
+    { name: 'sourcePage', type: 'text', access: { update: serviceOnly } },
+    { name: 'lastActivityAt', type: 'date', required: true, access: { update: serviceOnly } },
+    { name: 'lastMessagePreview', type: 'textarea', maxLength: 500, access: { update: serviceOnly } },
+  ],
+})
+
+export const createMessagesCollection = (): CollectionConfig => ({
+  slug: 'messages',
+  admin: { useAsTitle: 'subject', defaultColumns: ['subject', 'direction', 'deliveryState', 'createdAt'], hidden: true },
+  access: serviceOwnedAccess,
+  fields: [
+    { name: 'conversation', type: 'relationship', relationTo: 'conversations', required: true, index: true, access: { update: serviceOnly } },
+    { name: 'direction', type: 'select', required: true, options: ['form_enquiry', 'received_email', 'reply'], access: { update: serviceOnly } },
+    { name: 'from', type: 'email', access: { update: serviceOnly } },
+    { name: 'to', type: 'email', access: { update: serviceOnly } },
+    { name: 'subject', type: 'text', required: true, access: { update: serviceOnly } },
+    { name: 'text', type: 'textarea', required: true, access: { update: serviceOnly } },
+    { name: 'draftText', type: 'textarea', access: { update: serviceOnly } },
+    { name: 'draftRevision', type: 'number', defaultValue: 0, access: { update: serviceOnly } },
+    { name: 'deliveryState', type: 'select', required: true, defaultValue: 'received', options: ['draft', 'queued', 'sending', 'accepted', 'failed', 'uncertain', 'received'], access: { update: serviceOnly } },
+    { name: 'form', type: 'relationship', relationTo: 'contactForms', access: { update: serviceOnly } },
+    { name: 'formSnapshot', type: 'json', access: { update: serviceOnly } },
+    { name: 'receiptId', type: 'text', unique: true, index: true, admin: { hidden: true }, access: { update: serviceOnly } },
+    { name: 'externalMessageId', type: 'text', index: true, admin: { hidden: true }, access: { update: serviceOnly } },
+    { name: 'inReplyTo', type: 'text', index: true, admin: { hidden: true }, access: { update: serviceOnly } },
+    { name: 'references', type: 'json', admin: { hidden: true }, access: { update: serviceOnly } },
+    { name: 'rawObjectKey', type: 'text', admin: { hidden: true }, access: { update: serviceOnly } },
+    { name: 'attachmentManifest', type: 'json', admin: { hidden: true }, access: { update: serviceOnly } },
+    { name: 'approvalHash', type: 'text', admin: { hidden: true }, access: { update: serviceOnly } },
+    { name: 'approvedBy', type: 'text', admin: { hidden: true }, access: { update: serviceOnly } },
+    { name: 'approvedAt', type: 'date', admin: { hidden: true }, access: { update: serviceOnly } },
+    { name: 'operationId', type: 'text', unique: true, index: true, admin: { hidden: true }, access: { update: serviceOnly } },
+  ],
+})
+
+export const createMessageOperationsCollection = (): CollectionConfig => ({
+  slug: 'messageOperations',
+  admin: { useAsTitle: 'operationId', defaultColumns: ['operationType', 'state', 'attempts', 'updatedAt'], hidden: true },
+  access: serviceOwnedAccess,
+  fields: [
+    { name: 'operationId', type: 'text', required: true, unique: true, index: true, access: { update: serviceOnly } },
+    { name: 'operationType', type: 'select', required: true, options: ['form_accept', 'inbound_email', 'owner_notification', 'save_draft', 'send_reply'], access: { update: serviceOnly } },
+    { name: 'idempotencyKey', type: 'text', required: true, unique: true, index: true, access: { update: serviceOnly } },
+    { name: 'requestHash', type: 'text', required: true, defaultValue: '', index: true, access: { update: serviceOnly } },
+    { name: 'state', type: 'select', required: true, defaultValue: 'accepted', options: ['accepted', 'queued', 'processing', 'completed', 'failed', 'uncertain'], access: { update: serviceOnly } },
+    { name: 'attempts', type: 'number', defaultValue: 0, access: { update: serviceOnly } },
+    { name: 'nextAttemptAt', type: 'date', access: { update: serviceOnly } },
+    { name: 'leaseUntil', type: 'date', access: { update: serviceOnly } },
+    { name: 'payload', type: 'json', access: { update: serviceOnly } },
+    { name: 'privateObjectKey', type: 'text', admin: { hidden: true }, access: { update: serviceOnly } },
+    { name: 'providerReference', type: 'text', access: { update: serviceOnly } },
+    { name: 'errorCode', type: 'text', access: { update: serviceOnly } },
+  ],
+})
+
+export const createMessageMailboxGlobal = (): GlobalConfig => ({
+  slug: 'messageMailbox',
+  admin: { hidden: true },
+  access: { read: ownerCanRead, update: serviceOnly },
+  fields: [
+    { name: 'domain', type: 'text', access: { update: serviceOnly } },
+    { name: 'address', type: 'email', access: { update: serviceOnly } },
+    { name: 'state', type: 'select', required: true, defaultValue: 'domain_required', options: ['domain_required', 'provisioning', 'action_required', 'active', 'failed'], access: { update: serviceOnly } },
+    { name: 'statusDetail', type: 'textarea', access: { update: serviceOnly } },
+    { name: 'activatedAt', type: 'date', access: { update: serviceOnly } },
+    { name: 'notificationAddress', type: 'email', label: 'Verified notification email', access: { update: serviceOnly } },
+    { name: 'notificationVerifiedAt', type: 'date', access: { update: serviceOnly } },
+    { name: 'notificationPendingAddress', type: 'email', admin: { hidden: true }, access: { update: serviceOnly } },
+    { name: 'notificationCodeHash', type: 'text', admin: { hidden: true }, access: { update: serviceOnly } },
+    { name: 'notificationCodeExpiresAt', type: 'date', admin: { hidden: true }, access: { update: serviceOnly } },
+    { name: 'notificationCodeSentAt', type: 'date', admin: { hidden: true }, access: { update: serviceOnly } },
+    { name: 'notificationCodeAttempts', type: 'number', defaultValue: 0, admin: { hidden: true }, access: { update: serviceOnly } },
+  ],
+})
 
 export const createPagesCollection = (guard: NativeWriteGuard): CollectionConfig => ({
   slug: 'pages',
   versions: { drafts: true, maxPerDoc: 10 },
   admin: { useAsTitle: 'title', defaultColumns: ['title', 'slug', '_status', 'updatedAt'] },
   fields: [
-    { name: 'sourceId', type: 'text', admin: { position: 'sidebar' } },
+    { name: 'sourceId', type: 'text', admin: { position: 'sidebar', readOnly: true }, access: { update: serviceOnly } },
     { name: 'title', type: 'text', required: true, localized: true, label: 'Page title' },
     { name: 'slug', type: 'text', required: true, unique: true, label: 'Page address' },
     { name: 'summary', type: 'textarea', localized: true, label: 'Short introduction' },
@@ -310,7 +852,7 @@ export const createPostsCollection = (guard: NativeWriteGuard): CollectionConfig
   versions: { drafts: true, maxPerDoc: 10 },
   admin: { useAsTitle: 'title', defaultColumns: ['title', 'publishedAt', '_status', 'updatedAt'] },
   fields: [
-    { name: 'sourceId', type: 'text', admin: { position: 'sidebar' } },
+    { name: 'sourceId', type: 'text', admin: { position: 'sidebar', readOnly: true }, access: { update: serviceOnly } },
     { name: 'title', type: 'text', required: true, localized: true, label: 'Article title' },
     { name: 'slug', type: 'text', required: true, unique: true, label: 'Article address' },
     { name: 'summary', type: 'textarea', localized: true, label: 'Article excerpt' },
@@ -341,7 +883,7 @@ export const createPostCategoriesCollection = (guard: NativeWriteGuard): Collect
   versions: { drafts: true, maxPerDoc: 10 },
   admin: { useAsTitle: 'title' },
   fields: [
-    { name: 'sourceId', type: 'text', index: true, unique: true, admin: { position: 'sidebar' } },
+    { name: 'sourceId', type: 'text', index: true, unique: true, admin: { position: 'sidebar', readOnly: true }, access: { update: serviceOnly } },
     { name: 'title', type: 'text', required: true, localized: true },
     { name: 'slug', type: 'text', required: true, unique: true },
     { name: 'sourceUrl', type: 'text' },
@@ -367,7 +909,7 @@ export const createProductsCollection = (guard: NativeWriteGuard): CollectionCon
   versions: { drafts: true, maxPerDoc: 10 },
   admin: { useAsTitle: 'title' },
   fields: [
-    { name: 'sourceId', type: 'text', admin: { position: 'sidebar' } },
+    { name: 'sourceId', type: 'text', admin: { position: 'sidebar', readOnly: true }, access: { update: serviceOnly } },
     { name: 'title', type: 'text', required: true, localized: true },
     { name: 'slug', type: 'text', required: true, unique: true },
     { name: 'summary', type: 'textarea', localized: true },
@@ -397,7 +939,7 @@ export const createProductCategoriesCollection = (guard: NativeWriteGuard): Coll
   slug: 'productCategories',
   admin: { useAsTitle: 'title' },
   fields: [
-    { name: 'sourceId', type: 'text', admin: { position: 'sidebar' } },
+    { name: 'sourceId', type: 'text', admin: { position: 'sidebar', readOnly: true }, access: { update: serviceOnly } },
     { name: 'sourceUrl', type: 'text' },
     { name: 'title', type: 'text', required: true, localized: true },
     { name: 'slug', type: 'text', required: true, unique: true },
@@ -419,7 +961,34 @@ export const createProductCategoriesCollection = (guard: NativeWriteGuard): Coll
 })
 
 export const Users: CollectionConfig = {
-  slug: 'users', auth: true, admin: { useAsTitle: 'email' }, fields: [],
+  slug: 'users',
+  auth: { disableLocalStrategy: { enableFields: true }, useSessions: true },
+  access: { create: () => false, read: () => false, update: () => false, delete: () => false },
+  admin: { useAsTitle: 'email', hidden: true },
+  fields: [
+    {
+      name: 'helloadaSubject',
+      type: 'text',
+      required: true,
+      unique: true,
+      index: true,
+      admin: { hidden: true },
+      access: { read: serviceOnly, update: serviceOnly },
+    },
+  ],
+}
+
+/** Durable one-use claims prevent a valid HelloAda session grant from being replayed. */
+export const OwnerHandoffGrants: CollectionConfig = {
+  slug: 'owner-handoff-grants',
+  admin: { hidden: true, useAsTitle: 'grantId' },
+  access: { create: () => false, read: () => false, update: () => false, delete: () => false },
+  fields: [
+    { name: 'grantId', type: 'text', required: true, unique: true, index: true, access: { update: serviceOnly } },
+    { name: 'tenantId', type: 'text', required: true, access: { update: serviceOnly } },
+    { name: 'ownerSubjectHash', type: 'text', required: true, access: { update: serviceOnly } },
+    { name: 'consumedAt', type: 'date', required: true, access: { update: serviceOnly } },
+  ],
 }
 
 export const Media: CollectionConfig = {
@@ -433,7 +1002,7 @@ export const Media: CollectionConfig = {
   upload: true,
   fields: [
     { name: 'alt', type: 'text', localized: true, label: 'Alternative text' },
-    { name: 'sourceId', type: 'text', required: true, index: true, unique: true, admin: { position: 'sidebar' } },
+    { name: 'sourceId', type: 'text', required: true, index: true, unique: true, admin: { position: 'sidebar', readOnly: true }, access: { update: serviceOnly } },
     { name: 'sourceUrl', type: 'text' },
     { name: 'originalUrl', type: 'text' },
     { name: 'description', type: 'textarea', localized: true, label: 'Description' },
@@ -507,7 +1076,10 @@ export const createNavigationGlobal = (guard: NativeWriteGuard): GlobalConfig =>
       return navigation
     }],
     beforeOperation: [async ({ args, operation }) => {
-      if (operation === 'update') await guard('global:navigation', 'navigation', args.req)
+      if (operation === 'update') await guard('global:navigation', 'navigation', args.req, operation, args.data)
+    }],
+    afterChange: [async ({ req }) => {
+      await guard('global:navigation', 'navigation', req, 'complete')
     }],
   },
 })
@@ -547,15 +1119,99 @@ export const createSiteSettingsGlobal = (guard: NativeWriteGuard): GlobalConfig 
   ],
   hooks: {
     beforeOperation: [async ({ args, operation }) => {
-      if (operation === 'update') await guard('global:siteSettings', 'siteSettings', args.req)
+      if (operation === 'update') await guard('global:siteSettings', 'siteSettings', args.req, operation, args.data)
+    }],
+    afterChange: [async ({ req }) => {
+      await guard('global:siteSettings', 'siteSettings', req, 'complete')
     }],
   },
 })
 
 export const createHelloAdaSchema = (guard: NativeWriteGuard) => ({
-  collections: [Users, createPagesCollection(guard), createPostsCollection(guard), createPostCategoriesCollection(guard), createProductsCollection(guard), createProductCategoriesCollection(guard), Media],
-  globals: [createSiteSettingsGlobal(guard), createNavigationGlobal(guard)],
+  collections: [
+    Users,
+    OwnerHandoffGrants,
+    createPagesCollection(guard),
+    createPostsCollection(guard),
+    createPostCategoriesCollection(guard),
+    createProductsCollection(guard),
+    createProductCategoriesCollection(guard),
+    Media,
+    createContactFormsCollection(),
+    createContactsCollection(),
+    createConversationsCollection(),
+    createMessagesCollection(),
+    createMessageOperationsCollection(),
+  ],
+  globals: [createSiteSettingsGlobal(guard), createNavigationGlobal(guard), createMessageMailboxGlobal()],
 })
+
+/**
+ * Return Ada's design-facing contract from the same Payload configs installed
+ * on the destination. This intentionally excludes users, operational data,
+ * private messaging, and platform-controlled publication/identity fields.
+ */
+export const createHelloAdaAuthoringContract = () => {
+  const schema = createHelloAdaSchema(async () => undefined)
+  const collections = new Map(schema.collections.map((collection) => [collection.slug, collection]))
+  const globals = new Map(schema.globals.map((global) => [global.slug, global]))
+  const fields = (config: CollectionConfig | GlobalConfig) => config.fields
+    .flatMap((field) => 'name' in field && typeof field.name === 'string' ? [field as AuthoringField] : [])
+    .filter((field) => !AUTHORING_RESERVED_FIELDS.has(String(field.name || '')))
+    .map(authoringFieldShape)
+  return {
+    contract: HELLOADA_CONTENT_CONTRACT_VERSION,
+    corePackage: '@weareheadless/helloada-payload-core',
+    coreVersion: HELLOADA_CORE_VERSION,
+    schemaRevision: HELLOADA_SCHEMA_REVISION,
+    collections: Object.fromEntries(HELLOADA_AUTHORING_CAPABILITIES.collections.map((slug) => {
+      const config = collections.get(slug)
+      if (!config) throw new Error(`Authoring collection ${slug} is missing from the shared schema.`)
+      return [slug, fields(config)]
+    })),
+    globals: Object.fromEntries(HELLOADA_AUTHORING_CAPABILITIES.globals.map((slug) => {
+      const config = globals.get(slug)
+      if (!config) throw new Error(`Authoring global ${slug} is missing from the shared schema.`)
+      return [slug, fields(config)]
+    })),
+    contentBlocks: HELLOADA_CAPABILITIES.contentBlocks,
+    reservedFields: [...AUTHORING_RESERVED_FIELDS].sort(),
+  }
+}
+
+/** Reject data that is outside the installed canonical Payload field tree. */
+export const validateHelloAdaAuthoringData = (
+  kind: 'collection' | 'global',
+  slug: string,
+  value: unknown,
+  options: { operation?: 'create' | 'update' } = {},
+): true => {
+  const schema = createHelloAdaSchema(async () => undefined)
+  const config = kind === 'collection'
+    ? schema.collections.find((item) => item.slug === slug && (HELLOADA_AUTHORING_CAPABILITIES.collections as readonly string[]).includes(slug))
+    : schema.globals.find((item) => item.slug === slug && (HELLOADA_AUTHORING_CAPABILITIES.globals as readonly string[]).includes(slug))
+  if (!config) throw new Error(`Unsupported website ${kind}: ${slug}.`)
+  const fields = config.fields as AuthoringField[]
+  validateAuthoringRecord(value, fields, slug, undefined, false, options.operation === 'create')
+  const row = asRow(value)
+  if (kind === 'collection' && slug === 'pages' && Object.hasOwn(row, 'sections')) {
+    const result = validateHelloAdaPageSections(row.sections)
+    if (result !== true) throw new Error(String(result))
+  }
+  if (kind === 'collection' && slug === 'posts' && Object.hasOwn(row, 'sections')) {
+    const result = validateHelloAdaPageSections(row.sections)
+    if (result !== true) throw new Error(String(result))
+  }
+  if (kind === 'collection' && slug === 'products' && Object.hasOwn(row, 'sections')) {
+    const result = validateHelloAdaPageSections(row.sections)
+    if (result !== true) throw new Error(String(result))
+  }
+  if (kind === 'global' && slug === 'navigation') {
+    const result = validateHelloAdaNavigation({ ...row })
+    if (result !== true) throw new Error(String(result))
+  }
+  return true
+}
 
 /** Generate the machine-readable bootstrap contract from the real Payload config. */
 export const createHelloAdaContentContract = () => {

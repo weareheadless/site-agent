@@ -1441,6 +1441,20 @@ class DesignService:
                 return {**run, "draft_id": draft["id"]}
         business = ((run.get("intake_json") or {}).get("business") or {})
         title = f"Design candidate: {str(business.get('name') or run_id)[:100]}"
+        planning = run.get("planning_json") if isinstance(run.get("planning_json"), Mapping) else {}
+        payload_effects = planning.get("payload_effects") if isinstance(planning.get("payload_effects"), list) else []
+        payload_revision_set_hash = str(planning.get("payload_revision_set_hash") or "")
+        if payload_effects:
+            from ..core.payload_receipts import payload_revision_manifest
+
+            try:
+                normalized_effects, computed_hash = payload_revision_manifest(payload_effects)
+            except ValueError as exc:
+                raise DesignServiceError(f"design review has invalid Payload revision receipts: {exc}") from exc
+            if normalized_effects != payload_effects or computed_hash != payload_revision_set_hash:
+                raise DesignServiceError("design review Payload receipts do not match their immutable revision-set hash")
+        elif (run.get("operation_kind") or "initial_build") == "initial_build":
+            raise DesignServiceError("a first-site candidate cannot enter review before its canonical Payload homepage draft is verified")
         meta = {
             "run_id": run_id,
             "base_sha": run["base_sha"],
@@ -1451,6 +1465,9 @@ class DesignService:
             "manifest_hash": run["design_manifest_hash"],
             "publishable": True,
         }
+        if payload_effects:
+            meta["payload_effects"] = payload_effects
+            meta["payload_revision_set_hash"] = payload_revision_set_hash
         draft_id = self.memory.save_draft(
             title=title,
             body=f"Immutable design candidate {run['candidate_sha']} is ready for owner review.",

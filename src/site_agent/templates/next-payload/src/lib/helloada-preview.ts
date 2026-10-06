@@ -7,6 +7,8 @@ export type HelloAdaPreviewClaims = {
   collection: 'pages' | 'posts' | 'products'
   documentId: string
   documentHash: string
+  locale: string
+  globals: Array<{ slug: 'siteSettings' | 'navigation'; hash: string }>
   route: string
   state: 'draft' | 'published'
   expiresAt: number
@@ -43,6 +45,15 @@ const validClaims = (value: unknown, tenantId: string): value is HelloAdaPreview
     && typeof claims.collection === 'string' && collections.has(claims.collection as HelloAdaPreviewClaims['collection'])
     && typeof claims.documentId === 'string' && claims.documentId.length > 0
     && typeof claims.documentHash === 'string' && /^sha256:[0-9a-f]{64}$/.test(claims.documentHash)
+    && typeof claims.locale === 'string' && /^[A-Za-z0-9-]{2,20}$/.test(claims.locale)
+    && Array.isArray(claims.globals)
+    && claims.globals.length === 2
+    && new Set(claims.globals.map(global => global?.slug)).size === 2
+    && claims.globals.every(global =>
+      (global?.slug === 'siteSettings' || global?.slug === 'navigation')
+      && typeof global.hash === 'string'
+      && /^sha256:[0-9a-f]{64}$/.test(global.hash),
+    )
     && typeof claims.route === 'string' && claims.route.startsWith('/') && !claims.route.startsWith('//')
     && (claims.state === 'draft' || claims.state === 'published')
     && Number.isSafeInteger(claims.expiresAt) && Number(claims.expiresAt) > Math.floor(Date.now() / 1000)

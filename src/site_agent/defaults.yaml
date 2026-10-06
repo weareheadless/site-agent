@@ -242,11 +242,13 @@ site:
     api_prefix: /api/workspace
     token_env: PAYLOAD_GATEWAY_TOKEN
     timeout_seconds: 30
-    # Required when enabled. Values are instance-specific and belong in the
-    # tenant config, not in the Payload adapter implementation.
+    # Pins are written from the shared template manifest during tenant setup.
+    # They are not a second, hand-maintained list of collection fields.
     contract:
-      collections: {}
-      globals: {}
+      contract: ""
+      coreVersion: ""
+      schemaRevision: 0
+      schemaIdentity: ""
       media_fields: []
   cloudflare:
     account_id: ""

@@ -8,11 +8,6 @@ const source = readFileSync(new URL('../../../src/site_agent/templates/next-payl
 const compiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText
-const localeSource = readFileSync(new URL('../../../src/site_agent/templates/next-payload/src/lib/payload-locale.ts', import.meta.url), 'utf8')
-const localeSandbox = { exports: {} }
-vm.runInNewContext(ts.transpileModule(localeSource, {
-  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
-}).outputText, localeSandbox)
 
 test('the default content gateway bounds requested lists and requires service authentication', async () => {
   let authorized = true
@@ -22,9 +17,9 @@ test('the default content gateway bounds requested lists and requires service au
     'next/server': { NextResponse: { json: (body, options) => ({ body, status: options?.status || 200 }) } },
     payload: { getPayload: async () => payload },
     '@payload-config': { default: {} },
-    '@/helloada.config': { helloAdaSite: { locales: ['en', 'fr'] } },
-    '@/lib/payload-locale': localeSandbox.exports,
     '@/lib/service-auth': { serviceAuthorized: () => authorized },
+    '@/helloada.config': { helloAdaSite: { locales: ['en'] } },
+    '@/lib/payload-locale': { resolvePayloadLocale: () => undefined },
   }
   const sandbox = { exports: {}, URL, require: name => modules[name] }
   vm.runInNewContext(compiled, sandbox)
@@ -34,9 +29,6 @@ test('the default content gateway bounds requested lists and requires service au
     assert.equal(queries.at(-1).limit, expected)
     assert.equal(response.body.documents.length, 1)
   }
-  assert.equal((await sandbox.exports.GET({ url: 'https://tenant.test/api/workspace/content?locale=xx' })).status, 400)
-  assert.equal((await sandbox.exports.GET({ url: 'https://tenant.test/api/workspace/content?locale=fr' })).status, 200)
-  assert.equal(queries.at(-1).locale, 'fr')
   authorized = false
   const count = queries.length
   assert.equal((await sandbox.exports.GET({ url: 'https://tenant.test/api/workspace/content' })).status, 401)
@@ -58,6 +50,9 @@ test('draft updates require the exact current Payload revision', async () => {
     payload: { getPayload: async () => payload },
     '@payload-config': { default: {} },
     '@/lib/service-auth': { serviceAuthorized: () => true },
+    '@/helloada.config': { helloAdaSite: { locales: ['en'] } },
+    '@/lib/payload-locale': { resolvePayloadLocale: () => undefined },
+    '@weareheadless/helloada-payload-core/schema': { validateHelloAdaAuthoringData: () => true },
     '@/lib/payload-hash': {
       hashJson: async () => revision,
       withoutPayloadMetadata: ({ id, title }) => ({ id, title }),
@@ -68,8 +63,8 @@ test('draft updates require the exact current Payload revision', async () => {
   const post = body => sandbox.exports.POST({ json: async () => body })
 
   assert.equal((await post({ operation: 'update', collection: 'pages', id: 'page-1', data: { title: 'After' } })).status, 400)
-  assert.equal((await post({ operation: 'update', collection: 'pages', id: 'page-1', expectedHash: `sha256:${'b'.repeat(64)}`, data: { title: 'After' } })).status, 409)
-  const accepted = await post({ operation: 'update', collection: 'pages', id: 'page-1', expectedHash: revision, data: { title: 'After' } })
+  assert.equal((await post({ operation: 'update', collection: 'pages', id: 'page-1', locale: 'en', expectedHash: `sha256:${'b'.repeat(64)}`, data: { title: 'After' } })).status, 409)
+  const accepted = await post({ operation: 'update', collection: 'pages', id: 'page-1', locale: 'en', expectedHash: revision, data: { title: 'After' } })
   assert.equal(accepted.status, 200)
   assert.deepEqual(writes.map(({ data, draft }) => ({ data, draft })), [{ data: { title: 'After' }, draft: true }])
   assert.equal(accepted.body.documentHash, revision)

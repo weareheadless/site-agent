@@ -27,6 +27,11 @@ TEMPLATE = ROOT / "src/site_agent/templates/next-payload"
 TEMPLATE_MANIFEST = json.loads((TEMPLATE / "template-manifest.json").read_text())
 CUSTOMER = {
     **REGISTRY["customers"]["oceanicvibes"],
+    "payloadAdmin": TEMPLATE_MANIFEST["payloadAdmin"],
+    "payloadCore": TEMPLATE_MANIFEST["payloadCore"],
+    "contentContract": TEMPLATE_MANIFEST["contentContract"],
+    "schemaRevision": TEMPLATE_MANIFEST["schemaRevision"],
+    "schemaIdentity": TEMPLATE_MANIFEST["schemaIdentity"],
     "migrationHead": TEMPLATE_MANIFEST["migrationHead"],
     "d1DatabaseId": "56d3f277-fbaf-43d4-91e5-b3a195653a05",
     "d1DatabaseName": "oceanicvibes-content",

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import sys
+import hashlib
+import json
+import subprocess
 
 import pytest
 
@@ -41,6 +44,163 @@ def test_source_deployment_build_environment_forces_production_mode(tmp_path):
     try:
         assert service._child_env()["NODE_ENV"] == "development"
         assert service._child_env(production=True)["NODE_ENV"] == "production"
+    finally:
+        service.close()
+
+
+def test_candidate_preview_environment_never_receives_platform_or_tenant_credentials(tmp_path):
+    service = source_deployment.SourceDeploymentService(
+        {"site": {"clone_path": str(tmp_path)}},
+        env={
+            "PATH": "/usr/bin:/bin",
+            "HOME": "/tmp/preview-home",
+            "NODE_ENV": "development",
+            "CLOUDFLARE_API_TOKEN": "cloudflare-production-token",
+            "CLOUDFLARE_ACCOUNT_ID": "production-account",
+            "PAYLOAD_SECRET": "tenant-signing-secret",
+            "PAYLOAD_GATEWAY_TOKEN": "tenant-service-token",
+            "GITHUB_TOKEN": "github-write-token",
+            "OPENAI_API_KEY": "model-provider-key",
+            "AWS_SECRET_ACCESS_KEY": "storage-secret",
+        },
+    )
+    try:
+        preview = service._preview_env(production=True)
+        assert preview["NODE_ENV"] == "production"
+        assert preview["HELLOADA_PREVIEW_MODE"] == "1"
+        assert preview["HOME"] != "/tmp/preview-home"
+        assert preview["NPM_CONFIG_CACHE"].startswith(preview["HOME"])
+        assert preview["PAYLOAD_SECRET"] != "tenant-signing-secret"
+        assert len(preview["PAYLOAD_SECRET"]) >= 32
+        assert not {
+            "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "PAYLOAD_GATEWAY_TOKEN",
+            "GITHUB_TOKEN", "OPENAI_API_KEY", "AWS_SECRET_ACCESS_KEY",
+        } & set(preview)
+    finally:
+        service.close()
+
+
+def test_candidate_validation_commands_use_the_restricted_preview_environment(monkeypatch, tmp_path):
+    service = source_deployment.SourceDeploymentService(
+        {"site": {"clone_path": str(tmp_path)}},
+        env={"PATH": "/usr/bin:/bin", "PAYLOAD_GATEWAY_TOKEN": "must-not-leak"},
+    )
+    observed = {}
+
+    def run(command, **kwargs):
+        observed.update(kwargs["env"])
+        return source_deployment.subprocess.CompletedProcess(command, 0, "ok", "")
+
+    monkeypatch.setattr(source_deployment.subprocess, "run", run)
+    try:
+        service._check(["npm", "ci"], tmp_path, "dependencies", 30)
+        assert "PAYLOAD_GATEWAY_TOKEN" not in observed
+        assert observed["HELLOADA_PREVIEW_MODE"] == "1"
+        assert observed["PAYLOAD_SECRET"]
+    finally:
+        service.close()
+
+
+def test_source_preview_uses_payload_revisions_from_the_persisted_review_draft(tmp_path):
+    effect = {
+        "kind": "collection",
+        "operation": "update",
+        "target": "pages",
+        "document_id": "17",
+        "revision": "sha256:" + "a" * 64,
+        "locale": "es-MX",
+        "fields": ["sections"],
+        "summary": "Change the homepage copy",
+    }
+    encoded = json.dumps([effect], ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    revision_hash = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+    memory = Memory(tmp_path / "memory.db")
+    draft_id = memory.save_draft(
+        "Homepage change", "diff", kind="merge",
+        meta={"payload_effects": [effect], "payload_revision_set_hash": revision_hash},
+    )
+    service = source_deployment.SourceDeploymentService(
+        {"site": {"clone_path": str(tmp_path)}}, memory=memory,
+    )
+    try:
+        effects, verified_hash = service._reviewed_payload_effects(
+            draft_id,
+            {"payload_effects": [effect], "payload_revision_set_hash": revision_hash},
+        )
+        assert effects == [effect]
+        assert verified_hash == revision_hash
+        with pytest.raises(source_deployment.SourceDeploymentError, match="does not match the reviewed"):
+            service._reviewed_payload_effects(draft_id, {"payload_revision_set_hash": "0" * 64})
+    finally:
+        service.close()
+        memory.close()
+
+
+def test_compiled_candidate_is_checked_against_frontend_allowlist_before_build(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", str(repo), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    git("init", "-b", "main")
+    git("config", "user.name", "Site Agent Test")
+    git("config", "user.email", "site-agent-test@example.invalid")
+    presentation = repo / "src/components/site/presentation/Hero.tsx"
+    presentation.parent.mkdir(parents=True)
+    presentation.write_text("export const Hero = () => <h1>Base</h1>\n", encoding="utf-8")
+    package_json = repo / "package.json"
+    package_json.write_text('{"name":"tenant-site"}\n', encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "base")
+    base_sha = git("rev-parse", "HEAD")
+
+    presentation.write_text("export const Hero = () => <h1>Candidate</h1>\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "presentation change")
+    candidate_sha = git("rev-parse", "HEAD")
+    memory = Memory(tmp_path / "memory.db")
+    draft_id = memory.save_draft(
+        "Candidate", "diff", kind="merge",
+        meta={"base_sha": base_sha, "candidate_sha": candidate_sha},
+    )
+    service = source_deployment.SourceDeploymentService(
+        {"site": {"clone_path": str(repo)}}, memory=memory,
+    )
+    try:
+        result = service._verify_candidate_source_boundary(repo, candidate_sha, draft_id)
+        assert result["ok"] is True
+        assert result["changed_files"] == 1
+
+        package_json.write_text('{"name":"tenant-site","scripts":{"preinstall":"node evil.js"}}\n', encoding="utf-8")
+        git("add", ".")
+        git("commit", "-m", "attempt to change package scripts")
+        prohibited_sha = git("rev-parse", "HEAD")
+        bad_draft_id = memory.save_draft(
+            "Unsafe candidate", "diff", kind="merge",
+            meta={"base_sha": base_sha, "candidate_sha": prohibited_sha},
+        )
+        with pytest.raises(source_deployment.SourceDeploymentError, match="platform-owned or non-presentation"):
+            service._verify_candidate_source_boundary(repo, prohibited_sha, bad_draft_id)
+    finally:
+        service.close()
+        memory.close()
+
+
+def test_compiled_preview_does_not_report_a_404_homepage_as_ready(tmp_path):
+    service = source_deployment.SourceDeploymentService(
+        {"site": {"clone_path": str(tmp_path)}},
+    )
+    try:
+        assert service._preview_root_is_ready(200) is True
+        assert service._preview_root_is_ready(204) is False
+        with pytest.raises(source_deployment.SourceDeploymentError, match="HTTP 404; refusing to mark"):
+            service._preview_root_is_ready(404)
     finally:
         service.close()
 

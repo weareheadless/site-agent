@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+
 from fastapi.testclient import TestClient
+import yaml
 
 from site_agent.application.tenant_registration import (
     TenantRegistrationService,
@@ -31,7 +34,7 @@ def _host(tmp_path):
     return config, env
 
 
-def test_registration_creates_an_isolated_idempotent_tenant(tmp_path):
+def test_registration_creates_pending_identity_without_a_temporary_site(tmp_path):
     config, env = _host(tmp_path)
     registry = TenantRegistry.from_config(config, env)
     service = TenantRegistrationService(config, env, registry=registry)
@@ -48,20 +51,22 @@ def test_registration_creates_an_isolated_idempotent_tenant(tmp_path):
         assert (tmp_path / "websites" / "new-site" / "config.yaml").is_file()
         assert (tmp_path / "websites" / "new-site" / "tenant.env").is_file()
         site_root = tmp_path / "websites" / "new-site" / "site"
-        assert (site_root / ".git").is_dir()
-        assert registry.for_tenant_id("new-site") is not None
-        tenant = registry.for_tenant_id("new-site")
-        assert tenant.config["design_engine"]["intake_advisor"]["max_tokens"] == 4096
-        assert tenant.config["design_engine"]["enabled"] is True
-        assert tenant.config["builder"]["enabled"] is True
-        assert tenant.config["site"]["clone_path"] == str(site_root)
-        assert tenant.context["design_adapter"].__class__.__name__ == "NeutralScaffold"
-        assert tenant.context["source_deployment"] is None
-        assert tenant.context["source_editor"].adapter.__class__.__name__ == "NeutralScaffold"
+        assert not site_root.exists()
+        assert registry.for_tenant_id("new-site") is None
+        index = (tmp_path / "websites" / "tenants.json").read_text(encoding="utf-8")
+        assert '"bootstrap_state": "pending"' in index
 
         declared, extra_env = load_provisioned_tenants(config, env)
-        assert declared["new-site"]["config_path"].endswith("new-site/config.yaml")
-        assert extra_env[first["api_token_env"]]
+        assert "new-site" not in declared
+        assert first["api_token_env"] not in extra_env
+
+        retry_registry = TenantRegistry.from_config(config, env)
+        retry_service = TenantRegistrationService(config, env, registry=retry_registry)
+        retried = retry_service.register("new-site", display_name="New Site")
+        assert retried["created"] is False
+        assert retried["api_token_env"] == first["api_token_env"]
+        assert (tmp_path / "websites" / "new-site" / "site").exists() is False
+        retry_registry.close()
     finally:
         registry.close()
 
@@ -90,11 +95,74 @@ def test_shared_build_toolchain_is_inherited_by_new_site_tenants(tmp_path):
     service = TenantRegistrationService(config, env, registry=registry)
     try:
         service.register("new-site", display_name="New Site")
-        tenant = registry.for_tenant_id("new-site")
-        assert tenant is not None
-        assert tenant.config["source_deployment"] == config["source_deployment"]
+        assert registry.for_tenant_id("new-site") is None
+        assert not (tmp_path / "websites" / "new-site" / "site").exists()
     finally:
         registry.close()
+
+
+def test_only_a_configured_payload_runtime_becomes_restart_loadable(tmp_path):
+    config, env = _host(tmp_path)
+    registry = TenantRegistry.from_config(config, env)
+    service = TenantRegistrationService(config, env, registry=registry)
+    try:
+        service.register("new-site", display_name="New Site")
+        tenant_path = tmp_path / "websites" / "new-site" / "config.yaml"
+        tenant_config = yaml.safe_load(tenant_path.read_text(encoding="utf-8"))
+        tenant_config["site"]["payload"]["enabled"] = True
+        TenantRegistrationService._replace_config(tenant_path, tenant_config)
+
+        service.mark_runtime_configured("new-site")
+
+        declared, extra_env = load_provisioned_tenants(config, env)
+        assert declared["new-site"]["config_path"] == str(tenant_path)
+        assert extra_env["PROVISIONED_NEW_SITE_TOKEN"]
+        index = json.loads((tmp_path / "websites" / "tenants.json").read_text(encoding="utf-8"))
+        assert index["new-site"]["bootstrap_state"] == "ready"
+        assert registry.for_tenant_id("new-site") is None
+    finally:
+        registry.close()
+
+
+def test_registration_fails_closed_on_a_corrupt_registry(tmp_path):
+    config, env = _host(tmp_path)
+    registry = TenantRegistry.from_config(config, env)
+    service = TenantRegistrationService(config, env, registry=registry)
+    try:
+        service.register("first-site", display_name="First Site")
+        index_path = tmp_path / "websites" / "tenants.json"
+        index_path.write_text("not-json", encoding="utf-8")
+
+        try:
+            service.register("second-site", display_name="Second Site")
+        except ValueError as error:
+            assert "registry is unreadable" in str(error)
+        else:
+            raise AssertionError("a corrupt registry must not be overwritten")
+        assert index_path.read_text(encoding="utf-8") == "not-json"
+        assert not (tmp_path / "websites" / "second-site").exists()
+    finally:
+        registry.close()
+
+
+def test_startup_fails_closed_on_an_invalid_registry_path(tmp_path):
+    config, env = _host(tmp_path)
+    root = tmp_path / "websites"
+    root.mkdir()
+    (root / "tenants.json").write_text(json.dumps({
+        "broken-site": {
+            "config_path": str(tmp_path / "outside" / "config.yaml"),
+            "api_token_env": "PROVISIONED_BROKEN_SITE_TOKEN",
+            "bootstrap_state": "pending",
+        },
+    }), encoding="utf-8")
+
+    try:
+        load_provisioned_tenants(config, env)
+    except ValueError as error:
+        assert "registration paths are invalid" in str(error)
+    else:
+        raise AssertionError("invalid tenant paths must stop startup rather than disappear")
 
 
 def test_control_plane_registers_a_tenant_without_leaking_the_token(tmp_path):
@@ -128,8 +196,7 @@ def test_control_plane_registers_a_tenant_without_leaking_the_token(tmp_path):
             "/v1/control-plane/websites/new-site/design/recommendations",
             headers={"Authorization": "Bearer control-secret"},
         )
-        assert recommendations.status_code == 200
-        assert recommendations.json()["recommendations"] == []
+        assert recommendations.status_code == 404
 
 
 def test_control_plane_can_start_with_no_declared_tenants(tmp_path):
