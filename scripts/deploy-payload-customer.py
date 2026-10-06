@@ -79,7 +79,7 @@ def payload_migration_config_file(temporary_directory: Path, customer: dict[str,
         os.fchmod(descriptor, 0o600)
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             json.dump(config, stream, indent=2, sort_keys=True)
-            stream.write("\\n")
+            stream.write("\n")
         return path
     except BaseException:
         path.unlink(missing_ok=True)
