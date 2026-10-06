@@ -15,6 +15,13 @@
       "id": "20261005-atelier-preview-mount-7",
       "sha": "fd9910cb176cd3cc3b19aa6d9ef67785dd8c509a"
     },
+    "northstar-coffee-house-afd6a0232bf10fd4": {
+      "id": "rel-20261006204411-124ba3b8",
+      "initializeSchema": {
+        "migrationHead": "75064eaeb5a035afc8977d39a59742dfa8bfb5e94d344ca9090e29e516bb2534"
+      },
+      "sha": "89833f3023489eb366c5f756cf956e652cac9e91"
+    },
     "oceanicvibes": {
       "id": "20261005-oceanic-presentation-repair-13",
       "sha": "03d4c43d0077d85355821ec7efe3b6a84469a630"

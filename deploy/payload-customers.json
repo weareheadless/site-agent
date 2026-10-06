@@ -52,6 +52,21 @@
       "websitePresent": true,
       "worker": "atelier-harmonie"
     },
+    "northstar-coffee-house-afd6a0232bf10fd4": {
+      "adminPath": "/api/helloada",
+      "contentContract": "helloada-content-v3",
+      "d1DatabaseId": "9b7beb75-1bba-4f9c-94a6-4a5911474546",
+      "d1DatabaseName": "helloada-northstar-coffee-house-afd6a0232bf10fd4",
+      "health": "https://helloada-northstar-coffee-house-afd6a0232bf10fd4.workers.dev/api/health",
+      "migrationHead": "75064eaeb5a035afc8977d39a59742dfa8bfb5e94d344ca9090e29e516bb2534",
+      "payloadAdmin": "0.10.0",
+      "payloadCore": "0.5.1",
+      "r2BucketName": "helloada-northstar-coffee-house-afd6a0232bf10fd4-media",
+      "repository": "https://github.com/weareheadless/helloada-northstar-coffee-house-afd6a0232bf10fd4.git",
+      "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
+      "schemaRevision": 5,
+      "worker": "helloada-northstar-coffee-house-afd6a0232bf10fd4"
+    },
     "oceanicvibes": {
       "adminPath": "/api/helloada",
       "contentContract": "helloada-content-v2",
