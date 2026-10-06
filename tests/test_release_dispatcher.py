@@ -15,6 +15,25 @@ SPEC = importlib.util.spec_from_file_location(
 )
 dispatcher = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(dispatcher)
+API_SPEC = importlib.util.spec_from_file_location(
+    "deploy_site_agent_api_template_bundle_test", ROOT / "scripts/deploy-site-agent-api.py"
+)
+api_deploy = importlib.util.module_from_spec(API_SPEC)
+API_SPEC.loader.exec_module(api_deploy)
+
+
+def test_api_release_requires_the_complete_payload_template_bundle(tmp_path):
+    template = tmp_path / "site_agent/templates/next-payload"
+    template.mkdir(parents=True)
+    for name in ("template-manifest.json", "helloada-content-contract.json", "wrangler.jsonc"):
+        (template / name).write_text("{}\n", encoding="utf-8")
+    (template / ".gitignore").write_text("node_modules/\n*.tsbuildinfo\n", encoding="utf-8")
+
+    api_deploy._verify_payload_template_bundle(tmp_path)
+
+    (template / ".gitignore").unlink()
+    with pytest.raises(RuntimeError, match="missing canonical Payload template files"):
+        api_deploy._verify_payload_template_bundle(tmp_path)
 
 
 def test_dispatcher_resolves_only_the_configured_github_ssh_identity(tmp_path):

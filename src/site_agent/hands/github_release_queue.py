@@ -119,6 +119,7 @@ class GitHubReleaseQueue:
         *,
         approval_id: int | str | None = None,
         initialize_schema: bool = False,
+        new_attempt: bool = False,
     ) -> dict[str, str]:
         tenant = str(tenant or "").strip().lower()
         source_sha = str(source_sha or "").strip().lower()
@@ -173,7 +174,8 @@ class GitHubReleaseQueue:
             current = releases.get(tenant)
             expected_approval = int(approval_id) if approval_id is not None else None
             if (
-                isinstance(current, Mapping)
+                not new_attempt
+                and isinstance(current, Mapping)
                 and current.get("sha") == source_sha
                 and current.get("approvalId") == expected_approval
                 and current.get("initializeSchema") == (

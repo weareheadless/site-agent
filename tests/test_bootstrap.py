@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -144,6 +145,7 @@ def test_bootstrap_configures_generic_seo_provisioning_for_new_sites(tmp_path):
     from site_agent.site_scaffold import initialize_managed_site
 
     initialize_managed_site(site_dir)
+    (site_dir / ".gitignore").unlink()
 
     class Registry:
         def reload_tenant(self, *args, **kwargs):
@@ -184,6 +186,10 @@ def test_bootstrap_configures_generic_seo_provisioning_for_new_sites(tmp_path):
     assert config["site"]["payload"]["contract"]["schemaIdentity"] == template_manifest["schemaIdentity"]
     assert config["site"]["payload"]["contract"]["migrationHead"] == template_manifest["migrationHead"]
     assert config["site"]["payload"]["contract"]["locales"] == ["en"]
+    assert (site_dir / ".gitignore").read_bytes() == (
+        Path(__file__).resolve().parents[1]
+        / "src/site_agent/templates/next-payload/.gitignore"
+    ).read_bytes()
     wrangler = json.loads((site_dir / "wrangler.jsonc").read_text(encoding="utf-8"))
     assert wrangler["vars"]["HELLOADA_TEMPLATE_SCHEMA"] == str(template_manifest["templateSchema"])
     assert wrangler["vars"]["HELLOADA_PAYLOAD_SCHEMA_REVISION"] == str(template_manifest["schemaRevision"])
@@ -217,23 +223,25 @@ def test_bootstrap_release_accepts_the_canonical_owner_repository_identity(tmp_p
     service.env = {}
 
     git_calls = []
+    status_output = " M wrangler.jsonc\n?? .gitignore"
 
     def fake_git(_site_dir, *args):
         git_calls.append(args)
         return {
             ("remote", "get-url", "origin"): "git@github.com:weareheadless/helloada-demo.git",
             ("branch", "--show-current"): "main",
-            ("status", "--porcelain"): " M wrangler.jsonc",
-            ("diff", "--cached", "--name-only"): "wrangler.jsonc",
+            ("status", "--porcelain"): status_output,
+            ("diff", "--cached", "--name-only"): ".gitignore\nwrangler.jsonc",
             ("rev-parse", "HEAD"): "a" * 40,
         }.get(args, "")
 
     captured = {}
 
-    def fake_request_release(config, _env, source_sha, *, initialize_schema=False):
+    def fake_request_release(config, _env, source_sha, *, initialize_schema=False, new_attempt=False):
         captured["repository"] = config["site"]["repository"]
         captured["source_sha"] = source_sha
         captured["initialize_schema"] = initialize_schema
+        captured["new_attempt"] = new_attempt
         return {"release_id": "bootstrap-demo", "source_sha": source_sha}
 
     monkeypatch.setattr(service, "_git", fake_git)
@@ -247,23 +255,40 @@ def test_bootstrap_release_accepts_the_canonical_owner_repository_identity(tmp_p
             "worker_name": "helloada-demo",
             "worker_url": "https://helloada-demo.workers.dev",
         },
+        new_attempt=True,
     )
 
     assert captured == {
         "repository": "weareheadless/helloada-demo",
         "source_sha": "a" * 40,
         "initialize_schema": True,
+        "new_attempt": True,
     }
     assert result["tenant_id"] == "demo"
     assert result["release_id"] == "bootstrap-demo"
     assert git_calls[2:] == [
         ("status", "--porcelain"),
-        ("add", "--", "wrangler.jsonc"),
+        ("add", "--", ".gitignore", "wrangler.jsonc"),
         ("diff", "--cached", "--name-only"),
-        ("commit", "-qm", "Configure canonical Payload Worker bindings"),
+        ("commit", "-qm", "Configure canonical Payload Worker files"),
         ("push", "origin", "main"),
         ("rev-parse", "HEAD"),
     ]
+
+    from site_agent.application.bootstrap import BootstrapError
+    import pytest
+
+    status_output = "?? src/app/page.tsx"
+    with pytest.raises(BootstrapError, match="outside canonical Worker files"):
+        service._queue_release(
+            "demo",
+            config_path,
+            {
+                "site_dir": str(site_dir),
+                "worker_name": "helloada-demo",
+                "worker_url": "https://helloada-demo.workers.dev",
+            },
+        )
 
 
 def test_git_status_preserves_porcelain_columns(tmp_path, monkeypatch):
@@ -313,6 +338,115 @@ def test_bootstrap_retry_reconciles_a_completed_source_configuration_step(tmp_pa
     assert state["steps"]["creating_worker"]["receipt"] == result
     persisted = json.loads((tmp_path / "demo" / "bootstrap.json").read_text(encoding="utf-8"))
     assert persisted["steps"]["creating_worker"]["receipt"] == result
+
+
+def test_bootstrap_retry_queues_again_only_after_the_previous_release_failed(tmp_path):
+    from site_agent.application.bootstrap import BootstrapError
+    import pytest
+
+    release_root = tmp_path / "releases"
+    receipt_path = release_root / "runs" / "demo" / "bootstrap-demo" / "receipt.json"
+    receipt_path.parent.mkdir(parents=True)
+    receipt_path.write_text(
+        json.dumps({
+            "tenant": "demo",
+            "releaseId": "bootstrap-demo",
+            "sourceSha": "a" * 40,
+            "approvalId": None,
+            "status": "failed",
+        }),
+        encoding="utf-8",
+    )
+    service = WebsiteBootstrapService.__new__(WebsiteBootstrapService)
+    service.config = {"deployment_pipeline": {"release_root": str(release_root)}}
+    state = {
+        "tenant_id": "demo",
+        "release": {"tenant_id": "demo", "release_id": "bootstrap-demo", "source_sha": "a" * 40},
+        "steps": {
+            "queueing_shell_release": {
+                "status": "done",
+                "receipt": {"tenant_id": "demo", "release_id": "bootstrap-demo", "source_sha": "a" * 40},
+            },
+        },
+        "resource_receipts": {"queueing_shell_release": {"release_id": "bootstrap-demo"}},
+    }
+
+    assert service._prepare_failed_release_retry(state) is True
+    assert "queueing_shell_release" not in state["steps"]
+    assert "queueing_shell_release" not in state["resource_receipts"]
+    assert "release" not in state
+
+    receipt_path.write_text(
+        json.dumps({
+            "tenant": "demo",
+            "releaseId": "bootstrap-demo",
+            "sourceSha": "a" * 40,
+            "approvalId": None,
+            "status": "running",
+        }),
+        encoding="utf-8",
+    )
+    state["release"] = {"tenant_id": "demo", "release_id": "bootstrap-demo", "source_sha": "a" * 40}
+    state["steps"]["queueing_shell_release"] = {
+        "status": "done",
+        "receipt": {"tenant_id": "demo", "release_id": "bootstrap-demo", "source_sha": "a" * 40},
+    }
+    assert service._prepare_failed_release_retry(state) is False
+    assert state["release"]["release_id"] == "bootstrap-demo"
+
+    state["release"]["source_sha"] = "b" * 40
+    with pytest.raises(BootstrapError, match="does not match its recorded step"):
+        service._prepare_failed_release_retry(state)
+
+
+def test_bootstrap_verified_failed_retry_requests_a_fresh_release_id(tmp_path, monkeypatch):
+    import threading
+
+    release_root = tmp_path / "releases"
+    receipt_path = release_root / "runs" / "demo" / "bootstrap-demo" / "receipt.json"
+    receipt_path.parent.mkdir(parents=True)
+    receipt_path.write_text(json.dumps({
+        "tenant": "demo",
+        "releaseId": "bootstrap-demo",
+        "sourceSha": "a" * 40,
+        "approvalId": None,
+        "status": "failed",
+    }), encoding="utf-8")
+    service = WebsiteBootstrapService.__new__(WebsiteBootstrapService)
+    service.config = {"deployment_pipeline": {"release_root": str(release_root)}}
+    service._lock = threading.RLock()
+    service._futures = {"demo": object()}
+    state = {
+        "tenant_id": "demo",
+        "config_path": str(tmp_path / "config.yaml"),
+        "release": {"tenant_id": "demo", "release_id": "bootstrap-demo", "source_sha": "a" * 40},
+        "steps": {
+            "queueing_shell_release": {
+                "status": "done",
+                "receipt": {"tenant_id": "demo", "release_id": "bootstrap-demo", "source_sha": "a" * 40},
+            },
+        },
+        "resource_receipts": {},
+    }
+    monkeypatch.setattr(service, "_read_state", lambda _tenant_id: state)
+    monkeypatch.setattr(service, "_write_state", lambda _state: None)
+    monkeypatch.setattr(service, "_repository", lambda *_args: {"repository": "demo"})
+    monkeypatch.setattr(service, "_data_resources", lambda *_args: {"resources": "ready"})
+    monkeypatch.setattr(service, "_configure_source", lambda *_args: {"worker_name": "helloada-demo"})
+    monkeypatch.setattr(service, "_refresh_release_state", lambda _state: None)
+    queued = {}
+
+    def queue_release(_tenant_id, _config_path, _worker, *, new_attempt=False):
+        queued["new_attempt"] = new_attempt
+        return {"release_id": "rel-fresh-attempt", "source_sha": "b" * 40}
+
+    monkeypatch.setattr(service, "_queue_release", queue_release)
+
+    service._run("demo", "Demo")
+
+    assert queued == {"new_attempt": True}
+    assert state["release"]["release_id"] == "rel-fresh-attempt"
+    assert state["status"] == "awaiting_release"
 
 
 def test_bootstrap_refuses_to_guess_a_payload_contract(tmp_path):

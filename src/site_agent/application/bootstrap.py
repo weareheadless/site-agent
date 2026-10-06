@@ -302,6 +302,9 @@ class WebsiteBootstrapService:
     def _run(self, tenant_id: str, display_name: str) -> None:
         try:
             state = self._read_state(tenant_id)
+            failed_release_retry = self._prepare_failed_release_retry(state)
+            if failed_release_retry:
+                self._write_state(state)
             config_path = Path(str(state.get("config_path") or "") or str(self._state_path(tenant_id).parent / "config.yaml"))
             state["config_path"] = str(config_path)
             self._write_state(state)
@@ -323,7 +326,12 @@ class WebsiteBootstrapService:
             release = self._run_step(
                 state,
                 "queueing_shell_release",
-                lambda: self._queue_release(tenant_id, config_path, worker),
+                lambda: self._queue_release(
+                    tenant_id,
+                    config_path,
+                    worker,
+                    new_attempt=failed_release_retry,
+                ),
             )
             state["status"] = "awaiting_release"
             state["step"] = "deploying_shell"
@@ -414,6 +422,63 @@ class WebsiteBootstrapService:
         else:
             state.update(status="awaiting_release", workspace_ready=False, website_live=False)
         self._write_state(state)
+
+    def _prepare_failed_release_retry(self, state: dict[str, Any]) -> bool:
+        """Retire only a verified terminal release before an explicit retry."""
+        steps = state.get("steps") if isinstance(state.get("steps"), dict) else {}
+        step = steps.get("queueing_shell_release")
+        if not isinstance(step, Mapping) or step.get("status") != "done":
+            return False
+        recorded = step.get("receipt")
+        release = state.get("release")
+        if not isinstance(recorded, Mapping) or not isinstance(release, Mapping):
+            raise BootstrapError("completed bootstrap release identity is incomplete")
+
+        tenant_id = str(state.get("tenant_id") or "")
+        release_id = str(release.get("release_id") or "")
+        source_sha = str(release.get("source_sha") or "")
+        if (
+            not tenant_id
+            or not release_id
+            or not re.fullmatch(r"[0-9a-f]{40}", source_sha)
+            or recorded.get("tenant_id") != tenant_id
+            or recorded.get("release_id") != release_id
+            or recorded.get("source_sha") != source_sha
+        ):
+            raise BootstrapError("completed bootstrap release identity does not match its recorded step")
+
+        receipt_path = release_root(self.config) / "runs" / tenant_id / release_id / "receipt.json"
+        try:
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return False
+        except (OSError, UnicodeError, ValueError, ReleaseQueueError) as exc:
+            raise BootstrapError("central release receipt is unreadable during retry") from exc
+        if (
+            not isinstance(receipt, Mapping)
+            or receipt.get("tenant") != tenant_id
+            or receipt.get("releaseId") != release_id
+            or receipt.get("sourceSha") != source_sha
+            or receipt.get("approvalId") is not None
+        ):
+            raise BootstrapError("central release receipt does not match the failed bootstrap request")
+        if receipt.get("status") not in {"failed", "interrupted"}:
+            return False
+
+        steps.pop("queueing_shell_release", None)
+        receipts = state.get("resource_receipts")
+        if isinstance(receipts, dict):
+            receipts.pop("queueing_shell_release", None)
+        state.pop("release", None)
+        state.update(
+            status="queued",
+            step="requested",
+            diagnostic="",
+            workspace_ready=False,
+            website_live=False,
+            updated_at=_now(),
+        )
+        return True
 
     def _activate_runtime(self, tenant_id: str, state: Mapping[str, Any]) -> None:
         """Mount the tenant only after the exact Payload Worker is verified live."""
@@ -713,6 +778,7 @@ class WebsiteBootstrapService:
         site = raw.setdefault("site", {})
         if not isinstance(site, dict):
             raise BootstrapError("tenant site config must be an object")
+        self._ensure_canonical_ignore_rules(site_dir)
         site.update({
             "adapter": "payload_gateway",
             "repository": str(repository.get("full_name") or ""),
@@ -790,6 +856,20 @@ class WebsiteBootstrapService:
             self._handoff_public_key(),
         )
         return {"worker_name": names["worker"], "worker_url": worker_url, "repository": repository.get("full_name", "")}
+
+    @staticmethod
+    def _ensure_canonical_ignore_rules(site_dir: Path) -> None:
+        template_path = Path(__file__).resolve().parents[1] / "templates" / "next-payload" / ".gitignore"
+        site_path = site_dir / ".gitignore"
+        try:
+            canonical = template_path.read_bytes()
+            existing = site_path.read_bytes() if site_path.exists() else None
+        except OSError as exc:
+            raise BootstrapError("canonical Payload ignore rules are unavailable") from exc
+        if existing is None:
+            site_path.write_bytes(canonical)
+        elif existing != canonical:
+            raise BootstrapError("managed Payload ignore rules differ from the canonical template")
 
     def _handoff_public_key(self) -> str:
         value = str(self.env.get("HELLOADA_HANDOFF_PUBLIC_KEY") or "").strip()
@@ -908,6 +988,8 @@ class WebsiteBootstrapService:
         tenant_id: str,
         config_path: Path,
         worker: Mapping[str, Any],
+        *,
+        new_attempt: bool = False,
     ) -> Mapping[str, Any]:
         site_dir = Path(str(worker.get("site_dir") or config_path.parent / "site"))
         try:
@@ -924,20 +1006,29 @@ class WebsiteBootstrapService:
             if self._git(site_dir, "branch", "--show-current") != "main":
                 raise BootstrapError("managed tenant checkout must be on main before bootstrap release")
             changed = self._git(site_dir, "status", "--porcelain").splitlines()
-            if any(line[3:] != "wrangler.jsonc" for line in changed):
-                raise BootstrapError("bootstrap found source changes outside the declared Worker configuration")
+            changed_paths = {line[3:] for line in changed}
+            allowed_changes = {".gitignore", "wrangler.jsonc"}
+            if not changed_paths.issubset(allowed_changes):
+                raise BootstrapError("bootstrap found source changes outside canonical Worker files")
             if changed:
-                self._git(site_dir, "add", "--", "wrangler.jsonc")
+                staged_paths = sorted(changed_paths)
+                self._git(site_dir, "add", "--", *staged_paths)
                 staged = self._git(site_dir, "diff", "--cached", "--name-only").splitlines()
-                if staged != ["wrangler.jsonc"]:
-                    raise BootstrapError("bootstrap staging contains files outside the declared Worker configuration")
-                self._git(site_dir, "commit", "-qm", "Configure canonical Payload Worker bindings")
+                if staged != staged_paths:
+                    raise BootstrapError("bootstrap staging contains files outside canonical Worker files")
+                self._git(site_dir, "commit", "-qm", "Configure canonical Payload Worker files")
                 self._git(site_dir, "push", "origin", "main")
             commit = self._git(site_dir, "rev-parse", "HEAD").lower()
             if not re.fullmatch(r"[0-9a-f]{40}", commit):
                 raise BootstrapError("canonical site source has no exact Git revision")
             request_config = deep_merge(self.config, dict(raw))
-            request = request_release(request_config, self.env, commit, initialize_schema=True)
+            request = request_release(
+                request_config,
+                self.env,
+                commit,
+                initialize_schema=True,
+                new_attempt=new_attempt,
+            )
             root = release_root(self.config)
         except (OSError, UnicodeError, yaml.YAMLError, ReleaseQueueError) as exc:
             raise BootstrapError(str(exc)[:500]) from exc
