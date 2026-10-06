@@ -52,7 +52,7 @@ export const getPayloadCloudflareContext = async (): Promise<Context> => {
   wranglerContext ??= import(/* webpackIgnore: true */ `${'__wrangler'.replaceAll('_', '')}`).then(
     ({ getPlatformProxy }) => getPlatformProxy({
       ...(plan.configPath ? { configPath: plan.configPath } : {}),
-      environment: process.env.CLOUDFLARE_ENV,
+      environment: plan.configPath ? undefined : process.env.CLOUDFLARE_ENV,
       remoteBindings: plan.remoteBindings,
     } satisfies GetPlatformProxyOptions) as unknown as Context,
   )
