@@ -721,10 +721,12 @@ class WebsiteBootstrapService:
                 "token_env": token_env,
                 "api_prefix": "/api/workspace",
                 "contract": {
+                    "adminVersion": payload_contract["adminVersion"],
                     "contract": payload_contract["contract"],
                     "coreVersion": payload_contract["coreVersion"],
                     "schemaRevision": payload_contract["schemaRevision"],
                     "schemaIdentity": payload_contract["schemaIdentity"],
+                    "migrationHead": payload_contract["migrationHead"],
                     "locales": payload_contract["locales"],
                     "defaultLocale": payload_contract["defaultLocale"],
                     "media_fields": list(payload_contract["collections"]["media"]),
