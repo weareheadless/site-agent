@@ -288,6 +288,33 @@ def test_git_status_preserves_porcelain_columns(tmp_path, monkeypatch):
     assert service._git(tmp_path, "status", "--porcelain") == " M wrangler.jsonc"
 
 
+def test_bootstrap_retry_reconciles_a_completed_source_configuration_step(tmp_path):
+    service = WebsiteBootstrapService.__new__(WebsiteBootstrapService)
+    service.root = tmp_path
+    state = {
+        "tenant_id": "demo",
+        "steps": {
+            "creating_worker": {
+                "status": "done",
+                "receipt": {"schemaIdentity": "old-template"},
+            },
+        },
+        "resource_receipts": {},
+    }
+
+    result = service._run_step(
+        state,
+        "creating_worker",
+        lambda: {"schemaIdentity": "current-template"},
+        refresh_completed=True,
+    )
+
+    assert result == {"schemaIdentity": "current-template"}
+    assert state["steps"]["creating_worker"]["receipt"] == result
+    persisted = json.loads((tmp_path / "demo" / "bootstrap.json").read_text(encoding="utf-8"))
+    assert persisted["steps"]["creating_worker"]["receipt"] == result
+
+
 def test_bootstrap_refuses_to_guess_a_payload_contract(tmp_path):
     site_dir = tmp_path / "site"
     site_dir.mkdir()

@@ -271,9 +271,11 @@ class WebsiteBootstrapService:
         state: dict[str, Any],
         name: str,
         operation: Callable[[], Mapping[str, Any]],
+        *,
+        refresh_completed: bool = False,
     ) -> dict[str, Any]:
         existing = state.get("steps", {}).get(name) if isinstance(state.get("steps"), Mapping) else None
-        if isinstance(existing, Mapping) and existing.get("status") == "done":
+        if isinstance(existing, Mapping) and existing.get("status") == "done" and not refresh_completed:
             receipt = existing.get("receipt")
             return dict(receipt) if isinstance(receipt, Mapping) else {}
         state["status"] = "running"
@@ -304,12 +306,19 @@ class WebsiteBootstrapService:
             state["config_path"] = str(config_path)
             self._write_state(state)
 
+            release_step = state.get("steps", {}).get("queueing_shell_release")
+            refresh_source = not (
+                isinstance(release_step, Mapping) and release_step.get("status") == "done"
+            )
             repository = self._run_step(state, "creating_repository", lambda: self._repository(tenant_id, display_name, config_path))
             data = self._run_step(state, "creating_data", lambda: self._data_resources(tenant_id))
             worker = self._run_step(
                 state,
                 "creating_worker",
                 lambda: self._configure_source(tenant_id, display_name, config_path, repository, data),
+                # A failed release retry must reconcile generated tenant config
+                # against the current canonical Payload template before retrying.
+                refresh_completed=refresh_source,
             )
             release = self._run_step(
                 state,
