@@ -57,7 +57,8 @@ def test_production_payload_cli_requires_an_explicit_remote_config():
     assert 'payloadCliEntrypoint && !isCLI' in config
     assert 'isDatabaseMigrationCommand' not in config
     for expected in (
-        'isDatabaseMigrationCommand',
+        'const isDatabaseMigration = argv.some',
+        "['migrate', 'migrate:status', 'migrate:create', 'migrate:down']",
         'isPayloadContractVerifier',
         'HELLOADA_CLOUDFLARE_CONFIG_PATH',
         'if (requiresRemoteD1 && !env.CLOUDFLARE_API_TOKEN)',
