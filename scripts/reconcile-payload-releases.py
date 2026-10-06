@@ -39,17 +39,43 @@ validate_helloada_app_queue = HELLOADA_APP_DEPLOYMENT.validate_helloada_app_queu
 
 
 def mark_interrupted_runs(root: Path) -> None:
-    # The caller owns the global lock; no previous service process can still run.
+    # The caller owns the global lock; systemd has stopped the prior process group.
     for receipt in (root / "runs").glob("*/*/receipt.json"):
         result = json.loads(receipt.read_text())
         if result.get("status") != "running":
             continue
         result.update({"status": "interrupted", "error": "systemd job ended before a terminal receipt",
                        "finishedAt": datetime.now(timezone.utc).isoformat()})
+        if result.get("tenant") and result.get("worker"):
+            for name in ("source", "temporary", "open-next.tar.gz"):
+                path = receipt.parent / name
+                if path.is_symlink() or path.is_file():
+                    path.unlink(missing_ok=True)
+                elif path.is_dir():
+                    shutil.rmtree(path)
+            result["workspaceCleanupStatus"] = "interrupted-cleaned"
         temporary = receipt.with_suffix(".tmp")
         temporary.write_text(json.dumps(result, indent=2) + "\n")
         temporary.chmod(0o600)
         temporary.replace(receipt)
+
+
+def cleanup_stale_release_workspaces(root: Path) -> None:
+    work_root = root / "work"
+    if work_root.is_symlink():
+        raise RuntimeError("release workspace root must not be a symlink")
+    if not work_root.exists():
+        return
+    if not work_root.is_dir():
+        raise RuntimeError("release workspace root is not a real directory")
+    # The caller owns reconcile.lock, so no canonical build can still be using it.
+    for workspace in work_root.iterdir():
+        if workspace.is_symlink() or workspace.is_file():
+            workspace.unlink()
+        elif workspace.is_dir():
+            shutil.rmtree(workspace)
+        else:
+            raise RuntimeError("unexpected object in release workspace root")
 
 
 def validate_queue(queue: dict, registry: dict) -> None:
@@ -156,6 +182,7 @@ def main() -> int:
         except BlockingIOError:
             return 0
         mark_interrupted_runs(args.root)
+        cleanup_stale_release_workspaces(args.root)
         profile = {"credentials": {"profile_file": "/SOCIAL/configs/host-credentials.yaml"}}
         ssh_command = github_ssh_command(profile, {})
         if not ssh_command:
@@ -266,7 +293,8 @@ def main() -> int:
                 result = json.loads(receipt.read_text())
                 if result["sourceSha"] != request["sha"]:
                     raise RuntimeError("release ID was reused for a different SHA")
-                if result["status"] not in ("deployed", "verified"):
+                if (result["status"] not in ("deployed", "verified")
+                        or result.get("workspaceCleanupStatus") == "failed"):
                     failures += 1
                 continue
             print(f"[queue] release={tenant}/{request['id']} source={request['sha']} pipeline={sha}", flush=True)

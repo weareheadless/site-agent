@@ -336,8 +336,9 @@ operating and installation instructions are in `deploy/README.md`.
 The central script is a hard gate, not a repair or fallback layer. It must:
 
 1. resolve the tenant from the manifest and reject an unregistered target;
-2. clone the configured repository into a new release directory, verify the
-   immutable SHA is on official `main`, and use a detached checkout;
+2. clone the configured repository into an isolated temporary workspace under
+   `/SOCIAL/payload-releases/work`, verify the immutable SHA is on official
+   `main`, and use a detached checkout;
 3. resolve Cloudflare through `/SOCIAL/configs/host-credentials.yaml` using
    `site_agent.credentials`, never by sourcing `/SOCIAL/site-agent/.env`;
 4. verify the exact Node/npm versions from the release manifest, then run
@@ -351,13 +352,19 @@ The central script is a hard gate, not a repair or fallback layer. It must:
    promote that immutable version, then verify that exact version receives 100%
    of traffic, check the live source SHA, and perform the authenticated
    Ada/Payload connection gate; and
-7. persist a secret-free receipt in `/SOCIAL/payload-releases/runs`. Never
-   mutate Worker secrets after promotion through Cloudflare's script-secrets
-   endpoint or `wrangler secret put`: those operations create a different
-   version, and `wrangler secret put` deploys it immediately, invalidating the
-   exact-version release receipt. Failed or
-   interrupted releases stop. Fix their cause and commit a new release ID to
-   retry; never repeat failed builds automatically or bypass their gate.
+7. persist a secret-free receipt in `/SOCIAL/payload-releases/runs`. Build
+   checkouts, `node_modules`, caches and OpenNext output exist only in the
+   isolated workspace while the release runs. The runner removes that workspace
+   after success or failure; the next locked queue poll removes any workspace
+   left by an interrupted systemd job. The receipt retains the exact Git SHA,
+   per-file artifact hashes, uploaded Cloudflare version and deployment
+   identity; GitHub and Cloudflare are the durable source/artifact stores.
+   Never mutate Worker secrets after promotion through Cloudflare's
+   script-secrets endpoint or `wrangler secret put`: those operations create a
+   different version, and `wrangler secret put` deploys it immediately,
+   invalidating the exact-version release receipt. Failed or interrupted
+   releases stop. Fix their cause and commit a new release ID to retry; never
+   repeat failed builds automatically or bypass their gate.
 
 The shared site-agent preview builder uses the same explicit toolchain policy.
 The API root config's `source_deployment` section must specify `node_path`,
@@ -369,8 +376,9 @@ machine's system `PATH` or a shell-installed Node/npm.
 
 For a promoted version whose live gate failed during rollout, the documented
 `--verify-only` command may repeat the exact read-only checks under the queue
-lock without rebuilding or deploying. It validates the retained artifact and
-exact serving version and preserves the original failure. Never edit a failed
+lock without rebuilding or deploying. It validates the receipt's artifact-hash
+manifest and exact serving version; it requires no local checkout or archived
+build. It preserves the original failure. Never edit a failed
 receipt into success by hand.
 
 There is no customer-facing legacy admin API. The canonical Payload bridge is
