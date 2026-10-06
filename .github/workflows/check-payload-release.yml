@@ -4,50 +4,28 @@ on:
   pull_request:
     paths:
       - '.github/workflows/**'
-      - 'src/site_agent/templates/next-payload/**'
-      - 'tests/test_payload_template_contract.py'
-      - 'tests/test_payload_contract.py'
-      - 'tests/test_site_scaffold.py'
+      - 'AGENTS.md'
+      - 'docs/helloada-project-selector-to-payload-intake-contract.md'
+      - 'packages/**'
+      - 'src/site_agent/**'
+      - 'tests/**'
+      - 'scripts/**'
       - 'deploy/**'
+      - 'src/site_agent/templates/next-payload/**'
       - 'pyproject.toml'
-      - 'scripts/*payload*'
-      - 'scripts/bootstrap-release-pipeline.py'
-      - 'scripts/migrate-static-tenants-to-registry.py'
-      - 'scripts/deploy-site-agent-api.py'
-      - 'src/site_agent/application/workspace.py'
-      - 'src/site_agent/application/tenant_registration.py'
-      - 'src/site_agent/web/server.py'
-      - 'tests/test_payload_release.py'
-      - 'tests/test_builder.py'
-      - 'tests/test_release_dispatcher.py'
-      - 'tests/test_tenant_registry_migration.py'
-      - 'tests/test_tenant_registration.py'
-      - 'tests/test_web.py'
-      - 'tests/test_workspace_web.py'
   push:
     branches: [main]
     paths:
       - '.github/workflows/**'
-      - 'src/site_agent/templates/next-payload/**'
-      - 'tests/test_payload_template_contract.py'
-      - 'tests/test_payload_contract.py'
-      - 'tests/test_site_scaffold.py'
+      - 'AGENTS.md'
+      - 'docs/helloada-project-selector-to-payload-intake-contract.md'
+      - 'packages/**'
+      - 'src/site_agent/**'
+      - 'tests/**'
+      - 'scripts/**'
       - 'deploy/**'
+      - 'src/site_agent/templates/next-payload/**'
       - 'pyproject.toml'
-      - 'scripts/*payload*'
-      - 'scripts/bootstrap-release-pipeline.py'
-      - 'scripts/migrate-static-tenants-to-registry.py'
-      - 'scripts/deploy-site-agent-api.py'
-      - 'src/site_agent/application/workspace.py'
-      - 'src/site_agent/application/tenant_registration.py'
-      - 'src/site_agent/web/server.py'
-      - 'tests/test_payload_release.py'
-      - 'tests/test_builder.py'
-      - 'tests/test_release_dispatcher.py'
-      - 'tests/test_tenant_registry_migration.py'
-      - 'tests/test_tenant_registration.py'
-      - 'tests/test_web.py'
-      - 'tests/test_workspace_web.py'
 
 permissions:
   contents: read
@@ -55,20 +33,37 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - run: python -m pip install -e '.[dev]'
-      - run: >-
-          python -m pytest -q
-          tests/test_payload_release.py
-          tests/test_builder.py
-          tests/test_release_dispatcher.py
-          tests/test_tenant_registry_migration.py
-          tests/test_tenant_registration.py
-          tests/test_workspace_web.py
-          tests/test_payload_template_contract.py
-          tests/test_payload_contract.py
-          tests/test_site_scaffold.py
+      - run: python -m pytest -q
+
+  shared-payload-packages:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [helloada-payload-core, helloada-payload-admin]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.14.0'
+          cache: npm
+          cache-dependency-path: packages/${{ matrix.package }}/package-lock.json
+      - name: Pin the production npm toolchain
+        run: npm install --global npm@11.13.0
+      - run: test "$(npm --version)" = "11.13.0"
+      - name: Install locked package dependencies
+        working-directory: packages/${{ matrix.package }}
+        run: npm ci --ignore-scripts
+      - name: Test and typecheck shared package
+        working-directory: packages/${{ matrix.package }}
+        run: |
+          npm test
+          npm run typecheck
