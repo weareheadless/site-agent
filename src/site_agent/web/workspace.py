@@ -912,7 +912,13 @@ def register_workspace_routes(
         @app.get(f"{control_prefix}/{{website_id}}/bootstrap")
         def control_plane_bootstrap_status(website_id: str, request: Request):
             require_control_plane(request)
-            if registry is None or bootstrap is None or registry.for_tenant_id(website_id) is None:
+            if registration is None or bootstrap is None:
+                raise HTTPException(status_code=503, detail="website bootstrap is unavailable")
+            try:
+                registered = registration.is_registered(website_id)
+            except TenantRegistrationError as exc:
+                raise HTTPException(status_code=503, detail="website registration state is unavailable") from exc
+            if not registered:
                 raise HTTPException(status_code=404, detail="website was not found")
             try:
                 return bootstrap.status(website_id)

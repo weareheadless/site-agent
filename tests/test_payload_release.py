@@ -7,6 +7,8 @@ import shutil
 from pathlib import Path
 
 import pytest
+from site_agent.application.release_queue import ReleaseQueueError, customer_release_identity
+from site_agent.site_scaffold import initialize_managed_site
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -203,6 +205,53 @@ def test_external_customer_repository_is_rejected():
     customer = {**CUSTOMER, "repository": "https://github.com/stranger/site.git"}
     with pytest.raises(ValueError, match="official"):
         release.validate_target(customer, "oceanicvibes", SHA, "release-1")
+
+
+def test_customer_release_identity_serializes_the_canonical_owner_repository(tmp_path):
+    site_dir = initialize_managed_site(tmp_path / "site")
+    manifest = json.loads((site_dir / "template-manifest.json").read_text())
+    wrangler_path = site_dir / "wrangler.jsonc"
+    wrangler = json.loads(wrangler_path.read_text())
+    wrangler["name"] = "helloada-demo"
+    wrangler["d1_databases"] = [{
+        "binding": "D1",
+        "database_id": "56d3f277-fbaf-43d4-91e5-b3a195653a05",
+        "database_name": "helloada-demo",
+    }]
+    wrangler["r2_buckets"] = [{"binding": "R2", "bucket_name": "helloada-demo-media"}]
+    wrangler_path.write_text(json.dumps(wrangler), encoding="utf-8")
+    config = {
+        "instance_name": "demo",
+        "site": {
+            "repository": "weareheadless/helloada-demo",
+            "public_url": "https://helloada-demo.workers.dev",
+            "source_deployment": {
+                "worker_name": "helloada-demo",
+                "clone_path": str(site_dir),
+            },
+            "payload": {"contract": {
+                "adminVersion": manifest["payloadAdmin"],
+                "coreVersion": manifest["payloadCore"],
+                "contract": manifest["contentContract"],
+                "schemaRevision": manifest["schemaRevision"],
+                "schemaIdentity": manifest["schemaIdentity"],
+                "migrationHead": manifest["migrationHead"],
+            }},
+        },
+    }
+
+    tenant, customer = customer_release_identity(config)
+
+    assert tenant == "demo"
+    assert customer["repository"] == "https://github.com/weareheadless/helloada-demo.git"
+
+    for invalid_repository in (
+        "https://github.com/weareheadless/helloada-demo.git",
+        "another-owner/helloada-demo",
+    ):
+        config["site"]["repository"] = invalid_repository
+        with pytest.raises(ReleaseQueueError, match="official owner/repository"):
+            customer_release_identity(config)
 
 
 def test_customer_without_a_committed_migration_identity_cannot_be_released():
