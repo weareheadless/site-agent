@@ -27,6 +27,22 @@ const runtime = packedText('src/server/runtime-env.ts')
 if (!runtime.includes('helloAdaWorkspacePath') || !runtime.includes('/growth/check')) throw new Error('Packed artifact lacks the shared Growth bridge')
 const packedPackage = JSON.parse(packedText('package.json'))
 if (packedPackage.version !== pkg.version) throw new Error('Packed package version mismatch')
+
+const templateRoot = path.join(root, 'src/site_agent/templates/next-payload')
+const templatePackage = JSON.parse(readFileSync(path.join(templateRoot, 'package.json'), 'utf8'))
+const templateLock = JSON.parse(readFileSync(path.join(templateRoot, 'package-lock.json'), 'utf8'))
+const templateManifest = JSON.parse(readFileSync(path.join(templateRoot, 'template-manifest.json'), 'utf8'))
+const templateWorker = readFileSync(path.join(templateRoot, 'wrangler.jsonc'), 'utf8')
+const releaseAsset = `https://github.com/weareheadless/site-agent/releases/download/${tag}/${packed.filename}`
+const lockedAdmin = templateLock.packages['node_modules/@weareheadless/helloada-payload-admin']
+if (templatePackage.dependencies['@weareheadless/helloada-payload-admin'] !== releaseAsset
+  || templateManifest.payloadAdmin !== pkg.version
+  || !templateWorker.includes(`"HELLOADA_PAYLOAD_ADMIN_VERSION": "${pkg.version}"`)
+  || lockedAdmin?.version !== pkg.version
+  || lockedAdmin?.resolved !== releaseAsset
+  || lockedAdmin?.integrity !== packed.integrity) {
+  throw new Error('Default Payload template does not pin the exact tagged admin artifact and runtime version')
+}
 const digest = bytes => createHash('sha256').update(bytes).digest('hex')
 const manifest = {
   schemaVersion: 1, sourceCommit, releaseTag: tag, packageName: pkg.name, packageVersion: pkg.version,

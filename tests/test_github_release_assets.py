@@ -41,3 +41,25 @@ def test_default_worker_and_manifest_use_the_released_shared_versions():
         version = json.loads((root / 'packages' / package / 'package.json').read_text())['version']
         assert manifest[field] == version
         assert re.search('"' + variable + '":\\s*"' + re.escape(version) + '"', worker)
+
+    admin_package = root / 'packages/helloada-payload-admin'
+    admin_version = json.loads((admin_package / 'package.json').read_text())['version']
+    runtime = (admin_package / 'src/version.ts').read_text()
+    runtime_version = r"HELLOADA_PAYLOAD_ADMIN_VERSION\s*=\s*['\"]" + re.escape(admin_version) + r"['\"]"
+    assert re.search(runtime_version, runtime)
+
+    template_package = json.loads((template / 'package.json').read_text())
+    template_lock = json.loads((template / 'package-lock.json').read_text())
+    release_asset = (
+        f"https://github.com/weareheadless/site-agent/releases/download/payload-admin-v{admin_version}/"
+        f"weareheadless-helloada-payload-admin-{admin_version}.tgz"
+    )
+    assert template_package['dependencies']['@weareheadless/helloada-payload-admin'] == release_asset
+    locked_admin = template_lock['packages']['node_modules/@weareheadless/helloada-payload-admin']
+    assert locked_admin['version'] == admin_version
+    assert locked_admin['resolved'] == release_asset
+    assert locked_admin['integrity'] == (
+        'sha512-XWa1TjlJPyvP1Epvmgr0XxzWtZiDgqBK485vuTrwbmCV+ly/'
+        'vzyuEW2MgNojSkktOGETbPKh5Kldj9/7zUlFmw=='
+    )
+
