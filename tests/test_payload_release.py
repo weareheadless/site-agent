@@ -425,6 +425,20 @@ def test_empty_tenant_database_requires_explicit_bootstrap_initialization(monkey
     assert calls == []
 
 
+def test_cloudflare_reserved_d1_table_is_not_application_data(monkeypatch):
+    monkeypatch.setattr(release, "d1_query", lambda *_args: [{"name": "_cf_KV"}])
+    assert release.applied_payload_migrations(CUSTOMER, {}) == ([], [])
+
+
+def test_d1_application_table_still_counts_as_existing_state(monkeypatch):
+    monkeypatch.setattr(
+        release,
+        "d1_query",
+        lambda *_args: [{"name": "_cf_KV"}, {"name": "users"}],
+    )
+    assert release.applied_payload_migrations(CUSTOMER, {}) == (["users"], [])
+
+
 def test_existing_database_never_receives_a_schema_mutation(monkeypatch):
     expected = [entry["name"] for entry in TEMPLATE_MANIFEST["migrations"]]
     calls = []

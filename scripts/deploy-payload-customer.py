@@ -23,6 +23,7 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+D1_SYSTEM_TABLES = frozenset({"_cf_KV"})
 
 
 def utc_now() -> str:
@@ -192,7 +193,13 @@ def d1_query(customer: dict[str, Any], sql: str, env: dict[str, str]) -> list[di
 def applied_payload_migrations(customer: dict[str, Any], env: dict[str, str]) -> tuple[list[str], list[str]]:
     tables = d1_query(customer,
         "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name", env)
-    table_names = [str(row.get("name") or "") for row in tables]
+    # Cloudflare creates _cf_KV in every D1 database; it is provider-owned,
+    # reserved, and not application data. Ignore this exact system table only.
+    table_names = []
+    for row in tables:
+        name = str(row.get("name") or "")
+        if name not in D1_SYSTEM_TABLES:
+            table_names.append(name)
     if "payload_migrations" not in table_names:
         return table_names, []
     rows = d1_query(customer, "SELECT name FROM payload_migrations ORDER BY batch ASC, id ASC", env)
