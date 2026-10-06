@@ -45,6 +45,11 @@ test('template pins the exact shared schema and admin releases it advertises', (
   assert.equal(runtime.HELLOADA_PAYLOAD_MIGRATION_HEAD, manifest.migrationHead)
 })
 
+test('health verifies the full canonical schema identity advertised by the template', () => {
+  const health = read('src/app/api/health/route.ts')
+  assert.match(health, /globals:\s*HELLOADA_CAPABILITIES\.globals/)
+})
+
 test('public page and article routes read Payload and render Payload SEO metadata', () => {
   const page = read('src/app/(frontend)/[[...slug]]/page.tsx')
   const article = read('src/app/(frontend)/[[...slug]]/page.tsx')
