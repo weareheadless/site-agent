@@ -1,7 +1,7 @@
 import type { Block, CollectionConfig, GlobalConfig } from 'payload'
 
 export const HELLOADA_CONTENT_CONTRACT_VERSION = 'helloada-content-v3'
-export const HELLOADA_CORE_VERSION = '0.5.0'
+export const HELLOADA_CORE_VERSION = '0.5.1'
 export const HELLOADA_SCHEMA_REVISION = 5
 
 export const validateHelloAdaLink = (value: unknown): true | string => {
