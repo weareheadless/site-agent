@@ -1,4 +1,7 @@
 {
   "schema": 1,
-  "release": null
+  "release": {
+    "id": "20261006-api-intake-flow-2",
+    "sha": "99834627a60d470b29a75257421b4dc84bd9cb80"
+  }
 }
