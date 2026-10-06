@@ -166,6 +166,15 @@ def test_release_toolchain_is_exact_and_absolute():
             release.validate_toolchain_manifest(invalid)
 
 
+def test_payload_build_requires_disk_headroom(monkeypatch, tmp_path):
+    class DiskUsage:
+        free = release.MINIMUM_BUILD_FREE_BYTES - 1
+
+    monkeypatch.setattr(release.shutil, "disk_usage", lambda _: DiskUsage())
+    with pytest.raises(RuntimeError, match="GiB free"):
+        release.ensure_build_capacity(tmp_path)
+
+
 def test_schema_initialization_queue_is_exactly_registered_and_cannot_be_an_approval():
     registry = {"customers": {"demo": {"migrationHead": "c" * 64}}}
     request = {"id": "bootstrap-1", "sha": SHA, "initializeSchema": {"migrationHead": "c" * 64}}
@@ -197,13 +206,23 @@ def test_schema_migration_queue_requires_exact_old_and_registered_target_heads()
 def test_interrupted_receipts_are_terminal_even_after_the_queue_moves_on(tmp_path):
     interrupted = tmp_path / "runs/oceanicvibes/old-request/receipt.json"
     interrupted.parent.mkdir(parents=True)
-    interrupted.write_text(json.dumps({"status": "running", "sourceSha": SHA, "stage": "build"}))
+    for name in ("source", "temporary"):
+        (interrupted.parent / name).mkdir()
+        (interrupted.parent / name / "partial").write_text("temporary")
+    (interrupted.parent / "open-next.tar.gz").write_text("temporary")
+    interrupted.write_text(json.dumps({
+        "status": "running", "sourceSha": SHA, "stage": "build",
+        "tenant": "oceanicvibes", "worker": CUSTOMER["worker"],
+    }))
     completed = tmp_path / "runs/oceanicvibes/completed/receipt.json"
     completed.parent.mkdir(parents=True)
     completed.write_text(json.dumps({"status": "deployed", "sourceSha": SHA}))
     queue.mark_interrupted_runs(tmp_path)
     result = json.loads(interrupted.read_text())
     assert result["status"] == "interrupted" and result["finishedAt"]
+    assert not (interrupted.parent / "source").exists()
+    assert not (interrupted.parent / "temporary").exists()
+    assert not (interrupted.parent / "open-next.tar.gz").exists()
     assert json.loads(completed.read_text())["status"] == "deployed"
     first = interrupted.read_bytes()
     queue.mark_interrupted_runs(tmp_path)
@@ -216,6 +235,22 @@ def test_interrupted_receipts_are_terminal_even_after_the_queue_moves_on(tmp_pat
     ("oceanicvibes", {"id": "release-1", "sha": "main"}),
     ("oceanicvibes", {"id": "release-1", "sha": SHA, "command": "arbitrary"}),
 ])
+def test_stale_build_workspaces_are_removed_only_from_the_dedicated_root(tmp_path):
+    work_root = tmp_path / "work"
+    workspace = work_root / "oceanicvibes-release-123"
+    workspace.mkdir(parents=True)
+    (workspace / "node_modules").mkdir()
+    (workspace / "node_modules" / "partial").write_text("temporary")
+    receipt = tmp_path / "runs" / "oceanicvibes" / "completed" / "receipt.json"
+    receipt.parent.mkdir(parents=True)
+    receipt.write_text(json.dumps({"status": "deployed"}))
+
+    queue.cleanup_stale_release_workspaces(tmp_path)
+
+    assert list(work_root.iterdir()) == []
+    assert json.loads(receipt.read_text())["status"] == "deployed"
+
+
 def test_invalid_requests_never_execute(tenant, release_request):
     with pytest.raises(ValueError):
         queue.validate_queue({"schema": 1, "releases": {tenant: release_request}}, REGISTRY)
@@ -798,8 +833,6 @@ def test_completed_schema_migration_request_is_idempotent(monkeypatch, tmp_path)
 
 def promoted_receipt(tmp_path):
     customer = CUSTOMER
-    archive = tmp_path / "open-next.tar.gz"
-    archive.write_bytes(b"immutable-artifact")
     result = {"tenant": "oceanicvibes", "sourceSha": SHA, "releaseId": "release-1",
               "worker": customer["worker"], "repository": customer["repository"],
               "payloadAdmin": customer["payloadAdmin"], "payloadCore": customer["payloadCore"],
@@ -807,7 +840,7 @@ def promoted_receipt(tmp_path):
               "schemaIdentity": customer["schemaIdentity"], "migrationHead": customer["migrationHead"],
               "status": "failed", "stage": "verify-connection", "error": "connection failed",
               "deployment": {"id": "deployment-1"}, "uploadedVersion": "version-1",
-              "archiveSha256": release.hashlib.sha256(archive.read_bytes()).hexdigest()}
+              "artifactHashes": {"worker.js": "b" * 64}}
     (tmp_path / "receipt.json").write_text(json.dumps(result))
     return result, customer
 
@@ -827,7 +860,7 @@ def test_read_only_continuation_rejects_unproven_release(tmp_path, changed):
     elif changed == "unpromoted":
         result["stage"] = "upload"
     else:
-        (tmp_path / "open-next.tar.gz").write_bytes(b"changed")
+        result["artifactHashes"] = {"../worker.js": "not-a-sha256"}
     (tmp_path / "receipt.json").write_text(json.dumps(result))
     with pytest.raises(ValueError):
         release.verification_receipt(tmp_path, "oceanicvibes", SHA, "release-1", customer)
