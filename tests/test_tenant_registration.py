@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 import yaml
@@ -111,8 +112,23 @@ def test_only_a_configured_payload_runtime_becomes_restart_loadable(tmp_path):
         service.register("new-site", display_name="New Site")
         tenant_path = tmp_path / "websites" / "new-site" / "config.yaml"
         tenant_config = yaml.safe_load(tenant_path.read_text(encoding="utf-8"))
-        tenant_config["site"]["payload"]["enabled"] = True
-        tenant_config["site"]["payload"]["token_env"] = "PROVISIONED_NEW_SITE_TOKEN"
+        manifest = json.loads((
+            Path(__file__).parents[1]
+            / "src/site_agent/templates/next-payload/template-manifest.json"
+        ).read_text(encoding="utf-8"))
+        tenant_config["site"]["payload"].update(
+            enabled=True,
+            url="https://new-site.example",
+            token_env="PROVISIONED_NEW_SITE_TOKEN",
+            api_prefix="/api/workspace",
+            contract={
+                "contract": manifest["contentContract"],
+                "coreVersion": manifest["payloadCore"],
+                "schemaRevision": manifest["schemaRevision"],
+                "schemaIdentity": manifest["schemaIdentity"],
+                "media_fields": [],
+            },
+        )
         TenantRegistrationService._replace_config(tenant_path, tenant_config)
 
         service.mark_runtime_mounted("new-site")
