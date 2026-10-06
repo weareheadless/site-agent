@@ -7,6 +7,13 @@
       },
       "sha": "055996dc6f13d93de3e72a776a82d4354aa53772"
     },
+    "ada-e2e-studio-intake-0aa0b1a55ae48348": {
+      "id": "rel-20261006161932-1c24f0e9",
+      "initializeSchema": {
+        "migrationHead": "75064eaeb5a035afc8977d39a59742dfa8bfb5e94d344ca9090e29e516bb2534"
+      },
+      "sha": "a8b86a428e48cad45ade20b9fdbabc479054250c"
+    },
     "atelier-harmonie": {
       "id": "20261005-atelier-preview-mount-7",
       "sha": "fd9910cb176cd3cc3b19aa6d9ef67785dd8c509a"
