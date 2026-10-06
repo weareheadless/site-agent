@@ -91,14 +91,23 @@ CI passes on the pinned Node/npm versions, queue one new ID and the exact
 ```
 
 The dispatcher verifies the app SHA is on the official `helloada/main`,
-archives that exact commit, installs only its lockfile, runs its tests, lint,
-typecheck, Next build and OpenNext Worker build with local bindings, then
-validates the exact Worker, API, D1, R2 and required-secret configuration. It
-uploads one immutable version with the exact `HELLOADA_RELEASE_SHA`, promotes
-only that version to 100%, and requires `https://helloada.app/api/health` to
-return that same SHA. If live verification fails, it restores the exact
-previous Worker version and records a terminal failed receipt. The receipt is
-`/SOCIAL/payload-releases/runs/helloada-app/<release-id>/receipt.json`.
+archives that exact commit into a unique mode-0700 job workspace, installs only
+its lockfile with a job-scoped npm cache, runs its tests, lint, typecheck, Next
+build and OpenNext Worker build with local bindings, then validates the exact
+Worker, API, D1, R2 and required-secret configuration. Source, dependencies,
+temporary secrets/configuration and build output stay under that one workspace
+and are removed on success or failure; interrupted workspaces are swept by the
+next serialized dispatch. The old persistent HelloAda source/npm caches are
+removed under the queue lock. Superseded Site-Agent control snapshots are
+pruned while the current exact-main snapshot remains cached for the timer.
+Only the small receipt remains at
+`/SOCIAL/payload-releases/runs/helloada-app/<release-id>/receipt.json`; it
+records the source SHA, artifact hash, exact Cloudflare version and deployment
+result. The pipeline uploads one immutable version with the exact
+`HELLOADA_RELEASE_SHA`, promotes only that version to 100%, and requires
+`https://helloada.app/api/health` to return that same SHA. If live verification
+fails, it restores the exact previous Worker version and records a terminal
+failed receipt.
 
 The handoff private key is read from the declared mode-`0600` file at
 `/SOCIAL/configs/helloada-app/secrets.json`; the release fails before upload if
