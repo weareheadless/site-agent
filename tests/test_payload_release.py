@@ -460,7 +460,7 @@ def test_d1_application_table_still_counts_as_existing_state(monkeypatch):
 
 
 def test_payload_migration_config_targets_only_the_exact_remote_tenant_bindings(tmp_path):
-    path = release.payload_migration_config_file(tmp_path, CUSTOMER, WORKER_CONFIG)
+    path = release.payload_remote_bindings_config_file(tmp_path, CUSTOMER, WORKER_CONFIG)
     try:
         config = json.loads(path.read_text())
         assert path.stat().st_mode & 0o777 == 0o600
@@ -515,6 +515,28 @@ def test_existing_database_never_receives_a_schema_mutation(monkeypatch, tmp_pat
     monkeypatch.setattr(release, "tenant_runtime_secrets", lambda *args: pytest.fail("existing D1 must not load migration secrets"))
     result = release.enforce_payload_migrations(TEMPLATE, CUSTOMER, {}, None, None, {}, {}, "oceanicvibes", lambda _: None, WORKER_CONFIG, tmp_path)
     assert result == expected and calls == []
+
+
+def test_payload_contract_verifier_uses_and_cleans_the_remote_binding_config(monkeypatch, tmp_path):
+    commands = []
+
+    def fake_run(command, cwd, env):
+        config_path = Path(env["HELLOADA_CLOUDFLARE_CONFIG_PATH"])
+        config = json.loads(config_path.read_text())
+        assert config["d1_databases"][0]["remote"] is True
+        assert config["d1_databases"][0]["database_id"] == CUSTOMER["d1DatabaseId"]
+        commands.append((command, config_path))
+        return "contract verified"
+
+    monkeypatch.setattr(release, "run", fake_run)
+    result = release.run_payload_contract_verifier(
+        TEMPLATE, CUSTOMER, WORKER_CONFIG, {"CLOUDFLARE_API_TOKEN": "configured"},
+        {}, tmp_path,
+    )
+
+    assert result == "contract verified"
+    assert commands[0][0] == ["npm", "run", "verify:payload"]
+    assert not commands[0][1].exists()
 
 
 def test_payload_migration_uses_the_pinned_package_script():
