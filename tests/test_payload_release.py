@@ -40,6 +40,26 @@ CUSTOMER = {
     "r2BucketName": "helloada-oceanicvibes-media",
 }
 
+WORKER_CONFIG = {
+    "name": CUSTOMER["worker"],
+    "tenant": "oceanicvibes",
+    "admin": CUSTOMER["payloadAdmin"],
+    "core": CUSTOMER["payloadCore"],
+    "contract": CUSTOMER["contentContract"],
+    "schemaRevision": CUSTOMER["schemaRevision"],
+    "schemaIdentity": CUSTOMER["schemaIdentity"],
+    "migrationHead": CUSTOMER["migrationHead"],
+    "d1Count": 1,
+    "d1Binding": "D1",
+    "d1DatabaseId": CUSTOMER["d1DatabaseId"],
+    "d1DatabaseName": CUSTOMER["d1DatabaseName"],
+    "r2Count": 1,
+    "r2Binding": "R2",
+    "r2BucketName": CUSTOMER["r2BucketName"],
+    "compatibilityDate": "2025-08-15",
+    "compatibilityFlags": ["nodejs_compat", "global_fetch_strictly_public"],
+}
+
 
 def test_committed_queue_is_valid():
     queue.validate_queue(json.loads((ROOT / "deploy/desired-releases.json").read_text()), REGISTRY)
@@ -415,13 +435,13 @@ def test_obsolete_route_in_built_manifest_is_rejected(tmp_path):
         release.inspect_artifact(checkout, CUSTOMER, SHA)
 
 
-def test_empty_tenant_database_requires_explicit_bootstrap_initialization(monkeypatch):
+def test_empty_tenant_database_requires_explicit_bootstrap_initialization(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(release, "applied_payload_migrations", lambda *args: ([], []))
     monkeypatch.setattr(release, "run", lambda *args: calls.append(args) or "")
     monkeypatch.setattr(release, "tenant_runtime_secrets", lambda *args: {"PAYLOAD_SECRET": "secret"})
     with pytest.raises(RuntimeError, match="explicit bootstrap initialization"):
-        release.enforce_payload_migrations(TEMPLATE, CUSTOMER, {}, None, None, {}, {}, "oceanicvibes", lambda _: None)
+        release.enforce_payload_migrations(TEMPLATE, CUSTOMER, {}, None, None, {}, {}, "oceanicvibes", lambda _: None, WORKER_CONFIG, tmp_path)
     assert calls == []
 
 
@@ -439,13 +459,61 @@ def test_d1_application_table_still_counts_as_existing_state(monkeypatch):
     assert release.applied_payload_migrations(CUSTOMER, {}) == (["users"], [])
 
 
-def test_existing_database_never_receives_a_schema_mutation(monkeypatch):
+def test_payload_migration_config_targets_only_the_exact_remote_tenant_bindings(tmp_path):
+    path = release.payload_migration_config_file(tmp_path, CUSTOMER, WORKER_CONFIG)
+    try:
+        config = json.loads(path.read_text())
+        assert path.stat().st_mode & 0o777 == 0o600
+        assert config["name"] == CUSTOMER["worker"]
+        assert config["compatibility_date"] == WORKER_CONFIG["compatibilityDate"]
+        assert config["compatibility_flags"] == WORKER_CONFIG["compatibilityFlags"]
+        assert config["d1_databases"] == [{
+            "binding": "D1",
+            "database_id": CUSTOMER["d1DatabaseId"],
+            "database_name": CUSTOMER["d1DatabaseName"],
+            "remote": True,
+        }]
+        assert config["r2_buckets"] == [{
+            "binding": "R2",
+            "bucket_name": CUSTOMER["r2BucketName"],
+            "remote": True,
+        }]
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_payload_migration_uses_remote_config_and_removes_it_afterward(monkeypatch, tmp_path):
+    commands = []
+    monkeypatch.setattr(release, "tenant_runtime_secrets", lambda *_args: {"PAYLOAD_SECRET": "test-secret"})
+
+    def fake_run(command, cwd, env):
+        config_path = Path(env["HELLOADA_CLOUDFLARE_CONFIG_PATH"])
+        config = json.loads(config_path.read_text())
+        assert config["d1_databases"][0]["remote"] is True
+        assert config["d1_databases"][0]["database_id"] == CUSTOMER["d1DatabaseId"]
+        assert env["PAYLOAD_CLI"] == "1" and env["NODE_ENV"] == "production"
+        assert env["PAYLOAD_SECRET"] == "test-secret"
+        commands.append((command, config_path))
+        return "migration complete"
+
+    monkeypatch.setattr(release, "run", fake_run)
+    result = release.run_payload_migration(
+        TEMPLATE, CUSTOMER, WORKER_CONFIG, {"CLOUDFLARE_API_TOKEN": "configured"},
+        {}, REGISTRY, "oceanicvibes", tmp_path,
+    )
+
+    assert result == "migration complete"
+    assert commands[0][0] == release.payload_migration_command(REGISTRY)
+    assert not commands[0][1].exists()
+
+
+def test_existing_database_never_receives_a_schema_mutation(monkeypatch, tmp_path):
     expected = [entry["name"] for entry in TEMPLATE_MANIFEST["migrations"]]
     calls = []
     monkeypatch.setattr(release, "applied_payload_migrations", lambda *args: (["pages", "payload_migrations"], expected))
     monkeypatch.setattr(release, "run", lambda *args: calls.append(args) or "")
     monkeypatch.setattr(release, "tenant_runtime_secrets", lambda *args: pytest.fail("existing D1 must not load migration secrets"))
-    result = release.enforce_payload_migrations(TEMPLATE, CUSTOMER, {}, None, None, {}, {}, "oceanicvibes", lambda _: None)
+    result = release.enforce_payload_migrations(TEMPLATE, CUSTOMER, {}, None, None, {}, {}, "oceanicvibes", lambda _: None, WORKER_CONFIG, tmp_path)
     assert result == expected and calls == []
 
 
@@ -507,7 +575,7 @@ def test_tenant_payload_verifier_matches_the_site_agent_contract_before_mutation
         release.validate_payload_verifier(tmp_path)
 
 
-def test_new_site_initialization_is_exact_and_idempotent(monkeypatch):
+def test_new_site_initialization_is_exact_and_idempotent(monkeypatch, tmp_path):
     expected = [entry["name"] for entry in TEMPLATE_MANIFEST["migrations"]]
     calls = []
     queries = iter([([], []), (["pages", "payload_migrations"], expected)])
@@ -517,7 +585,7 @@ def test_new_site_initialization_is_exact_and_idempotent(monkeypatch):
     stages = []
     result = release.enforce_payload_migrations(
         TEMPLATE, CUSTOMER, {}, CUSTOMER["migrationHead"], None, {}, REGISTRY, "oceanicvibes", stages.append,
-    )
+     WORKER_CONFIG, tmp_path)
     assert result == expected
     assert stages == ["initialize-schema"]
     assert calls == [[str(Path(REGISTRY["npmBin"]) / "npm"), "run", "payload", "--", "migrate"]]
@@ -636,7 +704,7 @@ def test_tenant_secret_mapping_rejects_a_noncanonical_worker_binding(tmp_path, m
         )
 
 
-def test_partial_or_unexpected_database_never_triggers_a_migration(monkeypatch):
+def test_partial_or_unexpected_database_never_triggers_a_migration(monkeypatch, tmp_path):
     expected = [entry["name"] for entry in TEMPLATE_MANIFEST["migrations"]]
     calls = []
     monkeypatch.setattr(release, "applied_payload_migrations", lambda *args: (["users", "payload_migrations"], []))
@@ -644,11 +712,11 @@ def test_partial_or_unexpected_database_never_triggers_a_migration(monkeypatch):
     with pytest.raises(RuntimeError, match="non-empty D1"):
         release.enforce_payload_migrations(
             TEMPLATE, CUSTOMER, {}, CUSTOMER["migrationHead"], None, {}, {}, "oceanicvibes", lambda _: None,
-        )
+         WORKER_CONFIG, tmp_path)
     assert calls == []
 
 
-def test_existing_tenant_migration_requires_the_exact_nonempty_ledger_prefix(monkeypatch):
+def test_existing_tenant_migration_requires_the_exact_nonempty_ledger_prefix(monkeypatch, tmp_path):
     expected = [entry["name"] for entry in TEMPLATE_MANIFEST["migrations"]]
     applied = expected[:1]
     from_head = release.migration_ledger_head(applied)
@@ -663,7 +731,7 @@ def test_existing_tenant_migration_requires_the_exact_nonempty_ledger_prefix(mon
 
     result = release.enforce_payload_migrations(
         TEMPLATE, CUSTOMER, {}, None, from_head, {}, REGISTRY, "oceanicvibes", stages.append,
-    )
+     WORKER_CONFIG, tmp_path)
 
     assert result == expected
     assert stages == ["migrate-schema"]
@@ -675,35 +743,35 @@ def test_existing_tenant_migration_requires_the_exact_nonempty_ledger_prefix(mon
     (["unknown"], release.migration_ledger_head(["unknown"])),
     ([TEMPLATE_MANIFEST["migrations"][0]["name"]], "f" * 64),
 ])
-def test_existing_tenant_migration_rejects_missing_or_changed_ledger(monkeypatch, applied, requested_head):
+def test_existing_tenant_migration_rejects_missing_or_changed_ledger(monkeypatch, tmp_path, applied, requested_head):
     calls = []
     monkeypatch.setattr(release, "applied_payload_migrations", lambda *args: (["pages", "payload_migrations"], applied))
     monkeypatch.setattr(release, "run", lambda *args: calls.append(args) or "")
     with pytest.raises(RuntimeError, match="migration|ledger|existing tenant"):
         release.enforce_payload_migrations(
             TEMPLATE, CUSTOMER, {}, None, requested_head, {}, {}, "oceanicvibes", lambda _: None,
-        )
+         WORKER_CONFIG, tmp_path)
     assert calls == []
 
 
-def test_existing_tenant_migration_refuses_to_mutate_without_an_explicit_request(monkeypatch):
+def test_existing_tenant_migration_refuses_to_mutate_without_an_explicit_request(monkeypatch, tmp_path):
     expected = [entry["name"] for entry in TEMPLATE_MANIFEST["migrations"]]
     monkeypatch.setattr(release, "applied_payload_migrations", lambda *args: (["pages", "payload_migrations"], expected[:1]))
     monkeypatch.setattr(release, "run", lambda *args: pytest.fail("unexpected Payload migration"))
     with pytest.raises(RuntimeError, match="explicit exact schema-migration request"):
         release.enforce_payload_migrations(
             TEMPLATE, CUSTOMER, {}, None, None, {}, {}, "oceanicvibes", lambda _: None,
-        )
+         WORKER_CONFIG, tmp_path)
 
 
-def test_completed_schema_migration_request_is_idempotent(monkeypatch):
+def test_completed_schema_migration_request_is_idempotent(monkeypatch, tmp_path):
     expected = [entry["name"] for entry in TEMPLATE_MANIFEST["migrations"]]
     from_head = release.migration_ledger_head(expected[:1])
     monkeypatch.setattr(release, "applied_payload_migrations", lambda *args: (["pages", "payload_migrations"], expected))
     monkeypatch.setattr(release, "run", lambda *args: pytest.fail("completed migration must not rerun"))
     assert release.enforce_payload_migrations(
         TEMPLATE, CUSTOMER, {}, None, from_head, {}, {}, "oceanicvibes", lambda _: None,
-    ) == expected
+     WORKER_CONFIG, tmp_path) == expected
 
 
 def promoted_receipt(tmp_path):
