@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -24,10 +25,22 @@ ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 D1_SYSTEM_TABLES = frozenset({"_cf_KV"})
+MINIMUM_BUILD_FREE_BYTES = 8 * 1024 ** 3
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def ensure_build_capacity(path: Path) -> None:
+    free_bytes = shutil.disk_usage(path).free
+    if free_bytes < MINIMUM_BUILD_FREE_BYTES:
+        free_gib = free_bytes / (1024 ** 3)
+        minimum_gib = MINIMUM_BUILD_FREE_BYTES // (1024 ** 3)
+        raise RuntimeError(
+            f"Payload build requires at least {minimum_gib} GiB free; "
+            f"only {free_gib:.1f} GiB is available"
+        )
 
 
 def atomic_json(path: Path, value: Any) -> None:
@@ -517,9 +530,13 @@ def verification_receipt(directory: Path, tenant: str, sha: str, release_id: str
         raise ValueError("only a promoted release may resume read-only verification")
     if not receipt.get("uploadedVersion") or not receipt.get("deployment"):
         raise ValueError("release has no recorded immutable production promotion")
-    archive = directory / "open-next.tar.gz"
-    if hashlib.sha256(archive.read_bytes()).hexdigest() != receipt.get("archiveSha256"):
-        raise ValueError("recorded release artifact is missing or changed")
+    artifact_hashes = receipt.get("artifactHashes")
+    if (not isinstance(artifact_hashes, dict) or not artifact_hashes
+            or any(not isinstance(path, str) or not path or Path(path).is_absolute()
+                   or ".." in Path(path).parts or not isinstance(digest, str)
+                   or not SHA256_RE.fullmatch(digest)
+                   for path, digest in artifact_hashes.items())):
+        raise ValueError("release has no valid verified artifact manifest")
     receipt.setdefault("verificationHistory", []).append({key: receipt.get(key) for key in
         ("status", "stage", "error", "finishedAt")})
     receipt.pop("error", None)
@@ -607,7 +624,10 @@ def main() -> int:
     if customer is None:
         parser.error("tenant is not registered")
     validate_target(customer, args.tenant, args.ref, args.release_id)
-    directory = Path(manifest["releaseRoot"]) / "runs" / args.tenant / args.release_id
+    release_root = Path(manifest["releaseRoot"])
+    directory = release_root / "runs" / args.tenant / args.release_id
+    workspace = None
+    workspace_path = None
     # Serialize read-only continuation with the queue, which owns this lock
     # during normal releases. Keep the handle alive until main returns.
     verification_lock = None
@@ -662,11 +682,22 @@ def main() -> int:
         if not cloudflare.get("env_file") or not Path(cloudflare["env_file"]).is_file():
             raise RuntimeError("declared Cloudflare credential file is missing")
         base = {k: os.environ[k] for k in ("HOME", "USER", "LANG", "TZ", "TMPDIR") if k in os.environ}
-        base.update({"PATH": manifest["npmBin"] + ":" + manifest["nodeBin"] + ":/usr/local/bin:/usr/bin:/bin", "CI": "1",
-                     "npm_config_cache": str(Path(manifest["releaseRoot"]) / "npm-cache")})
-        temporary_root = directory / "temporary"
-        temporary_root.mkdir(mode=0o700, exist_ok=True)
-        base["TMPDIR"] = str(temporary_root)
+        base.update({"PATH": manifest["npmBin"] + ":" + manifest["nodeBin"] + ":/usr/local/bin:/usr/bin:/bin",
+                     "CI": "1"})
+        if not args.verify_only:
+            ensure_build_capacity(release_root)
+            work_root = release_root / "work"
+            work_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            work_root.chmod(0o700)
+            workspace = tempfile.TemporaryDirectory(
+                prefix=f"{args.tenant}-{args.release_id}-", dir=str(work_root),
+            )
+            workspace_path = Path(workspace.name)
+            checkout = workspace_path / "source"
+            temporary_root = workspace_path / "temporary"
+            temporary_root.mkdir(mode=0o700)
+            base["npm_config_cache"] = str(workspace_path / "npm-cache")
+            base["TMPDIR"] = str(temporary_root)
         deploy_env = credential_environment({"credentials": {"cloudflare": cloudflare}}, base)
         if not deploy_env.get("CLOUDFLARE_API_TOKEN") or not deploy_env.get("CLOUDFLARE_ACCOUNT_ID"):
             raise RuntimeError("declared Cloudflare profile is incomplete")
@@ -745,16 +776,13 @@ def main() -> int:
         if changed:
             raise RuntimeError("build changed tracked source: " + changed)
         stage("artifact-verified")
-        run(["tar", "-czf", str(directory / "open-next.tar.gz"), "-C", str(checkout), ".open-next"], directory, base)
-        receipt["archiveSha256"] = hashlib.sha256((directory / "open-next.tar.gz").read_bytes()).hexdigest()
-
         stage("upload")
         before_deploy = cloudflare_deployment(customer, deploy_env)
         if before_deploy.get("id") != receipt["previousDeployment"].get("id"):
             raise RuntimeError("production changed during the build; reconcile that deployment before retrying")
         runtime_secrets = tenant_runtime_secrets(manifest, args.tenant)
         receipt["uploadedVersion"] = upload_worker_version(
-            checkout, args.ref, args.release_id, directory, runtime_secrets, deploy_env,
+            checkout, args.ref, args.release_id, workspace_path, runtime_secrets, deploy_env,
         )
         if file_hashes(checkout / ".open-next") != receipt["artifactHashes"]:
             raise RuntimeError("upload changed the inspected artifact")
@@ -792,6 +820,16 @@ def main() -> int:
         atomic_json(receipt_path, receipt)
         print(f"[release] FAILED stage={receipt['stage']}: {error}", file=sys.stderr, flush=True)
         return 1
+    finally:
+        if workspace is not None:
+            try:
+                workspace.cleanup()
+                receipt["workspaceCleanupStatus"] = "complete"
+            except OSError as error:
+                receipt["workspaceCleanupStatus"] = "failed"
+                receipt["workspaceCleanupError"] = f"{type(error).__name__}: {error}"
+                print(f"[release] WORKSPACE_CLEANUP_FAILED: {error}", file=sys.stderr, flush=True)
+            atomic_json(receipt_path, receipt)
 
 
 if __name__ == "__main__":
