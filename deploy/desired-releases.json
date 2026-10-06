@@ -1,7 +1,7 @@
 {
   "releases": {
     "ada-e2e-studio-b39ae17e77014b8c": {
-      "id": "rel-20261006145336-caff537a",
+      "id": "rel-20261006152429-ab552269",
       "initializeSchema": {
         "migrationHead": "75064eaeb5a035afc8977d39a59742dfa8bfb5e94d344ca9090e29e516bb2534"
       },
