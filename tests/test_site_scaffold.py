@@ -1,3 +1,5 @@
+import json
+
 from site_agent.site_scaffold import (
     initialize_managed_site,
     initialize_payload_site,
@@ -20,8 +22,9 @@ def test_initialize_payload_site_creates_canonical_helloada_template(tmp_path):
     assert '"HELLOADA_SITE_NAME": "North Star Studio"' in wrangler
     assert "__SITE_AGENT_VERSION__" not in wrangler
 
-    manifest = (root / "template-manifest.json").read_text()
-    assert '"contentContract": "helloada-content-v2"' in manifest
+    manifest = json.loads((root / "template-manifest.json").read_text())
+    contract = json.loads((root / "helloada-content-contract.json").read_text())
+    assert manifest["contentContract"] == contract["contract"]
     assert "createHelloAdaSchema" in (root / "payload.config.ts").read_text()
     assert not (root / "src/collections/Posts.ts").exists()
     assert not (root / "src/collections/Pages.ts").exists()

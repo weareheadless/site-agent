@@ -12,6 +12,8 @@ from site_agent.hands.cloudflare_resources import CloudflareResourceProvisioner
 from site_agent.hands.github_provisioning import GitHubRepositoryProvisioner
 from site_agent.web.workspace import create_workspace_api_app
 
+_TEST_HANDOFF_PUBLIC_KEY = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAoIThyhKH-lq0spevMAnsVT1aVp0yNYV07Ndd_aE1VIlfkMCxA5y_VLFmltt215rts1eaHvoYczPvRGfvR9Vc9ctssM5vSorWBH2v_gRCEH__ZKgAVrZh9K12jG8wXU3j06rn45bNIPVQV9ETOfUqK7cBXtrRKF_yCrM999Ov8N_D_OBkr54NIl-3xVjcHCmToiE9iDupQ-QqPeOCUAaS4oji9cmOnovaxchO_ZRKNQOpfl3gyYEO3uXRg11fthFB8MFtGoymisHqcSUi6UcYy3_v8TajD80Zp_o024PfgbjXxmGt-taTZ3kEvgmSXHZcbf15w3ha3rT0pvfaebDsAwIDAQAB"
+
 
 def _host(tmp_path):
     root_config = tmp_path / "config.yaml"
@@ -116,7 +118,7 @@ def test_bootstrap_configures_generic_seo_provisioning_for_new_sites(tmp_path):
 
     service = WebsiteBootstrapService.__new__(WebsiteBootstrapService)
     service.config = {"bootstrap": {"resource_prefix": "helloada"}}
-    service.env = {}
+    service.env = {"HELLOADA_HANDOFF_PUBLIC_KEY": _TEST_HANDOFF_PUBLIC_KEY}
     service.registry = Registry()
 
     service._configure_source(
@@ -138,12 +140,12 @@ def test_bootstrap_configures_generic_seo_provisioning_for_new_sites(tmp_path):
     assert config["seo"]["provisioning"]["auto"] is True
     assert config["seo"]["site_url"] == "https://helloada-demo.workers.dev/"
     assert config["seo"]["gsc_property"] == "https://helloada-demo.workers.dev/"
-    assert config["site"]["payload"]["contract"]["contract"] == "helloada-content-v2"
+    assert config["site"]["payload"]["contract"]["contract"] == template_manifest["contentContract"]
     assert config["site"]["payload"]["contract"]["schemaIdentity"] == template_manifest["schemaIdentity"]
     assert config["site"]["payload"]["contract"]["locales"] == ["en"]
     wrangler = json.loads((site_dir / "wrangler.jsonc").read_text(encoding="utf-8"))
-    assert wrangler["vars"]["HELLOADA_TEMPLATE_SCHEMA"] == "4"
-    assert wrangler["vars"]["HELLOADA_PAYLOAD_SCHEMA_REVISION"] == "2"
+    assert wrangler["vars"]["HELLOADA_TEMPLATE_SCHEMA"] == str(template_manifest["templateSchema"])
+    assert wrangler["vars"]["HELLOADA_PAYLOAD_SCHEMA_REVISION"] == str(template_manifest["schemaRevision"])
     assert wrangler["vars"]["HELLOADA_SCHEMA_IDENTITY"] == template_manifest["schemaIdentity"]
     assert wrangler["vars"]["HELLOADA_PAYLOAD_MIGRATION_HEAD"] == template_manifest["migrationHead"]
 
@@ -166,15 +168,16 @@ def test_bootstrap_configures_one_explicit_tenant_ownership_marker(tmp_path):
     site_dir = initialize_managed_site(tmp_path / "site")
     WebsiteBootstrapService._configure_template(site_dir, "demo", "Demo")
     marker = json.loads((site_dir / ".helloada-managed.json").read_text())
+    manifest = json.loads((site_dir / "template-manifest.json").read_text())
     assert marker == {
         "tenantId": "demo",
-        "templateSchema": 4,
-        "payloadAdmin": "0.8.10",
-        "payloadCore": "0.2.0",
-        "contentContract": "helloada-content-v2",
-        "schemaRevision": 2,
-        "schemaIdentity": json.loads((site_dir / "template-manifest.json").read_text())["schemaIdentity"],
-        "migrationHead": json.loads((site_dir / "template-manifest.json").read_text())["migrationHead"],
+        "templateSchema": manifest["templateSchema"],
+        "payloadAdmin": manifest["payloadAdmin"],
+        "payloadCore": manifest["payloadCore"],
+        "contentContract": manifest["contentContract"],
+        "schemaRevision": manifest["schemaRevision"],
+        "schemaIdentity": manifest["schemaIdentity"],
+        "migrationHead": manifest["migrationHead"],
     }
     assert 'tenantId: "demo"' in (site_dir / "src/helloada.config.ts").read_text()
 

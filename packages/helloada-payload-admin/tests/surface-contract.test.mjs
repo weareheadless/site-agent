@@ -3,6 +3,7 @@ import {readFileSync} from 'node:fs';
 import test from 'node:test';
 
 const read = path => readFileSync(new URL(`../src/styles/${path}`, import.meta.url), 'utf8');
+const workspace = readFileSync(new URL('../src/components/WebsiteWorkspace.tsx', import.meta.url), 'utf8');
 const surfaces = read('_surfaces.scss');
 const paper = surfaces.split('@mixin paper {')[1].split('@mixin chrome')[0];
 const chrome = surfaces.split('@mixin chrome {')[1];
@@ -67,4 +68,11 @@ test('charts and status text use surface-aware accents rather than pale dark-onl
   assert.match(growth, /stroke: var\(--helloada-cyan\);/);
   assert.match(growth, /color: var\(--helloada-positive\);/);
   assert.doesNotMatch(growth, /#ff9989|#ffa69a|#b4d990|#ffdc91/);
+});
+test('new-site onboarding steps reflect the confirmed brief and stay out of established sites', () => {
+  assert.match(workspace, /!websitePresent && onboarding\?\.enabled \? \(\s*<ol className="helloada-onboarding-steps"/);
+  assert.match(workspace, /onboarding\.completed_stages\?\.includes\(stage\)/);
+  assert.match(workspace, /onboardingCurrentStage === stage/);
+  assert.match(workspace, /onboarding\?\.report\?\.candidate_sha/);
+  assert.doesNotMatch(workspace, /helloada-onboarding-steps[^]*?\d+%/);
 });

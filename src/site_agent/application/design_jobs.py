@@ -15,6 +15,7 @@ from ..core.design_contracts import (
     PageBuildRequest,
 )
 from .designs import DesignService
+from .onboarding_report import persist_initial_onboarding_report
 
 
 class DesignJobExecutor:
@@ -134,6 +135,36 @@ class DesignJobExecutor:
                     "The candidate passed quality gates but could not be linked to Review.",
                     {"error": str(exc)[:500]},
                 )
+            except Exception:
+                pass
+
+    def _ensure_initial_onboarding_report(self, run: Mapping[str, Any]) -> None:
+        """Persist the new-site plan after its exact candidate passes review gates."""
+        config = self.context.get("config")
+        site = config.get("site") if isinstance(config, Mapping) else None
+        if not isinstance(site, Mapping) or site.get("website_present") is not False:
+            return
+        if str(run.get("operation_kind") or "initial_build") != "initial_build":
+            return
+        try:
+            phase = persist_initial_onboarding_report(self.memory, run)
+            if phase and phase.get("status") == "completed":
+                return
+        except Exception as exc:  # A report failure must not downgrade a verified candidate.
+            try:
+                run_id = str(run["run_id"])
+                already_recorded = any(
+                    event.get("stage") == "onboarding_report_failed"
+                    and (event.get("detail") or {}).get("candidate_sha") == run.get("candidate_sha")
+                    for event in self.memory.list_design_run_events(run_id, limit=500)
+                )
+                if not already_recorded:
+                    self.memory.add_design_run_event(
+                        run_id,
+                        "onboarding_report_failed",
+                        "The first-site plan could not be prepared; the verified page remains available for review.",
+                        {"error": str(exc)[:500], "candidate_sha": run.get("candidate_sha")},
+                    )
             except Exception:
                 pass
 
@@ -363,6 +394,9 @@ class DesignJobExecutor:
             events = run.get("events") or []
             latest_stage = events[-1].get("stage") if events else ""
             status = run.get("status")
+            if status == DesignRunStatus.READY_FOR_REVIEW.value:
+                self._ensure_initial_onboarding_report(run)
+                continue
             if status in {
                 DesignRunStatus.CREATED.value,
                 DesignRunStatus.ASSESSING_INTAKE.value,
@@ -766,6 +800,7 @@ class DesignJobExecutor:
                     )
         self._queue_host_evidence_repair_if_needed(run_id)
         self._link_review_draft_if_ready(run_id)
+        self._ensure_initial_onboarding_report(self.service.get_run(run_id))
 
     def finish_validation(self, run_id: str) -> None:
         """Complete the durable post-validation handoff for revalidation callers.

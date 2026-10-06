@@ -208,28 +208,31 @@ def test_api_release_client_uses_newline_framed_broker_protocol(tmp_path):
     api_deploy = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(api_deploy)
 
-    broker_path = str(tmp_path / "restart.sock")
-    received = []
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
-        listener.bind(broker_path)
-        listener.listen(1)
+    import tempfile
 
-        def serve_one_request():
-            connection, _address = listener.accept()
-            with connection:
-                request = bytearray()
-                while chunk := connection.recv(32):
-                    request.extend(chunk)
-                received.append(bytes(request))
-                connection.sendall(b"restarted\n")
+    with tempfile.TemporaryDirectory(prefix=".s-", dir=ROOT) as broker_dir:
+        broker_path = str(Path(broker_dir) / "restart.sock")
+        received = []
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+            listener.bind(broker_path)
+            listener.listen(1)
 
-        worker = threading.Thread(target=serve_one_request, daemon=True)
-        worker.start()
-        api_deploy._restart_api(broker_path)
-        worker.join(timeout=2)
+            def serve_one_request():
+                connection, _address = listener.accept()
+                with connection:
+                    request = bytearray()
+                    while chunk := connection.recv(32):
+                        request.extend(chunk)
+                    received.append(bytes(request))
+                    connection.sendall(b"restarted\n")
 
-    assert not worker.is_alive()
-    assert received == [b"restart\n"]
+            worker = threading.Thread(target=serve_one_request, daemon=True)
+            worker.start()
+            api_deploy._restart_api(broker_path)
+            worker.join(timeout=2)
+
+        assert not worker.is_alive()
+        assert received == [b"restart\n"]
  
 def test_host_bootstrap_restarts_updated_socket_and_timer_units():
     bootstrap = (ROOT / "scripts/bootstrap-release-pipeline.py").read_text()

@@ -1005,10 +1005,17 @@ def test_chat_with_builder_enabled_routes_source_tweak_to_builder(runtime, monke
             "change": {"status": "candidate_created", "draft_id": 42},
         },
     )
-    context["llm"] = FakeLLM([json.dumps({
-        "reply": "Handing this to the implementation builder.",
-        "action": {"type": "spawn_build", "brief": "Add 2px to the footer margin."},
-    })])
+    context["llm"] = FakeLLM([
+        json.dumps({
+            "reply": "",
+            "action": {"type": "plan_website_change", "content_effects": [],
+                       "source_brief": "Add 2px to the footer margin.", "response_only": False},
+        }),
+        json.dumps({
+            "reply": "Handing this to the implementation builder.",
+            "action": {"type": "spawn_build", "brief": "Add 2px to the footer margin."},
+        }),
+    ])
     context["persona_prompt"] = "You are Ada."
     _login(client)
     adapter.files["styles.css"] = ".footer { padding: 4px; }"
@@ -1018,9 +1025,8 @@ def test_chat_with_builder_enabled_routes_source_tweak_to_builder(runtime, monke
     assert body["preview"]["status"] == "building"
 
 
-def test_chat_json_spawn_build_runs_staged_builder(runtime, monkeypatch):
-    """The JSON fallback's spawn_build returns a build_brief; the server runs the
-    full staged cycle and surfaces the merge draft."""
+def test_chat_spawn_build_runs_staged_builder(runtime, monkeypatch):
+    """The native tool plan starts the staged source builder and surfaces its draft."""
     memory, config, adapter, context, client = runtime
     config["builder"] = {"enabled": True}
     config["site"]["clone_path"] = "/tmp/whatever"
@@ -1032,14 +1038,21 @@ def test_chat_json_spawn_build_runs_staged_builder(runtime, monkeypatch):
             "reply": f"Built {brief[:20]}...", "merge_draft_id": 42, "changed": True,
         },
     )
-    context["llm"] = FakeLLM([json.dumps({
-        "reply": "Handing this to my builder agent.",
-        "action": {"type": "spawn_build", "brief": "build a coaching page"},
-    })])
+    context["llm"] = FakeLLM([
+        json.dumps({
+            "reply": "",
+            "action": {"type": "plan_website_change", "content_effects": [],
+                       "source_brief": "Build a coaching page.", "response_only": False},
+        }),
+        json.dumps({
+            "reply": "Handing this to my builder agent.",
+            "action": {"type": "spawn_build", "brief": "build a coaching page"},
+        }),
+    ])
     context["persona_prompt"] = "You are Ada."
     _login(client)
     body = chat_and_wait(client, "build a coaching page")
-    assert body["reply"].startswith("Built build a coachin")
+    assert body["reply"].lower().startswith("built build a coaching pag")
     assert body["merge_draft_id"] == 42
 
 
@@ -1187,6 +1200,25 @@ def test_incomplete_done_chat_job_can_be_retried(runtime):
     assert memory.retry_chat_job(job_id)
     re_claimed = memory.claim_chat_job("worker")
     assert re_claimed is not None and re_claimed["id"] == job_id
+
+
+def test_chat_job_completion_preserves_every_payload_write_receipt(runtime):
+    memory, _, _, _, _ = runtime
+    conversation_id = memory.create_conversation("task")
+    job_id = memory.enqueue_chat_job(conversation_id, "update content and design")
+    assert memory.claim_chat_job("worker") is not None
+    first = {"target": "pages", "document_id": "1", "revision": "sha256:" + "a" * 64, "fields": ["sections"]}
+    second = {"target": "siteSettings", "document_id": "siteSettings", "revision": "sha256:" + "b" * 64, "fields": ["footerTitle"]}
+    assert memory.record_chat_job_effect(job_id, "worker", first)
+    assert memory.record_chat_job_effect(job_id, "worker", second)
+    assert memory.complete_chat_job(job_id, "worker", {
+        "changed": True,
+        "reply": "Done",
+        "payload_effects": [first],
+    })
+
+    result = memory.get_chat_job(job_id)["result"]
+    assert result["payload_effects"] == [first, second]
 
 
 def test_chat_job_claim_is_single_owner(tmp_path):

@@ -29,7 +29,7 @@ def _workspace_language(message: str) -> str:
     """Read only the explicit language metadata added by the trusted bridge."""
     context_block = str(message or "").split("[User request]", 1)[0]
     match = re.search(r'"language"\s*:\s*"([a-z]{2,3}(?:-[a-z0-9]{2,8}){0,2})"', context_block, re.IGNORECASE)
-    return match.group(1).lower() if match else ""
+    return match.group(1) if match else ""
 
 
 def _looks_like_design_request(message: str) -> bool:
@@ -132,6 +132,34 @@ def _payload_gateway(context: dict[str, Any]):
     return context.get("payload_gateway")
 
 
+def _payload_locale(payload: Any, context: dict[str, Any]) -> str:
+    """Resolve every Payload read/write to one explicitly enabled tenant locale."""
+    contract = context.get("_authoring_contract")
+    if not isinstance(contract, dict):
+        require_contract = getattr(payload, "require_authoring_contract", None)
+        if not callable(require_contract):
+            raise ValueError("the verified tenant Payload locale contract is unavailable")
+        contract = require_contract()
+        context["_authoring_contract"] = contract
+    locales = contract.get("locales")
+    default_locale = contract.get("defaultLocale")
+    if (
+        not isinstance(locales, list)
+        or not locales
+        or any(not isinstance(item, str) or not item for item in locales)
+        or not isinstance(default_locale, str)
+        or default_locale not in locales
+    ):
+        raise ValueError("the tenant Payload locale contract is invalid")
+    requested = str(context.get("_workspace_language") or "").strip()
+    if not requested:
+        return default_locale
+    match = next((item for item in locales if item.casefold() == requested.casefold()), None)
+    if match is None:
+        raise ValueError(f"the requested language '{requested}' is not enabled for this website")
+    return match
+
+
 def _payload_result(document: Any, *, action: str) -> str:
     if not isinstance(document, dict):
         return f"Payload {action} completed, but returned no document."
@@ -143,12 +171,336 @@ def _payload_result(document: Any, *, action: str) -> str:
     revision = document.get("_helloadaRevision")
     if isinstance(revision, str) and revision:
         compact["expectedHash"] = revision
-    if action == "read":
-        for key in ("content", "sections", "description", "excerpt", "metaDescription", "seo"):
-            if key in document:
-                compact[key] = document[key]
+    for key in (
+        "summary", "sections", "body", "featuredImage", "gallery", "author", "publishedAt",
+        "modifiedAt", "category", "canonicalUrl", "seo", "siteName", "tagline", "description",
+        "logo", "email", "telephone", "contactLabel", "promoText", "promoHref", "promoCta",
+        "footerKicker", "footerTitle", "footerNote", "defaultSeoTitle", "defaultSeoDescription",
+        "defaultSocialImage", "journalTitle", "journalDescription", "address", "items", "footer",
+        "groups", "footerGroups",
+    ):
+        if key in document:
+            compact[key] = document[key]
     rendered = json.dumps(compact, ensure_ascii=False, default=str)
     return rendered[:8000] + ("…" if len(rendered) > 8000 else "")
+
+
+def _authoring_value_schema(field: dict[str, Any]) -> dict[str, Any]:
+    kind = str(field.get("type") or "")
+    if kind in {"text", "textarea", "email", "date", "code", "radio"}:
+        schema: dict[str, Any] = {"type": "string"}
+        if kind == "email":
+            schema["format"] = "email"
+        if kind == "date":
+            schema["format"] = "date-time"
+        if isinstance(field.get("maxLength"), int):
+            schema["maxLength"] = int(field["maxLength"])
+        if isinstance(field.get("minLength"), int):
+            schema["minLength"] = int(field["minLength"])
+        return schema
+    if kind == "number":
+        return {key: field[key] for key in ("type", "min", "max") if key in field} | {"type": "number"}
+    if kind == "checkbox":
+        return {"type": "boolean"}
+    if kind == "select":
+        options = field.get("options") if isinstance(field.get("options"), list) else []
+        values = [row.get("value") if isinstance(row, dict) else row for row in options]
+        if not values:
+            raise ValueError(f"authoring field {field.get('name') or '(unnamed)'} has no declared select options")
+        return {"type": "string", "enum": values}
+    if kind in {"upload", "relationship"}:
+        identity: dict[str, Any] = {"oneOf": [{"type": "string", "minLength": 1}, {"type": "integer", "minimum": 1}]}
+        return {"type": "array", "items": identity} if field.get("hasMany") else identity
+    if kind == "group":
+        return _authoring_record_schema(field.get("fields"), nested=False, create=True)
+    if kind in {"array", "blocks"}:
+        if kind == "blocks":
+            variants = []
+            for block in field.get("blocks", []):
+                if not isinstance(block, dict):
+                    continue
+                variants.append(_authoring_record_schema(
+                    block.get("fields"),
+                    nested=True,
+                    block_type=str(block.get("slug") or ""),
+                ))
+            if not variants:
+                raise ValueError(f"authoring field {field.get('name') or '(unnamed)'} has no declared blocks")
+            item_schema: dict[str, Any] = {"oneOf": variants}
+        else:
+            item_schema = _authoring_record_schema(field.get("fields"), nested=True)
+        return {
+            "type": "array",
+            **({"minItems": int(field["minRows"])} if isinstance(field.get("minRows"), int) else {}),
+            **({"maxItems": int(field["maxRows"])} if isinstance(field.get("maxRows"), int) else {}),
+            "items": item_schema,
+        }
+    if kind == "richText":
+        return {
+            "type": "object",
+            "description": "Payload Lexical document: a root node with supported paragraph, heading, list, link and text children.",
+            "properties": {
+                "root": {
+                    "type": "object",
+                    "properties": {
+                        "type": {"const": "root"},
+                        "version": {"type": "integer"},
+                        "format": {"type": "string"},
+                        "indent": {"type": "integer"},
+                        "direction": {"type": ["string", "null"]},
+                        "children": {"type": "array", "items": {"type": "object"}},
+                    },
+                    "required": ["type", "children"],
+                    "additionalProperties": False,
+                },
+                "version": {"type": ["string", "integer"]},
+            },
+            "required": ["root"],
+            "additionalProperties": False,
+        }
+    if kind == "json":
+        return {"description": "JSON data; the host validates every nested value before writing."}
+    raise ValueError(f"authoring field {field.get('name') or '(unnamed)'} uses unsupported Payload type {kind or '(empty)'}")
+
+
+def _authoring_record_schema(
+    raw_fields: Any,
+    *,
+    nested: bool,
+    block_type: str = "",
+    create: bool = False,
+) -> dict[str, Any]:
+    fields = raw_fields if isinstance(raw_fields, list) else []
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+    for field in fields:
+        if not isinstance(field, dict) or not str(field.get("name") or "").strip():
+            continue
+        name = str(field["name"])
+        properties[name] = _authoring_value_schema(field)
+        if (create or nested) and field.get("required") is True:
+            required.append(name)
+    if nested:
+        properties["id"] = {"oneOf": [{"type": "string"}, {"type": "integer", "minimum": 1}]}
+    if block_type:
+        properties["blockType"] = {"const": block_type}
+        required.append("blockType")
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": False,
+    }
+
+
+def _validate_website_change_plan(
+    value: Any,
+    authoring_contract: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise ValueError("the website change plan must be an object")
+    content_effects = value.get("content_effects")
+    source_brief = str(value.get("source_brief") or "").strip()
+    response_only = value.get("response_only") is True
+    if not isinstance(content_effects, list) or len(content_effects) > 12:
+        raise ValueError("content_effects must be a list of at most twelve changes")
+    if response_only:
+        if content_effects or source_brief:
+            raise ValueError("a response-only plan cannot include website changes")
+        return {"content_effects": [], "source_brief": "", "response_only": True}
+    if not content_effects and not source_brief:
+        raise ValueError("the plan has no content or presentation change")
+    if len(source_brief) > 3_000:
+        raise ValueError("source_brief is too long")
+    if content_effects and not isinstance(authoring_contract, dict):
+        raise ValueError("the canonical Payload authoring contract is unavailable")
+    authoring = (authoring_contract or {}).get("authoring") or {}
+    enabled = (authoring_contract or {}).get("enabled") or {}
+    planned: list[dict[str, Any]] = []
+    identities: set[tuple[str, str, str]] = set()
+    for index, raw in enumerate(content_effects):
+        if not isinstance(raw, dict):
+            raise ValueError(f"content_effects[{index}] must be an object")
+        allowed_keys = {
+            "kind", "operation", "collection", "global", "identifier",
+            "identifier_kind", "fields", "summary",
+        }
+        unknown_keys = sorted(set(raw) - allowed_keys)
+        if unknown_keys:
+            raise ValueError(f"content_effects[{index}] contains unsupported plan fields: {', '.join(unknown_keys)}")
+        kind = str(raw.get("kind") or "").strip()
+        operation = str(raw.get("operation") or "").strip()
+        collection = str(raw.get("collection") or "").strip()
+        global_name = str(raw.get("global") or "").strip()
+        identifier = str(raw.get("identifier") or "").strip()
+        identifier_kind = str(raw.get("identifier_kind") or "").strip()
+        summary = str(raw.get("summary") or "").strip()
+        fields = raw.get("fields")
+        if kind not in {"collection", "global"} or operation not in {"create", "update"}:
+            raise ValueError(f"content_effects[{index}] needs a supported target and operation")
+        if not isinstance(fields, list) or not fields or any(not isinstance(item, str) or not item.strip() for item in fields):
+            raise ValueError(f"content_effects[{index}].fields must name at least one top-level authoring field")
+        if len(set(fields)) != len(fields):
+            raise ValueError(f"content_effects[{index}].fields cannot contain duplicates")
+        if not summary or len(summary) > 600:
+            raise ValueError(f"content_effects[{index}].summary must briefly explain the requested content change")
+        if kind == "collection":
+            if collection not in (enabled.get("collections") or []) or global_name:
+                raise ValueError(f"content_effects[{index}] targets a collection that is not enabled")
+            schema_fields = (authoring.get("collections") or {}).get(collection)
+            target = collection
+            if operation == "create" and (collection not in {"pages", "posts", "products"} or identifier_kind != "slug"):
+                raise ValueError("collection creates must target a page, post, or product route slug")
+            if operation == "create" and not identifier:
+                raise ValueError("collection creates need their intended route slug as the exact identity")
+        else:
+            if global_name not in (enabled.get("globals") or []) or collection or operation != "update":
+                raise ValueError(f"content_effects[{index}] targets an unsupported shared global operation")
+            schema_fields = (authoring.get("globals") or {}).get(global_name)
+            target = global_name
+        names = {
+            str(field.get("name") or "")
+            for field in schema_fields or []
+            if isinstance(field, dict)
+        }
+        unknown = sorted(set(fields) - names)
+        if unknown:
+            raise ValueError(f"content_effects[{index}] includes fields outside the shared schema: {', '.join(unknown)}")
+        if operation == "update" and not identifier:
+            raise ValueError(f"content_effects[{index}] updates need an exact document/global identity")
+        if operation == "update" and kind == "collection" and identifier_kind not in {"id", "sourceId", "slug"}:
+            raise ValueError(f"content_effects[{index}] updates need an exact document identity")
+        if kind == "global" and (identifier_kind != "global" or identifier != global_name):
+            raise ValueError(f"content_effects[{index}] must identify the exact global by name")
+        if kind == "collection" and operation == "create" and "slug" not in fields:
+            raise ValueError("idempotent content creation must include the route slug")
+        identity = (kind, target, identifier if operation == "update" else "create")
+        if identity in identities:
+            raise ValueError("the plan contains duplicate content targets")
+        identities.add(identity)
+        planned.append({
+            "kind": kind,
+            "operation": operation,
+            "target": target,
+            "collection": collection,
+            "global": global_name,
+            "identifier": identifier,
+            "identifier_kind": identifier_kind,
+            "fields": sorted(fields),
+            "summary": summary,
+            "completed_fields": [],
+        })
+    return {"content_effects": planned, "source_brief": source_brief, "response_only": False}
+
+
+def _payload_plan_complete(context: dict[str, Any]) -> bool:
+    plan = context.get("_website_change_plan")
+    if not isinstance(plan, dict):
+        return False
+    return all(
+        set(effect.get("fields") or []).issubset(set(effect.get("completed_fields") or []))
+        for effect in plan.get("content_effects") or []
+    )
+
+
+def _plan_effect_for_tool(context: dict[str, Any], name: str, args: dict[str, Any]) -> dict[str, Any]:
+    plan = context.get("_website_change_plan")
+    if not isinstance(plan, dict) or plan.get("response_only"):
+        raise ValueError("a validated website change plan is required before making this change")
+    data = args.get("data") if isinstance(args.get("data"), dict) else {}
+    if name == "create_payload_draft":
+        collection = str(args.get("collection") or "")
+        operation = "create"
+        identifier = str(data.get("slug") or "")
+        identifier_kind = "slug"
+        kind = "collection"
+    elif name == "update_payload_draft":
+        collection = str(args.get("collection") or "")
+        operation = "update"
+        identifier = str(args.get("id") or "")
+        identifier_kind = "id"
+        kind = "collection"
+    elif name == "update_payload_global":
+        collection = ""
+        operation = "update"
+        identifier = str(args.get("global") or "")
+        identifier_kind = "global"
+        kind = "global"
+    else:
+        raise ValueError("this tool is not a planned Payload mutation")
+
+    candidates = []
+    reads = context.get("_payload_read_documents") or {}
+    globals_read = context.get("_payload_read_globals") or {}
+    for effect in plan.get("content_effects", []):
+        if not isinstance(effect, dict) or effect.get("kind") != kind or effect.get("operation") != operation:
+            continue
+        if effect.get("target") != (collection or identifier):
+            continue
+        if operation == "create":
+            matches = effect.get("identifier") == identifier and effect.get("identifier_kind") == identifier_kind
+        elif kind == "global":
+            matches = effect.get("identifier") == identifier and effect.get("identifier_kind") == identifier_kind
+        else:
+            document = reads.get((collection, identifier)) if isinstance(reads, dict) else None
+            locator = str(effect.get("identifier_kind") or "")
+            matches = isinstance(document, dict) and str(document.get(locator) or "") == str(effect.get("identifier") or "")
+        if matches:
+            candidates.append(effect)
+    if len(candidates) != 1:
+        raise ValueError("the Payload change does not match one exact target in Ada's validated plan")
+    effect = candidates[0]
+    planned_fields = set(effect.get("fields") or [])
+    if set(data) != planned_fields:
+        raise ValueError("the Payload fields must exactly match the validated plan")
+    if effect.get("completed_fields"):
+        raise ValueError("this planned Payload effect has already been applied")
+
+    if name == "update_payload_draft":
+        document = reads.get((collection, identifier)) if isinstance(reads, dict) else None
+        if not isinstance(document, dict):
+            raise ValueError("read the exact Payload document in this request before updating it")
+        locator_key = str(effect.get("identifier_kind") or "")
+        if str(document.get(locator_key) or "") != str(effect.get("identifier") or ""):
+            raise ValueError("the update target differs from the exact document in Ada's plan")
+        if str(args.get("expected_hash") or "") != str(document.get("_helloadaRevision") or ""):
+            raise ValueError("the update revision is not the exact revision read for this target")
+    elif name == "update_payload_global":
+        document = globals_read.get(identifier) if isinstance(globals_read, dict) else None
+        if not isinstance(document, dict):
+            raise ValueError("read the exact Payload global in this request before updating it")
+        if str(args.get("expected_hash") or "") != str(document.get("_helloadaRevision") or ""):
+            raise ValueError("the global revision is not the exact revision read for this target")
+    return effect
+
+
+def _record_payload_effect(context: dict[str, Any], effect: dict[str, Any], document: Any) -> None:
+    if not isinstance(document, dict):
+        raise RuntimeError("Payload write returned no exact document receipt")
+    revision = str(document.get("_helloadaRevision") or "")
+    document_id = str(document.get("id") or (effect.get("target") if effect.get("kind") == "global" else "") or "")
+    if not revision.startswith("sha256:") or not document_id:
+        raise RuntimeError("Payload write returned no exact document identity and revision")
+    fields = list(effect.get("fields") or [])
+    effect["completed_fields"] = fields
+    receipt = {
+        "kind": effect.get("kind"),
+        "operation": effect.get("operation"),
+        "target": effect.get("target"),
+        "document_id": document_id,
+        "revision": revision,
+        "locale": str(context.get("_resolved_payload_locale") or ""),
+        "fields": fields,
+        "summary": effect.get("summary"),
+    }
+    context.setdefault("_completed_payload_effects", []).append(receipt)
+    context["_last_payload_effect"] = receipt
+    memory = context.get("memory")
+    job_id = context.get("_chat_job_id")
+    worker = context.get("_chat_job_worker")
+    if memory is not None and job_id is not None and worker and hasattr(memory, "record_chat_job_effect"):
+        if not memory.record_chat_job_effect(int(job_id), str(worker), receipt):
+            raise RuntimeError("Payload draft is saved, but its chat-job receipt could not be persisted")
 
 
 def _tools_spec(
@@ -156,6 +508,7 @@ def _tools_spec(
     *,
     design_intent: bool = False,
     source_edit_intent: bool = False,
+    authoring_contract: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     # ``source_edit_intent`` is retained as a compatibility argument for
     # callers that still pass the old classifier result.  Capability, not
@@ -164,8 +517,8 @@ def _tools_spec(
 
     cfg = context.get("config") if isinstance(context.get("config"), dict) else context
     source_builder_available = _runner.builder_available(cfg)
-    canonical_design_handoff = design_intent and context.get("design_service") is not None
-    use_existing_builder = source_builder_available and not canonical_design_handoff
+    canonical_design_handoff = design_intent and context.get("design_service") is not None and not source_builder_available
+    use_existing_builder = source_builder_available
 
     def fn(name, desc, props, required=None):
         return {
@@ -176,6 +529,9 @@ def _tools_spec(
                 "parameters": {"type": "object", "properties": props, "required": required or []},
             },
         }
+
+    def raw_fn(name: str, desc: str, parameters: dict[str, Any]) -> dict[str, Any]:
+        return {"type": "function", "function": {"name": name, "description": desc, "parameters": parameters}}
 
     tools = [
         fn("read_file", "Read a file from the site repo. For big files pass "
@@ -214,22 +570,77 @@ def _tools_spec(
                     },
                 }, ["intent", "intake", "owner_summary"]),
         ])
-    if _payload_gateway(context) is not None:
-        payload = _payload_gateway(context)
-        contract = getattr(payload, "contract", None)
-        configured_collections = tuple(getattr(contract, "collections", ()) or ())
-        configured_globals = tuple(getattr(contract, "globals", ()) or ())
-        collection = {"type": "string"}
-        if configured_collections:
-            collection["enum"] = list(configured_collections)
-        payload_global = {"type": "string"}
-        if configured_globals:
-            payload_global["enum"] = list(configured_globals)
-        data = {
-            "type": "object",
-            "description": "Only fields from the selected collection's editable draft schema.",
-            "additionalProperties": True,
+    can_author_payload = _payload_gateway(context) is not None and isinstance(authoring_contract, dict)
+    if source_builder_available or can_author_payload:
+        enabled = (authoring_contract or {}).get("enabled") or {}
+        authoring = (authoring_contract or {}).get("authoring") or {}
+        effect_variants: list[dict[str, Any]] = []
+        for name in enabled.get("collections", []):
+            fields = authoring.get("collections", {}).get(name, [])
+            names = [str(field.get("name")) for field in fields if isinstance(field, dict) and field.get("name")]
+            for operation in ("create", "update"):
+                identifier_kinds = ["slug"] if operation == "create" else ["id", "sourceId", "slug"]
+                effect_variants.append({
+                    "type": "object",
+                    "properties": {
+                        "kind": {"const": "collection"},
+                        "operation": {"const": operation},
+                        "collection": {"const": name},
+                        "identifier": {"type": "string", "minLength": 1},
+                        "identifier_kind": {"type": "string", "enum": identifier_kinds},
+                        "fields": {"type": "array", "items": {"type": "string", "enum": names}, "minItems": 1, "uniqueItems": True},
+                        "summary": {"type": "string", "minLength": 1, "maxLength": 600},
+                    },
+                    "required": ["kind", "operation", "collection", "identifier", "identifier_kind", "fields", "summary"],
+                    "additionalProperties": False,
+                })
+        for name in enabled.get("globals", []):
+            fields = authoring.get("globals", {}).get(name, [])
+            names = [str(field.get("name")) for field in fields if isinstance(field, dict) and field.get("name")]
+            effect_variants.append({
+                "type": "object",
+                "properties": {
+                    "kind": {"const": "global"},
+                    "operation": {"const": "update"},
+                    "global": {"const": name},
+                    "identifier": {"const": name},
+                    "identifier_kind": {"const": "global"},
+                    "fields": {"type": "array", "items": {"type": "string", "enum": names}, "minItems": 1, "uniqueItems": True},
+                    "summary": {"type": "string", "minLength": 1, "maxLength": 600},
+                },
+                "required": ["kind", "operation", "global", "identifier", "identifier_kind", "fields", "summary"],
+                "additionalProperties": False,
+            })
+        plan_properties: dict[str, Any] = {
+            "content_effects": {"type": "array", "items": {"oneOf": effect_variants} if effect_variants else {"not": {}}, "maxItems": 12},
+            "source_brief": {"type": "string", "maxLength": 3000},
+            "response_only": {"type": "boolean"},
         }
+        tools.append(raw_fn(
+            "plan_website_change",
+            "Declare the exact work before any Payload or source mutation. Use response_only for an answer without changes. "
+            "Payload effects must identify exact shared-schema fields and targets; source_brief describes only presentation/code work. "
+            "The host validates this plan and requires Payload drafts to be saved before source work.",
+            {
+                "type": "object",
+                "properties": plan_properties,
+                "required": ["content_effects", "source_brief", "response_only"],
+                "additionalProperties": False,
+            },
+        ))
+    if _payload_gateway(context) is not None and isinstance(authoring_contract, dict):
+        authoring = authoring_contract.get("authoring") or {}
+        enabled = authoring_contract.get("enabled") or {}
+        collection_names = [
+            name for name in enabled.get("collections", [])
+            if isinstance(name, str) and isinstance((authoring.get("collections") or {}).get(name), list)
+        ]
+        global_names = [
+            name for name in enabled.get("globals", [])
+            if isinstance(name, str) and isinstance((authoring.get("globals") or {}).get(name), list)
+        ]
+        collection = {"type": "string", "enum": collection_names}
+        payload_global = {"type": "string", "enum": global_names}
         tools.extend([
             fn(
                 "read_payload_content",
@@ -242,38 +653,67 @@ def _tools_spec(
                 },
                 ["collection", "identifier"],
             ),
-            fn(
-                "create_payload_draft",
-                "Create a new Payload draft. Ask for missing required business facts instead of inventing them.",
-                {"collection": collection, "data": data},
-                ["collection", "data"],
-            ),
-            fn(
-                "update_payload_draft",
-                "Update only the requested fields on an existing Payload draft. Read the document first and pass its exact expectedHash. Never publish as part of this tool.",
-                {"collection": collection, "id": {"type": "string"}, "expected_hash": {"type": "string"}, "data": data},
-                ["collection", "id", "expected_hash", "data"],
-            ),
-             fn(
-                 "read_payload_global",
-                  "Read one shared Payload global. Use this before changing navigation or site-wide settings.",
-                 {
-                      "global": payload_global,
-                     "draft": {"type": "boolean"},
-                 },
-                 ["global"],
-             ),
-             fn(
-                 "update_payload_global",
-                  "Update selected fields on a shared Payload global draft. Read it first and pass its exact expectedHash. Never publish as part of this tool.",
-                 {
-                      "global": payload_global,
-                     "expected_hash": {"type": "string"},
-                     "data": {"type": "object", "additionalProperties": True},
-                 },
-                 ["global", "expected_hash", "data"],
-             ),
          ])
+        create_variants = []
+        update_variants = []
+        for name in collection_names:
+            fields = authoring["collections"][name]
+            create_variants.append({
+                "type": "object",
+                "properties": {
+                    "collection": {"const": name},
+                    "data": _authoring_record_schema(fields, nested=False, create=True),
+                },
+                "required": ["collection", "data"],
+                "additionalProperties": False,
+            })
+            update_variants.append({
+                "type": "object",
+                "properties": {
+                    "collection": {"const": name},
+                    "id": {"type": "string", "minLength": 1},
+                    "expected_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+                    "data": _authoring_record_schema(fields, nested=False),
+                },
+                "required": ["collection", "id", "expected_hash", "data"],
+                "additionalProperties": False,
+            })
+        if create_variants:
+            tools.append(raw_fn(
+                "create_payload_draft",
+                "Create a schema-valid Payload draft. Required fields follow the selected document type; never invent business facts.",
+                {"oneOf": create_variants},
+            ))
+        if update_variants:
+            tools.append(raw_fn(
+                "update_payload_draft",
+                "Update only requested fields on an existing Payload draft. Read the document first and pass its exact expectedHash. Never publish as part of this tool.",
+                {"oneOf": update_variants},
+            ))
+        tools.append(fn(
+            "read_payload_global",
+            "Read one shared Payload global. Use this before changing navigation, footer, or site-wide settings.",
+            {"global": payload_global, "draft": {"type": "boolean"}},
+            ["global"],
+        ))
+        global_update_variants = []
+        for name in global_names:
+            global_update_variants.append({
+                "type": "object",
+                "properties": {
+                    "global": {"const": name},
+                    "expected_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+                    "data": _authoring_record_schema(authoring["globals"][name], nested=False),
+                },
+                "required": ["global", "expected_hash", "data"],
+                "additionalProperties": False,
+            })
+        if global_update_variants:
+            tools.append(raw_fn(
+                "update_payload_global",
+                "Update selected fields on a shared Payload global draft. Read it first and pass its exact expectedHash. Never publish as part of this tool.",
+                {"oneOf": global_update_variants},
+            ))
     if use_existing_builder:
         tools.append(fn(
             "spawn_build",
@@ -316,6 +756,8 @@ SYSTEM_NOTE_TOOLS = (
 
 def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args: dict[str, Any], say) -> str:
     memory = context["memory"]
+    context.pop("_last_action_succeeded", None)
+    context.pop("_last_payload_effect", None)
     phrase = {
         "read_file": lambda: f"reading {args.get('path', '')}",
         "list_files": lambda: "listing repository files",
@@ -423,6 +865,16 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
         if service is None:
             return "Approved business knowledge is not available."
         return json.dumps(service.search(str(args.get("query") or ""), int(args.get("limit", 8))))
+    if name == "plan_website_change":
+        if context.get("_website_change_plan") is not None:
+            return "REFUSED: this request already has a validated plan; do not replace it after effects begin."
+        try:
+            plan = _validate_website_change_plan(args, context.get("_authoring_contract"))
+        except (TypeError, ValueError) as exc:
+            return f"REFUSED: the website change plan is invalid: {exc}"
+        context["_website_change_plan"] = plan
+        context["_last_action_succeeded"] = True
+        return "Validated website change plan: " + json.dumps(plan, ensure_ascii=False)
     if name in {
         "read_payload_content", "create_payload_draft", "update_payload_draft",
         "read_payload_global", "update_payload_global",
@@ -431,33 +883,43 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
         if payload is None:
             return "Payload content editing is not configured on this site-agent instance."
         try:
-            locale = context.get("_workspace_language") or None
+            locale = _payload_locale(payload, context)
+            context["_resolved_payload_locale"] = locale
             if name == "read_payload_content":
                 read_kwargs = {
                     "identifier": str(args.get("identifier") or ""),
                     "identifier_kind": str(args.get("identifier_kind") or "sourceId"),
                     "draft": bool(args.get("draft", True)),
                 }
-                if locale:
-                    read_kwargs["locale"] = locale
+                read_kwargs["locale"] = locale
                 document = payload.read(
                     str(args.get("collection") or ""),
                     **read_kwargs,
                 )
+                if isinstance(document, dict):
+                    reads = context.setdefault("_payload_read_documents", {})
+                    for key in ("id", "sourceId", "slug"):
+                        value = str(document.get(key) or "").strip()
+                        if value:
+                            reads[(str(args.get("collection") or ""), value)] = document
                 return _payload_result(document, action="read")
             if name == "read_payload_global":
                 read_kwargs = {"draft": bool(args.get("draft", True))}
-                if locale:
-                    read_kwargs["locale"] = locale
+                read_kwargs["locale"] = locale
                 document = payload.read_global(str(args.get("global") or ""), **read_kwargs)
+                if isinstance(document, dict):
+                    context.setdefault("_payload_read_globals", {})[str(args.get("global") or "")] = document
                 return _payload_result(document, action="read")
             if name == "create_payload_draft":
-                write_kwargs = {"locale": locale} if locale else {}
+                effect = _plan_effect_for_tool(context, name, args)
+                write_kwargs = {"locale": locale}
                 document = payload.create(str(args.get("collection") or ""), args.get("data") or {}, **write_kwargs)
+                _record_payload_effect(context, effect, document)
                 context["_last_action_succeeded"] = True
                 return f"Payload draft created: {_payload_result(document, action='write')}"
             if name == "update_payload_draft":
-                write_kwargs = {"locale": locale} if locale else {}
+                effect = _plan_effect_for_tool(context, name, args)
+                write_kwargs = {"locale": locale}
                 document = payload.update(
                     str(args.get("collection") or ""),
                     str(args.get("id") or ""),
@@ -465,14 +927,17 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
                     expected_hash=str(args.get("expected_hash") or ""),
                     **write_kwargs,
                 )
+                _record_payload_effect(context, effect, document)
                 context["_last_action_succeeded"] = True
                 return f"Payload draft updated: {_payload_result(document, action='write')}"
             if name == "update_payload_global":
-                write_kwargs = {"locale": locale} if locale else {}
+                effect = _plan_effect_for_tool(context, name, args)
+                write_kwargs = {"locale": locale}
                 document = payload.update_global(
                     str(args.get("global") or ""), args.get("data") or {},
                     expected_hash=str(args.get("expected_hash") or ""), **write_kwargs,
                 )
+                _record_payload_effect(context, effect, document)
                 context["_last_action_succeeded"] = True
                 return f"Payload global draft updated: {_payload_result(document, action='write')}"
             return "REFUSED: unknown Payload action."
@@ -483,10 +948,23 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
         brief = str(args.get("brief", "")).strip()
         if not brief:
             return "REFUSED: spawn_build needs a non-empty brief."
+        plan = context.get("_website_change_plan")
+        if not isinstance(plan, dict) or plan.get("response_only") or not str(plan.get("source_brief") or "").strip():
+            return "REFUSED: source work requires a validated presentation brief in the website change plan."
+        if not _payload_plan_complete(context):
+            return "REFUSED: complete every planned Payload draft and verify its receipt before starting source work."
         if not runner.builder_available(context["config"]):
             return "Builder agent is not enabled on this instance."
+        payload_receipts = context.get("_completed_payload_effects") or []
+        authoritative_brief = str(plan["source_brief"]).strip()
+        execution_context = ""
+        if payload_receipts:
+            execution_context = (
+                "\n\nExact Payload drafts saved before this source task (these are the content authority; do not copy their values into source):\n"
+                + json.dumps(payload_receipts, ensure_ascii=False, sort_keys=True)
+            )
         try:
-            outcome = runner.stage_build(context, brief, say)
+            outcome = runner.stage_build(context, authoritative_brief + execution_context, say)
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(f"Builder failed: {exc}") from exc
         context["_last_merge_draft_id"] = outcome.get("merge_draft_id")
@@ -560,6 +1038,7 @@ def _max_work_steps(context: dict[str, Any], default: int = 8) -> int:
 
 
 SIDE_EFFECTS = {
+    "plan_website_change",
     "spawn_build",
     "create_payload_draft",
     "update_payload_draft",
@@ -573,6 +1052,19 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
     history = history or []
     say = progress or (lambda text: None)
     llm = context["llm"]
+    authoring_contract = None
+    payload = _payload_gateway(context)
+    if payload is not None:
+        try:
+            authoring_contract = payload.require_authoring_contract()
+            context["_authoring_contract"] = authoring_contract
+            context.pop("_authoring_contract_error", None)
+        except Exception as exc:  # schema identity/readiness failures must never trigger an alternate content path
+            context.pop("_authoring_contract", None)
+            context["_authoring_contract_error"] = str(exc)[:400]
+    else:
+        context.pop("_authoring_contract", None)
+        context.pop("_authoring_contract_error", None)
     patterns = ", ".join(_writable_patterns(context))
     inner = inner_life_context(context["memory"])
     system = (
@@ -625,6 +1117,26 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
             "global edits remain drafts and must never be published by Ada. "
             "Broad visual requests belong on the typed design workflow instead of Payload content tools."
         )
+        if authoring_contract is not None:
+            system += (
+                "\n\nVerified Payload contract for this tenant (the host enforces the exact schema):\n"
+                + json.dumps({key: authoring_contract.get(key) for key in (
+                    "contract", "coreVersion", "schemaRevision", "schemaIdentity", "authoringContractHash",
+                    "enabled", "locales", "defaultLocale",
+                )}, ensure_ascii=False)
+            )
+        else:
+            system += (
+                "\n\nThe canonical Payload contract could not be verified. Do not write business text, links, imagery, "
+                "SEO, navigation or footer content into source code. Explain that content work is blocked until the "
+                "shared Payload contract is available; do not try another endpoint or use a local/static copy."
+            )
+    system += (
+        "\n\nMutation protocol: before any Payload or source change, call plan_website_change exactly once. "
+        "Declare every requested Payload target and exact top-level field, plus any source presentation brief. "
+        "Read the exact Payload document/global and revision before updating it. The host refuses unplanned fields, "
+        "targets, and source work before required Payload drafts are saved. A response_only plan is for read-only answers."
+    )
     try:
         from .prompts import memory_context
         mem = memory_context(context["memory"], max_observations=20)
@@ -637,6 +1149,8 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
     workspace_language = _workspace_language(message)
     if workspace_language:
         context["_workspace_language"] = workspace_language
+    else:
+        context.pop("_workspace_language", None)
     context.pop("_last_proposal_id", None)
     context.pop("_last_merge_draft_id", None)
     context.pop("_last_preview", None)
@@ -645,6 +1159,12 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
     context.pop("_last_action_succeeded", None)
     context.pop("_design_request", None)
     context.pop("_read_cache", None)
+    context.pop("_website_change_plan", None)
+    context.pop("_completed_payload_effects", None)
+    context.pop("_resolved_payload_locale", None)
+    context.pop("_payload_read_documents", None)
+    context.pop("_payload_read_globals", None)
+    context.pop("_source_build_completed", None)
     if source_message_id is not None:
         context["_source_message_id"] = source_message_id
 
@@ -654,6 +1174,7 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
         tool_spec = _tools_spec(
             context,
             design_intent=design_intent,
+            authoring_contract=authoring_contract,
         )
         offered_tools = {
             str(item.get("function", {}).get("name") or "")
@@ -678,6 +1199,25 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
             reply = (resp.get("content") or "").strip()
             if not reply:
                 raise RuntimeError("Connection issue, try again.")
+            plan = context.get("_website_change_plan")
+            if isinstance(plan, dict) and not plan.get("response_only"):
+                unfinished = [
+                    effect for effect in plan.get("content_effects", [])
+                    if not set(effect.get("fields") or []).issubset(set(effect.get("completed_fields") or []))
+                ]
+                source_pending = bool(str(plan.get("source_brief") or "").strip()) and not context.get("_source_build_completed")
+                if unfinished or source_pending:
+                    pending = []
+                    if unfinished:
+                        pending.append(f"{len(unfinished)} planned Payload effect(s) are incomplete")
+                    if source_pending:
+                        pending.append("the planned source build has not been staged")
+                    convo.append({
+                        "role": "system",
+                        "content": "Do not give a completion response yet: " + "; ".join(pending)
+                        + ". Continue only with the exact remaining effects in the validated plan. If blocked, explain the concrete blocker and do not claim completion.",
+                    })
+                    continue
             return {
                 "reply": _owner_safe_reply(reply),
                 "proposal_id": context.get("_last_proposal_id"),
@@ -716,7 +1256,8 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
                     "changed": context.get("_last_changed"),
                     "design_request": context["_design_request"],
                 }
-            if name in SIDE_EFFECTS and context.get("_last_action_succeeded"):
+            if name == "spawn_build" and context.get("_last_action_succeeded"):
+                context["_source_build_completed"] = True
                 return {
                     "reply": _owner_safe_reply(result),
                     "proposal_id": context.get("_last_proposal_id"),

@@ -30,6 +30,21 @@ class Payload:
     def require_growth_contract(self):
         return {"version": 1}
 
+    def require_authoring_contract(self):
+        return {
+            "version": 1,
+            "enabled": {"collections": ["pages"], "globals": []},
+            "authoring": {
+                "collections": {"pages": [{"name": field} for field in self.contract.collection_fields["pages"]]},
+                "globals": {},
+            },
+        }
+
+    def authoring_fields(self, kind, slug, *, authoring_contract=None):
+        if kind == "collection" and slug == "pages":
+            return tuple(self.contract.collection_fields["pages"])
+        raise AssertionError((kind, slug))
+
     def validate_growth_candidate(self, package, package_hash):
         return {"status": "passed", "packageHash": package_hash, "checks": {
             "canonicalSchema": True, "exactDraft": True, "private": True,

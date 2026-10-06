@@ -31,7 +31,8 @@ def prepare_payload_candidate(context: Mapping[str, Any], initiative: Mapping[st
     entry = next((row for row in inventory if row["collection"] == collection and str(row["document"]["id"]) == document_id), None)
     if entry is None:
         raise ValueError("Ada selected a document outside the canonical inventory")
-    fields = payload.contract.collection_fields[collection]
+    authoring_contract = payload.require_authoring_contract()
+    fields = payload.authoring_fields("collection", collection, authoring_contract=authoring_contract)
     editable = sorted(set(fields) - {"id", "sourceId", "slug", "published", "publishedAt", "modifiedAt", "canonicalUrl", "_status"})
     live = payload.read(collection, identifier=document_id, identifier_kind="id", draft=False)
     draft = payload.read(collection, identifier=document_id, identifier_kind="id", draft=True)

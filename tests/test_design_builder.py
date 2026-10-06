@@ -14,6 +14,120 @@ from site_agent.hands.site_build import NEXT_REACT_PROFILE, SiteBuildResult
 from tests.test_design_contracts import _experience_plan
 
 
+def _payload_first_request(contact_destination=None):
+    conversion = {"primary_action": "Start a conversation", "not_available": True}
+    if contact_destination:
+        conversion = {"primary_action": "Start a conversation", "contact_destination": contact_destination}
+    return PageBuildRequest.from_dict({
+        "schema_version": 1,
+        "run_id": "payload-first-home",
+        "mode": "initial_homepage",
+        "base_sha": "a" * 40,
+        "page_path": "index.html",
+        "purpose": "Create the homepage.",
+        "acceptance_criteria": ["Use confirmed business facts."],
+        "content": {
+            "site_intake": {
+                "schema_version": 1,
+                "business": {
+                    "name": "North Star Studio",
+                    "offer_summary": "Brand strategy for independent businesses.",
+                    "primary_services": ["Brand strategy"],
+                },
+                "audience": {"primary": "Independent business owners"},
+                "conversion": conversion,
+                "brand": {"voice": "Clear, thoughtful, and warm."},
+                "site": {"required_pages": ["home"]},
+            },
+        },
+    })
+
+
+def test_payload_first_homepage_data_is_editable_and_never_invents_a_contact_destination():
+    copy_deck = {
+        "eyebrow": "Independent by design",
+        "headline": "Make your next move clearer.",
+        "body": "Brand strategy for independent businesses.",
+        "primary_action": "Start a conversation",
+        "supporting_copy": ["Built around the business you are growing."],
+        "meta_description": "A thoughtful brand strategy partner for independent businesses.",
+    }
+
+    linked = runner._initial_homepage_payload_data(
+        _payload_first_request("mailto:hello@example.com"),
+        SimpleNamespace(copy_deck=copy_deck),
+        featured_media_id=17,
+    )
+    entries = linked["sections"][0]["entries"]
+    assert linked["title"] == "North Star Studio"
+    assert linked["slug"] == "home"
+    assert linked["featuredImage"] == 17
+    assert linked["seo"]["description"] == copy_deck["meta_description"]
+    assert entries[1]["text"] == copy_deck["headline"]
+    assert entries[2]["text"] == copy_deck["body"]
+    assert entries[3]["href"] == "mailto:hello@example.com"
+    assert entries[3]["key"] == "home.hero.primary-action"
+
+    no_destination = runner._initial_homepage_payload_data(
+        _payload_first_request(), SimpleNamespace(copy_deck=copy_deck)
+    )
+    action = no_destination["sections"][0]["entries"][3]
+    assert action["blockType"] == "helloAdaParagraph"
+    assert action["text"] == copy_deck["primary_action"]
+    assert "href" not in action
+
+
+def test_payload_first_stage_persists_and_binds_the_exact_default_locale_revision():
+    class Payload:
+        document = None
+
+        def require_authoring_contract(self):
+            return {
+                "enabled": {"collections": ["pages"]},
+                "locales": ["es-MX", "en"],
+                "defaultLocale": "es-MX",
+                "schemaIdentity": "schema-identity",
+                "authoringContractHash": "authoring-hash",
+            }
+
+        def read_media(self, identifier, *, identifier_kind, draft):
+            raise AssertionError("there is no selected tenant media asset in this test")
+
+        def create(self, collection, data, *, locale):
+            assert collection == "pages" and locale == "es-MX"
+            self.document = {"id": 41, "slug": "home", "sourceId": "pages:home", **data,
+                             "_helloadaRevision": "sha256:" + "1" * 64}
+            return dict(self.document)
+
+        def read(self, collection, *, identifier, identifier_kind, draft, locale):
+            assert (collection, identifier, identifier_kind, draft, locale) == ("pages", "41", "id", True, "es-MX")
+            return dict(self.document)
+
+    request = _payload_first_request()
+    staged = runner._stage_initial_homepage_payload(
+        {"payload_gateway": Payload()},
+        request,
+        SimpleNamespace(
+            copy_deck={
+                "headline": "A clear promise.",
+                "body": "An owner-confirmed service.",
+                "primary_action": "Learn more",
+            },
+            asset_composition_plan=(),
+            asset_evidence=(),
+        ),
+    )
+
+    receipt = staged.content["payload_draft_receipts"][0]
+    assert receipt["document_id"] == "41"
+    assert receipt["revision"] == "sha256:" + "1" * 64
+    assert receipt["locale"] == "es-MX"
+    assert receipt["content_keys"] == [
+        "home.hero.heading", "home.hero.introduction", "home.hero.primary-action",
+    ]
+    assert "payload_draft_receipts" not in request.content
+
+
 def _build_target(value):
     value.setdefault("build_profile", NEXT_REACT_PROFILE.name)
     value["allowed_paths"] = list(NEXT_REACT_PROFILE.writable_patterns)

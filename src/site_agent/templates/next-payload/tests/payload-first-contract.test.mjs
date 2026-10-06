@@ -12,7 +12,7 @@ const sourceTree = (relativePath) => {
     const fullPath = path.join(directory, entry.name)
     return entry.isDirectory() ? collect(fullPath) : /\.(?:ts|tsx|js|mjs)$/.test(entry.name) ? readFileSync(fullPath, 'utf8') : []
   })
-  return collect(root.pathname).join('\n')
+  return collect(fileURLToPath(root)).join('\n')
 }
 const manifest = JSON.parse(read('template-manifest.json'))
 const contract = JSON.parse(read('helloada-content-contract.json'))
@@ -27,6 +27,14 @@ test('template pins the exact shared schema and admin releases it advertises', (
   assert.match(packageJson.dependencies['@weareheadless/helloada-payload-core'], new RegExp(`helloada-payload-core-v${manifest.payloadCore}`))
   assert.equal(lock.packages[''].dependencies['@weareheadless/helloada-payload-admin'], packageJson.dependencies['@weareheadless/helloada-payload-admin'])
   assert.equal(lock.packages[''].dependencies['@weareheadless/helloada-payload-core'], packageJson.dependencies['@weareheadless/helloada-payload-core'])
+  const runtime = JSON.parse(read('wrangler.jsonc')).vars
+  assert.equal(runtime.HELLOADA_TEMPLATE_SCHEMA, String(manifest.templateSchema))
+  assert.equal(runtime.HELLOADA_PAYLOAD_ADMIN_VERSION, manifest.payloadAdmin)
+  assert.equal(runtime.HELLOADA_PAYLOAD_CORE_VERSION, manifest.payloadCore)
+  assert.equal(runtime.HELLOADA_PAYLOAD_SCHEMA_REVISION, String(manifest.schemaRevision))
+  assert.equal(runtime.HELLOADA_CONTENT_CONTRACT_VERSION, manifest.contentContract)
+  assert.equal(runtime.HELLOADA_SCHEMA_IDENTITY, manifest.schemaIdentity)
+  assert.equal(runtime.HELLOADA_PAYLOAD_MIGRATION_HEAD, manifest.migrationHead)
 })
 
 test('public page and article routes read Payload and render Payload SEO metadata', () => {
@@ -55,6 +63,8 @@ test('Growth review renders an owner-bound exact Payload revision through Next, 
   const bridge = read('src/app/api/helloada/[...path]/route.ts')
   const preview = read('src/app/(frontend)/helloada-preview/[token]/page.tsx')
   const presentation = read('src/components/site/presentation/PagePresentation.tsx')
+  const claims = read('src/lib/helloada-preview.ts')
+  const chrome = read('src/components/SiteChrome.tsx')
   assert.doesNotMatch(bridge, /react-dom\/server|renderToStaticMarkup/)
   assert.match(bridge, /createHelloAdaPreviewToken/)
   assert.match(bridge, /fetch\(previewUrl/)
@@ -64,6 +74,12 @@ test('Growth review renders an owner-bound exact Payload revision through Next, 
   assert.match(preview, /verifyHelloAdaPreviewToken/)
   assert.match(preview, /claims\.ownerId/)
   assert.match(preview, /claims\.documentHash/)
+  assert.match(preview, /claims\.globals\.map/)
+  assert.match(preview, /hashJson\(withoutPayloadMetadata\(global\)\) !== claim\.hash/)
+  assert.match(preview, /locale: claims\.locale/)
+  assert.match(claims, /globals: Array<\{ slug: 'siteSettings' \| 'navigation'; hash: string \}>/)
+  assert.match(claims, /claims\.globals\.length === 2/)
+  assert.match(chrome, /navigation: candidateNavigation/)
   assert.match(preview, /expectedPublicRoute\(claims\.collection, document\) !== claims\.route/)
   assert.match(presentation, /data-helloada-document-id/)
   assert.match(presentation, /data-helloada-updated-at/)

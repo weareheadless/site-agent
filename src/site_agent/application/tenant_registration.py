@@ -1,9 +1,9 @@
 """Server-only, local registration of a HelloAda website tenant.
 
-Registering a website in HelloAda creates a real site-agent tenant on the local
-filesystem: a tenant config, a dedicated memory database, a runtime API token,
-and a durable entry in the sole tenant registry. The shared API reloads every
-tenant from this registry after restart; host config does not declare tenants.
+Registering a website in HelloAda creates its tenant identity on the local
+filesystem: a tenant config, dedicated memory database, runtime API token and
+a pending entry in the sole tenant registry. The shared API mounts that tenant
+only after bootstrap verifies its canonical Payload Worker.
 
 This module intentionally stops before provider mutations. The companion
 ``application.bootstrap`` saga owns the separately retryable GitHub/Cloudflare/
@@ -12,6 +12,7 @@ Payload bootstrap after this local identity and token boundary exists.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
@@ -23,9 +24,7 @@ from typing import Any
 
 import yaml
 
-from ..config import deep_merge
 from ..core.memory import SCHEMA_VERSION, Memory
-from ..hands.design_experiment import DesignExperimentError, initialize_neutral_repository
 
 _SAFE_ID = re.compile(r"^[a-z][a-z0-9-]{1,62}$")
 _SAFE_ENV = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -74,21 +73,18 @@ def load_provisioned_tenants(
     ``{"config_path": ..., "api_token_env": ...}`` and extra_env carries each
     tenant's api token read from its 0600 env file.
     """
-    try:
-        root = provisioned_root(config)
-    except TenantRegistrationError:
-        return {}, {}
+    root = provisioned_root(config)
     index_path = root / _TENANTS_FILE
     if not index_path.is_file():
         return {}, {}
     try:
         raw = json.loads(index_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, UnicodeError):
-        return {}, {}
+    except (OSError, ValueError, UnicodeError) as exc:
+        raise TenantRegistrationError("tenant registry is unreadable") from exc
     declared: dict[str, Any] = {}
     extra_env: dict[str, str] = {}
     if not isinstance(raw, Mapping):
-        return {}, {}
+        raise TenantRegistrationError("tenant registry must be an object")
     configured_section = config.get("workspace_api") or {}
     configured_tenants = configured_section.get("tenants") if isinstance(configured_section, Mapping) else {}
     configured_ids = {
@@ -98,13 +94,14 @@ def load_provisioned_tenants(
     for tenant_id, entry in raw.items():
         tenant_id = str(tenant_id or "").strip().lower()
         if not _SAFE_ID.fullmatch(tenant_id) or not isinstance(entry, Mapping):
-            continue
+            raise TenantRegistrationError("tenant registry contains an invalid entry")
         if tenant_id in configured_ids:
             # A host-declared tenant owns its id; a persisted website must not
             # silently shadow it during a restart.
-            continue
+            raise TenantRegistrationError(f"tenant {tenant_id} registration paths are invalid")
         config_path = Path(str(entry.get("config_path") or "")).expanduser().resolve()
         token_env = str(entry.get("api_token_env") or tenant_token_env(tenant_id)).strip()
+        bootstrap_state = str(entry.get("bootstrap_state") or "ready").strip()
         tenant_dir = (root / tenant_id).resolve()
         env_path = tenant_dir / "tenant.env"
         if (
@@ -114,16 +111,23 @@ def load_provisioned_tenants(
             or tenant_dir != config_path.parent
             or not _SAFE_ENV.fullmatch(token_env)
         ):
+            raise TenantRegistrationError(f"tenant {tenant_id} registration paths are invalid")
+        if bootstrap_state not in {"pending", "ready"}:
+            raise TenantRegistrationError(
+                f"tenant {tenant_id} has an unsupported bootstrap state"
+            )
+        if bootstrap_state == "pending":
             continue
         token = _read_token_env(env_path, token_env)
-        if token:
-            extra_env[token_env] = token
+        if not token:
+            raise TenantRegistrationError(f"tenant {tenant_id} runtime token is missing")
+        extra_env[token_env] = token
         declared[tenant_id] = {"config_path": str(config_path), "api_token_env": token_env}
     return declared, extra_env
 
 
 class TenantRegistrationService:
-    """Provision one tenant workspace directory and register it in the API."""
+    """Persist a tenant identity before its canonical Payload runtime exists."""
 
     def __init__(
         self,
@@ -151,6 +155,15 @@ class TenantRegistrationService:
         if tenant_dir == expected_root or expected_root not in tenant_dir.parents:
             raise TenantRegistrationError("tenant directory escapes the provisioned root")
         return tenant_dir
+
+    def _registry_lock(self) -> int:
+        """Serialize registration and registry changes across API processes."""
+        self.root.mkdir(parents=True, exist_ok=True)
+        try:
+            self.root.chmod(0o700)
+        except OSError:
+            pass
+        return os.open(self.root / ".registration.lock", os.O_CREAT | os.O_RDWR, 0o600)
 
     @staticmethod
     def _write_config(path: Path, config: Mapping[str, Any]) -> bool:
@@ -181,61 +194,26 @@ class TenantRegistrationService:
             raise TenantRegistrationError("tenant config could not be created") from exc
 
     @staticmethod
-    def _ensure_existing_neutral_scaffold(path: Path) -> bool:
-        """Upgrade an older local registration before returning its idempotent receipt."""
-        try:
-            raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        except (OSError, yaml.YAMLError) as exc:
-            raise TenantRegistrationError("existing tenant config is unreadable") from exc
-        if not isinstance(raw, Mapping):
-            raise TenantRegistrationError("existing tenant config must be an object")
-        site = raw.get("site") if isinstance(raw.get("site"), Mapping) else {}
-        if (
-            str(site.get("adapter") or "").strip() != "neutral_scaffold"
-            or bool(site.get("website_present"))
-            or str(site.get("clone_path") or "").strip()
-        ):
-            return False
-
-        site_dir = path.parent / "site"
-        try:
-            _, baseline_sha = initialize_neutral_repository(site_dir)
-        except (DesignExperimentError, OSError) as exc:
-            raise TenantRegistrationError(
-                f"tenant source scaffold could not be created: {str(exc)[:300]}"
-            ) from exc
-
-        upgraded = dict(raw)
-        upgraded["site"] = {
-            **dict(site),
-            **_neutral_site_overrides(site_dir, baseline_sha),
-            "website_present": False,
-        }
-        upgraded["design_engine"] = deep_merge(
-            dict(raw.get("design_engine") or {})
-            if isinstance(raw.get("design_engine"), Mapping)
-            else {},
-            _neutral_design_overrides(),
-        )
-        upgraded["builder"] = deep_merge(
-            dict(raw.get("builder") or {})
-            if isinstance(raw.get("builder"), Mapping)
-            else {},
-            _neutral_builder_overrides(),
-        )
-        TenantRegistrationService._replace_config(path, upgraded)
-        return True
-
-    @staticmethod
-    def _record_index(root: Path, tenant_id: str, config_path: Path, token_env: str) -> None:
+    def _record_index(
+        root: Path,
+        tenant_id: str,
+        config_path: Path,
+        token_env: str,
+        *,
+        bootstrap_state: str,
+    ) -> None:
         index_path = root / _TENANTS_FILE
         try:
             raw = json.loads(index_path.read_text(encoding="utf-8")) if index_path.exists() else {}
-        except (OSError, ValueError, UnicodeError):
-            raw = {}
+        except (OSError, ValueError, UnicodeError) as exc:
+            raise TenantRegistrationError("tenant registry is unreadable") from exc
         if not isinstance(raw, dict):
-            raw = {}
-        raw[tenant_id] = {"config_path": str(config_path), "api_token_env": token_env}
+            raise TenantRegistrationError("tenant registry must be an object")
+        raw[tenant_id] = {
+            "config_path": str(config_path),
+            "api_token_env": token_env,
+            "bootstrap_state": bootstrap_state,
+        }
         temporary = index_path.with_name(f"{index_path.name}.{secrets.token_hex(8)}.tmp")
         temporary.write_text(
             json.dumps(raw, indent=2, sort_keys=True) + "\n",
@@ -243,6 +221,21 @@ class TenantRegistrationService:
         )
         os.chmod(temporary, 0o600)
         temporary.replace(index_path)
+
+    def _validate_index(self) -> None:
+        """Fail before creating tenant files when the central index is corrupt."""
+        index_path = self.root / _TENANTS_FILE
+        if not index_path.is_file():
+            return
+        try:
+            raw = json.loads(index_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, UnicodeError) as exc:
+            raise TenantRegistrationError("tenant registry is unreadable") from exc
+        if not isinstance(raw, Mapping):
+            raise TenantRegistrationError("tenant registry must be an object")
+        for tenant_id, entry in raw.items():
+            if not _SAFE_ID.fullmatch(str(tenant_id)) or not isinstance(entry, Mapping):
+                raise TenantRegistrationError("tenant registry contains an invalid entry")
 
     @staticmethod
     def _write_token_env(tenant_dir: Path, token_env: str, token: str) -> None:
@@ -256,6 +249,45 @@ class TenantRegistrationService:
         os.chmod(temporary, 0o600)
         temporary.replace(path)
 
+    def mark_runtime_configured(self, tenant_id: str) -> None:
+        """Make a fully configured Payload tenant eligible for API startup."""
+        with self._lock:
+            descriptor = self._registry_lock()
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+                normalized = str(tenant_id or "").strip().lower()
+                if not _SAFE_ID.fullmatch(normalized):
+                    raise TenantRegistrationError("website id must be a lowercase slug")
+                config_path = self._tenant_dir(normalized) / "config.yaml"
+                token_env = tenant_token_env(normalized)
+                if not config_path.is_file() or not _read_token_env(config_path.parent / "tenant.env", token_env):
+                    raise TenantRegistrationError("configured tenant identity or token is missing")
+                try:
+                    raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+                except (OSError, yaml.YAMLError) as exc:
+                    raise TenantRegistrationError("configured tenant config is unreadable") from exc
+                if not isinstance(raw, Mapping) or raw.get("instance_name") != normalized:
+                    raise TenantRegistrationError("configured tenant identity does not match its registry entry")
+                site = raw.get("site") if isinstance(raw, Mapping) and isinstance(raw.get("site"), Mapping) else {}
+                payload = site.get("payload") if isinstance(site.get("payload"), Mapping) else {}
+                if site.get("adapter") != "payload_gateway" or payload.get("enabled") is not True:
+                    raise TenantRegistrationError("tenant Payload runtime is not configured")
+                state = self._indexed_bootstrap_state(normalized)
+                if state == "ready":
+                    return
+                if state not in {"", "pending"}:
+                    raise TenantRegistrationError("tenant has an unsupported bootstrap state")
+                self._record_index(
+                    self.root,
+                    normalized,
+                    config_path,
+                    token_env,
+                    bootstrap_state="ready",
+                )
+            finally:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+                os.close(descriptor)
+
     # -- the provisioning call -------------------------------------------
 
     def register(
@@ -266,7 +298,13 @@ class TenantRegistrationService:
         env: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
         with self._lock:
-            return self._register(tenant_id, display_name=display_name, env=env)
+            descriptor = self._registry_lock()
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+                return self._register(tenant_id, display_name=display_name, env=env)
+            finally:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+                os.close(descriptor)
 
     def _register(
         self,
@@ -275,6 +313,7 @@ class TenantRegistrationService:
         display_name: str = "",
         env: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
+        self._validate_index()
         normalized = str(tenant_id or "").strip().lower()
         if not _SAFE_ID.fullmatch(normalized):
             raise TenantRegistrationError("website id must be a lowercase slug")
@@ -283,43 +322,59 @@ class TenantRegistrationService:
             indexed_config_path = self._indexed_config_path(normalized)
             if not indexed_config_path:
                 raise TenantRegistrationError("website id is already reserved")
-            # Older registrations created only the config/database. Upgrade
-            # those local no-site tenants before returning the idempotent
-            # receipt; the API process is restarted by the host after a config
-            # migration so the new runtime graph is loaded.
-            scaffold_upgraded = self._ensure_existing_neutral_scaffold(Path(indexed_config_path))
-            # Idempotent: the tenant is already registered in this process.
             receipt = self._receipt(
                 normalized,
                 str(existing.config.get("data_dir") or ""),
                 config_path=indexed_config_path,
                 created=False,
             )
-            if scaffold_upgraded:
-                receipt["scaffold_upgraded"] = True
             return receipt
 
         tenant_dir = self._tenant_dir(normalized)
-        tenant_dir.mkdir(parents=True, exist_ok=True)
+        config_path = tenant_dir / "config.yaml"
+        if config_path.exists():
+            try:
+                raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            except (OSError, yaml.YAMLError) as exc:
+                raise TenantRegistrationError("existing tenant config is unreadable") from exc
+            if not isinstance(raw, Mapping) or raw.get("instance_name") != normalized:
+                raise TenantRegistrationError("existing tenant config belongs to another tenant")
+            data_dir = str(raw.get("data_dir") or "")
+            token_env = tenant_token_env(normalized)
+            token = _read_token_env(tenant_dir / "tenant.env", token_env)
+            if not data_dir or not token:
+                raise TenantRegistrationError("existing tenant registration is incomplete")
+            state = self._indexed_bootstrap_state(normalized)
+            if state == "ready":
+                raise TenantRegistrationError("configured tenant runtime is missing from the registry")
+            if state not in {"", "pending"}:
+                raise TenantRegistrationError("existing tenant has an unsupported bootstrap state")
+            if not state:
+                self._record_index(
+                    self.root,
+                    normalized,
+                    config_path,
+                    token_env,
+                    bootstrap_state="pending",
+                )
+            return self._receipt(
+                normalized,
+                data_dir,
+                config_path=config_path,
+                created=False,
+            )
+
+        tenant_dir.mkdir(parents=True, exist_ok=False)
         try:
             tenant_dir.chmod(0o700)
         except OSError:
             pass
         config_path = tenant_dir / "config.yaml"
         data_dir = tenant_dir / "data"
-        site_dir = tenant_dir / "site"
         data_dir.mkdir(parents=True, exist_ok=True)
-
-        try:
-            _, baseline_sha = initialize_neutral_repository(site_dir)
-        except (DesignExperimentError, OSError) as exc:
-            raise TenantRegistrationError(
-                f"tenant source scaffold could not be created: {str(exc)[:300]}"
-            ) from exc
-
         created = self._write_config(
             config_path,
-            _new_site_config(normalized, data_dir, display_name, site_dir, baseline_sha),
+            _new_site_config(normalized, data_dir, display_name, tenant_dir / "site"),
         )
         memory = Memory(data_dir / "memory.db")
         try:
@@ -330,25 +385,13 @@ class TenantRegistrationService:
         token = secrets.token_urlsafe(32)
         token_env = tenant_token_env(normalized)
         self._write_token_env(tenant_dir, token_env, token)
-        self._record_index(self.root, normalized, config_path, token_env)
-
-        tenant_env = dict(self.env)
-        if env:
-            tenant_env.update(env)
-        try:
-            self.registry.register_tenant(
-                normalized,
-                str(config_path),
-                api_token=token,
-                api_token_env=token_env,
-                env=tenant_env,
-            )
-        except TenantRegistrationError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - keep provider/config details at this boundary
-            raise TenantRegistrationError(
-                f"tenant runtime could not be registered: {str(exc)[:300]}"
-            ) from exc
+        self._record_index(
+            self.root,
+            normalized,
+            config_path,
+            token_env,
+            bootstrap_state="pending",
+        )
         return self._receipt(
             normalized,
             str(data_dir),
@@ -363,12 +406,25 @@ class TenantRegistrationService:
             return ""
         try:
             raw = json.loads(index_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, UnicodeError):
-            return ""
+        except (OSError, ValueError, UnicodeError) as exc:
+            raise TenantRegistrationError("tenant registry is unreadable") from exc
+        if not isinstance(raw, Mapping):
+            raise TenantRegistrationError("tenant registry must be an object")
         entry = raw.get(tenant_id) if isinstance(raw, Mapping) else None
         if isinstance(entry, Mapping) and str(entry.get("config_path") or "").strip():
             return str(entry["config_path"])
         return ""
+
+    def _indexed_bootstrap_state(self, tenant_id: str) -> str:
+        index_path = self.root / _TENANTS_FILE
+        if not index_path.is_file():
+            return ""
+        try:
+            raw = json.loads(index_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, UnicodeError) as exc:
+            raise TenantRegistrationError("tenant registry is unreadable") from exc
+        entry = raw.get(tenant_id) if isinstance(raw, Mapping) else None
+        return str(entry.get("bootstrap_state") or "ready") if isinstance(entry, Mapping) else ""
 
     def _receipt(
         self,
@@ -385,7 +441,7 @@ class TenantRegistrationService:
             "data_dir": str(data_dir),
             "api_token_env": tenant_token_env(tenant_id),
             "schema_version": int(schema_version or SCHEMA_VERSION),
-            "status": "ready",
+            "status": "registered",
             "created": bool(created),
         }
 
@@ -395,7 +451,6 @@ def _new_site_config(
     data_dir: Path,
     display_name: str,
     site_dir: Path,
-    baseline_sha: str,
 ) -> dict[str, Any]:
     """Override block for a brand-new website tenant (merged with package defaults)."""
     return {
@@ -408,31 +463,22 @@ def _new_site_config(
             "research": {"enabled": False},
         },
         "site": {
-            **_neutral_site_overrides(site_dir, baseline_sha),
+            "adapter": "payload_gateway",
+            "repository": "",
+            "clone_path": str(site_dir),
+            "branch": "main",
+            "preview_branch": "",
+            "payload": {"enabled": False},
             "website_present": False,
         },
         "editorial": {"enabled": True},
-        "design_engine": _neutral_design_overrides(),
-        "builder": _neutral_builder_overrides(),
+        "design_engine": _new_design_overrides(),
+        "builder": _new_builder_overrides(),
         "publish_mode": "ask_first",
     }
 
 
-def _neutral_site_overrides(site_dir: Path, baseline_sha: str) -> dict[str, Any]:
-    from ..hands.site_build import NEXT_REACT_PROFILE
-
-    return {
-        "adapter": "neutral_scaffold",
-        "repository": "",
-        "clone_path": str(site_dir),
-        "platform_baseline_sha": baseline_sha,
-        "branch": "main",
-        "preview_branch": "",
-        "writable_patterns": list(NEXT_REACT_PROFILE.writable_patterns),
-    }
-
-
-def _neutral_design_overrides() -> dict[str, Any]:
+def _new_design_overrides() -> dict[str, Any]:
     return {
         "enabled": True,
         "build_profile": "next_react",
@@ -446,7 +492,7 @@ def _neutral_design_overrides() -> dict[str, Any]:
     }
 
 
-def _neutral_builder_overrides() -> dict[str, Any]:
+def _new_builder_overrides() -> dict[str, Any]:
     """Give creative direction enough completion budget for its typed handoff."""
     return {
         "enabled": True,

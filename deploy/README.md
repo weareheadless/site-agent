@@ -52,6 +52,43 @@ new dependency, first provision and validate that dependency in the service
 environment as an explicit dependency release; the API queue will not install
 packages ad hoc.
 
+## HelloAda project-selector release
+
+HelloAda's own Worker uses this same timer and dispatcher; it is not deployed
+from a developer checkout or a separate manual Wrangler command. After the
+HelloAda change is reviewed, merged to `weareheadless/helloada/main`, and its
+CI passes on the pinned Node/npm versions, queue one new ID and the exact
+40-character app commit in `deploy/desired-helloada-app-release.json`:
+
+```json
+{
+  "schema": 1,
+  "release": { "id": "20261006-helloada-app-1", "sha": "<full-40-character-main-SHA>" }
+}
+```
+
+The dispatcher verifies the app SHA is on the official `helloada/main`,
+archives that exact commit, installs only its lockfile, runs its tests, lint,
+typecheck, Next build and OpenNext Worker build with local bindings, then
+validates the exact Worker, API, D1, R2 and required-secret configuration. It
+uploads one immutable version with the exact `HELLOADA_RELEASE_SHA`, promotes
+only that version to 100%, and requires `https://helloada.app/api/health` to
+return that same SHA. If live verification fails, it restores the exact
+previous Worker version and records a terminal failed receipt. The receipt is
+`/SOCIAL/payload-releases/runs/helloada-app/<release-id>/receipt.json`.
+
+The handoff private key is read from the declared mode-`0600` file at
+`/SOCIAL/configs/helloada-app/secrets.json`; the release fails before upload if
+it is missing, malformed, or does not cryptographically match
+`HELLOADA_HANDOFF_PUBLIC_KEY` in the protected Site-Agent API environment file.
+It is injected only for the immutable Worker upload, never exposed to `npm
+ci`, tests, lint, typecheck or build. The HelloAda app release does not migrate
+Payload data or launch a customer website. A successful receipt means only
+that the project selector itself is live at the exact reviewed SHA.
+
+Failed or interrupted app release IDs are terminal. Fix the cause and queue a
+new unique ID; never edit a retained source snapshot or repurpose a receipt.
+
 ## Release command
 
 1. Review, test and push the customer source to its official GitHub `main`.

@@ -9,6 +9,7 @@ already happened.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -51,6 +52,7 @@ class BootstrapError(RuntimeError):
 _SAFE_COMPONENT = re.compile(r"^[a-z][a-z0-9-]{1,62}$")
 _SECRET_ENV = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _PRIVATE_RECEIPT_KEYS = frozenset({"site_dir", "config_path", "account_id", "ssh_url", "clone_url"})
+_HELLOADA_HANDOFF_ISSUER = "https://helloada.app"
 
 
 def _now() -> str:
@@ -66,6 +68,72 @@ def _component(value: str, label: str) -> str:
     if not _SAFE_COMPONENT.fullmatch(normalized):
         raise BootstrapError(f"{label} is invalid")
     return normalized
+
+
+def _der_value(data: bytes, offset: int, tag: int) -> tuple[bytes, int]:
+    """Read one canonical DER TLV; reject BER, truncation and trailing lengths."""
+    if offset >= len(data) or data[offset] != tag or offset + 1 >= len(data):
+        raise ValueError("DER tag is invalid")
+    first_length = data[offset + 1]
+    if first_length < 0x80:
+        length = first_length
+        value_offset = offset + 2
+    else:
+        count = first_length & 0x7F
+        if count == 0 or count > 4 or offset + 2 + count > len(data):
+            raise ValueError("DER length is invalid")
+        length_bytes = data[offset + 2:offset + 2 + count]
+        if length_bytes[0] == 0:
+            raise ValueError("DER length is not canonical")
+        length = int.from_bytes(length_bytes, "big")
+        if length < 0x80 or (count > 1 and length < 1 << (8 * (count - 1))):
+            raise ValueError("DER length is not canonical")
+        value_offset = offset + 2 + count
+    end = value_offset + length
+    if end > len(data):
+        raise ValueError("DER value is truncated")
+    return data[value_offset:end], end
+
+
+def _validate_rsa_spki(der: bytes) -> None:
+    """Validate a DER SubjectPublicKeyInfo containing a 2048–4096-bit RSA key."""
+    outer, outer_end = _der_value(der, 0, 0x30)
+    if outer_end != len(der):
+        raise ValueError("SPKI has trailing bytes")
+    algorithm, offset = _der_value(outer, 0, 0x30)
+    oid, algorithm_offset = _der_value(algorithm, 0, 0x06)
+    null, algorithm_end = _der_value(algorithm, algorithm_offset, 0x05)
+    if oid != bytes.fromhex("2a864886f70d010101") or null or algorithm_end != len(algorithm):
+        raise ValueError("SPKI algorithm is not rsaEncryption")
+    bit_string, offset = _der_value(outer, offset, 0x03)
+    if offset != len(outer) or not bit_string or bit_string[0] != 0:
+        raise ValueError("SPKI bit string is invalid")
+    rsa_key, rsa_end = _der_value(bit_string[1:], 0, 0x30)
+    if rsa_end != len(bit_string) - 1:
+        raise ValueError("RSA key has trailing bytes")
+    modulus, integer_offset = _der_value(rsa_key, 0, 0x02)
+    exponent, integer_end = _der_value(rsa_key, integer_offset, 0x02)
+    if integer_end != len(rsa_key):
+        raise ValueError("RSA key has trailing fields")
+    for integer in (modulus, exponent):
+        if (
+            not integer
+            or integer[0] & 0x80
+            or (len(integer) > 1 and integer[0] == 0 and not integer[1] & 0x80)
+        ):
+            raise ValueError("RSA integer is not a canonical positive INTEGER")
+    modulus_value = int.from_bytes(modulus, "big")
+    exponent_value = int.from_bytes(exponent, "big")
+    if not 2048 <= modulus_value.bit_length() <= 4096:
+        raise ValueError("RSA modulus must be between 2048 and 4096 bits")
+    if (
+        modulus_value % 2 == 0
+        or exponent_value < 3
+        or exponent_value >= modulus_value
+        or exponent_value > 2**32
+        or exponent_value % 2 == 0
+    ):
+        raise ValueError("RSA public exponent is invalid")
 
 
 class WebsiteBootstrapService:
@@ -175,6 +243,7 @@ class WebsiteBootstrapService:
         normalized = _component(tenant_id, "website id")
         if not bool(self.settings.get("enabled", True)):
             raise BootstrapError("website bootstrap is disabled")
+        self._handoff_public_key()
         try:
             self.registration.register(normalized, display_name=display_name, env=self.env)
         except TenantRegistrationError as exc:
@@ -231,9 +300,6 @@ class WebsiteBootstrapService:
     def _run(self, tenant_id: str, display_name: str) -> None:
         try:
             state = self._read_state(tenant_id)
-            tenant = self.registry.for_tenant_id(tenant_id)
-            if tenant is None:
-                raise BootstrapError("registered tenant is unavailable")
             config_path = Path(str(state.get("config_path") or "") or str(self._state_path(tenant_id).parent / "config.yaml"))
             state["config_path"] = str(config_path)
             self._write_state(state)
@@ -303,6 +369,7 @@ class WebsiteBootstrapService:
         ):
             state.update(status="failed", step="needs_attention", diagnostic="central release receipt does not match this bootstrap", updated_at=_now())
         elif receipt.get("status") in {"deployed", "verified"} and receipt.get("connectionVerifiedAt"):
+            previously_ready = state.get("workspace_ready") is True and state.get("step") == "ready"
             state.update(
                 status="done",
                 step="ready",
@@ -316,6 +383,18 @@ class WebsiteBootstrapService:
                 },
                 updated_at=_now(),
             )
+            if not previously_ready:
+                try:
+                    self._activate_runtime(tenant_id, state)
+                except Exception as exc:  # noqa: BLE001 - activation is part of verified workspace readiness
+                    state.update(
+                        status="failed",
+                        step="needs_attention",
+                        diagnostic=f"Payload runtime could not be activated: {str(exc)[:700]}",
+                        workspace_ready=False,
+                        website_live=False,
+                        updated_at=_now(),
+                    )
         elif receipt.get("status") in {"failed", "interrupted"}:
             state.update(
                 status="failed",
@@ -326,6 +405,30 @@ class WebsiteBootstrapService:
         else:
             state.update(status="awaiting_release", workspace_ready=False, website_live=False)
         self._write_state(state)
+
+    def _activate_runtime(self, tenant_id: str, state: Mapping[str, Any]) -> None:
+        """Mount the tenant only after the exact Payload Worker is verified live."""
+        config_path = Path(str(state.get("config_path") or self._state_path(tenant_id).parent / "config.yaml"))
+        token_env = tenant_token_env(tenant_id)
+        values = self._read_env(config_path.parent / "tenant.env")
+        token = str(values.get(token_env) or "").strip()
+        if not token:
+            raise BootstrapError("registered tenant API token is missing")
+        if self.registry.for_tenant_id(tenant_id) is None:
+            try:
+                self.registry.reload_tenant(
+                    tenant_id,
+                    str(config_path),
+                    api_token=token,
+                    api_token_env=token_env,
+                    env={**self.env, **values},
+                )
+            except Exception as exc:  # noqa: BLE001 - keep bootstrap diagnostics at this boundary
+                raise BootstrapError(f"tenant runtime could not be activated: {str(exc)[:400]}") from exc
+        try:
+            self.registration.mark_runtime_configured(tenant_id)
+        except TenantRegistrationError as exc:
+            raise BootstrapError(str(exc)) from exc
 
     def _credentials(self) -> tuple[dict[str, str], str, str, str]:
         env = credential_environment(self.config, self.env)
@@ -614,7 +717,15 @@ class WebsiteBootstrapService:
                 "url": worker_url,
                 "token_env": token_env,
                 "api_prefix": "/api/workspace",
-                "contract": payload_contract,
+                "contract": {
+                    "contract": payload_contract["contract"],
+                    "coreVersion": payload_contract["coreVersion"],
+                    "schemaRevision": payload_contract["schemaRevision"],
+                    "schemaIdentity": payload_contract["schemaIdentity"],
+                    "locales": payload_contract["locales"],
+                    "defaultLocale": payload_contract["defaultLocale"],
+                    "media_fields": list(payload_contract["collections"]["media"]),
+                },
             },
             "source_deployment": {
                 "clone_path": str(site_dir),
@@ -653,18 +764,35 @@ class WebsiteBootstrapService:
         values.setdefault("PAYLOAD_SECRET", os.urandom(36).hex())
         self._write_env(env_path, values)
 
-        self._configure_wranger(site_dir, names, worker_url, site_agent_url, data, display_name, tenant_id, payload_contract)
-        try:
-            self.registry.reload_tenant(
-                tenant_id,
-                str(config_path),
-                api_token=values.get(token_env, ""),
-                api_token_env=token_env,
-                env={**self.env, **values},
-            )
-        except Exception as exc:  # noqa: BLE001 - keep bootstrap receipt bounded
-            raise BootstrapError(f"tenant runtime could not be reloaded: {str(exc)[:400]}") from exc
+        self._configure_wranger(
+            site_dir,
+            names,
+            worker_url,
+            site_agent_url,
+            data,
+            display_name,
+            tenant_id,
+            payload_contract,
+            self._handoff_public_key(),
+        )
         return {"worker_name": names["worker"], "worker_url": worker_url, "repository": repository.get("full_name", "")}
+
+    def _handoff_public_key(self) -> str:
+        value = str(self.env.get("HELLOADA_HANDOFF_PUBLIC_KEY") or "").strip()
+        if not 300 <= len(value) <= 4096 or not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+            raise BootstrapError("HelloAda owner-handoff public key is missing or invalid")
+        try:
+            encoded = value + "=" * ((4 - len(value) % 4) % 4)
+            der = base64.b64decode(encoded, altchars=b"-_", validate=True)
+        except (ValueError, base64.binascii.Error) as exc:
+            raise BootstrapError("HelloAda owner-handoff public key is invalid") from exc
+        if len(der) < 256 or len(der) > 3072:
+            raise BootstrapError("HelloAda owner-handoff public key is not a supported RSA public key")
+        try:
+            _validate_rsa_spki(der)
+        except ValueError as exc:
+            raise BootstrapError("HelloAda owner-handoff public key is not a supported RSA public key") from exc
+        return value
 
     @staticmethod
     def _load_payload_contract(site_dir: Path) -> Mapping[str, Any]:
@@ -726,6 +854,7 @@ class WebsiteBootstrapService:
         display_name: str,
         tenant_id: str,
         payload_contract: Mapping[str, Any],
+        handoff_public_key: str,
     ) -> None:
         path = site_dir / "wrangler.jsonc"
         try:
@@ -748,6 +877,8 @@ class WebsiteBootstrapService:
             "HELLOADA_CONTENT_CONTRACT_VERSION": str(payload_contract.get("contract") or ""),
             "HELLOADA_SCHEMA_IDENTITY": str(template.get("schemaIdentity") or ""),
             "HELLOADA_PAYLOAD_MIGRATION_HEAD": str(template.get("migrationHead") or ""),
+            "HELLOADA_HANDOFF_ISSUER": _HELLOADA_HANDOFF_ISSUER,
+            "HELLOADA_HANDOFF_PUBLIC_KEY": handoff_public_key,
         })
         document["name"] = names["worker"]
         document["d1_databases"] = [{

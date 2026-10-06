@@ -54,6 +54,7 @@ export async function GET() {
     migrationHead: templateManifest.migrationHead,
   }
   const configured = {
+    templateSchema: Number(process.env.HELLOADA_TEMPLATE_SCHEMA || 0),
     payloadCore: process.env.HELLOADA_PAYLOAD_CORE_VERSION || '',
     contentContract: process.env.HELLOADA_CONTENT_CONTRACT_VERSION || '',
     schemaRevision: Number(process.env.HELLOADA_PAYLOAD_SCHEMA_REVISION || 0),
@@ -62,7 +63,8 @@ export async function GET() {
     migrationHead: process.env.HELLOADA_PAYLOAD_MIGRATION_HEAD || '',
   }
   const compatible = Boolean(tenant)
-    && templateSchema === 4
+    && Number.isSafeInteger(configured.templateSchema)
+    && configured.templateSchema === templateSchema
     && Object.entries(loaded).every(([key, value]) => configured[key as keyof typeof configured] === value)
   if (!compatible) {
     return Response.json({ ok: false, error: 'payload_contract_mismatch', tenant: tenant || null, loaded, configured, templateSchema },

@@ -1110,6 +1110,64 @@ def test_review_draft_requires_react_gsap_build_and_browser_evidence(tmp_path):
     memory.close()
 
 
+def test_first_site_review_draft_carries_exact_payload_revision_set(tmp_path):
+    memory = Memory(tmp_path / "service.db")
+    service = DesignService(memory)
+    run = service.create_run(_intake(), run_id="design-review-payload-bound", base_sha="a" * 40)
+    effects = [{
+        "kind": "collection",
+        "operation": "create",
+        "target": "pages",
+        "document_id": "41",
+        "revision": "sha256:" + "d" * 64,
+        "locale": "en",
+        "fields": ["sections", "seo", "slug"],
+        "summary": "Create the verified homepage draft.",
+    }]
+    from site_agent.core.payload_receipts import payload_revision_manifest
+
+    normalized, revision_hash = payload_revision_manifest(effects)
+    memory.update_design_run(
+        run["run_id"],
+        candidate_sha="b" * 40,
+        candidate_ref=run["candidate_ref"],
+        planning_json={"payload_effects": normalized, "payload_revision_set_hash": revision_hash},
+        quality_report_json={"state": "passed"},
+        quality_report_hash=canonical_hash({"state": "passed"}),
+        design_manifest_path="design/ada-design-manifest.json",
+        design_manifest_hash="f" * 64,
+    )
+    for status in ("assessing_intake", "planning", "building", "candidate_ready", "validating", "ready_for_review"):
+        memory.transition_design_run(run["run_id"], status)
+
+    review = service.create_review_draft(run["run_id"])
+    draft = memory.get_draft(review["draft_id"])
+    assert draft["meta"]["payload_effects"] == normalized
+    assert draft["meta"]["payload_revision_set_hash"] == revision_hash
+    memory.close()
+
+
+def test_first_site_without_verified_payload_draft_cannot_enter_review(tmp_path):
+    memory = Memory(tmp_path / "service.db")
+    service = DesignService(memory)
+    run = service.create_run(_intake(), run_id="design-review-no-payload", base_sha="a" * 40)
+    memory.update_design_run(
+        run["run_id"],
+        candidate_sha="b" * 40,
+        candidate_ref=run["candidate_ref"],
+        quality_report_json={"state": "passed"},
+        quality_report_hash=canonical_hash({"state": "passed"}),
+        design_manifest_path="design/ada-design-manifest.json",
+        design_manifest_hash="f" * 64,
+    )
+    for status in ("assessing_intake", "planning", "building", "candidate_ready", "validating", "ready_for_review"):
+        memory.transition_design_run(run["run_id"], status)
+
+    with pytest.raises(DesignServiceError, match="Payload homepage draft"):
+        service.create_review_draft(run["run_id"])
+    memory.close()
+
+
 def test_validate_run_retains_large_quality_report_with_bounded_artifact_preview(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     repo.mkdir()

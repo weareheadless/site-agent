@@ -2353,6 +2353,18 @@ class Memory:
         return cur.rowcount > 0
 
     @_locked
+    def get_draft(self, draft_id: int) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT * FROM drafts WHERE id = ?", (int(draft_id),)).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        try:
+            result["meta"] = json.loads(result.get("meta") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            result["meta"] = {}
+        return result
+
+    @_locked
     def add_draft_feedback(self, draft_id: int, feedback: str) -> bool:
         """Attach the owner's rejection note to the draft's meta so the decision
         ledger can show the *reason* a proposal was declined. Structured data,
@@ -6335,24 +6347,96 @@ class Memory:
             )
 
     @_locked
+    def record_chat_job_effect(self, job_id: int, worker: str, effect: dict[str, Any]) -> bool:
+        """Persist a completed external draft effect before later work can fail."""
+        row = self.conn.execute(
+            "SELECT result FROM chat_jobs WHERE id = ? AND status = 'running' AND claimed_by = ?",
+            (job_id, worker),
+        ).fetchone()
+        if row is None:
+            return False
+        try:
+            result = json.loads(row["result"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            result = {}
+        if not isinstance(result, dict):
+            result = {}
+        effects = result.get("payload_effects")
+        if not isinstance(effects, list):
+            effects = []
+        identity = (
+            str(effect.get("target") or ""),
+            str(effect.get("document_id") or ""),
+            str(effect.get("revision") or ""),
+            str(effect.get("locale") or ""),
+        )
+        if not any(
+            isinstance(item, dict)
+            and (
+                str(item.get("target") or ""),
+                str(item.get("document_id") or ""),
+                str(item.get("revision") or ""),
+                str(item.get("locale") or ""),
+            ) == identity
+            for item in effects
+        ):
+            effects.append(effect)
+        result["payload_effects"] = effects[-40:]
+        with self.conn:
+            updated = self.conn.execute(
+                "UPDATE chat_jobs SET result = ?, updated_ts = ? WHERE id = ? AND status = 'running' AND claimed_by = ?",
+                (json.dumps(result), _now(), job_id, worker),
+            ).rowcount
+        return updated == 1
+
+    @_locked
     def complete_chat_job(self, job_id: int, worker: str, result: dict[str, Any]) -> bool:
         row = self.conn.execute(
-            "SELECT conversation_id FROM chat_jobs "
+            "SELECT conversation_id, result FROM chat_jobs "
             "WHERE id = ? AND status = 'running' AND claimed_by = ?",
             (job_id, worker),
         ).fetchone()
         if row is None:
             return False
+        completed_result = dict(result)
+        try:
+            persisted = json.loads(row["result"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            persisted = {}
+        if not isinstance(persisted, dict):
+            persisted = {}
+        persisted_effects = persisted.get("payload_effects")
+        result_effects = completed_result.get("payload_effects")
+        effects = [
+            item for item in (persisted_effects if isinstance(persisted_effects, list) else [])
+            + (result_effects if isinstance(result_effects, list) else [])
+            if isinstance(item, dict)
+        ]
+        deduplicated: list[dict[str, Any]] = []
+        identities: set[tuple[str, str, str, str]] = set()
+        for effect in effects:
+            identity = (
+                str(effect.get("target") or ""),
+                str(effect.get("document_id") or ""),
+                str(effect.get("revision") or ""),
+                str(effect.get("locale") or ""),
+            )
+            if identity in identities:
+                continue
+            identities.add(identity)
+            deduplicated.append(effect)
+        if deduplicated:
+            completed_result["payload_effects"] = deduplicated[-40:]
         with self.conn:
             updated = self.conn.execute(
                 "UPDATE chat_jobs SET status = 'done', result = ?, updated_ts = ?, "
                 "claimed_by = NULL, heartbeat_ts = NULL WHERE id = ? AND claimed_by = ?",
-                (json.dumps(result), _now(), job_id, worker),
+                (json.dumps(completed_result), _now(), job_id, worker),
             ).rowcount
             if updated == 1:
                 self.conn.execute(
                     "INSERT INTO chat_messages (conversation_id, ts, role, text) VALUES (?, ?, 'assistant', ?)",
-                    (row["conversation_id"], _now(), result.get("reply") or ""),
+                    (row["conversation_id"], _now(), completed_result.get("reply") or ""),
                 )
         return updated == 1
 

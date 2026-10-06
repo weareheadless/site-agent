@@ -143,6 +143,24 @@ def test_design_review_is_sha_bound_and_approval_is_explicit(tmp_path, monkeypat
     )
     validated_run = service.get_run(run["run_id"])
     assert validated_run["output_artifact_id"], validated_run["quality_report_json"]["findings"]
+    from site_agent.core.payload_receipts import payload_revision_manifest
+
+    payload_effects, payload_hash = payload_revision_manifest([{
+        "kind": "collection",
+        "operation": "create",
+        "target": "pages",
+        "document_id": "1",
+        "revision": "sha256:" + "e" * 64,
+        "locale": "en",
+        "fields": ["slug", "title", "sections", "seo"],
+        "summary": "Create the canonical initial homepage draft",
+    }])
+    planning = dict(validated_run["planning_json"])
+    planning.update({
+        "payload_effects": payload_effects,
+        "payload_revision_set_hash": payload_hash,
+    })
+    memory.update_design_run(run["run_id"], planning_json=planning)
     # This endpoint test exercises the owner-review/approval lifecycle after
     # the independent gates have passed. Keep the complete host-issued gate
     # receipt explicit; a build artifact by itself is not review approval.
