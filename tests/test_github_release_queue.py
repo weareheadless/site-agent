@@ -147,7 +147,23 @@ def test_matching_request_is_idempotent(monkeypatch):
     monkeypatch.setattr(queue, "_request", request)
     result = queue.request("demo", SHA, CUSTOMER, approval_id=42)
     assert result == {"release_id": "rel-20261003000000-abcd1234", "source_sha": SHA, "control_sha": "1" * 40}
+    retry_result = queue.request(
+        "demo",
+        SHA,
+        CUSTOMER,
+        approval_id=42,
+        release_id="rel-20261003000000-abcd1234",
+    )
+    assert retry_result == result
     assert writes == []
+    with pytest.raises(GitHubReleaseQueueError, match="already bound"):
+        queue.request(
+            "demo",
+            "b" * 40,
+            CUSTOMER,
+            approval_id=42,
+            release_id="rel-20261003000000-abcd1234",
+        )
 
 
 def test_verified_failed_release_retry_creates_a_new_attempt(monkeypatch):
@@ -185,9 +201,10 @@ def test_verified_failed_release_retry_creates_a_new_attempt(monkeypatch):
         raise AssertionError((method, path, payload))
 
     monkeypatch.setattr(queue, "_request", request)
-    result = queue.request("demo", SHA, CUSTOMER, initialize_schema=True, new_attempt=True)
+    retry_release_id = "rel-20261006000000-1234abcd"
+    result = queue.request("demo", SHA, CUSTOMER, initialize_schema=True, release_id=retry_release_id)
 
-    assert result["release_id"] != "rel-20261003000000-abcd1234"
+    assert result["release_id"] == retry_release_id
     tree = next(payload for method, path, payload in writes if method == "POST" and path.endswith("/git/trees"))
     written = {row["path"].rsplit("/", 1)[1]: blob_contents[row["sha"]] for row in tree["tree"]}
     assert written["desired-releases.json"]["releases"]["demo"] == {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -237,11 +238,11 @@ def test_bootstrap_release_accepts_the_canonical_owner_repository_identity(tmp_p
 
     captured = {}
 
-    def fake_request_release(config, _env, source_sha, *, initialize_schema=False, new_attempt=False):
+    def fake_request_release(config, _env, source_sha, *, initialize_schema=False, release_id=None):
         captured["repository"] = config["site"]["repository"]
         captured["source_sha"] = source_sha
         captured["initialize_schema"] = initialize_schema
-        captured["new_attempt"] = new_attempt
+        captured["release_id"] = release_id
         return {"release_id": "bootstrap-demo", "source_sha": source_sha}
 
     monkeypatch.setattr(service, "_git", fake_git)
@@ -255,14 +256,14 @@ def test_bootstrap_release_accepts_the_canonical_owner_repository_identity(tmp_p
             "worker_name": "helloada-demo",
             "worker_url": "https://helloada-demo.workers.dev",
         },
-        new_attempt=True,
+        release_id="rel-20261006000000-1234abcd",
     )
 
     assert captured == {
         "repository": "weareheadless/helloada-demo",
         "source_sha": "a" * 40,
         "initialize_schema": True,
-        "new_attempt": True,
+        "release_id": "rel-20261006000000-1234abcd",
     }
     assert result["tenant_id"] == "demo"
     assert result["release_id"] == "bootstrap-demo"
@@ -372,6 +373,7 @@ def test_bootstrap_retry_queues_again_only_after_the_previous_release_failed(tmp
     }
 
     assert service._prepare_failed_release_retry(state) is True
+    assert re.fullmatch(r"rel-\d{14}-[0-9a-f]{8}", state["release_retry_id"])
     assert "queueing_shell_release" not in state["steps"]
     assert "queueing_shell_release" not in state["resource_receipts"]
     assert "release" not in state
@@ -399,7 +401,7 @@ def test_bootstrap_retry_queues_again_only_after_the_previous_release_failed(tmp
         service._prepare_failed_release_retry(state)
 
 
-def test_bootstrap_verified_failed_retry_requests_a_fresh_release_id(tmp_path, monkeypatch):
+def test_bootstrap_verified_failed_retry_persists_and_requests_a_fresh_release_id(tmp_path, monkeypatch):
     import threading
 
     release_root = tmp_path / "releases"
@@ -436,17 +438,18 @@ def test_bootstrap_verified_failed_retry_requests_a_fresh_release_id(tmp_path, m
     monkeypatch.setattr(service, "_refresh_release_state", lambda _state: None)
     queued = {}
 
-    def queue_release(_tenant_id, _config_path, _worker, *, new_attempt=False):
-        queued["new_attempt"] = new_attempt
-        return {"release_id": "rel-fresh-attempt", "source_sha": "b" * 40}
+    def queue_release(_tenant_id, _config_path, _worker, *, release_id=None):
+        queued["release_id"] = release_id
+        return {"release_id": release_id, "source_sha": "b" * 40}
 
     monkeypatch.setattr(service, "_queue_release", queue_release)
 
     service._run("demo", "Demo")
 
-    assert queued == {"new_attempt": True}
-    assert state["release"]["release_id"] == "rel-fresh-attempt"
+    assert queued["release_id"] is not None
+    assert state["release"]["release_id"] == queued["release_id"]
     assert state["status"] == "awaiting_release"
+    assert "release_retry_id" not in state
 
 
 def test_bootstrap_refuses_to_guess_a_payload_contract(tmp_path):

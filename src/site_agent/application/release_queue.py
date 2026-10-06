@@ -104,7 +104,7 @@ def request_release(
     *,
     approval_id: int | str | None = None,
     initialize_schema: bool = False,
-    new_attempt: bool = False,
+    release_id: str | None = None,
 ) -> dict[str, str]:
     """Commit a release request to the only production queue in site-agent."""
     root = release_root(config)
@@ -119,7 +119,7 @@ def request_release(
             customer,
             approval_id=approval_id,
             initialize_schema=initialize_schema,
-            new_attempt=new_attempt,
+            release_id=release_id,
         )
     except GitHubReleaseQueueError as exc:
         raise ReleaseQueueError(str(exc)) from exc

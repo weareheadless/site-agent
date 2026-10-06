@@ -13,6 +13,7 @@ import base64
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import threading
@@ -302,9 +303,12 @@ class WebsiteBootstrapService:
     def _run(self, tenant_id: str, display_name: str) -> None:
         try:
             state = self._read_state(tenant_id)
-            failed_release_retry = self._prepare_failed_release_retry(state)
-            if failed_release_retry:
+            verified_failed_release_retry = self._prepare_failed_release_retry(state)
+            if verified_failed_release_retry:
                 self._write_state(state)
+            retry_release_id = str(state.get("release_retry_id") or "") or None
+            if retry_release_id is not None and not re.fullmatch(r"rel-\d{14}-[0-9a-f]{8}", retry_release_id):
+                raise BootstrapError("persisted bootstrap retry release identity is invalid")
             config_path = Path(str(state.get("config_path") or "") or str(self._state_path(tenant_id).parent / "config.yaml"))
             state["config_path"] = str(config_path)
             self._write_state(state)
@@ -330,9 +334,10 @@ class WebsiteBootstrapService:
                     tenant_id,
                     config_path,
                     worker,
-                    new_attempt=failed_release_retry,
+                    release_id=retry_release_id,
                 ),
             )
+            state.pop("release_retry_id", None)
             state["status"] = "awaiting_release"
             state["step"] = "deploying_shell"
             state["release"] = release
@@ -470,6 +475,7 @@ class WebsiteBootstrapService:
         if isinstance(receipts, dict):
             receipts.pop("queueing_shell_release", None)
         state.pop("release", None)
+        state["release_retry_id"] = datetime.now(timezone.utc).strftime("rel-%Y%m%d%H%M%S-") + secrets.token_hex(4)
         state.update(
             status="queued",
             step="requested",
@@ -989,7 +995,7 @@ class WebsiteBootstrapService:
         config_path: Path,
         worker: Mapping[str, Any],
         *,
-        new_attempt: bool = False,
+        release_id: str | None = None,
     ) -> Mapping[str, Any]:
         site_dir = Path(str(worker.get("site_dir") or config_path.parent / "site"))
         try:
@@ -1027,7 +1033,7 @@ class WebsiteBootstrapService:
                 self.env,
                 commit,
                 initialize_schema=True,
-                new_attempt=new_attempt,
+                release_id=release_id,
             )
             root = release_root(self.config)
         except (OSError, UnicodeError, yaml.YAMLError, ReleaseQueueError) as exc:
