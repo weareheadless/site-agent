@@ -221,6 +221,9 @@ the exact manifest migration-chain hash: the pipeline confirms the registered
 D1 identity is empty, applies the committed Payload migration chain through `npm run payload -- migrate`
 in the generated site's package-managed Payload CLI entrypoint, and verifies the
 complete migration ledger before upload.
+The emptiness check excludes only Cloudflare's reserved `_cf_KV` D1 system
+table; any other application table makes the database non-empty and requires
+the normal exact-ledger rules below.
 Any non-empty or partially initialized database fails closed. Existing-tenant
 schema upgrades require a separate exact queue request containing the old
 migration-ledger identity and registered target head. The pipeline accepts only
