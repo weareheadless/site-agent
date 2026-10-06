@@ -33,10 +33,9 @@ def test_helloada_app_queue_is_one_exact_release_or_null():
 def test_helloada_app_registry_points_to_its_one_official_worker_and_secret_file():
     config = json.loads((ROOT / "deploy/helloada-app.json").read_text())
     assert config == release.HELLOADA_APP_CONFIG
-    assert json.loads((ROOT / "deploy/desired-helloada-app-release.json").read_text()) == {
-        "schema": 1,
-        "release": None,
-    }
+    queue = json.loads((ROOT / "deploy/desired-helloada-app-release.json").read_text())
+    assert queue["schema"] == 1
+    release.validate_helloada_app_queue(queue)
 
 
 @pytest.mark.skipif(not shutil.which("openssl"), reason="OpenSSL is required by the production release contract")
