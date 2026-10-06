@@ -170,6 +170,13 @@ every possible concurrent Payload writer.
   They may not call Wrangler/OpenNext production deployment directly or replace
   an existing tenant checkout to “repair” its baseline. A mismatched or
   untracked baseline stops with an operator-visible diagnostic.
+- New-site bootstrap provisions and durably records the Cloudflare Worker
+  identity before queueing its first version. `wrangler versions upload` only
+  uploads versions for an existing Worker; it does not create the Worker
+  resource. Use the idempotent Cloudflare resource provisioner and the same
+  version-upload/verified-promotion pipeline used for later releases. Do not
+  seed a placeholder Worker or bypass the VPS release queue with a first-deploy
+  `wrangler deploy` path.
 - Shared Python API releases use `deploy/desired-api-release.json` and the same
   VPS release timer. Queue one new release ID plus the full official `main` SHA;
   the VPS tests that exact source, builds and smoke-checks one wheel, checks its

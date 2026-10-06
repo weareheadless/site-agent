@@ -319,6 +319,12 @@ class WebsiteBootstrapService:
             )
             repository = self._run_step(state, "creating_repository", lambda: self._repository(tenant_id, display_name, config_path))
             data = self._run_step(state, "creating_data", lambda: self._data_resources(tenant_id))
+            self._run_step(
+                state,
+                "creating_worker_identity",
+                lambda: self._worker_resource(tenant_id),
+                refresh_completed=refresh_source,
+            )
             worker = self._run_step(
                 state,
                 "creating_worker",
@@ -606,6 +612,12 @@ class WebsiteBootstrapService:
             "r2": {"bucket": names["r2"], "created": bool(r2_created)},
             "account_id": account_id,
         }
+
+    def _worker_resource(self, tenant_id: str) -> Mapping[str, Any]:
+        _env, _github_token, cloudflare_token, account_id = self._credentials()
+        worker_name = self._names(tenant_id)["worker"]
+        receipt = CloudflareResourceProvisioner(account_id, cloudflare_token).ensure_worker(worker_name)
+        return receipt.to_dict()
 
     def _worker_url(self, worker_name: str) -> str:
         configured = str(self.settings.get("worker_url_template") or "").strip()
