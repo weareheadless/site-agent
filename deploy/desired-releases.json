@@ -8,11 +8,11 @@
       "sha": "055996dc6f13d93de3e72a776a82d4354aa53772"
     },
     "ada-e2e-studio-intake-0aa0b1a55ae48348": {
-      "id": "rel-20261006163152-127e1a7a",
+      "id": "rel-20261006-remote-d1-fix-1",
       "initializeSchema": {
         "migrationHead": "75064eaeb5a035afc8977d39a59742dfa8bfb5e94d344ca9090e29e516bb2534"
       },
-      "sha": "a8b86a428e48cad45ade20b9fdbabc479054250c"
+      "sha": "117f8ac01f4979a3f77dcf67042415d97c664a73"
     },
     "atelier-harmonie": {
       "id": "20261005-atelier-preview-mount-7",
