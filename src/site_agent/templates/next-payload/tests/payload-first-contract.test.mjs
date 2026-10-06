@@ -27,6 +27,14 @@ test('template pins the exact shared schema and admin releases it advertises', (
   assert.match(packageJson.dependencies['@weareheadless/helloada-payload-core'], new RegExp(`helloada-payload-core-v${manifest.payloadCore}`))
   assert.equal(lock.packages[''].dependencies['@weareheadless/helloada-payload-admin'], packageJson.dependencies['@weareheadless/helloada-payload-admin'])
   assert.equal(lock.packages[''].dependencies['@weareheadless/helloada-payload-core'], packageJson.dependencies['@weareheadless/helloada-payload-core'])
+  for (const [name, version] of [
+    ['@weareheadless/helloada-payload-admin', manifest.payloadAdmin],
+    ['@weareheadless/helloada-payload-core', manifest.payloadCore],
+  ]) {
+    const entry = lock.packages[`node_modules/${name}`]
+    assert.equal(entry.version, version)
+    assert.match(entry.integrity, /^sha512-[A-Za-z0-9+/]+={0,2}$/)
+  }
   const runtime = JSON.parse(read('wrangler.jsonc')).vars
   assert.equal(runtime.HELLOADA_TEMPLATE_SCHEMA, String(manifest.templateSchema))
   assert.equal(runtime.HELLOADA_PAYLOAD_ADMIN_VERSION, manifest.payloadAdmin)
