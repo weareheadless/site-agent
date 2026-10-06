@@ -139,3 +139,35 @@ def test_runtime_preflight_does_not_accept_a_manifest_tenant_without_payload_ena
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
     with pytest.raises(ValueError, match="enabled canonical Payload gateway"):
         sync.validate_runtime_configs(host, manifest, {"PROVISIONED_OCEANICVIBES_TOKEN": "not-a-real-token"})
+
+
+def test_runtime_preflight_allows_a_dormant_tenant_without_a_payload_instance(tmp_path):
+    host, manifest, config_path, customer = _fixture(tmp_path)
+    sync.sync_tenant_config(config_path, "oceanicvibes", customer, apply=True)
+    root = config_path.parents[1]
+    tenant_dir = root / "dormant-studio"
+    tenant_dir.mkdir()
+    dormant = tenant_dir / "config.yaml"
+    dormant.write_text(yaml.safe_dump({
+        "instance_name": "dormant-studio",
+        "site": {"adapter": "payload_gateway", "website_present": False},
+    }))
+    (tenant_dir / "tenant.env").write_text("PROVISIONED_DORMANT_STUDIO_TOKEN=not-a-real-token\n")
+    registry_path = root / "tenants.json"
+    registry = json.loads(registry_path.read_text())
+    registry["dormant-studio"] = {
+        "config_path": str(dormant),
+        "api_token_env": "PROVISIONED_DORMANT_STUDIO_TOKEN",
+        "bootstrap_state": "ready",
+    }
+    registry_path.write_text(json.dumps(registry))
+
+    result = sync.validate_runtime_configs(host, manifest, {
+        "PROVISIONED_OCEANICVIBES_TOKEN": "not-a-real-token",
+        "PROVISIONED_DORMANT_STUDIO_TOKEN": "not-a-real-token",
+    })
+
+    assert result == {
+        "validatedTenants": ["dormant-studio", "oceanicvibes"],
+        "payloadTenants": ["oceanicvibes"],
+    }
