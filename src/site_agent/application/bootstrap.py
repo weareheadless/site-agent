@@ -627,7 +627,10 @@ class WebsiteBootstrapService:
         if result.returncode:
             detail = (result.stderr or result.stdout or "git command failed").strip()[-800:]
             raise BootstrapError(f"git {' '.join(args[:3])}: {detail}")
-        return result.stdout.strip()
+        # Git porcelain output uses its leading columns to encode staged and
+        # unstaged state. Preserve those columns so callers can safely parse
+        # paths such as a modified wrangler.jsonc.
+        return result.stdout.rstrip("\r\n")
 
     def _git_init_and_push(self, site_dir: Path, receipt: GitHubRepositoryReceipt) -> None:
         if not (site_dir / ".git").is_dir():
