@@ -49,13 +49,24 @@ def test_all_server_side_payload_gateway_resources_have_exact_route_handlers():
     assert "operation || '').trim().toLowerCase() !== 'update'" in media
 
 
-def test_production_payload_cli_has_no_local_migration_escape_hatch():
+def test_production_payload_cli_requires_an_explicit_remote_config():
     config = (TEMPLATE / 'payload.config.ts').read_text(encoding='utf-8')
+    context = (TEMPLATE / 'src' / 'lib' / 'cloudflare-context.ts').read_text(encoding='utf-8')
     package = json.loads((TEMPLATE / 'package.json').read_text(encoding='utf-8'))
-    assert 'ALLOW_LOCAL_PAYLOAD_MIGRATION' not in config
+    assert 'ALLOW_LOCAL_PAYLOAD_MIGRATION' not in config + context
     assert 'payloadCliEntrypoint && !isCLI' in config
-    assert 'isCLI && isProduction && isDatabaseMigrationCommand && !hasCloudflareToken' in config
-    assert "['migrate', 'migrate:status', 'migrate:create', 'migrate:down']" in config
+    assert 'isDatabaseMigrationCommand' not in config
+    for expected in (
+        'const isDatabaseMigration = argv.some',
+        "['migrate', 'migrate:status', 'migrate:create', 'migrate:down']",
+        'isPayloadContractVerifier',
+        'HELLOADA_CLOUDFLARE_CONFIG_PATH',
+        'if (requiresRemoteD1 && !env.CLOUDFLARE_API_TOKEN)',
+        'if (requiresRemoteD1 && !configPath)',
+        'configPath: plan.configPath',
+        'remoteBindings: plan.remoteBindings',
+    ):
+        assert expected in context
     assert 'PAYLOAD_CLI=1' in package['scripts']['prebuild']
     assert 'PAYLOAD_CLI=1' in package['scripts']['payload']
 

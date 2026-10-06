@@ -203,8 +203,17 @@ never to dependency installation or builds. The artifact is inspected, hashed
 and archived before upload. The pipeline checks production did not change during
 the build and uploads an immutable, unpromoted version. If the queue entry is an
 explicit tenant schema migration, it verifies the exact live ledger prefix,
-applies only the committed Payload migration with `npm run payload -- migrate` through the tenant's pinned package script (`PAYLOAD_CLI=1`), then verifies the full target
-ledger and Payload contract while the prior Worker remains active. It then
+creates a private temporary Wrangler config from the already-validated tenant
+Worker contract, and marks only that tenant's D1 and R2 bindings as remote for
+the migration process. The package-managed Payload CLI receives that exact
+config path; its context refuses production migrations without both the
+Cloudflare credential and this explicit config. After `npm run payload -- migrate`,
+the pipeline reads the ledger directly from the registered Cloudflare D1 and
+requires the complete committed chain before removing the temporary config.
+This keeps ordinary local development bindings local while ensuring the
+production migration cannot silently succeed against Wrangler's local emulator.
+The prior Worker remains active until the remote ledger and candidate Payload
+contract pass. It then
 promotes that exact uploaded version to 100% traffic, checks the live SHA and
 tenant, and performs the authenticated connection gate.
 
@@ -218,9 +227,13 @@ Artifacts, source, receipts and previous Cloudflare versions are retained under
 `/SOCIAL/payload-releases`. Ordinary application releases never mutate a Payload
 database. The sole exception is an explicit new-tenant bootstrap request carrying
 the exact manifest migration-chain hash: the pipeline confirms the registered
-D1 identity is empty, applies the committed Payload migration chain through `npm run payload -- migrate`
-in the generated site's package-managed Payload CLI entrypoint, and verifies the
-complete migration ledger before upload.
+D1 identity is empty, creates the same private remote-binding config from that
+Worker's exact D1/R2 identities, and applies the committed migration chain
+through the generated site's package-managed Payload CLI entrypoint. The
+Payload context rejects production migrations without that config, and the
+pipeline verifies the complete ledger against the Cloudflare D1 API before
+upload; it never treats a successful local-emulator migration as production
+state.
 The emptiness check excludes only Cloudflare's reserved `_cf_KV` D1 system
 table; any other application table makes the database non-empty and requires
 the normal exact-ledger rules below.
