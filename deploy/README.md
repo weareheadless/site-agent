@@ -160,7 +160,7 @@ rollout, first diagnose the failed gate. Then rerun only verification from the
 reviewed VPS checkout, using the same recorded tenant, full SHA and release ID:
 
 ```bash
-.venv/bin/python scripts/deploy-payload-customer.py --tenant <tenant> --ref <full-sha> --release-id <recorded-id> --verify-only
+.venv/bin/python scripts/deploy-payload-customer.py --tenant <tenant> --ref <full-sha> --release-id <recorded-id> --release-purpose website --verify-only
 ```
 
 This command takes the queue lock, validates the receipt's per-file artifact
@@ -266,6 +266,19 @@ guesses SQL, and leaves the prior Worker serving until the migrated schema and
 candidate Payload contract pass. A missing ledger, drifted database or
 uncommitted migration stops the release. Source deployment cannot invent or
 silently apply a schema change.
+
+The queue's exact `initializeSchema` operation selects the distinct
+`workspace-bootstrap` verification contract. Before promotion, the pipeline
+proves the committed template/schema identity, exact migration ledger, and
+required Worker routes. After promotion, the normal live gates verify the
+Worker's schema health and authenticated Payload connection. Bootstrap does
+not require business content or publish a website; it only makes the
+authenticated Payload admin ready for Ada's intake. Every ordinary website
+release selects the `website` contract and still runs the unchanged full Payload
+verifier, which requires the published site name, shared header/footer
+navigation, and complete published home page before promotion. Release purpose
+is required at the queue-to-runner boundary, and bootstrap must carry the exact
+registered migration head; one release class cannot relax the other's gate.
 Rollback uses the previous receipt's Cloudflare version with
 `wrangler versions deploy <version>@100% --name <worker> --yes` through the
 declared credential profile, followed by live checks. It never rolls back data.

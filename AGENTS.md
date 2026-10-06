@@ -333,6 +333,15 @@ identity every minute. `helloada-release.service` snapshots the exact control
 commit and runs `scripts/deploy-payload-customer.py` from that snapshot. Full
 operating and installation instructions are in `deploy/README.md`.
 
+The queue operation determines the required Payload gate. An exact
+`initializeSchema` request is passed as `--release-purpose workspace-bootstrap`:
+it proves the committed schema/migration identity and the live authenticated
+workspace contract, but it does not require or publish business content. Every
+other queued site release is passed as `--release-purpose website` and must run
+the full Payload verifier for published site settings, shared navigation, and
+the authored homepage. Do not downgrade an ordinary website release to the
+workspace-bootstrap gate or infer bootstrap from a failed content check.
+
 The central script is a hard gate, not a repair or fallback layer. It must:
 
 1. resolve the tenant from the manifest and reject an unregistered target;

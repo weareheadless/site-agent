@@ -99,6 +99,36 @@ def payload_remote_bindings_config_file(temporary_directory: Path, customer: dic
         raise
 
 
+def require_release_purpose(
+    release_purpose: str,
+    initialization_head: str | None,
+) -> None:
+    """Bind the verifier contract to the exact operation recorded in GitHub."""
+    expected_purpose = "workspace-bootstrap" if initialization_head is not None else "website"
+    if release_purpose != expected_purpose:
+        raise ValueError("release purpose does not match the exact queued operation")
+    if initialization_head is not None and not SHA256_RE.fullmatch(initialization_head):
+        raise ValueError("workspace bootstrap requires the exact committed Payload migration head")
+
+
+def verify_workspace_bootstrap_contract(
+    checkout: Path,
+    receipt: dict[str, Any],
+    customer: dict[str, Any],
+    initialization_head: str | None,
+) -> None:
+    """Require the exact initialized schema before making a new admin available."""
+    manifest = json.loads((checkout / "template-manifest.json").read_text(encoding="utf-8"))
+    expected_migrations = [str(item["name"]) for item in manifest["migrations"]]
+    if (
+        initialization_head != customer["migrationHead"]
+        or manifest.get("migrationHead") != customer["migrationHead"]
+        or receipt.get("verifiedMigrationHead") != customer["migrationHead"]
+        or receipt.get("appliedMigrations") != expected_migrations
+    ):
+        raise RuntimeError("workspace bootstrap does not match the exact registered Payload schema and migration chain")
+
+
 def validate_payload_verifier(checkout: Path) -> None:
     """Require the exact site-agent verifier before any build or tenant D1 mutation."""
     template = ROOT / "src/site_agent/templates/next-payload"
@@ -510,9 +540,14 @@ def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dic
 
 
 def verification_receipt(directory: Path, tenant: str, sha: str, release_id: str,
-                         customer: dict[str, Any], approval_id: int | None = None,
+                         customer: dict[str, Any], release_purpose: str,
+                         approval_id: int | None = None,
                          initialization_head: str | None = None) -> dict[str, Any]:
     receipt = json.loads((directory / "receipt.json").read_text())
+    require_release_purpose(release_purpose, initialization_head)
+    recorded_purpose = "workspace-bootstrap" if receipt.get("initialSchemaHead") is not None else "website"
+    if recorded_purpose != release_purpose:
+        raise ValueError("verification purpose differs from the exact queued release operation")
     expected = {"tenant": tenant, "sourceSha": sha, "releaseId": release_id,
                 "worker": customer["worker"], "repository": customer["repository"],
                 "payloadAdmin": customer["payloadAdmin"], "payloadCore": customer["payloadCore"],
@@ -613,6 +648,8 @@ def main() -> int:
     parser.add_argument("--release-id", required=True)
     parser.add_argument("--approval-id", type=int)
     parser.add_argument("--initialize-schema-head", help="hash of the exact Payload migration chain for an empty new tenant")
+    parser.add_argument("--release-purpose", choices=("workspace-bootstrap", "website"), required=True,
+                        help="explicit release contract selected by the canonical release queue")
     parser.add_argument("--schema-migration-from-ledger-identity", help="exact identity of the current Payload ledger for an approved tenant schema migration")
     parser.add_argument("--verify-only", action="store_true",
                         help="Recheck an already promoted version; never build, upload or promote")
@@ -624,6 +661,10 @@ def main() -> int:
     if customer is None:
         parser.error("tenant is not registered")
     validate_target(customer, args.tenant, args.ref, args.release_id)
+    try:
+        require_release_purpose(args.release_purpose, args.initialize_schema_head)
+    except ValueError as error:
+        parser.error(str(error))
     release_root = Path(manifest["releaseRoot"])
     directory = release_root / "runs" / args.tenant / args.release_id
     workspace = None
@@ -666,7 +707,7 @@ def main() -> int:
         receipt["schemaMigrationTargetHead"] = customer["migrationHead"]
     if args.verify_only:
         receipt = verification_receipt(directory, args.tenant, args.ref, args.release_id, customer,
-                                       args.approval_id, args.initialize_schema_head)
+                                       args.release_purpose, args.approval_id, args.initialize_schema_head)
 
     def stage(name: str) -> None:
         receipt["stage"] = name
@@ -795,8 +836,14 @@ def main() -> int:
             args.schema_migration_from_ledger_identity, base, manifest, args.tenant, stage, wrangler, temporary_root,
         )
         receipt["verifiedMigrationHead"] = customer["migrationHead"]
-        stage("verify-payload-contract")
-        run_payload_contract_verifier(checkout, customer, wrangler, deploy_env, base, temporary_root)
+        if args.release_purpose == "workspace-bootstrap":
+            stage("verify-workspace-bootstrap-contract")
+            verify_workspace_bootstrap_contract(
+                checkout, receipt, customer, args.initialize_schema_head,
+            )
+        else:
+            stage("verify-payload-contract")
+            run_payload_contract_verifier(checkout, customer, wrangler, deploy_env, base, temporary_root)
         atomic_json(receipt_path, receipt)
 
         stage("promote")
