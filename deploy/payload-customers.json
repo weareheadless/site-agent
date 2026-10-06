@@ -1,48 +1,63 @@
 {
-  "schema": 1,
+  "connectionGate": {
+    "apiUrl": "https://api.helloada.app/v1",
+    "config": "/SOCIAL/configs/site-agent-api/config.yaml",
+    "envFile": "/SOCIAL/configs/site-agent-api/.env"
+  },
   "credentialProfile": "/SOCIAL/configs/host-credentials.yaml",
+  "customers": {
+    "ada-e2e-studio-b39ae17e77014b8c": {
+      "adminPath": "/api/helloada",
+      "contentContract": "helloada-content-v3",
+      "d1DatabaseId": "d6cfa6bb-33b7-406a-82dc-e8d9f678cb85",
+      "d1DatabaseName": "helloada-ada-e2e-studio-b39ae17e77014b8c",
+      "health": "https://helloada-ada-e2e-studio-b39ae17e77014b8c.workers.dev/api/health",
+      "migrationHead": "75064eaeb5a035afc8977d39a59742dfa8bfb5e94d344ca9090e29e516bb2534",
+      "payloadAdmin": "0.10.0",
+      "payloadCore": "0.5.1",
+      "r2BucketName": "helloada-ada-e2e-studio-b39ae17e77014b8c-media",
+      "repository": "https://github.com/weareheadless/helloada-ada-e2e-studio-b39ae17e77014b8c.git",
+      "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
+      "schemaRevision": 5,
+      "worker": "helloada-ada-e2e-studio-b39ae17e77014b8c"
+    },
+    "atelier-harmonie": {
+      "adminPath": "/api/helloada",
+      "contentContract": "helloada-content-v2",
+      "d1DatabaseId": "9496d871-ab28-42ee-9d38-3f38471f953d",
+      "d1DatabaseName": "atelier-harmonie",
+      "health": "https://atelier-harmonie.weareheadless.workers.dev/api/health",
+      "migrationHead": "42f3252c0d3097bea7c821e388bc880f019882d779bf7ba62af162d078f27765",
+      "payloadAdmin": "0.8.10",
+      "payloadCore": "0.2.0",
+      "r2BucketName": "atelier-harmonie-media",
+      "repository": "https://github.com/weareheadless/atelier-harmonie-headless.git",
+      "schemaIdentity": "88efb2c6d810331060abdd4b85f4e19ee6b4ed913c91a8d363e8bfd996b02490",
+      "schemaRevision": 2,
+      "websitePresent": true,
+      "worker": "atelier-harmonie"
+    },
+    "oceanicvibes": {
+      "adminPath": "/api/helloada",
+      "contentContract": "helloada-content-v2",
+      "d1DatabaseId": "56d3f277-fbaf-43d4-91e5-b3a195653a05",
+      "d1DatabaseName": "oceanicvibes-content",
+      "health": "https://oceanicvibes.com/api/health",
+      "migrationHead": "adcbd6979e8839086cea1b62f92aa32fc8f93518067fb44ea5065181418b6888",
+      "payloadAdmin": "0.8.10",
+      "payloadCore": "0.2.0",
+      "r2BucketName": "helloada-oceanicvibes-media",
+      "repository": "https://github.com/weareheadless/oceanicvibes.git",
+      "schemaIdentity": "88efb2c6d810331060abdd4b85f4e19ee6b4ed913c91a8d363e8bfd996b02490",
+      "schemaRevision": 2,
+      "websitePresent": true,
+      "worker": "oceanicvibes"
+    }
+  },
   "nodeBin": "/home/admin/.local/share/site-agent-node22/bin",
   "nodeVersion": "22.14.0",
   "npmBin": "/home/admin/.local/share/site-agent-npm11-global/bin",
   "npmVersion": "11.13.0",
   "releaseRoot": "/SOCIAL/payload-releases",
-  "connectionGate": {
-    "config": "/SOCIAL/configs/site-agent-api/config.yaml",
-    "envFile": "/SOCIAL/configs/site-agent-api/.env",
-    "apiUrl": "https://api.helloada.app/v1"
-  },
-  "customers": {
-    "oceanicvibes": {
-      "repository": "https://github.com/weareheadless/oceanicvibes.git",
-      "worker": "oceanicvibes",
-      "d1DatabaseId": "56d3f277-fbaf-43d4-91e5-b3a195653a05",
-      "d1DatabaseName": "oceanicvibes-content",
-      "r2BucketName": "helloada-oceanicvibes-media",
-      "health": "https://oceanicvibes.com/api/health",
-      "adminPath": "/api/helloada",
-      "websitePresent": true,
-      "payloadAdmin": "0.8.10",
-      "payloadCore": "0.2.0",
-      "contentContract": "helloada-content-v2",
-      "schemaRevision": 2,
-      "schemaIdentity": "88efb2c6d810331060abdd4b85f4e19ee6b4ed913c91a8d363e8bfd996b02490",
-      "migrationHead": "adcbd6979e8839086cea1b62f92aa32fc8f93518067fb44ea5065181418b6888"
-    },
-    "atelier-harmonie": {
-      "repository": "https://github.com/weareheadless/atelier-harmonie-headless.git",
-      "worker": "atelier-harmonie",
-      "d1DatabaseId": "9496d871-ab28-42ee-9d38-3f38471f953d",
-      "d1DatabaseName": "atelier-harmonie",
-      "r2BucketName": "atelier-harmonie-media",
-      "health": "https://atelier-harmonie.weareheadless.workers.dev/api/health",
-      "adminPath": "/api/helloada",
-      "websitePresent": true,
-      "payloadAdmin": "0.8.10",
-      "payloadCore": "0.2.0",
-      "contentContract": "helloada-content-v2",
-      "schemaRevision": 2,
-      "schemaIdentity": "88efb2c6d810331060abdd4b85f4e19ee6b4ed913c91a8d363e8bfd996b02490",
-      "migrationHead": "42f3252c0d3097bea7c821e388bc880f019882d779bf7ba62af162d078f27765"
-    }
-  }
+  "schema": 1
 }

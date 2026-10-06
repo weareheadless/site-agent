@@ -1,13 +1,20 @@
 {
-  "schema": 1,
   "releases": {
-    "oceanicvibes": {
-      "id": "20261005-oceanic-presentation-repair-13",
-      "sha": "03d4c43d0077d85355821ec7efe3b6a84469a630"
+    "ada-e2e-studio-b39ae17e77014b8c": {
+      "id": "rel-20261006140721-a608a704",
+      "initializeSchema": {
+        "migrationHead": "75064eaeb5a035afc8977d39a59742dfa8bfb5e94d344ca9090e29e516bb2534"
+      },
+      "sha": "c5ea0f4d72f2f233d1734245239bb3bc5d05f37b"
     },
     "atelier-harmonie": {
       "id": "20261005-atelier-preview-mount-7",
       "sha": "fd9910cb176cd3cc3b19aa6d9ef67785dd8c509a"
+    },
+    "oceanicvibes": {
+      "id": "20261005-oceanic-presentation-repair-13",
+      "sha": "03d4c43d0077d85355821ec7efe3b6a84469a630"
     }
-  }
+  },
+  "schema": 1
 }
