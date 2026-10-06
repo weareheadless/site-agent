@@ -139,7 +139,7 @@ def test_pending_bootstrap_status_is_visible_before_runtime_activation(tmp_path)
 
 def test_bootstrap_configures_generic_seo_provisioning_for_new_sites(tmp_path):
     config_path = tmp_path / "config.yaml"
-    config_path.write_text("site: {}\n", encoding="utf-8")
+    config_path.write_text("instance_name: demo\nsite: {}\n", encoding="utf-8")
     site_dir = tmp_path / "site"
     from site_agent.site_scaffold import initialize_managed_site
 
@@ -159,7 +159,12 @@ def test_bootstrap_configures_generic_seo_provisioning_for_new_sites(tmp_path):
         "Demo",
         config_path,
         {"full_name": "weareheadless/helloada-demo", "site_dir": str(site_dir)},
-        {"d1": {"name": "helloada-demo"}},
+        {
+            "d1": {
+                "name": "helloada-demo",
+                "database_id": "56d3f277-fbaf-43d4-91e5-b3a195653a05",
+            },
+        },
     )
 
     import yaml
@@ -174,14 +179,20 @@ def test_bootstrap_configures_generic_seo_provisioning_for_new_sites(tmp_path):
     assert config["seo"]["provisioning"]["auto"] is True
     assert config["seo"]["site_url"] == "https://helloada-demo.workers.dev/"
     assert config["seo"]["gsc_property"] == "https://helloada-demo.workers.dev/"
+    assert config["site"]["payload"]["contract"]["adminVersion"] == template_manifest["payloadAdmin"]
     assert config["site"]["payload"]["contract"]["contract"] == template_manifest["contentContract"]
     assert config["site"]["payload"]["contract"]["schemaIdentity"] == template_manifest["schemaIdentity"]
+    assert config["site"]["payload"]["contract"]["migrationHead"] == template_manifest["migrationHead"]
     assert config["site"]["payload"]["contract"]["locales"] == ["en"]
     wrangler = json.loads((site_dir / "wrangler.jsonc").read_text(encoding="utf-8"))
     assert wrangler["vars"]["HELLOADA_TEMPLATE_SCHEMA"] == str(template_manifest["templateSchema"])
     assert wrangler["vars"]["HELLOADA_PAYLOAD_SCHEMA_REVISION"] == str(template_manifest["schemaRevision"])
     assert wrangler["vars"]["HELLOADA_SCHEMA_IDENTITY"] == template_manifest["schemaIdentity"]
     assert wrangler["vars"]["HELLOADA_PAYLOAD_MIGRATION_HEAD"] == template_manifest["migrationHead"]
+    from site_agent.application.release_queue import customer_release_identity
+
+    tenant, _identity = customer_release_identity(config)
+    assert tenant == "demo"
 
 
 def test_bootstrap_release_accepts_the_canonical_owner_repository_identity(tmp_path, monkeypatch):
