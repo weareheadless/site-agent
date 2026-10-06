@@ -415,6 +415,28 @@ class TenantRegistrationService:
             return str(entry["config_path"])
         return ""
 
+    def is_registered(self, tenant_id: str) -> bool:
+        """Check the durable tenant index, including tenants still bootstrapping."""
+        normalized = str(tenant_id or "").strip().lower()
+        if not _SAFE_ID.fullmatch(normalized):
+            return False
+        with self._lock:
+            self._validate_index()
+            indexed_path = self._indexed_config_path(normalized)
+            if not indexed_path:
+                return False
+            expected_path = (self.root / normalized / "config.yaml").resolve()
+            config_path = Path(indexed_path).expanduser().resolve()
+            if config_path != expected_path or not config_path.is_file():
+                raise TenantRegistrationError("registered website config path is invalid")
+            try:
+                config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            except (OSError, UnicodeError, yaml.YAMLError) as exc:
+                raise TenantRegistrationError("registered website config is unreadable") from exc
+            if not isinstance(config, Mapping) or config.get("instance_name") != normalized:
+                raise TenantRegistrationError("registered website identity is invalid")
+            return True
+
     def _indexed_bootstrap_state(self, tenant_id: str) -> str:
         index_path = self.root / _TENANTS_FILE
         if not index_path.is_file():

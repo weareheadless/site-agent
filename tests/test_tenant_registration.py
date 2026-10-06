@@ -50,6 +50,8 @@ def test_registration_creates_pending_identity_without_a_temporary_site(tmp_path
         assert first["schema_version"] > 0
         assert (tmp_path / "websites" / "new-site" / "config.yaml").is_file()
         assert (tmp_path / "websites" / "new-site" / "tenant.env").is_file()
+        assert service.is_registered("new-site") is True
+        assert service.is_registered("unknown-site") is False
         site_root = tmp_path / "websites" / "new-site" / "site"
         assert not site_root.exists()
         assert registry.for_tenant_id("new-site") is None

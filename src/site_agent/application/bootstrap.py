@@ -902,10 +902,9 @@ class WebsiteBootstrapService:
                 raise BootstrapError("tenant source identity does not match its registration")
             site = _mapping(raw.get("site"))
             repository = str(site.get("repository") or "")
-            match = re.fullmatch(r"https://github\.com/(weareheadless/[A-Za-z0-9_.-]+)\.git", repository)
-            if not match:
+            if not re.fullmatch(r"weareheadless/[A-Za-z0-9_.-]+", repository):
                 raise BootstrapError("managed tenant repository identity is invalid")
-            expected_remote = f"git@github.com:{match.group(1)}.git"
+            expected_remote = f"git@github.com:{repository}.git"
             if self._git(site_dir, "remote", "get-url", "origin") != expected_remote:
                 raise BootstrapError("managed tenant checkout remote differs from its registered GitHub repository")
             if self._git(site_dir, "branch", "--show-current") != "main":

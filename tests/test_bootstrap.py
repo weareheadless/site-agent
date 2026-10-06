@@ -104,6 +104,39 @@ def test_bootstrap_status_is_durable_before_worker_starts(tmp_path):
         registry.close()
 
 
+def test_pending_bootstrap_status_is_visible_before_runtime_activation(tmp_path):
+    config, _unused, env = _host(tmp_path)
+    registry = TenantRegistry.from_config(config, env)
+    registration = TenantRegistrationService(config, env, registry=registry)
+    service = WebsiteBootstrapService(config, env, registration=registration, registry=registry)
+    app = create_workspace_api_app(
+        registry,
+        control_token="control",
+        registration=registration,
+        bootstrap=service,
+    )
+    try:
+        registration.register("demo", display_name="Demo")
+        assert registry.for_tenant_id("demo") is None
+        with TestClient(app) as client:
+            response = client.get(
+                "/v1/control-plane/websites/demo/bootstrap",
+                headers={"Authorization": "Bearer control"},
+            )
+            assert response.status_code == 200
+            assert response.json()["status"] == "queued"
+            assert response.json()["step"] == "requested"
+
+            missing = client.get(
+                "/v1/control-plane/websites/unknown/bootstrap",
+                headers={"Authorization": "Bearer control"},
+            )
+            assert missing.status_code == 404
+    finally:
+        service.close()
+        registry.close()
+
+
 def test_bootstrap_configures_generic_seo_provisioning_for_new_sites(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text("site: {}\n", encoding="utf-8")
@@ -132,6 +165,7 @@ def test_bootstrap_configures_generic_seo_provisioning_for_new_sites(tmp_path):
     import yaml
 
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert config["site"]["repository"] == "weareheadless/helloada-demo"
     template_manifest = json.loads((site_dir / "template-manifest.json").read_text(encoding="utf-8"))
     assert config["site"]["public_url"] == "https://helloada-demo.workers.dev/"
     assert config["ga"]["enabled"] is True
@@ -148,6 +182,65 @@ def test_bootstrap_configures_generic_seo_provisioning_for_new_sites(tmp_path):
     assert wrangler["vars"]["HELLOADA_PAYLOAD_SCHEMA_REVISION"] == str(template_manifest["schemaRevision"])
     assert wrangler["vars"]["HELLOADA_SCHEMA_IDENTITY"] == template_manifest["schemaIdentity"]
     assert wrangler["vars"]["HELLOADA_PAYLOAD_MIGRATION_HEAD"] == template_manifest["migrationHead"]
+
+
+def test_bootstrap_release_accepts_the_canonical_owner_repository_identity(tmp_path, monkeypatch):
+    import yaml
+
+    from site_agent.application import bootstrap as bootstrap_module
+
+    site_dir = tmp_path / "site"
+    site_dir.mkdir()
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump({
+            "instance_name": "demo",
+            "site": {"repository": "weareheadless/helloada-demo"},
+        }),
+        encoding="utf-8",
+    )
+    release_root = tmp_path / "releases"
+    release_root.mkdir()
+    service = WebsiteBootstrapService.__new__(WebsiteBootstrapService)
+    service.config = {"deployment_pipeline": {"release_root": str(release_root)}}
+    service.env = {}
+
+    def fake_git(_site_dir, *args):
+        return {
+            ("remote", "get-url", "origin"): "git@github.com:weareheadless/helloada-demo.git",
+            ("branch", "--show-current"): "main",
+            ("status", "--porcelain"): "",
+            ("rev-parse", "HEAD"): "a" * 40,
+        }[args]
+
+    captured = {}
+
+    def fake_request_release(config, _env, source_sha, *, initialize_schema=False):
+        captured["repository"] = config["site"]["repository"]
+        captured["source_sha"] = source_sha
+        captured["initialize_schema"] = initialize_schema
+        return {"release_id": "bootstrap-demo", "source_sha": source_sha}
+
+    monkeypatch.setattr(service, "_git", fake_git)
+    monkeypatch.setattr(bootstrap_module, "request_release", fake_request_release)
+
+    result = service._queue_release(
+        "demo",
+        config_path,
+        {
+            "site_dir": str(site_dir),
+            "worker_name": "helloada-demo",
+            "worker_url": "https://helloada-demo.workers.dev",
+        },
+    )
+
+    assert captured == {
+        "repository": "weareheadless/helloada-demo",
+        "source_sha": "a" * 40,
+        "initialize_schema": True,
+    }
+    assert result["tenant_id"] == "demo"
+    assert result["release_id"] == "bootstrap-demo"
 
 
 def test_bootstrap_refuses_to_guess_a_payload_contract(tmp_path):
