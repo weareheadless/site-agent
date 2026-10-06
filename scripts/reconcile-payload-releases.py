@@ -126,6 +126,11 @@ def validate_queue(queue: dict, registry: dict) -> None:
                 raise ValueError("tenant schema migration must identify one prior ledger and the registered target head")
 
 
+def release_purpose_for_request(request: dict) -> str:
+    """Map one validated queue operation to its exact Payload content gate."""
+    return "workspace-bootstrap" if "initializeSchema" in request else "website"
+
+
 def snapshot_api_source(mirror: Path, root: Path, source_sha: str) -> Path:
     snapshot = root / "api-sources" / source_sha
     marker = snapshot / ".site-agent-source-sha"
@@ -355,6 +360,7 @@ def main() -> int:
             print(f"[queue] release={tenant}/{request['id']} source={request['sha']} pipeline={sha}", flush=True)
             command = [sys.executable, str(snapshot / "scripts/deploy-payload-customer.py"),
                 "--tenant", tenant, "--ref", request["sha"], "--release-id", request["id"]]
+            command.extend(["--release-purpose", release_purpose_for_request(request)])
             if "approvalId" in request:
                 command.extend(["--approval-id", str(request["approvalId"])])
             if "initializeSchema" in request:

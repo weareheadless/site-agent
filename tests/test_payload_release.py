@@ -187,6 +187,40 @@ def test_schema_initialization_queue_is_exactly_registered_and_cannot_be_an_appr
             queue.validate_queue({"schema": 1, "releases": {"demo": invalid}}, registry)
 
 
+def test_release_queue_operation_selects_the_matching_content_gate():
+    bootstrap_request = {
+        "id": "bootstrap-1",
+        "sha": SHA,
+        "initializeSchema": {"migrationHead": CUSTOMER["migrationHead"]},
+    }
+    assert queue.release_purpose_for_request(bootstrap_request) == "workspace-bootstrap"
+    assert queue.release_purpose_for_request({"id": "release-1", "sha": SHA}) == "website"
+
+
+def test_release_purpose_is_bound_to_the_exact_initialization_operation():
+    bootstrap_head = CUSTOMER["migrationHead"]
+    release.require_release_purpose("workspace-bootstrap", bootstrap_head)
+    release.require_release_purpose("website", None)
+    with pytest.raises(ValueError, match="does not match"):
+        release.require_release_purpose("website", bootstrap_head)
+    with pytest.raises(ValueError, match="exact"):
+        release.require_release_purpose("workspace-bootstrap", "not-a-head")
+
+
+def test_workspace_bootstrap_contract_requires_exact_registered_schema_and_ledger(tmp_path):
+    shutil.copyfile(TEMPLATE / "template-manifest.json", tmp_path / "template-manifest.json")
+    manifest = json.loads((TEMPLATE / "template-manifest.json").read_text())
+    migrations = [item["name"] for item in manifest["migrations"]]
+    receipt = {"verifiedMigrationHead": manifest["migrationHead"], "appliedMigrations": migrations}
+    release.verify_workspace_bootstrap_contract(
+        tmp_path, receipt, CUSTOMER, CUSTOMER["migrationHead"],
+    )
+    with pytest.raises(RuntimeError, match="exact registered Payload schema"):
+        release.verify_workspace_bootstrap_contract(
+            tmp_path, {**receipt, "appliedMigrations": migrations[:-1]}, CUSTOMER, CUSTOMER["migrationHead"],
+        )
+
+
 def test_schema_migration_queue_requires_exact_old_and_registered_target_heads():
     registry = {"customers": {"demo": {"migrationHead": "c" * 64}}}
     request = {"id": "schema-2", "sha": SHA, "schemaMigration": {
@@ -847,9 +881,17 @@ def promoted_receipt(tmp_path):
 
 def test_read_only_continuation_preserves_prior_failure(tmp_path):
     _, customer = promoted_receipt(tmp_path)
-    result = release.verification_receipt(tmp_path, "oceanicvibes", SHA, "release-1", customer)
+    result = release.verification_receipt(tmp_path, "oceanicvibes", SHA, "release-1", customer, "website")
     assert result["status"] == "running" and "error" not in result
     assert result["verificationHistory"][-1]["error"] == "connection failed"
+
+
+def test_read_only_continuation_requires_the_same_explicit_release_purpose(tmp_path):
+    receipt, customer = promoted_receipt(tmp_path)
+    receipt["initialSchemaHead"] = customer["migrationHead"]
+    (tmp_path / "receipt.json").write_text(json.dumps(receipt))
+    with pytest.raises(ValueError, match="purpose differs"):
+        release.verification_receipt(tmp_path, "oceanicvibes", SHA, "release-1", customer, "website")
 
 
 @pytest.mark.parametrize("changed", ["identity", "unpromoted", "artifact"])
@@ -863,7 +905,7 @@ def test_read_only_continuation_rejects_unproven_release(tmp_path, changed):
         result["artifactHashes"] = {"../worker.js": "not-a-sha256"}
     (tmp_path / "receipt.json").write_text(json.dumps(result))
     with pytest.raises(ValueError):
-        release.verification_receipt(tmp_path, "oceanicvibes", SHA, "release-1", customer)
+        release.verification_receipt(tmp_path, "oceanicvibes", SHA, "release-1", customer, "website")
 
 
 def test_edge_convergence_repeats_identical_checks_without_deploying(monkeypatch):
