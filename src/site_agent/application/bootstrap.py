@@ -257,6 +257,90 @@ class WebsiteBootstrapService:
             self._refresh_release_state(state)
             return self._public_state(state)
 
+    def activate_runtime_after_health(
+        self,
+        tenant_id: str,
+        *,
+        release_id: str,
+        source_sha: str,
+    ) -> dict[str, Any]:
+        """Mount a pending tenant after its exact Payload Worker passed health.
+
+        The release runner calls this server-only handoff before the authenticated
+        workspace-connection gate. That ordering is necessary because the gate
+        can only resolve tenants already mounted by this process. Owner-visible
+        bootstrap readiness still waits for the subsequent connection check.
+        """
+        normalized = _component(tenant_id, "website id")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", str(release_id or "")):
+            raise BootstrapError("runtime activation release identity is invalid")
+        if not re.fullmatch(r"[0-9a-f]{40}", str(source_sha or "")):
+            raise BootstrapError("runtime activation source identity is invalid")
+
+        with self._lock:
+            state = self._read_state(normalized)
+            release = state.get("release") if isinstance(state.get("release"), Mapping) else {}
+            if (
+                state.get("step") != "deploying_shell"
+                or release.get("tenant_id") != normalized
+                or release.get("release_id") != release_id
+                or release.get("source_sha") != source_sha
+            ):
+                raise BootstrapError("runtime activation does not match the active bootstrap release")
+
+            try:
+                receipt_path = release_root(self.config) / "runs" / normalized / release_id / "receipt.json"
+                receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, ValueError, ReleaseQueueError) as exc:
+                raise BootstrapError("runtime activation release receipt is unavailable") from exc
+            if (
+                not isinstance(receipt, Mapping)
+                or receipt.get("tenant") != normalized
+                or receipt.get("releaseId") != release_id
+                or receipt.get("sourceSha") != source_sha
+                or receipt.get("status") != "running"
+                or receipt.get("stage") != "verify-connection"
+                or receipt.get("initialSchemaHead") != receipt.get("migrationHead")
+                or receipt.get("approvalId") is not None
+            ):
+                raise BootstrapError("runtime activation is not at the verified Worker health boundary")
+
+            deployment = receipt.get("deployment")
+            uploaded_version = str(receipt.get("uploadedVersion") or "")
+            versions = deployment.get("versions") if isinstance(deployment, Mapping) else None
+            if not uploaded_version or not isinstance(versions, list) or not any(
+                isinstance(version, Mapping)
+                and version.get("version_id") == uploaded_version
+                and version.get("percentage") == 100
+                for version in versions
+            ):
+                raise BootstrapError("runtime activation release is not the exact live Worker version")
+
+            health = receipt.get("health")
+            if not isinstance(health, Mapping):
+                raise BootstrapError("runtime activation has no verified Worker health receipt")
+            expected_health = {
+                "ok": True,
+                "tenant": normalized,
+                "releaseSha": source_sha,
+                "payloadAdmin": receipt.get("payloadAdmin"),
+                "payloadCore": receipt.get("payloadCore"),
+                "contentContract": receipt.get("contentContract"),
+                "schemaRevision": receipt.get("schemaRevision"),
+                "schemaIdentity": receipt.get("schemaIdentity"),
+                "migrationHead": receipt.get("migrationHead"),
+            }
+            if any(health.get(key) != value for key, value in expected_health.items()):
+                raise BootstrapError("runtime activation Worker health does not match the release contract")
+
+            self._mount_runtime(normalized, state)
+            return {
+                "tenant_id": normalized,
+                "release_id": release_id,
+                "source_sha": source_sha,
+                "runtime_active": True,
+            }
+
     def start(self, tenant_id: str, *, display_name: str = "") -> dict[str, Any]:
         normalized = _component(tenant_id, "website id")
         if not bool(self.settings.get("enabled", True)):
@@ -509,8 +593,8 @@ class WebsiteBootstrapService:
         )
         return True
 
-    def _activate_runtime(self, tenant_id: str, state: Mapping[str, Any]) -> None:
-        """Mount the tenant only after the exact Payload Worker is verified live."""
+    def _mount_runtime(self, tenant_id: str, state: Mapping[str, Any]) -> None:
+        """Mount a health-verified tenant for the authenticated connection gate."""
         config_path = Path(str(state.get("config_path") or self._state_path(tenant_id).parent / "config.yaml"))
         token_env = tenant_token_env(tenant_id)
         values = self._read_env(config_path.parent / "tenant.env")
@@ -528,6 +612,14 @@ class WebsiteBootstrapService:
                 )
             except Exception as exc:  # noqa: BLE001 - keep bootstrap diagnostics at this boundary
                 raise BootstrapError(f"tenant runtime could not be activated: {str(exc)[:400]}") from exc
+        try:
+            self.registration.mark_runtime_mounted(tenant_id)
+        except TenantRegistrationError as exc:
+            raise BootstrapError(str(exc)) from exc
+
+    def _activate_runtime(self, tenant_id: str, state: Mapping[str, Any]) -> None:
+        """Mark a mounted tenant owner-ready after its connection gate passes."""
+        self._mount_runtime(tenant_id, state)
         try:
             self.registration.mark_runtime_configured(tenant_id)
         except TenantRegistrationError as exc:

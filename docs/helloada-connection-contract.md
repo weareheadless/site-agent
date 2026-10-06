@@ -62,6 +62,34 @@ from a client component or export it from the UI barrel.
    connection/Growth requests are rejected. Do not accept a public health page,
    HTTP 200 login redirect, secret-list metadata, or a local mock as proof.
 
+### New-workspace runtime activation boundary
+
+A new tenant is intentionally absent from the shared API registry while its
+registration is `pending`. The canonical release sequence must therefore be:
+
+1. Deploy the exact Worker version and persist its release receipt.
+2. Pass the release verifier's exact-version check and `/api/health` contract.
+3. Persist stage `verify-connection`, including the health response, then call
+   the authenticated control-plane `activate-runtime` handoff with the exact
+   tenant, release ID, and source SHA.
+4. The API validates that handoff against the bootstrap state and central
+   release receipt: matching tenant/release/SHA, a running `verify-connection`
+   stage, the exact 100%-traffic uploaded Worker version, and matching shared
+   Payload health identity. Only then does it mount the tenant and change its
+   registry state from `pending` to `runtime` so the API can serve the
+   authenticated connection gate. This is not owner-ready state.
+5. Run the existing tenant-token-authenticated connection check, including a
+   read-only Payload gateway round trip. Only after this succeeds and the
+   release receipt records `connectionVerifiedAt` does bootstrap change the
+   tenant from `runtime` to `ready` and expose the owner workspace as ready.
+
+This ordering is part of the shared release contract, not a UI polling side
+effect. It must complete when the owner's browser is closed. Existing website
+releases do not run bootstrap activation; they use the same health and
+connection checks against the already-mounted tenant. Do not expose pending
+tenants to the public workspace API, skip the authenticated connection gate,
+or treat a successful Worker health check alone as owner readiness.
+
 The owner-authenticated connection response exposes presence booleans,
 binding source, expected tenant and a bounded failure code only. It never
 returns a service token, secret URL, environment dump, or provider credentials.

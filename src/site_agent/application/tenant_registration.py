@@ -112,7 +112,7 @@ def load_provisioned_tenants(
             or not _SAFE_ENV.fullmatch(token_env)
         ):
             raise TenantRegistrationError(f"tenant {tenant_id} registration paths are invalid")
-        if bootstrap_state not in {"pending", "ready"}:
+        if bootstrap_state not in {"pending", "runtime", "ready"}:
             raise TenantRegistrationError(
                 f"tenant {tenant_id} has an unsupported bootstrap state"
             )
@@ -249,8 +249,15 @@ class TenantRegistrationService:
         os.chmod(temporary, 0o600)
         temporary.replace(path)
 
+    def mark_runtime_mounted(self, tenant_id: str) -> None:
+        """Persist that a health-verified Payload runtime is mounted for its connection gate."""
+        self._mark_runtime_state(tenant_id, target="runtime", allowed={"pending", "runtime", "ready"})
+
     def mark_runtime_configured(self, tenant_id: str) -> None:
-        """Make a fully configured Payload tenant eligible for API startup."""
+        """Mark a mounted Payload tenant owner-ready after the connection gate passes."""
+        self._mark_runtime_state(tenant_id, target="ready", allowed={"runtime", "ready"})
+
+    def _mark_runtime_state(self, tenant_id: str, *, target: str, allowed: set[str]) -> None:
         with self._lock:
             descriptor = self._registry_lock()
             try:
@@ -270,19 +277,23 @@ class TenantRegistrationService:
                     raise TenantRegistrationError("configured tenant identity does not match its registry entry")
                 site = raw.get("site") if isinstance(raw, Mapping) and isinstance(raw.get("site"), Mapping) else {}
                 payload = site.get("payload") if isinstance(site.get("payload"), Mapping) else {}
-                if site.get("adapter") != "payload_gateway" or payload.get("enabled") is not True:
+                if (
+                    site.get("adapter") != "payload_gateway"
+                    or payload.get("enabled") is not True
+                    or payload.get("token_env") != token_env
+                ):
                     raise TenantRegistrationError("tenant Payload runtime is not configured")
                 state = self._indexed_bootstrap_state(normalized)
-                if state == "ready":
+                if state == target or (target == "runtime" and state == "ready"):
                     return
-                if state not in {"", "pending"}:
+                if state not in allowed:
                     raise TenantRegistrationError("tenant has an unsupported bootstrap state")
                 self._record_index(
                     self.root,
                     normalized,
                     config_path,
                     token_env,
-                    bootstrap_state="ready",
+                    bootstrap_state=target,
                 )
             finally:
                 fcntl.flock(descriptor, fcntl.LOCK_UN)
@@ -345,7 +356,7 @@ class TenantRegistrationService:
             if not data_dir or not token:
                 raise TenantRegistrationError("existing tenant registration is incomplete")
             state = self._indexed_bootstrap_state(normalized)
-            if state == "ready":
+            if state in {"runtime", "ready"}:
                 raise TenantRegistrationError("configured tenant runtime is missing from the registry")
             if state not in {"", "pending"}:
                 raise TenantRegistrationError("existing tenant has an unsupported bootstrap state")

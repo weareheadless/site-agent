@@ -112,13 +112,21 @@ def test_only_a_configured_payload_runtime_becomes_restart_loadable(tmp_path):
         tenant_path = tmp_path / "websites" / "new-site" / "config.yaml"
         tenant_config = yaml.safe_load(tenant_path.read_text(encoding="utf-8"))
         tenant_config["site"]["payload"]["enabled"] = True
+        tenant_config["site"]["payload"]["token_env"] = "PROVISIONED_NEW_SITE_TOKEN"
         TenantRegistrationService._replace_config(tenant_path, tenant_config)
 
-        service.mark_runtime_configured("new-site")
+        service.mark_runtime_mounted("new-site")
 
         declared, extra_env = load_provisioned_tenants(config, env)
         assert declared["new-site"]["config_path"] == str(tenant_path)
         assert extra_env["PROVISIONED_NEW_SITE_TOKEN"]
+        index = json.loads((tmp_path / "websites" / "tenants.json").read_text(encoding="utf-8"))
+        assert index["new-site"]["bootstrap_state"] == "runtime"
+        runtime_registry = TenantRegistry.from_config(config, env)
+        assert runtime_registry.for_tenant_id("new-site") is not None
+        runtime_registry.close()
+
+        service.mark_runtime_configured("new-site")
         index = json.loads((tmp_path / "websites" / "tenants.json").read_text(encoding="utf-8"))
         assert index["new-site"]["bootstrap_state"] == "ready"
         assert registry.for_tenant_id("new-site") is None
