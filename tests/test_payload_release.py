@@ -289,7 +289,7 @@ def test_release_registry_requires_exact_shared_payload_versions(field):
 
 def test_worker_contract_requires_the_registered_tenant_and_all_shared_versions():
     customer = CUSTOMER
-    worker = {"name": "oceanicvibes", "tenant": "oceanicvibes", "d1Count": 1, "r2Count": 1,
+    worker = {"name": "oceanicvibes", "tenant": "oceanicvibes", "d1Count": 1, "d1Binding": "D1", "r2Count": 1, "r2Binding": "R2",
         "admin": customer["payloadAdmin"], "core": customer["payloadCore"],
         "contract": customer["contentContract"], "schemaRevision": customer["schemaRevision"],
         "schemaIdentity": customer["schemaIdentity"], "migrationHead": customer["migrationHead"],
