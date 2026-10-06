@@ -300,7 +300,7 @@ def test_pending_bootstrap_status_is_visible_before_runtime_activation(tmp_path)
 
 def test_bootstrap_worker_names_fit_the_workers_dev_preview_limit():
     service = WebsiteBootstrapService.__new__(WebsiteBootstrapService)
-    service.settings = {"resource_prefix": "helloada"}
+    service.config = {"bootstrap": {"resource_prefix": "helloada"}}
     tenant_id = "northstar-coffee-e2e-validation-8fbf2e6fea671768"
 
     first = service._names(tenant_id)
@@ -314,7 +314,7 @@ def test_bootstrap_worker_names_fit_the_workers_dev_preview_limit():
 
 def test_bootstrap_resource_names_remain_bounded_for_maximum_tenant_ids():
     service = WebsiteBootstrapService.__new__(WebsiteBootstrapService)
-    service.settings = {"resource_prefix": "helloada"}
+    service.config = {"bootstrap": {"resource_prefix": "helloada"}}
 
     names = service._names("n" + "orthstar-coffee-e2e-validation-" + "a" * 32)
 
@@ -326,7 +326,7 @@ def test_bootstrap_resource_names_remain_bounded_for_maximum_tenant_ids():
 
 def test_bootstrap_short_resource_names_keep_the_existing_stable_identity():
     service = WebsiteBootstrapService.__new__(WebsiteBootstrapService)
-    service.settings = {"resource_prefix": "helloada"}
+    service.config = {"bootstrap": {"resource_prefix": "helloada"}}
 
     names = service._names("oceanicvibes")
 
