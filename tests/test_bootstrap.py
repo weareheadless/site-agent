@@ -205,13 +205,17 @@ def test_bootstrap_release_accepts_the_canonical_owner_repository_identity(tmp_p
     service.config = {"deployment_pipeline": {"release_root": str(release_root)}}
     service.env = {}
 
+    git_calls = []
+
     def fake_git(_site_dir, *args):
+        git_calls.append(args)
         return {
             ("remote", "get-url", "origin"): "git@github.com:weareheadless/helloada-demo.git",
             ("branch", "--show-current"): "main",
-            ("status", "--porcelain"): "",
+            ("status", "--porcelain"): " M wrangler.jsonc",
+            ("diff", "--cached", "--name-only"): "wrangler.jsonc",
             ("rev-parse", "HEAD"): "a" * 40,
-        }[args]
+        }.get(args, "")
 
     captured = {}
 
@@ -241,6 +245,36 @@ def test_bootstrap_release_accepts_the_canonical_owner_repository_identity(tmp_p
     }
     assert result["tenant_id"] == "demo"
     assert result["release_id"] == "bootstrap-demo"
+    assert git_calls[2:] == [
+        ("status", "--porcelain"),
+        ("add", "--", "wrangler.jsonc"),
+        ("diff", "--cached", "--name-only"),
+        ("commit", "-qm", "Configure canonical Payload Worker bindings"),
+        ("push", "origin", "main"),
+        ("rev-parse", "HEAD"),
+    ]
+
+
+def test_git_status_preserves_porcelain_columns(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from site_agent.application import bootstrap as bootstrap_module
+
+    service = WebsiteBootstrapService.__new__(WebsiteBootstrapService)
+    service.config = {}
+    service.env = {}
+    monkeypatch.setattr(service, "_git_env", lambda: {})
+    monkeypatch.setattr(
+        bootstrap_module.subprocess,
+        "run",
+        lambda *args, **kwargs: SimpleNamespace(
+            returncode=0,
+            stdout=" M wrangler.jsonc\n",
+            stderr="",
+        ),
+    )
+
+    assert service._git(tmp_path, "status", "--porcelain") == " M wrangler.jsonc"
 
 
 def test_bootstrap_refuses_to_guess_a_payload_contract(tmp_path):
