@@ -43,6 +43,49 @@ def payload_migration_command(manifest: dict[str, Any]) -> list[str]:
     return [str(Path(manifest["npmBin"]) / "npm"), "run", "payload", "--", "migrate"]
 
 
+def payload_migration_config_file(temporary_directory: Path, customer: dict[str, Any],
+                                  worker_config: dict[str, Any]) -> Path:
+    """Build a private Wrangler config that explicitly targets this tenant's remote bindings."""
+    compatibility_date = str(worker_config.get("compatibilityDate") or "")
+    try:
+        datetime.strptime(compatibility_date, "%Y-%m-%d")
+    except ValueError as error:
+        raise ValueError("Payload migration requires the exact Worker compatibility date") from error
+    flags = worker_config.get("compatibilityFlags")
+    if not isinstance(flags, list) or any(not isinstance(flag, str) or not flag for flag in flags):
+        raise ValueError("Payload migration requires the exact Worker compatibility flags")
+    config = {
+        "name": customer["worker"],
+        "compatibility_date": compatibility_date,
+        "compatibility_flags": flags,
+        "d1_databases": [{
+            "binding": "D1",
+            "database_id": customer["d1DatabaseId"],
+            "database_name": customer["d1DatabaseName"],
+            "remote": True,
+        }],
+        "r2_buckets": [{
+            "binding": "R2",
+            "bucket_name": customer["r2BucketName"],
+            "remote": True,
+        }],
+    }
+    temporary_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor, filename = tempfile.mkstemp(
+        prefix=".helloada-payload-migration-", suffix=".jsonc", dir=temporary_directory,
+    )
+    path = Path(filename)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(config, stream, indent=2, sort_keys=True)
+            stream.write("\\n")
+        return path
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+
+
 def validate_payload_verifier(checkout: Path) -> None:
     """Require the exact site-agent verifier before any build or tenant D1 mutation."""
     template = ROOT / "src/site_agent/templates/next-payload"
@@ -151,6 +194,15 @@ def validate_toolchain_manifest(manifest: dict[str, Any]) -> None:
 def validate_worker_contract(worker_config: dict[str, Any], customer: dict[str, Any], tenant: str) -> None:
     if worker_config.get("d1Count") != 1 or worker_config.get("r2Count") != 1:
         raise RuntimeError("Worker must have exactly one canonical tenant D1 and R2 binding")
+    if worker_config.get("d1Binding") != "D1" or worker_config.get("r2Binding") != "R2":
+        raise RuntimeError("Worker must use the canonical D1 and R2 binding names")
+    try:
+        datetime.strptime(str(worker_config.get("compatibilityDate") or ""), "%Y-%m-%d")
+    except ValueError as error:
+        raise RuntimeError("Worker compatibility date is missing or invalid") from error
+    flags = worker_config.get("compatibilityFlags")
+    if not isinstance(flags, list) or any(not isinstance(flag, str) or not flag for flag in flags):
+        raise RuntimeError("Worker compatibility flags are missing or invalid")
     if worker_config.get("name") != customer["worker"] or worker_config.get("tenant") != tenant:
         raise RuntimeError("Worker name or tenant binding does not match the registry")
     if worker_config.get("admin") != customer["payloadAdmin"]:
@@ -206,10 +258,28 @@ def applied_payload_migrations(customer: dict[str, Any], env: dict[str, str]) ->
     return table_names, [str(row.get("name") or "") for row in rows]
 
 
+def run_payload_migration(checkout: Path, customer: dict[str, Any], worker_config: dict[str, Any],
+                          env: dict[str, str], base: dict[str, str], manifest: dict[str, Any],
+                          tenant: str, temporary_directory: Path) -> str:
+    config_path = payload_migration_config_file(temporary_directory, customer, worker_config)
+    try:
+        runtime = tenant_runtime_secrets(manifest, tenant)
+        migration_env = {
+            **base, **env, **runtime,
+            "NODE_ENV": "production",
+            "PAYLOAD_CLI": "1",
+            "HELLOADA_CLOUDFLARE_CONFIG_PATH": str(config_path),
+        }
+        return run(payload_migration_command(manifest), checkout, migration_env)
+    finally:
+        config_path.unlink(missing_ok=True)
+
+
 def enforce_payload_migrations(checkout: Path, customer: dict[str, Any], env: dict[str, str],
                                initialization_head: str | None, migration_from_ledger: str | None,
                                base: dict[str, str],
-                               manifest: dict[str, Any], tenant: str, stage: Any) -> list[str]:
+                               manifest: dict[str, Any], tenant: str, stage: Any,
+                               worker_config: dict[str, Any], temporary_directory: Path) -> list[str]:
     from site_agent.payload_contract import PayloadContractError, validate_payload_migrations
 
     try:
@@ -228,9 +298,7 @@ def enforce_payload_migrations(checkout: Path, customer: dict[str, Any], env: di
         if initialization_head != template["migrationHead"]:
             raise RuntimeError("empty tenant D1 requires the explicit bootstrap initialization receipt")
         stage("initialize-schema")
-        runtime = tenant_runtime_secrets(manifest, tenant)
-        migration_env = {**base, **env, **runtime, "NODE_ENV": "production", "PAYLOAD_CLI": "1"}
-        run(payload_migration_command(manifest), checkout, migration_env)
+        run_payload_migration(checkout, customer, worker_config, env, base, manifest, tenant, temporary_directory)
         tables, applied = applied_payload_migrations(customer, env)
     elif "payload_migrations" not in tables:
         raise RuntimeError("non-empty tenant D1 has no Payload migration ledger")
@@ -243,9 +311,7 @@ def enforce_payload_migrations(checkout: Path, customer: dict[str, Any], env: di
         if migration_ledger_head(applied) != migration_from_ledger:
             raise RuntimeError("tenant D1 migration ledger changed after the schema-migration request was approved")
         stage("migrate-schema")
-        runtime = tenant_runtime_secrets(manifest, tenant)
-        migration_env = {**base, **env, **runtime, "NODE_ENV": "production", "PAYLOAD_CLI": "1"}
-        run(payload_migration_command(manifest), checkout, migration_env)
+        run_payload_migration(checkout, customer, worker_config, env, base, manifest, tenant, temporary_directory)
         tables, applied = applied_payload_migrations(customer, env)
     elif migration_from_ledger is not None:
         prefix_heads = {
@@ -642,7 +708,9 @@ def main() -> int:
                       "d1DatabaseId:c.d1_databases?.[0]?.database_id,"
                       "d1DatabaseName:c.d1_databases?.[0]?.database_name,"
                       "r2Count:Array.isArray(c.r2_buckets)?c.r2_buckets.length:0,"
-                      "r2BucketName:c.r2_buckets?.[0]?.bucket_name}));"], checkout, base)
+                      "r2BucketName:c.r2_buckets?.[0]?.bucket_name,"
+                      "compatibilityDate:c.compatibility_date,compatibilityFlags:c.compatibility_flags||[],"
+                      "d1Binding:c.d1_databases?.[0]?.binding,r2Binding:c.r2_buckets?.[0]?.binding}));"], checkout, base)
         wrangler = json.loads(parsed)
         validate_worker_contract(wrangler, customer, args.tenant)
         run(["npm", "run", "typecheck"], checkout, base)
@@ -682,7 +750,7 @@ def main() -> int:
         # request can advance an existing tenant ledger.
         receipt["appliedMigrations"] = enforce_payload_migrations(
             checkout, customer, deploy_env, args.initialize_schema_head,
-            args.schema_migration_from_ledger_identity, base, manifest, args.tenant, stage,
+            args.schema_migration_from_ledger_identity, base, manifest, args.tenant, stage, wrangler, temporary_root,
         )
         receipt["verifiedMigrationHead"] = customer["migrationHead"]
         stage("verify-payload-contract")
