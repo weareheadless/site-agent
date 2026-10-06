@@ -17,6 +17,7 @@ _REPOSITORY = "weareheadless/site-agent"
 _GITHUB_API = "https://api.github.com"
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _TENANT = re.compile(r"^[a-z][a-z0-9-]{1,62}$")
+_RELEASE_ID = re.compile(r"^rel-\d{14}-[0-9a-f]{8}$")
 _VERSION = re.compile(r"^\d+\.\d+\.\d+$")
 _CONTRACT = re.compile(r"^helloada-content-v\d+$")
 
@@ -119,6 +120,7 @@ class GitHubReleaseQueue:
         *,
         approval_id: int | str | None = None,
         initialize_schema: bool = False,
+        release_id: str | None = None,
     ) -> dict[str, str]:
         tenant = str(tenant or "").strip().lower()
         source_sha = str(source_sha or "").strip().lower()
@@ -129,6 +131,9 @@ class GitHubReleaseQueue:
             raise GitHubReleaseQueueError("approval identity must be a positive integer")
         if initialize_schema and approval_id is not None:
             raise GitHubReleaseQueueError("schema initialization is reserved for new-tenant bootstrap")
+        requested_release_id = str(release_id or "").strip().lower() or None
+        if requested_release_id is not None and not _RELEASE_ID.fullmatch(requested_release_id):
+            raise GitHubReleaseQueueError("release attempt identity is invalid")
 
         for attempt in range(4):
             status, ref = self._request("GET", f"/repos/{_REPOSITORY}/git/ref/heads/main")
@@ -172,22 +177,30 @@ class GitHubReleaseQueue:
 
             current = releases.get(tenant)
             expected_approval = int(approval_id) if approval_id is not None else None
-            if (
+            same_request = (
                 isinstance(current, Mapping)
                 and current.get("sha") == source_sha
                 and current.get("approvalId") == expected_approval
                 and current.get("initializeSchema") == (
                     {"migrationHead": normalized_customer["migrationHead"]} if initialize_schema else None
                 )
-                and isinstance(current.get("id"), str)
-            ):
+            )
+            if isinstance(current, Mapping) and current.get("id") == requested_release_id and requested_release_id:
+                if not same_request:
+                    raise GitHubReleaseQueueError("release attempt identity is already bound to a different request")
+                return {
+                    "release_id": requested_release_id,
+                    "source_sha": source_sha,
+                    "control_sha": parent_sha,
+                }
+            if requested_release_id is None and same_request and isinstance(current.get("id"), str):
                 return {
                     "release_id": current["id"],
                     "source_sha": source_sha,
                     "control_sha": parent_sha,
                 }
 
-            release_id = datetime.now(timezone.utc).strftime("rel-%Y%m%d%H%M%S-") + secrets.token_hex(4)
+            release_id = requested_release_id or datetime.now(timezone.utc).strftime("rel-%Y%m%d%H%M%S-") + secrets.token_hex(4)
             request: dict[str, Any] = {"id": release_id, "sha": source_sha}
             if approval_id is not None:
                 request["approvalId"] = int(approval_id)

@@ -121,6 +121,18 @@ def _verify_wheel_runtime_dependencies(python: str, wheel: Path, *, cwd: Path,
         )
 
 
+def _verify_payload_template_bundle(site_packages: Path) -> None:
+    """Require the installed wheel to contain the canonical bootstrap scaffold."""
+    template = site_packages / "site_agent" / "templates" / "next-payload"
+    required = (".gitignore", "template-manifest.json", "helloada-content-contract.json", "wrangler.jsonc")
+    missing = [name for name in required if not (template / name).is_file()]
+    if missing:
+        raise RuntimeError("API wheel is missing canonical Payload template files: " + ", ".join(missing))
+    rules = set((template / ".gitignore").read_text(encoding="utf-8").splitlines())
+    if not {"node_modules/", "*.tsbuildinfo"}.issubset(rules):
+        raise RuntimeError("API wheel Payload ignore rules do not exclude generated Node/TypeScript files")
+
+
 def _set_current(current: Path, destination: Path) -> None:
     if current.exists() and not current.is_symlink():
         raise RuntimeError("API current release path is not a managed symlink")
@@ -317,6 +329,7 @@ def deploy(source_dir: Path, source_sha: str, release_id: str, root: Path,
         site_packages = staging / "site-packages"
         _run([python, "-m", "pip", "install", "--no-deps", "--no-index", "--target",
               str(site_packages), str(wheel)], cwd=source_dir, env=clean_env, log_path=log_path)
+        _verify_payload_template_bundle(site_packages)
         smoke_env = {**clean_env, "PYTHONPATH": str(site_packages)}
         smoke = _run([python, "-c",
                       "import importlib.metadata as m, importlib.util, json, pathlib; "
