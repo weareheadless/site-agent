@@ -90,7 +90,7 @@ def test_release_source_hash_ignores_only_build_caches(tmp_path):
     assert release._source_tree_hash(tmp_path) != first
 
 
-def test_release_snapshot_contains_only_the_requested_helloada_commit(tmp_path):
+def test_helloada_source_is_materialized_only_in_a_job_workspace(tmp_path):
     reconciler_spec = importlib.util.spec_from_file_location(
         "helloada_release_reconciler_test", ROOT / "scripts/reconcile-payload-releases.py",
     )
@@ -113,11 +113,41 @@ def test_release_snapshot_contains_only_the_requested_helloada_commit(tmp_path):
     bare = tmp_path / "helloada.git"
     subprocess.run(["git", "clone", "-q", "--bare", str(repository), str(bare)], check=True)
 
-    snapshot = reconciler.snapshot_helloada_source(bare, tmp_path / "releases", first_sha)
-    assert (snapshot / ".helloada-source-sha").read_text().strip() == first_sha
-    assert (snapshot / "src/page.tsx").read_text() == "first exact app source\n"
-    assert reconciler.snapshot_helloada_source(bare, tmp_path / "releases", first_sha) == snapshot
+    first_workspace = tmp_path / "work" / "job-one"
+    first_snapshot = reconciler.snapshot_helloada_source(bare, first_workspace / "source", first_sha)
+    assert (first_snapshot / ".helloada-source-sha").read_text().strip() == first_sha
+    assert (first_snapshot / "src/page.tsx").read_text() == "first exact app source\n"
 
-    (snapshot / ".helloada-source-sha").write_text("b" * 40 + "\n")
-    with pytest.raises(RuntimeError, match="snapshot identity mismatch"):
-        reconciler.snapshot_helloada_source(bare, tmp_path / "releases", first_sha)
+    second_workspace = tmp_path / "work" / "job-two"
+    second_snapshot = reconciler.snapshot_helloada_source(bare, second_workspace / "source", first_sha)
+    assert first_snapshot != second_snapshot
+    assert (second_snapshot / "src/page.tsx").read_text() == "first exact app source\n"
+    assert not (tmp_path / "releases" / "helloada-sources").exists()
+
+    with pytest.raises(RuntimeError, match="destination must be a new workspace path"):
+        reconciler.snapshot_helloada_source(bare, first_snapshot, first_sha)
+
+
+def test_legacy_helloada_build_cache_cleanup_removes_only_generated_caches(tmp_path):
+    reconciler_spec = importlib.util.spec_from_file_location(
+        "helloada_release_cache_cleanup_test", ROOT / "scripts/reconcile-payload-releases.py",
+    )
+    assert reconciler_spec is not None and reconciler_spec.loader is not None
+    reconciler = importlib.util.module_from_spec(reconciler_spec)
+    reconciler_spec.loader.exec_module(reconciler)
+
+    (tmp_path / "helloada-sources" / ("a" * 40)).mkdir(parents=True)
+    (tmp_path / "npm-cache" / "_cache").mkdir(parents=True)
+    mirror = tmp_path / "helloada-control.git"
+    mirror.mkdir()
+    stale_control = tmp_path / "control" / ("b" * 40)
+    stale_control.mkdir(parents=True)
+    (stale_control / "old-source.txt").write_text("reproducible from GitHub")
+
+    reconciler.cleanup_legacy_helloada_build_caches(tmp_path)
+    reconciler.cleanup_stale_control_snapshots(tmp_path, "a" * 40)
+
+    assert not (tmp_path / "helloada-sources").exists()
+    assert not (tmp_path / "npm-cache").exists()
+    assert not stale_control.exists()
+    assert mirror.is_dir()

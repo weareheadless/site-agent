@@ -13,7 +13,6 @@ import shutil
 import stat
 import subprocess
 import sys
-import tarfile
 import tempfile
 import time
 import urllib.error
@@ -251,7 +250,7 @@ def deploy(source_dir: Path, source_sha: str, release_id: str, root: Path,
         print(f"[helloada-app] stage={name} release={release_id}", flush=True)
 
     try:
-        private_key = _load_handoff_secret(config, directory)
+        private_key = _load_handoff_secret(config, source_dir.parent)
         profile = {"credentials": {"profile_file": str(toolchain["credentialProfile"] )}}
         sys.path.insert(0, str(ROOT / "src"))
         from site_agent.credentials import credential_environment, credential_profile, github_ssh_command
@@ -260,8 +259,8 @@ def deploy(source_dir: Path, source_sha: str, release_id: str, root: Path,
             raise RuntimeError("declared Cloudflare credential file is missing")
         safe_base = {key: value for key, value in os.environ.items() if key in ("HOME", "USER", "LANG", "TZ")}
         safe_base.update({"PATH": str(toolchain["npmBin"]) + ":" + str(toolchain["nodeBin"]) + ":/usr/local/bin:/usr/bin:/bin",
-                          "CI": "1", "npm_config_cache": str(root / "npm-cache")})
-        temporary = directory / "temporary"
+                          "CI": "1", "npm_config_cache": str(source_dir.parent / "npm-cache")})
+        temporary = source_dir.parent / "temporary"
         temporary.mkdir(mode=0o700)
         safe_base["TMPDIR"] = str(temporary)
         build_env = {**safe_base, "PAYLOAD_LOCAL_BUILD": "1", "CLOUDFLARE_REMOTE_BINDINGS": "0",
@@ -308,16 +307,11 @@ def deploy(source_dir: Path, source_sha: str, release_id: str, root: Path,
         if _source_tree_hash(source_dir) != source_hash:
             raise RuntimeError("OpenNext changed tracked HelloAda source")
         receipt["artifactSha256"] = hashlib.sha256(json.dumps(artifact_files, sort_keys=True).encode()).hexdigest()
-        archive_path = directory / "open-next.tar.gz"
-        with tarfile.open(archive_path, "w:gz") as archive:
-            archive.add(artifact, arcname=".open-next")
-        receipt["archiveSha256"] = hashlib.sha256(archive_path.read_bytes()).hexdigest()
-
         stage("upload")
         if _WORKER_RELEASE.cloudflare_deployment(config, deploy_env).get("id") != public.get("id"):
             raise RuntimeError("HelloAda production changed during the build; inspect it before retrying")
         receipt["uploadedVersion"] = _WORKER_RELEASE.upload_worker_version(
-            source_dir, source_sha, release_id, directory,
+            source_dir, source_sha, release_id, source_dir.parent,
             {config["privateKeyName"]: private_key}, deploy_env,
         )
         if _WORKER_RELEASE.file_hashes(artifact) != artifact_files:

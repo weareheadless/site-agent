@@ -148,27 +148,56 @@ def snapshot_api_source(mirror: Path, root: Path, source_sha: str) -> Path:
     return snapshot
 
 
-def snapshot_helloada_source(mirror: Path, root: Path, source_sha: str) -> Path:
-    snapshot = root / "helloada-sources" / source_sha
-    marker = snapshot / ".helloada-source-sha"
-    if snapshot.exists():
-        if not marker.is_file() or marker.read_text(encoding="ascii").strip() != source_sha:
-            raise RuntimeError("cached HelloAda source snapshot identity mismatch")
-        return snapshot
-    snapshot.parent.mkdir(parents=True, exist_ok=True)
-    staging = Path(tempfile.mkdtemp(prefix="helloada-source-", dir=snapshot.parent))
+def snapshot_helloada_source(mirror: Path, destination: Path, source_sha: str) -> Path:
+    if not re.fullmatch(r"[0-9a-f]{40}", source_sha):
+        raise ValueError("HelloAda source snapshot requires a full immutable SHA")
+    if destination.exists() or destination.is_symlink():
+        raise RuntimeError("HelloAda source destination must be a new workspace path")
+    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    staging = Path(tempfile.mkdtemp(prefix="helloada-source-", dir=destination.parent))
     try:
-        with subprocess.Popen(["git", "-C", str(mirror), "archive", source_sha], stdout=subprocess.PIPE) as archive:
+        with subprocess.Popen(
+            ["git", "-C", str(mirror), "archive", source_sha],
+            stdout=subprocess.PIPE,
+        ) as archive:
             subprocess.run(["tar", "-x", "-C", str(staging)], stdin=archive.stdout, check=True)
+            if archive.stdout:
+                archive.stdout.close()
             if archive.wait():
                 raise RuntimeError("could not snapshot HelloAda source commit")
         marker_path = staging / ".helloada-source-sha"
         marker_path.write_text(source_sha + "\n", encoding="ascii")
-        staging.rename(snapshot)
+        staging.rename(destination)
     except Exception:
         shutil.rmtree(staging, ignore_errors=True)
         raise
-    return snapshot
+    return destination
+
+
+def cleanup_legacy_helloada_build_caches(root: Path) -> None:
+    for name in ("helloada-sources", "npm-cache"):
+        path = root / name
+        if not path.exists() and not path.is_symlink():
+            continue
+        if path.is_symlink() or not path.is_dir():
+            raise RuntimeError(f"legacy HelloAda build cache is not a real directory: {name}")
+        shutil.rmtree(path)
+
+
+def cleanup_stale_control_snapshots(root: Path, source_sha: str) -> None:
+    snapshots = root / "control"
+    if snapshots.is_symlink():
+        raise RuntimeError("control snapshot root must not be a symlink")
+    if not snapshots.exists():
+        return
+    if not snapshots.is_dir():
+        raise RuntimeError("control snapshot root is not a real directory")
+    for stale in snapshots.iterdir():
+        if stale.name == source_sha:
+            continue
+        if stale.is_symlink() or not stale.is_dir():
+            raise RuntimeError("unexpected object in control snapshot root")
+        shutil.rmtree(stale)
 
 
 def main() -> int:
@@ -183,6 +212,7 @@ def main() -> int:
             return 0
         mark_interrupted_runs(args.root)
         cleanup_stale_release_workspaces(args.root)
+        cleanup_legacy_helloada_build_caches(args.root)
         profile = {"credentials": {"profile_file": "/SOCIAL/configs/host-credentials.yaml"}}
         ssh_command = github_ssh_command(profile, {})
         if not ssh_command:
@@ -197,6 +227,7 @@ def main() -> int:
             raise RuntimeError("control repository remote mismatch")
         subprocess.run(["git", "-C", str(mirror), "fetch", "origin", "+refs/heads/main:refs/heads/main"], env=environment, check=True)
         sha = subprocess.check_output(["git", "-C", str(mirror), "rev-parse", "refs/heads/main"], text=True).strip()
+        cleanup_stale_control_snapshots(args.root, sha)
 
         def document(path: str) -> dict:
             return json.loads(subprocess.check_output(["git", "-C", str(mirror), "show", f"{sha}:{path}"], text=True))
@@ -265,18 +296,42 @@ def main() -> int:
             )
             if ancestry.returncode:
                 raise ValueError("HelloAda app release SHA is not an ancestor of official main")
-            app_source = snapshot_helloada_source(app_mirror, args.root, app_request["sha"])
             app_tool = snapshot / "scripts" / "deploy-helloada-app.py"
             if not app_tool.is_file():
                 raise RuntimeError("control snapshot does not contain the HelloAda app release contract")
-            print(f"[queue] HelloAda app release={app_request['id']} source={app_request['sha']}", flush=True)
-            code = subprocess.run(
-                [sys.executable, str(app_tool), "--source-dir", str(app_source),
-                 "--source-sha", app_request["sha"], "--release-id", app_request["id"],
-                 "--root", str(args.root)],
-                env={**environment, "HELLOADA_PIPELINE_SHA": sha},
-            ).returncode
-            failures += int(code != 0)
+            app_run = args.root / "runs" / "helloada-app" / app_request["id"]
+            app_receipt = app_run / "receipt.json"
+            if app_run.exists() or app_run.is_symlink():
+                if app_run.is_symlink() or not app_run.is_dir() or not app_receipt.is_file():
+                    print(f"[queue] HelloAda app {app_request['id']} has no terminal receipt; commit a new release ID",
+                          flush=True)
+                    failures += 1
+                else:
+                    result = json.loads(app_receipt.read_text(encoding="utf-8"))
+                    if result.get("sourceSha") != app_request["sha"] or result.get("releaseId") != app_request["id"]:
+                        raise RuntimeError("HelloAda app release ID was reused for different source")
+                    failures += int(result.get("status") != "deployed")
+            else:
+                work_root = args.root / "work"
+                work_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+                print(f"[queue] HelloAda app release={app_request['id']} source={app_request['sha']}", flush=True)
+                with tempfile.TemporaryDirectory(prefix="helloada-app-", dir=work_root) as workspace:
+                    app_source = snapshot_helloada_source(app_mirror, Path(workspace) / "source",
+                                                          app_request["sha"])
+                    code = subprocess.run(
+                        [sys.executable, str(app_tool), "--source-dir", str(app_source),
+                         "--source-sha", app_request["sha"], "--release-id", app_request["id"],
+                         "--root", str(args.root)],
+                        env={**environment, "HELLOADA_PIPELINE_SHA": sha},
+                    ).returncode
+                failures += int(code != 0)
+                if app_receipt.is_file():
+                    result = json.loads(app_receipt.read_text(encoding="utf-8"))
+                    result["workspaceCleanupStatus"] = "complete"
+                    temporary_receipt = app_receipt.with_suffix(".tmp")
+                    temporary_receipt.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+                    temporary_receipt.chmod(0o600)
+                    temporary_receipt.replace(app_receipt)
         pending = any(not (args.root / "runs" / tenant / request["id"]).exists()
                       for tenant, request in queue["releases"].items())
         if pending:
