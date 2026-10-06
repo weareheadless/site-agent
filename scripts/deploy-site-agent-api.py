@@ -143,6 +143,21 @@ def _health_check(url: str, attempts: int = 60) -> None:
     raise RuntimeError("API /healthz did not pass after restart")
 
 
+def _runtime_config_preflight(source_dir: Path, python: str, log_path: Path) -> None:
+    manifest_path = source_dir / "deploy/payload-customers.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        config_path = str(manifest["connectionGate"]["config"])
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise RuntimeError("API release manifest has no runtime config preflight target") from exc
+    validator = source_dir / "scripts/sync-provisioned-tenant-configs.py"
+    if not Path(config_path).is_absolute() or not validator.is_file():
+        raise RuntimeError("API release is missing its runtime config preflight contract")
+    env = {**os.environ, "PYTHONPATH": str(source_dir / "src")}
+    _run([python, str(validator), "--config", config_path, "--manifest", str(manifest_path), "--validate"],
+         cwd=source_dir, env=env, log_path=log_path)
+
+
 def _restart_api(socket_path: str = RESTART_SOCKET) -> None:
     """Request the one host-authorized action through its fixed-function broker."""
     response = bytearray()
@@ -278,6 +293,8 @@ def deploy(source_dir: Path, source_sha: str, release_id: str, root: Path,
         if staging.exists():
             raise RuntimeError("API staging directory already exists")
         staging.mkdir(mode=0o700)
+        _runtime_config_preflight(source_dir, python, log_path)
+        _record(receipt_path, receipt, "runtime-config-passed")
         test_env = {**os.environ, "PYTHONPATH": str(source_dir / "src")}
         _run([python, "-m", "pytest", "-q"], cwd=source_dir, env=test_env, log_path=log_path)
         _record(receipt_path, receipt, "tests-passed")

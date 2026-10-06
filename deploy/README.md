@@ -52,6 +52,26 @@ new dependency, first provision and validate that dependency in the service
 environment as an explicit dependency release; the API queue will not install
 packages ad hoc.
 
+Before an API release, the same snapshot validates every ready tenant in the
+single provisioned registry against its runtime contract. It checks each
+tenant's explicit website state, Payload adapter, token, and exact contract,
+core version, schema revision, and schema identity from this manifest. A
+failure stops before tests, slot activation, or service restart. Existing
+tenant configs are migrated explicitly with
+`scripts/sync-provisioned-tenant-configs.py`: run `--sync --tenant <id>` first
+to inspect a dry-run, then repeat with `--apply` only for the reviewed tenant
+IDs, and finish with `--validate`. The migration updates tenant runtime
+metadata only; it does not change a Payload database, Worker, content document,
+or schema. Keep customers on their currently deployed schema identity unless a
+separate reviewed schema migration is queued.
+
+To apply that config-only migration on the VPS, use the exact reviewed
+official-main source snapshot and the configured API Python environment. Do not
+edit tenant configs manually or run a mutable checkout's copy of the script.
+Queue neither API nor app releases until dry-run output has been reviewed and
+the explicit apply plus full-registry validation succeeds. Then queue the API
+release first; the dispatcher serializes the app release behind it.
+
 ## HelloAda project-selector release
 
 HelloAda's own Worker uses this same timer and dispatcher; it is not deployed

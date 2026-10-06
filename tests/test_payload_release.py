@@ -59,6 +59,28 @@ def test_api_release_queue_requires_one_immutable_source_identity():
             api_deploy.validate_api_queue(invalid)
 
 
+def test_api_deploy_runs_the_snapshot_runtime_config_gate_before_service_activation(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    (source / "deploy").mkdir(parents=True)
+    (source / "scripts").mkdir()
+    config_path = "/SOCIAL/configs/site-agent-api/config.yaml"
+    (source / "deploy/payload-customers.json").write_text(json.dumps({
+        "connectionGate": {"config": config_path},
+    }))
+    validator = source / "scripts/sync-provisioned-tenant-configs.py"
+    validator.write_text("# exact snapshot validator\n")
+    calls = []
+    monkeypatch.setattr(api_deploy, "_run", lambda *args, **kwargs: calls.append((args, kwargs)))
+
+    api_deploy._runtime_config_preflight(source, "/venv/bin/python", tmp_path / "deploy.log")
+
+    command, options = calls[0][0][0], calls[0][1]
+    assert command[:3] == ["/venv/bin/python", str(validator), "--config"]
+    assert command[3:] == [config_path, "--manifest", str(source / "deploy/payload-customers.json"), "--validate"]
+    assert options["cwd"] == source
+    assert options["env"]["PYTHONPATH"] == str(source / "src")
+
+
 def test_api_wheel_dependency_audit_is_independent_of_pip_install_flags(tmp_path):
     def wheel_with_requirement(filename, requirement):
         wheel = tmp_path / filename
