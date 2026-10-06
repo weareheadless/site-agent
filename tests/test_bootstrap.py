@@ -298,6 +298,48 @@ def test_pending_bootstrap_status_is_visible_before_runtime_activation(tmp_path)
         registry.close()
 
 
+def test_bootstrap_worker_names_fit_the_workers_dev_preview_limit():
+    service = WebsiteBootstrapService.__new__(WebsiteBootstrapService)
+    service.config = {"bootstrap": {"resource_prefix": "helloada"}}
+    tenant_id = "northstar-coffee-e2e-validation-8fbf2e6fea671768"
+
+    first = service._names(tenant_id)
+    second = service._names("northstar-coffee-e2e-validation-54bf2e6fea671768")
+
+    assert len(first["worker"]) == 54
+    assert first["worker"] == service._names(tenant_id)["worker"]
+    assert first["worker"] != second["worker"]
+    assert first["repo"] == f"helloada-{tenant_id}"
+
+
+def test_bootstrap_resource_names_remain_bounded_for_maximum_tenant_ids():
+    service = WebsiteBootstrapService.__new__(WebsiteBootstrapService)
+    service.config = {"bootstrap": {"resource_prefix": "helloada"}}
+    tenant_id = "northstar-coffee-e2e-validation-" + "a" * 31
+
+    assert len(tenant_id) == 63
+    names = service._names(tenant_id)
+
+    assert len(names["worker"]) <= 54
+    assert len(names["repo"]) <= 63
+    assert len(names["d1"]) <= 63
+    assert len(names["r2"]) <= 63
+
+
+def test_bootstrap_short_resource_names_keep_the_existing_stable_identity():
+    service = WebsiteBootstrapService.__new__(WebsiteBootstrapService)
+    service.config = {"bootstrap": {"resource_prefix": "helloada"}}
+
+    names = service._names("oceanicvibes")
+
+    assert names == {
+        "worker": "helloada-oceanicvibes",
+        "repo": "helloada-oceanicvibes",
+        "d1": "helloada-oceanicvibes",
+        "r2": "helloada-oceanicvibes-media",
+    }
+
+
 def test_bootstrap_configures_generic_seo_provisioning_for_new_sites(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text("instance_name: demo\nsite: {}\n", encoding="utf-8")

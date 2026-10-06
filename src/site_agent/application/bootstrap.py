@@ -10,6 +10,7 @@ already happened.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
 import re
@@ -52,6 +53,8 @@ class BootstrapError(RuntimeError):
 
 _SAFE_COMPONENT = re.compile(r"^[a-z][a-z0-9-]{1,62}$")
 _SECRET_ENV = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_WORKERS_DEV_SCRIPT_NAME_MAX_LENGTH = 54
+_RESOURCE_NAME_HASH_LENGTH = 20
 _PRIVATE_RECEIPT_KEYS = frozenset({"site_dir", "config_path", "account_id", "ssh_url", "clone_url"})
 _HELLOADA_HANDOFF_ISSUER = "https://helloada.app"
 
@@ -69,6 +72,20 @@ def _component(value: str, label: str) -> str:
     if not _SAFE_COMPONENT.fullmatch(normalized):
         raise BootstrapError(f"{label} is invalid")
     return normalized
+
+
+def _resource_name(prefix: str, tenant_id: str, label: str, *, max_length: int,
+                   suffix: str = "") -> str:
+    candidate = f"{prefix}-{tenant_id}{suffix}"
+    if len(candidate) > max_length:
+        digest = hashlib.sha256(tenant_id.encode("utf-8")).hexdigest()[:_RESOURCE_NAME_HASH_LENGTH]
+        readable_length = max_length - len(prefix) - len(suffix) - len(digest) - 2
+        readable = tenant_id[:max(0, readable_length)].rstrip("-")
+        identity = f"{prefix}-{readable}-{digest}{suffix}" if readable else f"{prefix}-{digest}{suffix}"
+        if len(identity) > max_length:
+            raise BootstrapError(f"{label} cannot fit the provider's {max_length}-character limit")
+        candidate = identity
+    return _component(candidate, label)
 
 
 def _der_value(data: bytes, offset: int, tag: int) -> tuple[bytes, int]:
@@ -531,10 +548,13 @@ class WebsiteBootstrapService:
     def _names(self, tenant_id: str) -> dict[str, str]:
         prefix = str(self.settings.get("resource_prefix") or "helloada").strip().lower()
         prefix = _component(prefix, "bootstrap resource prefix")
-        worker = _component(f"{prefix}-{tenant_id}", "Worker name")
-        repo = _component(f"{prefix}-{tenant_id}", "repository name")
-        d1 = _component(f"{prefix}-{tenant_id}", "D1 database name")
-        r2 = _component(f"{prefix}-{tenant_id}-media", "R2 bucket name")
+        tenant = _component(tenant_id, "tenant id")
+        worker = _resource_name(
+            prefix, tenant, "Worker name", max_length=_WORKERS_DEV_SCRIPT_NAME_MAX_LENGTH,
+        )
+        repo = _resource_name(prefix, tenant, "repository name", max_length=63)
+        d1 = _resource_name(prefix, tenant, "D1 database name", max_length=63)
+        r2 = _resource_name(prefix, tenant, "R2 bucket name", max_length=63, suffix="-media")
         return {"worker": worker, "repo": repo, "d1": d1, "r2": r2}
 
     def _repository(self, tenant_id: str, display_name: str, config_path: Path) -> Mapping[str, Any]:

@@ -181,7 +181,10 @@ every possible concurrent Payload writer.
   `<worker>.workers.dev`. The canonical release enables that script's
   workers.dev route only after the exact version is promoted and before live
   health/connection verification; a custom-domain release does not change the
-  workers.dev route.
+  workers.dev route. Keep generated Worker script names at or below Cloudflare's
+  54-character limit when the workers.dev preview route is enabled; long tenant
+  IDs must be shortened deterministically with a tenant-specific hash, while
+  already-valid resource names stay stable.
 - Shared Python API releases use `deploy/desired-api-release.json` and the same
   VPS release timer. Queue one new release ID plus the full official `main` SHA;
   the VPS tests that exact source, builds and smoke-checks one wheel, checks its
