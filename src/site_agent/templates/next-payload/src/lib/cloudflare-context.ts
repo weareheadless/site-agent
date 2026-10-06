@@ -24,13 +24,17 @@ export const payloadCloudflareContextPlan = (
   const isDatabaseMigration = argv.some((value) =>
     ['migrate', 'migrate:status', 'migrate:create', 'migrate:down'].includes(value),
   )
+  const isPayloadContractVerifier = argv.some((value) =>
+    value.replaceAll('\\\\', '/').endsWith('/verify-payload-contract.ts'),
+  )
   const configPath = env.HELLOADA_CLOUDFLARE_CONFIG_PATH?.trim()
-  const requiresRemoteMigration = isPayloadCli && isProduction && !isBuild && isDatabaseMigration
-  if (requiresRemoteMigration && !env.CLOUDFLARE_API_TOKEN) {
-    throw new Error('Production Payload migrations require the configured Cloudflare credential.')
+  const requiresRemoteD1 = isPayloadCli && isProduction && !isBuild
+    && (isDatabaseMigration || isPayloadContractVerifier)
+  if (requiresRemoteD1 && !env.CLOUDFLARE_API_TOKEN) {
+    throw new Error('Production Payload data operations require the configured Cloudflare credential.')
   }
-  if (requiresRemoteMigration && !configPath) {
-    throw new Error('Production Payload migrations require the release pipeline’s exact remote-binding Wrangler config.')
+  if (requiresRemoteD1 && !configPath) {
+    throw new Error('Production Payload data operations require the release pipeline’s exact remote-binding Wrangler config.')
   }
   const provider = isPayloadCli || !isProduction || isBuild ? 'wrangler' : 'opennext'
   return {
