@@ -25,7 +25,7 @@ export const payloadCloudflareContextPlan = (
     ['migrate', 'migrate:status', 'migrate:create', 'migrate:down'].includes(value),
   )
   const isPayloadContractVerifier = argv.some((value) =>
-    value.replaceAll('\\\\', '/').endsWith('/verify-payload-contract.ts'),
+    value.replaceAll('\\', '/').endsWith('/verify-payload-contract.ts'),
   )
   const configPath = env.HELLOADA_CLOUDFLARE_CONFIG_PATH?.trim()
   const requiresRemoteD1 = isPayloadCli && isProduction && !isBuild
