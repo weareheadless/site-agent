@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261006-api-bootstrap-retry-fix-1",
-    "sha": "2155e1adb927d3abd78e30dec419d155d0ebc695"
+    "id": "20261006-api-worker-identity-1",
+    "sha": "fa5a52daff63192c52f4338fb74ef802ebf8faba"
   }
 }
