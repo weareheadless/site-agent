@@ -154,8 +154,10 @@ reviewed VPS checkout, using the same recorded tenant, full SHA and release ID:
 .venv/bin/python scripts/deploy-payload-customer.py --tenant <tenant> --ref <full-sha> --release-id <recorded-id> --verify-only
 ```
 
-This command takes the queue lock, checks the retained artifact's hash and
-requires the exact uploaded version at 100% traffic. It does not build, upload,
+This command takes the queue lock, validates the receipt's per-file artifact
+hashes and requires the exact uploaded version at 100% traffic. The built
+workspace is not retained on the VPS; source is reproducible from the recorded
+Git SHA and deployed versions remain in Cloudflare. It does not build, upload,
 promote or change customer data. Prior failures remain in `verificationHistory`.
 The normal gate also waits for edge convergence with bounded repetitions of
 the same strict health and authenticated connection checks. A failure never
@@ -185,8 +187,10 @@ bootstrap from the exact official-main snapshot. The timer persists across
 SSH/chat disconnects and machine restarts. A systemd timeout kills the complete
 process group; the next poll records an interrupted attempt.
 
-Each customer gets a fresh Git clone. Before dependency installation, build, or
-remote database mutation, the pipeline requires the tenant verifier command,
+Each customer gets a fresh Git clone in a unique, mode-0700 workspace under
+`/SOCIAL/payload-releases/work`. The workspace has a job-scoped npm cache and
+is never placed in its durable receipt directory. Before dependency
+installation, build, or remote database mutation, the pipeline requires the tenant verifier command,
 `tsx` runtime and lock entry, and verifier source to match the canonical
 site-agent template exactly, and the declared `@payload-config` alias must
 resolve to one Payload config inside the checkout. Missing or drifted
@@ -199,9 +203,9 @@ preview builder receives the same four-value toolchain contract (`node_path`,
 `node_version`, `npm_command`, `npm_version`) from the host config; tenant
 registrations inherit it centrally. Missing or mismatched versions stop the
 build before dependency installation. Production credentials are supplied only to Cloudflare calls,
-never to dependency installation or builds. The artifact is inspected, hashed
-and archived before upload. The pipeline checks production did not change during
-the build and uploads an immutable, unpromoted version. If the queue entry is an
+never to dependency installation or builds. The artifact is inspected and hashed in the temporary workspace, then uploaded
+directly as an immutable, unpromoted version. The pipeline checks production
+did not change during the build. If the queue entry is an
 explicit tenant schema migration, it verifies the exact live ledger prefix,
 creates a private temporary Wrangler config from the already-validated tenant
 Worker contract, and marks only that tenant's D1 and R2 bindings as remote for
@@ -223,9 +227,17 @@ rewritten by an application release. This keeps the existing deployment token's
 Worker permissions sufficient. See [Cloudflare's deployment permissions](https://developers.cloudflare.com/workers/authorization/workers/)
 and [OpenNext's upload command](https://opennext.js.org/cloudflare/cli).
 
-Artifacts, source, receipts and previous Cloudflare versions are retained under
-`/SOCIAL/payload-releases`. Ordinary application releases never mutate a Payload
-database. The sole exception is an explicit new-tenant bootstrap request carrying
+The durable release record under `/SOCIAL/payload-releases/runs` contains the
+receipt and small browser-verification evidence. Exact source remains in
+GitHub; Cloudflare retains uploaded Worker versions for promotion and rollback.
+The checkout, dependency tree, job-scoped npm cache, temporary configs and
+OpenNext output live only under `/SOCIAL/payload-releases/work` during a build.
+The runner deletes them on success or failure, and the next serialized
+dispatcher pass cleans workspaces left by an interrupted process. The queue lock
+allows one canonical Payload build at a time, and a build refuses to start
+unless at least 8 GiB is free. This makes build storage depend on the one active
+job, not on the number of past releases. Ordinary application releases never
+mutate a Payload database. The sole exception is an explicit new-tenant bootstrap request carrying
 the exact manifest migration-chain hash: the pipeline confirms the registered
 D1 identity is empty, creates the same private remote-binding config from that
 Worker's exact D1/R2 identities, and applies the committed migration chain
