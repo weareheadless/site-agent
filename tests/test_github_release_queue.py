@@ -14,6 +14,7 @@ CUSTOMER = {
     "worker": "helloada-demo",
     "health": "https://demo.example/api/health",
     "adminPath": "/api/helloada",
+    "websitePresent": False,
     "payloadAdmin": "0.8.7",
     "payloadCore": "0.2.0",
     "contentContract": "helloada-content-v2",
@@ -213,6 +214,17 @@ def test_verified_failed_release_retry_creates_a_new_attempt(monkeypatch):
         "initializeSchema": {"migrationHead": CUSTOMER["migrationHead"]},
     }
     assert sum(method == "POST" and path.endswith("/git/commits") for method, path, _ in writes) == 1
+
+
+@pytest.mark.parametrize("website_present", [None, "false", 1])
+def test_release_request_requires_boolean_website_presence(website_present):
+    customer = dict(CUSTOMER)
+    if website_present is None:
+        customer.pop("websitePresent")
+    else:
+        customer["websitePresent"] = website_present
+    with pytest.raises(GitHubReleaseQueueError, match="website-present"):
+        GitHubReleaseQueue("token").request("demo", SHA, customer)
 
 
 def test_release_request_rejects_noncanonical_or_unversioned_customer():
