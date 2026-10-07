@@ -1,5 +1,12 @@
 {
   "releases": {
+    "ada-direct-admin-sso-e2e-a76df8a18660acea": {
+      "id": "rel-20261007042359-db987a5c",
+      "initializeSchema": {
+        "migrationHead": "75064eaeb5a035afc8977d39a59742dfa8bfb5e94d344ca9090e29e516bb2534"
+      },
+      "sha": "419f1c9344d56f6d0a368aff8ac419215f43d91c"
+    },
     "ada-e2e-studio-b39ae17e77014b8c": {
       "id": "rel-20261006-d1-system-table-1",
       "initializeSchema": {

@@ -6,6 +6,21 @@
   },
   "credentialProfile": "/SOCIAL/configs/host-credentials.yaml",
   "customers": {
+    "ada-direct-admin-sso-e2e-a76df8a18660acea": {
+      "adminPath": "/api/helloada",
+      "contentContract": "helloada-content-v3",
+      "d1DatabaseId": "8fb4cbce-6d0a-4a54-8684-f7fb446604b7",
+      "d1DatabaseName": "helloada-ada-direct-admin-sso-e2e-a76df8a18660acea",
+      "health": "https://helloada-ada-direct-admin-sso-e2e-a76df8a18660acea.weareheadless.workers.dev/api/health",
+      "migrationHead": "75064eaeb5a035afc8977d39a59742dfa8bfb5e94d344ca9090e29e516bb2534",
+      "payloadAdmin": "0.10.1",
+      "payloadCore": "0.5.1",
+      "r2BucketName": "helloada-ada-direct-admin-sso-e2e-a76df8a18660acea-media",
+      "repository": "https://github.com/weareheadless/helloada-ada-direct-admin-sso-e2e-a76df8a18660acea.git",
+      "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
+      "schemaRevision": 5,
+      "worker": "helloada-ada-direct-admin-sso-e2e-a76df8a18660acea"
+    },
     "ada-e2e-studio-b39ae17e77014b8c": {
       "adminPath": "/api/helloada",
       "contentContract": "helloada-content-v3",
