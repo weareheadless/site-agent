@@ -11,7 +11,10 @@ import re
 import stat
 import sys
 import tempfile
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
+import urllib.error
+import urllib.parse
+import urllib.request
 
 import yaml
 
@@ -43,26 +46,92 @@ def _read_yaml(path: Path, label: str) -> dict[str, Any]:
     return value
 
 
-def _expected_runtime_contract(customer: Mapping[str, Any]) -> dict[str, Any]:
-    contract = str(customer.get("contentContract") or "").strip()
-    core_version = str(customer.get("payloadCore") or "").strip()
-    revision = customer.get("schemaRevision")
-    identity = str(customer.get("schemaIdentity") or "").strip().lower()
-    if (
-        not re.fullmatch(r"helloada-content-v[1-9][0-9]*", contract)
-        or not re.fullmatch(r"\d+\.\d+\.\d+", core_version)
-        or isinstance(revision, bool)
-        or not isinstance(revision, int)
-        or revision < 1
-        or not re.fullmatch(r"[0-9a-f]{64}", identity)
-    ):
-        raise ValueError("tenant release manifest has no complete Payload runtime identity")
-    return {
-        "contract": contract,
-        "coreVersion": core_version,
-        "schemaRevision": revision,
-        "schemaIdentity": identity,
+def _validate_runtime_identity(value: Mapping[str, Any], label: str) -> dict[str, Any]:
+    identity = {
+        "adminVersion": value.get("adminVersion"),
+        "contract": value.get("contract"),
+        "coreVersion": value.get("coreVersion"),
+        "schemaRevision": value.get("schemaRevision"),
+        "schemaIdentity": value.get("schemaIdentity"),
+        "migrationHead": value.get("migrationHead"),
     }
+    if (
+        not isinstance(identity["adminVersion"], str)
+        or not re.fullmatch(r"\d+\.\d+\.\d+", identity["adminVersion"])
+        or not isinstance(identity["contract"], str)
+        or not re.fullmatch(r"helloada-content-v[1-9][0-9]*", identity["contract"])
+        or not isinstance(identity["coreVersion"], str)
+        or not re.fullmatch(r"\d+\.\d+\.\d+", identity["coreVersion"])
+        or isinstance(identity["schemaRevision"], bool)
+        or not isinstance(identity["schemaRevision"], int)
+        or identity["schemaRevision"] < 1
+        or not isinstance(identity["schemaIdentity"], str)
+        or not re.fullmatch(r"[0-9a-f]{64}", identity["schemaIdentity"])
+        or not isinstance(identity["migrationHead"], str)
+        or not re.fullmatch(r"[0-9a-f]{64}", identity["migrationHead"])
+    ):
+        raise ValueError(f"{label} has no complete Payload runtime identity")
+    return identity
+
+
+def _expected_runtime_contract(customer: Mapping[str, Any]) -> dict[str, Any]:
+    return _validate_runtime_identity({
+        "adminVersion": customer.get("payloadAdmin"),
+        "contract": customer.get("contentContract"),
+        "coreVersion": customer.get("payloadCore"),
+        "schemaRevision": customer.get("schemaRevision"),
+        "schemaIdentity": customer.get("schemaIdentity"),
+        "migrationHead": customer.get("migrationHead"),
+    }, "tenant release manifest")
+
+
+def _read_active_worker_contract(tenant_id: str, customer: Mapping[str, Any]) -> dict[str, Any]:
+    health_url = str(customer.get("health") or "").strip()
+    parsed = urllib.parse.urlsplit(health_url)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path != "/api/health"
+        or parsed.query
+        or parsed.fragment
+        or parsed.port not in (None, 443)
+    ):
+        raise ValueError(f"tenant {tenant_id} active Worker health URL is invalid")
+    request = urllib.request.Request(
+        health_url,
+        headers={"Accept": "application/json", "User-Agent": "HelloAda-API-Preflight/1.0"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=12) as response:
+            if response.status != 200 or response.geturl() != health_url:
+                raise ValueError(f"tenant {tenant_id} active Worker health check did not return its exact HTTPS endpoint")
+            raw = response.read(65537)
+    except (OSError, urllib.error.URLError) as exc:
+        raise ValueError(f"tenant {tenant_id} active Worker health check is unavailable") from exc
+    if len(raw) > 65536:
+        raise ValueError(f"tenant {tenant_id} active Worker health response is too large")
+    try:
+        health = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, ValueError) as exc:
+        raise ValueError(f"tenant {tenant_id} active Worker health response is invalid") from exc
+    if (
+        not isinstance(health, Mapping)
+        or health.get("ok") is not True
+        or health.get("tenant") != tenant_id
+        or not isinstance(health.get("releaseSha"), str)
+        or not re.fullmatch(r"[0-9a-f]{40}", health["releaseSha"])
+    ):
+        raise ValueError(f"tenant {tenant_id} active Worker health identity is invalid")
+    return _validate_runtime_identity({
+        "adminVersion": health.get("payloadAdmin"),
+        "contract": health.get("contentContract"),
+        "coreVersion": health.get("payloadCore"),
+        "schemaRevision": health.get("schemaRevision"),
+        "schemaIdentity": health.get("schemaIdentity"),
+        "migrationHead": health.get("migrationHead"),
+    }, f"tenant {tenant_id} active Worker health")
 
 
 def _registered_config(root: Path, registry: Mapping[str, Any], tenant_id: str) -> Path:
@@ -83,16 +152,21 @@ def _registered_config(root: Path, registry: Mapping[str, Any], tenant_id: str) 
     return expected
 
 
-def _updated_config(raw: Mapping[str, Any], customer: Mapping[str, Any], tenant_id: str) -> dict[str, Any]:
-    expected_website = customer.get("websitePresent")
-    if not isinstance(expected_website, bool):
+def _updated_config(
+    raw: Mapping[str, Any],
+    customer: Mapping[str, Any],
+    tenant_id: str,
+    active_identity: Mapping[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(customer.get("websitePresent"), bool):
         raise ValueError(f"tenant {tenant_id} release manifest must declare websitePresent")
     site_raw = raw.get("site")
     if not isinstance(site_raw, Mapping):
         raise ValueError(f"tenant {tenant_id} has no site configuration")
     site = dict(site_raw)
-    if site.get("website_present") is not None and site.get("website_present") is not expected_website:
-        raise ValueError(f"tenant {tenant_id} websitePresent conflicts with the release manifest")
+    website_present = site.get("website_present")
+    if not isinstance(website_present, bool):
+        raise ValueError(f"tenant {tenant_id} must explicitly configure website_present")
     if site.get("adapter") != "payload_gateway":
         raise ValueError(f"tenant {tenant_id} does not use the canonical Payload gateway")
 
@@ -104,18 +178,17 @@ def _updated_config(raw: Mapping[str, Any], customer: Mapping[str, Any], tenant_
     if not isinstance(contract_raw, Mapping):
         raise ValueError(f"tenant {tenant_id} Payload contract is missing")
 
-    expected_contract = _expected_runtime_contract(customer)
+    expected_contract = _validate_runtime_identity(
+        active_identity,
+        f"tenant {tenant_id} active Worker health",
+    )
     allowed = {
-        "contract", "coreVersion", "schemaRevision", "schemaIdentity", "media_fields",
-        "locales", "defaultLocale", "collections", "globals",
+        "adminVersion", "contract", "coreVersion", "schemaRevision", "schemaIdentity",
+        "migrationHead", "media_fields", "locales", "defaultLocale", "collections", "globals",
     }
     unknown = set(contract_raw) - allowed
     if unknown:
         raise ValueError(f"tenant {tenant_id} Payload contract contains unsupported fields")
-    for key, expected in expected_contract.items():
-        existing = contract_raw.get(key)
-        if existing is not None and existing != expected:
-            raise ValueError(f"tenant {tenant_id} Payload {key} conflicts with the release manifest")
     media_fields = contract_raw.get("media_fields", [])
     if not isinstance(media_fields, list) or any(not isinstance(item, str) or not item.strip() for item in media_fields):
         raise ValueError(f"tenant {tenant_id} Payload media_fields must be a list of non-empty strings")
@@ -141,7 +214,7 @@ def _updated_config(raw: Mapping[str, Any], customer: Mapping[str, Any], tenant_
         canonical_contract["locales"] = list(locales)
         canonical_contract["defaultLocale"] = default_locale
     payload["contract"] = canonical_contract
-    site["website_present"] = expected_website
+    site["website_present"] = website_present
     payload_config = dict(raw)
     payload_config["site"] = {**site, "payload": payload}
     return payload_config
@@ -169,11 +242,19 @@ def sync_tenant_config(
     customer: Mapping[str, Any],
     *,
     apply: bool,
+    active_health_reader: Callable[[str, Mapping[str, Any]], Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if config_path.is_symlink() or not config_path.is_file():
         raise ValueError(f"tenant {tenant_id} config must be a regular file")
     before = config_path.read_bytes()
-    updated = _updated_config(_read_yaml(config_path, f"tenant {tenant_id} config"), customer, tenant_id)
+    reader = active_health_reader or _read_active_worker_contract
+    active_identity = reader(tenant_id, customer)
+    updated = _updated_config(
+        _read_yaml(config_path, f"tenant {tenant_id} config"),
+        customer,
+        tenant_id,
+        active_identity,
+    )
     serialized = yaml.safe_dump(updated, sort_keys=False, allow_unicode=True).encode("utf-8")
     changed = serialized != before
     if apply and changed:
@@ -185,12 +266,18 @@ def sync_tenant_config(
         "status": "updated" if apply and changed else "would_update" if changed else "current",
         "configSha256Before": hashlib.sha256(before).hexdigest(),
         "configSha256After": hashlib.sha256(serialized).hexdigest(),
-        "websitePresent": customer["websitePresent"],
+        "websitePresent": updated["site"]["website_present"],
         "contractKeys": sorted(updated["site"]["payload"]["contract"].keys()),
     }
 
 
-def validate_runtime_configs(config_path: Path, manifest_path: Path, env: Mapping[str, str] | None = None) -> dict[str, Any]:
+def validate_runtime_configs(
+    config_path: Path,
+    manifest_path: Path,
+    env: Mapping[str, str] | None = None,
+    *,
+    active_health_reader: Callable[[str, Mapping[str, Any]], Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
     host_config = _read_yaml(config_path, "API host config")
     workspace = host_config.get("workspace_api")
     if not isinstance(workspace, Mapping) or workspace.get("enabled") is not True:
@@ -239,8 +326,9 @@ def validate_runtime_configs(config_path: Path, manifest_path: Path, env: Mappin
         if isinstance(customer, Mapping):
             if adapter != "payload_gateway" or not enabled:
                 raise ValueError(f"manifest tenant {tenant_id} must use the enabled canonical Payload gateway")
-            if website_present is not customer.get("websitePresent"):
-                raise ValueError(f"tenant {tenant_id} website_present does not match the release manifest")
+            if not isinstance(customer.get("websitePresent"), bool):
+                raise ValueError(f"tenant {tenant_id} release manifest must declare websitePresent")
+            _expected_runtime_contract(customer)
         if enabled and adapter != "payload_gateway":
             raise ValueError(f"tenant {tenant_id} enables Payload without the canonical gateway adapter")
         if not enabled:
@@ -252,16 +340,24 @@ def validate_runtime_configs(config_path: Path, manifest_path: Path, env: Mappin
         if client is None:
             raise ValueError(f"tenant {tenant_id} Payload gateway did not initialize")
         if isinstance(customer, Mapping):
-            expected = _expected_runtime_contract(customer)
             contract = client.contract
-            actual = {
+            actual = _validate_runtime_identity({
+                "adminVersion": raw_payload["contract"].get("adminVersion"),
                 "contract": contract.contract_version,
                 "coreVersion": contract.core_version,
                 "schemaRevision": contract.schema_revision,
                 "schemaIdentity": contract.schema_identity,
-            }
-            if actual != expected:
-                raise ValueError(f"tenant {tenant_id} Payload contract does not match the release manifest")
+                "migrationHead": raw_payload["contract"].get("migrationHead"),
+            }, f"tenant {tenant_id} runtime config")
+            reader = active_health_reader or _read_active_worker_contract
+            active = _validate_runtime_identity(
+                reader(tenant_id, customer),
+                f"tenant {tenant_id} active Worker health",
+            )
+            if actual != active:
+                raise ValueError(
+                    f"tenant {tenant_id} Payload contract does not match the active Worker health"
+                )
         validated_payload.append(tenant_id)
     return {"validatedTenants": sorted(declared), "payloadTenants": validated_payload}
 

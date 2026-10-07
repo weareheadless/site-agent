@@ -150,6 +150,65 @@ def test_only_a_configured_payload_runtime_becomes_restart_loadable(tmp_path):
         registry.close()
 
 
+def test_verified_payload_contract_sync_updates_tenant_config_atomically(tmp_path):
+    config, env = _host(tmp_path)
+    registry = TenantRegistry.from_config(config, env)
+    service = TenantRegistrationService(config, env, registry=registry)
+    try:
+        service.register("new-site", display_name="New Site")
+        tenant_path = tmp_path / "websites" / "new-site" / "config.yaml"
+        tenant_config = yaml.safe_load(tenant_path.read_text(encoding="utf-8"))
+        tenant_config["site"]["payload"].update(
+            enabled=True,
+            token_env="PROVISIONED_NEW_SITE_TOKEN",
+            contract={
+                "adminVersion": "0.8.10",
+                "contract": "helloada-content-v2",
+                "coreVersion": "0.2.0",
+                "schemaRevision": 2,
+                "schemaIdentity": "a" * 64,
+                "migrationHead": "b" * 64,
+                "media_fields": ["alt", "description"],
+                "locales": ["en", "es-MX"],
+                "defaultLocale": "en",
+                "collections": {"pages": ["title"]},
+                "globals": {"navigation": ["items"]},
+            },
+        )
+        TenantRegistrationService._replace_config(tenant_path, tenant_config)
+        identity = {
+            "adminVersion": "0.10.1",
+            "contract": "helloada-content-v3",
+            "coreVersion": "0.5.2",
+            "schemaRevision": 5,
+            "schemaIdentity": "c" * 64,
+            "migrationHead": "d" * 64,
+        }
+
+        assert service.sync_payload_runtime("new-site", identity, website_present=True) is True
+        updated = yaml.safe_load(tenant_path.read_text(encoding="utf-8"))
+        assert updated["site"]["website_present"] is True
+        assert updated["site"]["payload"]["contract"] == {
+            **identity,
+            "media_fields": ["alt", "description"],
+            "locales": ["en", "es-MX"],
+            "defaultLocale": "en",
+        }
+        assert service.sync_payload_runtime("new-site", identity, website_present=True) is False
+
+        contract = updated["site"]["payload"]["contract"]
+        contract["unsupported"] = "must fail closed"
+        TenantRegistrationService._replace_config(tenant_path, updated)
+        try:
+            service.sync_payload_runtime("new-site", identity, website_present=True)
+        except ValueError as error:
+            assert "unsupported fields" in str(error)
+        else:
+            raise AssertionError("unrecognized Payload contract fields must not be silently discarded")
+    finally:
+        registry.close()
+
+
 def test_registration_fails_closed_on_a_corrupt_registry(tmp_path):
     config, env = _host(tmp_path)
     registry = TenantRegistry.from_config(config, env)

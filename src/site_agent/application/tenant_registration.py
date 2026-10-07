@@ -299,6 +299,134 @@ class TenantRegistrationService:
                 fcntl.flock(descriptor, fcntl.LOCK_UN)
                 os.close(descriptor)
 
+    def sync_payload_runtime(
+        self,
+        tenant_id: str,
+        runtime_identity: Mapping[str, Any],
+        *,
+        website_present: bool,
+    ) -> bool:
+        """Pin an already verified Worker contract into this tenant's runtime config."""
+        normalized = str(tenant_id or "").strip().lower()
+        if not _SAFE_ID.fullmatch(normalized):
+            raise TenantRegistrationError("website id must be a lowercase slug")
+        if not isinstance(website_present, bool):
+            raise TenantRegistrationError("verified websitePresent state must be a boolean")
+        expected_keys = {
+            "adminVersion", "contract", "coreVersion", "schemaRevision",
+            "schemaIdentity", "migrationHead",
+        }
+        if set(runtime_identity) != expected_keys:
+            raise TenantRegistrationError("verified Payload runtime identity is incomplete")
+        identity = dict(runtime_identity)
+        if (
+            not isinstance(identity["adminVersion"], str)
+            or not re.fullmatch(r"[0-9]+[.][0-9]+[.][0-9]+", identity["adminVersion"])
+            or not isinstance(identity["contract"], str)
+            or not re.fullmatch(r"helloada-content-v[1-9][0-9]*", identity["contract"])
+            or not isinstance(identity["coreVersion"], str)
+            or not re.fullmatch(r"[0-9]+[.][0-9]+[.][0-9]+", identity["coreVersion"])
+            or isinstance(identity["schemaRevision"], bool)
+            or not isinstance(identity["schemaRevision"], int)
+            or identity["schemaRevision"] < 1
+            or not isinstance(identity["schemaIdentity"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", identity["schemaIdentity"])
+            or not isinstance(identity["migrationHead"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", identity["migrationHead"])
+        ):
+            raise TenantRegistrationError("verified Payload runtime identity is invalid")
+
+        with self._lock:
+            descriptor = self._registry_lock()
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+                self._validate_index()
+                tenant_dir = self._tenant_dir(normalized)
+                config_path = tenant_dir / "config.yaml"
+                indexed_path = self._indexed_config_path(normalized)
+                if (
+                    not indexed_path
+                    or Path(indexed_path).expanduser().resolve() != config_path.resolve()
+                    or config_path.is_symlink()
+                    or not config_path.is_file()
+                ):
+                    raise TenantRegistrationError("tenant config path is not registered canonically")
+                if self._indexed_bootstrap_state(normalized) not in {"pending", "runtime", "ready"}:
+                    raise TenantRegistrationError("tenant runtime is not registered for activation")
+                token_env = tenant_token_env(normalized)
+                if not _read_token_env(tenant_dir / "tenant.env", token_env):
+                    raise TenantRegistrationError("registered website API token is missing")
+
+                try:
+                    raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+                except (OSError, UnicodeError, yaml.YAMLError) as exc:
+                    raise TenantRegistrationError("tenant config is unreadable") from exc
+                if not isinstance(raw, dict) or raw.get("instance_name") != normalized:
+                    raise TenantRegistrationError("tenant config identity does not match its registry entry")
+                site = raw.get("site")
+                if not isinstance(site, dict) or site.get("adapter") != "payload_gateway":
+                    raise TenantRegistrationError("tenant does not use the canonical Payload gateway")
+                payload = site.get("payload")
+                if (
+                    not isinstance(payload, dict)
+                    or payload.get("enabled") is not True
+                    or payload.get("token_env") != token_env
+                ):
+                    raise TenantRegistrationError("tenant Payload runtime is not enabled canonically")
+                contract = payload.get("contract")
+                if not isinstance(contract, Mapping):
+                    raise TenantRegistrationError("tenant Payload contract is missing")
+                allowed_keys = expected_keys | {
+                    "media_fields", "locales", "defaultLocale", "collections", "globals",
+                }
+                if set(contract) - allowed_keys:
+                    raise TenantRegistrationError("tenant Payload contract has unsupported fields")
+                for key in ("collections", "globals"):
+                    if key in contract and not isinstance(contract[key], Mapping):
+                        raise TenantRegistrationError(f"tenant Payload {key} metadata is invalid")
+
+                media_fields = contract.get("media_fields", [])
+                if (
+                    not isinstance(media_fields, list)
+                    or any(not isinstance(item, str) or not item.strip() for item in media_fields)
+                    or len(set(media_fields)) != len(media_fields)
+                ):
+                    raise TenantRegistrationError("tenant Payload media fields are invalid")
+                locales = contract.get("locales")
+                default_locale = contract.get("defaultLocale")
+                if locales is not None or default_locale is not None:
+                    if (
+                        not isinstance(locales, list)
+                        or not locales
+                        or any(not isinstance(locale, str) or not re.fullmatch(r"[A-Za-z0-9-]{2,20}", locale) for locale in locales)
+                        or len(set(locales)) != len(locales)
+                        or default_locale not in locales
+                    ):
+                        raise TenantRegistrationError("tenant Payload locale configuration is invalid")
+
+                canonical_contract = dict(identity)
+                if media_fields:
+                    canonical_contract["media_fields"] = list(media_fields)
+                if locales is not None:
+                    canonical_contract["locales"] = list(locales)
+                    canonical_contract["defaultLocale"] = default_locale
+                updated = dict(raw)
+                updated_site = dict(site)
+                updated_site["website_present"] = website_present
+                updated_payload = dict(payload)
+                updated_payload["contract"] = canonical_contract
+                updated_site["payload"] = updated_payload
+                updated["site"] = updated_site
+                before = yaml.safe_dump(raw, sort_keys=False, allow_unicode=True)
+                after = yaml.safe_dump(updated, sort_keys=False, allow_unicode=True)
+                if before == after:
+                    return False
+                self._replace_config(config_path, updated)
+                return True
+            finally:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+                os.close(descriptor)
+
     # -- the provisioning call -------------------------------------------
 
     def register(

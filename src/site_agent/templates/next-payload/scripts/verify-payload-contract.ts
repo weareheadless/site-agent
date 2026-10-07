@@ -8,6 +8,11 @@ const { default: config } = await import('@payload-config')
 const collections = ['pages', 'posts', 'postCategories', 'products', 'productCategories'] as const
 const versionedCollections = ['pages', 'posts', 'postCategories', 'products'] as const
 const failures: string[] = []
+const websitePresentValue = process.env.HELLOADA_WEBSITE_PRESENT
+if (websitePresentValue !== 'true' && websitePresentValue !== 'false') {
+  throw new Error('HELLOADA_WEBSITE_PRESENT must be explicitly set to true or false.')
+}
+const websitePresent = websitePresentValue === 'true'
 
 const check = async (label: string, operation: () => Promise<unknown>) => {
   try {
@@ -53,48 +58,54 @@ try {
     await check(`${slug} draft read`, () => payload.findGlobal({ slug, draft: true, depth: 0, overrideAccess: true }))
   }
 
-  await check('siteSettings publishable name', async () => {
-    if (!String(globals.siteSettings?.siteName ?? '').trim()) {
-      throw new Error('Published siteSettings.siteName is empty; publish the business identity in Payload before release.')
-    }
-  })
-
-  await check('navigation has shared header and footer links', async () => {
-    const navigation = globals.navigation ?? {}
-    const items = navigation.items
-    const footer = navigation.footer
-    if (!Array.isArray(items) || items.length === 0) throw new Error('Published navigation.items is empty.')
-    if (!Array.isArray(footer) || footer.length === 0) throw new Error('Published navigation.footer is empty.')
-  })
-
-  await check('published home page is complete enough to render', async () => {
-    const result = await payload.find({
-      collection: 'pages',
-      where: { slug: { equals: 'home' } },
-      draft: false,
-      depth: 1,
-      limit: 1,
-      pagination: false,
-      overrideAccess: true,
+  if (websitePresent) {
+    await check('siteSettings publishable name', async () => {
+      if (!String(globals.siteSettings?.siteName ?? '').trim()) {
+        throw new Error('Published siteSettings.siteName is empty; publish the business identity in Payload before release.')
+      }
     })
-    const home = result.docs[0] as unknown as Record<string, unknown> | undefined
-    if (!home) throw new Error('No published pages document with slug "home" exists.')
-    if (!String(home.title ?? '').trim()) throw new Error('Published home page title is empty.')
-    if (!String(home.summary ?? '').trim()) throw new Error('Published home page summary is empty.')
-    const seo = objectValue(home.seo)
-    if (!String(seo.title ?? '').trim() || !String(seo.description ?? '').trim()) {
-      throw new Error('Published home page needs both seo.title and seo.description.')
-    }
-    if (!hasAuthoredText(home.body) && !hasAuthoredText(home.sections)) {
-      throw new Error('Published home page has no authored body or sections.')
-    }
-  })
+
+    await check('navigation has shared header and footer links', async () => {
+      const navigation = globals.navigation ?? {}
+      const items = navigation.items
+      const footer = navigation.footer
+      if (!Array.isArray(items) || items.length === 0) throw new Error('Published navigation.items is empty.')
+      if (!Array.isArray(footer) || footer.length === 0) throw new Error('Published navigation.footer is empty.')
+    })
+
+    await check('published home page is complete enough to render', async () => {
+      const result = await payload.find({
+        collection: 'pages',
+        where: { slug: { equals: 'home' } },
+        draft: false,
+        depth: 1,
+        limit: 1,
+        pagination: false,
+        overrideAccess: true,
+      })
+      const home = result.docs[0] as unknown as Record<string, unknown> | undefined
+      if (!home) throw new Error('No published pages document with slug "home" exists.')
+      if (!String(home.title ?? '').trim()) throw new Error('Published home page title is empty.')
+      if (!String(home.summary ?? '').trim()) throw new Error('Published home page summary is empty.')
+      const seo = objectValue(home.seo)
+      if (!String(seo.title ?? '').trim() || !String(seo.description ?? '').trim()) {
+        throw new Error('Published home page needs both seo.title and seo.description.')
+      }
+      if (!hasAuthoredText(home.body) && !hasAuthoredText(home.sections)) {
+        throw new Error('Published home page has no authored body or sections.')
+      }
+    })
+  } else {
+    console.log('[payload-contract] published business content checks skipped: intake site is explicitly empty')
+  }
 
   await check('media read', () => payload.find({ collection: 'media', depth: 0, limit: 1, pagination: false, overrideAccess: true }))
 
   if (failures.length) throw new Error(`Payload contract verification failed (${failures.length} checks). Fix the content contract before deploying.`)
 
-  console.log('[payload-contract] schema, shared chrome, published homepage, drafts, versions, and media reads passed')
+  console.log(websitePresent
+    ? '[payload-contract] schema, shared chrome, published homepage, drafts, versions, and media reads passed'
+    : '[payload-contract] schema, empty-intake state, drafts, versions, and media reads passed')
 } finally {
   await payload.destroy()
 }

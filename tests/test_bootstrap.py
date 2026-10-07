@@ -325,6 +325,7 @@ def test_bootstrap_runtime_activation_requires_exact_live_health_receipt(tmp_pat
         "schemaRevision": 5,
         "schemaIdentity": "b" * 64,
         "migrationHead": "c" * 64,
+        "websitePresent": False,
     }
     receipt["health"] = {
         "ok": True,
@@ -346,7 +347,7 @@ def test_bootstrap_runtime_activation_requires_exact_live_health_receipt(tmp_pat
         "release": {"tenant_id": tenant_id, "release_id": release_id, "source_sha": source_sha},
     }
     activated = []
-    service._mount_runtime = lambda selected_tenant, state: activated.append((selected_tenant, state))
+    service._mount_runtime = lambda selected_tenant, state, **kwargs: activated.append((selected_tenant, state, kwargs))
 
     result = service.activate_runtime_after_health(
         tenant_id, release_id=release_id, source_sha=source_sha,
@@ -374,6 +375,81 @@ def test_bootstrap_runtime_activation_requires_exact_live_health_receipt(tmp_pat
             tenant_id, release_id=release_id, source_sha=source_sha,
         )
     assert len(activated) == 1
+
+
+def test_regular_release_activation_syncs_contract_without_bootstrap_state(tmp_path):
+    import threading
+
+    tenant_id = "oceanicvibes"
+    release_id = "rel-20261007123456-aabbccdd"
+    source_sha = "a" * 40
+    releases = tmp_path / "releases"
+    receipt = {
+        "tenant": tenant_id,
+        "releaseId": release_id,
+        "sourceSha": source_sha,
+        "status": "running",
+        "stage": "verify-connection",
+        "approvalId": None,
+        "uploadedVersion": "version-current",
+        "deployment": {"versions": [{"version_id": "version-current", "percentage": 100}]},
+        "payloadAdmin": "0.10.1",
+        "payloadCore": "0.5.2",
+        "contentContract": "helloada-content-v3",
+        "schemaRevision": 5,
+        "schemaIdentity": "b" * 64,
+        "migrationHead": "c" * 64,
+        "websitePresent": True,
+    }
+    receipt["health"] = {
+        "ok": True,
+        "tenant": tenant_id,
+        "releaseSha": source_sha,
+        "payloadAdmin": receipt["payloadAdmin"],
+        "payloadCore": receipt["payloadCore"],
+        "contentContract": receipt["contentContract"],
+        "schemaRevision": receipt["schemaRevision"],
+        "schemaIdentity": receipt["schemaIdentity"],
+        "migrationHead": receipt["migrationHead"],
+    }
+    path = releases / "runs" / tenant_id / release_id / "receipt.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    service = WebsiteBootstrapService.__new__(WebsiteBootstrapService)
+    service.config = {"deployment_pipeline": {"release_root": str(releases)}}
+    service._lock = threading.RLock()
+
+    class Registration:
+        def is_registered(self, selected_tenant):
+            return selected_tenant == tenant_id
+
+    service.registration = Registration()
+    activated = []
+    service._mount_runtime = lambda selected_tenant, state, **kwargs: activated.append(
+        (selected_tenant, state, kwargs)
+    )
+
+    result = service.activate_runtime_after_health(
+        tenant_id, release_id=release_id, source_sha=source_sha,
+    )
+
+    assert result["runtime_active"] is True
+    assert activated == [(
+        tenant_id,
+        {"tenant_id": tenant_id},
+        {
+            "runtime_identity": {
+                "adminVersion": "0.10.1",
+                "contract": "helloada-content-v3",
+                "coreVersion": "0.5.2",
+                "schemaRevision": 5,
+                "schemaIdentity": "b" * 64,
+                "migrationHead": "c" * 64,
+            },
+            "website_present": True,
+        },
+    )]
 
 
 def test_control_plane_activates_pending_tenant_only_with_authenticated_health_handoff(tmp_path):
@@ -411,6 +487,7 @@ def test_control_plane_activates_pending_tenant_only_with_authenticated_health_h
         "schemaRevision": 5,
         "schemaIdentity": "b" * 64,
         "migrationHead": "c" * 64,
+        "websitePresent": False,
     }
     receipt["health"] = {
         "ok": True,
@@ -425,7 +502,7 @@ def test_control_plane_activates_pending_tenant_only_with_authenticated_health_h
     receipt_path.parent.mkdir(parents=True)
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
     activated = []
-    service._mount_runtime = lambda selected_tenant, selected_state: activated.append(selected_tenant)
+    service._mount_runtime = lambda selected_tenant, selected_state, **kwargs: activated.append(selected_tenant)
     app = create_workspace_api_app(
         registry,
         control_token="control",

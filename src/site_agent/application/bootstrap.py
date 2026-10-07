@@ -264,13 +264,7 @@ class WebsiteBootstrapService:
         release_id: str,
         source_sha: str,
     ) -> dict[str, Any]:
-        """Mount a pending tenant after its exact Payload Worker passed health.
-
-        The release runner calls this server-only handoff before the authenticated
-        workspace-connection gate. That ordering is necessary because the gate
-        can only resolve tenants already mounted by this process. Owner-visible
-        bootstrap readiness still waits for the subsequent connection check.
-        """
+        """Synchronize and mount a tenant only after its exact Worker passed live health."""
         normalized = _component(tenant_id, "website id")
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", str(release_id or "")):
             raise BootstrapError("runtime activation release identity is invalid")
@@ -278,16 +272,6 @@ class WebsiteBootstrapService:
             raise BootstrapError("runtime activation source identity is invalid")
 
         with self._lock:
-            state = self._read_state(normalized)
-            release = state.get("release") if isinstance(state.get("release"), Mapping) else {}
-            if (
-                state.get("step") != "deploying_shell"
-                or release.get("tenant_id") != normalized
-                or release.get("release_id") != release_id
-                or release.get("source_sha") != source_sha
-            ):
-                raise BootstrapError("runtime activation does not match the active bootstrap release")
-
             try:
                 receipt_path = release_root(self.config) / "runs" / normalized / release_id / "receipt.json"
                 receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
@@ -300,10 +284,29 @@ class WebsiteBootstrapService:
                 or receipt.get("sourceSha") != source_sha
                 or receipt.get("status") != "running"
                 or receipt.get("stage") != "verify-connection"
-                or receipt.get("initialSchemaHead") != receipt.get("migrationHead")
                 or receipt.get("approvalId") is not None
             ):
                 raise BootstrapError("runtime activation is not at the verified Worker health boundary")
+
+            initial_schema_head = receipt.get("initialSchemaHead")
+            if initial_schema_head is not None:
+                state = self._read_state(normalized)
+                release = state.get("release") if isinstance(state.get("release"), Mapping) else {}
+                if (
+                    state.get("step") != "deploying_shell"
+                    or release.get("tenant_id") != normalized
+                    or release.get("release_id") != release_id
+                    or release.get("source_sha") != source_sha
+                    or initial_schema_head != receipt.get("migrationHead")
+                ):
+                    raise BootstrapError("runtime activation does not match the active bootstrap release")
+            else:
+                try:
+                    if not self.registration.is_registered(normalized):
+                        raise BootstrapError("tenant runtime is not present in the canonical registry")
+                except TenantRegistrationError as exc:
+                    raise BootstrapError(str(exc)) from exc
+                state = {"tenant_id": normalized}
 
             deployment = receipt.get("deployment")
             uploaded_version = str(receipt.get("uploadedVersion") or "")
@@ -319,21 +322,37 @@ class WebsiteBootstrapService:
             health = receipt.get("health")
             if not isinstance(health, Mapping):
                 raise BootstrapError("runtime activation has no verified Worker health receipt")
-            expected_health = {
-                "ok": True,
-                "tenant": normalized,
-                "releaseSha": source_sha,
-                "payloadAdmin": receipt.get("payloadAdmin"),
-                "payloadCore": receipt.get("payloadCore"),
-                "contentContract": receipt.get("contentContract"),
+            runtime_identity = {
+                "adminVersion": receipt.get("payloadAdmin"),
+                "contract": receipt.get("contentContract"),
+                "coreVersion": receipt.get("payloadCore"),
                 "schemaRevision": receipt.get("schemaRevision"),
                 "schemaIdentity": receipt.get("schemaIdentity"),
                 "migrationHead": receipt.get("migrationHead"),
             }
+            expected_health = {
+                "ok": True,
+                "tenant": normalized,
+                "releaseSha": source_sha,
+                "payloadAdmin": runtime_identity["adminVersion"],
+                "payloadCore": runtime_identity["coreVersion"],
+                "contentContract": runtime_identity["contract"],
+                "schemaRevision": runtime_identity["schemaRevision"],
+                "schemaIdentity": runtime_identity["schemaIdentity"],
+                "migrationHead": runtime_identity["migrationHead"],
+            }
             if any(health.get(key) != value for key, value in expected_health.items()):
                 raise BootstrapError("runtime activation Worker health does not match the release contract")
+            website_present = receipt.get("websitePresent")
+            if not isinstance(website_present, bool):
+                raise BootstrapError("runtime activation release has no explicit websitePresent state")
 
-            self._mount_runtime(normalized, state)
+            self._mount_runtime(
+                normalized,
+                state,
+                runtime_identity=runtime_identity,
+                website_present=website_present,
+            )
             return {
                 "tenant_id": normalized,
                 "release_id": release_id,
@@ -593,15 +612,50 @@ class WebsiteBootstrapService:
         )
         return True
 
-    def _mount_runtime(self, tenant_id: str, state: Mapping[str, Any]) -> None:
-        """Mount a health-verified tenant for the authenticated connection gate."""
+    def _mount_runtime(
+        self,
+        tenant_id: str,
+        state: Mapping[str, Any],
+        *,
+        runtime_identity: Mapping[str, Any] | None = None,
+        website_present: bool | None = None,
+    ) -> None:
+        """Pin and mount only a contract proven by the live Worker health receipt."""
         config_path = Path(str(state.get("config_path") or self._state_path(tenant_id).parent / "config.yaml"))
         token_env = tenant_token_env(tenant_id)
         values = self._read_env(config_path.parent / "tenant.env")
         token = str(values.get(token_env) or "").strip()
         if not token:
             raise BootstrapError("registered tenant API token is missing")
-        if self.registry.for_tenant_id(tenant_id) is None:
+
+        config_changed = False
+        if runtime_identity is not None:
+            try:
+                config_changed = self.registration.sync_payload_runtime(
+                    tenant_id,
+                    runtime_identity,
+                    website_present=website_present,
+                )
+            except TenantRegistrationError as exc:
+                raise BootstrapError(str(exc)) from exc
+
+        def mounted_contract_matches(runtime: Any) -> bool:
+            if runtime_identity is None:
+                return runtime is not None
+            if runtime is None or not isinstance(runtime.config, Mapping):
+                return False
+            site = runtime.config.get("site")
+            payload = site.get("payload") if isinstance(site, Mapping) else None
+            contract = payload.get("contract") if isinstance(payload, Mapping) else None
+            return (
+                isinstance(contract, Mapping)
+                and all(contract.get(key) == value for key, value in runtime_identity.items())
+                and isinstance(site, Mapping)
+                and site.get("website_present") is website_present
+            )
+
+        current = self.registry.for_tenant_id(tenant_id)
+        if current is None or config_changed or not mounted_contract_matches(current):
             try:
                 self.registry.reload_tenant(
                     tenant_id,
@@ -612,6 +666,8 @@ class WebsiteBootstrapService:
                 )
             except Exception as exc:  # noqa: BLE001 - keep bootstrap diagnostics at this boundary
                 raise BootstrapError(f"tenant runtime could not be activated: {str(exc)[:400]}") from exc
+        if not mounted_contract_matches(self.registry.for_tenant_id(tenant_id)):
+            raise BootstrapError("mounted tenant runtime does not match the verified Worker contract")
         try:
             self.registration.mark_runtime_mounted(tenant_id)
         except TenantRegistrationError as exc:

@@ -36,12 +36,19 @@ def _fixture(tmp_path: Path):
         "instance_name": "oceanicvibes",
         "site": {
             "adapter": "payload_gateway",
+            "website_present": True,
             "payload": {
                 "enabled": True,
                 "url": "https://oceanicvibes.com",
                 "api_prefix": "/api/workspace",
                 "token_env": "PROVISIONED_OCEANICVIBES_TOKEN",
                 "contract": {
+                    "adminVersion": "0.8.10",
+                    "contract": "helloada-content-v2",
+                    "coreVersion": "0.2.0",
+                    "schemaRevision": 2,
+                    "schemaIdentity": "a" * 64,
+                    "migrationHead": "b" * 64,
                     "collections": {"pages": ["title"], "posts": ["title"]},
                     "globals": {"navigation": ["items"]},
                     "media_fields": ["alt", "description"],
@@ -55,10 +62,13 @@ def _fixture(tmp_path: Path):
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
     config_path.chmod(0o600)
     customer = {
+        "health": "https://oceanicvibes.com/api/health",
+        "payloadAdmin": "0.8.10",
         "payloadCore": "0.2.0",
         "contentContract": "helloada-content-v2",
         "schemaRevision": 2,
         "schemaIdentity": "a" * 64,
+        "migrationHead": "b" * 64,
         "websitePresent": True,
     }
     manifest = tmp_path / "manifest.json"
@@ -66,69 +76,104 @@ def _fixture(tmp_path: Path):
     return host, manifest, config_path, customer
 
 
-def test_sync_is_dry_run_by_default_and_removes_duplicate_schema_field_maps(tmp_path):
-    host, manifest, config_path, customer = _fixture(tmp_path)
-    before = config_path.read_bytes()
-    result = sync.sync_tenant_config(config_path, "oceanicvibes", customer, apply=False)
-    assert result["status"] == "would_update"
-    assert config_path.read_bytes() == before
-
-    applied = sync.sync_tenant_config(config_path, "oceanicvibes", customer, apply=True)
-    updated = yaml.safe_load(config_path.read_text())
-    contract = updated["site"]["payload"]["contract"]
-    assert applied["status"] == "updated"
-    assert contract == {
+def _active_worker_health(tenant_id, _customer):
+    assert tenant_id == "oceanicvibes"
+    return {
+        "adminVersion": "0.8.10",
         "contract": "helloada-content-v2",
         "coreVersion": "0.2.0",
         "schemaRevision": 2,
         "schemaIdentity": "a" * 64,
+        "migrationHead": "b" * 64,
+    }
+
+
+def test_sync_is_dry_run_by_default_and_removes_duplicate_schema_field_maps(tmp_path):
+    host, manifest, config_path, customer = _fixture(tmp_path)
+    before = config_path.read_bytes()
+    result = sync.sync_tenant_config(config_path, "oceanicvibes", customer, apply=False, active_health_reader=_active_worker_health)
+    assert result["status"] == "would_update"
+    assert config_path.read_bytes() == before
+
+    applied = sync.sync_tenant_config(config_path, "oceanicvibes", customer, apply=True, active_health_reader=_active_worker_health)
+    updated = yaml.safe_load(config_path.read_text())
+    contract = updated["site"]["payload"]["contract"]
+    assert applied["status"] == "updated"
+    assert contract == {
+        "adminVersion": "0.8.10",
+        "contract": "helloada-content-v2",
+        "coreVersion": "0.2.0",
+        "schemaRevision": 2,
+        "schemaIdentity": "a" * 64,
+        "migrationHead": "b" * 64,
         "media_fields": ["alt", "description"],
         "locales": ["en", "fr"],
         "defaultLocale": "en",
     }
     assert updated["site"]["website_present"] is True
     assert config_path.stat().st_mode & 0o777 == 0o600
-    assert sync.validate_runtime_configs(host, manifest, {"PROVISIONED_OCEANICVIBES_TOKEN": "not-a-real-token"}) == {
+    assert sync.validate_runtime_configs(host, manifest, {"PROVISIONED_OCEANICVIBES_TOKEN": "not-a-real-token"}, active_health_reader=_active_worker_health) == {
         "validatedTenants": ["oceanicvibes"],
         "payloadTenants": ["oceanicvibes"],
     }
 
 
-def test_sync_refuses_conflicting_explicit_identity_or_website_state(tmp_path):
+def test_sync_uses_active_worker_identity_and_preserves_website_state(tmp_path):
     _host, _manifest, config_path, customer = _fixture(tmp_path)
     config = yaml.safe_load(config_path.read_text())
     config["site"]["website_present"] = False
-    config["site"]["payload"]["contract"]["schemaIdentity"] = "b" * 64
+    config["site"]["payload"]["contract"]["schemaIdentity"] = "c" * 64
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
-    before = config_path.read_bytes()
-    for _ in range(2):
-        try:
-            sync.sync_tenant_config(config_path, "oceanicvibes", customer, apply=True)
-        except ValueError:
-            pass
-        else:
-            raise AssertionError("conflicting runtime identity must stop the config migration")
-        assert config_path.read_bytes() == before
+    customer["payloadCore"] = "0.5.2"
+    customer["schemaIdentity"] = "c" * 64
+
+    result = sync.sync_tenant_config(
+        config_path, "oceanicvibes", customer, apply=True,
+        active_health_reader=_active_worker_health,
+    )
+
+    updated = yaml.safe_load(config_path.read_text())
+    contract = updated["site"]["payload"]["contract"]
+    assert result["status"] == "updated"
+    assert updated["site"]["website_present"] is False
+    assert contract["schemaIdentity"] == "a" * 64
+    assert contract["coreVersion"] == "0.2.0"
 
 
-def test_runtime_preflight_requires_explicit_journey_and_pinned_payload_identity(tmp_path):
+def test_runtime_preflight_compares_config_with_active_worker_not_queued_target(tmp_path):
     host, manifest, config_path, _customer = _fixture(tmp_path)
+    config = yaml.safe_load(config_path.read_text())
+    config["site"].pop("website_present")
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
     with pytest.raises(ValueError, match="website_present"):
-        sync.validate_runtime_configs(host, manifest, {"PROVISIONED_OCEANICVIBES_TOKEN": "not-a-real-token"})
+        sync.validate_runtime_configs(
+            host, manifest, {"PROVISIONED_OCEANICVIBES_TOKEN": "not-a-real-token"},
+            active_health_reader=_active_worker_health,
+        )
+
     config = yaml.safe_load(config_path.read_text())
     config["site"]["website_present"] = True
-    config["site"]["payload"]["contract"].update({
-        "contract": "helloada-content-v2",
-        "coreVersion": "0.2.0",
-        "schemaRevision": 2,
-        "schemaIdentity": "a" * 64,
-    })
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
     release_manifest = json.loads(manifest.read_text())
-    release_manifest["customers"]["oceanicvibes"]["schemaIdentity"] = "b" * 64
+    release_manifest["customers"]["oceanicvibes"]["schemaIdentity"] = "c" * 64
+    release_manifest["customers"]["oceanicvibes"]["payloadCore"] = "0.5.2"
     manifest.write_text(json.dumps(release_manifest))
-    with pytest.raises(ValueError, match="release manifest"):
-        sync.validate_runtime_configs(host, manifest, {"PROVISIONED_OCEANICVIBES_TOKEN": "not-a-real-token"})
+
+    # The queued target can advance while runtime and the active Worker remain
+    # on their still-consistent contract.
+    result = sync.validate_runtime_configs(
+        host, manifest, {"PROVISIONED_OCEANICVIBES_TOKEN": "not-a-real-token"},
+        active_health_reader=_active_worker_health,
+    )
+    assert result["payloadTenants"] == ["oceanicvibes"]
+
+    config["site"]["payload"]["contract"]["schemaIdentity"] = "c" * 64
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+    with pytest.raises(ValueError, match="active Worker health"):
+        sync.validate_runtime_configs(
+            host, manifest, {"PROVISIONED_OCEANICVIBES_TOKEN": "not-a-real-token"},
+            active_health_reader=_active_worker_health,
+        )
 
 
 def test_runtime_preflight_does_not_accept_a_manifest_tenant_without_payload_enabled(tmp_path):
@@ -138,12 +183,12 @@ def test_runtime_preflight_does_not_accept_a_manifest_tenant_without_payload_ena
     config["site"]["payload"]["enabled"] = False
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
     with pytest.raises(ValueError, match="enabled canonical Payload gateway"):
-        sync.validate_runtime_configs(host, manifest, {"PROVISIONED_OCEANICVIBES_TOKEN": "not-a-real-token"})
+        sync.validate_runtime_configs(host, manifest, {"PROVISIONED_OCEANICVIBES_TOKEN": "not-a-real-token"}, active_health_reader=_active_worker_health)
 
 
 def test_runtime_preflight_allows_a_dormant_tenant_without_a_payload_instance(tmp_path):
     host, manifest, config_path, customer = _fixture(tmp_path)
-    sync.sync_tenant_config(config_path, "oceanicvibes", customer, apply=True)
+    sync.sync_tenant_config(config_path, "oceanicvibes", customer, apply=True, active_health_reader=_active_worker_health)
     root = config_path.parents[1]
     tenant_dir = root / "dormant-studio"
     tenant_dir.mkdir()
@@ -165,7 +210,7 @@ def test_runtime_preflight_allows_a_dormant_tenant_without_a_payload_instance(tm
     result = sync.validate_runtime_configs(host, manifest, {
         "PROVISIONED_OCEANICVIBES_TOKEN": "not-a-real-token",
         "PROVISIONED_DORMANT_STUDIO_TOKEN": "not-a-real-token",
-    })
+    }, active_health_reader=_active_worker_health)
 
     assert result == {
         "validatedTenants": ["dormant-studio", "oceanicvibes"],

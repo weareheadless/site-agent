@@ -52,28 +52,32 @@ new dependency, first provision and validate that dependency in the service
 environment as an explicit dependency release; the API queue will not install
 packages ad hoc.
 
-Before an API release, the same snapshot validates every ready tenant in the
-single provisioned registry. Every tenant must declare its website state and
-adapter. A tenant with Payload enabled must explicitly configure the canonical
-gateway, token and pinned contract identity. Every customer in the release
-manifest must have that gateway enabled and match its exact contract, core
-version, schema revision, and schema identity. A dormant tenant with Payload
-disabled does not need a Payload instance. A failure stops before tests, slot
-activation, or service restart. Existing
-tenant configs are migrated explicitly with
-`scripts/sync-provisioned-tenant-configs.py`: run `--sync --tenant <id>` first
-to inspect a dry-run, then repeat with `--apply` only for the reviewed tenant
-IDs, and finish with `--validate`. The migration updates tenant runtime
-metadata only; it does not change a Payload database, Worker, content document,
-or schema. Keep customers on their currently deployed schema identity unless a
-separate reviewed schema migration is queued.
+Before an API release, the same snapshot validates every ready tenant in
+the single provisioned registry. Every tenant must explicitly declare its
+website state and adapter. Each enabled Payload tenant must use the canonical
+gateway, token and complete pinned contract. Preflight reads each registered
+HTTPS health endpoint, rejects redirects or malformed health, and compares the
+tenant runtime config with the Worker currently serving traffic. It does not
+compare runtime config with a queued target contract: the target is expected to
+advance only after its Worker is verified and promoted. A dormant tenant with
+Payload disabled does not need a Payload instance. Any mismatch stops before
+tests, slot activation, or service restart.
 
-To apply that config-only migration on the VPS, use the exact reviewed
-official-main source snapshot and the configured API Python environment. Do not
-edit tenant configs manually or run a mutable checkout's copy of the script.
-Queue neither API nor app releases until dry-run output has been reviewed and
-the explicit apply plus full-registry validation succeeds. Then queue the API
-release first; the dispatcher serializes the app release behind it.
+The release runner crosses one authenticated `activate-runtime` boundary for
+every Worker release, not only initial bootstrap. It requires the exact release
+receipt, uploaded version at 100%, matching live health identity, and the
+explicit `websitePresent` state. Site-Agent then synchronizes
+`adminVersion`, core version, content contract, schema revision/identity,
+migration head and website-present state from that verified receipt into the
+registered tenant config. It preserves the tenant's locale and media settings,
+reloads the mounted runtime only if its pinned config changed, and only then
+runs the authenticated connection check. Thus API preflight sees the active
+Worker contract, while a candidate may be newer without creating a false
+mismatch. If an existing config genuinely differs from its active Worker, the
+operator-only `--sync --tenant <id>` dry run reads that active health identity;
+`--apply` may reconcile only the explicitly named registered tenant. It never
+uses the queued candidate identity or changes a database, Worker, content
+document, or schema. Finish with `--validate` before an API release.
 
 ## HelloAda project-selector release
 
@@ -227,8 +231,10 @@ This keeps ordinary local development bindings local while ensuring the
 production migration cannot silently succeed against Wrangler's local emulator.
 The prior Worker remains active until the remote ledger and candidate Payload
 contract pass. It then
-promotes that exact uploaded version to 100% traffic, checks the live SHA and
-tenant, and performs the authenticated connection gate.
+promotes that exact uploaded version to 100% traffic, checks its live SHA,
+tenant and complete Payload identity, then calls the authenticated runtime
+activation endpoint to synchronize the central tenant config before performing
+the Ada/Payload connection gate.
 
 Application releases use OpenNext `upload` and Wrangler `versions deploy`.
 Domain routes, DNS and cron triggers are provisioned separately and are never
@@ -283,13 +289,16 @@ proves the committed template/schema identity, exact migration ledger, and
 required Worker routes. After promotion, the normal live gates verify the
 Worker's schema health and authenticated Payload connection. Bootstrap does
 not require business content or publish a website; it only makes the
-authenticated Payload admin ready for Ada's intake. Every ordinary website
-release selects the `website` contract and still runs the unchanged full Payload
-verifier, which requires the published site name, shared header/footer
-navigation, and complete published home page before promotion. Release purpose
-is required at the queue-to-runner boundary, and bootstrap must carry the exact
+authenticated Payload admin ready for Ada's intake. Every other release selects
+the `website` contract and runs the canonical Payload verifier. When the
+manifest explicitly says `websitePresent: false`, the verifier requires all
+schema, draft, version, media and global reads but permits an empty site. When
+`websitePresent: true`, it additionally requires a publishable site name,
+shared header/footer navigation and a complete published home page. The flag is
+required and is never inferred from missing content. Release purpose is
+required at the queue-to-runner boundary, and bootstrap must carry the exact
 registered migration head; one release class cannot relax the other's gate.
-Rollback uses the previous receipt's Cloudflare version with
+Rollback uses the previous receipt's Cloudflare versionRollback uses the previous receipt's Cloudflare version with
 `wrangler versions deploy <version>@100% --name <worker> --yes` through the
 declared credential profile, followed by live checks. It never rolls back data.
 
