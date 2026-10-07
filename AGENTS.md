@@ -345,10 +345,18 @@ The queue operation determines the required Payload gate. An exact
 `initializeSchema` request is passed as `--release-purpose workspace-bootstrap`:
 it proves the committed schema/migration identity and the live authenticated
 workspace contract, but it does not require or publish business content. Every
-other queued site release is passed as `--release-purpose website` and must run
-the full Payload verifier for published site settings, shared navigation, and
-the authored homepage. Do not downgrade an ordinary website release to the
-workspace-bootstrap gate or infer bootstrap from a failed content check.
+other queued site release is passed as `--release-purpose website` and runs the
+canonical Payload verifier. The release manifest must explicitly declare
+`websitePresent`: false allows an intentionally empty intake site after all
+schema/draft/version/media/global reads pass; true additionally requires the
+published business identity, shared navigation and complete homepage. Never
+infer the flag from missing content or relax the verifier for a failed check.
+After exact live health and 100% promotion, every Worker release must use the
+authenticated `activate-runtime` handoff to pin that receipt's Payload
+identity and website state into the central tenant config before the
+authenticated API connection check. API release preflight compares each
+tenant config to its currently active Worker's health identity, not a queued
+candidate manifest. See `deploy/README.md` for the full contract.
 
 The central script is a hard gate, not a repair or fallback layer. It must:
 

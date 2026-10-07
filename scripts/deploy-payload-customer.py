@@ -326,9 +326,13 @@ def run_payload_contract_verifier(checkout: Path, customer: dict[str, Any],
                                    base: dict[str, str], temporary_directory: Path) -> str:
     config_path = payload_remote_bindings_config_file(temporary_directory, customer, worker_config)
     try:
+        website_present = customer.get("websitePresent")
+        if not isinstance(website_present, bool):
+            raise RuntimeError("release manifest must explicitly declare websitePresent")
         verifier_env = {
             **base, **env,
             "HELLOADA_CLOUDFLARE_CONFIG_PATH": str(config_path),
+            "HELLOADA_WEBSITE_PRESENT": "true" if website_present else "false",
         }
         return run(["npm", "run", "verify:payload"], checkout, verifier_env)
     finally:
@@ -600,15 +604,10 @@ def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dic
         workers_dev.ensure_workers_dev_route(str(customer["worker"]))
         stage("verify-deployment")
     gate = manifest["connectionGate"]
-    # Runtime activation is the extra control-plane boundary for an initial
-    # workspace bootstrap. Existing tenant releases are already mounted and
-    # continue through the same read-only connection gate without a bootstrap
-    # state transition.
-    activation_token = (
-        control_plane_token(gate["envFile"], base)
-        if receipt.get("initialSchemaHead") is not None
-        else None
-    )
+    # Every verified Worker version crosses the same control-plane boundary:
+    # the API synchronizes its runtime contract before the authenticated
+    # connection gate. Bootstrap and ordinary tenant releases differ only in
+    # schema initialization policy, not in runtime activation.
     # Edge rollout is asynchronous. Repeat the same strict read-only gates;
     # never change the version, identity, endpoint or success criteria.
     for attempt in range(12):
@@ -616,11 +615,11 @@ def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dic
             receipt["health"] = check_health(customer["health"], receipt["tenant"],
                                              customer, receipt["sourceSha"])
             stage("verify-connection")
-            if activation_token is not None:
-                activate_tenant_runtime(
-                    gate["apiUrl"], receipt["tenant"], receipt["releaseId"],
-                    receipt["sourceSha"], activation_token,
-                )
+            activation_token = control_plane_token(gate["envFile"], base)
+            activate_tenant_runtime(
+                gate["apiUrl"], receipt["tenant"], receipt["releaseId"],
+                receipt["sourceSha"], activation_token,
+            )
             run([sys.executable, str(ROOT / "scripts/check-helloada-connections.py"),
                  "--config", gate["config"], "--env-file", gate["envFile"],
                  "--api-url", gate["apiUrl"], "--tenant", receipt["tenant"]], ROOT,
@@ -649,7 +648,7 @@ def verification_receipt(directory: Path, tenant: str, sha: str, release_id: str
                 "payloadAdmin": customer["payloadAdmin"], "payloadCore": customer["payloadCore"],
                 "contentContract": customer["contentContract"],
                 "schemaRevision": customer["schemaRevision"], "schemaIdentity": customer["schemaIdentity"],
-                "migrationHead": customer["migrationHead"]}
+                "migrationHead": customer["migrationHead"], "websitePresent": customer["websitePresent"]}
     if approval_id is not None:
         expected["approvalId"] = approval_id
     if initialization_head is not None:
@@ -782,6 +781,7 @@ def main() -> int:
         "payloadAdmin": customer["payloadAdmin"], "payloadCore": customer["payloadCore"],
         "contentContract": customer["contentContract"], "schemaRevision": customer["schemaRevision"],
         "schemaIdentity": customer["schemaIdentity"], "migrationHead": customer["migrationHead"],
+        "websitePresent": customer["websitePresent"],
         "d1DatabaseId": customer["d1DatabaseId"], "d1DatabaseName": customer["d1DatabaseName"],
         "r2BucketName": customer["r2BucketName"],
         "startedAt": utc_now(), "status": "running", "stage": "preflight",

@@ -595,20 +595,23 @@ def test_existing_database_never_receives_a_schema_mutation(monkeypatch, tmp_pat
     assert result == expected and calls == []
 
 
-def test_payload_contract_verifier_uses_and_cleans_the_remote_binding_config(monkeypatch, tmp_path):
+@pytest.mark.parametrize("website_present", [True, False])
+def test_payload_contract_verifier_uses_and_cleans_the_remote_binding_config(monkeypatch, tmp_path, website_present):
     commands = []
+    customer = {**CUSTOMER, "websitePresent": website_present}
 
     def fake_run(command, cwd, env):
         config_path = Path(env["HELLOADA_CLOUDFLARE_CONFIG_PATH"])
         config = json.loads(config_path.read_text())
         assert config["d1_databases"][0]["remote"] is True
-        assert config["d1_databases"][0]["database_id"] == CUSTOMER["d1DatabaseId"]
+        assert config["d1_databases"][0]["database_id"] == customer["d1DatabaseId"]
+        assert env["HELLOADA_WEBSITE_PRESENT"] == ("true" if website_present else "false")
         commands.append((command, config_path))
         return "contract verified"
 
     monkeypatch.setattr(release, "run", fake_run)
     result = release.run_payload_contract_verifier(
-        TEMPLATE, CUSTOMER, WORKER_CONFIG, {"CLOUDFLARE_API_TOKEN": "configured"},
+        TEMPLATE, customer, WORKER_CONFIG, {"CLOUDFLARE_API_TOKEN": "configured"},
         {}, tmp_path,
     )
 
@@ -881,6 +884,7 @@ def promoted_receipt(tmp_path):
               "payloadAdmin": customer["payloadAdmin"], "payloadCore": customer["payloadCore"],
               "contentContract": customer["contentContract"], "schemaRevision": customer["schemaRevision"],
               "schemaIdentity": customer["schemaIdentity"], "migrationHead": customer["migrationHead"],
+              "websitePresent": customer["websitePresent"],
               "status": "failed", "stage": "verify-connection", "error": "connection failed",
               "deployment": {"id": "deployment-1"}, "uploadedVersion": "version-1",
               "artifactHashes": {"worker.js": "b" * 64}}
@@ -965,16 +969,15 @@ def test_failed_connection_gate_is_bounded_and_remains_failed(monkeypatch):
     monkeypatch.setattr(release, "cloudflare_deployment", lambda *args: {
         "versions": [{"percentage": 100, "version_id": "version-1"}]})
     monkeypatch.setattr(release, "check_health", lambda *args: {"ok": True})
-    monkeypatch.setattr(
-        release,
-        "control_plane_token",
-        lambda *_args: pytest.fail("ordinary website releases must not activate bootstrap tenants"),
-    )
+    monkeypatch.setattr(release, "control_plane_token", lambda *_args: "control-token")
+    activations = []
+    monkeypatch.setattr(release, "activate_tenant_runtime", lambda *args: activations.append(args))
     monkeypatch.setattr(release.time, "sleep", lambda _: None)
     monkeypatch.setattr(release, "run", lambda *args: (_ for _ in ()).throw(RuntimeError("gate failed")))
     with pytest.raises(RuntimeError, match="gate failed"):
         release.verify_live(result, CUSTOMER, REGISTRY,
                             {}, {}, lambda name: result.update(stage=name))
+    assert len(activations) == 12
     assert len(result["gateAttempts"]) == 12 and "connectionVerifiedAt" not in result
 
 
@@ -1008,9 +1011,12 @@ def test_workers_dev_health_url_must_match_the_cloudflare_account_subdomain(monk
     }, env) is None
 
 
-def test_live_verification_enables_only_the_exact_promoted_workers_dev_route(monkeypatch):
+@pytest.mark.parametrize("initial_bootstrap", [True, False])
+def test_live_verification_enables_only_the_exact_promoted_workers_dev_route(monkeypatch, initial_bootstrap):
     result = {"tenant": "demo", "sourceSha": SHA, "releaseId": "release-1",
-              "uploadedVersion": "version-1", "initialSchemaHead": CUSTOMER["migrationHead"]}
+              "uploadedVersion": "version-1"}
+    if initial_bootstrap:
+        result["initialSchemaHead"] = CUSTOMER["migrationHead"]
     customer = {
         **CUSTOMER,
         "worker": "helloada-demo",
