@@ -1,7 +1,7 @@
 import type { Block, CollectionConfig, GlobalConfig } from 'payload'
 
 export const HELLOADA_CONTENT_CONTRACT_VERSION = 'helloada-content-v3'
-export const HELLOADA_CORE_VERSION = '0.5.1'
+export const HELLOADA_CORE_VERSION = '0.5.2'
 export const HELLOADA_SCHEMA_REVISION = 5
 
 export const validateHelloAdaLink = (value: unknown): true | string => {
@@ -962,7 +962,10 @@ export const createProductCategoriesCollection = (guard: NativeWriteGuard): Coll
 
 export const Users: CollectionConfig = {
   slug: 'users',
-  auth: { disableLocalStrategy: { enableFields: true }, useSessions: true },
+  // HelloAda handoff remains the primary sign-in path, but Payload must also
+  // expose its native email/password session for owners who open /admin
+  // directly or need to recover from an interrupted handoff.
+  auth: { useSessions: true },
   access: { create: () => false, read: () => false, update: () => false, delete: () => false },
   admin: { useAsTitle: 'email', hidden: true },
   fields: [
