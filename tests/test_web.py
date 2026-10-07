@@ -394,6 +394,35 @@ def test_chat_links_started_owner_action_to_its_job(runtime):
     assert memory.get_owner_action(action.id).state.value == "completed"
 
 
+def test_failed_chat_job_moves_linked_owner_action_to_waiting_atomically(runtime):
+    memory, _, _, _, _ = runtime
+    action = memory.create_owner_action(
+        OwnerAction(
+            capability_id="content.suggestion",
+            provider_id="site-agent",
+            title="Prepare a welcome page",
+            summary="Ada can prepare the first draft.",
+            action_label="Ask Ada to help",
+            priority=ActionPriority.OPTIONAL,
+            requirement=ActionRequirement.SUGGESTION,
+            source_ref="test:failed-chat-action",
+            dedupe_key="test:failed-chat-action",
+        )
+    )
+    conversation_id = memory.create_conversation("Welcome page")
+    job_id = memory.enqueue_chat_job(conversation_id, "Prepare the welcome page")
+    memory.transition_owner_action(action.id, "started")
+    memory.link_owner_action(action.id, conversation_id=conversation_id, job_id=job_id)
+
+    job = memory.claim_chat_job("test-worker")
+    assert job is not None
+    assert job["id"] == job_id
+    assert memory.fail_chat_job(job_id, "test-worker", "provider failed")
+
+    assert memory.get_chat_job(job_id)["status"] == "error"
+    assert memory.get_owner_action(action.id).state.value == "waiting"
+
+
 def test_dirty_worktree_is_not_exposed_in_customer_ui(runtime, tmp_path):
     import subprocess
 
