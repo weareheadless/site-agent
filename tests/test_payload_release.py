@@ -884,6 +884,7 @@ def promoted_receipt(tmp_path):
               "payloadAdmin": customer["payloadAdmin"], "payloadCore": customer["payloadCore"],
               "contentContract": customer["contentContract"], "schemaRevision": customer["schemaRevision"],
               "schemaIdentity": customer["schemaIdentity"], "migrationHead": customer["migrationHead"],
+              "websitePresent": customer["websitePresent"],
               "status": "failed", "stage": "verify-connection", "error": "connection failed",
               "deployment": {"id": "deployment-1"}, "uploadedVersion": "version-1",
               "artifactHashes": {"worker.js": "b" * 64}}
@@ -968,16 +969,15 @@ def test_failed_connection_gate_is_bounded_and_remains_failed(monkeypatch):
     monkeypatch.setattr(release, "cloudflare_deployment", lambda *args: {
         "versions": [{"percentage": 100, "version_id": "version-1"}]})
     monkeypatch.setattr(release, "check_health", lambda *args: {"ok": True})
-    monkeypatch.setattr(
-        release,
-        "control_plane_token",
-        lambda *_args: pytest.fail("ordinary website releases must not activate bootstrap tenants"),
-    )
+    monkeypatch.setattr(release, "control_plane_token", lambda *_args: "control-token")
+    activations = []
+    monkeypatch.setattr(release, "activate_tenant_runtime", lambda *args: activations.append(args))
     monkeypatch.setattr(release.time, "sleep", lambda _: None)
     monkeypatch.setattr(release, "run", lambda *args: (_ for _ in ()).throw(RuntimeError("gate failed")))
     with pytest.raises(RuntimeError, match="gate failed"):
         release.verify_live(result, CUSTOMER, REGISTRY,
                             {}, {}, lambda name: result.update(stage=name))
+    assert len(activations) == 12
     assert len(result["gateAttempts"]) == 12 and "connectionVerifiedAt" not in result
 
 
