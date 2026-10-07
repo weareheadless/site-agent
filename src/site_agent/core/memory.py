@@ -6427,27 +6427,75 @@ class Memory:
             deduplicated.append(effect)
         if deduplicated:
             completed_result["payload_effects"] = deduplicated[-40:]
+        completed_ts = _now()
         with self.conn:
             updated = self.conn.execute(
                 "UPDATE chat_jobs SET status = 'done', result = ?, updated_ts = ?, "
                 "claimed_by = NULL, heartbeat_ts = NULL WHERE id = ? AND claimed_by = ?",
-                (json.dumps(completed_result), _now(), job_id, worker),
+                (json.dumps(completed_result), completed_ts, job_id, worker),
             ).rowcount
             if updated == 1:
+                # A linked owner action is part of the job's terminal state.
+                # Commit both transitions together so readers never observe a
+                # completed job with an action still marked as started.
+                actions = self.conn.execute(
+                    "SELECT id, state FROM owner_actions WHERE job_id = ? "
+                    "AND state IN (?, ?, ?, ?)",
+                    (
+                        job_id,
+                        ActionState.OPEN.value,
+                        ActionState.STARTED.value,
+                        ActionState.WAITING.value,
+                        ActionState.SNOOZED.value,
+                    ),
+                ).fetchall()
+                for action in actions:
+                    current = ActionState(action["state"])
+                    validate_action_transition(current, ActionState.COMPLETED)
+                    self.conn.execute(
+                        "UPDATE owner_actions SET state = ?, snoozed_until = NULL, updated_ts = ? "
+                        "WHERE id = ? AND state = ?",
+                        (
+                            ActionState.COMPLETED.value,
+                            completed_ts,
+                            action["id"],
+                            current.value,
+                        ),
+                    )
                 self.conn.execute(
                     "INSERT INTO chat_messages (conversation_id, ts, role, text) VALUES (?, ?, 'assistant', ?)",
-                    (row["conversation_id"], _now(), completed_result.get("reply") or ""),
+                    (row["conversation_id"], completed_ts, completed_result.get("reply") or ""),
                 )
         return updated == 1
 
     @_locked
     def fail_chat_job(self, job_id: int, worker: str, error: str) -> bool:
+        failed_ts = _now()
         with self.conn:
             updated = self.conn.execute(
                 "UPDATE chat_jobs SET status = 'error', error = ?, updated_ts = ?, "
                 "claimed_by = NULL, heartbeat_ts = NULL WHERE id = ? AND claimed_by = ?",
-                (error[:500], _now(), job_id, worker),
+                (error[:500], failed_ts, job_id, worker),
             ).rowcount
+            if updated == 1:
+                # Failed jobs move active linked actions to waiting atomically.
+                actions = self.conn.execute(
+                    "SELECT id, state FROM owner_actions WHERE job_id = ? AND state IN (?, ?)",
+                    (job_id, ActionState.OPEN.value, ActionState.STARTED.value),
+                ).fetchall()
+                for action in actions:
+                    current = ActionState(action["state"])
+                    validate_action_transition(current, ActionState.WAITING)
+                    self.conn.execute(
+                        "UPDATE owner_actions SET state = ?, snoozed_until = NULL, updated_ts = ? "
+                        "WHERE id = ? AND state = ?",
+                        (
+                            ActionState.WAITING.value,
+                            failed_ts,
+                            action["id"],
+                            current.value,
+                        ),
+                    )
         return updated == 1
 
     @_locked
