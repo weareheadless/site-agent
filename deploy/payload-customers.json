@@ -19,6 +19,7 @@
       "repository": "https://github.com/weareheadless/helloada-ada-direct-admin-sso-e2e-a76df8a18660acea.git",
       "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
       "schemaRevision": 5,
+      "websitePresent": false,
       "worker": "helloada-ada-direct-admin-sso-e2e-a76df8a18660acea"
     },
     "ada-e2e-studio-b39ae17e77014b8c": {
@@ -34,6 +35,7 @@
       "repository": "https://github.com/weareheadless/helloada-ada-e2e-studio-b39ae17e77014b8c.git",
       "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
       "schemaRevision": 5,
+      "websitePresent": false,
       "worker": "helloada-ada-e2e-studio-b39ae17e77014b8c"
     },
     "ada-e2e-studio-intake-0aa0b1a55ae48348": {
@@ -49,6 +51,7 @@
       "repository": "https://github.com/weareheadless/helloada-ada-e2e-studio-intake-0aa0b1a55ae48348.git",
       "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
       "schemaRevision": 5,
+      "websitePresent": false,
       "worker": "helloada-ada-e2e-studio-intake-0aa0b1a55ae48348"
     },
     "atelier-harmonie": {
@@ -80,6 +83,7 @@
       "repository": "https://github.com/weareheadless/helloada-northstar-coffee-e2e-validation-8fbf2e6fea671768.git",
       "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
       "schemaRevision": 5,
+      "websitePresent": false,
       "worker": "helloada-northstar-coffee-e2e-validation-8fbf2e6fea671768"
     },
     "northstar-coffee-e2e-validation-long-name-d719295b4d086bd3": {
@@ -95,6 +99,7 @@
       "repository": "https://github.com/weareheadless/helloada-northstar-coffee-e2e-validation-l-8c5745f57bbce7efb441.git",
       "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
       "schemaRevision": 5,
+      "websitePresent": false,
       "worker": "helloada-northstar-coffee-e2e-val-8c5745f57bbce7efb441"
     },
     "northstar-coffee-full-intake-validation-5a8564dae07494ec": {
@@ -110,6 +115,7 @@
       "repository": "https://github.com/weareheadless/helloada-northstar-coffee-full-intake-vali-ad820fa9f96521e91211.git",
       "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
       "schemaRevision": 5,
+      "websitePresent": false,
       "worker": "helloada-northstar-coffee-full-in-ad820fa9f96521e91211"
     },
     "northstar-coffee-house-afd6a0232bf10fd4": {
@@ -125,6 +131,7 @@
       "repository": "https://github.com/weareheadless/helloada-northstar-coffee-house-afd6a0232bf10fd4.git",
       "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
       "schemaRevision": 5,
+      "websitePresent": false,
       "worker": "helloada-northstar-coffee-house-afd6a0232bf10fd4"
     },
     "oceanicvibes": {

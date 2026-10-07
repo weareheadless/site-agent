@@ -312,6 +312,7 @@ def test_customer_release_identity_serializes_the_canonical_owner_repository(tmp
     config = {
         "instance_name": "demo",
         "site": {
+            "website_present": False,
             "repository": "weareheadless/helloada-demo",
             "public_url": "https://helloada-demo.weareheadless.workers.dev",
             "source_deployment": {
@@ -333,6 +334,14 @@ def test_customer_release_identity_serializes_the_canonical_owner_repository(tmp
 
     assert tenant == "demo"
     assert customer["repository"] == "https://github.com/weareheadless/helloada-demo.git"
+    assert customer["websitePresent"] is False
+    config["ada_journey"] = {"website_present": True}
+    assert customer_release_identity(config)[1]["websitePresent"] is True
+    config.pop("ada_journey")
+    config["site"].pop("website_present")
+    with pytest.raises(ReleaseQueueError, match="website-present state must be explicit"):
+        customer_release_identity(config)
+    config["site"]["website_present"] = False
 
     for invalid_repository in (
         "https://github.com/weareheadless/helloada-demo.git",
