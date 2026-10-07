@@ -23,7 +23,7 @@ test('all standard tenant schemas come from one contract and share the native mu
   assert.deepEqual(Object.keys(collections), ['users', 'owner-handoff-grants', 'pages', 'posts', 'postCategories', 'products', 'productCategories', 'media', 'contactForms', 'contacts', 'conversations', 'messages', 'messageOperations'])
   assert.deepEqual(Object.keys(globals), ['siteSettings', 'navigation', 'messageMailbox'])
   const messageOperations = collections.messageOperations.fields.find((field) => field.name === 'operationType')
-  assert.equal(collections.users.auth.disableLocalStrategy, undefined)
+  assert.deepEqual(collections.users.auth.disableLocalStrategy, { enableFields: true })
   assert.equal(collections.users.auth.useSessions, true)
   assert.equal(collections.users.access.create(), false)
   assert.equal(collections.users.access.read(), false)

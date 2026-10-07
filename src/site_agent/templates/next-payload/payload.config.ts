@@ -42,6 +42,7 @@ export default buildConfig({
       description: 'A calm control room for shaping, reviewing, and publishing your website with Ada.',
     },
     components: {
+      beforeLogin: ['@/components/admin/HelloAdaLoginRedirect#HelloAdaLoginRedirect'],
       views: {
         dashboard: {
           Component: {
