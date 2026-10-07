@@ -29,6 +29,11 @@ def customer_release_identity(config: Mapping[str, Any]) -> tuple[str, dict[str,
     """Read tenant and package identity from the canonical managed checkout."""
     tenant = str(config.get("instance_name") or "").strip().lower()
     site = config.get("site") if isinstance(config.get("site"), Mapping) else {}
+    journey = config.get("ada_journey") or config.get("journey") or {}
+    journey = journey if isinstance(journey, Mapping) else {}
+    website_present = journey.get("website_present") if "website_present" in journey else site.get("website_present")
+    if not isinstance(website_present, bool):
+        raise ReleaseQueueError("managed website-present state must be explicit")
     deployment = site.get("source_deployment") if isinstance(site.get("source_deployment"), Mapping) else {}
     repository = _managed_repository_url(site.get("repository"))
     worker = str(deployment.get("worker_name") or "").strip()
@@ -72,6 +77,7 @@ def customer_release_identity(config: Mapping[str, Any]) -> tuple[str, dict[str,
         "worker": worker,
         "health": public_url + "/api/health",
         "adminPath": "/api/helloada",
+        "websitePresent": website_present,
         "payloadAdmin": manifest.get("payloadAdmin"),
         "payloadCore": manifest.get("payloadCore"),
         "contentContract": manifest.get("contentContract"),
