@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
+import { JWTAuthentication } from 'payload'
+
 import {
   HELLOADA_CAPABILITIES,
   HELLOADA_AUTHORING_CAPABILITIES,
@@ -25,6 +27,9 @@ test('all standard tenant schemas come from one contract and share the native mu
   const messageOperations = collections.messageOperations.fields.find((field) => field.name === 'operationType')
   assert.deepEqual(collections.users.auth.disableLocalStrategy, { enableFields: true })
   assert.equal(collections.users.auth.useSessions, true)
+  assert.equal(collections.users.auth.strategies.length, 1)
+  assert.equal(collections.users.auth.strategies[0].name, 'helloada-payload-session')
+  assert.equal(collections.users.auth.strategies[0].authenticate, JWTAuthentication)
   assert.equal(collections.users.access.create(), false)
   assert.equal(collections.users.access.read(), false)
   assert.equal(collections.users.fields.find((field) => field.name === 'helloadaSubject').unique, true)
