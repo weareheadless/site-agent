@@ -46,7 +46,7 @@ jobs:
       - name: Publish immutable release asset
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
         run: |
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release upload "$RELEASE_TAG" packages/helloada-payload-core/.release/*.tgz packages/helloada-payload-core/.release/release-manifest.json --clobber
