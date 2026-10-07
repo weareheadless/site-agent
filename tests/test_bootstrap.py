@@ -298,6 +298,159 @@ def test_pending_bootstrap_status_is_visible_before_runtime_activation(tmp_path)
         registry.close()
 
 
+def test_bootstrap_runtime_activation_requires_exact_live_health_receipt(tmp_path):
+    import threading
+    import pytest
+    from site_agent.application.bootstrap import BootstrapError
+
+    tenant_id = "demo"
+    release_id = "rel-20261006123456-aabbccdd"
+    source_sha = "a" * 40
+    releases = tmp_path / "releases"
+    receipt_path = releases / "runs" / tenant_id / release_id / "receipt.json"
+    receipt_path.parent.mkdir(parents=True)
+    receipt = {
+        "tenant": tenant_id,
+        "releaseId": release_id,
+        "sourceSha": source_sha,
+        "status": "running",
+        "stage": "verify-connection",
+        "approvalId": None,
+        "initialSchemaHead": "c" * 64,
+        "uploadedVersion": "version-demo",
+        "deployment": {"versions": [{"version_id": "version-demo", "percentage": 100}]},
+        "payloadAdmin": "0.10.1",
+        "payloadCore": "0.5.1",
+        "contentContract": "helloada-content-v3",
+        "schemaRevision": 5,
+        "schemaIdentity": "b" * 64,
+        "migrationHead": "c" * 64,
+    }
+    receipt["health"] = {
+        "ok": True,
+        "tenant": tenant_id,
+        "releaseSha": source_sha,
+        **{key: receipt[key] for key in (
+            "payloadAdmin", "payloadCore", "contentContract", "schemaRevision",
+            "schemaIdentity", "migrationHead",
+        )},
+    }
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    service = WebsiteBootstrapService.__new__(WebsiteBootstrapService)
+    service.config = {"deployment_pipeline": {"release_root": str(releases)}}
+    service._lock = threading.RLock()
+    service._read_state = lambda _tenant: {
+        "tenant_id": tenant_id,
+        "step": "deploying_shell",
+        "release": {"tenant_id": tenant_id, "release_id": release_id, "source_sha": source_sha},
+    }
+    activated = []
+    service._mount_runtime = lambda selected_tenant, state: activated.append((selected_tenant, state))
+
+    result = service.activate_runtime_after_health(
+        tenant_id, release_id=release_id, source_sha=source_sha,
+    )
+    assert result == {
+        "tenant_id": tenant_id,
+        "release_id": release_id,
+        "source_sha": source_sha,
+        "runtime_active": True,
+    }
+    assert len(activated) == 1
+
+    receipt["stage"] = "verify-deployment"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    with pytest.raises(BootstrapError, match="health boundary"):
+        service.activate_runtime_after_health(
+            tenant_id, release_id=release_id, source_sha=source_sha,
+        )
+
+    receipt["stage"] = "verify-connection"
+    receipt["health"]["schemaIdentity"] = "d" * 64
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    with pytest.raises(BootstrapError, match="health does not match"):
+        service.activate_runtime_after_health(
+            tenant_id, release_id=release_id, source_sha=source_sha,
+        )
+    assert len(activated) == 1
+
+
+def test_control_plane_activates_pending_tenant_only_with_authenticated_health_handoff(tmp_path):
+    tenant_id = "demo"
+    release_id = "rel-20261006123456-aabbccdd"
+    source_sha = "a" * 40
+    config, _unused, env = _host(tmp_path)
+    registry = TenantRegistry.from_config(config, env)
+    registration = TenantRegistrationService(config, env, registry=registry)
+    service = WebsiteBootstrapService(config, env, registration=registration, registry=registry)
+    releases = tmp_path / "releases"
+    service.config["deployment_pipeline"] = {"release_root": str(releases)}
+    registration.register(tenant_id, display_name="Demo")
+    state = {
+        "tenant_id": tenant_id,
+        "status": "awaiting_release",
+        "step": "deploying_shell",
+        "release": {"tenant_id": tenant_id, "release_id": release_id, "source_sha": source_sha},
+        "steps": {},
+    }
+    service._state_path(tenant_id).write_text(json.dumps(state), encoding="utf-8")
+    receipt = {
+        "tenant": tenant_id,
+        "releaseId": release_id,
+        "sourceSha": source_sha,
+        "status": "running",
+        "stage": "verify-connection",
+        "approvalId": None,
+        "initialSchemaHead": "c" * 64,
+        "uploadedVersion": "version-demo",
+        "deployment": {"versions": [{"version_id": "version-demo", "percentage": 100}]},
+        "payloadAdmin": "0.10.1",
+        "payloadCore": "0.5.1",
+        "contentContract": "helloada-content-v3",
+        "schemaRevision": 5,
+        "schemaIdentity": "b" * 64,
+        "migrationHead": "c" * 64,
+    }
+    receipt["health"] = {
+        "ok": True,
+        "tenant": tenant_id,
+        "releaseSha": source_sha,
+        **{key: receipt[key] for key in (
+            "payloadAdmin", "payloadCore", "contentContract", "schemaRevision",
+            "schemaIdentity", "migrationHead",
+        )},
+    }
+    receipt_path = releases / "runs" / tenant_id / release_id / "receipt.json"
+    receipt_path.parent.mkdir(parents=True)
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    activated = []
+    service._mount_runtime = lambda selected_tenant, selected_state: activated.append(selected_tenant)
+    app = create_workspace_api_app(
+        registry,
+        control_token="control",
+        registration=registration,
+        bootstrap=service,
+    )
+    try:
+        with TestClient(app) as client:
+            path = f"/v1/control-plane/websites/{tenant_id}/activate-runtime"
+            body = {"release_id": release_id, "source_sha": source_sha}
+            assert client.post(path, json=body).status_code == 401
+            response = client.post(
+                path,
+                headers={"Authorization": "Bearer control"},
+                json=body,
+            )
+            assert response.status_code == 200
+            assert response.json()["runtime_active"] is True
+            assert response.json()["release_id"] == release_id
+            assert activated == [tenant_id]
+    finally:
+        service.close()
+        registry.close()
+
+
 def test_bootstrap_worker_names_fit_the_workers_dev_preview_limit():
     service = WebsiteBootstrapService.__new__(WebsiteBootstrapService)
     service.config = {"bootstrap": {"resource_prefix": "helloada"}}

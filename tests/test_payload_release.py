@@ -909,16 +909,25 @@ def test_read_only_continuation_rejects_unproven_release(tmp_path, changed):
 
 
 def test_edge_convergence_repeats_identical_checks_without_deploying(monkeypatch):
-    result = {"tenant": "oceanicvibes", "sourceSha": SHA, "uploadedVersion": "version-1"}
+    result = {"tenant": "oceanicvibes", "sourceSha": SHA, "releaseId": "release-1",
+              "uploadedVersion": "version-1", "initialSchemaHead": CUSTOMER["migrationHead"]}
     customer = CUSTOMER
     monkeypatch.setattr(release, "cloudflare_deployment", lambda *args: {
         "versions": [{"percentage": 100, "version_id": "version-1"}]})
-    monkeypatch.setattr(release, "check_health", lambda *args: {"ok": True})
+    events = []
+    monkeypatch.setattr(release, "check_health", lambda *args: events.append("health") or {"ok": True})
+    monkeypatch.setattr(release, "control_plane_token", lambda *_args: "control-token")
+    monkeypatch.setattr(
+        release,
+        "activate_tenant_runtime",
+        lambda *args: events.append(("activate", args[1], args[2], args[3])),
+    )
     monkeypatch.setattr(release.time, "sleep", lambda _: None)
     commands = []
 
     def run(command, *args):
         commands.append(command)
+        events.append("connection")
         if len(commands) == 1:
             raise RuntimeError("connection gate failed")
 
@@ -927,6 +936,10 @@ def test_edge_convergence_repeats_identical_checks_without_deploying(monkeypatch
     assert commands[0] == commands[1] and len(commands) == 2
     assert commands[0][1].endswith("check-helloada-connections.py")
     assert result["connectionVerifiedAt"] and len(result["gateAttempts"]) == 1
+    assert events == [
+        "health", ("activate", "oceanicvibes", "release-1", SHA), "connection",
+        "health", ("activate", "oceanicvibes", "release-1", SHA), "connection",
+    ]
 
 
 def test_read_only_gate_rejects_a_different_production_version(monkeypatch):
@@ -938,10 +951,16 @@ def test_read_only_gate_rejects_a_different_production_version(monkeypatch):
 
 
 def test_failed_connection_gate_is_bounded_and_remains_failed(monkeypatch):
-    result = {"tenant": "oceanicvibes", "sourceSha": SHA, "uploadedVersion": "version-1"}
+    result = {"tenant": "oceanicvibes", "sourceSha": SHA, "releaseId": "release-1",
+              "uploadedVersion": "version-1"}
     monkeypatch.setattr(release, "cloudflare_deployment", lambda *args: {
         "versions": [{"percentage": 100, "version_id": "version-1"}]})
     monkeypatch.setattr(release, "check_health", lambda *args: {"ok": True})
+    monkeypatch.setattr(
+        release,
+        "control_plane_token",
+        lambda *_args: pytest.fail("ordinary website releases must not activate bootstrap tenants"),
+    )
     monkeypatch.setattr(release.time, "sleep", lambda _: None)
     monkeypatch.setattr(release, "run", lambda *args: (_ for _ in ()).throw(RuntimeError("gate failed")))
     with pytest.raises(RuntimeError, match="gate failed"):
@@ -981,7 +1000,8 @@ def test_workers_dev_health_url_must_match_the_cloudflare_account_subdomain(monk
 
 
 def test_live_verification_enables_only_the_exact_promoted_workers_dev_route(monkeypatch):
-    result = {"tenant": "demo", "sourceSha": SHA, "uploadedVersion": "version-1"}
+    result = {"tenant": "demo", "sourceSha": SHA, "releaseId": "release-1",
+              "uploadedVersion": "version-1", "initialSchemaHead": CUSTOMER["migrationHead"]}
     customer = {
         **CUSTOMER,
         "worker": "helloada-demo",
@@ -998,6 +1018,9 @@ def test_live_verification_enables_only_the_exact_promoted_workers_dev_route(mon
         "versions": [{"percentage": 100, "version_id": "version-1"}],
     })
     monkeypatch.setattr(release, "check_health", lambda *_args: {"ok": True})
+    monkeypatch.setattr(release, "control_plane_token", lambda *_args: "control-token")
+    activations = []
+    monkeypatch.setattr(release, "activate_tenant_runtime", lambda *args: activations.append(args))
     monkeypatch.setattr(release, "run", lambda *_args: None)
     stages = []
 
@@ -1008,4 +1031,7 @@ def test_live_verification_enables_only_the_exact_promoted_workers_dev_route(mon
 
     assert calls == ["helloada-demo"]
     assert stages.index("enable-workers-dev") < stages.index("verify-connection")
+    assert activations == [(
+        REGISTRY["connectionGate"]["apiUrl"], "demo", "release-1", SHA, "control-token",
+    )]
     assert result["connectionVerifiedAt"]

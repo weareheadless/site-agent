@@ -511,6 +511,59 @@ def check_health(url: str, tenant: str, customer: dict[str, Any], sha: str) -> d
     return body
 
 
+def control_plane_token(env_file: str | Path, base: dict[str, str]) -> str:
+    """Load the server-only activation credential from the declared API env file."""
+    from site_agent.config import load_env_file
+
+    token = str(load_env_file(env_file, base).get("HELLOADA_CONTROL_PLANE_TOKEN") or "").strip()
+    if not token:
+        raise RuntimeError("the declared HelloAda control-plane credential is missing")
+    return token
+
+
+def activate_tenant_runtime(
+    api_url: str,
+    tenant: str,
+    release_id: str,
+    source_sha: str,
+    token: str,
+) -> None:
+    """Mount the pending tenant after Worker health and before connection auth."""
+    endpoint = (
+        api_url.rstrip("/")
+        + "/control-plane/websites/"
+        + urllib.parse.quote(tenant, safe="")
+        + "/activate-runtime"
+    )
+    payload = json.dumps({"release_id": release_id, "source_sha": source_sha}).encode("utf-8")
+    request = urllib.request.Request(
+        endpoint,
+        data=payload,
+        method="POST",
+        headers={
+            "Authorization": "Bearer " + token,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "HelloAda-Release/1.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=25) as response:
+            result = json.load(response)
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"tenant runtime activation returned HTTP {exc.code}") from None
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError("tenant runtime activation did not return a valid response") from exc
+    if (
+        not isinstance(result, dict)
+        or result.get("tenant_id") != tenant
+        or result.get("release_id") != release_id
+        or result.get("source_sha") != source_sha
+        or result.get("runtime_active") is not True
+    ):
+        raise RuntimeError("tenant runtime activation identity did not match the release")
+
+
 def workers_dev_provisioner(
     customer: dict[str, Any], deploy_env: dict[str, str],
 ) -> CloudflareResourceProvisioner | None:
@@ -547,6 +600,15 @@ def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dic
         workers_dev.ensure_workers_dev_route(str(customer["worker"]))
         stage("verify-deployment")
     gate = manifest["connectionGate"]
+    # Runtime activation is the extra control-plane boundary for an initial
+    # workspace bootstrap. Existing tenant releases are already mounted and
+    # continue through the same read-only connection gate without a bootstrap
+    # state transition.
+    activation_token = (
+        control_plane_token(gate["envFile"], base)
+        if receipt.get("initialSchemaHead") is not None
+        else None
+    )
     # Edge rollout is asynchronous. Repeat the same strict read-only gates;
     # never change the version, identity, endpoint or success criteria.
     for attempt in range(12):
@@ -554,6 +616,11 @@ def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dic
             receipt["health"] = check_health(customer["health"], receipt["tenant"],
                                              customer, receipt["sourceSha"])
             stage("verify-connection")
+            if activation_token is not None:
+                activate_tenant_runtime(
+                    gate["apiUrl"], receipt["tenant"], receipt["releaseId"],
+                    receipt["sourceSha"], activation_token,
+                )
             run([sys.executable, str(ROOT / "scripts/check-helloada-connections.py"),
                  "--config", gate["config"], "--env-file", gate["envFile"],
                  "--api-url", gate["apiUrl"], "--tenant", receipt["tenant"]], ROOT,
