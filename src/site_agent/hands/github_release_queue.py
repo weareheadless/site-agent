@@ -80,7 +80,7 @@ class GitHubReleaseQueue:
     @staticmethod
     def _required_customer(customer: Mapping[str, Any]) -> dict[str, Any]:
         result = {key: customer.get(key) for key in (
-            "repository", "worker", "health", "adminPath", "payloadAdmin", "payloadCore",
+            "repository", "worker", "health", "adminPath", "websitePresent", "payloadAdmin", "payloadCore",
             "contentContract", "schemaRevision", "schemaIdentity", "migrationHead",
             "d1DatabaseId", "d1DatabaseName", "r2BucketName",
         )}
@@ -92,6 +92,8 @@ class GitHubReleaseQueue:
             raise GitHubReleaseQueueError("registered health endpoint is invalid")
         if result["adminPath"] != "/api/helloada":
             raise GitHubReleaseQueueError("release does not use the canonical HelloAda API")
+        if not isinstance(result["websitePresent"], bool):
+            raise GitHubReleaseQueueError("explicit website-present state is required")
         if not _VERSION.fullmatch(str(result["payloadAdmin"] or "")) or not _VERSION.fullmatch(str(result["payloadCore"] or "")):
             raise GitHubReleaseQueueError("exact shared Payload package versions are required")
         if not _CONTRACT.fullmatch(str(result["contentContract"] or "")):
