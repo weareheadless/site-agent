@@ -42,7 +42,12 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   ])
   if (page && product) throw new Error('Payload assigns the same public route to both a page and a product.')
   const document = post || page || product
-  if (!document) notFound()
+  // The page render below owns the canonical 404 decision. Calling
+  // notFound() from generateMetadata as well makes the Cloudflare OpenNext
+  // adapter serialize a missing Payload document as HTTP 500, even though the
+  // rendered body is its 404 page. Keep metadata total for an unpublished or
+  // not-yet-created home document and let PublicRoute return the real 404.
+  if (!document) return routeMetadata(String(settings.defaultSeoTitle || settings.siteName || 'HelloAda site').trim(), String(settings.defaultSeoDescription || settings.description || '').trim())
   const seo = seoFor(document, settings)
   return routeMetadata(seo.title, seo.description, seo.image, seo.canonical)
 }
