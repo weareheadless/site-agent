@@ -90,7 +90,7 @@
       "health": "https://helloada-northstar-coffee-full-in-ad820fa9f96521e91211.weareheadless.workers.dev/api/health",
       "migrationHead": "75064eaeb5a035afc8977d39a59742dfa8bfb5e94d344ca9090e29e516bb2534",
       "payloadAdmin": "0.10.1",
-      "payloadCore": "0.5.1",
+      "payloadCore": "0.5.2",
       "r2BucketName": "helloada-northstar-coffee-full-intak-ad820fa9f96521e91211-media",
       "repository": "https://github.com/weareheadless/helloada-northstar-coffee-full-intake-vali-ad820fa9f96521e91211.git",
       "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
