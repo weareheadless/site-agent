@@ -1,7 +1,8 @@
+import { JWTAuthentication } from 'payload'
 import type { Block, CollectionConfig, GlobalConfig } from 'payload'
 
 export const HELLOADA_CONTENT_CONTRACT_VERSION = 'helloada-content-v3'
-export const HELLOADA_CORE_VERSION = '0.5.3'
+export const HELLOADA_CORE_VERSION = '0.5.4'
 export const HELLOADA_SCHEMA_REVISION = 5
 
 export const validateHelloAdaLink = (value: unknown): true | string => {
@@ -964,7 +965,12 @@ export const Users: CollectionConfig = {
   slug: 'users',
   // HelloAda is the identity provider. Payload sessions are created only by
   // its signed, one-use handoff; tenant owners do not get a second password.
-  auth: { disableLocalStrategy: { enableFields: true }, useSessions: true },
+  auth: {
+    // Password login stays disabled; HelloAda-issued Payload sessions still need the built-in JWT verifier.
+    disableLocalStrategy: { enableFields: true },
+    useSessions: true,
+    strategies: [{ name: 'helloada-payload-session', authenticate: JWTAuthentication }],
+  },
   access: { create: () => false, read: () => false, update: () => false, delete: () => false },
   admin: { useAsTitle: 'email', hidden: true },
   fields: [
