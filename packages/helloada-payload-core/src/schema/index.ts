@@ -2,8 +2,8 @@ import { JWTAuthentication } from 'payload'
 import type { Block, CollectionConfig, GlobalConfig } from 'payload'
 
 export const HELLOADA_CONTENT_CONTRACT_VERSION = 'helloada-content-v3'
-export const HELLOADA_CORE_VERSION = '0.5.5'
-export const HELLOADA_SCHEMA_REVISION = 5
+export const HELLOADA_CORE_VERSION = '0.5.6'
+export const HELLOADA_SCHEMA_REVISION = 6
 
 export const validateHelloAdaLink = (value: unknown): true | string => {
   if (typeof value !== 'string' || !value.trim()) return 'Enter a destination for this link.'
@@ -977,7 +977,9 @@ export const Users: CollectionConfig = {
     {
       name: 'helloadaSubject',
       type: 'text',
-      required: true,
+      // Existing Payload owners predate HelloAda's external subject. The
+      // first signed handoff creates this link; older user rows stay valid.
+      required: false,
       unique: true,
       index: true,
       admin: { hidden: true },
