@@ -5,6 +5,8 @@ from site_agent.credentials import (
     credential_profile,
     credential_profile_file,
     credential_status,
+    cloudflare_dns_api_token,
+    cloudflare_email_api_token,
     github_remote,
     github_ssh_command,
 )
@@ -24,6 +26,19 @@ def test_host_credential_files_are_loaded_without_overriding_process_values(tmp_
 
     assert resolved["GITHUB_PERSONAL_ACCESS_TOKEN"] == "from-process"
     assert resolved["CLOUDFLARE_API_TOKEN"] == "cf-token"
+
+
+def test_email_profiles_never_fall_back_to_the_general_cloudflare_token():
+    env = {
+        "CLOUDFLARE_API_TOKEN": "worker-management-token",
+        "CLOUDFLARE_DNS_API_TOKEN": "dns-token",
+        "CLOUDFLARE_EMAIL_API_TOKEN": "email-token",
+    }
+
+    assert cloudflare_dns_api_token({}, env) == "dns-token"
+    assert cloudflare_email_api_token({}, env) == "email-token"
+    assert cloudflare_dns_api_token({}, {"CLOUDFLARE_API_TOKEN": "worker-management-token"}) == ""
+    assert cloudflare_email_api_token({}, {"CLOUDFLARE_API_TOKEN": "worker-management-token"}) == ""
 
 
 def test_canonical_profile_file_is_loaded_once_with_explicit_overrides(tmp_path):
@@ -69,10 +84,16 @@ def test_credential_status_is_non_secret_and_reports_file_readiness(tmp_path):
     os.chmod(key, 0o600)
     env_file = tmp_path / "cloudflare.env"
     env_file.write_text("CLOUDFLARE_API_TOKEN=cf-secret-123\nCLOUDFLARE_ACCOUNT_ID=account-secret-456\n")
+    email_env_file = tmp_path / "cloudflare-email.env"
+    email_env_file.write_text("CLOUDFLARE_EMAIL_API_TOKEN=email-secret-789\n")
+    dns_env_file = tmp_path / "cloudflare-dns.env"
+    dns_env_file.write_text("CLOUDFLARE_DNS_API_TOKEN=dns-secret-012\n")
     config = {
         "credentials": {
             "github": {"ssh_key_path": str(key)},
             "cloudflare": {"env_file": str(env_file)},
+            "cloudflare_email": {"env_file": str(email_env_file)},
+            "cloudflare_dns": {"env_file": str(dns_env_file)},
         }
     }
 
@@ -83,5 +104,9 @@ def test_credential_status_is_non_secret_and_reports_file_readiness(tmp_path):
     assert status["cloudflare"]["env_file_available"] is True
     assert status["cloudflare"]["api_token_configured"] is True
     assert status["cloudflare"]["account_id_configured"] is True
+    assert status["cloudflare_email"]["api_token_configured"] is True
+    assert status["cloudflare_dns"]["api_token_configured"] is True
     assert "cf-secret-123" not in str(status)
     assert "account-secret-456" not in str(status)
+    assert "email-secret-789" not in str(status)
+    assert "dns-secret-012" not in str(status)

@@ -208,19 +208,34 @@ in the queue. Never edit the canceled source directory or resume its upload.
 ## Domain email provisioning
 
 Domain email is provisioned by the shared site-agent API from the canonical
-tenant config. New-site bootstrap enables it with the stable `hello` local
-part; changing a tenant's registered custom origin updates the email domain
-and triggers the same reconciliation after the exact Worker health contract is
-ready. A tenant scheduler retries automatically every hour after a new Worker
-release becomes ready; it does not need a dashboard visit or a manual API
-restart. Provider secrets remain in the protected Cloudflare credential profile.
+tenant config. Workspace bootstrap enables automatic reconciliation with the
+stable `hello` local part, and a registered custom website origin can supply
+the email domain. A platform-hosted `workers.dev` site without an explicitly
+registered email domain remains `domain_required`; automatic shared-domain
+assignment for every new workspace is phase two, tracked in issue #106. For
+the current validation, existing platform-hosted tenants can receive an
+explicit HelloAda email domain and tenant-unique local part through the
+read-only/`--apply` CLI flow below. A tenant scheduler retries automatically
+every hour after a new Worker release becomes ready; it does not need a
+dashboard visit or a manual API restart. Provider secrets remain in protected
+host credential profiles.
 Unknown existing MX, SPF, DMARC or routing state stops before Cloudflare writes.
-The protected Cloudflare API token must be able to inspect the registered zone
-and manage only the DNS and Email Routing/Sending resources this provisioner
-uses. Keep it restricted to the zones site-agent manages. Missing permissions,
-an unavailable account entitlement, or an unsupported provider response is a
-hard error; the workflow never asks an operator to finish onboarding in the
-dashboard or silently substitutes a manual DNS recipe.
+The provisioner uses separate protected host profiles. The `cloudflare_dns`
+token needs Zone Read, DNS Read and DNS Write, restricted to the zones
+site-agent manages. The `cloudflare_email` token needs Email Routing Rules
+Read/Edit and Zone Settings Read/Edit, restricted to those same zones, plus
+Email Sending Edit on the owning account. Do not grant broad account or global
+permissions. Missing permissions, an unavailable account entitlement, or an
+unsupported provider response is a hard error; the workflow never asks an
+operator to finish onboarding in the dashboard or silently substitutes a
+manual DNS recipe. The general Cloudflare token remains dedicated to Worker
+origin/resource operations and is not reused for email provisioning. Store
+the token values only in the corresponding protected host environment files;
+the non-secret profile in `/SOCIAL/configs/host-credentials.yaml` names those
+files and environment variable names. Store `CLOUDFLARE_EMAIL_API_TOKEN` in
+`/SOCIAL/configs/helloada-cloudflare-email.env`; use the existing configured
+DNS-profile file for `CLOUDFLARE_DNS_API_TOKEN`. Never put token values in
+tenant config, source, GitHub or issue comments.
 
 For a one-time existing-tenant setup, run the installed site-agent CLI on the
 VPS using the API's protected host config:
@@ -228,6 +243,17 @@ VPS using the API's protected host config:
 ```sh
 site-agent --config /SOCIAL/configs/site-agent-api/config.yaml provision-email --tenant <registered-tenant-id>
 ```
+
+For a tenant on a platform `workers.dev` website, include its pre-registered
+HelloAda zone-apex email domain with `--email-domain helloada.app` and its
+tenant-unique mailbox local part with `--local-part atelier-harmonie`. This
+first validation supports zone-apex domains only. The
+current Cloudflare Email Routing API's subdomain DNS query is deprecated, and
+subdomain routing setup is documented as a dashboard flow; do not silently
+use that legacy query. The email domain must resolve to an active zone visible
+to the protected DNS profile. These values are persisted only by the matching
+`--apply` after the plan is reviewed; the Worker and tenant identity still
+come exclusively from the registry.
 
 That invocation is read-only and resolves the tenant only from the canonical
 `provisioned_root/tenants.json`; it prints the intended mailbox and operations
