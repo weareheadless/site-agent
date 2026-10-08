@@ -7,6 +7,7 @@ import yaml
 
 from site_agent.application.growth import growth_snapshot
 from site_agent.application.workspace import ChatService, Tenant, TenantRegistry
+import site_agent.application.workspace as workspace_module
 from site_agent.core.memory import Memory
 from site_agent.web.workspace import register_workspace_routes
 from site_agent.application.seo_bootstrap import load_tenant_environment
@@ -89,10 +90,10 @@ def test_migrated_tenant_keeps_its_existing_provider_credential_file(tmp_path):
     assert env['PROVISIONED_DEMO_TOKEN'] == 'canonical-fixture'
 
 
-def test_site_origin_change_is_persisted_before_runtime_reconciliation(tmp_path):
+def test_site_origin_change_is_persisted_before_runtime_reconciliation(tmp_path, monkeypatch):
     config_path = tmp_path / 'config.yaml'
     config_path.write_text(yaml.safe_dump({
-        'site': {'preview_url': 'https://demo.workers.dev/'},
+        'site': {'preview_url': 'https://demo.example/', 'source_deployment': {'worker_name': 'demo'}},
         'seo': {
             'enabled': True,
             'site_url': 'https://demo.workers.dev/',
@@ -112,6 +113,7 @@ def test_site_origin_change_is_persisted_before_runtime_reconciliation(tmp_path)
         api_token_env='CUSTOM_DEMO_TOKEN',
     )
     registry = TenantRegistry({'demo': tenant})
+    monkeypatch.setattr(workspace_module, 'canonical_worker_preview_url', lambda _config, _env: 'https://demo.weareheadless.workers.dev')
     calls = []
 
     def reload_tenant(tenant_id, path, **kwargs):
@@ -122,6 +124,7 @@ def test_site_origin_change_is_persisted_before_runtime_reconciliation(tmp_path)
     registry.update_site_origin('demo', 'https://www.demo.example')
 
     updated = yaml.safe_load(config_path.read_text(encoding='utf-8'))
+    assert updated['site']['preview_url'] == 'https://demo.weareheadless.workers.dev'
     assert updated['site']['public_url'] == 'https://www.demo.example/'
     assert updated['site']['url'] == 'https://www.demo.example/'
     assert updated['site']['custom_domain'] == 'www.demo.example'

@@ -23,11 +23,64 @@ def _config(tmp_path: Path):
         "site": {
             "custom_domain": "oceanicvibes.com",
             "public_url": "https://oceanicvibes.com/",
-            "preview_url": "https://oceanicvibes.workers.dev",
+            "preview_url": "https://oceanicvibes.weareheadless.workers.dev",
             "source_deployment": {"worker_name": "oceanicvibes"},
         },
         "messages": {"email": {"enabled": True, "local_part": "contact", "provisioning": {"auto": True}}},
     }
+
+
+def test_worker_readiness_accepts_only_the_account_qualified_origin(monkeypatch, tmp_path):
+    config = _config(tmp_path)
+    config["site"]["preview_url"] = "https://oceanicvibes.weareheadless.workers.dev/"
+    expected = "https://oceanicvibes.weareheadless.workers.dev"
+    monkeypatch.setattr(bootstrap, "canonical_worker_preview_url", lambda config, env: expected)
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _size=-1):
+            return bootstrap.json.dumps({
+                "ok": True,
+                "tenant": "oceanicvibes",
+                "contentContract": "helloada-content-v3",
+                "emailProvisioningVersion": 1,
+            }).encode()
+
+    def urlopen(request, timeout):
+        assert request.full_url == expected + "/api/health"
+        assert timeout == 12
+        return Response()
+
+    monkeypatch.setattr(bootstrap.urllib.request, "urlopen", urlopen)
+    worker, error = bootstrap._worker_readiness(config, "oceanicvibes", {})
+
+    assert worker == "oceanicvibes"
+    assert error == ""
+
+
+def test_worker_readiness_rejects_the_old_bare_workers_dev_host(monkeypatch, tmp_path):
+    config = _config(tmp_path)
+    config["site"]["preview_url"] = "https://oceanicvibes.workers.dev"
+    monkeypatch.setattr(
+        bootstrap,
+        "canonical_worker_preview_url",
+        lambda config, env: "https://oceanicvibes.weareheadless.workers.dev",
+    )
+    monkeypatch.setattr(
+        bootstrap.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must reject before health request")),
+    )
+
+    worker, error = bootstrap._worker_readiness(config, "oceanicvibes", {})
+
+    assert worker == ""
+    assert "does not match the Cloudflare account" in error
 
 
 def test_email_bootstrap_is_not_enabled_implicitly_for_existing_tenants(monkeypatch, tmp_path):
@@ -47,7 +100,7 @@ def test_prepare_plan_derives_mailbox_from_current_domain_and_local_part(monkeyp
     config["messages"]["email"]["address"] = "stale@former-domain.test"
     seen = {}
 
-    monkeypatch.setattr(bootstrap, "_worker_readiness", lambda config, tenant: ("oceanicvibes", ""))
+    monkeypatch.setattr(bootstrap, "_worker_readiness", lambda config, tenant, env=None: ("oceanicvibes", ""))
     monkeypatch.setattr(bootstrap, "cloudflare_api_token", lambda config, env: "cf-token")
 
     class Client:
@@ -81,7 +134,7 @@ def test_prepare_plan_uses_managed_zone_apex_for_a_www_site(monkeypatch, tmp_pat
     config["site"]["custom_domain"] = "www.oceanicvibes.com"
     seen = {}
 
-    monkeypatch.setattr(bootstrap, "_worker_readiness", lambda config, tenant: ("oceanicvibes", ""))
+    monkeypatch.setattr(bootstrap, "_worker_readiness", lambda config, tenant, env=None: ("oceanicvibes", ""))
     monkeypatch.setattr(bootstrap, "cloudflare_api_token", lambda config, env: "cf-token")
 
     class Client:
