@@ -544,6 +544,79 @@ def cloudflare_worker_version_identity(
     return worker_version_identity(version)
 
 
+def require_active_worker_snapshot(
+    customer: dict[str, Any], deploy_env: dict[str, str], deployment_id: str, version_id: str,
+) -> None:
+    """Require the observed production deployment/version to remain unchanged."""
+    current = cloudflare_deployment(customer, deploy_env)
+    versions = current.get("versions")
+    if (
+        current.get("id") != deployment_id
+        or not isinstance(versions, list)
+        or len(versions) != 1
+        or versions[0].get("version_id") != version_id
+        or versions[0].get("percentage") != 100
+    ):
+        raise RuntimeError("the active Worker version changed during readiness verification")
+
+
+def resolve_verified_active_worker(
+    customer: dict[str, Any], deploy_env: dict[str, str], uploaded_version: str,
+) -> tuple[dict[str, Any], str, dict[str, str], dict[str, str]]:
+    """Resolve a stable active version and prove any replacement is secret-only."""
+    changed_message = "the active Worker version changed during readiness verification"
+    for attempt in range(8):
+        deployment = cloudflare_deployment(customer, deploy_env)
+        versions = deployment.get("versions")
+        if not isinstance(versions, list) or len(versions) != 1 or versions[0].get("percentage") != 100:
+            raise RuntimeError("Cloudflare production deployment does not have exactly one 100%-traffic Worker version")
+        active_version = versions[0].get("version_id")
+        deployment_id = deployment.get("id")
+        if not isinstance(active_version, str) or not active_version or not isinstance(deployment_id, str) or not deployment_id:
+            raise RuntimeError("Cloudflare production deployment has no active Worker identity")
+        if active_version != uploaded_version:
+            annotations = deployment.get("annotations")
+            if not isinstance(annotations, dict) or annotations.get("workers/triggered_by") != "secret":
+                raise RuntimeError("the active Worker differs from the release outside a secret-only update")
+        uploaded_identity = cloudflare_worker_version_identity(customer, uploaded_version, deploy_env)
+        active_identity = (
+            uploaded_identity
+            if active_version == uploaded_version
+            else cloudflare_worker_version_identity(customer, active_version, deploy_env)
+        )
+        if uploaded_identity != active_identity:
+            raise RuntimeError("the active Worker code or non-secret bindings differ from the exact release")
+        try:
+            require_active_worker_snapshot(customer, deploy_env, deployment_id, active_version)
+        except RuntimeError as error:
+            if str(error) != changed_message or attempt == 7:
+                raise
+            time.sleep(0.25)
+            continue
+        return deployment, active_version, uploaded_identity, active_identity
+    raise RuntimeError("Cloudflare production deployment kept changing during readiness verification")
+
+
+def record_current_verification(
+    receipt: dict[str, Any], deployment: dict[str, Any], active_version: str,
+    uploaded_identity: dict[str, str], active_identity: dict[str, str],
+) -> None:
+    receipt["currentVerification"] = {
+        "releaseId": receipt["releaseId"],
+        "sourceSha": receipt["sourceSha"],
+        "uploadedVersion": receipt["uploadedVersion"],
+        "workerVersion": active_version,
+        "deploymentId": deployment["id"],
+        "trafficPercentage": 100,
+        "uploadedScriptEtag": uploaded_identity["script_etag"],
+        "activeScriptEtag": active_identity["script_etag"],
+        "uploadedBindingIdentity": uploaded_identity["binding_identity"],
+        "activeBindingIdentity": active_identity["binding_identity"],
+        "mode": "exact" if active_version == receipt["uploadedVersion"] else "secret_rotation",
+        "verifiedAt": utc_now(),
+    }
+
+
 
 def tenant_environment_path(manifest: dict[str, Any], tenant: str) -> Path:
     """Resolve the exact registered tenant environment file on the protected VPS."""
@@ -835,50 +908,26 @@ def workers_dev_provisioner(
 
 def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dict[str, Any],
                 deploy_env: dict[str, str], base: dict[str, str], stage: Any, *,
-                verify_only: bool = False, expected_worker_version: str | None = None) -> None:
+                verify_only: bool = False) -> None:
     stage("verify-deployment")
-    deployment = cloudflare_deployment(customer, deploy_env)
-    versions = deployment["versions"]
-    if len(versions) != 1 or versions[0].get("percentage") != 100:
-        raise RuntimeError("the exact uploaded Worker version does not receive 100% of production traffic")
-    active_version = versions[0].get("version_id")
-    if not isinstance(active_version, str) or not active_version:
-        raise RuntimeError("Cloudflare production deployment has no active Worker version")
-    if expected_worker_version is not None and active_version != expected_worker_version:
-        raise RuntimeError("the active Worker version changed during readiness verification")
     if verify_only:
-        if active_version != receipt["uploadedVersion"]:
-            annotations = deployment.get("annotations")
-            if not isinstance(annotations, dict) or annotations.get("workers/triggered_by") != "secret":
-                raise RuntimeError("the active Worker differs from the release outside a secret-only update")
-        uploaded_identity = cloudflare_worker_version_identity(
-            customer, receipt["uploadedVersion"], deploy_env,
+        deployment, active_version, uploaded_identity, active_identity = resolve_verified_active_worker(
+            customer, deploy_env, receipt["uploadedVersion"],
         )
-        active_identity = uploaded_identity if active_version == receipt["uploadedVersion"] else (
-            cloudflare_worker_version_identity(customer, active_version, deploy_env)
-        )
-        if uploaded_identity != active_identity:
-            raise RuntimeError("the active Worker code or non-secret bindings differ from the exact release")
-        receipt["currentVerification"] = {
-            "releaseId": receipt["releaseId"],
-            "sourceSha": receipt["sourceSha"],
-            "uploadedVersion": receipt["uploadedVersion"],
-            "workerVersion": active_version,
-            "deploymentId": deployment.get("id"),
-            "trafficPercentage": 100,
-            "uploadedScriptEtag": uploaded_identity["script_etag"],
-            "activeScriptEtag": active_identity["script_etag"],
-            "uploadedBindingIdentity": uploaded_identity["binding_identity"],
-            "activeBindingIdentity": active_identity["binding_identity"],
-            "mode": "exact" if active_version == receipt["uploadedVersion"] else "secret_rotation",
-            "verifiedAt": utc_now(),
-        }
+        record_current_verification(receipt, deployment, active_version, uploaded_identity, active_identity)
     else:
+        deployment = cloudflare_deployment(customer, deploy_env)
+        versions = deployment["versions"]
+        if len(versions) != 1 or versions[0].get("percentage") != 100:
+            raise RuntimeError("the exact uploaded Worker version does not receive 100% of production traffic")
+        active_version = versions[0].get("version_id")
+        if not isinstance(active_version, str) or not active_version:
+            raise RuntimeError("Cloudflare production deployment has no active Worker version")
         if active_version != receipt["uploadedVersion"]:
             raise RuntimeError("the exact uploaded Worker version does not receive 100% of production traffic")
         receipt["deployment"] = deployment
     workers_dev = workers_dev_provisioner(customer, deploy_env)
-    if workers_dev is not None:
+    if workers_dev is not None and not verify_only:
         stage("enable-workers-dev")
         workers_dev.ensure_workers_dev_route(str(customer["worker"]))
         stage("verify-deployment")
@@ -903,14 +952,35 @@ def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dic
                  "--config", gate["config"], "--env-file", gate["envFile"],
                  "--api-url", gate["apiUrl"], "--tenant", receipt["tenant"]], ROOT,
                 {**base, "PYTHONPATH": str(ROOT / "src")})
-            receipt["connectionVerifiedAt"] = utc_now()
-            return
         except (OSError, ValueError, RuntimeError) as error:
             receipt.setdefault("gateAttempts", []).append({"at": utc_now(), "error": str(error)})
             stage(receipt["stage"])
             if attempt == 11:
                 raise
             time.sleep(5)
+            continue
+        if verify_only:
+            current_deployment, current_version, current_uploaded_identity, current_active_identity = (
+                resolve_verified_active_worker(customer, deploy_env, receipt["uploadedVersion"])
+            )
+            if current_deployment["id"] != deployment["id"] or current_version != active_version:
+                deployment = current_deployment
+                active_version = current_version
+                uploaded_identity = current_uploaded_identity
+                active_identity = current_active_identity
+                record_current_verification(
+                    receipt, deployment, active_version, uploaded_identity, active_identity,
+                )
+                stage("verify-deployment")
+                if attempt == 11:
+                    raise RuntimeError("Cloudflare production deployment kept changing during readiness verification")
+                continue
+            record_current_verification(
+                receipt, current_deployment, current_version,
+                current_uploaded_identity, current_active_identity,
+            )
+        receipt["connectionVerifiedAt"] = utc_now()
+        return
 
 
 def verification_receipt(directory: Path, tenant: str, sha: str, release_id: str,
@@ -1037,12 +1107,8 @@ def main() -> int:
     parser.add_argument("--schema-migration-from-ledger-identity", help="exact identity of the current Payload ledger for an approved tenant schema migration")
     parser.add_argument("--verify-only", action="store_true",
                         help="Recheck an already promoted version; never build, upload or promote")
-    parser.add_argument("--expected-worker-version",
-                        help="exact active Worker version expected during read-only readiness verification")
     parser.add_argument("--manifest", type=Path, default=ROOT / "deploy/payload-customers.json")
     args = parser.parse_args()
-    if args.verify_only != (args.expected_worker_version is not None):
-        parser.error("read-only verification requires --expected-worker-version, which is invalid for a new release")
     manifest = json.loads(args.manifest.read_text())
     validate_toolchain_manifest(manifest)
     customer = manifest["customers"].get(args.tenant)
@@ -1103,7 +1169,8 @@ def main() -> int:
 
     def stage(name: str) -> None:
         receipt["stage"] = name
-        atomic_json(receipt_path, receipt)
+        if not args.verify_only:
+            atomic_json(receipt_path, receipt)
         print(f"[release] stage={name} tenant={args.tenant}", flush=True)
 
     try:
@@ -1139,7 +1206,6 @@ def main() -> int:
             verify_live(
                 receipt, customer, manifest, deploy_env, base, stage,
                 verify_only=True,
-                expected_worker_version=args.expected_worker_version,
             )
             receipt.update({"status": "deployed", "stage": "awaiting-browser-verification", "finishedAt": utc_now()})
             atomic_json(receipt_path, receipt)
@@ -1292,12 +1358,15 @@ def main() -> int:
         print(f"[release] DEPLOYED receipt={receipt_path}", flush=True)
         return 0
     except Exception as error:
-        receipt.update({"status": "failed", "error": str(error), "finishedAt": utc_now()})
-        atomic_json(receipt_path, receipt)
-        print(f"[release] FAILED stage={receipt['stage']}: {error}", file=sys.stderr, flush=True)
+        if args.verify_only:
+            print(f"[release] VERIFICATION_FAILED stage={receipt['stage']}: {error}", file=sys.stderr, flush=True)
+        else:
+            receipt.update({"status": "failed", "error": str(error), "finishedAt": utc_now()})
+            atomic_json(receipt_path, receipt)
+            print(f"[release] FAILED stage={receipt['stage']}: {error}", file=sys.stderr, flush=True)
         return 1
     finally:
-        if workspace is not None:
+        if workspace is not None and not args.verify_only:
             try:
                 workspace.cleanup()
                 receipt["workspaceCleanupStatus"] = "complete"

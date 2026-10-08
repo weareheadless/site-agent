@@ -431,8 +431,12 @@ machine's system `PATH` or a shell-installed Node/npm.
 For a promoted version whose live gate failed during rollout, the documented
 `--verify-only` command may repeat the exact read-only checks under the queue
 lock without rebuilding or deploying. It validates the receipt's artifact-hash
-manifest and exact serving version; it requires no local checkout or archived
-build. It preserves the original failure. Never edit a failed
+manifest and resolves the active 100%-traffic version directly from Cloudflare.
+During adoption only, a Cloudflare secret-triggered version is accepted when
+its code and non-secret binding identity exactly match the uploaded version;
+the verifier rechecks the active deployment around live health and authenticated
+connection checks. Failed read-only verification does not rewrite the canonical
+promotion receipt. It requires no local checkout or archived build. Never edit a failed
 receipt into success by hand.
 
 There is no customer-facing legacy admin API. The canonical Payload bridge is

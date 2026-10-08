@@ -10,7 +10,6 @@ def test_adoption_verifier_command_preserves_explicit_release_contract(tmp_path)
         tenant="oceanicvibes",
         source_sha="a" * 40,
         release_id="20261008-oceanic-messages-schema-3",
-        worker_version="18499a63-18ab-49bb-aa9a-3ba1311c328a",
         release_purpose="website",
     )
 
@@ -25,8 +24,6 @@ def test_adoption_verifier_command_preserves_explicit_release_contract(tmp_path)
         "20261008-oceanic-messages-schema-3",
         "--release-purpose",
         "website",
-        "--expected-worker-version",
-        "18499a63-18ab-49bb-aa9a-3ba1311c328a",
         "--verify-only",
     ]
 

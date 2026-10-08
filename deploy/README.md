@@ -183,13 +183,20 @@ reviewed VPS checkout, using the same recorded tenant, full SHA and release ID:
 ```
 
 This command takes the queue lock, validates the receipt's per-file artifact
-hashes and requires the exact uploaded version at 100% traffic. The built
+hashes and reads the current 100%-traffic deployment directly from Cloudflare.
+For adoption only, a current version created by a secret-only rotation is
+accepted only when Cloudflare marks it secret-triggered and its script ETag and
+non-secret binding identity exactly match the uploaded release. The verifier
+rechecks the active deployment around the live health and authenticated
+connection gates; it does not accept a caller-supplied Worker version. Failed
+read-only verification does not rewrite the canonical release receipt. The built
 workspace is not retained on the VPS; source is reproducible from the recorded
 Git SHA and deployed versions remain in Cloudflare. It does not build, upload,
 promote or change customer data. Prior failures remain in `verificationHistory`.
 The normal gate also waits for edge convergence with bounded repetitions of
 the same strict health and authenticated connection checks. A failure never
-selects another endpoint, credential or Worker version.
+selects another endpoint or credential. Normal release promotion still requires
+the exact uploaded version.
 
 To cancel an obsolete build, stop `helloada-release.timer` and then
 `helloada-release.service`. The service stops its complete process group. Commit
