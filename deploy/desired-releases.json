@@ -1,51 +1,13 @@
 {
+  "schema": 1,
   "releases": {
-    "ada-direct-admin-sso-e2e-a76df8a18660acea": {
-      "id": "rel-20261007042359-db987a5c",
-      "initializeSchema": {
-        "migrationHead": "75064eaeb5a035afc8977d39a59742dfa8bfb5e94d344ca9090e29e516bb2534"
-      },
-      "sha": "419f1c9344d56f6d0a368aff8ac419215f43d91c"
-    },
-    "ada-e2e-studio-b39ae17e77014b8c": {
-      "id": "rel-20261006-d1-system-table-1",
-      "initializeSchema": {
-        "migrationHead": "75064eaeb5a035afc8977d39a59742dfa8bfb5e94d344ca9090e29e516bb2534"
-      },
-      "sha": "055996dc6f13d93de3e72a776a82d4354aa53772"
-    },
-    "ada-e2e-studio-intake-0aa0b1a55ae48348": {
-      "id": "rel-20261006-remote-d1-fix-2",
-      "sha": "117f8ac01f4979a3f77dcf67042415d97c664a73"
-    },
     "atelier-harmonie": {
       "id": "20261005-atelier-preview-mount-7",
       "sha": "fd9910cb176cd3cc3b19aa6d9ef67785dd8c509a"
     },
-    "northstar-coffee-e2e-validation-8fbf2e6fea671768": {
-      "id": "rel-20261006224116-adc412d9",
-      "initializeSchema": {
-        "migrationHead": "75064eaeb5a035afc8977d39a59742dfa8bfb5e94d344ca9090e29e516bb2534"
-      },
-      "sha": "4b7f3dbf1cf8d517ef508e602d84953bc0b5fc9b"
-    },
-    "northstar-coffee-e2e-validation-long-name-d719295b4d086bd3": {
-      "id": "rel-20261006230935-7c0d23d2",
-      "initializeSchema": {
-        "migrationHead": "75064eaeb5a035afc8977d39a59742dfa8bfb5e94d344ca9090e29e516bb2534"
-      },
-      "sha": "10667013a58ef4632f073a760b93e079c7f5a91b"
-    },
     "northstar-coffee-full-intake-validation-5a8564dae07494ec": {
       "id": "rel-20261007-payload-handoff-jwt-1",
       "sha": "8a7fb1fcb50c2b12e0942c789ab50feb9071d507"
-    },
-    "northstar-coffee-house-afd6a0232bf10fd4": {
-      "id": "rel-20261006212816-11d97f91",
-      "initializeSchema": {
-        "migrationHead": "75064eaeb5a035afc8977d39a59742dfa8bfb5e94d344ca9090e29e516bb2534"
-      },
-      "sha": "1b888270300d25d0f66ef99e7b75b2e0cce206f9"
     },
     "oceanicvibes": {
       "id": "20261008-oceanic-messages-schema-3",
@@ -55,6 +17,5 @@
       },
       "sha": "738807785d870e65829076be10e43bf1be98a59a"
     }
-  },
-  "schema": 1
+  }
 }
