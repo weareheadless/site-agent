@@ -30,11 +30,10 @@ def _config(tmp_path: Path):
     }
 
 
-def test_worker_readiness_accepts_only_the_account_qualified_origin(monkeypatch, tmp_path):
+def test_worker_readiness_uses_registered_public_origin(monkeypatch, tmp_path):
     config = _config(tmp_path)
     config["site"]["preview_url"] = "https://oceanicvibes.weareheadless.workers.dev/"
-    expected = "https://oceanicvibes.weareheadless.workers.dev"
-    monkeypatch.setattr(bootstrap, "canonical_worker_preview_url", lambda config, env: expected)
+    expected = "https://oceanicvibes.com"
 
     class Response:
         def __enter__(self):
@@ -57,30 +56,60 @@ def test_worker_readiness_accepts_only_the_account_qualified_origin(monkeypatch,
         return Response()
 
     monkeypatch.setattr(bootstrap.urllib.request, "urlopen", urlopen)
-    worker, error = bootstrap._worker_readiness(config, "oceanicvibes", {})
+    worker, error = bootstrap._worker_readiness(config, "oceanicvibes")
 
     assert worker == "oceanicvibes"
     assert error == ""
 
 
-def test_worker_readiness_rejects_the_old_bare_workers_dev_host(monkeypatch, tmp_path):
+def test_worker_readiness_rejects_a_public_origin_outside_the_registered_domain(monkeypatch, tmp_path):
     config = _config(tmp_path)
-    config["site"]["preview_url"] = "https://oceanicvibes.workers.dev"
-    monkeypatch.setattr(
-        bootstrap,
-        "canonical_worker_preview_url",
-        lambda config, env: "https://oceanicvibes.weareheadless.workers.dev",
-    )
+    config["site"]["public_url"] = "https://different.example/"
     monkeypatch.setattr(
         bootstrap.urllib.request,
         "urlopen",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must reject before health request")),
     )
 
-    worker, error = bootstrap._worker_readiness(config, "oceanicvibes", {})
+    worker, error = bootstrap._worker_readiness(config, "oceanicvibes")
 
     assert worker == ""
-    assert "does not match the Cloudflare account" in error
+    assert "tenant's custom domain" in error
+
+
+def test_payload_mailbox_configuration_uses_registered_public_origin(monkeypatch, tmp_path):
+    config = _config(tmp_path)
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _size=-1):
+            return bootstrap.json.dumps({
+                "state": "active",
+                "domain": "oceanicvibes.com",
+                "address": "contact@oceanicvibes.com",
+            }).encode()
+
+    def urlopen(request, timeout):
+        assert request.full_url == "https://oceanicvibes.com/api/helloada/internal/messages/configure-mailbox"
+        assert request.get_method() == "POST"
+        assert timeout == 20
+        return Response()
+
+    monkeypatch.setattr(bootstrap.urllib.request, "urlopen", urlopen)
+    result = bootstrap._configure_payload_mailbox(
+        config,
+        tenant_id="oceanicvibes",
+        token="tenant-token",
+        domain="oceanicvibes.com",
+        address="contact@oceanicvibes.com",
+    )
+
+    assert result == {"state": "active", "domain": "oceanicvibes.com", "address": "contact@oceanicvibes.com"}
 
 
 def test_email_bootstrap_is_not_enabled_implicitly_for_existing_tenants(monkeypatch, tmp_path):

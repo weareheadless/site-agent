@@ -112,6 +112,29 @@ auth is deliberately different from the server-to-server gateway's tenant-token
 auth. A release is incomplete unless both paths are deployed from the same
 canonical template and the VPS caller uses the matching prefix.
 
+## Existing-site readiness adoption
+
+A tenant that was deployed before its HelloAda bootstrap saga was recorded must
+be adopted explicitly; a missing bootstrap receipt is not runtime evidence of
+readiness. Use `site-agent adopt-release-readiness` with the registered tenant,
+exact canonical release ID, full customer source SHA, and exact Worker version.
+Before writing readiness, the command runs the standard
+`deploy-payload-customer.py --verify-only` gate for that exact tenant, release,
+and SHA. This checks Cloudflare's current 100%-active version, the live Worker
+health contract, and the authenticated HelloAda/Payload connection. The
+adoption then requires that receipt to be the tenant's latest successful
+release, validates its full Payload identity and explicit website-presence
+state, and verifies the registered `site.public_url` matches the health origin
+and Worker identity in the canonical deployment manifest.
+
+The migration records provenance and the exact `creating_worker.worker_url`
+needed by HelloAda's owner handoff. After adoption, the ordinary bootstrap
+status refresh performs the existing runtime activation and owner-readiness
+checks. The command does not deploy a Worker, issue an SSO grant, replace
+conflicting bootstrap state, or accept an unverified, stale, or failed release.
+Repeating it for the same completed release is idempotent. New tenants continue
+through the normal bootstrap saga.
+
 ## Growth behavior
 
 Growth is a read-only tenant projection of actual analytics, insights, research,
