@@ -476,6 +476,74 @@ def cloudflare_deployment(customer: dict[str, Any], env: dict[str, str]) -> dict
     return max(deployments, key=lambda item: item["created_on"])
 
 
+def worker_version_identity(version: Any) -> dict[str, str]:
+    """Fingerprint code and non-secret bindings without including secret values."""
+    resources = version.get("resources") if isinstance(version, dict) else None
+    script = resources.get("script") if isinstance(resources, dict) else None
+    bindings = resources.get("bindings") if isinstance(resources, dict) else None
+    etag = script.get("etag") if isinstance(script, dict) else None
+    if not isinstance(etag, str) or not etag or not isinstance(bindings, list):
+        raise RuntimeError("Cloudflare Worker version has incomplete code or binding identity")
+
+    normalized_bindings = []
+    names = set()
+    for binding in bindings:
+        if not isinstance(binding, dict):
+            raise RuntimeError("Cloudflare Worker version has an invalid binding")
+        name = binding.get("name")
+        binding_type = binding.get("type")
+        if not isinstance(name, str) or not name or not isinstance(binding_type, str) or not binding_type:
+            raise RuntimeError("Cloudflare Worker version has an incomplete binding identity")
+        if name in names:
+            raise RuntimeError("Cloudflare Worker version has duplicate binding names")
+        names.add(name)
+        if binding_type in {"secret_text", "secret_key"}:
+            normalized = {
+                key: binding[key]
+                for key in ("name", "type", "algorithm", "format")
+                if key in binding
+            }
+        else:
+            normalized = binding
+        normalized_bindings.append(normalized)
+    normalized_bindings.sort(key=lambda item: item["name"])
+    identity = hashlib.sha256(
+        json.dumps(normalized_bindings, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return {"script_etag": etag, "binding_identity": identity}
+
+
+def cloudflare_worker_version_identity(
+    customer: dict[str, Any], version_id: str, env: dict[str, str],
+) -> dict[str, str]:
+    """Read code and non-secret binding identity without returning secret values."""
+    url = (
+        "https://api.cloudflare.com/client/v4/accounts/"
+        + urllib.parse.quote(env["CLOUDFLARE_ACCOUNT_ID"], safe="")
+        + "/workers/scripts/"
+        + urllib.parse.quote(customer["worker"], safe="")
+        + "/versions/"
+        + urllib.parse.quote(version_id, safe="")
+    )
+    request = urllib.request.Request(
+        url,
+        headers={"Authorization": "Bearer " + env["CLOUDFLARE_API_TOKEN"]},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.load(response)
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(f"Cloudflare Worker version inspection failed with HTTP {error.code}") from error
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        raise RuntimeError("Cloudflare Worker version inspection returned no valid response") from error
+    if payload.get("success") is not True:
+        raise RuntimeError("Cloudflare Worker version inspection failed")
+    version = payload.get("result")
+    if not isinstance(version, dict) or version.get("id") != version_id:
+        raise RuntimeError("Cloudflare Worker version identity does not match the requested version")
+    return worker_version_identity(version)
+
+
 
 def tenant_environment_path(manifest: dict[str, Any], tenant: str) -> Path:
     """Resolve the exact registered tenant environment file on the protected VPS."""
@@ -766,14 +834,49 @@ def workers_dev_provisioner(
 
 
 def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dict[str, Any],
-                deploy_env: dict[str, str], base: dict[str, str], stage: Any) -> None:
+                deploy_env: dict[str, str], base: dict[str, str], stage: Any, *,
+                verify_only: bool = False, expected_worker_version: str | None = None) -> None:
     stage("verify-deployment")
     deployment = cloudflare_deployment(customer, deploy_env)
     versions = deployment["versions"]
-    if (len(versions) != 1 or versions[0]["percentage"] != 100
-            or versions[0]["version_id"] != receipt["uploadedVersion"]):
+    if len(versions) != 1 or versions[0].get("percentage") != 100:
         raise RuntimeError("the exact uploaded Worker version does not receive 100% of production traffic")
-    receipt["deployment"] = deployment
+    active_version = versions[0].get("version_id")
+    if not isinstance(active_version, str) or not active_version:
+        raise RuntimeError("Cloudflare production deployment has no active Worker version")
+    if expected_worker_version is not None and active_version != expected_worker_version:
+        raise RuntimeError("the active Worker version changed during readiness verification")
+    if verify_only:
+        if active_version != receipt["uploadedVersion"]:
+            annotations = deployment.get("annotations")
+            if not isinstance(annotations, dict) or annotations.get("workers/triggered_by") != "secret":
+                raise RuntimeError("the active Worker differs from the release outside a secret-only update")
+        uploaded_identity = cloudflare_worker_version_identity(
+            customer, receipt["uploadedVersion"], deploy_env,
+        )
+        active_identity = uploaded_identity if active_version == receipt["uploadedVersion"] else (
+            cloudflare_worker_version_identity(customer, active_version, deploy_env)
+        )
+        if uploaded_identity != active_identity:
+            raise RuntimeError("the active Worker code or non-secret bindings differ from the exact release")
+        receipt["currentVerification"] = {
+            "releaseId": receipt["releaseId"],
+            "sourceSha": receipt["sourceSha"],
+            "uploadedVersion": receipt["uploadedVersion"],
+            "workerVersion": active_version,
+            "deploymentId": deployment.get("id"),
+            "trafficPercentage": 100,
+            "uploadedScriptEtag": uploaded_identity["script_etag"],
+            "activeScriptEtag": active_identity["script_etag"],
+            "uploadedBindingIdentity": uploaded_identity["binding_identity"],
+            "activeBindingIdentity": active_identity["binding_identity"],
+            "mode": "exact" if active_version == receipt["uploadedVersion"] else "secret_rotation",
+            "verifiedAt": utc_now(),
+        }
+    else:
+        if active_version != receipt["uploadedVersion"]:
+            raise RuntimeError("the exact uploaded Worker version does not receive 100% of production traffic")
+        receipt["deployment"] = deployment
     workers_dev = workers_dev_provisioner(customer, deploy_env)
     if workers_dev is not None:
         stage("enable-workers-dev")
@@ -934,8 +1037,12 @@ def main() -> int:
     parser.add_argument("--schema-migration-from-ledger-identity", help="exact identity of the current Payload ledger for an approved tenant schema migration")
     parser.add_argument("--verify-only", action="store_true",
                         help="Recheck an already promoted version; never build, upload or promote")
+    parser.add_argument("--expected-worker-version",
+                        help="exact active Worker version expected during read-only readiness verification")
     parser.add_argument("--manifest", type=Path, default=ROOT / "deploy/payload-customers.json")
     args = parser.parse_args()
+    if args.verify_only != (args.expected_worker_version is not None):
+        parser.error("read-only verification requires --expected-worker-version, which is invalid for a new release")
     manifest = json.loads(args.manifest.read_text())
     validate_toolchain_manifest(manifest)
     customer = manifest["customers"].get(args.tenant)
@@ -1029,7 +1136,11 @@ def main() -> int:
             raise RuntimeError("declared Cloudflare profile is incomplete")
         workers_dev_provisioner(customer, deploy_env)
         if args.verify_only:
-            verify_live(receipt, customer, manifest, deploy_env, base, stage)
+            verify_live(
+                receipt, customer, manifest, deploy_env, base, stage,
+                verify_only=True,
+                expected_worker_version=args.expected_worker_version,
+            )
             receipt.update({"status": "deployed", "stage": "awaiting-browser-verification", "finishedAt": utc_now()})
             atomic_json(receipt_path, receipt)
             print(f"[release] REVERIFIED receipt={receipt_path}", flush=True)

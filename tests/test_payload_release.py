@@ -1066,6 +1066,102 @@ def test_read_only_gate_rejects_a_different_production_version(monkeypatch):
         release.verify_live({"uploadedVersion": "version-1"}, {}, {}, {}, {}, lambda _: None)
 
 
+def test_worker_version_identity_ignores_secret_values_but_binds_code_and_public_bindings():
+    def version(etag, secret_value, public_value):
+        return {
+            "resources": {
+                "script": {"etag": etag},
+                "bindings": [
+                    {"name": "API_KEY", "type": "secret_text", "text": secret_value},
+                    {"name": "SITE_NAME", "type": "plain_text", "text": public_value},
+                ],
+            },
+        }
+
+    baseline = release.worker_version_identity(version("a" * 64, "old-secret", "Oceanic"))
+    rotated_secret = release.worker_version_identity(version("a" * 64, "new-secret", "Oceanic"))
+    changed_code = release.worker_version_identity(version("b" * 64, "old-secret", "Oceanic"))
+    changed_public_binding = release.worker_version_identity(version("a" * 64, "old-secret", "Other"))
+
+    assert baseline == rotated_secret
+    assert baseline != changed_code
+    assert baseline != changed_public_binding
+
+
+def test_read_only_gate_accepts_secret_rotation_only_with_identical_code_and_bindings(monkeypatch):
+    result = {
+        "tenant": "oceanicvibes",
+        "sourceSha": SHA,
+        "releaseId": "release-1",
+        "uploadedVersion": "version-1",
+        "deployment": {"id": "original-deployment"},
+    }
+    deployment = {
+        "id": "secret-rotation-deployment",
+        "annotations": {"workers/triggered_by": "secret"},
+        "versions": [{"percentage": 100, "version_id": "version-2"}],
+    }
+    identity = {"script_etag": "a" * 64, "binding_identity": "b" * 64}
+    monkeypatch.setattr(release, "cloudflare_deployment", lambda *_args: deployment)
+    monkeypatch.setattr(release, "cloudflare_worker_version_identity", lambda *_args: identity)
+    monkeypatch.setattr(release, "workers_dev_provisioner", lambda *_args: None)
+    monkeypatch.setattr(release, "check_health", lambda *_args: {"ok": True, "tenant": "oceanicvibes"})
+    monkeypatch.setattr(release, "control_plane_token", lambda *_args: "control-token")
+    monkeypatch.setattr(release, "activate_tenant_runtime", lambda *_args: None)
+    monkeypatch.setattr(release, "run", lambda *_args: None)
+    monkeypatch.setattr(release.time, "sleep", lambda *_args: None)
+
+    release.verify_live(
+        result, CUSTOMER, REGISTRY, {}, {}, lambda name: result.update(stage=name),
+        verify_only=True, expected_worker_version="version-2",
+    )
+
+    assert result["deployment"] == {"id": "original-deployment"}
+    assert result["currentVerification"] == {
+        "releaseId": "release-1",
+        "sourceSha": SHA,
+        "uploadedVersion": "version-1",
+        "workerVersion": "version-2",
+        "deploymentId": "secret-rotation-deployment",
+        "trafficPercentage": 100,
+        "uploadedScriptEtag": "a" * 64,
+        "activeScriptEtag": "a" * 64,
+        "uploadedBindingIdentity": "b" * 64,
+        "activeBindingIdentity": "b" * 64,
+        "mode": "secret_rotation",
+        "verifiedAt": result["currentVerification"]["verifiedAt"],
+    }
+
+
+def test_read_only_gate_rejects_code_drift_and_unexpected_active_version(monkeypatch):
+    deployment = {
+        "id": "secret-rotation-deployment",
+        "annotations": {"workers/triggered_by": "secret"},
+        "versions": [{"percentage": 100, "version_id": "version-2"}],
+    }
+    monkeypatch.setattr(release, "cloudflare_deployment", lambda *_args: deployment)
+
+    def mismatched_identity(_customer, version_id, _env):
+        return {
+            "script_etag": "a" * 64 if version_id == "version-1" else "c" * 64,
+            "binding_identity": "b" * 64,
+        }
+
+    monkeypatch.setattr(release, "cloudflare_worker_version_identity", mismatched_identity)
+    with pytest.raises(RuntimeError, match="code or non-secret bindings differ"):
+        release.verify_live(
+            {"uploadedVersion": "version-1"}, CUSTOMER, REGISTRY, {}, {}, lambda _: None,
+            verify_only=True, expected_worker_version="version-2",
+        )
+
+    monkeypatch.setattr(release, "cloudflare_worker_version_identity", lambda *_args: pytest.fail("version changed"))
+    with pytest.raises(RuntimeError, match="changed during readiness verification"):
+        release.verify_live(
+            {"uploadedVersion": "version-1"}, CUSTOMER, REGISTRY, {}, {}, lambda _: None,
+            verify_only=True, expected_worker_version="version-3",
+        )
+
+
 def test_failed_connection_gate_is_bounded_and_remains_failed(monkeypatch):
     result = {"tenant": "oceanicvibes", "sourceSha": SHA, "releaseId": "release-1",
               "uploadedVersion": "version-1"}

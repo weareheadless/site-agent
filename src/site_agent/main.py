@@ -1106,6 +1106,8 @@ def _adoption_verifier_command(verifier: Path, args: argparse.Namespace) -> list
         args.release_id,
         "--release-purpose",
         args.release_purpose,
+        "--expected-worker-version",
+        args.worker_version,
         "--verify-only",
     ]
 
