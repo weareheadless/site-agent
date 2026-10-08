@@ -125,6 +125,21 @@ that the project selector itself is live at the exact reviewed SHA.
 Failed or interrupted app release IDs are terminal. Fix the cause and queue a
 new unique ID; never edit a retained source snapshot or repurpose a receipt.
 
+## Message data and form security resources
+
+Every exact customer Worker release provisions the tenant's registered private
+email R2 bucket, Messages Queue and dead-letter Queue before upload. The release
+receipt records the exact resource names and whether each resource was created;
+the pipeline never deletes or silently substitutes a resource. Site-agent also
+provisions a dedicated Turnstile widget for that tenant and synchronizes its
+hostname allow-list from the registered health URL, the exact public origin and
+Worker custom-domain routes in the immutable customer source. Turnstile's
+public sitekey is injected as a Worker variable and its secret is stored only
+in the tenant's protected `tenant.env` and uploaded through a mode-0600
+ephemeral secret file. Cloudflare API credentials must include Turnstile Sites Write (or Account Settings Write) in addition to the existing scoped R2 and Queues
+permissions. A missing permission or mismatched existing resource fails the
+release before promotion; no manual dashboard setup or test key is accepted.
+
 ## Release command
 
 1. Review, test and push the customer source to its official GitHub `main`.
