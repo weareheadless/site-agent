@@ -33,11 +33,25 @@ The scope is deliberately small, but the implementation must be production-quali
 | Existing tenant | Required role in the rollout |
 | --- | --- |
 | OceanicVibes — `https://oceanicvibes.com`, admin `/admin` | First production rollout; full form → inbox → Ada draft → owner-approved domain reply → external reply roundtrip, plus direct incoming email |
-| Atelier Harmonie — resolve its current registered Worker/admin identity | Second production rollout; same schema/packages, forms, Contacts, Messages, Ada drafting and tenant isolation; custom-domain email only if a supported domain is actually registered and approved |
+| Atelier Harmonie — resolve its current registered Worker/admin identity | Second validation rollout; same schema/packages, forms, Contacts, Messages, Ada drafting and tenant isolation; use a unique address on the explicitly registered HelloAda email domain while its website remains on `workers.dev` |
+| Northstar — resolve its current registered Worker/admin identity | Third validation rollout; same shared schema/packages and behavior as Atelier, with a distinct address on the same explicitly registered HelloAda email domain |
 
 OceanicVibes's custom domain is supplied by the owner as the intended email-validation target. The owner has confirmed the domain is managed in their Cloudflare account, that the visible Mailgun setup is retired Squarespace-era configuration, and authorized temporarily disabling any personal-email forwarding rule that conflicts with the test. The signed-in Cloudflare inspection on 2026-10-04 found the OceanicVibes zone and website Worker, two apex Mailgun MX records, a Mailgun-only apex SPF record, and legacy Mailgun DMARC/DKIM values; Email Routing and Email Sending are not yet onboarded for OceanicVibes. The Email Routing account view did not show an OceanicVibes routing rule. Capture the exact live state through the provisioning script before mutation; if the script discovers a forwarding rule or DNS/provider state different from this documented legacy set, stop and preserve it rather than guessing.
 
 Do not replace either existing tenant or rebuild its site from scratch. Preserve existing content, editable field mappings, owner access and tenant identifiers. Do not infer an external Atelier domain from its business name.
+
+For Atelier and Northstar, phase-one provisioning uses unique addresses on the
+HelloAda-owned `helloada.app` zone apex. The exact local part must be recorded
+against each permanent tenant ID; do not guess it from a display name. This is
+an explicit platform-owned email identity, not a fallback inferred from the
+website hostname. Keep each address/local part in the registered tenant email
+configuration. Do not use `inbox.helloada.app` yet: Cloudflare documents
+Email Routing subdomain enablement as a dashboard flow, while the older
+subdomain query on its routing-DNS API is deprecated. The shared provisioning
+path currently supports the zone apex only and must reject a subdomain rather
+than accidentally applying apex routing semantics. If `helloada.app` has
+unexpected MX, SPF, DMARC or routing state at preflight, stop without mutation;
+do not displace any existing HelloAda mail service.
 
 OceanicVibes live mail validation is mandatory. Its owner-approved first-run exception is a narrowly scoped, auditable cutover of the exact legacy Mailgun records listed above. Only the platform provisioning script may perform it. Any unrelated or unrecognized record/rule, missing Cloudflare entitlement, or missing API permission is a hard stop. Do not substitute a new tenant or different domain and declare OceanicVibes validated.
 

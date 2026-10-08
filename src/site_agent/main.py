@@ -207,6 +207,12 @@ def _cmd_provision_email(args: argparse.Namespace) -> int:
         })
     if args.allow_forwarding_cutover:
         policy_overrides["allowForwardingCutover"] = True
+    email_domain_override = str(getattr(args, "email_domain", "") or "").strip()
+    local_part_override = str(getattr(args, "local_part", "") or "").strip()
+    if email_domain_override:
+        policy_overrides["emailDomain"] = email_domain_override
+    if local_part_override:
+        policy_overrides["localPart"] = local_part_override
 
     try:
         plan, _policy, _ = prepare_email_plan(
@@ -290,6 +296,10 @@ def _cmd_provision_email(args: argparse.Namespace) -> int:
     email = dict(email)
     email["enabled"] = True
     email.setdefault("local_part", "hello")
+    if email_domain_override:
+        email["domain"] = email_domain_override.lower().rstrip(".")
+    if local_part_override:
+        email["local_part"] = local_part_override.lower()
     provisioning = email.get("provisioning") if isinstance(email.get("provisioning"), dict) else {}
     email["provisioning"] = {**dict(provisioning), "auto": True}
     messages["email"] = email
@@ -1225,6 +1235,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     email_parser.add_argument("--tenant", required=True, help="stable tenant ID from the canonical tenants.json registry")
     email_parser.add_argument("--apply", action="store_true", help="enable the tenant email setting and apply the reviewed Cloudflare plan")
+    email_parser.add_argument("--email-domain", default="", help="explicit Cloudflare-managed email domain; required for a workers.dev site without an existing email.domain setting")
+    email_parser.add_argument("--local-part", default="", help="unique registered mailbox local part; persisted only with --apply")
     email_parser.add_argument(
         "--approve-mailgun-cutover",
         action="store_true",

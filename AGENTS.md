@@ -131,25 +131,40 @@ VPS release/migration contract. Do not report production readiness until the
 plan's OceanicVibes and Atelier live evidence, provisioning, licensing and
 authenticated-browser gates are complete.
 
-Domain email uses the same registered-tenant lifecycle as GA4/GSC. New sites
-default to the `hello` local part and automatic Cloudflare reconciliation;
-adding/changing a custom website origin updates that tenant's email domain and
-re-runs provisioning only after the exact registered Worker advertises the
-Messages/email health contract. The shared tenant scheduler retries readiness
-and transient failures hourly after bootstrap/deployment. The API adapter is the only path that changes
-Cloudflare Email Service/DNS. Unknown MX/SPF/routing state is a hard stop; do
-not click through Cloudflare or substitute another provider. For one existing
-tenant, run `site-agent provision-email --tenant <registered-id>` first (read
-only), inspect its domain/address/operation summary, then use `--apply` to
-persist the tenant setting and perform the reviewed plan. The command resolves
+Domain email uses the same registered-tenant lifecycle as GA4/GSC. Workspace
+bootstrap enables automatic reconciliation with the `hello` local part;
+custom-origin tenants derive their email domain from the registered custom
+origin. A `workers.dev` tenant without an explicitly registered email domain
+remains `domain_required`; fully automatic shared-domain assignment for every
+new workspace is still the separately tracked phase-two work. The shared
+tenant scheduler retries readiness and transient failures hourly after
+bootstrap/deployment. The API adapter is the only path that changes Cloudflare
+Email Service/DNS. Unknown MX/SPF/routing state is a hard stop; do not click
+through Cloudflare or substitute another provider. For one existing tenant,
+run `site-agent provision-email --tenant <registered-id>` first (read only),
+inspect its domain/address/operation summary, then use `--apply` to persist
+the tenant setting and perform the reviewed plan. The command resolves
 tenant identity only from `provisioned_root/tenants.json`; it accepts no
-arbitrary domain or Worker target. Exact legacy Mailgun MX/SPF replacement and
+arbitrary Worker target, and any explicit email domain must resolve to an
+active zone visible to the host DNS profile. Exact legacy Mailgun MX/SPF replacement and
 exact-address forwarding-rule cutover require the dedicated
 `--approve-mailgun-cutover` and `--allow-forwarding-cutover` flags. The before
 state is retained in a mode-0600 tenant receipt; never print or commit its
 forward destination. Automatic activation requires Cloudflare and Payload to
 both confirm the same mailbox. Email Routing is not a general-purpose mailbox
 or unrestricted Gmail replacement.
+
+Email provisioning uses distinct protected `cloudflare_dns` and
+`cloudflare_email` credential profiles. The former requires Zone Read, DNS
+Read and DNS Write; the latter requires Email Routing Rules Read/Edit and Zone
+Settings Read/Edit on managed zones plus Email Sending Edit on the owning
+account. Do not reuse the general Worker-management token for Email Service
+calls or merge these scopes.
+For a tenant without a custom website domain, a read-only plan may specify an
+explicit host-owned email domain and unique local part with `--email-domain`
+and `--local-part`; `--apply` persists those values to that registered tenant.
+The current implementation supports zone-apex email domains only. Do not use
+Cloudflare's deprecated Email Routing subdomain DNS query as a fallback.
 
 ### No parallel architecture or silent recovery path
 
