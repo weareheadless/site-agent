@@ -34,6 +34,7 @@ from ..brain.owner_copy import owner_safe_failure
 from ..runtime import Runtime
 from .tenant_registration import tenant_token_env
 from .site_origin import SiteOriginError, normalize_site_origin, origin_hostname, origins_equal
+from .worker_origin import WorkerOriginError, canonical_worker_preview_url
 
 
 class BridgeError(ValueError):
@@ -800,10 +801,19 @@ class TenantRegistry:
 
         site = raw.get("site") if isinstance(raw.get("site"), Mapping) else {}
         site = dict(site)
-        preview_url = str(site.get("preview_url") or "").strip()
+        values = dict(self._env)
+        if env:
+            values.update(env)
+        origin_config = dict(tenant.config)
+        origin_config["site"] = site
+        try:
+            worker_preview_url = canonical_worker_preview_url(origin_config, values)
+        except WorkerOriginError as exc:
+            raise ConfigError(str(exc)) from exc
+        site["preview_url"] = worker_preview_url
         site["public_url"] = site_url
         site["url"] = site_url
-        site["custom_domain"] = "" if preview_url and origins_equal(preview_url, site_url) else origin_hostname(site_url)
+        site["custom_domain"] = "" if origins_equal(worker_preview_url, site_url) else origin_hostname(site_url)
         raw["site"] = site
 
         # Email follows the same registered-origin lifecycle as analytics.
@@ -838,9 +848,6 @@ class TenantRegistry:
         from .tenant_registration import TenantRegistrationService
 
         TenantRegistrationService._replace_config(config_path, raw)
-        values = dict(self._env)
-        if env:
-            values.update(env)
         token_env = str(tenant.api_token_env or tenant_token_env(normalized)).strip()
         values[token_env] = tenant.api_token
         return self.reload_tenant(
