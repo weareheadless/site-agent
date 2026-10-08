@@ -48,7 +48,7 @@
       "sha": "1b888270300d25d0f66ef99e7b75b2e0cce206f9"
     },
     "oceanicvibes": {
-      "id": "20261008-oceanic-messages-schema-1",
+      "id": "20261008-oceanic-messages-schema-2",
       "schemaMigration": {
         "fromLedgerIdentity": "2e1b5a515b7f2029804188d11de51a4ee71b796373c2e823d5581ae468dc2688",
         "targetMigrationHead": "0a3c897981ad305bcc81be848e4ef8969abe20425b9137538bd560017d498d0e"
