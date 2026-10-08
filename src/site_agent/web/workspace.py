@@ -955,13 +955,17 @@ def register_workspace_routes(
                 raise HTTPException(status_code=400, detail="request body must be an object")
             release_id = str(body.get("release_id") or "").strip()
             source_sha = str(body.get("source_sha") or "").strip()
+            verification = body.get("verification")
             if not release_id or not source_sha:
                 raise HTTPException(status_code=400, detail="release_id and source_sha are required")
+            if verification is not None and not isinstance(verification, dict):
+                raise HTTPException(status_code=400, detail="verification must be an object")
             try:
                 return bootstrap.activate_runtime_after_health(
                     website_id,
                     release_id=release_id,
                     source_sha=source_sha,
+                    verification=verification,
                 )
             except (BootstrapError, TenantRegistrationError) as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc

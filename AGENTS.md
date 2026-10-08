@@ -435,9 +435,11 @@ manifest and resolves the active 100%-traffic version directly from Cloudflare.
 During adoption only, a Cloudflare secret-triggered version is accepted when
 its code and non-secret binding identity exactly match the uploaded version;
 the verifier rechecks the active deployment around live health and authenticated
-connection checks. Failed read-only verification does not rewrite the canonical
-promotion receipt. It requires no local checkout or archived build. Never edit a failed
-receipt into success by hand.
+connection checks. The control-plane activation receives that verifier proof and
+validates it against the canonical release identity; it does not require a
+temporary `running` receipt. Failed read-only verification does not rewrite the
+canonical promotion receipt. It requires no local checkout or archived build.
+Never edit a failed receipt into success by hand.
 
 There is no customer-facing legacy admin API. The canonical Payload bridge is
 `/api/helloada/*`; customer source containing `/api/atelier` is rejected. The

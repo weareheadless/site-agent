@@ -192,7 +192,8 @@ connection gates; it does not accept a caller-supplied Worker version. Failed
 read-only verification does not rewrite the canonical release receipt. The built
 workspace is not retained on the VPS; source is reproducible from the recorded
 Git SHA and deployed versions remain in Cloudflare. It does not build, upload,
-promote or change customer data. Prior failures remain in `verificationHistory`.
+or promote a Worker. It may synchronize tenant runtime through the authenticated
+control-plane gate. Prior failures remain in `verificationHistory`.
 The normal gate also waits for edge convergence with bounded repetitions of
 the same strict health and authenticated connection checks. A failure never
 selects another endpoint or credential. Normal release promotion still requires

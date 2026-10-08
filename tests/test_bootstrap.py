@@ -577,7 +577,7 @@ def test_bootstrap_runtime_activation_requires_exact_live_health_receipt(tmp_pat
 
     receipt["stage"] = "verify-deployment"
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
-    with pytest.raises(BootstrapError, match="health boundary"):
+    with pytest.raises(BootstrapError, match="verified Worker boundary"):
         service.activate_runtime_after_health(
             tenant_id, release_id=release_id, source_sha=source_sha,
         )
@@ -590,6 +590,32 @@ def test_bootstrap_runtime_activation_requires_exact_live_health_receipt(tmp_pat
             tenant_id, release_id=release_id, source_sha=source_sha,
         )
     assert len(activated) == 1
+
+
+def test_read_only_runtime_activation_requires_verified_current_worker_proof(tmp_path):
+    import pytest
+    from site_agent.application.bootstrap import BootstrapError
+
+    service, tenant, release, source_sha, _version, receipt_path, _activated, _config = _adoption_fixture(tmp_path)
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt.update(status="failed", stage="verify-deployment")
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    mounted = []
+    service._mount_runtime = lambda selected_tenant, state, **_kwargs: mounted.append((selected_tenant, state))
+
+    result = service.activate_runtime_after_health(
+        tenant, release_id=release, source_sha=source_sha,
+        verification=receipt["currentVerification"],
+    )
+    assert result["runtime_active"] is True
+    assert mounted == [(tenant, {"tenant_id": tenant})]
+
+    invalid = {**receipt["currentVerification"], "activeScriptEtag": "f" * 64}
+    with pytest.raises(BootstrapError, match="verified Worker boundary"):
+        service.activate_runtime_after_health(
+            tenant, release_id=release, source_sha=source_sha, verification=invalid,
+        )
+    assert len(mounted) == 1
 
 
 def test_regular_release_activation_syncs_contract_without_bootstrap_state(tmp_path):
@@ -738,6 +764,38 @@ def test_control_plane_activates_pending_tenant_only_with_authenticated_health_h
             assert response.json()["runtime_active"] is True
             assert response.json()["release_id"] == release_id
             assert activated == [tenant_id]
+
+            receipt.update(status="failed", stage="verify-deployment")
+            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+            proof = {
+                "releaseId": release_id,
+                "sourceSha": source_sha,
+                "uploadedVersion": "version-demo",
+                "workerVersion": "version-demo",
+                "deploymentId": "deployment-demo",
+                "trafficPercentage": 100,
+                "uploadedScriptEtag": "d" * 64,
+                "activeScriptEtag": "d" * 64,
+                "uploadedBindingIdentity": "e" * 64,
+                "activeBindingIdentity": "e" * 64,
+                "mode": "exact",
+                "verifiedAt": "2026-10-08T18:00:00Z",
+            }
+            proof_response = client.post(
+                path,
+                headers={"Authorization": "Bearer control"},
+                json={**body, "verification": proof},
+            )
+            assert proof_response.status_code == 200
+            assert proof_response.json()["runtime_active"] is True
+            assert activated == [tenant_id, tenant_id]
+
+            malformed = client.post(
+                path,
+                headers={"Authorization": "Bearer control"},
+                json={**body, "verification": []},
+            )
+            assert malformed.status_code == 400
     finally:
         service.close()
         registry.close()

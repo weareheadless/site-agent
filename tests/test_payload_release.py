@@ -1107,7 +1107,8 @@ def test_read_only_gate_accepts_secret_rotation_only_with_identical_code_and_bin
     monkeypatch.setattr(release, "workers_dev_provisioner", lambda *_args: None)
     monkeypatch.setattr(release, "check_health", lambda *_args: {"ok": True, "tenant": "oceanicvibes"})
     monkeypatch.setattr(release, "control_plane_token", lambda *_args: "control-token")
-    monkeypatch.setattr(release, "activate_tenant_runtime", lambda *_args: None)
+    activations = []
+    monkeypatch.setattr(release, "activate_tenant_runtime", lambda *args: activations.append(args))
     monkeypatch.setattr(release, "run", lambda *_args: None)
     monkeypatch.setattr(release.time, "sleep", lambda *_args: None)
 
@@ -1131,6 +1132,11 @@ def test_read_only_gate_accepts_secret_rotation_only_with_identical_code_and_bin
         "mode": "secret_rotation",
         "verifiedAt": result["currentVerification"]["verifiedAt"],
     }
+    assert activations[0][-1]["releaseId"] == result["currentVerification"]["releaseId"]
+    assert activations[0][-1]["workerVersion"] == result["currentVerification"]["workerVersion"]
+    assert activations[0][-1]["uploadedScriptEtag"] == result["currentVerification"]["activeScriptEtag"]
+    assert activations[0][-1]["uploadedBindingIdentity"] == result["currentVerification"]["activeBindingIdentity"]
+    assert activations[0][-1]["verifiedAt"]
 
 
 def test_read_only_gate_rejects_code_drift_and_resolves_active_deployment_changes(monkeypatch):
