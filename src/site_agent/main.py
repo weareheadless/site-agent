@@ -5,6 +5,7 @@ import copy
 import json
 import os
 import ipaddress
+import subprocess
 import sys
 from pathlib import Path
 from urllib.parse import quote
@@ -1092,6 +1093,73 @@ def _cmd_api(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_adopt_release_readiness(args: argparse.Namespace) -> int:
+    """Record the explicit adoption of an existing, exactly verified tenant release."""
+    from .application.bootstrap import BootstrapError, WebsiteBootstrapService
+    from .application.tenant_registration import TenantRegistrationService
+    from .application.workspace import TenantRegistry
+
+    raw_env = dict(os.environ)
+    config, _ = load(args.config, raw_env)
+    raw_env = credential_environment(config, raw_env)
+    registry = TenantRegistry.from_config(config, raw_env)
+    registration = TenantRegistrationService(config, raw_env, registry=registry)
+    bootstrap = WebsiteBootstrapService(config, raw_env, registration=registration, registry=registry)
+    try:
+        repository_root = Path(__file__).resolve().parents[2]
+        verifier = repository_root / "scripts" / "deploy-payload-customer.py"
+        if not verifier.is_file():
+            print("[site-agent] canonical customer release verifier is unavailable; adoption stopped", file=sys.stderr)
+            return 1
+        try:
+            verification = subprocess.run(
+                [
+                    sys.executable,
+                    str(verifier),
+                    "--tenant",
+                    args.tenant,
+                    "--ref",
+                    args.source_sha,
+                    "--release-id",
+                    args.release_id,
+                    "--verify-only",
+                ],
+                cwd=repository_root,
+                env=os.environ.copy(),
+                capture_output=True,
+                text=True,
+                timeout=180,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            print("[site-agent] current Worker verification did not complete; adoption was not written", file=sys.stderr)
+            return 1
+        if verification.returncode != 0:
+            print("[site-agent] current Worker verification failed; adoption was not written", file=sys.stderr)
+            return 1
+        result = bootstrap.adopt_verified_release(
+            args.tenant,
+            release_id=args.release_id,
+            source_sha=args.source_sha,
+            worker_version=args.worker_version,
+        )
+        print(json.dumps({
+            "tenant": args.tenant,
+            "releaseId": args.release_id,
+            "sourceSha": args.source_sha,
+            "workerVersion": args.worker_version,
+            "workspaceReady": result["workspace_ready"],
+            "status": result["status"],
+        }, indent=2))
+        return 0
+    except BootstrapError as exc:
+        print(f"[site-agent] release adoption stopped: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        bootstrap.close()
+        registry.close()
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="site-agent", description="Portable AI website content manager")
     parser.add_argument("--version", action="version", version=f"site-agent {__version__}")
@@ -1107,6 +1175,15 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("run", parents=[common], help="run the scheduler loop (long-lived)")
     sub.add_parser("serve", parents=[common], help="retired legacy admin command; use the customer Payload /admin workspace")
     sub.add_parser("api", parents=[common], help="run the shared tenant-aware Ada API")
+    adopt_parser = sub.add_parser(
+        "adopt-release-readiness",
+        parents=[common],
+        help="explicitly adopt an already deployed registered tenant into HelloAda admin readiness",
+    )
+    adopt_parser.add_argument("--tenant", required=True, help="registered tenant ID")
+    adopt_parser.add_argument("--release-id", required=True, help="exact canonical VPS release ID")
+    adopt_parser.add_argument("--source-sha", required=True, help="exact full 40-character customer source SHA")
+    adopt_parser.add_argument("--worker-version", required=True, help="exact active Cloudflare Worker version ID")
     init_parser = sub.add_parser("init-site", help="create the canonical Next.js/Payload site in an empty site directory")
     init_parser.add_argument("--directory", required=True, help="empty customer website directory")
     init_parser.add_argument("--name", default="New Website", help="customer website name")
@@ -1201,6 +1278,7 @@ def main(argv: list[str] | None = None) -> int:
     if getattr(args, "config", None) is None:
         args.config = None
     handlers = {"check": _cmd_check, "once": _cmd_once, "run": _cmd_run, "serve": _cmd_serve, "api": _cmd_api,
+                "adopt-release-readiness": _cmd_adopt_release_readiness,
                 "init-site": _cmd_init_site,
                 "provision-r2": _cmd_provision_r2, "provision-seo": _cmd_provision_seo,
                 "provision-email": _cmd_provision_email,

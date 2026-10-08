@@ -22,6 +22,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -255,6 +256,245 @@ class WebsiteBootstrapService:
         with self._lock:
             state = self._read_state(normalized)
             self._refresh_release_state(state)
+            return self._public_state(state)
+
+    def _adoption_worker_origin(self, tenant_id: str, receipt: Mapping[str, Any]) -> tuple[str, str]:
+        config_path = self.root / tenant_id / "config.yaml"
+        try:
+            tenant_config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            manifest_path = Path(__file__).resolve().parents[3] / "deploy" / "payload-customers.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError, yaml.YAMLError) as exc:
+            raise BootstrapError("canonical tenant origin or deployment manifest is unavailable") from exc
+
+        site = _mapping(_mapping(tenant_config).get("site"))
+        source_deployment = _mapping(site.get("source_deployment"))
+        public_url = str(site.get("public_url") or "").strip()
+        try:
+            public = urlsplit(public_url)
+            public_port = public.port
+        except ValueError as exc:
+            raise BootstrapError("registered tenant public origin is invalid") from exc
+        if (
+            public.scheme.lower() != "https"
+            or not public.hostname
+            or public.username is not None
+            or public.password is not None
+            or public.path not in {"", "/"}
+            or public.query
+            or public.fragment
+        ):
+            raise BootstrapError("registered tenant public origin must be a canonical HTTPS origin")
+        hostname = public.hostname.lower()
+        authority = f"[{hostname}]" if ":" in hostname else hostname
+        if public_port is not None:
+            authority = f"{authority}:{public_port}"
+        origin = f"https://{authority}"
+
+        deployment = _mapping(_mapping(manifest).get("customers")).get(tenant_id)
+        deployment = _mapping(deployment)
+        worker_name = str(source_deployment.get("worker_name") or "").strip()
+        if (
+            not worker_name
+            or worker_name != receipt.get("worker")
+            or worker_name != deployment.get("worker")
+            or deployment.get("repository") != receipt.get("repository")
+        ):
+            raise BootstrapError("registered tenant Worker does not match the canonical deployment identity")
+        try:
+            health = urlsplit(str(deployment.get("health") or ""))
+            health_port = health.port
+        except ValueError as exc:
+            raise BootstrapError("canonical deployment health origin is invalid") from exc
+        if (
+            health.scheme.lower() != "https"
+            or not health.hostname
+            or health.username is not None
+            or health.password is not None
+            or health.query
+            or health.fragment
+        ):
+            raise BootstrapError("canonical deployment health URL is invalid")
+        health_host = health.hostname.lower()
+        health_authority = f"[{health_host}]" if ":" in health_host else health_host
+        if health_port is not None:
+            health_authority = f"{health_authority}:{health_port}"
+        if origin != f"https://{health_authority}":
+            raise BootstrapError("registered admin origin does not match the release health origin")
+        return origin, worker_name
+
+    def adopt_verified_release(
+        self,
+        tenant_id: str,
+        *,
+        release_id: str,
+        source_sha: str,
+        worker_version: str,
+    ) -> dict[str, Any]:
+        """Explicitly adopt a healthy, already-deployed tenant into bootstrap readiness."""
+        normalized = _component(tenant_id, "website id")
+        release_id = str(release_id or "").strip()
+        source_sha = str(source_sha or "").strip().lower()
+        worker_version = str(worker_version or "").strip()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", release_id):
+            raise BootstrapError("adoption release identity is invalid")
+        if not re.fullmatch(r"[0-9a-f]{40}", source_sha):
+            raise BootstrapError("adoption source identity is invalid")
+        if not worker_version:
+            raise BootstrapError("adoption Worker version is required")
+        try:
+            if not self.registration.is_registered(normalized):
+                raise BootstrapError("tenant is not present in the canonical registry")
+        except TenantRegistrationError as exc:
+            raise BootstrapError(str(exc)) from exc
+
+        try:
+            receipt_path = release_root(self.config) / "runs" / normalized / release_id / "receipt.json"
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError, ReleaseQueueError) as exc:
+            raise BootstrapError("canonical release receipt is unavailable") from exc
+        if not isinstance(receipt, Mapping) or (
+            receipt.get("tenant") != normalized
+            or receipt.get("releaseId") != release_id
+            or receipt.get("sourceSha") != source_sha
+            or receipt.get("uploadedVersion") != worker_version
+            or receipt.get("status") not in {"deployed", "verified"}
+            or receipt.get("approvalId") is not None
+            or not receipt.get("connectionVerifiedAt")
+            or not receipt.get("startedAt")
+        ):
+            raise BootstrapError("release receipt does not prove the requested deployed tenant identity")
+
+        runs_path = receipt_path.parent.parent.parent
+        latest_successes: list[tuple[datetime, str, str]] = []
+        try:
+            for candidate_path in runs_path.glob(f"{normalized}/*/receipt.json"):
+                try:
+                    candidate = json.loads(candidate_path.read_text(encoding="utf-8"))
+                except (OSError, UnicodeError, ValueError) as exc:
+                    raise BootstrapError("tenant release history contains an unreadable receipt") from exc
+                if not isinstance(candidate, Mapping):
+                    raise BootstrapError("tenant release history contains an invalid receipt")
+                if candidate.get("status") not in {"deployed", "verified"}:
+                    continue
+                if (
+                    candidate.get("tenant") != normalized
+                    or candidate.get("releaseId") != candidate_path.parent.name
+                    or not candidate.get("startedAt")
+                ):
+                    raise BootstrapError("tenant release history has an incomplete successful receipt")
+                try:
+                    finished_at = datetime.fromisoformat(str(candidate["startedAt"]).replace("Z", "+00:00"))
+                except ValueError as exc:
+                    raise BootstrapError("tenant release history has an invalid start timestamp") from exc
+                if finished_at.tzinfo is None:
+                    raise BootstrapError("tenant release history has a timezone-free start timestamp")
+                latest_successes.append((finished_at, str(candidate["releaseId"]), str(candidate.get("sourceSha") or "")))
+        except OSError as exc:
+            raise BootstrapError("canonical tenant release history is unavailable") from exc
+        if not latest_successes:
+            raise BootstrapError("tenant has no successful canonical release to adopt")
+        _finished_at, latest_release_id, latest_source_sha = max(latest_successes)
+        if latest_release_id != release_id or latest_source_sha != source_sha:
+            raise BootstrapError("requested release is not the latest successful tenant release")
+
+        deployment = receipt.get("deployment")
+        versions = deployment.get("versions") if isinstance(deployment, Mapping) else None
+        if not isinstance(versions, list) or not any(
+            isinstance(version, Mapping)
+            and version.get("version_id") == worker_version
+            and version.get("percentage") == 100
+            for version in versions
+        ):
+            raise BootstrapError("release receipt does not prove the exact Worker version is active")
+
+        health = receipt.get("health")
+        runtime_identity = {
+            "payloadAdmin": receipt.get("payloadAdmin"),
+            "payloadCore": receipt.get("payloadCore"),
+            "contentContract": receipt.get("contentContract"),
+            "schemaRevision": receipt.get("schemaRevision"),
+            "schemaIdentity": receipt.get("schemaIdentity"),
+            "migrationHead": receipt.get("migrationHead"),
+        }
+        if not isinstance(health, Mapping) or any(value is None for value in runtime_identity.values()):
+            raise BootstrapError("release receipt has no complete Payload health contract")
+        expected_health = {
+            "ok": True,
+            "tenant": normalized,
+            "releaseSha": source_sha,
+            **runtime_identity,
+        }
+        if any(health.get(key) != value for key, value in expected_health.items()):
+            raise BootstrapError("release health does not match the requested tenant and schema contract")
+        if not isinstance(receipt.get("websitePresent"), bool):
+            raise BootstrapError("release receipt has no explicit website presence state")
+        worker_origin, worker_name = self._adoption_worker_origin(normalized, receipt)
+        worker_receipt = {
+            "worker_name": worker_name,
+            "worker_url": worker_origin,
+            "repository": receipt.get("repository"),
+        }
+
+        with self._lock:
+            state_path = self._state_path(normalized)
+            state = self._read_state(normalized)
+            existing_release = state.get("release") if isinstance(state.get("release"), Mapping) else {}
+            same_release = (
+                existing_release.get("tenant_id") == normalized
+                and existing_release.get("release_id") == release_id
+                and existing_release.get("source_sha") == source_sha
+            )
+            if state_path.is_file():
+                existing_worker = _mapping(_mapping(state.get("resource_receipts")).get("creating_worker"))
+                if (
+                    same_release
+                    and state.get("workspace_ready") is True
+                    and state.get("status") == "done"
+                    and state.get("step") == "ready"
+                    and existing_worker.get("worker_url") == worker_origin
+                ):
+                    self._refresh_release_state(state)
+                    if state.get("workspace_ready") is True and state.get("step") == "ready":
+                        return self._public_state(state)
+                raise BootstrapError("existing bootstrap state differs; refusing to overwrite it")
+
+            now = _now()
+            state.update(
+                status="awaiting_release",
+                step="deploying_shell",
+                diagnostic="",
+                steps={"queueing_shell_release": {"status": "done", "updated_at": now}},
+                release={
+                    "tenant_id": normalized,
+                    "release_id": release_id,
+                    "source_sha": source_sha,
+                },
+                adoption={
+                    "kind": "verified_existing_release",
+                    "release_id": release_id,
+                    "source_sha": source_sha,
+                    "worker_version": worker_version,
+                    "admin_origin": worker_origin,
+                    "verified_at": receipt.get("connectionVerifiedAt"),
+                    "adopted_at": now,
+                },
+                workspace_ready=False,
+                website_live=False,
+                updated_at=now,
+            )
+            state.setdefault("resource_receipts", {})["creating_worker"] = worker_receipt
+            self._write_state(state)
+            self._refresh_release_state(state)
+            if state.get("workspace_ready") is not True or state.get("step") != "ready":
+                raise BootstrapError(
+                    str(state.get("diagnostic") or "verified release could not activate the registered tenant runtime")
+                )
+            state.setdefault("steps", {})["adopting_existing_release"] = {
+                "status": "done",
+                "updated_at": _now(),
+            }
+            self._write_state(state)
             return self._public_state(state)
 
     def activate_runtime_after_health(

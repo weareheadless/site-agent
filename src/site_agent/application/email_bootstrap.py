@@ -14,7 +14,6 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from ..credentials import cloudflare_api_token, credential_environment
-from .worker_origin import WorkerOriginError, canonical_worker_preview_url
 from ..hands.cloudflare_email import CloudflareEmailClient
 from .email_provisioning import EmailProvisioningError, EmailProvisioningService
 from .tenant_registration import tenant_token_env
@@ -32,34 +31,47 @@ def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
+def _registered_site_origin(config: Mapping[str, Any]) -> str:
+    site = _mapping(config.get("site"))
+    raw_origin = str(site.get("public_url") or "").strip()
+    custom_domain = str(site.get("custom_domain") or "").strip().lower().rstrip(".")
+    try:
+        parsed = urlsplit(raw_origin)
+        port = parsed.port
+    except ValueError as exc:
+        raise EmailProvisioningError("The registered public website origin is invalid.") from exc
+    hostname = str(parsed.hostname or "").lower().rstrip(".")
+    if (
+        parsed.scheme.lower() != "https"
+        or not hostname
+        or not custom_domain
+        or parsed.username is not None
+        or parsed.password is not None
+        or port is not None
+        or parsed.path not in ("", "/")
+        or parsed.query
+        or parsed.fragment
+        or (hostname != custom_domain and not hostname.endswith("." + custom_domain))
+    ):
+        raise EmailProvisioningError("The registered public website origin must be HTTPS on the tenant's custom domain.")
+    return f"https://{hostname}"
+
+
 def _worker_readiness(
     config: Mapping[str, Any],
     tenant_id: str,
-    env: Mapping[str, str] | None = None,
 ) -> tuple[str, str]:
     site = _mapping(config.get("site"))
     deployment = _mapping(site.get("source_deployment"))
     worker = str(deployment.get("worker_name") or "").strip().lower()
-    preview = str(site.get("preview_url") or "").strip()
     if not re.fullmatch(r"[a-z][a-z0-9-]{1,62}", worker):
         return "", "The registered Cloudflare Worker identity is unavailable."
     try:
-        expected_preview = canonical_worker_preview_url(config, env)
-    except WorkerOriginError:
-        return "", "Cloudflare could not confirm the registered account-qualified Worker origin."
-    parsed = urlsplit(preview)
-    expected = urlsplit(expected_preview)
-    if (
-        parsed.scheme != "https"
-        or parsed.hostname != expected.hostname
-        or parsed.port is not None
-        or parsed.path not in ("", "/")
-        or parsed.query
-        or parsed.fragment
-    ):
-        return "", "The registered Worker preview origin does not match the Cloudflare account."
+        origin = _registered_site_origin(config)
+    except EmailProvisioningError as exc:
+        return "", str(exc)
     request = urllib.request.Request(
-        urllib.parse.urljoin(preview.rstrip("/") + "/", "api/health"),
+        urllib.parse.urljoin(origin.rstrip("/") + "/", "api/health"),
         headers={"Accept": "application/json", "Cache-Control": "no-cache", "User-Agent": "HelloAda-Email-Provisioner/1.0"},
     )
     try:
@@ -86,10 +98,9 @@ def _configure_payload_mailbox(
     domain: str,
     address: str,
 ) -> dict[str, Any]:
-    site = _mapping(config.get("site"))
-    preview = str(site.get("preview_url") or "").rstrip("/")
+    origin = _registered_site_origin(config)
     request = urllib.request.Request(
-        preview + "/api/helloada/internal/messages/configure-mailbox",
+        origin + "/api/helloada/internal/messages/configure-mailbox",
         data=json.dumps({"domain": domain, "address": address}).encode("utf-8"),
         method="POST",
         headers={
@@ -143,7 +154,7 @@ def prepare_email_plan(
     # Cloudflare zone first so a www/custom-host registration still provisions
     # the conventional mailbox at its managed zone apex.
     local_part = str(email.get("local_part") or "hello").strip().lower()
-    worker, readiness_error = _worker_readiness(config, tenant_id, resolved_env)
+    worker, readiness_error = _worker_readiness(config, tenant_id)
     if readiness_error:
         raise EmailWorkerReadinessError(readiness_error)
     token = cloudflare_api_token(config, resolved_env)

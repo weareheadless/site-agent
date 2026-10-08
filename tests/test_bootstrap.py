@@ -298,6 +298,196 @@ def test_pending_bootstrap_status_is_visible_before_runtime_activation(tmp_path)
         registry.close()
 
 
+def _adoption_fixture(tmp_path, *, registered=True):
+    import threading
+
+    tenant_id = "oceanicvibes"
+    release_id = "20261008-oceanic-messages-schema-3"
+    source_sha = "a" * 40
+    worker_version = "903fba29-2211-4d6b-a7e4-5e3236a2c02a"
+    releases = tmp_path / "releases"
+    receipt_path = releases / "runs" / tenant_id / release_id / "receipt.json"
+    receipt_path.parent.mkdir(parents=True)
+    identity = {
+        "payloadAdmin": "0.10.2",
+        "payloadCore": "0.5.6",
+        "contentContract": "helloada-content-v3",
+        "schemaRevision": 6,
+        "schemaIdentity": "b" * 64,
+        "migrationHead": "c" * 64,
+    }
+    receipt = {
+        "tenant": tenant_id,
+        "worker": tenant_id,
+        "repository": "https://github.com/weareheadless/oceanicvibes.git",
+        "releaseId": release_id,
+        "sourceSha": source_sha,
+        "status": "deployed",
+        "approvalId": None,
+        "uploadedVersion": worker_version,
+        "deployment": {"versions": [{"version_id": worker_version, "percentage": 100}]},
+        "startedAt": "2026-10-08T11:38:27.168209Z",
+        "connectionVerifiedAt": "2026-10-08T11:39:27.167607Z",
+        "finishedAt": "2026-10-08T11:39:27.168209Z",
+        "websitePresent": True,
+        **identity,
+        "health": {
+            "ok": True,
+            "tenant": tenant_id,
+            "releaseSha": source_sha,
+            **identity,
+        },
+    }
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    class Registration:
+        def is_registered(self, selected_tenant):
+            return registered and selected_tenant == tenant_id
+
+    service = WebsiteBootstrapService.__new__(WebsiteBootstrapService)
+    service.config = {"deployment_pipeline": {"release_root": str(releases)}}
+    service.root = tmp_path / "websites"
+    tenant_config_path = service.root / tenant_id / "config.yaml"
+    tenant_config_path.parent.mkdir(parents=True)
+    tenant_config_path.write_text(
+        "site:\n  public_url: https://oceanicvibes.com/\n  source_deployment:\n    worker_name: oceanicvibes\n",
+        encoding="utf-8",
+    )
+    service._lock = threading.RLock()
+    service.registration = Registration()
+    activated = []
+    service._activate_runtime = lambda selected_tenant, _state: activated.append(selected_tenant)
+    return service, tenant_id, release_id, source_sha, worker_version, receipt_path, activated, tenant_config_path
+
+
+def test_adopt_verified_release_writes_readiness_and_is_idempotent(tmp_path):
+    service, tenant, release, source_sha, version, _path, activated, _config = _adoption_fixture(tmp_path)
+
+    result = service.adopt_verified_release(
+        tenant,
+        release_id=release,
+        source_sha=source_sha,
+        worker_version=version,
+    )
+    state_path = service._state_path(tenant)
+    saved = json.loads(state_path.read_text(encoding="utf-8"))
+
+    assert result["workspace_ready"] is True
+    assert result["status"] == "done"
+    assert saved["adoption"]["kind"] == "verified_existing_release"
+    assert saved["adoption"]["release_id"] == release
+    assert saved["adoption"]["source_sha"] == source_sha
+    assert saved["adoption"]["worker_version"] == version
+    assert saved["steps"]["adopting_existing_release"]["status"] == "done"
+    assert saved["adoption"]["admin_origin"] == "https://oceanicvibes.com"
+    assert saved["adoption"]["verified_at"] == "2026-10-08T11:39:27.167607Z"
+    assert saved["resource_receipts"]["creating_worker"]["worker_url"] == "https://oceanicvibes.com"
+    assert activated == [tenant]
+
+    again = service.adopt_verified_release(
+        tenant,
+        release_id=release,
+        source_sha=source_sha,
+        worker_version=version,
+    )
+    assert again["workspace_ready"] is True
+    assert activated == [tenant]
+
+
+def test_adopt_verified_release_rejects_unregistered_or_mismatched_identity(tmp_path):
+    import pytest
+    from site_agent.application.bootstrap import BootstrapError
+
+    service, tenant, release, source_sha, version, _path, _activated, _config = _adoption_fixture(
+        tmp_path / "unregistered",
+        registered=False,
+    )
+    with pytest.raises(BootstrapError, match="canonical registry"):
+        service.adopt_verified_release(
+            tenant, release_id=release, source_sha=source_sha, worker_version=version,
+        )
+
+    service, tenant, release, source_sha, version, _path, _activated, _config = _adoption_fixture(
+        tmp_path / "mismatch",
+    )
+    with pytest.raises(BootstrapError, match="deployed tenant identity"):
+        service.adopt_verified_release(
+            tenant, release_id=release, source_sha="d" * 40, worker_version=version,
+        )
+    with pytest.raises(BootstrapError, match="deployed tenant identity"):
+        service.adopt_verified_release(
+            tenant, release_id=release, source_sha=source_sha, worker_version="wrong",
+        )
+    assert not service._state_path(tenant).exists()
+
+
+def test_adopt_verified_release_rejects_stale_release_and_mismatched_admin_origin(tmp_path):
+    import pytest
+    from site_agent.application.bootstrap import BootstrapError
+
+    service, tenant, release, source_sha, version, receipt_path, _activated, _config = _adoption_fixture(
+        tmp_path / "stale",
+    )
+    newer_id = "20261008-oceanic-messages-schema-4"
+    newer = json.loads(receipt_path.read_text(encoding="utf-8"))
+    newer.update(
+        releaseId=newer_id,
+        sourceSha="d" * 40,
+        startedAt="2026-10-08T11:40:27.168209Z",
+        finishedAt="2026-10-08T11:40:27.168209Z",
+    )
+    newer_path = receipt_path.parent.parent / newer_id / "receipt.json"
+    newer_path.parent.mkdir(parents=True)
+    newer_path.write_text(json.dumps(newer), encoding="utf-8")
+    with pytest.raises(BootstrapError, match="not the latest successful"):
+        service.adopt_verified_release(
+            tenant, release_id=release, source_sha=source_sha, worker_version=version,
+        )
+    assert not service._state_path(tenant).exists()
+
+    service, tenant, release, source_sha, version, _path, _activated, config_path = _adoption_fixture(
+        tmp_path / "origin",
+    )
+    config_path.write_text(
+        "site:\n  public_url: https://wrong.example/\n  source_deployment:\n    worker_name: oceanicvibes\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(BootstrapError, match="does not match the release health origin"):
+        service.adopt_verified_release(
+            tenant, release_id=release, source_sha=source_sha, worker_version=version,
+        )
+
+def test_adopt_verified_release_rejects_nonactive_version_and_conflicting_state(tmp_path):
+    import pytest
+    from site_agent.application.bootstrap import BootstrapError
+
+    service, tenant, release, source_sha, version, receipt_path, _activated, _config = _adoption_fixture(tmp_path)
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["deployment"]["versions"][0]["percentage"] = 50
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    with pytest.raises(BootstrapError, match="exact Worker version is active"):
+        service.adopt_verified_release(
+            tenant, release_id=release, source_sha=source_sha, worker_version=version,
+        )
+    receipt["deployment"]["versions"][0]["percentage"] = 100
+    receipt["health"]["schemaIdentity"] = "z" * 64
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    with pytest.raises(BootstrapError, match="health does not match"):
+        service.adopt_verified_release(
+            tenant, release_id=release, source_sha=source_sha, worker_version=version,
+        )
+
+    receipt["health"]["schemaIdentity"] = "b" * 64
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    state_path = service._state_path(tenant)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps({"tenant_id": tenant, "status": "queued"}), encoding="utf-8")
+    with pytest.raises(BootstrapError, match="refusing to overwrite"):
+        service.adopt_verified_release(
+            tenant, release_id=release, source_sha=source_sha, worker_version=version,
+        )
+
+
 def test_bootstrap_runtime_activation_requires_exact_live_health_receipt(tmp_path):
     import threading
     import pytest
