@@ -3,7 +3,7 @@
   "workspaceApi": "v1",
   "payloadAdmin": "0.10.2",
   "payloadCore": "0.5.6",
-  "schemaRevision": 5,
+  "schemaRevision": 6,
   "contentContract": "helloada-content-v3",
   "defaultLocale": "en",
   "locales": [
@@ -14,7 +14,7 @@
     "node": ">=20.9.0",
     "payload": ">=3.88.0 <4"
   },
-  "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
+  "schemaIdentity": "e7665ac18ba1b2263d2d1b66218416d288c8851ab6dc9eb55bd0014d0ff9b75c",
   "migrations": [
     {
       "name": "20261004_021536_helloada_initial",
