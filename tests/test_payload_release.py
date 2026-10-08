@@ -979,6 +979,9 @@ def promoted_receipt(tmp_path):
               "contentContract": customer["contentContract"], "schemaRevision": customer["schemaRevision"],
               "schemaIdentity": customer["schemaIdentity"], "migrationHead": customer["migrationHead"],
               "websitePresent": customer["websitePresent"],
+              "privateEmailR2BucketName": customer["privateEmailR2BucketName"],
+              "messagesQueueName": customer["messagesQueueName"],
+              "messagesDlqName": customer["messagesDlqName"],
               "status": "failed", "stage": "verify-connection", "error": "connection failed",
               "deployment": {"id": "deployment-1"}, "uploadedVersion": "version-1",
               "artifactHashes": {"worker.js": "b" * 64}}
