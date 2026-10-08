@@ -32,6 +32,7 @@ test('all standard tenant schemas come from one contract and share the native mu
   assert.equal(collections.users.auth.strategies[0].authenticate, JWTAuthentication)
   assert.equal(collections.users.access.create(), false)
   assert.equal(collections.users.access.read(), false)
+  assert.equal(collections.users.fields.find((field) => field.name === 'helloadaSubject').required, false)
   assert.equal(collections.users.fields.find((field) => field.name === 'helloadaSubject').unique, true)
   assert.equal(collections.users.fields.find((field) => field.name === 'helloadaSubject').access.read(), false)
   assert.equal(collections.users.admin.hidden, true)
