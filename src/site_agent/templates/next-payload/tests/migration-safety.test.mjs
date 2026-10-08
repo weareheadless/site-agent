@@ -16,7 +16,7 @@ test('owner handoff preserves Growth operation tables created by the preceding m
 })
 
 test('owner handoff adds the external subject without invalidating existing Payload users', () => {
-  assert.ok(migration.includes('ALTER TABLE `users` ADD `helloada_subject` text;'))
+  assert.ok(migration.replaceAll('\\`', '`').includes('ALTER TABLE `users` ADD `helloada_subject` text;'))
   assert.equal(snapshot.tables.users.columns.helloada_subject.notNull, false)
   assert.equal(snapshot.tables.users.indexes.users_helloada_subject_idx.isUnique, true)
 })
