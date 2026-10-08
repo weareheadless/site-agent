@@ -38,6 +38,16 @@ class CloudflareWorkerReceipt:
         return {"worker_id": self.worker_id, "name": self.name, "created": self.created}
 
 
+@dataclass(frozen=True)
+class QueueReceipt:
+    queue_id: str
+    name: str
+    created: bool
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"queue_id": self.queue_id, "name": self.name, "created": self.created}
+
+
 class CloudflareResourceProvisioner:
     """Small idempotent client for account-level Cloudflare resources."""
 
@@ -261,9 +271,45 @@ class CloudflareResourceProvisioner:
             raise CloudflareResourceError("Queue creation raced another owner and could not be reconciled")
         raise CloudflareResourceError(self._error(created))
 
+    def _find_queue(self, queue_name: str) -> QueueReceipt | None:
+        page = 1
+        per_page = 100
+        while True:
+            query = urllib.parse.urlencode({"page": page, "per_page": per_page})
+            status, body = self._request(
+                "GET",
+                f"/accounts/{self.account_id}/queues?{query}",
+            )
+            if status != 200 or not body.get("success"):
+                raise CloudflareResourceError(self._error(body))
+            rows = body.get("result")
+            if not isinstance(rows, list):
+                raise CloudflareResourceError("Cloudflare Queue list response is invalid")
+            for row in rows:
+                if not isinstance(row, Mapping) or str(row.get("queue_name") or "") != queue_name:
+                    continue
+                queue_id = str(row.get("queue_id") or "").strip()
+                if not queue_id:
+                    raise CloudflareResourceError("Cloudflare Queue identity is missing its ID")
+                return QueueReceipt(queue_id, queue_name, False)
+            info = body.get("result_info")
+            total_pages = info.get("total_pages") if isinstance(info, Mapping) else None
+            if total_pages is not None:
+                try:
+                    if page >= int(total_pages):
+                        return None
+                except (TypeError, ValueError) as exc:
+                    raise CloudflareResourceError("Cloudflare Queue pagination metadata is invalid") from exc
+            elif len(rows) < per_page:
+                return None
+            else:
+                raise CloudflareResourceError("Cloudflare Queue list omitted pagination metadata")
+            page += 1
+
 __all__ = [
     "CloudflareResourceError",
     "CloudflareResourceProvisioner",
     "CloudflareWorkerReceipt",
     "D1DatabaseReceipt",
+    "QueueReceipt",
 ]
