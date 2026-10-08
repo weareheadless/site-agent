@@ -128,6 +128,9 @@ def test_site_origin_change_is_persisted_before_runtime_reconciliation(tmp_path)
     assert updated['seo']['site_url'] == 'https://www.demo.example/'
     assert updated['seo']['gsc_property'] == 'https://www.demo.example/'
     assert updated['seo']['provisioning']['gsc_property'] == 'https://www.demo.example/'
+    assert updated['messages']['email']['enabled'] is True
+    assert updated['messages']['email']['local_part'] == 'hello'
+    assert updated['messages']['email']['provisioning']['auto'] is True
     assert calls[0][0] == 'demo'
     assert calls[0][2]['api_token'] == 'demo-token'
     assert calls[0][2]['api_token_env'] == 'CUSTOM_DEMO_TOKEN'

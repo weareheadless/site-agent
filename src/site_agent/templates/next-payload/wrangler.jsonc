@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "main": ".open-next/worker.js",
+  "main": "worker.ts",
   "name": "helloada-template",
   "compatibility_date": "2025-08-15",
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
@@ -14,8 +14,8 @@
     "HELLOADA_HANDOFF_PUBLIC_KEY": "__HELLOADA_HANDOFF_PUBLIC_KEY__",
     "HELLOADA_TEMPLATE_SCHEMA": "6",
     "HELLOADA_WORKSPACE_API_VERSION": "v1",
-    "HELLOADA_PAYLOAD_ADMIN_VERSION": "0.10.1",
-    "HELLOADA_PAYLOAD_CORE_VERSION": "0.5.4",
+    "HELLOADA_PAYLOAD_ADMIN_VERSION": "0.10.2",
+    "HELLOADA_PAYLOAD_CORE_VERSION": "0.5.5",
     "HELLOADA_PAYLOAD_SCHEMA_REVISION": "5",
     "HELLOADA_CONTENT_CONTRACT_VERSION": "helloada-content-v3",
     "HELLOADA_SCHEMA_IDENTITY": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
@@ -30,6 +30,20 @@
     }
   ],
   "r2_buckets": [
-    { "binding": "R2", "bucket_name": "helloada-template-media" }
-  ]
+    { "binding": "R2", "bucket_name": "helloada-template-media" },
+    { "binding": "PRIVATE_EMAIL", "bucket_name": "helloada-template-email", "preview_bucket_name": "helloada-template-email" }
+  ],
+  "send_email": [{ "name": "EMAIL" }],
+  "ratelimits": [
+    { "name": "HELLOADA_FORM_RATE_LIMIT", "namespace_id": "2701", "simple": { "limit": 10, "period": 60 } },
+    { "name": "HELLOADA_NOTIFICATION_RATE_LIMIT", "namespace_id": "2702", "simple": { "limit": 5, "period": 60 } }
+  ],
+  "queues": {
+    "producers": [{ "binding": "HELLOADA_MESSAGES_QUEUE", "queue": "helloada-template-messages" }],
+    "consumers": [
+      { "queue": "helloada-template-messages", "max_batch_size": 1, "max_batch_timeout": 5, "max_retries": 8, "retry_delay": 30, "max_concurrency": 1, "dead_letter_queue": "helloada-template-messages-dlq" },
+      { "queue": "helloada-template-messages-dlq", "max_batch_size": 1, "max_batch_timeout": 5, "max_retries": 3, "retry_delay": 30, "max_concurrency": 1 }
+    ]
+  },
+  "triggers": { "crons": ["*/5 * * * *"] }
 }

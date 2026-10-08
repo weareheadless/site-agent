@@ -38,6 +38,18 @@ CUSTOMER = {
     "d1DatabaseId": "56d3f277-fbaf-43d4-91e5-b3a195653a05",
     "d1DatabaseName": "oceanicvibes-content",
     "r2BucketName": "helloada-oceanicvibes-media",
+    "privateEmailR2BucketName": "helloada-oceanicvibes-email",
+    "messagesQueueName": "helloada-oceanicvibes-messages",
+    "messagesDlqName": "helloada-oceanicvibes-messages-dlq",
+}
+CANDIDATE_CUSTOMER = {
+    **CUSTOMER,
+    "payloadAdmin": TEMPLATE_MANIFEST["payloadAdmin"],
+    "payloadCore": TEMPLATE_MANIFEST["payloadCore"],
+    "contentContract": TEMPLATE_MANIFEST["contentContract"],
+    "schemaRevision": TEMPLATE_MANIFEST["schemaRevision"],
+    "schemaIdentity": TEMPLATE_MANIFEST["schemaIdentity"],
+    "migrationHead": TEMPLATE_MANIFEST["migrationHead"],
 }
 
 WORKER_CONFIG = {
@@ -307,7 +319,17 @@ def test_customer_release_identity_serializes_the_canonical_owner_repository(tmp
         "database_id": "56d3f277-fbaf-43d4-91e5-b3a195653a05",
         "database_name": "helloada-demo",
     }]
-    wrangler["r2_buckets"] = [{"binding": "R2", "bucket_name": "helloada-demo-media"}]
+    wrangler["r2_buckets"] = [
+        {"binding": "R2", "bucket_name": "helloada-demo-media"},
+        {"binding": "PRIVATE_EMAIL", "bucket_name": "helloada-demo-email"},
+    ]
+    wrangler["queues"] = {
+        "producers": [{"binding": "HELLOADA_MESSAGES_QUEUE", "queue": "helloada-demo-messages"}],
+        "consumers": [
+            {"queue": "helloada-demo-messages", "dead_letter_queue": "helloada-demo-messages-dlq"},
+            {"queue": "helloada-demo-messages-dlq"},
+        ],
+    }
     wrangler_path.write_text(json.dumps(wrangler), encoding="utf-8")
     config = {
         "instance_name": "demo",
@@ -335,6 +357,9 @@ def test_customer_release_identity_serializes_the_canonical_owner_repository(tmp
     assert tenant == "demo"
     assert customer["repository"] == "https://github.com/weareheadless/helloada-demo.git"
     assert customer["websitePresent"] is False
+    assert customer["privateEmailR2BucketName"] == "helloada-demo-email"
+    assert customer["messagesQueueName"] == "helloada-demo-messages"
+    assert customer["messagesDlqName"] == "helloada-demo-messages-dlq"
     config["ada_journey"] = {"website_present": True}
     assert customer_release_identity(config)[1]["websitePresent"] is True
     config.pop("ada_journey")
@@ -372,7 +397,15 @@ def test_worker_contract_requires_the_registered_tenant_and_all_shared_versions(
         "contract": customer["contentContract"], "schemaRevision": customer["schemaRevision"],
         "schemaIdentity": customer["schemaIdentity"], "migrationHead": customer["migrationHead"],
         "d1DatabaseId": customer["d1DatabaseId"], "d1DatabaseName": customer["d1DatabaseName"],
-        "r2BucketName": customer["r2BucketName"], "compatibilityDate": "2025-08-15", "compatibilityFlags": ["nodejs_compat", "global_fetch_strictly_public"]}
+        "r2BucketName": customer["r2BucketName"],
+        "privateEmailR2BucketName": customer["privateEmailR2BucketName"],
+        "messagesQueueName": customer["messagesQueueName"],
+        "messagesDlqName": customer["messagesDlqName"],
+        "messagesQueueConsumer": True, "messagesDlqConsumer": True,
+        "sendEmailBinding": True,
+        "main": "worker.ts", "turnstileSiteKey": "test-site-key", "rateLimitBinding": True,
+        "handlers": ["fetch", "email", "queue", "scheduled"],
+        "compatibilityDate": "2025-08-15", "compatibilityFlags": ["nodejs_compat", "global_fetch_strictly_public"]}
     release.validate_worker_contract(worker, customer, "oceanicvibes")
     with pytest.raises(RuntimeError, match="shared Payload contract"):
         release.validate_worker_contract({**worker, "core": "0.0.9"}, customer, "oceanicvibes")
@@ -437,12 +470,16 @@ def test_live_health_requires_the_exact_shared_payload_contract(monkeypatch, key
 
 
 def artifact(tmp_path):
-    customer = CUSTOMER
+    customer = CANDIDATE_CUSTOMER
     shutil.copytree(TEMPLATE / "src/migrations", tmp_path / "src/migrations")
     files = {
         "payload.config.ts": "import { createHelloAdaSchema } from '@weareheadless/helloada-payload-core/schema';\nconst schema = createHelloAdaSchema(guard);\n",
         ".open-next/worker.js": "import './server-functions/default/handler.mjs'",
         ".open-next/server-functions/default/handler.mjs": "route('/growth/contract')",
+        "worker.ts": (TEMPLATE / "worker.ts").read_text(),
+        "wrangler.jsonc": (TEMPLATE / "wrangler.jsonc").read_text(),
+        "package.json": (TEMPLATE / "package.json").read_text(),
+        "package-lock.json": (TEMPLATE / "package-lock.json").read_text(),
         ".next/server/app-paths-manifest.json": json.dumps({
             "/api/helloada/[...path]/route": "helloada.js",
             "/api/workspace/content/route": "content.js",
@@ -468,29 +505,43 @@ def artifact(tmp_path):
 
 def test_checks_compiled_server_instead_of_thin_worker_entry(tmp_path):
     checkout = artifact(tmp_path)
-    hashes = release.inspect_artifact(checkout, CUSTOMER, SHA)
-    assert "server-functions/default/handler.mjs" in hashes
+    custom_bundle = tmp_path / "custom-worker-dry-run"
+    custom_bundle.mkdir()
+    (custom_bundle / "worker.js").write_text("export default {fetch(){},email(){},queue(){},scheduled(){}};\n")
+    hashes = release.inspect_artifact(checkout, CANDIDATE_CUSTOMER, SHA, custom_bundle)
+    assert ".open-next/server-functions/default/handler.mjs" in hashes
+    assert hashes["worker.ts"]
+    assert hashes["wrangler.jsonc"]
+    assert hashes["package-lock.json"]
+    assert hashes["custom-worker/worker.js"]
+
+
+def test_release_artifact_requires_all_custom_worker_event_handlers(tmp_path):
+    checkout = artifact(tmp_path)
+    (checkout / "worker.ts").write_text("export default { fetch() {} }\n")
+    with pytest.raises(RuntimeError, match="custom Worker artifact"):
+        release.inspect_artifact(checkout, CANDIDATE_CUSTOMER, SHA)
 
 
 def test_release_rejects_a_tenant_local_payload_schema(tmp_path):
     checkout = artifact(tmp_path)
     (checkout / "payload.config.ts").write_text("export default buildConfig({ collections: [TenantPages] });\n")
     with pytest.raises(RuntimeError, match="shared site-agent schema factory"):
-        release.inspect_artifact(checkout, CUSTOMER, SHA)
+        release.inspect_artifact(checkout, CANDIDATE_CUSTOMER, SHA)
 
 
 def test_stale_release_marker_is_rejected(tmp_path):
     checkout = artifact(tmp_path)
     (checkout / ".open-next/assets/helloada-release.json").write_text(json.dumps({"sourceSha": "b" * 40}))
     with pytest.raises(RuntimeError, match="marker"):
-        release.inspect_artifact(checkout, CUSTOMER, SHA)
+        release.inspect_artifact(checkout, CANDIDATE_CUSTOMER, SHA)
 
 
 def test_shared_core_version_must_match_release_registry(tmp_path):
     checkout = artifact(tmp_path)
     (checkout / "node_modules/@weareheadless/helloada-payload-core/package.json").write_text(json.dumps({"version": "0.0.9"}))
     with pytest.raises(RuntimeError, match="core version"):
-        release.inspect_artifact(checkout, CUSTOMER, SHA)
+        release.inspect_artifact(checkout, CANDIDATE_CUSTOMER, SHA)
 
 
 def test_browser_bridge_does_not_substitute_for_service_content_gateway(tmp_path):
@@ -500,7 +551,7 @@ def test_browser_bridge_does_not_substitute_for_service_content_gateway(tmp_path
     del routes["/api/workspace/content/route"]
     path.write_text(json.dumps(routes))
     with pytest.raises(RuntimeError, match="service content"):
-        release.inspect_artifact(checkout, CUSTOMER, SHA)
+        release.inspect_artifact(checkout, CANDIDATE_CUSTOMER, SHA)
 
 
 def test_obsolete_route_in_built_manifest_is_rejected(tmp_path):
@@ -510,7 +561,7 @@ def test_obsolete_route_in_built_manifest_is_rejected(tmp_path):
     routes["/api/atelier/ada/route"] = "old.js"
     path.write_text(json.dumps(routes))
     with pytest.raises(RuntimeError, match="obsolete"):
-        release.inspect_artifact(checkout, CUSTOMER, SHA)
+        release.inspect_artifact(checkout, CANDIDATE_CUSTOMER, SHA)
 
 
 def test_empty_tenant_database_requires_explicit_bootstrap_initialization(monkeypatch, tmp_path):

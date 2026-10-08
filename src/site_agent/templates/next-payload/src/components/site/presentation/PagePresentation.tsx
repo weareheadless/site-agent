@@ -11,11 +11,12 @@ type RecordValue = Record<string, unknown>
 const objectValue = (value: unknown): RecordValue =>
   value && typeof value === 'object' && !Array.isArray(value) ? value as RecordValue : {}
 
-export default function PagePresentation({ document, settings, kind, collection }: {
+export default function PagePresentation({ document, settings, kind, collection, preview = false }: {
   document: RecordValue
   settings: RecordValue
   kind: 'page' | 'post' | 'product'
   collection: 'pages' | 'posts' | 'products'
+  preview?: boolean
 }) {
   const documentId = String(document.id || '')
   if (!documentId) throw new Error('Public Payload content has no stable document ID.')
@@ -35,7 +36,7 @@ export default function PagePresentation({ document, settings, kind, collection 
     {image ? <img className="article-image" src={image} alt={mediaAlt(document.featuredImage)} data-helloada-field={bind('featuredImage')} /> : null}
     {document.summary ? <p className="article-intro" data-helloada-field={bind('summary')}>{String(document.summary)}</p> : null}
     {document.body ? <div className="article-body" data-helloada-field={bind('body')}><RichText data={document.body as SerializedEditorState} /></div> : null}
-    <TenantSections sections={sections} collection={collection} documentId={documentId} />
+    <TenantSections sections={sections} collection={collection} documentId={documentId} preview={preview} />
     {kind === 'post' && document.publishedAt ? <small>{new Date(String(document.publishedAt)).toLocaleDateString()}</small> : null}
   </main>
 }

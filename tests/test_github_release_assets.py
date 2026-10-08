@@ -59,7 +59,18 @@ def test_default_worker_and_manifest_use_the_released_shared_versions():
     assert locked_admin['version'] == admin_version
     assert locked_admin['resolved'] == release_asset
     assert locked_admin['integrity'] == (
-        'sha512-XWa1TjlJPyvP1Epvmgr0XxzWtZiDgqBK485vuTrwbmCV+ly/'
-        'vzyuEW2MgNojSkktOGETbPKh5Kldj9/7zUlFmw=='
+        'sha512-emr3+N6Ol3hBcgj3SxstlabjDsR0JPGbVGPBYJhWD+IxiVE2QZlb6l6QxkdgnvJ2T9JrUcPvQT/azdmbIZaKoA=='
     )
 
+    core_version = json.loads((root / 'packages/helloada-payload-core/package.json').read_text())['version']
+    core_asset = (
+        f"https://github.com/weareheadless/site-agent/releases/download/helloada-payload-core-v{core_version}/"
+        f"weareheadless-helloada-payload-core-{core_version}.tgz"
+    )
+    assert template_package['dependencies']['@weareheadless/helloada-payload-core'] == core_asset
+    locked_core = template_lock['packages']['node_modules/@weareheadless/helloada-payload-core']
+    assert locked_core['version'] == core_version
+    assert locked_core['resolved'] == core_asset
+    assert locked_core['integrity'] == (
+        'sha512-Xdqf5D302wIggpFE4xp4ZybybTFiBybQiX7h6F+SehmYntA12T98CU4F6m4+mXAwYsQ1Al6fYBZsFtXagfEOOg=='
+    )

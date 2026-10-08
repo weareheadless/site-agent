@@ -122,6 +122,35 @@ Save and publish exact Payload document revisions separately. The Growth write
 receipt/guard is not a substitute for proving atomic compare-and-swap against
 every possible concurrent Payload writer.
 
+For website forms, Messages, Contacts and domain email, follow
+`docs/helloada-messages-contacts-production-implementation-plan.md`. These are
+one shared Payload capability and one tenant Worker, not a customer-specific
+mail app. Preserve explicit owner approval before sending, private message
+storage, tenant-scoped access, durable idempotent processing and the existing
+VPS release/migration contract. Do not report production readiness until the
+plan's OceanicVibes and Atelier live evidence, provisioning, licensing and
+authenticated-browser gates are complete.
+
+Domain email uses the same registered-tenant lifecycle as GA4/GSC. New sites
+default to the `hello` local part and automatic Cloudflare reconciliation;
+adding/changing a custom website origin updates that tenant's email domain and
+re-runs provisioning only after the exact registered Worker advertises the
+Messages/email health contract. The shared tenant scheduler retries readiness
+and transient failures hourly after bootstrap/deployment. The API adapter is the only path that changes
+Cloudflare Email Service/DNS. Unknown MX/SPF/routing state is a hard stop; do
+not click through Cloudflare or substitute another provider. For one existing
+tenant, run `site-agent provision-email --tenant <registered-id>` first (read
+only), inspect its domain/address/operation summary, then use `--apply` to
+persist the tenant setting and perform the reviewed plan. The command resolves
+tenant identity only from `provisioned_root/tenants.json`; it accepts no
+arbitrary domain or Worker target. Exact legacy Mailgun MX/SPF replacement and
+exact-address forwarding-rule cutover require the dedicated
+`--approve-mailgun-cutover` and `--allow-forwarding-cutover` flags. The before
+state is retained in a mode-0600 tenant receipt; never print or commit its
+forward destination. Automatic activation requires Cloudflare and Payload to
+both confirm the same mailbox. Email Routing is not a general-purpose mailbox
+or unrestricted Gmail replacement.
+
 ### No parallel architecture or silent recovery path
 
 - Every managed or publishable new site starts from

@@ -90,10 +90,12 @@ focused contract tests before processing requests. See
 
 The queue accepts only a registered tenant, a full customer SHA and a release ID.
 The script serializes releases, resolves the declared Cloudflare profile,
-builds from a clean detached checkout, inspects one OpenNext artifact, deploys
-that same artifact, verifies the tenant-specific health contract, and writes a
-secret-free receipt. It rejects legacy `/api/atelier` source, stale Payload
-admin markers, missing Growth contract markers, dirty checkouts, missing
+builds from a clean detached checkout, compiles the custom Worker with a
+non-deploying Wrangler dry-run, hashes and archives the OpenNext output plus its
+custom entry/configuration/locked inputs, uploads from those unchanged inputs,
+verifies the tenant-specific health contract, and writes a secret-free receipt.
+It rejects legacy `/api/atelier` source, stale Payload admin markers, missing
+Growth or registered message-handler contracts, dirty checkouts, missing
 credentials and failed live health checks. It never repairs, falls back to, or
 reuses a stale artifact.
 

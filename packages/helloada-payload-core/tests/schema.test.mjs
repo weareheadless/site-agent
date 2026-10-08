@@ -109,6 +109,18 @@ test('contact forms require stable field IDs, a required email and enquiry, and 
   assert.match(validateHelloAdaFormFields(valid.map((field) => field.key === 'contact.name' ? { ...field, key: '' } : field)), /stable ID/)
 })
 
+test('contact forms require stable field IDs, a required email and enquiry, and compatible mappings', () => {
+  const valid = [
+    { key: 'contact.name', label: 'Your name', type: 'text', mapsTo: 'name' },
+    { key: 'contact.email', label: 'Email', type: 'email', mapsTo: 'email', required: true },
+    { key: 'contact.message', label: 'How can we help?', type: 'textarea', mapsTo: 'message', required: true, maxLength: 4000 },
+  ]
+  assert.equal(validateHelloAdaFormFields(valid), true)
+  assert.match(validateHelloAdaFormFields(valid.map((field) => field.key === 'contact.email' ? { ...field, required: false } : field)), /must require an email/)
+  assert.match(validateHelloAdaFormFields(valid.map((field) => field.key === 'contact.message' ? { ...field, type: 'select' } : field)), /text input/)
+  assert.match(validateHelloAdaFormFields(valid.map((field) => field.key === 'contact.name' ? { ...field, key: '' } : field)), /stable ID/)
+})
+
 test('bootstrap capability manifest is generated from the exact Payload collections, globals and blocks', () => {
   const generated = createHelloAdaContentContract()
   const committed = JSON.parse(readFileSync(new URL('../../../src/site_agent/templates/next-payload/helloada-content-contract.json', import.meta.url), 'utf8'))

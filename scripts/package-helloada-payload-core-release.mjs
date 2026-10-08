@@ -42,14 +42,17 @@ const main = () => {
   const packed = JSON.parse(execFileSync('npm', ['pack', '--json', '--pack-destination', output], { cwd: packageRoot, encoding: 'utf8' }))[0]
   const archive = path.join(output, packed.filename)
   const files = new Set(execFileSync('tar', ['-tzf', archive], { encoding: 'utf8' }).trim().split('\n'))
-  for (const file of ['src/schema/index.ts', 'src/server.ts', 'src/routes.ts', 'src/contract.ts', 'README.md']) {
+  for (const file of ['src/schema/index.ts', 'src/messages/index.ts', 'src/server.ts', 'src/routes.ts', 'src/contract.ts', 'README.md']) {
     if (!files.has(`package/${file}`)) throw new Error(`Packed artifact is missing ${file}`)
   }
   const packedText = file => execFileSync('tar', ['-xOf', archive, `package/${file}`], { encoding: 'utf8' })
   const schemaMetadata = readSchemaReleaseMetadata(packedText('src/schema/index.ts'))
   if (schemaMetadata.coreVersion !== pkg.version) throw new Error('Package and schema core versions do not match')
   const schema = packedText('src/schema/index.ts')
-  if (!schema.includes('createPagesCollection') || !schema.includes('createNavigationGlobal')) throw new Error('Packed core is missing canonical collections or globals')
+  if (!schema.includes('createPagesCollection') || !schema.includes('createNavigationGlobal')
+    || !schema.includes('createMessageMailboxGlobal') || !packedText('src/messages/index.ts').includes('validateHelloAdaFormSubmission')) {
+    throw new Error('Packed core is missing the canonical Messages schema or form contract')
+  }
   const packageJson = JSON.parse(packedText('package.json'))
   if (packageJson.name !== pkg.name || packageJson.version !== pkg.version) throw new Error('Packed package identity mismatch')
   const digest = bytes => createHash('sha256').update(bytes).digest('hex')

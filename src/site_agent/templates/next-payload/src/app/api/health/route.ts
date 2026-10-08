@@ -88,5 +88,6 @@ export async function GET() {
     workspaceApi: process.env.HELLOADA_WORKSPACE_API_VERSION || null,
     siteAgent: process.env.HELLOADA_SITE_AGENT_VERSION || null,
     releaseSha: process.env.HELLOADA_RELEASE_SHA || null,
+    emailProvisioningVersion: 1,
   }, { status: compatible ? 200 : 503, headers: { 'Cache-Control': 'no-store' } })
 }

@@ -155,6 +155,189 @@ def _cmd_provision_seo(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_provision_email(args: argparse.Namespace) -> int:
+    """Plan or apply email provisioning for one canonical registered tenant."""
+    import datetime
+    import secrets
+    import tempfile
+
+    from .application.email_bootstrap import auto_provision_email, prepare_email_plan
+    from .application.email_provisioning import EmailProvisioningError
+    from .application.seo_bootstrap import load_tenant_environment
+    from .application.tenant_registration import load_provisioned_tenants
+    from .config import deep_merge
+    from .credentials import credential_environment
+
+    host_config, _sources = load(args.config)
+    host_env = credential_environment(host_config, os.environ)
+    declared, tenant_env = load_provisioned_tenants(host_config, host_env)
+    tenant_id = str(args.tenant or "").strip().lower()
+    spec = declared.get(tenant_id)
+    if not isinstance(spec, dict):
+        raise ConfigError(f"tenant {tenant_id!r} is not present in the canonical provisioned tenant registry")
+
+    config_path = Path(str(spec.get("config_path") or "")).expanduser().resolve()
+    raw_tenant = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw_tenant, dict):
+        raise ConfigError("registered tenant configuration must be a mapping")
+    config, _ = load(config_path, {**host_env, **tenant_env}, validate_integrations=False)
+    section = host_config.get("workspace_api") if isinstance(host_config.get("workspace_api"), dict) else {}
+    root_credentials = host_config.get("credentials") if isinstance(host_config.get("credentials"), dict) else {}
+    section_credentials = section.get("credentials") if isinstance(section.get("credentials"), dict) else {}
+    tenant_credentials = raw_tenant.get("credentials") if isinstance(raw_tenant.get("credentials"), dict) else {}
+    config["credentials"] = deep_merge(deep_merge(root_credentials, section_credentials), tenant_credentials)
+    config["observability"] = deep_merge(
+        host_config.get("observability") if isinstance(host_config.get("observability"), dict) else {},
+        raw_tenant.get("observability") if isinstance(raw_tenant.get("observability"), dict) else {},
+    )
+    config["source_deployment"] = deep_merge(
+        config.get("source_deployment") if isinstance(config.get("source_deployment"), dict) else {},
+        host_config.get("source_deployment") if isinstance(host_config.get("source_deployment"), dict) else {},
+    )
+    config["instance_name"] = tenant_id
+    resolved_env = load_tenant_environment(config, {**host_env, **tenant_env})
+
+    policy_overrides: dict[str, object] = {}
+    if args.approve_mailgun_cutover:
+        policy_overrides.update({
+            "approvedLegacyMx": ["mxa.mailgun.org", "mxb.mailgun.org"],
+            "approvedLegacySpf": "v=spf1 include:mailgun.org ~all",
+            "allowLegacyMailgunCutover": True,
+        })
+    if args.allow_forwarding_cutover:
+        policy_overrides["allowForwardingCutover"] = True
+
+    try:
+        plan, _policy, _ = prepare_email_plan(
+            config,
+            tenant_id=tenant_id,
+            env=resolved_env,
+            policy_overrides=policy_overrides,
+        )
+    except EmailProvisioningError as exc:
+        print(f"[site-agent] Email preflight stopped without changes: {exc}", file=sys.stderr)
+        return 1
+
+    summary = {
+        "state": "ready_to_apply",
+        "tenant": tenant_id,
+        "domain": plan["domain"],
+        "address": plan["address"],
+        "worker": plan["worker"],
+        "preflightSha256": plan["snapshotSha256"],
+        "operations": plan["operations"],
+        "mode": "apply" if args.apply else "plan_only",
+    }
+    if not args.apply:
+        print(json.dumps(summary, indent=2, ensure_ascii=False))
+        print("Read-only preflight only; pass --apply to configure the registered tenant and Cloudflare.")
+        return 0
+
+    if isinstance(config.get("messages"), dict) and config["messages"].get("enabled") is False:
+        raise ConfigError("messages.enabled is false for this tenant; enable the Messages capability before provisioning email")
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    run_id = now.strftime("%Y%m%dT%H%M%SZ-") + secrets.token_hex(4)
+    data_dir = Path(str(config.get("data_dir") or "")).expanduser().resolve()
+    if data_dir == Path(data_dir.anchor) or not str(config.get("data_dir") or "").strip():
+        raise ConfigError("registered tenant has no dedicated data_dir for a protected provisioning receipt")
+    receipt_root = data_dir / "email-provisioning"
+    receipt_runs = receipt_root / "runs"
+    receipt_dir = receipt_runs / run_id
+    receipt_path = receipt_dir / "receipt.json"
+
+    def write_receipt(value: dict[str, object]) -> None:
+        for directory in (receipt_root, receipt_runs, receipt_dir):
+            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            try:
+                directory.chmod(0o700)
+            except OSError:
+                pass
+        fd, temporary_name = tempfile.mkstemp(prefix=".receipt-", suffix=".tmp", dir=receipt_dir)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(value, stream, indent=2, ensure_ascii=False, sort_keys=True)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.chmod(temporary_name, 0o600)
+            os.replace(temporary_name, receipt_path)
+        finally:
+            try:
+                os.unlink(temporary_name)
+            except FileNotFoundError:
+                pass
+
+    # Record the exact read-only preflight before any config or provider write.
+    receipt: dict[str, object] = {
+        "schema": 1,
+        **summary,
+        "state": "preflight_complete",
+        "runId": run_id,
+        "approvedMailgunCutover": bool(args.approve_mailgun_cutover),
+        "approvedForwardingCutover": bool(args.allow_forwarding_cutover),
+        "startedAt": now.isoformat(timespec="seconds"),
+        # May include a personal forwarding destination; this exact before
+        # state is stored only in this mode-0600 tenant receipt, never stdout.
+        "preflightSnapshot": plan["snapshot"],
+    }
+    write_receipt(receipt)
+
+    messages = raw_tenant.get("messages") if isinstance(raw_tenant.get("messages"), dict) else {}
+    messages = dict(messages)
+    email = messages.get("email") if isinstance(messages.get("email"), dict) else {}
+    email = dict(email)
+    email["enabled"] = True
+    email.setdefault("local_part", "hello")
+    provisioning = email.get("provisioning") if isinstance(email.get("provisioning"), dict) else {}
+    email["provisioning"] = {**dict(provisioning), "auto": True}
+    messages["email"] = email
+    raw_tenant["messages"] = messages
+    from .application.tenant_registration import TenantRegistrationService
+
+    TenantRegistrationService._replace_config(config_path, raw_tenant)
+    config, _ = load(config_path, {**host_env, **tenant_env}, validate_integrations=False)
+    config["credentials"] = deep_merge(deep_merge(root_credentials, section_credentials), tenant_credentials)
+    config["observability"] = deep_merge(
+        host_config.get("observability") if isinstance(host_config.get("observability"), dict) else {},
+        raw_tenant.get("observability") if isinstance(raw_tenant.get("observability"), dict) else {},
+    )
+    config["source_deployment"] = deep_merge(
+        config.get("source_deployment") if isinstance(config.get("source_deployment"), dict) else {},
+        host_config.get("source_deployment") if isinstance(host_config.get("source_deployment"), dict) else {},
+    )
+    config["instance_name"] = tenant_id
+    resolved_env = load_tenant_environment(config, {**host_env, **tenant_env})
+    receipt["state"] = "applying"
+    write_receipt(receipt)
+
+    memory = Memory(data_dir / "memory.db")
+    try:
+        state, _resolved = auto_provision_email(
+            config,
+            tenant_id=tenant_id,
+            memory=memory,
+            env=resolved_env,
+            policy_overrides=policy_overrides,
+            expected_snapshot_sha256=str(plan["snapshotSha256"]),
+        )
+    finally:
+        memory.close()
+    receipt.update(state)
+    receipt["runId"] = run_id
+    receipt["receiptPath"] = str(receipt_path)
+    write_receipt(receipt)
+    print(json.dumps({
+        key: receipt.get(key)
+        for key in (
+            "state", "tenant", "domain", "address", "worker", "runId",
+            "preflightSha256", "operations", "error", "completedAt", "receiptPath",
+        )
+        if key in receipt
+    }, indent=2, ensure_ascii=False, default=str))
+    return 0 if receipt.get("state") == "active" else 1
+
+
 def _cmd_init_site(args: argparse.Namespace) -> int:
     root = initialize_payload_site(args.directory, args.name, args.url)
     print(f"initialized canonical Payload site: {root}")
@@ -958,6 +1141,23 @@ def main(argv: list[str] | None = None) -> int:
     seo_parser.add_argument("--ensure-host", action="store_true", help="add a proxied placeholder A record when the host does not resolve")
     seo_parser.add_argument("--idempotency-key", default="", help="stable credential key; defaults to site-agent:<tenant>:v1")
     seo_parser.add_argument("--persist-token-dir", default="", help="directory for the 0600 crawlseo.env token file")
+    email_parser = sub.add_parser(
+        "provision-email",
+        parents=[common],
+        help="preflight or provision Cloudflare domain email for one registered tenant",
+    )
+    email_parser.add_argument("--tenant", required=True, help="stable tenant ID from the canonical tenants.json registry")
+    email_parser.add_argument("--apply", action="store_true", help="enable the tenant email setting and apply the reviewed Cloudflare plan")
+    email_parser.add_argument(
+        "--approve-mailgun-cutover",
+        action="store_true",
+        help="authorize replacing only apex mxa/mxb.mailgun.org MX and the exact standard Mailgun SPF record",
+    )
+    email_parser.add_argument(
+        "--allow-forwarding-cutover",
+        action="store_true",
+        help="authorize replacing an exact-address Cloudflare forward rule with the tenant Worker rule",
+    )
     experiment_parser = sub.add_parser("design-experiment", parents=[common], help="run a local-only immutable design experiment")
     experiment_parser.add_argument("--intake", required=True, help="sanitized design-intake JSON")
     experiment_parser.add_argument("--data-dir", required=True, help="dedicated experiment data directory")
@@ -1003,6 +1203,7 @@ def main(argv: list[str] | None = None) -> int:
     handlers = {"check": _cmd_check, "once": _cmd_once, "run": _cmd_run, "serve": _cmd_serve, "api": _cmd_api,
                 "init-site": _cmd_init_site,
                 "provision-r2": _cmd_provision_r2, "provision-seo": _cmd_provision_seo,
+                "provision-email": _cmd_provision_email,
                 "design-experiment": _cmd_design_experiment, "intake-lab": _cmd_intake_lab}
     if args.command == "design-lab":
         handlers = {

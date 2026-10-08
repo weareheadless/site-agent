@@ -239,6 +239,27 @@ class CloudflareResourceProvisioner:
                     return D1DatabaseReceipt(database_id, database_name, False)
         return None
 
+    def ensure_queue(self, name: str) -> QueueReceipt:
+        queue_name = str(name or "").strip().lower()
+        if not re.fullmatch(r"[a-z][a-z0-9-]{2,62}", queue_name):
+            raise CloudflareResourceError("Queue name is invalid")
+        existing = self._find_queue(queue_name)
+        if existing is not None:
+            return existing
+        status, created = self._request(
+            "POST", f"/accounts/{self.account_id}/queues", payload={"queue_name": queue_name},
+        )
+        if status in {200, 201} and created.get("success"):
+            row = created.get("result") or {}
+            queue_id = str(row.get("queue_id") or row.get("id") or "").strip()
+            if queue_id:
+                return QueueReceipt(queue_id, queue_name, True)
+        if status in {400, 409, 422}:
+            existing = self._find_queue(queue_name)
+            if existing is not None:
+                return existing
+            raise CloudflareResourceError("Queue creation raced another owner and could not be reconciled")
+        raise CloudflareResourceError(self._error(created))
 
 __all__ = [
     "CloudflareResourceError",

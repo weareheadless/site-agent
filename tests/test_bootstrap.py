@@ -554,6 +554,9 @@ def test_bootstrap_resource_names_remain_bounded_for_maximum_tenant_ids():
     assert len(names["repo"]) <= 63
     assert len(names["d1"]) <= 63
     assert len(names["r2"]) <= 63
+    assert len(names["email_r2"]) <= 63
+    assert len(names["messages_queue"]) <= 63
+    assert len(names["messages_dlq"]) <= 63
 
 
 def test_bootstrap_short_resource_names_keep_the_existing_stable_identity():
@@ -567,6 +570,9 @@ def test_bootstrap_short_resource_names_keep_the_existing_stable_identity():
         "repo": "helloada-oceanicvibes",
         "d1": "helloada-oceanicvibes",
         "r2": "helloada-oceanicvibes-media",
+        "email_r2": "helloada-oceanicvibes-email",
+        "messages_queue": "helloada-oceanicvibes-messages",
+        "messages_dlq": "helloada-oceanicvibes-messages-dlq",
     }
 
 
@@ -918,6 +924,40 @@ def test_bootstrap_configures_one_explicit_tenant_ownership_marker(tmp_path):
         "migrationHead": manifest["migrationHead"],
     }
     assert 'tenantId: "demo"' in (site_dir / "src/helloada.config.ts").read_text()
+
+
+def test_bootstrap_pins_message_queues_and_consumes_the_dead_letter_queue(tmp_path):
+    from site_agent.site_scaffold import initialize_managed_site
+
+    site_dir = initialize_managed_site(tmp_path / "site")
+    WebsiteBootstrapService._configure_template(site_dir, "demo", "Demo")
+    template = json.loads((site_dir / "template-manifest.json").read_text())
+    service = WebsiteBootstrapService.__new__(WebsiteBootstrapService)
+    service.config = {"bootstrap": {"resource_prefix": "helloada"}}
+    names = service._names("demo")
+    WebsiteBootstrapService._configure_wranger(
+        site_dir, names, "https://helloada-demo.workers.dev", "https://site-agent.test",
+        {
+            "d1": {"database_id": "d1-id", "name": names["d1"]},
+            "queues": {
+                "messages": {"name": names["messages_queue"]},
+                "dead_letter": {"name": names["messages_dlq"]},
+            },
+            "private_email_r2": {"bucket": names["email_r2"]},
+        },
+        "Demo", "demo", {
+            "coreVersion": template["payloadCore"],
+            "schemaRevision": template["schemaRevision"],
+            "contract": template["contentContract"],
+        },
+        _TEST_HANDOFF_PUBLIC_KEY,
+    )
+    wrangler = json.loads((site_dir / "wrangler.jsonc").read_text())
+    assert wrangler["vars"]["HELLOADA_MESSAGES_QUEUE_NAME"] == names["messages_queue"]
+    assert wrangler["vars"]["HELLOADA_MESSAGES_DLQ_NAME"] == names["messages_dlq"]
+    assert [consumer["queue"] for consumer in wrangler["queues"]["consumers"]] == [
+        names["messages_queue"], names["messages_dlq"],
+    ]
 
 
 def test_bootstrap_never_replaces_an_existing_site_directory(tmp_path):

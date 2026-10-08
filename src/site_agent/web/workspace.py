@@ -187,6 +187,22 @@ def register_workspace_routes(
                 status = 503
             raise HTTPException(status_code=status, detail=str(exc)) from exc
 
+    @app.post(f"{prefix}/messages/reply-draft")
+    async def workspace_message_reply_draft(request: Request):
+        tenant = require_service(request)
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001 - normalize malformed bridge input
+            raise HTTPException(status_code=400, detail="invalid json")
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="request body must be an object")
+        try:
+            return service.draft_message_reply(body, tenant=tenant)
+        except BridgeError as exc:
+            message = str(exc)
+            status = 413 if "too long" in message else 503 if "LLM not configured" in message or "right now" in message else 400
+            raise HTTPException(status_code=status, detail=message) from exc
+
     @app.get(f"{prefix}/chat/status")
     def workspace_chat_status(request: Request, conversation_id: int | None = None):
         tenant = require_service(request)

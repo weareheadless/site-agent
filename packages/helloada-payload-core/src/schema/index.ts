@@ -2,7 +2,7 @@ import { JWTAuthentication } from 'payload'
 import type { Block, CollectionConfig, GlobalConfig } from 'payload'
 
 export const HELLOADA_CONTENT_CONTRACT_VERSION = 'helloada-content-v3'
-export const HELLOADA_CORE_VERSION = '0.5.4'
+export const HELLOADA_CORE_VERSION = '0.5.5'
 export const HELLOADA_SCHEMA_REVISION = 5
 
 export const validateHelloAdaLink = (value: unknown): true | string => {

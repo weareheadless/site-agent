@@ -17,12 +17,13 @@ mkdirSync(output, { recursive: true })
 const packed = JSON.parse(execFileSync('npm', ['pack', '--json', '--pack-destination', output], { cwd: packageRoot, encoding: 'utf8' }))[0]
 const archive = path.join(output, packed.filename)
 const files = new Set(execFileSync('tar', ['-tzf', archive], { encoding: 'utf8' }).trim().split('\n'))
-for (const file of ['src/components/GrowthTasks.tsx', 'src/components/WebsiteWorkspace.tsx', 'src/server/runtime-env.ts', 'src/styles/growth.scss']) {
+for (const file of ['src/components/GrowthTasks.tsx', 'src/components/HelloAdaMessages.tsx', 'src/components/WebsiteWorkspace.tsx', 'src/server/runtime-env.ts', 'src/styles/growth.scss', 'src/styles/messages.scss']) {
   if (!files.has(`package/${file}`)) throw new Error(`Packed artifact is missing ${file}`)
 }
 const packedText = file => execFileSync('tar', ['-xOf', archive, `package/${file}`], { encoding: 'utf8' })
 const growth = packedText('src/components/HelloAdaGrowth.tsx')
 if (!growth.includes('<GrowthTasks ') || growth.includes('className="helloada-growth-sidebar"')) throw new Error('Packed artifact has the old scattered Growth overview')
+if (!packedText('src/index.ts').includes('HelloAdaMessages')) throw new Error('Packed admin package does not export the shared Messages screen')
 const runtime = packedText('src/server/runtime-env.ts')
 if (!runtime.includes('helloAdaWorkspacePath') || !runtime.includes('/growth/check')) throw new Error('Packed artifact lacks the shared Growth bridge')
 const packedPackage = JSON.parse(packedText('package.json'))
