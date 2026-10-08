@@ -82,7 +82,8 @@ class GitHubReleaseQueue:
         result = {key: customer.get(key) for key in (
             "repository", "worker", "health", "adminPath", "websitePresent", "payloadAdmin", "payloadCore",
             "contentContract", "schemaRevision", "schemaIdentity", "migrationHead",
-            "d1DatabaseId", "d1DatabaseName", "r2BucketName",
+            "d1DatabaseId", "d1DatabaseName", "r2BucketName", "privateEmailR2BucketName",
+            "messagesQueueName", "messagesDlqName",
         )}
         if not re.fullmatch(r"https://github\.com/weareheadless/[A-Za-z0-9_.-]+\.git", str(result["repository"] or "")):
             raise GitHubReleaseQueueError("release source must be an official weareheadless repository")
@@ -112,6 +113,9 @@ class GitHubReleaseQueue:
             raise GitHubReleaseQueueError("tenant D1 database name is invalid")
         if not re.fullmatch(r"[a-z0-9-]{3,63}", str(result["r2BucketName"] or "")):
             raise GitHubReleaseQueueError("tenant R2 bucket name is invalid")
+        for field in ("privateEmailR2BucketName", "messagesQueueName", "messagesDlqName"):
+            if not re.fullmatch(r"[a-z0-9-]{3,63}", str(result[field] or "")):
+                raise GitHubReleaseQueueError(f"tenant {field} resource name is invalid")
         return result
 
     def request(
@@ -174,8 +178,19 @@ class GitHubReleaseQueue:
             existing = customers.get(tenant)
             if existing is None:
                 customers[tenant] = normalized_customer
-            elif any(existing.get(key) != value for key, value in normalized_customer.items()):
-                raise GitHubReleaseQueueError("registered tenant contract differs from the approved source; reconcile the registry first")
+            elif not isinstance(existing, dict):
+                raise GitHubReleaseQueueError("registered tenant contract is not an object")
+            else:
+                for key, value in normalized_customer.items():
+                    if key not in existing:
+                        # A source-derived exact identity may add newly required
+                        # resource bindings to an older registration atomically
+                        # with its release request. Existing values never drift.
+                        existing[key] = value
+                    elif existing[key] != value:
+                        raise GitHubReleaseQueueError(
+                            "registered tenant contract differs from the approved source; reconcile the registry first"
+                        )
 
             current = releases.get(tenant)
             expected_approval = int(approval_id) if approval_id is not None else None

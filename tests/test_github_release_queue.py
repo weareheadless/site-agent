@@ -24,13 +24,21 @@ CUSTOMER = {
     "d1DatabaseId": "12345678-1234-1234-1234-123456789abc",
     "d1DatabaseName": "helloada-demo",
     "r2BucketName": "helloada-demo-media",
+    "privateEmailR2BucketName": "helloada-demo-email",
+    "messagesQueueName": "helloada-demo-messages",
+    "messagesDlqName": "helloada-demo-messages-dlq",
 }
 
 
 def test_release_request_commits_registry_and_exact_approval_together(monkeypatch):
     queue = GitHubReleaseQueue("token")
+    legacy_customer = {key: value for key, value in CUSTOMER.items() if key not in {
+        "privateEmailR2BucketName", "messagesQueueName", "messagesDlqName",
+    }}
     documents = {
-        "payload-customers.json": {"schema": 1, "releaseRoot": "/SOCIAL/payload-releases", "customers": {}},
+        "payload-customers.json": {
+            "schema": 1, "releaseRoot": "/SOCIAL/payload-releases", "customers": {"demo": legacy_customer},
+        },
         "desired-releases.json": {"schema": 1, "releases": {}},
     }
     calls = []
