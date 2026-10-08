@@ -100,7 +100,7 @@ def credential_environment(
     root_file = str(profiles.get("env_file") or "").strip()
     if root_file:
         paths.append(root_file)
-    for name in ("github", "cloudflare", "cloudflare_dns", "crawlseo"):
+    for name in ("github", "cloudflare", "cloudflare_dns", "cloudflare_email", "crawlseo"):
         path = str(credential_profile(config, name).get("env_file") or "").strip()
         if path:
             paths.append(path)
@@ -198,6 +198,27 @@ def cloudflare_api_token(config: Mapping[str, Any] | None, env: Mapping[str, str
     return credential_environment(config, env).get(token_name, "")
 
 
+def _profile_api_token(
+    config: Mapping[str, Any] | None,
+    env: Mapping[str, str] | None,
+    profile_name: str,
+    default_env_name: str,
+) -> str:
+    profile = credential_profile(config, profile_name)
+    token_name = _valid_env_name(profile.get("api_token_env"), default_env_name)
+    return credential_environment(config, env).get(token_name, "")
+
+
+def cloudflare_dns_api_token(config: Mapping[str, Any] | None, env: Mapping[str, str] | None = None) -> str:
+    """Resolve the host-owned token for zone and DNS record operations."""
+    return _profile_api_token(config, env, "cloudflare_dns", "CLOUDFLARE_DNS_API_TOKEN")
+
+
+def cloudflare_email_api_token(config: Mapping[str, Any] | None, env: Mapping[str, str] | None = None) -> str:
+    """Resolve the narrowly scoped Cloudflare Email Service token."""
+    return _profile_api_token(config, env, "cloudflare_email", "CLOUDFLARE_EMAIL_API_TOKEN")
+
+
 def github_api_token(config: Mapping[str, Any] | None, env: Mapping[str, str] | None = None) -> str:
     """Resolve the trusted GitHub API token from the shared profile."""
     return credential_environment(config, env).get(github_api_token_env(config), "")
@@ -214,6 +235,14 @@ def credential_status(
     token_name, account_name = cloudflare_env_names(config)
     cloudflare_file = str(credential_profile(config, "cloudflare").get("env_file") or "").strip()
     file_path = Path(cloudflare_file).expanduser() if cloudflare_file else None
+    email_profile = credential_profile(config, "cloudflare_email")
+    email_file = str(email_profile.get("env_file") or "").strip()
+    email_file_path = Path(email_file).expanduser() if email_file else None
+    email_token_name = _valid_env_name(email_profile.get("api_token_env"), "CLOUDFLARE_EMAIL_API_TOKEN")
+    dns_profile = credential_profile(config, "cloudflare_dns")
+    dns_file = str(dns_profile.get("env_file") or "").strip()
+    dns_file_path = Path(dns_file).expanduser() if dns_file else None
+    dns_token_name = _valid_env_name(dns_profile.get("api_token_env"), "CLOUDFLARE_DNS_API_TOKEN")
     profile_path = credential_profile_file(config)
     return {
         "profile_file": str(profile_path) if profile_path else "",
@@ -234,12 +263,26 @@ def credential_status(
             "account_id_env": account_name,
             "account_id_configured": bool(resolved.get(account_name)),
         },
+        "cloudflare_email": {
+            "env_file_configured": bool(email_file),
+            "env_file_available": bool(email_file_path and email_file_path.is_file()),
+            "api_token_env": email_token_name,
+            "api_token_configured": bool(resolved.get(email_token_name)),
+        },
+        "cloudflare_dns": {
+            "env_file_configured": bool(dns_file),
+            "env_file_available": bool(dns_file_path and dns_file_path.is_file()),
+            "api_token_env": dns_token_name,
+            "api_token_configured": bool(resolved.get(dns_token_name)),
+        },
     }
 
 
 __all__ = [
     "cloudflare_env_names",
     "cloudflare_api_token",
+    "cloudflare_dns_api_token",
+    "cloudflare_email_api_token",
     "credential_environment",
     "credential_profile_file",
     "credential_profile",

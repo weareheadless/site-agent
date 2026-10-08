@@ -1,5 +1,6 @@
 from urllib.parse import parse_qs, urlsplit
 
+import site_agent.hands.cloudflare_email as cloudflare_email
 from site_agent.hands.cloudflare_email import CloudflareEmailClient
 
 
@@ -48,3 +49,29 @@ def test_zone_lookup_resolves_the_most_specific_managed_parent_zone():
 
     assert zone["id"] == "specific-zone"
     assert len(client.paths) == 2
+
+
+def test_cloudflare_email_client_routes_dns_and_email_calls_to_separate_tokens(monkeypatch):
+    tokens = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _size=-1):
+            return b'{"success":true,"result":{}}'
+
+    def urlopen(request, timeout):
+        tokens.append(request.get_header("Authorization"))
+        return Response()
+
+    monkeypatch.setattr(cloudflare_email.urllib.request, "urlopen", urlopen)
+    client = CloudflareEmailClient("email-secret", "dns-secret")
+
+    client.request("GET", "/zones/zone-id/dns_records")
+    client.request("GET", "/zones/zone-id/email/routing")
+
+    assert tokens == ["Bearer dns-secret", "Bearer email-secret"]

@@ -35,21 +35,30 @@ def _errors(payload: Mapping[str, Any]) -> str:
 class CloudflareEmailClient:
     """Small, bounded API adapter for per-zone Email Sending and Routing."""
 
-    def __init__(self, api_token: str, *, timeout_seconds: float = 30.0) -> None:
-        token = str(api_token or "").strip()
-        if not token:
-            raise CloudflareEmailError("Cloudflare Email provisioning token is missing")
-        self._token = token
+    def __init__(self, email_api_token: str, dns_api_token: str, *, timeout_seconds: float = 30.0) -> None:
+        email_token = str(email_api_token or "").strip()
+        dns_token = str(dns_api_token or "").strip()
+        if not email_token:
+            raise CloudflareEmailError("Cloudflare Email Service API token is missing")
+        if not dns_token:
+            raise CloudflareEmailError("Cloudflare DNS API token is missing")
+        self._email_token = email_token
+        self._dns_token = dns_token
         self._timeout = float(timeout_seconds)
 
+    @staticmethod
+    def _uses_dns_token(path: str) -> bool:
+        return "/email/" not in path
+
     def request(self, method: str, path: str, body: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        token = self._dns_token if self._uses_dns_token(path) else self._email_token
         data = json.dumps(dict(body)).encode("utf-8") if body is not None else None
         request = urllib.request.Request(
             CF_API + path,
             data=data,
             method=method,
             headers={
-                "Authorization": f"Bearer {self._token}",
+                "Authorization": f"Bearer {token}",
                 "Accept": "application/json",
                 "Content-Type": "application/json",
                 "User-Agent": USER_AGENT,
