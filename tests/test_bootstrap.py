@@ -304,7 +304,8 @@ def _adoption_fixture(tmp_path, *, registered=True):
     tenant_id = "oceanicvibes"
     release_id = "20261008-oceanic-messages-schema-3"
     source_sha = "a" * 40
-    worker_version = "903fba29-2211-4d6b-a7e4-5e3236a2c02a"
+    uploaded_version = "903fba29-2211-4d6b-a7e4-5e3236a2c02a"
+    worker_version = "18499a63-18ab-49bb-aa9a-3ba1311c328a"
     releases = tmp_path / "releases"
     receipt_path = releases / "runs" / tenant_id / release_id / "receipt.json"
     receipt_path.parent.mkdir(parents=True)
@@ -324,8 +325,22 @@ def _adoption_fixture(tmp_path, *, registered=True):
         "sourceSha": source_sha,
         "status": "deployed",
         "approvalId": None,
-        "uploadedVersion": worker_version,
-        "deployment": {"versions": [{"version_id": worker_version, "percentage": 100}]},
+        "uploadedVersion": uploaded_version,
+        "deployment": {"versions": [{"version_id": uploaded_version, "percentage": 100}]},
+        "currentVerification": {
+            "releaseId": release_id,
+            "sourceSha": source_sha,
+            "uploadedVersion": uploaded_version,
+            "workerVersion": worker_version,
+            "deploymentId": "secret-rotation-deployment",
+            "trafficPercentage": 100,
+            "uploadedScriptEtag": "d" * 64,
+            "activeScriptEtag": "d" * 64,
+            "uploadedBindingIdentity": "e" * 64,
+            "activeBindingIdentity": "e" * 64,
+            "mode": "secret_rotation",
+            "verifiedAt": "2026-10-08T11:45:27.168209Z",
+        },
         "startedAt": "2026-10-08T11:38:27.168209Z",
         "connectionVerifiedAt": "2026-10-08T11:39:27.167607Z",
         "finishedAt": "2026-10-08T11:39:27.168209Z",
@@ -463,13 +478,13 @@ def test_adopt_verified_release_rejects_nonactive_version_and_conflicting_state(
 
     service, tenant, release, source_sha, version, receipt_path, _activated, _config = _adoption_fixture(tmp_path)
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-    receipt["deployment"]["versions"][0]["percentage"] = 50
+    receipt["currentVerification"]["trafficPercentage"] = 50
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
-    with pytest.raises(BootstrapError, match="exact Worker version is active"):
+    with pytest.raises(BootstrapError, match="deployed tenant identity"):
         service.adopt_verified_release(
             tenant, release_id=release, source_sha=source_sha, worker_version=version,
         )
-    receipt["deployment"]["versions"][0]["percentage"] = 100
+    receipt["currentVerification"]["trafficPercentage"] = 100
     receipt["health"]["schemaIdentity"] = "z" * 64
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
     with pytest.raises(BootstrapError, match="health does not match"):

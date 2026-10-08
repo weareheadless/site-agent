@@ -353,11 +353,24 @@ class WebsiteBootstrapService:
             receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, ValueError, ReleaseQueueError) as exc:
             raise BootstrapError("canonical release receipt is unavailable") from exc
+        current_verification = receipt.get("currentVerification") if isinstance(receipt, Mapping) else None
         if not isinstance(receipt, Mapping) or (
             receipt.get("tenant") != normalized
             or receipt.get("releaseId") != release_id
             or receipt.get("sourceSha") != source_sha
-            or receipt.get("uploadedVersion") != worker_version
+            or not isinstance(current_verification, Mapping)
+            or current_verification.get("releaseId") != release_id
+            or current_verification.get("sourceSha") != source_sha
+            or current_verification.get("uploadedVersion") != receipt.get("uploadedVersion")
+            or current_verification.get("workerVersion") != worker_version
+            or current_verification.get("trafficPercentage") != 100
+            or current_verification.get("mode") not in {"exact", "secret_rotation"}
+            or not current_verification.get("deploymentId")
+            or not current_verification.get("verifiedAt")
+            or current_verification.get("uploadedScriptEtag") != current_verification.get("activeScriptEtag")
+            or not re.fullmatch(r"[0-9a-f]{64}", str(current_verification.get("activeScriptEtag") or ""))
+            or current_verification.get("uploadedBindingIdentity") != current_verification.get("activeBindingIdentity")
+            or not re.fullmatch(r"[0-9a-f]{64}", str(current_verification.get("activeBindingIdentity") or ""))
             or receipt.get("status") not in {"deployed", "verified"}
             or receipt.get("approvalId") is not None
             or not receipt.get("connectionVerifiedAt")
@@ -402,11 +415,11 @@ class WebsiteBootstrapService:
         versions = deployment.get("versions") if isinstance(deployment, Mapping) else None
         if not isinstance(versions, list) or not any(
             isinstance(version, Mapping)
-            and version.get("version_id") == worker_version
+            and version.get("version_id") == receipt.get("uploadedVersion")
             and version.get("percentage") == 100
             for version in versions
         ):
-            raise BootstrapError("release receipt does not prove the exact Worker version is active")
+            raise BootstrapError("release receipt does not prove the original uploaded Worker version was promoted")
 
         health = receipt.get("health")
         runtime_identity = {

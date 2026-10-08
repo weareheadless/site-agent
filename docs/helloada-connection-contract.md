@@ -117,7 +117,8 @@ canonical template and the VPS caller uses the matching prefix.
 A tenant that was deployed before its HelloAda bootstrap saga was recorded must
 be adopted explicitly; a missing bootstrap receipt is not runtime evidence of
 readiness. Use `site-agent adopt-release-readiness` with the registered tenant,
-exact canonical release ID, full customer source SHA, and exact Worker version.
+exact canonical release ID, full customer source SHA, explicit release purpose,
+and exact current Worker version.
 Before writing readiness, the command runs the standard
 `deploy-payload-customer.py --verify-only` gate for that exact tenant, release,
 and SHA. This checks Cloudflare's current 100%-active version, the live Worker
@@ -134,6 +135,19 @@ checks. The command does not deploy a Worker, issue an SSO grant, replace
 conflicting bootstrap state, or accept an unverified, stale, or failed release.
 Repeating it for the same completed release is idempotent. New tenants continue
 through the normal bootstrap saga.
+
+### Secret-only version rotations
+
+Cloudflare can assign a new active Worker version ID when a secret changes,
+even though deployed code and non-secret bindings are unchanged. During
+read-only adoption verification only, a different current version ID is
+accepted only when Cloudflare marks the deployment as secret-triggered, exactly
+one version receives 100% of traffic, and the uploaded/current script ETags
+and binding identities match. The binding identity excludes secret values but
+includes each secret binding's name/type and the full non-secret binding
+configuration. The fresh live health and authenticated connection gates still
+must pass. Normal release uploads continue to require the exact uploaded
+version at 100%; this rule does not relax promotion or accept code/config drift.
 
 ## Growth behavior
 
