@@ -2,8 +2,8 @@
   "templateSchema": 6,
   "workspaceApi": "v1",
   "payloadAdmin": "0.10.2",
-  "payloadCore": "0.5.5",
-  "schemaRevision": 5,
+  "payloadCore": "0.5.6",
+  "schemaRevision": 6,
   "contentContract": "helloada-content-v3",
   "defaultLocale": "en",
   "locales": [
@@ -14,7 +14,7 @@
     "node": ">=20.9.0",
     "payload": ">=3.88.0 <4"
   },
-  "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
+  "schemaIdentity": "e7665ac18ba1b2263d2d1b66218416d288c8851ab6dc9eb55bd0014d0ff9b75c",
   "migrations": [
     {
       "name": "20261004_021536_helloada_initial",
@@ -28,10 +28,10 @@
     },
     {
       "name": "20261006_061835_helloada_owner_handoff",
-      "fileSha256": "1f9cedb12fe5af38a976de23f7d98aee3d958b7aa4b2300218375100ed46e115",
-      "snapshotSha256": "1960eb3a12aba3a3cd16f4134db2f3e9da6a39f30d97f120756a39414ca35bae"
+      "fileSha256": "f16cd270749fcec9c23ec966703d6cc0b90cf198e2ba214c46bd61ba400b8028",
+      "snapshotSha256": "a09a5b327041bcc319edd8695513e583fe99129b57535c4377aebc4940040212"
     }
   ],
-  "migrationHead": "75064eaeb5a035afc8977d39a59742dfa8bfb5e94d344ca9090e29e516bb2534",
+  "migrationHead": "8380cee7947adbc16e617d0a4965d1f047ebbade682a57c7d75f9783d8196d13",
   "migrationIndexSha256": "381e90f4069b810c8505a4b353b67674052f679380ab4034e05a0433a555119c"
 }

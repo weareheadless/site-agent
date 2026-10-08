@@ -440,8 +440,6 @@ export async function up({ db, payload, req }: MigrateUpArgs): Promise<void> {
   	\`created_at\` text
   );
   `)
-  await db.run(sql`DROP TABLE \`helloada_growth_candidates\`;`)
-  await db.run(sql`DROP TABLE \`helloada_growth_operations\`;`)
   await db.run(sql`PRAGMA foreign_keys=OFF;`)
   await db.run(sql`CREATE TABLE \`__new_media\` (
   	\`id\` integer PRIMARY KEY NOT NULL,
@@ -479,7 +477,7 @@ export async function up({ db, payload, req }: MigrateUpArgs): Promise<void> {
   await db.run(sql`CREATE INDEX \`media_updated_at_idx\` ON \`media\` (\`updated_at\`);`)
   await db.run(sql`CREATE INDEX \`media_created_at_idx\` ON \`media\` (\`created_at\`);`)
   await db.run(sql`CREATE UNIQUE INDEX \`media_filename_idx\` ON \`media\` (\`filename\`);`)
-  await db.run(sql`ALTER TABLE \`users\` ADD \`helloada_subject\` text NOT NULL;`)
+  await db.run(sql`ALTER TABLE \`users\` ADD \`helloada_subject\` text;`)
   await db.run(sql`CREATE UNIQUE INDEX \`users_helloada_subject_idx\` ON \`users\` (\`helloada_subject\`);`)
   await db.run(sql`ALTER TABLE \`payload_locked_documents_rels\` ADD \`owner_handoff_grants_id\` integer REFERENCES owner_handoff_grants(id);`)
   await db.run(sql`ALTER TABLE \`payload_locked_documents_rels\` ADD \`contact_forms_id\` integer REFERENCES contact_forms(id);`)
@@ -498,33 +496,6 @@ export async function up({ db, payload, req }: MigrateUpArgs): Promise<void> {
 }
 
 export async function down({ db, payload, req }: MigrateDownArgs): Promise<void> {
-  await db.run(sql`CREATE TABLE \`helloada_growth_candidates\` (
-  	\`package_hash\` text PRIMARY KEY NOT NULL,
-  	\`tenant_id\` text NOT NULL,
-  	\`initiative_id\` text NOT NULL,
-  	\`collection_name\` text NOT NULL,
-  	\`document_id\` text NOT NULL,
-  	\`base_hash\` text NOT NULL,
-  	\`candidate_hash\` text NOT NULL,
-  	\`package_json\` text NOT NULL,
-  	\`state\` text NOT NULL,
-  	\`result_json\` text,
-  	\`created_at\` text NOT NULL,
-  	\`updated_at\` text NOT NULL
-  );
-  `)
-  await db.run(sql`CREATE TABLE \`helloada_growth_operations\` (
-  	\`operation_key\` text PRIMARY KEY NOT NULL,
-  	\`document_key\` text NOT NULL,
-  	\`tenant_id\` text NOT NULL,
-  	\`package_hash\` text NOT NULL,
-  	\`state\` text NOT NULL,
-  	\`result_json\` text,
-  	\`created_at\` text NOT NULL,
-  	\`updated_at\` text NOT NULL
-  );
-  `)
-  await db.run(sql`CREATE UNIQUE INDEX \`helloada_growth_writing_document\` ON \`helloada_growth_operations\` (\`document_key\`) WHERE state = writing;`)
   await db.run(sql`DROP TABLE \`owner_handoff_grants\`;`)
   await db.run(sql`DROP TABLE \`pages_blocks_hello_ada_contact_form\`;`)
   await db.run(sql`DROP TABLE \`_pages_v_blocks_hello_ada_contact_form\`;`)
