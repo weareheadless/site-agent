@@ -1,4 +1,31 @@
-from site_agent.main import _loopback_host, main
+from site_agent.main import _adoption_verifier_command, _loopback_host, main
+
+
+def test_adoption_verifier_command_preserves_explicit_release_contract(tmp_path):
+    import sys
+    from argparse import Namespace
+
+    verifier = tmp_path / "deploy-payload-customer.py"
+    args = Namespace(
+        tenant="oceanicvibes",
+        source_sha="a" * 40,
+        release_id="20261008-oceanic-messages-schema-3",
+        release_purpose="website",
+    )
+
+    assert _adoption_verifier_command(verifier, args) == [
+        sys.executable,
+        str(verifier),
+        "--tenant",
+        "oceanicvibes",
+        "--ref",
+        "a" * 40,
+        "--release-id",
+        "20261008-oceanic-messages-schema-3",
+        "--release-purpose",
+        "website",
+        "--verify-only",
+    ]
 
 
 def test_missing_config_fails_regardless_of_option_position(tmp_path):

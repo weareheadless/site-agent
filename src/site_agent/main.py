@@ -1093,6 +1093,23 @@ def _cmd_api(args: argparse.Namespace) -> int:
     return 0
 
 
+def _adoption_verifier_command(verifier: Path, args: argparse.Namespace) -> list[str]:
+    """Build the exact read-only verifier command for one explicit release contract."""
+    return [
+        sys.executable,
+        str(verifier),
+        "--tenant",
+        args.tenant,
+        "--ref",
+        args.source_sha,
+        "--release-id",
+        args.release_id,
+        "--release-purpose",
+        args.release_purpose,
+        "--verify-only",
+    ]
+
+
 def _cmd_adopt_release_readiness(args: argparse.Namespace) -> int:
     """Record the explicit adoption of an existing, exactly verified tenant release."""
     from .application.bootstrap import BootstrapError, WebsiteBootstrapService
@@ -1113,17 +1130,7 @@ def _cmd_adopt_release_readiness(args: argparse.Namespace) -> int:
             return 1
         try:
             verification = subprocess.run(
-                [
-                    sys.executable,
-                    str(verifier),
-                    "--tenant",
-                    args.tenant,
-                    "--ref",
-                    args.source_sha,
-                    "--release-id",
-                    args.release_id,
-                    "--verify-only",
-                ],
+                _adoption_verifier_command(verifier, args),
                 cwd=repository_root,
                 env=os.environ.copy(),
                 capture_output=True,
@@ -1184,6 +1191,12 @@ def main(argv: list[str] | None = None) -> int:
     adopt_parser.add_argument("--release-id", required=True, help="exact canonical VPS release ID")
     adopt_parser.add_argument("--source-sha", required=True, help="exact full 40-character customer source SHA")
     adopt_parser.add_argument("--worker-version", required=True, help="exact active Cloudflare Worker version ID")
+    adopt_parser.add_argument(
+        "--release-purpose",
+        choices=("workspace-bootstrap", "website"),
+        required=True,
+        help="exact release contract recorded by the canonical customer release",
+    )
     init_parser = sub.add_parser("init-site", help="create the canonical Next.js/Payload site in an empty site directory")
     init_parser.add_argument("--directory", required=True, help="empty customer website directory")
     init_parser.add_argument("--name", default="New Website", help="customer website name")
