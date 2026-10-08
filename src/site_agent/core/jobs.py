@@ -751,6 +751,8 @@ def register_builtin(scheduler: Scheduler, config: dict[str, Any], context: dict
         scheduler.job("seo_outcomes", _spec(config, "seo_outcomes"), lambda: brain_seo_outcomes.run(context))
     if _seo_provisioning_enabled(config):
         scheduler.job("seo_provisioning", _spec(config, "seo_provisioning"), lambda: _seo_provisioning(context))
+    if _email_provisioning_enabled(config):
+        scheduler.job("email_provisioning", _spec(config, "email_provisioning"), lambda: _email_provisioning(context))
     scheduler.job("reindex_memory", _spec(config, "reindex_memory"), lambda: _reindex_memory(context))
     scheduler.job("backup", _spec(config, "backup"), lambda: maintenance.backup_data(context))
 

@@ -38,6 +38,9 @@ CUSTOMER = {
     "d1DatabaseId": "56d3f277-fbaf-43d4-91e5-b3a195653a05",
     "d1DatabaseName": "oceanicvibes-content",
     "r2BucketName": "helloada-oceanicvibes-media",
+    "privateEmailR2BucketName": "helloada-oceanicvibes-email",
+    "messagesQueueName": "helloada-oceanicvibes-messages",
+    "messagesDlqName": "helloada-oceanicvibes-messages-dlq",
 }
 CANDIDATE_CUSTOMER = {
     **CUSTOMER,
@@ -381,7 +384,15 @@ def test_worker_contract_requires_the_registered_tenant_and_all_shared_versions(
         "contract": customer["contentContract"], "schemaRevision": customer["schemaRevision"],
         "schemaIdentity": customer["schemaIdentity"], "migrationHead": customer["migrationHead"],
         "d1DatabaseId": customer["d1DatabaseId"], "d1DatabaseName": customer["d1DatabaseName"],
-        "r2BucketName": customer["r2BucketName"], "compatibilityDate": "2025-08-15", "compatibilityFlags": ["nodejs_compat", "global_fetch_strictly_public"]}
+        "r2BucketName": customer["r2BucketName"],
+        "privateEmailR2BucketName": customer["privateEmailR2BucketName"],
+        "messagesQueueName": customer["messagesQueueName"],
+        "messagesDlqName": customer["messagesDlqName"],
+        "messagesQueueConsumer": True, "messagesDlqConsumer": True,
+        "sendEmailBinding": True,
+        "main": "worker.ts", "turnstileSiteKey": "test-site-key", "rateLimitBinding": True,
+        "handlers": ["fetch", "email", "queue", "scheduled"],
+        "compatibilityDate": "2025-08-15", "compatibilityFlags": ["nodejs_compat", "global_fetch_strictly_public"]}
     release.validate_worker_contract(worker, customer, "oceanicvibes")
     with pytest.raises(RuntimeError, match="shared Payload contract"):
         release.validate_worker_contract({**worker, "core": "0.0.9"}, customer, "oceanicvibes")

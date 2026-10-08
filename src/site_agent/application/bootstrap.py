@@ -703,7 +703,18 @@ class WebsiteBootstrapService:
         repo = _resource_name(prefix, tenant, "repository name", max_length=63)
         d1 = _resource_name(prefix, tenant, "D1 database name", max_length=63)
         r2 = _resource_name(prefix, tenant, "R2 bucket name", max_length=63, suffix="-media")
-        return {"worker": worker, "repo": repo, "d1": d1, "r2": r2}
+        email_r2 = _resource_name(prefix, tenant, "private email R2 bucket name", max_length=63, suffix="-email")
+        messages_queue = _resource_name(prefix, tenant, "messages queue name", max_length=63, suffix="-messages")
+        messages_dlq = _resource_name(prefix, tenant, "messages dead-letter queue name", max_length=63, suffix="-messages-dlq")
+        return {
+            "worker": worker,
+            "repo": repo,
+            "d1": d1,
+            "r2": r2,
+            "email_r2": email_r2,
+            "messages_queue": messages_queue,
+            "messages_dlq": messages_dlq,
+        }
 
     def _repository(self, tenant_id: str, display_name: str, config_path: Path) -> Mapping[str, Any]:
         _env, github_token, _cloudflare_token, _account_id = self._credentials()

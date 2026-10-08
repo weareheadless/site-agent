@@ -554,6 +554,9 @@ def test_bootstrap_resource_names_remain_bounded_for_maximum_tenant_ids():
     assert len(names["repo"]) <= 63
     assert len(names["d1"]) <= 63
     assert len(names["r2"]) <= 63
+    assert len(names["email_r2"]) <= 63
+    assert len(names["messages_queue"]) <= 63
+    assert len(names["messages_dlq"]) <= 63
 
 
 def test_bootstrap_short_resource_names_keep_the_existing_stable_identity():
@@ -567,6 +570,9 @@ def test_bootstrap_short_resource_names_keep_the_existing_stable_identity():
         "repo": "helloada-oceanicvibes",
         "d1": "helloada-oceanicvibes",
         "r2": "helloada-oceanicvibes-media",
+        "email_r2": "helloada-oceanicvibes-email",
+        "messages_queue": "helloada-oceanicvibes-messages",
+        "messages_dlq": "helloada-oceanicvibes-messages-dlq",
     }
 
 
