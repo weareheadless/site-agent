@@ -27,8 +27,9 @@ def test_payload_template_has_remote_payload_contract_gate():
     verifier = (TEMPLATE / 'scripts' / 'verify-payload-contract.ts').read_text(encoding='utf-8')
     for expected in ['draft: false', 'draft: true', 'findVersions', 'findGlobal', "collection: 'media'"]:
         assert expected in verifier
-    assert "const collections = ['pages', 'posts', 'postCategories', 'products', 'productCategories', 'contactForms', 'contacts', 'conversations', 'messages', 'messageOperations'] as const" in verifier
-    assert "const versionedCollections = ['pages', 'posts', 'postCategories', 'products', 'contactForms'] as const" in verifier
+    assert "const collections = ['pages', 'posts', 'postCategories', 'products', 'productCategories'] as const" in verifier
+    assert "const versionedCollections = ['pages', 'posts', 'postCategories', 'products'] as const" in verifier
+    assert "await import('@payload-config')" in verifier
     assert 'for (const collection of versionedCollections)' in verifier
 
 
@@ -48,13 +49,24 @@ def test_all_server_side_payload_gateway_resources_have_exact_route_handlers():
     assert "operation || '').trim().toLowerCase() !== 'update'" in media
 
 
-def test_production_payload_cli_has_no_local_migration_escape_hatch():
+def test_production_payload_cli_requires_an_explicit_remote_config():
     config = (TEMPLATE / 'payload.config.ts').read_text(encoding='utf-8')
+    context = (TEMPLATE / 'src' / 'lib' / 'cloudflare-context.ts').read_text(encoding='utf-8')
     package = json.loads((TEMPLATE / 'package.json').read_text(encoding='utf-8'))
-    assert 'ALLOW_LOCAL_PAYLOAD_MIGRATION' not in config
+    assert 'ALLOW_LOCAL_PAYLOAD_MIGRATION' not in config + context
     assert 'payloadCliEntrypoint && !isCLI' in config
-    assert 'isCLI && isProduction && isDatabaseMigrationCommand && !hasCloudflareToken' in config
-    assert "['migrate', 'migrate:status', 'migrate:create', 'migrate:down']" in config
+    assert 'isDatabaseMigrationCommand' not in config
+    for expected in (
+        'const isDatabaseMigration = argv.some',
+        "['migrate', 'migrate:status', 'migrate:create', 'migrate:down']",
+        'isPayloadContractVerifier',
+        'HELLOADA_CLOUDFLARE_CONFIG_PATH',
+        'if (requiresRemoteD1 && !env.CLOUDFLARE_API_TOKEN)',
+        'if (requiresRemoteD1 && !configPath)',
+        'configPath: plan.configPath',
+        'remoteBindings: plan.remoteBindings',
+    ):
+        assert expected in context
     assert 'PAYLOAD_CLI=1' in package['scripts']['prebuild']
     assert 'PAYLOAD_CLI=1' in package['scripts']['payload']
 
@@ -85,7 +97,7 @@ def test_payload_template_has_one_managed_growth_write_and_renderer_boundary():
     assert 'assertNativeWriteAllowed' in contract
     assert 'ensureGrowthTables' not in contract
     assert 'CREATE TABLE' not in contract
-    migration = (TEMPLATE / 'src/migrations/20261004_221500_growth_operations.ts').read_text(encoding='utf-8')
+    migration = (TEMPLATE / 'src/migrations/20261004_090000_growth_operations.ts').read_text(encoding='utf-8')
     assert 'CREATE TABLE' in migration
     assert 'CREATE UNIQUE INDEX' in migration
     assert 'function PublicDocument' in renderer

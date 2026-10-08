@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "repository": "git@github.com:weareheadless/helloada.git",
+  "worker": "helloada",
+  "siteUrl": "https://helloada.app",
+  "healthUrl": "https://helloada.app/api/health",
+  "siteAgentUrl": "https://api.helloada.app/v1",
+  "d1": {
+    "name": "helloada",
+    "id": "54955f1d-7470-46eb-8760-693891dab001"
+  },
+  "r2Bucket": "helloada-media",
+  "privateKeyName": "HELLOADA_HANDOFF_PRIVATE_KEY",
+  "privateKeyFile": "/SOCIAL/configs/helloada-app/secrets.json",
+  "publicKeyName": "HELLOADA_HANDOFF_PUBLIC_KEY",
+  "apiEnvFile": "/SOCIAL/configs/site-agent-api/.env"
+}

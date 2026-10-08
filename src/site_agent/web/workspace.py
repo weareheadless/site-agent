@@ -928,11 +928,42 @@ def register_workspace_routes(
         @app.get(f"{control_prefix}/{{website_id}}/bootstrap")
         def control_plane_bootstrap_status(website_id: str, request: Request):
             require_control_plane(request)
-            if registry is None or bootstrap is None or registry.for_tenant_id(website_id) is None:
+            if registration is None or bootstrap is None:
+                raise HTTPException(status_code=503, detail="website bootstrap is unavailable")
+            try:
+                registered = registration.is_registered(website_id)
+            except TenantRegistrationError as exc:
+                raise HTTPException(status_code=503, detail="website registration state is unavailable") from exc
+            if not registered:
                 raise HTTPException(status_code=404, detail="website was not found")
             try:
                 return bootstrap.status(website_id)
             except BootstrapError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        @app.post(f"{control_prefix}/{{website_id}}/activate-runtime")
+        async def control_plane_activate_runtime(website_id: str, request: Request):
+            """Mount a pending tenant after its exact Worker health receipt passes."""
+            require_control_plane(request)
+            if registration is None or bootstrap is None:
+                raise HTTPException(status_code=503, detail="website bootstrap is unavailable")
+            try:
+                body = await request.json()
+            except Exception:
+                body = None
+            if not isinstance(body, dict):
+                raise HTTPException(status_code=400, detail="request body must be an object")
+            release_id = str(body.get("release_id") or "").strip()
+            source_sha = str(body.get("source_sha") or "").strip()
+            if not release_id or not source_sha:
+                raise HTTPException(status_code=400, detail="release_id and source_sha are required")
+            try:
+                return bootstrap.activate_runtime_after_health(
+                    website_id,
+                    release_id=release_id,
+                    source_sha=source_sha,
+                )
+            except (BootstrapError, TenantRegistrationError) as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
 
         @app.post(f"{control_prefix}/{{website_id}}/chat")

@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { getPayload } from 'payload'
-import type { CollectionSlug, PayloadRequest } from 'payload'
+import type { CollectionSlug, GlobalSlug, PayloadRequest, TypedLocale } from 'payload'
 
 import { authenticateHelloAdaRequest } from '@/lib/helloada-auth'
 import { createHelloAdaPreviewToken } from '@/lib/helloada-preview'
@@ -89,19 +89,36 @@ const equalJson = async (left: unknown, right: unknown) => (await hashJson(left)
 
 const verifyExactPreview = async (
   request: Request,
+  auth: Awaited<ReturnType<typeof authenticateHelloAdaRequest>>,
   ownerId: string,
   collection: EditableCollection,
   document: Record<string, unknown>,
   route: string,
   state: 'draft' | 'published' = 'draft',
 ) => {
+  if (!auth || text(auth.user.id) !== ownerId) throw new Error('The authenticated owner session is required for exact preview verification.')
+  const locale = helloAdaSite.defaultLocale
   const documentHash = await hashJson(withoutPayloadMetadata(document))
+  const globals = await Promise.all((['siteSettings', 'navigation'] as const).map(async (slug) => {
+    const global = await auth.payload.findGlobal({
+      slug: slug as GlobalSlug,
+      depth: 2,
+      draft: state === 'draft',
+      locale: locale as TypedLocale,
+      overrideAccess: false,
+      req: auth.req,
+      user: auth.user,
+    }) as unknown as Record<string, unknown>
+    return { slug, hash: await hashJson(withoutPayloadMetadata(global)) }
+  }))
   const token = await createHelloAdaPreviewToken({
     tenantId: tenantId(),
     ownerId,
     collection,
     documentId: text(document.id),
     documentHash,
+    locale,
+    globals,
     route,
     state,
   })
@@ -474,7 +491,7 @@ export async function POST(request: Request, { params }: RouteProps) {
     if (!packageHash) return errorResponse('packageHash is required')
     try {
       const verified = await verifyGrowthPackage(auth.payload, packageData, packageHash)
-      const preview = await verifyExactPreview(request, text(auth.user.id), verified.collection, verified.draft, verified.route)
+      const preview = await verifyExactPreview(request, auth, text(auth.user.id), verified.collection, verified.draft, verified.route)
       const result = {
         status: 'passed', packageHash, tenant: tenantId(),
         checks: { canonicalSchema: true, exactDraft: true, private: true, publicRenderer: true, approvalBoundary: true },
@@ -511,7 +528,7 @@ export async function POST(request: Request, { params }: RouteProps) {
       const afterWrite = await auth.payload.findByID({ collection: collection as CollectionSlug, depth: 2, draft: true, id: documentId, overrideAccess: false, req: auth.req, user: auth.user }) as unknown as Record<string, unknown>
       const afterProjection = projectDocument(afterWrite, verified.fields)
       if (await hashJson(afterProjection) !== text(packageData.candidateHash)) throw new Error('Payload did not retain the exact Growth candidate')
-      const preview = await verifyExactPreview(request, text(auth.user.id), verified.collection, afterWrite, verified.route)
+      const preview = await verifyExactPreview(request, auth, text(auth.user.id), verified.collection, afterWrite, verified.route)
       const proof = { ok: true, packageHash, candidateHash: packageData.candidateHash, validation: { status: 'passed', packageHash, checks: { canonicalSchema: true, exactDraft: true, private: true, publicRenderer: true, approvalBoundary: true }, preview } }
       await saveCandidate(packageData, packageHash, proof.validation)
       await completeOperation(operationKey, proof)

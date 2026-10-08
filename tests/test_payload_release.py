@@ -7,6 +7,8 @@ import shutil
 from pathlib import Path
 
 import pytest
+from site_agent.application.release_queue import ReleaseQueueError, customer_release_identity
+from site_agent.site_scaffold import initialize_managed_site
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -27,6 +29,11 @@ TEMPLATE = ROOT / "src/site_agent/templates/next-payload"
 TEMPLATE_MANIFEST = json.loads((TEMPLATE / "template-manifest.json").read_text())
 CUSTOMER = {
     **REGISTRY["customers"]["oceanicvibes"],
+    "payloadAdmin": TEMPLATE_MANIFEST["payloadAdmin"],
+    "payloadCore": TEMPLATE_MANIFEST["payloadCore"],
+    "contentContract": TEMPLATE_MANIFEST["contentContract"],
+    "schemaRevision": TEMPLATE_MANIFEST["schemaRevision"],
+    "schemaIdentity": TEMPLATE_MANIFEST["schemaIdentity"],
     "migrationHead": TEMPLATE_MANIFEST["migrationHead"],
     "d1DatabaseId": "56d3f277-fbaf-43d4-91e5-b3a195653a05",
     "d1DatabaseName": "oceanicvibes-content",
@@ -40,6 +47,26 @@ CANDIDATE_CUSTOMER = {
     "schemaRevision": TEMPLATE_MANIFEST["schemaRevision"],
     "schemaIdentity": TEMPLATE_MANIFEST["schemaIdentity"],
     "migrationHead": TEMPLATE_MANIFEST["migrationHead"],
+}
+
+WORKER_CONFIG = {
+    "name": CUSTOMER["worker"],
+    "tenant": "oceanicvibes",
+    "admin": CUSTOMER["payloadAdmin"],
+    "core": CUSTOMER["payloadCore"],
+    "contract": CUSTOMER["contentContract"],
+    "schemaRevision": CUSTOMER["schemaRevision"],
+    "schemaIdentity": CUSTOMER["schemaIdentity"],
+    "migrationHead": CUSTOMER["migrationHead"],
+    "d1Count": 1,
+    "d1Binding": "D1",
+    "d1DatabaseId": CUSTOMER["d1DatabaseId"],
+    "d1DatabaseName": CUSTOMER["d1DatabaseName"],
+    "r2Count": 1,
+    "r2Binding": "R2",
+    "r2BucketName": CUSTOMER["r2BucketName"],
+    "compatibilityDate": "2025-08-15",
+    "compatibilityFlags": ["nodejs_compat", "global_fetch_strictly_public"],
 }
 
 
@@ -61,6 +88,28 @@ def test_api_release_queue_requires_one_immutable_source_identity():
     ):
         with pytest.raises(ValueError):
             api_deploy.validate_api_queue(invalid)
+
+
+def test_api_deploy_runs_the_snapshot_runtime_config_gate_before_service_activation(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    (source / "deploy").mkdir(parents=True)
+    (source / "scripts").mkdir()
+    config_path = "/SOCIAL/configs/site-agent-api/config.yaml"
+    (source / "deploy/payload-customers.json").write_text(json.dumps({
+        "connectionGate": {"config": config_path},
+    }))
+    validator = source / "scripts/sync-provisioned-tenant-configs.py"
+    validator.write_text("# exact snapshot validator\n")
+    calls = []
+    monkeypatch.setattr(api_deploy, "_run", lambda *args, **kwargs: calls.append((args, kwargs)))
+
+    api_deploy._runtime_config_preflight(source, "/venv/bin/python", tmp_path / "deploy.log")
+
+    command, options = calls[0][0][0], calls[0][1]
+    assert command[:3] == ["/venv/bin/python", str(validator), "--config"]
+    assert command[3:] == [config_path, "--manifest", str(source / "deploy/payload-customers.json"), "--validate"]
+    assert options["cwd"] == source
+    assert options["env"]["PYTHONPATH"] == str(source / "src")
 
 
 def test_api_wheel_dependency_audit_is_independent_of_pip_install_flags(tmp_path):
@@ -126,6 +175,15 @@ def test_release_toolchain_is_exact_and_absolute():
             release.validate_toolchain_manifest(invalid)
 
 
+def test_payload_build_requires_disk_headroom(monkeypatch, tmp_path):
+    class DiskUsage:
+        free = release.MINIMUM_BUILD_FREE_BYTES - 1
+
+    monkeypatch.setattr(release.shutil, "disk_usage", lambda _: DiskUsage())
+    with pytest.raises(RuntimeError, match="GiB free"):
+        release.ensure_build_capacity(tmp_path)
+
+
 def test_schema_initialization_queue_is_exactly_registered_and_cannot_be_an_approval():
     registry = {"customers": {"demo": {"migrationHead": "c" * 64}}}
     request = {"id": "bootstrap-1", "sha": SHA, "initializeSchema": {"migrationHead": "c" * 64}}
@@ -136,6 +194,40 @@ def test_schema_initialization_queue_is_exactly_registered_and_cannot_be_an_appr
     ):
         with pytest.raises(ValueError, match="release|initialization"):
             queue.validate_queue({"schema": 1, "releases": {"demo": invalid}}, registry)
+
+
+def test_release_queue_operation_selects_the_matching_content_gate():
+    bootstrap_request = {
+        "id": "bootstrap-1",
+        "sha": SHA,
+        "initializeSchema": {"migrationHead": CUSTOMER["migrationHead"]},
+    }
+    assert queue.release_purpose_for_request(bootstrap_request) == "workspace-bootstrap"
+    assert queue.release_purpose_for_request({"id": "release-1", "sha": SHA}) == "website"
+
+
+def test_release_purpose_is_bound_to_the_exact_initialization_operation():
+    bootstrap_head = CUSTOMER["migrationHead"]
+    release.require_release_purpose("workspace-bootstrap", bootstrap_head)
+    release.require_release_purpose("website", None)
+    with pytest.raises(ValueError, match="does not match"):
+        release.require_release_purpose("website", bootstrap_head)
+    with pytest.raises(ValueError, match="exact"):
+        release.require_release_purpose("workspace-bootstrap", "not-a-head")
+
+
+def test_workspace_bootstrap_contract_requires_exact_registered_schema_and_ledger(tmp_path):
+    shutil.copyfile(TEMPLATE / "template-manifest.json", tmp_path / "template-manifest.json")
+    manifest = json.loads((TEMPLATE / "template-manifest.json").read_text())
+    migrations = [item["name"] for item in manifest["migrations"]]
+    receipt = {"verifiedMigrationHead": manifest["migrationHead"], "appliedMigrations": migrations}
+    release.verify_workspace_bootstrap_contract(
+        tmp_path, receipt, CUSTOMER, CUSTOMER["migrationHead"],
+    )
+    with pytest.raises(RuntimeError, match="exact registered Payload schema"):
+        release.verify_workspace_bootstrap_contract(
+            tmp_path, {**receipt, "appliedMigrations": migrations[:-1]}, CUSTOMER, CUSTOMER["migrationHead"],
+        )
 
 
 def test_schema_migration_queue_requires_exact_old_and_registered_target_heads():
@@ -157,17 +249,43 @@ def test_schema_migration_queue_requires_exact_old_and_registered_target_heads()
 def test_interrupted_receipts_are_terminal_even_after_the_queue_moves_on(tmp_path):
     interrupted = tmp_path / "runs/oceanicvibes/old-request/receipt.json"
     interrupted.parent.mkdir(parents=True)
-    interrupted.write_text(json.dumps({"status": "running", "sourceSha": SHA, "stage": "build"}))
+    for name in ("source", "temporary"):
+        (interrupted.parent / name).mkdir()
+        (interrupted.parent / name / "partial").write_text("temporary")
+    (interrupted.parent / "open-next.tar.gz").write_text("temporary")
+    interrupted.write_text(json.dumps({
+        "status": "running", "sourceSha": SHA, "stage": "build",
+        "tenant": "oceanicvibes", "worker": CUSTOMER["worker"],
+    }))
     completed = tmp_path / "runs/oceanicvibes/completed/receipt.json"
     completed.parent.mkdir(parents=True)
     completed.write_text(json.dumps({"status": "deployed", "sourceSha": SHA}))
     queue.mark_interrupted_runs(tmp_path)
     result = json.loads(interrupted.read_text())
     assert result["status"] == "interrupted" and result["finishedAt"]
+    assert not (interrupted.parent / "source").exists()
+    assert not (interrupted.parent / "temporary").exists()
+    assert not (interrupted.parent / "open-next.tar.gz").exists()
     assert json.loads(completed.read_text())["status"] == "deployed"
     first = interrupted.read_bytes()
     queue.mark_interrupted_runs(tmp_path)
     assert interrupted.read_bytes() == first
+
+
+def test_stale_build_workspaces_are_removed_only_from_the_dedicated_root(tmp_path):
+    work_root = tmp_path / "work"
+    workspace = work_root / "oceanicvibes-release-123"
+    workspace.mkdir(parents=True)
+    (workspace / "node_modules").mkdir()
+    (workspace / "node_modules" / "partial").write_text("temporary")
+    receipt = tmp_path / "runs" / "oceanicvibes" / "completed" / "receipt.json"
+    receipt.parent.mkdir(parents=True)
+    receipt.write_text(json.dumps({"status": "deployed"}))
+
+    queue.cleanup_stale_release_workspaces(tmp_path)
+
+    assert list(work_root.iterdir()) == []
+    assert json.loads(receipt.read_text())["status"] == "deployed"
 
 
 @pytest.mark.parametrize("tenant,release_request", [
@@ -187,6 +305,62 @@ def test_external_customer_repository_is_rejected():
         release.validate_target(customer, "oceanicvibes", SHA, "release-1")
 
 
+def test_customer_release_identity_serializes_the_canonical_owner_repository(tmp_path):
+    site_dir = initialize_managed_site(tmp_path / "site")
+    manifest = json.loads((site_dir / "template-manifest.json").read_text())
+    wrangler_path = site_dir / "wrangler.jsonc"
+    wrangler = json.loads(wrangler_path.read_text())
+    wrangler["name"] = "helloada-demo"
+    wrangler["d1_databases"] = [{
+        "binding": "D1",
+        "database_id": "56d3f277-fbaf-43d4-91e5-b3a195653a05",
+        "database_name": "helloada-demo",
+    }]
+    wrangler["r2_buckets"] = [{"binding": "R2", "bucket_name": "helloada-demo-media"}]
+    wrangler_path.write_text(json.dumps(wrangler), encoding="utf-8")
+    config = {
+        "instance_name": "demo",
+        "site": {
+            "website_present": False,
+            "repository": "weareheadless/helloada-demo",
+            "public_url": "https://helloada-demo.weareheadless.workers.dev",
+            "source_deployment": {
+                "worker_name": "helloada-demo",
+                "clone_path": str(site_dir),
+            },
+            "payload": {"contract": {
+                "adminVersion": manifest["payloadAdmin"],
+                "coreVersion": manifest["payloadCore"],
+                "contract": manifest["contentContract"],
+                "schemaRevision": manifest["schemaRevision"],
+                "schemaIdentity": manifest["schemaIdentity"],
+                "migrationHead": manifest["migrationHead"],
+            }},
+        },
+    }
+
+    tenant, customer = customer_release_identity(config)
+
+    assert tenant == "demo"
+    assert customer["repository"] == "https://github.com/weareheadless/helloada-demo.git"
+    assert customer["websitePresent"] is False
+    config["ada_journey"] = {"website_present": True}
+    assert customer_release_identity(config)[1]["websitePresent"] is True
+    config.pop("ada_journey")
+    config["site"].pop("website_present")
+    with pytest.raises(ReleaseQueueError, match="website-present state must be explicit"):
+        customer_release_identity(config)
+    config["site"]["website_present"] = False
+
+    for invalid_repository in (
+        "https://github.com/weareheadless/helloada-demo.git",
+        "another-owner/helloada-demo",
+    ):
+        config["site"]["repository"] = invalid_repository
+        with pytest.raises(ReleaseQueueError, match="official owner/repository"):
+            customer_release_identity(config)
+
+
 def test_customer_without_a_committed_migration_identity_cannot_be_released():
     customer = {**REGISTRY["customers"]["oceanicvibes"], "migrationHead": ""}
     with pytest.raises(ValueError, match="migration-chain identity"):
@@ -202,19 +376,12 @@ def test_release_registry_requires_exact_shared_payload_versions(field):
 
 def test_worker_contract_requires_the_registered_tenant_and_all_shared_versions():
     customer = CUSTOMER
-    worker = {"name": "oceanicvibes", "tenant": "oceanicvibes", "d1Count": 1, "r2Count": 2,
+    worker = {"name": "oceanicvibes", "tenant": "oceanicvibes", "d1Count": 1, "d1Binding": "D1", "r2Count": 1, "r2Binding": "R2",
         "admin": customer["payloadAdmin"], "core": customer["payloadCore"],
         "contract": customer["contentContract"], "schemaRevision": customer["schemaRevision"],
         "schemaIdentity": customer["schemaIdentity"], "migrationHead": customer["migrationHead"],
         "d1DatabaseId": customer["d1DatabaseId"], "d1DatabaseName": customer["d1DatabaseName"],
-        "r2BucketName": customer["r2BucketName"],
-        "privateEmailR2BucketName": customer["privateEmailR2BucketName"],
-        "messagesQueueName": customer["messagesQueueName"],
-        "messagesDlqName": customer["messagesDlqName"],
-        "messagesQueueConsumer": True, "messagesDlqConsumer": True,
-        "turnstileSiteKey": "0x4AAAAAAHelloAdaValidatedSiteKey", "rateLimitBinding": True,
-        "main": "worker.ts", "sendEmailBinding": True,
-        "handlers": ["fetch", "email", "queue", "scheduled"]}
+        "r2BucketName": customer["r2BucketName"], "compatibilityDate": "2025-08-15", "compatibilityFlags": ["nodejs_compat", "global_fetch_strictly_public"]}
     release.validate_worker_contract(worker, customer, "oceanicvibes")
     with pytest.raises(RuntimeError, match="shared Payload contract"):
         release.validate_worker_contract({**worker, "core": "0.0.9"}, customer, "oceanicvibes")
@@ -373,27 +540,172 @@ def test_obsolete_route_in_built_manifest_is_rejected(tmp_path):
         release.inspect_artifact(checkout, CANDIDATE_CUSTOMER, SHA)
 
 
-def test_empty_tenant_database_requires_explicit_bootstrap_initialization(monkeypatch):
+def test_empty_tenant_database_requires_explicit_bootstrap_initialization(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(release, "applied_payload_migrations", lambda *args: ([], []))
     monkeypatch.setattr(release, "run", lambda *args: calls.append(args) or "")
     monkeypatch.setattr(release, "tenant_runtime_secrets", lambda *args: {"PAYLOAD_SECRET": "secret"})
     with pytest.raises(RuntimeError, match="explicit bootstrap initialization"):
-        release.enforce_payload_migrations(TEMPLATE, CUSTOMER, {}, None, None, {}, {}, "oceanicvibes", lambda _: None)
+        release.enforce_payload_migrations(TEMPLATE, CUSTOMER, {}, None, None, {}, {}, "oceanicvibes", lambda _: None, WORKER_CONFIG, tmp_path)
     assert calls == []
 
 
-def test_existing_database_never_receives_a_schema_mutation(monkeypatch):
+def test_cloudflare_reserved_d1_table_is_not_application_data(monkeypatch):
+    monkeypatch.setattr(release, "d1_query", lambda *_args: [{"name": "_cf_KV"}])
+    assert release.applied_payload_migrations(CUSTOMER, {}) == ([], [])
+
+
+def test_d1_application_table_still_counts_as_existing_state(monkeypatch):
+    monkeypatch.setattr(
+        release,
+        "d1_query",
+        lambda *_args: [{"name": "_cf_KV"}, {"name": "users"}],
+    )
+    assert release.applied_payload_migrations(CUSTOMER, {}) == (["users"], [])
+
+
+def test_payload_migration_config_targets_only_the_exact_remote_tenant_bindings(tmp_path):
+    path = release.payload_remote_bindings_config_file(tmp_path, CUSTOMER, WORKER_CONFIG)
+    try:
+        config = json.loads(path.read_text())
+        assert path.stat().st_mode & 0o777 == 0o600
+        assert config["name"] == CUSTOMER["worker"]
+        assert config["compatibility_date"] == WORKER_CONFIG["compatibilityDate"]
+        assert config["compatibility_flags"] == WORKER_CONFIG["compatibilityFlags"]
+        assert config["d1_databases"] == [{
+            "binding": "D1",
+            "database_id": CUSTOMER["d1DatabaseId"],
+            "database_name": CUSTOMER["d1DatabaseName"],
+            "remote": True,
+        }]
+        assert config["r2_buckets"] == [{
+            "binding": "R2",
+            "bucket_name": CUSTOMER["r2BucketName"],
+            "remote": True,
+        }]
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_payload_migration_uses_remote_config_and_removes_it_afterward(monkeypatch, tmp_path):
+    commands = []
+    monkeypatch.setattr(release, "tenant_runtime_secrets", lambda *_args: {"PAYLOAD_SECRET": "test-secret"})
+
+    def fake_run(command, cwd, env):
+        config_path = Path(env["HELLOADA_CLOUDFLARE_CONFIG_PATH"])
+        config = json.loads(config_path.read_text())
+        assert config["d1_databases"][0]["remote"] is True
+        assert config["d1_databases"][0]["database_id"] == CUSTOMER["d1DatabaseId"]
+        assert env["PAYLOAD_CLI"] == "1" and env["NODE_ENV"] == "production"
+        assert env["PAYLOAD_SECRET"] == "test-secret"
+        commands.append((command, config_path))
+        return "migration complete"
+
+    monkeypatch.setattr(release, "run", fake_run)
+    result = release.run_payload_migration(
+        TEMPLATE, CUSTOMER, WORKER_CONFIG, {"CLOUDFLARE_API_TOKEN": "configured"},
+        {}, REGISTRY, "oceanicvibes", tmp_path,
+    )
+
+    assert result == "migration complete"
+    assert commands[0][0] == release.payload_migration_command(REGISTRY)
+    assert not commands[0][1].exists()
+
+
+def test_existing_database_never_receives_a_schema_mutation(monkeypatch, tmp_path):
     expected = [entry["name"] for entry in TEMPLATE_MANIFEST["migrations"]]
     calls = []
     monkeypatch.setattr(release, "applied_payload_migrations", lambda *args: (["pages", "payload_migrations"], expected))
     monkeypatch.setattr(release, "run", lambda *args: calls.append(args) or "")
     monkeypatch.setattr(release, "tenant_runtime_secrets", lambda *args: pytest.fail("existing D1 must not load migration secrets"))
-    result = release.enforce_payload_migrations(TEMPLATE, CUSTOMER, {}, None, None, {}, {}, "oceanicvibes", lambda _: None)
+    result = release.enforce_payload_migrations(TEMPLATE, CUSTOMER, {}, None, None, {}, {}, "oceanicvibes", lambda _: None, WORKER_CONFIG, tmp_path)
     assert result == expected and calls == []
 
 
-def test_new_site_initialization_is_exact_and_idempotent(monkeypatch):
+@pytest.mark.parametrize("website_present", [True, False])
+def test_payload_contract_verifier_uses_and_cleans_the_remote_binding_config(monkeypatch, tmp_path, website_present):
+    commands = []
+    customer = {**CUSTOMER, "websitePresent": website_present}
+
+    def fake_run(command, cwd, env):
+        config_path = Path(env["HELLOADA_CLOUDFLARE_CONFIG_PATH"])
+        config = json.loads(config_path.read_text())
+        assert config["d1_databases"][0]["remote"] is True
+        assert config["d1_databases"][0]["database_id"] == customer["d1DatabaseId"]
+        assert env["HELLOADA_WEBSITE_PRESENT"] == ("true" if website_present else "false")
+        commands.append((command, config_path))
+        return "contract verified"
+
+    monkeypatch.setattr(release, "run", fake_run)
+    result = release.run_payload_contract_verifier(
+        TEMPLATE, customer, WORKER_CONFIG, {"CLOUDFLARE_API_TOKEN": "configured"},
+        {}, tmp_path,
+    )
+
+    assert result == "contract verified"
+    assert commands[0][0] == ["npm", "run", "verify:payload"]
+    assert not commands[0][1].exists()
+
+
+def test_payload_migration_uses_the_pinned_package_script():
+    package = json.loads((TEMPLATE / "package.json").read_text())
+    assert release.payload_migration_command(REGISTRY) == [
+        str(Path(REGISTRY["npmBin"]) / "npm"), "run", "payload", "--", "migrate",
+    ]
+    assert "PAYLOAD_CLI=1" in package["scripts"]["payload"]
+
+
+def test_tenant_payload_verifier_matches_the_site_agent_contract_before_mutation(tmp_path):
+    package = json.loads((TEMPLATE / "package.json").read_text())
+    package_path = tmp_path / "package.json"
+    lock_path = tmp_path / "package-lock.json"
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    package_path.write_text(json.dumps(package))
+    lock = json.loads((TEMPLATE / "package-lock.json").read_text())
+    lock_path.write_text(json.dumps(lock))
+    shutil.copyfile(TEMPLATE / "tsconfig.json", tmp_path / "tsconfig.json")
+    shutil.copyfile(TEMPLATE / "payload.config.ts", tmp_path / "payload.config.ts")
+    verifier = scripts / "verify-payload-contract.ts"
+    shutil.copyfile(TEMPLATE / "scripts/verify-payload-contract.ts", verifier)
+
+    release.validate_payload_verifier(tmp_path)
+
+    package["scripts"]["verify:payload"] = "node scripts/verify-payload-contract.ts"
+    package_path.write_text(json.dumps(package))
+    with pytest.raises(RuntimeError, match="command must match"):
+        release.validate_payload_verifier(tmp_path)
+
+    package["scripts"]["verify:payload"] = json.loads((TEMPLATE / "package.json").read_text())["scripts"]["verify:payload"]
+    package.pop("devDependencies", None)
+    package_path.write_text(json.dumps(package))
+    with pytest.raises(RuntimeError, match="exact tsx version"):
+        release.validate_payload_verifier(tmp_path)
+
+    package = json.loads((TEMPLATE / "package.json").read_text())
+    package_path.write_text(json.dumps(package))
+    lock = json.loads((TEMPLATE / "package-lock.json").read_text())
+    lock["packages"][""]["devDependencies"]["tsx"] = "4.22.3"
+    lock_path.write_text(json.dumps(lock))
+    with pytest.raises(RuntimeError, match="does not pin"):
+        release.validate_payload_verifier(tmp_path)
+
+    lock = json.loads((TEMPLATE / "package-lock.json").read_text())
+    lock_path.write_text(json.dumps(lock))
+    tsconfig_path = tmp_path / "tsconfig.json"
+    tsconfig = json.loads(tsconfig_path.read_text())
+    tsconfig["compilerOptions"]["paths"].pop("@payload-config")
+    tsconfig_path.write_text(json.dumps(tsconfig))
+    with pytest.raises(RuntimeError, match="map @payload-config"):
+        release.validate_payload_verifier(tmp_path)
+
+    tsconfig_path.write_text((TEMPLATE / "tsconfig.json").read_text())
+    verifier.write_text(verifier.read_text() + "\\n// drift\\n")
+    with pytest.raises(RuntimeError, match="match the site-agent template exactly"):
+        release.validate_payload_verifier(tmp_path)
+
+
+def test_new_site_initialization_is_exact_and_idempotent(monkeypatch, tmp_path):
     expected = [entry["name"] for entry in TEMPLATE_MANIFEST["migrations"]]
     calls = []
     queries = iter([([], []), (["pages", "payload_migrations"], expected)])
@@ -402,11 +714,11 @@ def test_new_site_initialization_is_exact_and_idempotent(monkeypatch):
     monkeypatch.setattr(release, "tenant_runtime_secrets", lambda *args: {"PAYLOAD_SECRET": "secret"})
     stages = []
     result = release.enforce_payload_migrations(
-        TEMPLATE, CUSTOMER, {}, CUSTOMER["migrationHead"], None, {}, {}, "oceanicvibes", stages.append,
-    )
+        TEMPLATE, CUSTOMER, {}, CUSTOMER["migrationHead"], None, {}, REGISTRY, "oceanicvibes", stages.append,
+     WORKER_CONFIG, tmp_path)
     assert result == expected
     assert stages == ["initialize-schema"]
-    assert calls == [[str(TEMPLATE / "node_modules/.bin/payload"), "migrate"]]
+    assert calls == [[str(Path(REGISTRY["npmBin"]) / "npm"), "run", "payload", "--", "migrate"]]
 
 
 def test_tenant_token_is_mapped_to_the_canonical_worker_binding(tmp_path):
@@ -522,7 +834,7 @@ def test_tenant_secret_mapping_rejects_a_noncanonical_worker_binding(tmp_path, m
         )
 
 
-def test_partial_or_unexpected_database_never_triggers_a_migration(monkeypatch):
+def test_partial_or_unexpected_database_never_triggers_a_migration(monkeypatch, tmp_path):
     expected = [entry["name"] for entry in TEMPLATE_MANIFEST["migrations"]]
     calls = []
     monkeypatch.setattr(release, "applied_payload_migrations", lambda *args: (["users", "payload_migrations"], []))
@@ -530,11 +842,11 @@ def test_partial_or_unexpected_database_never_triggers_a_migration(monkeypatch):
     with pytest.raises(RuntimeError, match="non-empty D1"):
         release.enforce_payload_migrations(
             TEMPLATE, CUSTOMER, {}, CUSTOMER["migrationHead"], None, {}, {}, "oceanicvibes", lambda _: None,
-        )
+         WORKER_CONFIG, tmp_path)
     assert calls == []
 
 
-def test_existing_tenant_migration_requires_the_exact_nonempty_ledger_prefix(monkeypatch):
+def test_existing_tenant_migration_requires_the_exact_nonempty_ledger_prefix(monkeypatch, tmp_path):
     expected = [entry["name"] for entry in TEMPLATE_MANIFEST["migrations"]]
     applied = expected[:1]
     from_head = release.migration_ledger_head(applied)
@@ -548,12 +860,12 @@ def test_existing_tenant_migration_requires_the_exact_nonempty_ledger_prefix(mon
     monkeypatch.setattr(release, "tenant_runtime_secrets", lambda *args: {"PAYLOAD_SECRET": "secret"})
 
     result = release.enforce_payload_migrations(
-        TEMPLATE, CUSTOMER, {}, None, from_head, {}, {}, "oceanicvibes", stages.append,
-    )
+        TEMPLATE, CUSTOMER, {}, None, from_head, {}, REGISTRY, "oceanicvibes", stages.append,
+     WORKER_CONFIG, tmp_path)
 
     assert result == expected
     assert stages == ["migrate-schema"]
-    assert calls == [[str(TEMPLATE / "node_modules/.bin/payload"), "migrate"]]
+    assert calls == [[str(Path(REGISTRY["npmBin"]) / "npm"), "run", "payload", "--", "migrate"]]
 
 
 @pytest.mark.parametrize("applied,requested_head", [
@@ -561,58 +873,65 @@ def test_existing_tenant_migration_requires_the_exact_nonempty_ledger_prefix(mon
     (["unknown"], release.migration_ledger_head(["unknown"])),
     ([TEMPLATE_MANIFEST["migrations"][0]["name"]], "f" * 64),
 ])
-def test_existing_tenant_migration_rejects_missing_or_changed_ledger(monkeypatch, applied, requested_head):
+def test_existing_tenant_migration_rejects_missing_or_changed_ledger(monkeypatch, tmp_path, applied, requested_head):
     calls = []
     monkeypatch.setattr(release, "applied_payload_migrations", lambda *args: (["pages", "payload_migrations"], applied))
     monkeypatch.setattr(release, "run", lambda *args: calls.append(args) or "")
     with pytest.raises(RuntimeError, match="migration|ledger|existing tenant"):
         release.enforce_payload_migrations(
             TEMPLATE, CUSTOMER, {}, None, requested_head, {}, {}, "oceanicvibes", lambda _: None,
-        )
+         WORKER_CONFIG, tmp_path)
     assert calls == []
 
 
-def test_existing_tenant_migration_refuses_to_mutate_without_an_explicit_request(monkeypatch):
+def test_existing_tenant_migration_refuses_to_mutate_without_an_explicit_request(monkeypatch, tmp_path):
     expected = [entry["name"] for entry in TEMPLATE_MANIFEST["migrations"]]
     monkeypatch.setattr(release, "applied_payload_migrations", lambda *args: (["pages", "payload_migrations"], expected[:1]))
     monkeypatch.setattr(release, "run", lambda *args: pytest.fail("unexpected Payload migration"))
     with pytest.raises(RuntimeError, match="explicit exact schema-migration request"):
         release.enforce_payload_migrations(
             TEMPLATE, CUSTOMER, {}, None, None, {}, {}, "oceanicvibes", lambda _: None,
-        )
+         WORKER_CONFIG, tmp_path)
 
 
-def test_completed_schema_migration_request_is_idempotent(monkeypatch):
+def test_completed_schema_migration_request_is_idempotent(monkeypatch, tmp_path):
     expected = [entry["name"] for entry in TEMPLATE_MANIFEST["migrations"]]
     from_head = release.migration_ledger_head(expected[:1])
     monkeypatch.setattr(release, "applied_payload_migrations", lambda *args: (["pages", "payload_migrations"], expected))
     monkeypatch.setattr(release, "run", lambda *args: pytest.fail("completed migration must not rerun"))
     assert release.enforce_payload_migrations(
         TEMPLATE, CUSTOMER, {}, None, from_head, {}, {}, "oceanicvibes", lambda _: None,
-    ) == expected
+     WORKER_CONFIG, tmp_path) == expected
 
 
 def promoted_receipt(tmp_path):
     customer = CUSTOMER
-    archive = tmp_path / "worker-artifact.tar.gz"
-    archive.write_bytes(b"immutable-artifact")
     result = {"tenant": "oceanicvibes", "sourceSha": SHA, "releaseId": "release-1",
               "worker": customer["worker"], "repository": customer["repository"],
               "payloadAdmin": customer["payloadAdmin"], "payloadCore": customer["payloadCore"],
               "contentContract": customer["contentContract"], "schemaRevision": customer["schemaRevision"],
               "schemaIdentity": customer["schemaIdentity"], "migrationHead": customer["migrationHead"],
+              "websitePresent": customer["websitePresent"],
               "status": "failed", "stage": "verify-connection", "error": "connection failed",
               "deployment": {"id": "deployment-1"}, "uploadedVersion": "version-1",
-              "archiveSha256": release.hashlib.sha256(archive.read_bytes()).hexdigest()}
+              "artifactHashes": {"worker.js": "b" * 64}}
     (tmp_path / "receipt.json").write_text(json.dumps(result))
     return result, customer
 
 
 def test_read_only_continuation_preserves_prior_failure(tmp_path):
     _, customer = promoted_receipt(tmp_path)
-    result = release.verification_receipt(tmp_path, "oceanicvibes", SHA, "release-1", customer)
+    result = release.verification_receipt(tmp_path, "oceanicvibes", SHA, "release-1", customer, "website")
     assert result["status"] == "running" and "error" not in result
     assert result["verificationHistory"][-1]["error"] == "connection failed"
+
+
+def test_read_only_continuation_requires_the_same_explicit_release_purpose(tmp_path):
+    receipt, customer = promoted_receipt(tmp_path)
+    receipt["initialSchemaHead"] = customer["migrationHead"]
+    (tmp_path / "receipt.json").write_text(json.dumps(receipt))
+    with pytest.raises(ValueError, match="purpose differs"):
+        release.verification_receipt(tmp_path, "oceanicvibes", SHA, "release-1", customer, "website")
 
 
 @pytest.mark.parametrize("changed", ["identity", "unpromoted", "artifact"])
@@ -623,23 +942,32 @@ def test_read_only_continuation_rejects_unproven_release(tmp_path, changed):
     elif changed == "unpromoted":
         result["stage"] = "upload"
     else:
-        (tmp_path / "worker-artifact.tar.gz").write_bytes(b"changed")
+        result["artifactHashes"] = {"../worker.js": "not-a-sha256"}
     (tmp_path / "receipt.json").write_text(json.dumps(result))
     with pytest.raises(ValueError):
-        release.verification_receipt(tmp_path, "oceanicvibes", SHA, "release-1", customer)
+        release.verification_receipt(tmp_path, "oceanicvibes", SHA, "release-1", customer, "website")
 
 
 def test_edge_convergence_repeats_identical_checks_without_deploying(monkeypatch):
-    result = {"tenant": "oceanicvibes", "sourceSha": SHA, "uploadedVersion": "version-1"}
+    result = {"tenant": "oceanicvibes", "sourceSha": SHA, "releaseId": "release-1",
+              "uploadedVersion": "version-1", "initialSchemaHead": CUSTOMER["migrationHead"]}
     customer = CUSTOMER
     monkeypatch.setattr(release, "cloudflare_deployment", lambda *args: {
         "versions": [{"percentage": 100, "version_id": "version-1"}]})
-    monkeypatch.setattr(release, "check_health", lambda *args: {"ok": True})
+    events = []
+    monkeypatch.setattr(release, "check_health", lambda *args: events.append("health") or {"ok": True})
+    monkeypatch.setattr(release, "control_plane_token", lambda *_args: "control-token")
+    monkeypatch.setattr(
+        release,
+        "activate_tenant_runtime",
+        lambda *args: events.append(("activate", args[1], args[2], args[3])),
+    )
     monkeypatch.setattr(release.time, "sleep", lambda _: None)
     commands = []
 
     def run(command, *args):
         commands.append(command)
+        events.append("connection")
         if len(commands) == 1:
             raise RuntimeError("connection gate failed")
 
@@ -648,6 +976,10 @@ def test_edge_convergence_repeats_identical_checks_without_deploying(monkeypatch
     assert commands[0] == commands[1] and len(commands) == 2
     assert commands[0][1].endswith("check-helloada-connections.py")
     assert result["connectionVerifiedAt"] and len(result["gateAttempts"]) == 1
+    assert events == [
+        "health", ("activate", "oceanicvibes", "release-1", SHA), "connection",
+        "health", ("activate", "oceanicvibes", "release-1", SHA), "connection",
+    ]
 
 
 def test_read_only_gate_rejects_a_different_production_version(monkeypatch):
@@ -659,13 +991,89 @@ def test_read_only_gate_rejects_a_different_production_version(monkeypatch):
 
 
 def test_failed_connection_gate_is_bounded_and_remains_failed(monkeypatch):
-    result = {"tenant": "oceanicvibes", "sourceSha": SHA, "uploadedVersion": "version-1"}
+    result = {"tenant": "oceanicvibes", "sourceSha": SHA, "releaseId": "release-1",
+              "uploadedVersion": "version-1"}
     monkeypatch.setattr(release, "cloudflare_deployment", lambda *args: {
         "versions": [{"percentage": 100, "version_id": "version-1"}]})
     monkeypatch.setattr(release, "check_health", lambda *args: {"ok": True})
+    monkeypatch.setattr(release, "control_plane_token", lambda *_args: "control-token")
+    activations = []
+    monkeypatch.setattr(release, "activate_tenant_runtime", lambda *args: activations.append(args))
     monkeypatch.setattr(release.time, "sleep", lambda _: None)
     monkeypatch.setattr(release, "run", lambda *args: (_ for _ in ()).throw(RuntimeError("gate failed")))
     with pytest.raises(RuntimeError, match="gate failed"):
         release.verify_live(result, CUSTOMER, REGISTRY,
                             {}, {}, lambda name: result.update(stage=name))
+    assert len(activations) == 12
     assert len(result["gateAttempts"]) == 12 and "connectionVerifiedAt" not in result
+
+
+def test_workers_dev_health_url_must_match_the_cloudflare_account_subdomain(monkeypatch):
+    from site_agent.hands import cloudflare_resources
+
+    class Provisioner:
+        def __init__(self, account_id, token):
+            assert account_id == "a" * 32
+            assert token == "token"
+
+        def workers_dev_url(self, worker):
+            assert worker == "helloada-demo"
+            return "https://helloada-demo.weareheadless.workers.dev"
+
+    monkeypatch.setattr(cloudflare_resources, "CloudflareResourceProvisioner", Provisioner)
+    env = {"CLOUDFLARE_ACCOUNT_ID": "a" * 32, "CLOUDFLARE_API_TOKEN": "token"}
+    customer = {
+        "worker": "helloada-demo",
+        "health": "https://helloada-demo.weareheadless.workers.dev/api/health",
+    }
+    assert isinstance(release.workers_dev_provisioner(customer, env), Provisioner)
+    with pytest.raises(RuntimeError, match="does not match the Cloudflare account subdomain"):
+        release.workers_dev_provisioner({
+            **customer,
+            "health": "https://helloada-demo.workers.dev/api/health",
+        }, env)
+    assert release.workers_dev_provisioner({
+        **customer,
+        "health": "https://example.com/api/health",
+    }, env) is None
+
+
+@pytest.mark.parametrize("initial_bootstrap", [True, False])
+def test_live_verification_enables_only_the_exact_promoted_workers_dev_route(monkeypatch, initial_bootstrap):
+    result = {"tenant": "demo", "sourceSha": SHA, "releaseId": "release-1",
+              "uploadedVersion": "version-1"}
+    if initial_bootstrap:
+        result["initialSchemaHead"] = CUSTOMER["migrationHead"]
+    customer = {
+        **CUSTOMER,
+        "worker": "helloada-demo",
+        "health": "https://helloada-demo.weareheadless.workers.dev/api/health",
+    }
+    calls = []
+
+    class Provisioner:
+        def ensure_workers_dev_route(self, worker):
+            calls.append(worker)
+
+    monkeypatch.setattr(release, "workers_dev_provisioner", lambda *_args: Provisioner())
+    monkeypatch.setattr(release, "cloudflare_deployment", lambda *_args: {
+        "versions": [{"percentage": 100, "version_id": "version-1"}],
+    })
+    monkeypatch.setattr(release, "check_health", lambda *_args: {"ok": True})
+    monkeypatch.setattr(release, "control_plane_token", lambda *_args: "control-token")
+    activations = []
+    monkeypatch.setattr(release, "activate_tenant_runtime", lambda *args: activations.append(args))
+    monkeypatch.setattr(release, "run", lambda *_args: None)
+    stages = []
+
+    release.verify_live(
+        result, customer, REGISTRY,
+        {"CLOUDFLARE_API_TOKEN": "token", "CLOUDFLARE_ACCOUNT_ID": "a" * 32}, {}, stages.append,
+    )
+
+    assert calls == ["helloada-demo"]
+    assert stages.index("enable-workers-dev") < stages.index("verify-connection")
+    assert activations == [(
+        REGISTRY["connectionGate"]["apiUrl"], "demo", "release-1", SHA, "control-token",
+    )]
+    assert result["connectionVerifiedAt"]

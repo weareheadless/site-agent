@@ -38,21 +38,6 @@ def _owner_action_started(result: dict[str, Any]) -> bool:
     return isinstance(followup, dict) and followup.get("modification_status") == "started"
 
 
-def _reconcile_owner_action(context: dict[str, Any], job_id: int, *, succeeded: bool) -> None:
-    action_service = context.get("owner_action_service")
-    if action_service is None:
-        return
-    try:
-        action_service.reconcile(job_id=job_id, succeeded=succeeded)
-    except Exception as exc:  # noqa: BLE001 — reconciliation must not lose the job outcome
-        try:
-            context["memory"].record_action(
-                "chat_action_reconcile_error", f"job#{job_id}: {str(exc)[:240]}"
-            )
-        except Exception:  # noqa: BLE001 — diagnostics are best effort
-            pass
-
-
 def _handoff_design_request(
     context: dict[str, Any],
     job: dict[str, Any],
@@ -138,6 +123,8 @@ def run_job(context: dict[str, Any], job: dict[str, Any], worker: str,
     from ..config import timing_enabled
 
     timings_on = timing_enabled(context.get("config") or {}, context.get("env"))
+    context["_chat_job_id"] = int(job_id)
+    context["_chat_job_worker"] = str(worker)
 
     def record_job_timing(*, succeeded: bool) -> None:
         if not timings_on or not hasattr(memory, "record_timing"):
@@ -261,13 +248,14 @@ def run_job(context: dict[str, Any], job: dict[str, Any], worker: str,
         if not memory.complete_chat_job(job_id, worker, result):
             raise RuntimeError("chat job ownership was lost before completion")
         record_job_timing(succeeded=True)
-        _reconcile_owner_action(context, job_id, succeeded=True)
         return result
     except Exception as exc:  # noqa: BLE001 — a failing job must not kill the loop
         memory.fail_chat_job(job_id, worker, str(exc)[:300])
         record_job_timing(succeeded=False)
-        _reconcile_owner_action(context, job_id, succeeded=False)
         return {"error": str(exc)[:300]}
+    finally:
+        context.pop("_chat_job_id", None)
+        context.pop("_chat_job_worker", None)
 
 
 class ChatJobExecutor:

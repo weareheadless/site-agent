@@ -1,9 +1,9 @@
 {
   "templateSchema": 6,
   "workspaceApi": "v1",
-  "payloadAdmin": "0.10.0",
-  "payloadCore": "0.4.0",
-  "schemaRevision": 4,
+  "payloadAdmin": "0.10.2",
+  "payloadCore": "0.5.5",
+  "schemaRevision": 5,
   "contentContract": "helloada-content-v3",
   "defaultLocale": "en",
   "locales": [
@@ -14,7 +14,7 @@
     "node": ">=20.9.0",
     "payload": ">=3.88.0 <4"
   },
-  "schemaIdentity": "5907db1edc755b03bb2882ba87bea7912f0120889407dc74ac0569662250c3ba",
+  "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
   "migrations": [
     {
       "name": "20261004_021536_helloada_initial",
@@ -22,21 +22,16 @@
       "snapshotSha256": "0f487c77adff051dc29d74b9e2bcada1fa6cc718d53a7c2c7f270c0b4e9492a0"
     },
     {
-      "name": "20261004_221500_growth_operations",
+      "name": "20261004_090000_growth_operations",
       "fileSha256": "8829370cf9cbadf2e883a5fba3050396dd6558cabf951f055fe2e79c64a3ca0d",
       "snapshotSha256": "f4eeb2fddcc81087f80ec1e78fce273c511bdedc36ffd1a6da51e9865a993f85"
     },
     {
-      "name": "20261004_232326_helloada_messages_contacts",
-      "fileSha256": "9fb9b5506abae73b04c67485f10348ea763fe9e2971e018af27fcbdf14655a43",
-      "snapshotSha256": "b367c35243775ab6751d48000dc11877a3e6b8e941ec7178d0bb2e5b8e805b7b"
-    },
-    {
-      "name": "20261005_173359_helloada_owner_notifications",
-      "fileSha256": "d7213d632616b9b515a24051b899c438a0619652b18467e45ec6debabff22d7a",
-      "snapshotSha256": "8ca7789610ea2d0d2cf9b0cac670309eac9411023c53ae32a5c20f2b9355d46f"
+      "name": "20261006_061835_helloada_owner_handoff",
+      "fileSha256": "1f9cedb12fe5af38a976de23f7d98aee3d958b7aa4b2300218375100ed46e115",
+      "snapshotSha256": "1960eb3a12aba3a3cd16f4134db2f3e9da6a39f30d97f120756a39414ca35bae"
     }
   ],
-  "migrationHead": "5ae91044f05177e0fb50bab33ebc951f96e015394962ca0966c8c11b5bb1d721",
-  "migrationIndexSha256": "56f6b1dd932251c6f1b2174bec20fa346796fa8f2940e5a608dd84eeecf4e3af"
+  "migrationHead": "75064eaeb5a035afc8977d39a59742dfa8bfb5e94d344ca9090e29e516bb2534",
+  "migrationIndexSha256": "381e90f4069b810c8505a4b353b67674052f679380ab4034e05a0433a555119c"
 }

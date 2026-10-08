@@ -85,6 +85,16 @@ def snapshot_main(mirror: Path, root: Path, source_sha: str, env: dict[str, str]
     if not SHA_RE.fullmatch(source_sha):
         raise ValueError("official main did not resolve to a full commit SHA")
     snapshots = root / "dispatch-control"
+    snapshots.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # The systemd oneshot serializes dispatches; superseded source snapshots are
+    # reproducible from the protected Git mirror and must not accumulate.
+    for stale in snapshots.iterdir():
+        if stale.name == source_sha:
+            continue
+        if stale.is_symlink() or not stale.is_dir():
+            raise RuntimeError("unexpected object in dispatcher snapshot root")
+        shutil.rmtree(stale)
+
     destination = snapshots / source_sha
     marker = destination / SOURCE_MARKER
     if destination.exists():
@@ -93,7 +103,6 @@ def snapshot_main(mirror: Path, root: Path, source_sha: str, env: dict[str, str]
             raise RuntimeError("cached dispatcher snapshot identity mismatch")
         return destination
 
-    snapshots.mkdir(parents=True, exist_ok=True, mode=0o700)
     staging = Path(tempfile.mkdtemp(prefix="dispatch-", dir=snapshots))
     try:
         with subprocess.Popen(

@@ -84,6 +84,7 @@ class DesignPhase(str, Enum):
     BRAND_SOURCE = "brand_source"
     TRANSFER_REVIEW = "transfer_review"
     TEMPORAL_REVIEW = "temporal_review"
+    ONBOARDING_REPORT = "onboarding_report"
 
 
 class DesignPhaseStatus(str, Enum):

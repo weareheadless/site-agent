@@ -15,6 +15,25 @@ SPEC = importlib.util.spec_from_file_location(
 )
 dispatcher = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(dispatcher)
+API_SPEC = importlib.util.spec_from_file_location(
+    "deploy_site_agent_api_template_bundle_test", ROOT / "scripts/deploy-site-agent-api.py"
+)
+api_deploy = importlib.util.module_from_spec(API_SPEC)
+API_SPEC.loader.exec_module(api_deploy)
+
+
+def test_api_release_requires_the_complete_payload_template_bundle(tmp_path):
+    template = tmp_path / "site_agent/templates/next-payload"
+    template.mkdir(parents=True)
+    for name in ("template-manifest.json", "helloada-content-contract.json", "wrangler.jsonc"):
+        (template / name).write_text("{}\n", encoding="utf-8")
+    (template / ".gitignore").write_text("node_modules/\n*.tsbuildinfo\n", encoding="utf-8")
+
+    api_deploy._verify_payload_template_bundle(tmp_path)
+
+    (template / ".gitignore").unlink()
+    with pytest.raises(RuntimeError, match="missing canonical Payload template files"):
+        api_deploy._verify_payload_template_bundle(tmp_path)
 
 
 def test_dispatcher_resolves_only_the_configured_github_ssh_identity(tmp_path):
@@ -56,8 +75,12 @@ def test_dispatcher_archives_only_the_requested_immutable_commit(tmp_path):
     first_sha = subprocess.check_output(["git", "-C", str(repository), "rev-parse", "HEAD"], text=True).strip()
     bare = tmp_path / "control.git"
     subprocess.run(["git", "clone", "-q", "--bare", str(repository), str(bare)], check=True)
+    stale = tmp_path / "releases" / "dispatch-control" / ("b" * 40)
+    stale.mkdir(parents=True)
+    (stale / "old-checkout.txt").write_text("superseded")
 
     snapshot = dispatcher.snapshot_main(bare, tmp_path / "releases", first_sha, {})
+    assert not stale.exists()
     assert (snapshot / dispatcher.SOURCE_MARKER).read_text().strip() == first_sha
     assert (snapshot / "copy.txt").read_text() == "first\n"
     assert dispatcher.snapshot_main(bare, tmp_path / "releases", first_sha, {}) == snapshot
@@ -208,28 +231,31 @@ def test_api_release_client_uses_newline_framed_broker_protocol(tmp_path):
     api_deploy = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(api_deploy)
 
-    broker_path = str(tmp_path / "restart.sock")
-    received = []
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
-        listener.bind(broker_path)
-        listener.listen(1)
+    import tempfile
 
-        def serve_one_request():
-            connection, _address = listener.accept()
-            with connection:
-                request = bytearray()
-                while chunk := connection.recv(32):
-                    request.extend(chunk)
-                received.append(bytes(request))
-                connection.sendall(b"restarted\n")
+    with tempfile.TemporaryDirectory(prefix=".s-", dir=ROOT) as broker_dir:
+        broker_path = str(Path(broker_dir) / "restart.sock")
+        received = []
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+            listener.bind(broker_path)
+            listener.listen(1)
 
-        worker = threading.Thread(target=serve_one_request, daemon=True)
-        worker.start()
-        api_deploy._restart_api(broker_path)
-        worker.join(timeout=2)
+            def serve_one_request():
+                connection, _address = listener.accept()
+                with connection:
+                    request = bytearray()
+                    while chunk := connection.recv(32):
+                        request.extend(chunk)
+                    received.append(bytes(request))
+                    connection.sendall(b"restarted\n")
 
-    assert not worker.is_alive()
-    assert received == [b"restart\n"]
+            worker = threading.Thread(target=serve_one_request, daemon=True)
+            worker.start()
+            api_deploy._restart_api(broker_path)
+            worker.join(timeout=2)
+
+        assert not worker.is_alive()
+        assert received == [b"restart\n"]
  
 def test_host_bootstrap_restarts_updated_socket_and_timer_units():
     bootstrap = (ROOT / "scripts/bootstrap-release-pipeline.py").read_text()

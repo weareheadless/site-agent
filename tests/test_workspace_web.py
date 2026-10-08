@@ -28,6 +28,14 @@ from site_agent.hands.base import ADAPTERS, AdapterError
 from site_agent.web.workspace import register_workspace_routes
 
 
+_PAYLOAD_CONTRACT = {
+    "contract": "helloada-content-v3",
+    "coreVersion": "0.5.1",
+    "schemaRevision": 5,
+    "schemaIdentity": "a" * 64,
+}
+
+
 def test_workspace_bridge_requires_a_server_token(tmp_path):
     app = FastAPI()
     register_workspace_routes(
@@ -50,7 +58,7 @@ def test_workspace_bridge_requires_a_server_token(tmp_path):
 def test_shared_host_credentials_are_inherited_by_tenants(tmp_path, api_key):
     tenant_config = tmp_path / "tenant.yaml"
     tenant_config.write_text(
-        f"instance_name: demo\ndata_dir: {tmp_path / 'data'}\n",
+        f"instance_name: demo\ndata_dir: {tmp_path / 'data'}\nsite:\n  website_present: false\n",
         encoding="utf-8",
     )
     registry = TenantRegistry.from_config(
@@ -95,6 +103,10 @@ def test_registry_reuses_loaded_payload_client_for_source_adapter(tmp_path):
         "    url: https://demo.example.test\n"
         f"    token_env: {tenant_token_env}\n"
         "    contract:\n"
+        f"      contract: {_PAYLOAD_CONTRACT['contract']}\n"
+        f"      coreVersion: {_PAYLOAD_CONTRACT['coreVersion']}\n"
+        f"      schemaRevision: {_PAYLOAD_CONTRACT['schemaRevision']}\n"
+        f"      schemaIdentity: {_PAYLOAD_CONTRACT['schemaIdentity']}\n"
         "      collections:\n"
         "        pages: [title]\n",
         encoding="utf-8",
@@ -131,6 +143,7 @@ def test_shared_registry_rejects_payload_token_name_drift(tmp_path):
         f"""instance_name: demo
 data_dir: {tmp_path / 'data'}
 site:
+  website_present: true
   payload:
     enabled: true
     url: https://demo.example.test
@@ -521,6 +534,7 @@ def test_payload_gateway_client_is_server_configured_and_schema_bounded():
                     "url": "https://workspace.example.test",
                     "api_prefix": "/api/workspace",
                     "contract": {
+                        **_PAYLOAD_CONTRACT,
                         "collections": {"pages": ["sourceId", "title"]},
                         "globals": {"navigation": ["items"]},
                         "media_fields": ["alt"],
@@ -535,10 +549,18 @@ def test_payload_gateway_client_is_server_configured_and_schema_bounded():
     assert client.base_url == "https://workspace.example.test"
     assert client.gateway_prefix == "/api/workspace"
 
-    with pytest.raises(PayloadGatewayError, match="outside the pages draft contract"):
-        client._data("pages", {"password": "never"})
-    with pytest.raises(PayloadGatewayError, match="outside the navigation global contract"):
-        client._global_data("navigation", {"password": "never"})
+    with pytest.raises(PayloadGatewayError, match="pages contains unsupported nested fields"):
+        client._validate_authoring_shape({"password": "never"}, [{"name": "title", "type": "text"}], "pages")
+    with pytest.raises(PayloadGatewayError, match="navigation contains unsupported nested fields"):
+        client._validate_authoring_shape({"password": "never"}, [{"name": "items", "type": "json"}], "navigation")
+
+
+def test_payload_gateway_resolves_a_single_enabled_locale_for_every_authoring_operation():
+    locales = {"locales": ["en", "es-MX"], "defaultLocale": "en"}
+    assert PayloadGatewayClient._authoring_locale(locales, None) == "en"
+    assert PayloadGatewayClient._authoring_locale(locales, "ES-mx") == "es-MX"
+    with pytest.raises(PayloadGatewayError, match="not enabled"):
+        PayloadGatewayClient._authoring_locale(locales, "fr")
 
 
 @pytest.mark.parametrize("prefix", ["/api", "/v1/content", ""])
@@ -562,12 +584,12 @@ def test_payload_gateway_contract_is_instance_configured_and_adapter_is_register
     client = PayloadGatewayClient(
         "https://example.test",
         "secret",
-        PayloadContract({"articles": frozenset({"headline"})}, {}, frozenset()),
+        PayloadContract(frozenset({"alt"}), "helloada-content-v3", "0.5.1", 5, "a" * 64),
     )
 
-    assert client._collection("articles") == "articles"
+    assert client._collection("pages") == "pages"
     with pytest.raises(PayloadGatewayError, match="unsupported Payload collection"):
-        client._collection("pages")
+        client._collection("articles")
     assert ADAPTERS["payload_gateway"] is PayloadGatewaySiteAdapter
 
 
@@ -845,11 +867,11 @@ def test_message_reply_draft_uses_only_selected_thread_and_cannot_send_or_use_to
 
 def test_workspace_journey_separates_existing_site_incubation_from_new_site_intake():
     existing = _journey_for_config({
-        "site": {"payload": {"enabled": True}},
+        "site": {"website_present": True, "payload": {"enabled": True}},
         "intake": {"enabled": True},
     })
     new_site = _journey_for_config({
-        "site": {"adapter": "github_static"},
+        "site": {"adapter": "github_static", "website_present": False},
     })
 
     assert existing == Journey(website_present=True, incubation_needed=True)
@@ -857,16 +879,16 @@ def test_workspace_journey_separates_existing_site_incubation_from_new_site_inta
     assert new_site == Journey(website_present=False, incubation_needed=False)
     assert new_site.initial_phase == "intake"
 
-    observed_site = _journey_for_config({
-        "site": {"adapter": "github_static"},
-        "customer_profile": {"business": {"observed_site_settings": {"website_url": "https://example.test"}}},
-        "intake": {"enabled": True},
-    })
+    with pytest.raises(ConfigError, match="website_present must be explicitly configured"):
+        _journey_for_config({
+            "site": {"adapter": "github_static", "payload": {"enabled": True}},
+            "customer_profile": {"business": {"observed_site_settings": {"website_url": "https://example.test"}}},
+            "intake": {"enabled": True},
+        })
     forced_no_site = _journey_for_config({
         "ada_journey": {"website_present": False, "incubation_needed": True},
         "intake": {"enabled": True},
     })
-    assert observed_site == Journey(website_present=True, incubation_needed=True)
     assert forced_no_site == Journey(website_present=False, incubation_needed=False)
 
 

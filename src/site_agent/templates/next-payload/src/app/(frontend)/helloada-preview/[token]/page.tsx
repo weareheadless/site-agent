@@ -2,15 +2,16 @@ import { cache } from 'react'
 import type { Metadata } from 'next'
 import { headers } from 'next/headers'
 import { notFound } from 'next/navigation'
-import type { CollectionSlug } from 'payload'
+import type { CollectionSlug, GlobalSlug, TypedLocale } from 'payload'
 
 import PublicDocument from '@/components/PublicDocument'
 import SiteChrome from '@/components/SiteChrome'
 import { authenticateHelloAdaRequest } from '@/lib/helloada-auth'
-import { getSiteSettings, seoFor } from '@/lib/content'
+import { seoFor } from '@/lib/content'
 import { hashJson, withoutPayloadMetadata } from '@/lib/payload-hash'
 import { verifyHelloAdaPreviewToken } from '@/lib/helloada-preview'
 import { helloAdaSite } from '@/helloada.config'
+import { pathForDocument } from '@/lib/content-routes'
 
 export const dynamic = 'force-dynamic'
 export const revalidate = 0
@@ -20,15 +21,14 @@ type PreviewData = {
   collection: 'pages' | 'posts' | 'products'
   document: Record<string, unknown>
   settings: Record<string, unknown>
+  navigation: Record<string, unknown>
   route: string
 }
 
 const expectedPublicRoute = (collection: PreviewData['collection'], document: Record<string, unknown>) => {
   const slug = String(document.slug || '').trim().replace(/^\/+|\/+$/g, '')
   if (!slug) return undefined
-  if (collection === 'posts') return `/articles/${slug.split('/').map(encodeURIComponent).join('/')}`
-  if (slug === 'home' || slug === 'index') return '/'
-  return `/${slug.split('/').map(encodeURIComponent).join('/')}`
+  return pathForDocument(collection, slug)
 }
 
 const loadPreview = cache(async (token: string): Promise<PreviewData> => {
@@ -47,6 +47,7 @@ const loadPreview = cache(async (token: string): Promise<PreviewData> => {
       depth: 2,
       draft: claims.state === 'draft',
       id: claims.documentId,
+      locale: claims.locale as TypedLocale,
       overrideAccess: false,
       req: auth.req,
       user: auth.user,
@@ -57,8 +58,24 @@ const loadPreview = cache(async (token: string): Promise<PreviewData> => {
   if (await hashJson(withoutPayloadMetadata(document)) !== claims.documentHash) notFound()
   if (expectedPublicRoute(claims.collection, document) !== claims.route) notFound()
 
-  const settings = await getSiteSettings()
-  return { collection: claims.collection, document, settings, route: claims.route }
+  const globals = await Promise.all(claims.globals.map(async (claim) => {
+    const global = await auth.payload.findGlobal({
+      slug: claim.slug as GlobalSlug,
+      depth: 2,
+      draft: claims.state === 'draft',
+      locale: claims.locale as TypedLocale,
+      overrideAccess: false,
+      req: auth.req,
+      user: auth.user,
+    }) as unknown as Record<string, unknown>
+    if (await hashJson(withoutPayloadMetadata(global)) !== claim.hash) notFound()
+    return [claim.slug, global] as const
+  }))
+  const exactGlobals = Object.fromEntries(globals)
+  const settings = exactGlobals.siteSettings
+  const navigation = exactGlobals.navigation
+  if (!settings || !navigation) notFound()
+  return { collection: claims.collection, document, settings, navigation, route: claims.route }
 })
 
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
@@ -76,9 +93,9 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 
 export default async function HelloAdaExactPreview({ params }: Props) {
   const { token } = await params
-  const { collection, document, settings, route } = await loadPreview(token)
+  const { collection, document, settings, navigation, route } = await loadPreview(token)
   const kind = collection === 'posts' ? 'post' : collection === 'products' ? 'product' : 'page'
   return <div data-helloada-preview-hash={await hashJson(withoutPayloadMetadata(document))} data-helloada-preview-route={route}>
-    <SiteChrome><PublicDocument document={document} settings={settings} kind={kind} collection={collection} preview /></SiteChrome>
+    <SiteChrome navigation={navigation} settings={settings}><PublicDocument document={document} settings={settings} kind={kind} collection={collection} /></SiteChrome>
   </div>
 }

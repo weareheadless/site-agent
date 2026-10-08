@@ -1,21 +1,56 @@
 {
-  "schema": 1,
   "releases": {
-    "oceanicvibes": {
-      "id": "20261004-oceanic-canonical-schema-5",
-      "sha": "2a3172918f5d14b11e1dcd13ca12dea81ad284f0",
-      "schemaMigration": {
-        "fromLedgerIdentity": "464d4fea2c7584a96b0694ffb6743bd137b5d210de59528bd63584234edfd152",
-        "targetMigrationHead": "a61a108e7f172f97c0bb4f1d483d469861743b716d83ada1ecd887b7ac002827"
-      }
+    "ada-direct-admin-sso-e2e-a76df8a18660acea": {
+      "id": "rel-20261007042359-db987a5c",
+      "initializeSchema": {
+        "migrationHead": "75064eaeb5a035afc8977d39a59742dfa8bfb5e94d344ca9090e29e516bb2534"
+      },
+      "sha": "419f1c9344d56f6d0a368aff8ac419215f43d91c"
+    },
+    "ada-e2e-studio-b39ae17e77014b8c": {
+      "id": "rel-20261006-d1-system-table-1",
+      "initializeSchema": {
+        "migrationHead": "75064eaeb5a035afc8977d39a59742dfa8bfb5e94d344ca9090e29e516bb2534"
+      },
+      "sha": "055996dc6f13d93de3e72a776a82d4354aa53772"
+    },
+    "ada-e2e-studio-intake-0aa0b1a55ae48348": {
+      "id": "rel-20261006-remote-d1-fix-2",
+      "sha": "117f8ac01f4979a3f77dcf67042415d97c664a73"
     },
     "atelier-harmonie": {
-      "id": "20261004-atelier-canonical-schema-8",
-      "sha": "1a49bfb8583dfb47ec58878cee60045fe8f36260",
-      "schemaMigration": {
-        "fromLedgerIdentity": "8f08d0bbcccbe59a22d485354a91823da8ee16c3c478a7170bee05c5456e6ff4",
-        "targetMigrationHead": "d84206f592c2a3eadfb60553656f82010e390752447b474266829c62a906d22d"
-      }
+      "id": "20261005-atelier-preview-mount-7",
+      "sha": "fd9910cb176cd3cc3b19aa6d9ef67785dd8c509a"
+    },
+    "northstar-coffee-e2e-validation-8fbf2e6fea671768": {
+      "id": "rel-20261006224116-adc412d9",
+      "initializeSchema": {
+        "migrationHead": "75064eaeb5a035afc8977d39a59742dfa8bfb5e94d344ca9090e29e516bb2534"
+      },
+      "sha": "4b7f3dbf1cf8d517ef508e602d84953bc0b5fc9b"
+    },
+    "northstar-coffee-e2e-validation-long-name-d719295b4d086bd3": {
+      "id": "rel-20261006230935-7c0d23d2",
+      "initializeSchema": {
+        "migrationHead": "75064eaeb5a035afc8977d39a59742dfa8bfb5e94d344ca9090e29e516bb2534"
+      },
+      "sha": "10667013a58ef4632f073a760b93e079c7f5a91b"
+    },
+    "northstar-coffee-full-intake-validation-5a8564dae07494ec": {
+      "id": "rel-20261007-payload-handoff-jwt-1",
+      "sha": "8a7fb1fcb50c2b12e0942c789ab50feb9071d507"
+    },
+    "northstar-coffee-house-afd6a0232bf10fd4": {
+      "id": "rel-20261006212816-11d97f91",
+      "initializeSchema": {
+        "migrationHead": "75064eaeb5a035afc8977d39a59742dfa8bfb5e94d344ca9090e29e516bb2534"
+      },
+      "sha": "1b888270300d25d0f66ef99e7b75b2e0cce206f9"
+    },
+    "oceanicvibes": {
+      "id": "20261005-oceanic-presentation-repair-13",
+      "sha": "03d4c43d0077d85355821ec7efe3b6a84469a630"
     }
-  }
+  },
+  "schema": 1
 }

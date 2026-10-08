@@ -17,19 +17,30 @@ class ReleaseQueueError(RuntimeError):
     """A tenant release is not safe or could not be recorded in GitHub."""
 
 
+def _managed_repository_url(value: Any) -> str:
+    """Convert the canonical owner/repository setting to the release URL form."""
+    repository = str(value or "").strip()
+    if not re.fullmatch(r"weareheadless/[A-Za-z0-9_.-]+", repository):
+        raise ReleaseQueueError("managed tenant repository must use its official owner/repository identity")
+    return f"https://github.com/{repository}.git"
+
+
 def customer_release_identity(config: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
     """Read tenant and package identity from the canonical managed checkout."""
     tenant = str(config.get("instance_name") or "").strip().lower()
     site = config.get("site") if isinstance(config.get("site"), Mapping) else {}
+    journey = config.get("ada_journey") or config.get("journey") or {}
+    journey = journey if isinstance(journey, Mapping) else {}
+    website_present = journey.get("website_present") if "website_present" in journey else site.get("website_present")
+    if not isinstance(website_present, bool):
+        raise ReleaseQueueError("managed website-present state must be explicit")
     deployment = site.get("source_deployment") if isinstance(site.get("source_deployment"), Mapping) else {}
-    repository = str(site.get("repository") or "").strip()
+    repository = _managed_repository_url(site.get("repository"))
     worker = str(deployment.get("worker_name") or "").strip()
     public_url = str(site.get("public_url") or "").strip().rstrip("/")
     root = Path(str(deployment.get("clone_path") or site.get("clone_path") or "")).expanduser().resolve()
     if not re.fullmatch(r"[a-z][a-z0-9-]{1,62}", tenant):
         raise ReleaseQueueError("managed tenant identity is missing")
-    if not re.fullmatch(r"https://github\.com/weareheadless/[A-Za-z0-9_.-]+\.git", repository):
-        raise ReleaseQueueError("managed tenant repository is not an official GitHub source")
     if not re.fullmatch(r"[a-z][a-z0-9-]{1,62}", worker):
         raise ReleaseQueueError("managed Worker identity is missing")
     origin = urlsplit(public_url)
@@ -66,6 +77,7 @@ def customer_release_identity(config: Mapping[str, Any]) -> tuple[str, dict[str,
         "worker": worker,
         "health": public_url + "/api/health",
         "adminPath": "/api/helloada",
+        "websitePresent": website_present,
         "payloadAdmin": manifest.get("payloadAdmin"),
         "payloadCore": manifest.get("payloadCore"),
         "contentContract": manifest.get("contentContract"),
@@ -98,6 +110,7 @@ def request_release(
     *,
     approval_id: int | str | None = None,
     initialize_schema: bool = False,
+    release_id: str | None = None,
 ) -> dict[str, str]:
     """Commit a release request to the only production queue in site-agent."""
     root = release_root(config)
@@ -112,6 +125,7 @@ def request_release(
             customer,
             approval_id=approval_id,
             initialize_schema=initialize_schema,
+            release_id=release_id,
         )
     except GitHubReleaseQueueError as exc:
         raise ReleaseQueueError(str(exc)) from exc

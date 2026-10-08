@@ -1,7 +1,7 @@
 import Link from 'next/link'
 import { RichText } from '@payloadcms/richtext-lexical/react'
 import type { SerializedEditorState } from 'lexical'
-import { helloAdaBindingId } from '@weareheadless/helloada-payload-core/bindings'
+import { helloAdaBindingId, helloAdaGlobalBindingId } from '@weareheadless/helloada-payload-core/bindings'
 import { mediaAlt, mediaUrl } from '@/lib/content'
 import TenantSections from '@/components/site/TenantSections'
 import { articleIndexPath } from '@/lib/content-routes'
@@ -30,7 +30,7 @@ export default function PagePresentation({ document, settings, kind, collection,
 
   return <main className={`content-page${kind === 'post' ? ' article-page' : kind === 'product' ? ' product-page' : ''}`}
     data-helloada-document-id={documentId} data-helloada-updated-at={String(document.updatedAt || '')}>
-    {kind === 'post' ? <Link href={articleIndexPath()} aria-label="Back to journal">← {String(settings.journalTitle || '').trim()}</Link> : null}
+    {kind === 'post' ? <Link href={articleIndexPath()} aria-label="Back to journal"><span aria-hidden="true">← </span><span data-helloada-field={helloAdaGlobalBindingId('siteSettings', 'siteSettings', 'journalTitle')}>{String(settings.journalTitle || '').trim()}</span></Link> : null}
     {kind === 'post' && document.category ? <p className="eyebrow">{String(category.title || '').trim()}</p> : null}
     <h1 data-helloada-field={bind('title')}>{title}</h1>
     {image ? <img className="article-image" src={image} alt={mediaAlt(document.featuredImage)} data-helloada-field={bind('featuredImage')} /> : null}

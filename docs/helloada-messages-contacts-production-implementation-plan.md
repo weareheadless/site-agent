@@ -1,10 +1,10 @@
 # HelloAda Messages, Contacts and Website Forms — Production Implementation Plan
 
-Date: 2026-10-04
+Date: 2026-10-04; integration status reconciled 2026-10-07
 
-Status: implementation is in progress on an isolated feature branch; required
-implementation, provisioning and live evidence remain incomplete. Nothing has
-been deployed.
+Status: implementation is in progress on an isolated feature branch; the
+current-mainline integration and package CI are being completed. Tenant email
+provisioning and live evidence remain incomplete. Nothing has been deployed.
 
 Audience: the coding AI implementing the shared `weareheadless/site-agent` platform.
 
@@ -58,17 +58,25 @@ No additional site/domain is to be provisioned for acceptance in this rollout. F
 
 ## 2. What was verified, and what must still be inspected
 
-The plan was checked against the official GitHub repository's contributor guide, package manifests, canonical schema and deployment runbooks. Local workspace files returned read timeouts; therefore this document is a standalone handoff, not a claim that local repositories or running tenants were audited.
+The original plan snapshot was written on 2026-10-04. Its initial schema and scaffold observations are historical, not the current source of truth. The integration was re-audited against official `main` at `a5938124f27af569d2cf0b8011791a6a425a0698` on 2026-10-07.
 
-Verified current boundaries:
+Current verified boundaries:
 
 - `packages/helloada-payload-core` owns the shared schema and editable-content contract.
 - `packages/helloada-payload-admin` owns the shared HelloAda owner workspace.
 - `src/site_agent/templates/next-payload` is the canonical customer scaffold.
-- The inspected schema contains website content/media collections, but no canonical Messages/Contacts/forms module.
-- The inspected scaffold points Wrangler at the generated OpenNext Worker. A supported custom entry point will be needed for additional event handlers.
+- `@weareheadless/helloada-payload-core` 0.5.4 already owns the canonical Messages, Contacts, forms and owner-notification schema at schema revision 5. The registered mainline migration chain is the initial migration, Growth operations migration and `20261006_061835_helloada_owner_handoff`; the last migration contains the current forms/messages/notification tables and columns.
+- The canonical template already uses that shared schema. The old feature-branch migrations `20261004_232326_helloada_messages_contacts` and `20261005_173359_helloada_owner_notifications` duplicate schema history and must not be carried into the integrated tree or registered beside the mainline chain. This feature integration does not add a new schema migration unless a reviewed schema diff proves one is required.
+- The canonical scaffold already has a custom Worker entry point in the integration tree. Keep its HTTP delegate and email/queue handlers in the exact artifact verified by the VPS release pipeline; do not create another Worker or a direct-deploy path.
 - Immutable package releases require explicit consumer pin/lockfile updates; publishing a package does not redeploy customers.
 - `deploy/desired-releases.json` and the VPS release service own customer promotion. Schema upgrades require an explicit migration request with verified ledger identities.
+
+The earlier statements in this plan that Messages/forms were absent from the
+schema and that a custom Worker wrapper still needed to be designed are
+superseded by this current-mainline audit. Feature work should add only the
+shared runtime, owner UI, integration tests and provisioning capability not
+already present on `main`; it must not recreate completed schema or scaffold
+work.
 
 Before implementing, read the complete, current versions of:
 
@@ -200,7 +208,11 @@ If this checkpoint requires a parallel ORM, a second Worker, transplanting most 
 
 ## 7. Canonical Payload model
 
-Extend the platform-owned schema and its contract tests. Reuse an existing equivalent concept if current source already provides it; do not create a duplicate collection merely because this document proposes a name.
+Use the platform-owned schema and contract tests already on current `main`.
+Reuse those canonical collections; do not create a duplicate collection or
+schema migration merely because this document proposes a name. Any new schema
+change must be proved necessary against the exact current shared contract and
+must follow the explicit tenant migration queue.
 
 ### Forms
 
@@ -211,7 +223,9 @@ Extend the platform-owned schema and its contract tests. Reuse an existing equiv
 - Fixed delivery destination: the tenant's Messages inbox. No arbitrary external URL, JavaScript, SMTP settings or client-provided recipient.
 - An immutable form-definition revision/snapshot identifier for accepted submissions.
 
-Add a supported form-reference content block/field to the canonical editable-content contract. Ada uses that block and the shared submit component. Frontend layout/styling remain free, but submission and schema behavior are shared.
+The shared schema already has the form-reference block/fields. Ada uses that
+canonical block and the shared submit component. Frontend layout/styling remain
+free, but submission and schema behavior are shared.
 
 Forms are reviewed website configuration. Changes to the public form use the existing draft/publish journey and editable bindings, not an extra publish dashboard.
 
@@ -266,8 +280,8 @@ Distinguish provisioning readiness from inbox contents. Example machine states: 
 - All private collections, raw MIME, attachments and configuration require explicit authenticated access policies. Hidden navigation is not access control.
 - Test both Payload REST/GraphQL access and the local API. Local API bypass behavior must be explicitly controlled; privileged event ingestion uses a narrow trusted service path, never a browser-supplied identity.
 - Keep raw mail and personal information out of public content readers, page bindings and public health responses.
-- Bump shared schema/contract identities and publish exact package artifacts through the canonical workflow.
-- Generate and commit migrations during development. Preserve applied migrations and upgrade only through explicit release-queue migration requests.
+- Preserve the current shared schema/contract identity when feature code adds no schema change; publish exact package artifacts through the canonical workflow.
+- Keep the mainline migration index and generated contract in exact agreement. Preserve applied migrations and upgrade only through explicit release-queue migration requests. Never restore the duplicate feature-branch migrations listed in §2.
 - The selected migration must be additive and compatible with the prior serving Worker. A Worker rollback does not revert inbox data or the D1 ledger.
 - Prove the pinned Payload/D1 adapter's transaction capabilities. If multi-record atomicity is not available, establish one committed canonical receipt as the acceptance boundary and a tested idempotent materialization path. Do not claim a transaction that the adapter cannot execute, or introduce a parallel database to simulate it.
 
@@ -465,9 +479,9 @@ Exit evidence: written existing-tenant baselines, production rollout inventory a
 ### Phase B — Canonical schema, transport and Worker integration
 
 - Extract/adapt the narrow Mailflare primitives and add their provenance/tests.
-- Add the canonical custom Worker wrapper and prove OpenNext artifact generation.
-- Add the shared forms/contacts/conversation/message/operation contracts and explicit access policies.
-- Commit tested additive migrations and update schema/contract identity.
+- Integrate the existing canonical Worker wrapper and prove the complete OpenNext artifact generation and event dispatch.
+- Integrate the feature runtime against the shared forms/contacts/conversation/message/operation schema and explicit access policies already owned by current `main`.
+- Keep the canonical migration index/contract unchanged unless a focused schema diff proves the feature requires an additive migration; if so, generate, test and queue exactly that new migration without replacing or replaying existing history.
 - Prove canonical persistence, incoming/Queue handler dispatch and reply matching with focused automated tests and the supported D1/Payload path.
 - Measure dependency/bundle size and parsing runtime; identify actual reuse cost.
 

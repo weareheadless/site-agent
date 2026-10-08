@@ -35,6 +35,13 @@ test('shared package is customer-neutral', async () => {
   assert.match(combined, /HelloAda/)
 })
 
+
+test('runtime Payload admin version matches the immutable package version', async () => {
+  const pkg = JSON.parse(await source('package.json'))
+  const runtime = await source('src/version.ts')
+  assert.ok(runtime.includes(`HELLOADA_PAYLOAD_ADMIN_VERSION = '${pkg.version}'`))
+})
+
 test('shared package has a tenant configuration boundary', async () => {
   const config = await source('src/config/site.tsx')
   assert.match(config, /defineHelloAdaSite/)

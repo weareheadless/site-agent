@@ -121,6 +121,18 @@ def _verify_wheel_runtime_dependencies(python: str, wheel: Path, *, cwd: Path,
         )
 
 
+def _verify_payload_template_bundle(site_packages: Path) -> None:
+    """Require the installed wheel to contain the canonical bootstrap scaffold."""
+    template = site_packages / "site_agent" / "templates" / "next-payload"
+    required = (".gitignore", "template-manifest.json", "helloada-content-contract.json", "wrangler.jsonc")
+    missing = [name for name in required if not (template / name).is_file()]
+    if missing:
+        raise RuntimeError("API wheel is missing canonical Payload template files: " + ", ".join(missing))
+    rules = set((template / ".gitignore").read_text(encoding="utf-8").splitlines())
+    if not {"node_modules/", "*.tsbuildinfo"}.issubset(rules):
+        raise RuntimeError("API wheel Payload ignore rules do not exclude generated Node/TypeScript files")
+
+
 def _set_current(current: Path, destination: Path) -> None:
     if current.exists() and not current.is_symlink():
         raise RuntimeError("API current release path is not a managed symlink")
@@ -141,6 +153,21 @@ def _health_check(url: str, attempts: int = 60) -> None:
             pass
         time.sleep(1)
     raise RuntimeError("API /healthz did not pass after restart")
+
+
+def _runtime_config_preflight(source_dir: Path, python: str, log_path: Path) -> None:
+    manifest_path = source_dir / "deploy/payload-customers.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        config_path = str(manifest["connectionGate"]["config"])
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise RuntimeError("API release manifest has no runtime config preflight target") from exc
+    validator = source_dir / "scripts/sync-provisioned-tenant-configs.py"
+    if not Path(config_path).is_absolute() or not validator.is_file():
+        raise RuntimeError("API release is missing its runtime config preflight contract")
+    env = {**os.environ, "PYTHONPATH": str(source_dir / "src")}
+    _run([python, str(validator), "--config", config_path, "--manifest", str(manifest_path), "--validate"],
+         cwd=source_dir, env=env, log_path=log_path)
 
 
 def _restart_api(socket_path: str = RESTART_SOCKET) -> None:
@@ -278,6 +305,8 @@ def deploy(source_dir: Path, source_sha: str, release_id: str, root: Path,
         if staging.exists():
             raise RuntimeError("API staging directory already exists")
         staging.mkdir(mode=0o700)
+        _runtime_config_preflight(source_dir, python, log_path)
+        _record(receipt_path, receipt, "runtime-config-passed")
         test_env = {**os.environ, "PYTHONPATH": str(source_dir / "src")}
         _run([python, "-m", "pytest", "-q"], cwd=source_dir, env=test_env, log_path=log_path)
         _record(receipt_path, receipt, "tests-passed")
@@ -300,6 +329,7 @@ def deploy(source_dir: Path, source_sha: str, release_id: str, root: Path,
         site_packages = staging / "site-packages"
         _run([python, "-m", "pip", "install", "--no-deps", "--no-index", "--target",
               str(site_packages), str(wheel)], cwd=source_dir, env=clean_env, log_path=log_path)
+        _verify_payload_template_bundle(site_packages)
         smoke_env = {**clean_env, "PYTHONPATH": str(site_packages)}
         smoke = _run([python, "-c",
                       "import importlib.metadata as m, importlib.util, json, pathlib; "

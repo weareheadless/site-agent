@@ -418,17 +418,20 @@ def _inventory(context: Mapping[str, Any]) -> list[dict[str, Any]]:
     payload = context.get("payload_gateway")
     if payload is None:
         raise RuntimeError("The canonical Payload content gateway is unavailable")
+    authoring_contract = payload.require_authoring_contract()
+    enabled_collections = set((authoring_contract.get("enabled") or {}).get("collections") or [])
     inventory = []
     # Taxonomy is part of the shared schema, but categories are not public pages.
     for collection in ("pages", "posts", "products"):
-        if collection not in payload.contract.collections:
+        if collection not in enabled_collections:
             continue
+        fields = payload.authoring_fields("collection", collection, authoring_contract=authoring_contract)
         for document in payload.list(collection, draft=False, limit=100):
             if not document.get("id"):
                 raise ValueError("A canonical document has no identity")
             inventory.append({"collection": collection, "document": {"id": str(document["id"]),
                 "sourceId": document.get("sourceId"), "slug": document.get("slug"),
-                **document_content(document, payload.contract.collection_fields[collection])},
+                **document_content(document, fields)},
                 "sourceRef": f"payload:{collection}:{document['id']}", "route": document.get("route")})
     if not inventory:
         raise RuntimeError("The website has no canonical editable documents")

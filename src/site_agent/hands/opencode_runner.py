@@ -694,6 +694,206 @@ def _persist_integrated_composition(
     )
 
 
+def _initial_homepage_payload_data(request, plan: Any, *, featured_media_id: int | None = None) -> dict[str, Any]:
+    """Map confirmed intake and Ada's final homepage copy into canonical Payload fields."""
+    from ..core.design_contracts import ExperiencePlanBundle, SiteIntake
+
+    typed = (
+        plan
+        if isinstance(plan, ExperiencePlanBundle) or hasattr(plan, "copy_deck")
+        else ExperiencePlanBundle.from_dict(plan)
+    )
+    content = request.content if isinstance(request.content, Mapping) else {}
+    raw_intake = content.get("site_intake")
+    if not isinstance(raw_intake, Mapping):
+        raise RunnerError("the initial homepage has no confirmed typed intake to author in Payload")
+    try:
+        intake = SiteIntake.from_dict(raw_intake)
+    except Exception as exc:  # noqa: BLE001 - the typed intake is the factual source of this draft
+        raise RunnerError(f"the confirmed intake is invalid: {str(exc)[:500]}") from exc
+
+    copy_deck = typed.copy_deck
+
+    def required_copy(name: str) -> str:
+        value = copy_deck.get(name)
+        if not isinstance(value, str) or not value.strip():
+            raise RunnerError(f"the approved creative plan has no final Payload copy for {name}")
+        return value.strip()
+
+    headline = required_copy("headline")
+    body = required_copy("body")
+    action = required_copy("primary_action")
+    entries: list[dict[str, Any]] = []
+    eyebrow = copy_deck.get("eyebrow")
+    if eyebrow is not None:
+        if not isinstance(eyebrow, str) or not eyebrow.strip():
+            raise RunnerError("the homepage copy deck eyebrow must be non-empty text when present")
+        entries.append({
+            "key": "home.hero.eyebrow",
+            "blockType": "helloAdaParagraph",
+            "label": "Homepage eyebrow",
+            "text": eyebrow.strip(),
+        })
+    entries.append({
+        "key": "home.hero.heading",
+        "blockType": "helloAdaHeading",
+        "label": "Homepage headline",
+        "text": headline,
+        "level": "h2",
+    })
+    entries.append({
+        "key": "home.hero.introduction",
+        "blockType": "helloAdaParagraph",
+        "label": "Homepage introduction",
+        "text": body,
+    })
+    destination = str(intake.conversion.get("contact_destination") or "").strip()
+    if destination:
+        entries.append({
+            "key": "home.hero.primary-action",
+            "blockType": "helloAdaLink",
+            "label": "Primary action",
+            "text": action,
+            "href": destination,
+        })
+    else:
+        # The intake explicitly has no confirmed destination. Preserve Ada's
+        # call-to-action copy as editable content without manufacturing a link.
+        entries.append({
+            "key": "home.hero.primary-action",
+            "blockType": "helloAdaParagraph",
+            "label": "Primary action text (destination not supplied)",
+            "text": action,
+        })
+
+    supporting_copy = copy_deck.get("supporting_copy", [])
+    if not isinstance(supporting_copy, list) or len(supporting_copy) > 12:
+        raise RunnerError("the homepage copy deck supporting_copy must be a list of at most twelve items")
+    for index, value in enumerate(supporting_copy, start=1):
+        if not isinstance(value, str) or not value.strip():
+            raise RunnerError("homepage supporting_copy items must be non-empty text")
+        entries.append({
+            "key": f"home.supporting.paragraph-{index}",
+            "blockType": "helloAdaParagraph",
+            "label": f"Supporting copy {index}",
+            "text": value.strip(),
+        })
+
+    description = copy_deck.get("meta_description")
+    if description is not None and (not isinstance(description, str) or not description.strip()):
+        raise RunnerError("the homepage copy deck meta_description must be non-empty text when present")
+    description = str(description or body).strip()[:320]
+    page: dict[str, Any] = {
+        "title": str(intake.business["name"]).strip(),
+        "slug": "home",
+        "sections": [{"key": "home.hero", "label": "Homepage introduction", "entries": entries}],
+        "seo": {"title": headline[:300], "description": description},
+    }
+    if featured_media_id is not None:
+        page["featuredImage"] = featured_media_id
+    return page
+
+
+def _stage_initial_homepage_payload(context: dict[str, Any], request, plan: Any, progress=None):
+    """Persist and verify canonical homepage copy before a production source build."""
+    from ..core.design_contracts import PageBuildRequest
+
+    payload = context.get("payload_gateway")
+    if payload is None:
+        raise RunnerError("first-site generation is waiting for the tenant's canonical Payload workspace")
+    try:
+        contract = payload.require_authoring_contract()
+    except Exception as exc:  # noqa: BLE001 - no source-copy path is allowed without this proof
+        raise RunnerError(f"first-site generation cannot verify the tenant Payload contract: {str(exc)[:500]}") from exc
+    locales = contract.get("locales")
+    default_locale = str(contract.get("defaultLocale") or "").strip()
+    if not isinstance(locales, list) or not default_locale or default_locale not in locales:
+        raise RunnerError("the tenant Payload contract has no valid default authoring locale")
+    if "pages" not in ((contract.get("enabled") or {}).get("collections") or []):
+        raise RunnerError("first-site generation requires the canonical Payload pages capability")
+
+    typed_plan = plan
+    if not hasattr(typed_plan, "asset_composition_plan"):
+        from ..core.design_contracts import ExperiencePlanBundle
+
+        typed_plan = ExperiencePlanBundle.from_dict(plan)
+    approved_media_ids = set(request.supplied_media_asset_ids)
+    evidence = {item.asset_id: item for item in typed_plan.asset_evidence}
+    featured_media_id = None
+    for assignment in typed_plan.asset_composition_plan:
+        visual = evidence.get(assignment.asset_id)
+        if visual is None or str(visual.media_role).lower() in {"logo", "identity_mark"}:
+            continue
+        match = _re.fullmatch(r"media-([1-9][0-9]*)", assignment.asset_id)
+        if match and int(match.group(1)) in approved_media_ids:
+            featured_media_id = int(match.group(1))
+            break
+    if featured_media_id is not None:
+        try:
+            payload.read_media(str(featured_media_id), identifier_kind="id", draft=True)
+        except Exception as exc:  # noqa: BLE001 - verify the exact selected tenant-local asset
+            raise RunnerError("Ada selected a homepage image that is not present in this tenant's Payload media library") from exc
+
+    data = _initial_homepage_payload_data(request, typed_plan, featured_media_id=featured_media_id)
+    try:
+        result = payload.create("pages", data, locale=default_locale)
+        document_id = str(result.get("id") or "").strip()
+        if not document_id:
+            raise RunnerError("Payload did not return the new homepage document identity")
+        verified = payload.read("pages", identifier=document_id, identifier_kind="id", draft=True, locale=default_locale)
+    except Exception as exc:  # noqa: BLE001 - keep the design run blocked and its effect explicit
+        raise RunnerError(f"the initial Payload homepage draft could not be verified: {str(exc)[:500]}") from exc
+    revision = str(verified.get("_helloadaRevision") or "")
+    if not revision.startswith("sha256:") or revision != str(result.get("_helloadaRevision") or ""):
+        raise RunnerError("the initial Payload homepage changed before its exact draft receipt was bound to the build")
+    if str(verified.get("slug") or "") != "home" or str(verified.get("sourceId") or "") != "pages:home":
+        raise RunnerError("Payload did not persist the homepage at its canonical route identity")
+
+    receipt = {
+        "kind": "collection",
+        "operation": "create",
+        "target": "pages",
+        "document_id": document_id,
+        "source_id": str(verified.get("sourceId") or ""),
+        "slug": "home",
+        "locale": default_locale,
+        "revision": revision,
+        "fields": sorted(data),
+        "content_keys": [
+            str(entry["key"])
+            for section in data["sections"]
+            for entry in section["entries"]
+        ],
+        "schema_identity": contract.get("schemaIdentity"),
+        "authoring_contract_hash": contract.get("authoringContractHash"),
+    }
+    context["_payload_candidate_receipts"] = [receipt]
+    payload_effects, payload_revision_set_hash = _payload_revision_manifest(context)
+    request_data = request.to_dict()
+    request_content = dict(request_data.get("content") or {})
+    request_content["payload_draft_receipts"] = [receipt]
+    request_data["content"] = request_content
+    staged_request = PageBuildRequest.from_dict(request_data)
+
+    memory = context.get("memory")
+    if memory is not None and memory.get_design_run(request.run_id) is not None:
+        current = memory.get_design_run(request.run_id)
+        planning = dict(current.get("planning_json") or {})
+        planning["payload_draft_receipts"] = [receipt]
+        planning["payload_effects"] = payload_effects
+        planning["payload_revision_set_hash"] = payload_revision_set_hash
+        memory.update_design_run(request.run_id, planning_json=planning)
+        memory.add_design_run_event(
+            request.run_id,
+            "initial_payload_draft_staged",
+            "The confirmed homepage copy was saved and revision-checked in the tenant Payload workspace before source generation.",
+            receipt,
+        )
+    if progress:
+        progress("verified the exact homepage draft in the tenant's Payload workspace")
+    return staged_request
+
+
 def _remove_builder_worktree(repo: Path, worktree: Path) -> None:
     try:
         _git(repo, "worktree", "remove", "--force", str(worktree))
@@ -822,6 +1022,11 @@ def _design_prompt(
     frozen_context = ""
     request_data = request.to_dict()
     request_content = request_data.get("content") if isinstance(request_data.get("content"), dict) else {}
+    payload_draft_receipts = (
+        request_content.get("payload_draft_receipts")
+        if isinstance(request_content.get("payload_draft_receipts"), list)
+        else []
+    )
     creative_prompt = str(request_content.get("creative_prompt") or "").strip()
     creative_block = (
         "OWNER CREATIVE REQUEST (direction only; validated intake facts remain authoritative):\n"
@@ -980,10 +1185,12 @@ def _design_prompt(
     locked_plan_block = ""
     if design_plan is not None:
         plan_data = design_plan.to_dict() if hasattr(design_plan, "to_dict") else dict(design_plan)
+        if request.mode == "initial_homepage" and payload_draft_receipts:
+            plan_data.pop("copy_deck", None)
         locked_plan_block = (
             "LOCKED CREATIVE PLAN (host-selected; implement this direction rather than inventing a new one):\n"
             + canonical_json(plan_data)
-            + "\nUse the selected direction, copy decisions, composition, asset treatment, and motion intent in this plan. "
+            + "\nUse the selected direction, composition, asset treatment, and motion intent in this plan. "
             "The experience_journey is executable: implement every scene and every must-pass condition, including its "
             "trigger, visible transition, completion/exit condition, responsive translations, keyboard/touch behavior, "
             "reduced-motion translation, interruption, reverse, resize, and rapid-input behavior. Do not replace it "
@@ -1087,6 +1294,21 @@ def _design_prompt(
             + ". Do not use ranges or newer versions. Run the Next/React npm check/build commands only after the native "
             "source exists; build output is host-generated and must not be authored.\n\n"
         )
+    payload_first_block = ""
+    if request.mode == "initial_homepage" and payload_draft_receipts:
+        payload_first_block = (
+            "PAYLOAD-FIRST HOMEPAGE BINDING (hard content boundary):\n"
+            "The host has already saved the confirmed homepage as an unpublished Payload draft. The exact document, "
+            "locale, schema identity, revision, editable top-level fields, and stable content keys are in the request's "
+            "payload_draft_receipts. Use the existing Payload document passed through the shared route/presentation "
+            "contract; keep the site routes, data readers, Payload schema, and migrations untouched. Treat the saved "
+            "Payload values as the sole runtime source for business name, headline, paragraph text, calls to action, "
+            "metadata, and the selected image. Do not copy these values into JSX/TS/JS constants, static HTML, a second "
+            "JSON file, or a new content store. Create the original visual composition in the allowed presentation "
+            "components and CSS while retaining stable data-helloada-field bindings for every displayed editable value. "
+            "The locked experience plan's copy_deck is intentionally omitted from your source prompt: implement its "
+            "composition and motion intent, but read all wording from Payload.\n\n"
+        )
     retained_implementation_block = ""
     if is_technical_repair:
         retained_implementation_block = (
@@ -1122,8 +1344,9 @@ def _design_prompt(
               + font_safety
               + native_direction_block
               + locked_plan_block
-              + repair_brief_block
+               + repair_brief_block
                + native_framework_block
+               + payload_first_block
                + retained_implementation_block
                 + integrated_motion_block
               + "CREATIVE DESIGN PROCESS (required, not a host-provided visual scaffold):\n"
@@ -2100,9 +2323,14 @@ def stage_design_build(
         if request.context_snapshot.content_hash != request.context_snapshot_hash:
             raise RunnerError("design context snapshot hash is invalid")
     config = context["config"]
+    payload_first_required = (
+        request.mode == "initial_homepage"
+        and target.operation_kind == "initial_build"
+        and target.publishable
+    )
     creative_orchestration = str(
         (config.get("design_engine") or {}).get("orchestration") or "legacy"
-    ).strip().lower() == "creative"
+    ).strip().lower() == "creative" or payload_first_required
     if creative_orchestration and isinstance(design_plan, Mapping):
         try:
             # Repair requests persist the locked bundle as JSON so the durable
@@ -2361,6 +2589,11 @@ def stage_design_build(
                 )
             if progress:
                 progress("Ada's design direction is persisted; starting the integrated Build turn")
+        if payload_first_required:
+            staged_plan = experience_plan or design_plan
+            if staged_plan is None:
+                raise RunnerError("a production first-site build needs Ada's completed Payload-backed experience plan")
+            request = _stage_initial_homepage_payload(execution_context, request, staged_plan, progress)
         if repair_brief is not None:
             # Repair turns still need the host-written role definition. Keep
             # this independent from planning: a bounded repair is deliberately
@@ -2642,6 +2875,19 @@ def _candidate_sha(context: dict[str, Any], outcome: Mapping[str, Any], branch: 
     return ""
 
 
+def _payload_revision_manifest(context: Mapping[str, Any]) -> tuple[list[dict[str, Any]], str]:
+    from ..core.payload_receipts import payload_revision_manifest
+
+    raw = [
+        *(context.get("_completed_payload_effects") or []),
+        *(context.get("_payload_candidate_receipts") or []),
+    ]
+    try:
+        return payload_revision_manifest(raw)
+    except ValueError as exc:
+        raise RunnerError(str(exc)) from exc
+
+
 def stage_merge_draft(context: dict[str, Any], message: str, outcome: dict[str, Any]) -> int:
     """Turn a finished build into an approval-gated, revision-bound draft."""
     memory = context["memory"]
@@ -2674,6 +2920,9 @@ def stage_merge_draft(context: dict[str, Any], message: str, outcome: dict[str, 
         base_sha = str(outcome.get("base_sha") or "").strip().lower()
     if candidate_sha:
         preview["head_sha"] = candidate_sha
+    payload_effects, payload_revision_set_hash = _payload_revision_manifest(context)
+    if payload_effects:
+        preview["payload_revision_set_hash"] = payload_revision_set_hash
     meta = {
         "head": branch,
         "base": str(site.get("branch") or "main"),
@@ -2683,6 +2932,9 @@ def stage_merge_draft(context: dict[str, Any], message: str, outcome: dict[str, 
         "changed_paths": [str(path) for path in changed_paths],
         "preview": preview,
     }
+    if payload_effects:
+        meta["payload_effects"] = payload_effects
+        meta["payload_revision_set_hash"] = payload_revision_set_hash
     if context.get("_media_asset_ids"):
         meta["media_asset_ids"] = list(context["_media_asset_ids"])
         meta["materialized_media_paths"] = list(context.get("_materialized_media_paths") or [])
@@ -2719,6 +2971,7 @@ def stage_build(context: dict[str, Any], message: str, progress=None, media_asse
         merge_draft_id = stage_merge_draft(context, message, outcome)
         preview = dict(preview or preview_plan_for_paths([]))
         candidate_sha = _candidate_sha(context, outcome, str(outcome.get("branch") or PREVIEW_BRANCH))
+        payload_effects, payload_revision_set_hash = _payload_revision_manifest(context)
         if preview.get("requires_build"):
             deployer = context.get("source_deployment")
             start = getattr(deployer, "start", None)
@@ -2729,6 +2982,10 @@ def stage_build(context: dict[str, Any], message: str, progress=None, media_asse
                         "commit": candidate_sha,
                         "mode": "compiled_preview",
                         "draft_id": merge_draft_id,
+                        **({
+                            "payload_effects": payload_effects,
+                            "payload_revision_set_hash": payload_revision_set_hash,
+                        } if payload_effects else {}),
                     })
                     preview.update({
                         "status": "building",

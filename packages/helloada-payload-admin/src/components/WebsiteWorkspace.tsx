@@ -242,6 +242,32 @@ type IntakeStatus = {
   research?: IntakeResearchStatus
 }
 
+type OnboardingStepKey = 'launch_after_review' | 'complete_site_pages' | 'establish_growth_baseline' | 'plan_content_from_real_search_data'
+
+type OnboardingReport = {
+  candidate_sha?: string
+  title?: string
+  summary?: string
+  business?: { name?: string; offer?: string; audience?: string; primary_action?: string; brand_voice?: string }
+  first_page?: { route?: string; status?: string; passed_checks?: string[] }
+  planned_pages?: string[]
+  next_steps?: Array<{ key?: OnboardingStepKey; pages?: string[] }>
+  evidence?: {
+    research_available?: boolean
+    research?: Array<{ summary?: string; source?: string; title?: string; url?: string }>
+    unknowns?: string[]
+  }
+  limits?: { live_metrics_available?: boolean; explanation?: string }
+}
+
+type OnboardingStatus = {
+  enabled?: boolean
+  current_stage?: number
+  completed_stages?: number[]
+  report_state?: 'not_started' | 'preparing' | 'ready' | 'failed'
+  report?: OnboardingReport | null
+}
+
 type PendingAdaJob = {
   jobId: number
   conversationId: number
@@ -700,6 +726,8 @@ function ReviewWorkspace() {
   const [adaSteps, setAdaSteps] = useState<AdaJobStep[]>([])
   const [adaPhase, setAdaPhase] = useState<AdaPhase>('unknown')
   const [intakeStatus, setIntakeStatus] = useState<IntakeStatus>()
+  const [onboarding, setOnboarding] = useState<OnboardingStatus>()
+  const [onboardingReportOpen, setOnboardingReportOpen] = useState(false)
   const [messages, setMessages] = useState(initialMessages)
   const [loading, setLoading] = useState(true)
   const [sending, setSending] = useState(false)
@@ -754,6 +782,10 @@ function ReviewWorkspace() {
   const previousSendingRef = useRef(false)
   const activeAdaPollRef = useRef<number | undefined>(undefined)
   const chatWorking = sending || Boolean(pendingAdaJob)
+
+  useEffect(() => {
+    if (onboarding?.report) setOnboardingReportOpen(true)
+  }, [onboarding?.report?.candidate_sha])
 
   const scrollChatToBottom = useCallback((behavior: ScrollBehavior = 'auto') => {
     const element = chatLogRef.current
@@ -1184,6 +1216,7 @@ function ReviewWorkspace() {
           conversation_id?: number
           website_present?: boolean
           intake?: IntakeStatus
+          onboarding?: OnboardingStatus | null
           active_job?: {
             id?: number
             conversation_id?: number
@@ -1207,6 +1240,7 @@ function ReviewWorkspace() {
           loadWorkspace(background)
         }
         setIntakeStatus(body.intake)
+        setOnboarding(body.onboarding || undefined)
         if (body.conversation_id) setConversationId(body.conversation_id)
         if (body.active_job?.id && body.active_job.conversation_id) {
           const pendingJob: PendingAdaJob = {
@@ -2103,6 +2137,19 @@ function ReviewWorkspace() {
     return steps.slice(-8)
   })()
   const currentAdaProgress = adaProgressSteps[adaProgressSteps.length - 1]?.text || t('workspace.thinking')
+  const onboardingStages = [
+    t('workspace.onboardingBusiness'),
+    t('workspace.onboardingFirstPage'),
+    t('workspace.onboardingPlan'),
+    t('workspace.onboardingGrow'),
+  ]
+  const onboardingCurrentStage = Math.min(4, Math.max(1, onboarding?.current_stage || (intakeStatus?.confirmed ? 2 : 1)))
+  const onboardingNextStepText: Record<OnboardingStepKey, string> = {
+    launch_after_review: t('workspace.onboardingLaunch'),
+    complete_site_pages: t('workspace.onboardingPages'),
+    establish_growth_baseline: t('workspace.onboardingMeasurement'),
+    plan_content_from_real_search_data: t('workspace.onboardingContent'),
+  }
   return (
     <main className={`helloada-workspace helloada-owner-workspace shows-${mobilePane}`}>
       {error ? <div className="helloada-alert" role="alert">{error}</div> : null}
@@ -2268,6 +2315,21 @@ function ReviewWorkspace() {
                <span>{phaseSummary}</span>
                <span className="helloada-sr-only">{phaseNote}</span>
              </div>
+             {!websitePresent && onboarding?.enabled ? (
+               <ol className="helloada-onboarding-steps" aria-label={t('workspace.onboardingJourney')}>
+                 {onboardingStages.map((label, index) => {
+                   const stage = index + 1
+                   const completed = onboarding.completed_stages?.includes(stage) || false
+                   const current = onboardingCurrentStage === stage
+                   return (
+                     <li className={completed ? 'is-complete' : current ? 'is-current' : 'is-upcoming'} aria-current={current ? 'step' : undefined} key={stage}>
+                       <span className="helloada-onboarding-number">{completed ? '✓' : stage}</span>
+                       <span>{label}</span>
+                     </li>
+                   )
+                 })}
+               </ol>
+             ) : null}
              <div className="helloada-phase-actions">
                {hasBrief && adaPhase !== 'workspace' ? (
                  <button
@@ -2293,6 +2355,74 @@ function ReviewWorkspace() {
                {adaUnavailable ? <button className="helloada-phase-action" type="button" onClick={() => loadAdaStatus(conversationId)}>{t('owner.retry')}</button> : null}
              </div>
            </div> : null}
+
+           {!websitePresent && onboarding?.report_state === 'preparing' ? (
+             <p className="helloada-onboarding-report-state" role="status">{t('workspace.onboardingPlanPreparing')}</p>
+           ) : null}
+           {!websitePresent && onboarding?.report_state === 'failed' ? (
+             <p className="helloada-onboarding-report-state is-error" role="status">{t('workspace.onboardingPlanFailed')}</p>
+           ) : null}
+           {!websitePresent && onboarding?.report ? (
+             <details className="helloada-onboarding-report" open={onboardingReportOpen} onToggle={(event) => setOnboardingReportOpen(event.currentTarget.open)}>
+               <summary>{t('workspace.onboardingReportOpen')}</summary>
+               <div className="helloada-onboarding-report-content">
+                 <h2>{t('workspace.onboardingReportTitle')}</h2>
+                 {onboarding.report.summary ? <p className="helloada-onboarding-report-summary">{onboarding.report.summary}</p> : null}
+                 <section>
+                   <h3>{t('workspace.onboardingBusiness')}</h3>
+                   <dl>
+                     {onboarding.report.business?.name ? <div><dt>{t('workspace.onboardingName')}</dt><dd>{onboarding.report.business.name}</dd></div> : null}
+                     {onboarding.report.business?.offer ? <div><dt>{t('workspace.onboardingOffer')}</dt><dd>{onboarding.report.business.offer}</dd></div> : null}
+                     {onboarding.report.business?.audience ? <div><dt>{t('workspace.onboardingAudience')}</dt><dd>{onboarding.report.business.audience}</dd></div> : null}
+                     {onboarding.report.business?.primary_action ? <div><dt>{t('workspace.onboardingAction')}</dt><dd>{onboarding.report.business.primary_action}</dd></div> : null}
+                   </dl>
+                 </section>
+                 <section>
+                   <h3>{t('workspace.onboardingFirstPage')}</h3>
+                   <p>{t('workspace.onboardingPageVerified').replace('{route}', onboarding.report.first_page?.route || '/')}</p>
+                   {onboarding.report.first_page?.passed_checks?.length ? <p className="helloada-onboarding-report-evidence">{t('workspace.onboardingChecks').replace('{count}', String(onboarding.report.first_page.passed_checks.length))}</p> : null}
+                 </section>
+                 <section>
+                   <h3>{t('workspace.onboardingResearch')}</h3>
+                   {onboarding.report.evidence?.research?.length ? (
+                     <ul className="helloada-onboarding-research">
+                       {onboarding.report.evidence.research.map((item, index) => (
+                         <li key={`${item.source || 'research'}-${index}`}>
+                           <span>{item.summary}</span>
+                           {item.url ? <a href={item.url} target="_blank" rel="noreferrer">{item.title || t('workspace.onboardingResearchSource')} ↗</a> : item.title ? <small>{item.title}</small> : null}
+                         </li>
+                       ))}
+                     </ul>
+                   ) : <p>{t('workspace.onboardingResearchPending')}</p>}
+                   {onboarding.report.evidence?.unknowns?.length ? (
+                     <details className="helloada-onboarding-unknowns">
+                       <summary>{t('workspace.onboardingUnknowns')}</summary>
+                       <ul>{onboarding.report.evidence.unknowns.map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ul>
+                     </details>
+                   ) : null}
+                 </section>
+                 {onboarding.report.planned_pages?.length ? (
+                   <section>
+                     <h3>{t('workspace.onboardingPlannedPages')}</h3>
+                     <ul>{onboarding.report.planned_pages.map((page) => <li key={page}>{page}</li>)}</ul>
+                   </section>
+                 ) : null}
+                 <section>
+                   <h3>{t('workspace.onboardingNextSteps')}</h3>
+                   <ol>
+                     {onboarding.report.next_steps?.map((step) => step.key ? (
+                       <li key={step.key}>
+                         <strong>{onboardingNextStepText[step.key]}</strong>
+                         {step.pages?.length ? <span> — {step.pages.join(', ')}</span> : null}
+                       </li>
+                     ) : null)}
+                   </ol>
+                   <p className="helloada-onboarding-report-evidence">{t('workspace.onboardingNoLiveMetrics')}</p>
+                 </section>
+                 <a className="helloada-phase-action is-primary" href="/admin?view=growth">{t('workspace.onboardingReviewNextSteps')}</a>
+               </div>
+             </details>
+           ) : null}
 
            {briefOpen && hasBrief ? (
              <section className="helloada-brief-inspector" id="helloada-working-brief" aria-label={t('workspace.briefTitle')}>

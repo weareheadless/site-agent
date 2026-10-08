@@ -52,6 +52,79 @@ new dependency, first provision and validate that dependency in the service
 environment as an explicit dependency release; the API queue will not install
 packages ad hoc.
 
+Before an API release, the same snapshot validates every ready tenant in
+the single provisioned registry. Every tenant must explicitly declare its
+website state and adapter. Each enabled Payload tenant must use the canonical
+gateway, token and complete pinned contract. Preflight reads each registered
+HTTPS health endpoint, rejects redirects or malformed health, and compares the
+tenant runtime config with the Worker currently serving traffic. It does not
+compare runtime config with a queued target contract: the target is expected to
+advance only after its Worker is verified and promoted. A dormant tenant with
+Payload disabled does not need a Payload instance. Any mismatch stops before
+tests, slot activation, or service restart.
+
+The release runner crosses one authenticated `activate-runtime` boundary for
+every Worker release, not only initial bootstrap. It requires the exact release
+receipt, uploaded version at 100%, matching live health identity, and the
+explicit `websitePresent` state. Site-Agent then synchronizes
+`adminVersion`, core version, content contract, schema revision/identity,
+migration head and website-present state from that verified receipt into the
+registered tenant config. It preserves the tenant's locale and media settings,
+reloads the mounted runtime only if its pinned config changed, and only then
+runs the authenticated connection check. Thus API preflight sees the active
+Worker contract, while a candidate may be newer without creating a false
+mismatch. If an existing config genuinely differs from its active Worker, the
+operator-only `--sync --tenant <id>` dry run reads that active health identity;
+`--apply` may reconcile only the explicitly named registered tenant. It never
+uses the queued candidate identity or changes a database, Worker, content
+document, or schema. Finish with `--validate` before an API release.
+
+## HelloAda project-selector release
+
+HelloAda's own Worker uses this same timer and dispatcher; it is not deployed
+from a developer checkout or a separate manual Wrangler command. After the
+HelloAda change is reviewed, merged to `weareheadless/helloada/main`, and its
+CI passes on the pinned Node/npm versions, queue one new ID and the exact
+40-character app commit in `deploy/desired-helloada-app-release.json`:
+
+```json
+{
+  "schema": 1,
+  "release": { "id": "20261006-helloada-app-1", "sha": "<full-40-character-main-SHA>" }
+}
+```
+
+The dispatcher verifies the app SHA is on the official `helloada/main`,
+archives that exact commit into a unique mode-0700 job workspace, installs only
+its lockfile with a job-scoped npm cache, runs its tests, lint, typecheck, Next
+build and OpenNext Worker build with local bindings, then validates the exact
+Worker, API, D1, R2 and required-secret configuration. Source, dependencies,
+temporary secrets/configuration and build output stay under that one workspace
+and are removed on success or failure; interrupted workspaces are swept by the
+next serialized dispatch. The old persistent HelloAda source/npm caches are
+removed under the queue lock. Superseded Site-Agent control snapshots are
+pruned while the current exact-main snapshot remains cached for the timer.
+Only the small receipt remains at
+`/SOCIAL/payload-releases/runs/helloada-app/<release-id>/receipt.json`; it
+records the source SHA, artifact hash, exact Cloudflare version and deployment
+result. The pipeline uploads one immutable version with the exact
+`HELLOADA_RELEASE_SHA`, promotes only that version to 100%, and requires
+`https://helloada.app/api/health` to return that same SHA. If live verification
+fails, it restores the exact previous Worker version and records a terminal
+failed receipt.
+
+The handoff private key is read from the declared mode-`0600` file at
+`/SOCIAL/configs/helloada-app/secrets.json`; the release fails before upload if
+it is missing, malformed, or does not cryptographically match
+`HELLOADA_HANDOFF_PUBLIC_KEY` in the protected Site-Agent API environment file.
+It is injected only for the immutable Worker upload, never exposed to `npm
+ci`, tests, lint, typecheck or build. The HelloAda app release does not migrate
+Payload data or launch a customer website. A successful receipt means only
+that the project selector itself is live at the exact reviewed SHA.
+
+Failed or interrupted app release IDs are terminal. Fix the cause and queue a
+new unique ID; never edit a retained source snapshot or repurpose a receipt.
+
 ## Release command
 
 1. Review, test and push the customer source to its official GitHub `main`.
@@ -91,11 +164,13 @@ rollout, first diagnose the failed gate. Then rerun only verification from the
 reviewed VPS checkout, using the same recorded tenant, full SHA and release ID:
 
 ```bash
-.venv/bin/python scripts/deploy-payload-customer.py --tenant <tenant> --ref <full-sha> --release-id <recorded-id> --verify-only
+.venv/bin/python scripts/deploy-payload-customer.py --tenant <tenant> --ref <full-sha> --release-id <recorded-id> --release-purpose website --verify-only
 ```
 
-This command takes the queue lock, checks the retained artifact's hash and
-requires the exact uploaded version at 100% traffic. It does not build, upload,
+This command takes the queue lock, validates the receipt's per-file artifact
+hashes and requires the exact uploaded version at 100% traffic. The built
+workspace is not retained on the VPS; source is reproducible from the recorded
+Git SHA and deployed versions remain in Cloudflare. It does not build, upload,
 promote or change customer data. Prior failures remain in `verificationHistory`.
 The normal gate also waits for edge convergence with bounded repetitions of
 the same strict health and authenticated connection checks. A failure never
@@ -165,7 +240,15 @@ bootstrap from the exact official-main snapshot. The timer persists across
 SSH/chat disconnects and machine restarts. A systemd timeout kills the complete
 process group; the next poll records an interrupted attempt.
 
-Each customer gets a fresh Git clone. The pipeline checks its source SHA is on
+Each customer gets a fresh Git clone in a unique, mode-0700 workspace under
+`/SOCIAL/payload-releases/work`. The workspace has a job-scoped npm cache and
+is never placed in its durable receipt directory. Before dependency
+installation, build, or remote database mutation, the pipeline requires the tenant verifier command,
+`tsx` runtime and lock entry, and verifier source to match the canonical
+site-agent template exactly, and the declared `@payload-config` alias must
+resolve to one Payload config inside the checkout. Missing or drifted
+verification code stops the release before D1 can change. The pipeline then
+checks its source SHA is on
 official `main`, verifies the exact Node/npm versions in
 `deploy/payload-customers.json`, runs `npm ci` with that absolute npm executable,
 then typechecks and builds OpenNext with local bindings. The shared site-agent
@@ -173,18 +256,25 @@ preview builder receives the same four-value toolchain contract (`node_path`,
 `node_version`, `npm_command`, `npm_version`) from the host config; tenant
 registrations inherit it centrally. Missing or mismatched versions stop the
 build before dependency installation. Production credentials are supplied only to Cloudflare calls,
-never to dependency installation or builds. The full OpenNext output and the
-custom Worker entry are both part of the artifact contract: the pipeline runs a
-Wrangler dry-run against the configured `main`, hashes and archives its compiled
-Worker with `.open-next`, `worker.ts`, `wrangler.jsonc` and the lockfile, then
-uses the unchanged source/configuration for OpenNext `upload`. Upload fails if
-any inspected input changed. The pipeline checks production did not change
-during the build and uploads an immutable, unpromoted version. If the queue entry is an
+never to dependency installation or builds. The artifact is inspected and hashed in the temporary workspace, then uploaded
+directly as an immutable, unpromoted version. The pipeline checks production
+did not change during the build. If the queue entry is an
 explicit tenant schema migration, it verifies the exact live ledger prefix,
-applies only the committed Payload migration, and verifies the full target
-ledger and Payload contract while the prior Worker remains active. It then
-promotes that exact uploaded version to 100% traffic, checks the live SHA and
-tenant, and performs the authenticated connection gate.
+creates a private temporary Wrangler config from the already-validated tenant
+Worker contract, and marks only that tenant's D1 and R2 bindings as remote for
+the migration process. The package-managed Payload CLI receives that exact
+config path; its context refuses production migrations without both the
+Cloudflare credential and this explicit config. After `npm run payload -- migrate`,
+the pipeline reads the ledger directly from the registered Cloudflare D1 and
+requires the complete committed chain before removing the temporary config.
+This keeps ordinary local development bindings local while ensuring the
+production migration cannot silently succeed against Wrangler's local emulator.
+The prior Worker remains active until the remote ledger and candidate Payload
+contract pass. It then
+promotes that exact uploaded version to 100% traffic, checks its live SHA,
+tenant and complete Payload identity, then calls the authenticated runtime
+activation endpoint to synchronize the central tenant config before performing
+the Ada/Payload connection gate.
 
 Application releases use OpenNext `upload` and Wrangler `versions deploy`.
 Domain routes, DNS and cron triggers are provisioned separately and are never
@@ -192,12 +282,38 @@ rewritten by an application release. This keeps the existing deployment token's
 Worker permissions sufficient. See [Cloudflare's deployment permissions](https://developers.cloudflare.com/workers/authorization/workers/)
 and [OpenNext's upload command](https://opennext.js.org/cloudflare/cli).
 
-Artifacts, source, receipts and previous Cloudflare versions are retained under
-`/SOCIAL/payload-releases`. Ordinary application releases never mutate a Payload
-database. The sole exception is an explicit new-tenant bootstrap request carrying
+For a `workers.dev` health target, the account subdomain is read from Cloudflare
+and the registered health URL must be exactly
+`https://<worker>.<account-subdomain>.workers.dev/api/health`. The release
+pipeline first verifies that the exact uploaded Worker version receives 100%
+of traffic, then enables that script's production workers.dev route and runs
+the health and authenticated connection gates. A missing account subdomain or
+URL mismatch fails closed. Custom-domain health targets do not change the
+workers.dev route. Do not construct or register a bare `<worker>.workers.dev`
+hostname.
+
+The durable release record under `/SOCIAL/payload-releases/runs` contains the
+receipt and small browser-verification evidence. Exact source remains in
+GitHub; Cloudflare retains uploaded Worker versions for promotion and rollback.
+The checkout, dependency tree, job-scoped npm cache, temporary configs and
+OpenNext output live only under `/SOCIAL/payload-releases/work` during a build.
+The runner deletes them on success or failure, and the next serialized
+dispatcher pass cleans workspaces left by an interrupted process. The queue lock
+allows one canonical Payload build at a time, and a build refuses to start
+unless at least 8 GiB is free. This makes build storage depend on the one active
+job, not on the number of past releases. Ordinary application releases never
+mutate a Payload database. The sole exception is an explicit new-tenant bootstrap request carrying
 the exact manifest migration-chain hash: the pipeline confirms the registered
-D1 identity is empty, applies the committed Payload migration chain through the
-pinned Payload CLI, and verifies the complete migration ledger before upload.
+D1 identity is empty, creates the same private remote-binding config from that
+Worker's exact D1/R2 identities, and applies the committed migration chain
+through the generated site's package-managed Payload CLI entrypoint. The
+Payload context rejects production migrations without that config, and the
+pipeline verifies the complete ledger against the Cloudflare D1 API before
+upload; it never treats a successful local-emulator migration as production
+state.
+The emptiness check excludes only Cloudflare's reserved `_cf_KV` D1 system
+table; any other application table makes the database non-empty and requires
+the normal exact-ledger rules below.
 Any non-empty or partially initialized database fails closed. Existing-tenant
 schema upgrades require a separate exact queue request containing the old
 migration-ledger identity and registered target head. The pipeline accepts only
@@ -206,7 +322,23 @@ guesses SQL, and leaves the prior Worker serving until the migrated schema and
 candidate Payload contract pass. A missing ledger, drifted database or
 uncommitted migration stops the release. Source deployment cannot invent or
 silently apply a schema change.
-Rollback uses the previous receipt's Cloudflare version with
+
+The queue's exact `initializeSchema` operation selects the distinct
+`workspace-bootstrap` verification contract. Before promotion, the pipeline
+proves the committed template/schema identity, exact migration ledger, and
+required Worker routes. After promotion, the normal live gates verify the
+Worker's schema health and authenticated Payload connection. Bootstrap does
+not require business content or publish a website; it only makes the
+authenticated Payload admin ready for Ada's intake. Every other release selects
+the `website` contract and runs the canonical Payload verifier. When the
+manifest explicitly says `websitePresent: false`, the verifier requires all
+schema, draft, version, media and global reads but permits an empty site. When
+`websitePresent: true`, it additionally requires a publishable site name,
+shared header/footer navigation and a complete published home page. The flag is
+required and is never inferred from missing content. Release purpose is
+required at the queue-to-runner boundary, and bootstrap must carry the exact
+registered migration head; one release class cannot relax the other's gate.
+Rollback uses the previous receipt's Cloudflare versionRollback uses the previous receipt's Cloudflare version with
 `wrangler versions deploy <version>@100% --name <worker> --yes` through the
 declared credential profile, followed by live checks. It never rolls back data.
 

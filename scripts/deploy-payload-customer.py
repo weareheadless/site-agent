@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -16,17 +17,33 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 ROOT = Path(__file__).resolve().parents[1]
+if TYPE_CHECKING:
+    from site_agent.hands.cloudflare_resources import CloudflareResourceProvisioner
+
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+D1_SYSTEM_TABLES = frozenset({"_cf_KV"})
+MINIMUM_BUILD_FREE_BYTES = 8 * 1024 ** 3
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def ensure_build_capacity(path: Path) -> None:
+    free_bytes = shutil.disk_usage(path).free
+    if free_bytes < MINIMUM_BUILD_FREE_BYTES:
+        free_gib = free_bytes / (1024 ** 3)
+        minimum_gib = MINIMUM_BUILD_FREE_BYTES // (1024 ** 3)
+        raise RuntimeError(
+            f"Payload build requires at least {minimum_gib} GiB free; "
+            f"only {free_gib:.1f} GiB is available"
+        )
 
 
 def atomic_json(path: Path, value: Any) -> None:
@@ -35,6 +52,120 @@ def atomic_json(path: Path, value: Any) -> None:
     temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
     temporary.chmod(0o600)
     temporary.replace(path)
+
+
+def payload_migration_command(manifest: dict[str, Any]) -> list[str]:
+    """Run migrations through the site's pinned, package-managed Payload entrypoint."""
+    return [str(Path(manifest["npmBin"]) / "npm"), "run", "payload", "--", "migrate"]
+
+
+def payload_remote_bindings_config_file(temporary_directory: Path, customer: dict[str, Any],
+                                  worker_config: dict[str, Any]) -> Path:
+    """Build a private Wrangler config that explicitly targets this tenant's remote bindings."""
+    compatibility_date = str(worker_config.get("compatibilityDate") or "")
+    try:
+        datetime.strptime(compatibility_date, "%Y-%m-%d")
+    except ValueError as error:
+        raise ValueError("Payload migration requires the exact Worker compatibility date") from error
+    flags = worker_config.get("compatibilityFlags")
+    if not isinstance(flags, list) or any(not isinstance(flag, str) or not flag for flag in flags):
+        raise ValueError("Payload migration requires the exact Worker compatibility flags")
+    config = {
+        "name": customer["worker"],
+        "compatibility_date": compatibility_date,
+        "compatibility_flags": flags,
+        "d1_databases": [{
+            "binding": "D1",
+            "database_id": customer["d1DatabaseId"],
+            "database_name": customer["d1DatabaseName"],
+            "remote": True,
+        }],
+        "r2_buckets": [{
+            "binding": "R2",
+            "bucket_name": customer["r2BucketName"],
+            "remote": True,
+        }],
+    }
+    temporary_directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor, filename = tempfile.mkstemp(
+        prefix=".helloada-payload-migration-", suffix=".jsonc", dir=temporary_directory,
+    )
+    path = Path(filename)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump(config, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+        return path
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+
+
+def require_release_purpose(
+    release_purpose: str,
+    initialization_head: str | None,
+) -> None:
+    """Bind the verifier contract to the exact operation recorded in GitHub."""
+    expected_purpose = "workspace-bootstrap" if initialization_head is not None else "website"
+    if release_purpose != expected_purpose:
+        raise ValueError("release purpose does not match the exact queued operation")
+    if initialization_head is not None and not SHA256_RE.fullmatch(initialization_head):
+        raise ValueError("workspace bootstrap requires the exact committed Payload migration head")
+
+
+def verify_workspace_bootstrap_contract(
+    checkout: Path,
+    receipt: dict[str, Any],
+    customer: dict[str, Any],
+    initialization_head: str | None,
+) -> None:
+    """Require the exact initialized schema before making a new admin available."""
+    manifest = json.loads((checkout / "template-manifest.json").read_text(encoding="utf-8"))
+    expected_migrations = [str(item["name"]) for item in manifest["migrations"]]
+    if (
+        initialization_head != customer["migrationHead"]
+        or manifest.get("migrationHead") != customer["migrationHead"]
+        or receipt.get("verifiedMigrationHead") != customer["migrationHead"]
+        or receipt.get("appliedMigrations") != expected_migrations
+    ):
+        raise RuntimeError("workspace bootstrap does not match the exact registered Payload schema and migration chain")
+
+
+def validate_payload_verifier(checkout: Path) -> None:
+    """Require the exact site-agent verifier before any build or tenant D1 mutation."""
+    template = ROOT / "src/site_agent/templates/next-payload"
+    package_path = checkout / "package.json"
+    lock_path = checkout / "package-lock.json"
+    tsconfig_path = checkout / "tsconfig.json"
+    verifier_path = checkout / "scripts/verify-payload-contract.ts"
+    if not package_path.is_file() or not lock_path.is_file() or not tsconfig_path.is_file():
+        raise RuntimeError("tenant source must include its package manifest, lockfile, and tsconfig")
+    package = json.loads(package_path.read_text(encoding="utf-8"))
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    tsconfig = json.loads(tsconfig_path.read_text(encoding="utf-8"))
+    config_targets = tsconfig.get("compilerOptions", {}).get("paths", {}).get("@payload-config")
+    if not isinstance(config_targets, list) or len(config_targets) != 1 or not isinstance(config_targets[0], str):
+        raise RuntimeError("tenant tsconfig must map @payload-config to one existing Payload config")
+    config_path = checkout / config_targets[0]
+    try:
+        config_path.resolve().relative_to(checkout.resolve())
+    except ValueError as error:
+        raise RuntimeError("tenant @payload-config target must stay inside the source checkout") from error
+    if not config_path.is_file():
+        raise RuntimeError("tenant tsconfig @payload-config target does not exist")
+    expected_package = json.loads((template / "package.json").read_text(encoding="utf-8"))
+    expected_script = expected_package["scripts"]["verify:payload"]
+    expected_tsx = expected_package["devDependencies"]["tsx"]
+    if package.get("scripts", {}).get("verify:payload") != expected_script:
+        raise RuntimeError("tenant Payload verifier command must match the site-agent template")
+    if package.get("devDependencies", {}).get("tsx") != expected_tsx:
+        raise RuntimeError("tenant Payload verifier must declare the template's exact tsx version")
+    if lock.get("packages", {}).get("", {}).get("devDependencies", {}).get("tsx") != expected_tsx:
+        raise RuntimeError("tenant lockfile does not pin the template's exact Payload verifier runtime")
+    expected_source = (template / "scripts/verify-payload-contract.ts").read_bytes()
+    if not verifier_path.is_file() or verifier_path.read_bytes() != expected_source:
+        raise RuntimeError("tenant Payload verifier source must match the site-agent template exactly")
 
 
 def run(command: list[str], cwd: Path, env: dict[str, str]) -> str:
@@ -135,8 +266,17 @@ def validate_toolchain_manifest(manifest: dict[str, Any]) -> None:
 
 
 def validate_worker_contract(worker_config: dict[str, Any], customer: dict[str, Any], tenant: str) -> None:
-    if worker_config.get("d1Count") != 1 or worker_config.get("r2Count") != 2:
-        raise RuntimeError("Worker must have exactly one tenant D1, public-media R2, and private-email R2 binding")
+    if worker_config.get("d1Count") != 1 or worker_config.get("r2Count") != 1:
+        raise RuntimeError("Worker must have exactly one canonical tenant D1 and R2 binding")
+    if worker_config.get("d1Binding") != "D1" or worker_config.get("r2Binding") != "R2":
+        raise RuntimeError("Worker must use the canonical D1 and R2 binding names")
+    try:
+        datetime.strptime(str(worker_config.get("compatibilityDate") or ""), "%Y-%m-%d")
+    except ValueError as error:
+        raise RuntimeError("Worker compatibility date is missing or invalid") from error
+    flags = worker_config.get("compatibilityFlags")
+    if not isinstance(flags, list) or any(not isinstance(flag, str) or not flag for flag in flags):
+        raise RuntimeError("Worker compatibility flags are missing or invalid")
     if worker_config.get("name") != customer["worker"] or worker_config.get("tenant") != tenant:
         raise RuntimeError("Worker name or tenant binding does not match the registry")
     if worker_config.get("admin") != customer["payloadAdmin"]:
@@ -194,17 +334,59 @@ def d1_query(customer: dict[str, Any], sql: str, env: dict[str, str]) -> list[di
 def applied_payload_migrations(customer: dict[str, Any], env: dict[str, str]) -> tuple[list[str], list[str]]:
     tables = d1_query(customer,
         "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name", env)
-    table_names = [str(row.get("name") or "") for row in tables]
+    # Cloudflare creates _cf_KV in every D1 database; it is provider-owned,
+    # reserved, and not application data. Ignore this exact system table only.
+    table_names = []
+    for row in tables:
+        name = str(row.get("name") or "")
+        if name not in D1_SYSTEM_TABLES:
+            table_names.append(name)
     if "payload_migrations" not in table_names:
         return table_names, []
     rows = d1_query(customer, "SELECT name FROM payload_migrations ORDER BY batch ASC, id ASC", env)
     return table_names, [str(row.get("name") or "") for row in rows]
 
 
+def run_payload_migration(checkout: Path, customer: dict[str, Any], worker_config: dict[str, Any],
+                          env: dict[str, str], base: dict[str, str], manifest: dict[str, Any],
+                          tenant: str, temporary_directory: Path) -> str:
+    config_path = payload_remote_bindings_config_file(temporary_directory, customer, worker_config)
+    try:
+        runtime = tenant_runtime_secrets(manifest, tenant)
+        migration_env = {
+            **base, **env, **runtime,
+            "NODE_ENV": "production",
+            "PAYLOAD_CLI": "1",
+            "HELLOADA_CLOUDFLARE_CONFIG_PATH": str(config_path),
+        }
+        return run(payload_migration_command(manifest), checkout, migration_env)
+    finally:
+        config_path.unlink(missing_ok=True)
+
+
+def run_payload_contract_verifier(checkout: Path, customer: dict[str, Any],
+                                   worker_config: dict[str, Any], env: dict[str, str],
+                                   base: dict[str, str], temporary_directory: Path) -> str:
+    config_path = payload_remote_bindings_config_file(temporary_directory, customer, worker_config)
+    try:
+        website_present = customer.get("websitePresent")
+        if not isinstance(website_present, bool):
+            raise RuntimeError("release manifest must explicitly declare websitePresent")
+        verifier_env = {
+            **base, **env,
+            "HELLOADA_CLOUDFLARE_CONFIG_PATH": str(config_path),
+            "HELLOADA_WEBSITE_PRESENT": "true" if website_present else "false",
+        }
+        return run(["npm", "run", "verify:payload"], checkout, verifier_env)
+    finally:
+        config_path.unlink(missing_ok=True)
+
+
 def enforce_payload_migrations(checkout: Path, customer: dict[str, Any], env: dict[str, str],
                                initialization_head: str | None, migration_from_ledger: str | None,
                                base: dict[str, str],
-                               manifest: dict[str, Any], tenant: str, stage: Any) -> list[str]:
+                               manifest: dict[str, Any], tenant: str, stage: Any,
+                               worker_config: dict[str, Any], temporary_directory: Path) -> list[str]:
     from site_agent.payload_contract import PayloadContractError, validate_payload_migrations
 
     try:
@@ -223,9 +405,7 @@ def enforce_payload_migrations(checkout: Path, customer: dict[str, Any], env: di
         if initialization_head != template["migrationHead"]:
             raise RuntimeError("empty tenant D1 requires the explicit bootstrap initialization receipt")
         stage("initialize-schema")
-        runtime = tenant_runtime_secrets(manifest, tenant)
-        migration_env = {**base, **env, **runtime, "NODE_ENV": "production", "PAYLOAD_CLI": "1"}
-        run([str(checkout / "node_modules/.bin/payload"), "migrate"], checkout, migration_env)
+        run_payload_migration(checkout, customer, worker_config, env, base, manifest, tenant, temporary_directory)
         tables, applied = applied_payload_migrations(customer, env)
     elif "payload_migrations" not in tables:
         raise RuntimeError("non-empty tenant D1 has no Payload migration ledger")
@@ -238,9 +418,7 @@ def enforce_payload_migrations(checkout: Path, customer: dict[str, Any], env: di
         if migration_ledger_head(applied) != migration_from_ledger:
             raise RuntimeError("tenant D1 migration ledger changed after the schema-migration request was approved")
         stage("migrate-schema")
-        runtime = tenant_runtime_secrets(manifest, tenant)
-        migration_env = {**base, **env, **runtime, "NODE_ENV": "production", "PAYLOAD_CLI": "1"}
-        run([str(checkout / "node_modules/.bin/payload"), "migrate"], checkout, migration_env)
+        run_payload_migration(checkout, customer, worker_config, env, base, manifest, tenant, temporary_directory)
         tables, applied = applied_payload_migrations(customer, env)
     elif migration_from_ledger is not None:
         prefix_heads = {
@@ -380,6 +558,80 @@ def check_health(url: str, tenant: str, customer: dict[str, Any], sha: str) -> d
     return body
 
 
+def control_plane_token(env_file: str | Path, base: dict[str, str]) -> str:
+    """Load the server-only activation credential from the declared API env file."""
+    from site_agent.config import load_env_file
+
+    token = str(load_env_file(env_file, base).get("HELLOADA_CONTROL_PLANE_TOKEN") or "").strip()
+    if not token:
+        raise RuntimeError("the declared HelloAda control-plane credential is missing")
+    return token
+
+
+def activate_tenant_runtime(
+    api_url: str,
+    tenant: str,
+    release_id: str,
+    source_sha: str,
+    token: str,
+) -> None:
+    """Mount the pending tenant after Worker health and before connection auth."""
+    endpoint = (
+        api_url.rstrip("/")
+        + "/control-plane/websites/"
+        + urllib.parse.quote(tenant, safe="")
+        + "/activate-runtime"
+    )
+    payload = json.dumps({"release_id": release_id, "source_sha": source_sha}).encode("utf-8")
+    request = urllib.request.Request(
+        endpoint,
+        data=payload,
+        method="POST",
+        headers={
+            "Authorization": "Bearer " + token,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "HelloAda-Release/1.0",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=25) as response:
+            result = json.load(response)
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"tenant runtime activation returned HTTP {exc.code}") from None
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError("tenant runtime activation did not return a valid response") from exc
+    if (
+        not isinstance(result, dict)
+        or result.get("tenant_id") != tenant
+        or result.get("release_id") != release_id
+        or result.get("source_sha") != source_sha
+        or result.get("runtime_active") is not True
+    ):
+        raise RuntimeError("tenant runtime activation identity did not match the release")
+
+
+def workers_dev_provisioner(
+    customer: dict[str, Any], deploy_env: dict[str, str],
+) -> CloudflareResourceProvisioner | None:
+    """Resolve and validate the account-qualified workers.dev health origin."""
+    health = str(customer.get("health") or "")
+    hostname = urllib.parse.urlsplit(health).hostname or ""
+    if not hostname.endswith(".workers.dev"):
+        return None
+    token = str(deploy_env.get("CLOUDFLARE_API_TOKEN") or "").strip()
+    account_id = str(deploy_env.get("CLOUDFLARE_ACCOUNT_ID") or "").strip()
+    if not token or not account_id:
+        raise RuntimeError("Cloudflare credentials are required to validate the workers.dev origin")
+    from site_agent.hands.cloudflare_resources import CloudflareResourceProvisioner
+
+    provisioner = CloudflareResourceProvisioner(account_id, token)
+    expected = provisioner.workers_dev_url(str(customer.get("worker") or "")) + "/api/health"
+    if health != expected:
+        raise RuntimeError("registered workers.dev health endpoint does not match the Cloudflare account subdomain")
+    return provisioner
+
+
 def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dict[str, Any],
                 deploy_env: dict[str, str], base: dict[str, str], stage: Any) -> None:
     stage("verify-deployment")
@@ -389,7 +641,16 @@ def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dic
             or versions[0]["version_id"] != receipt["uploadedVersion"]):
         raise RuntimeError("the exact uploaded Worker version does not receive 100% of production traffic")
     receipt["deployment"] = deployment
+    workers_dev = workers_dev_provisioner(customer, deploy_env)
+    if workers_dev is not None:
+        stage("enable-workers-dev")
+        workers_dev.ensure_workers_dev_route(str(customer["worker"]))
+        stage("verify-deployment")
     gate = manifest["connectionGate"]
+    # Every verified Worker version crosses the same control-plane boundary:
+    # the API synchronizes its runtime contract before the authenticated
+    # connection gate. Bootstrap and ordinary tenant releases differ only in
+    # schema initialization policy, not in runtime activation.
     # Edge rollout is asynchronous. Repeat the same strict read-only gates;
     # never change the version, identity, endpoint or success criteria.
     for attempt in range(12):
@@ -397,6 +658,11 @@ def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dic
             receipt["health"] = check_health(customer["health"], receipt["tenant"],
                                              customer, receipt["sourceSha"])
             stage("verify-connection")
+            activation_token = control_plane_token(gate["envFile"], base)
+            activate_tenant_runtime(
+                gate["apiUrl"], receipt["tenant"], receipt["releaseId"],
+                receipt["sourceSha"], activation_token,
+            )
             run([sys.executable, str(ROOT / "scripts/check-helloada-connections.py"),
                  "--config", gate["config"], "--env-file", gate["envFile"],
                  "--api-url", gate["apiUrl"], "--tenant", receipt["tenant"]], ROOT,
@@ -412,15 +678,20 @@ def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dic
 
 
 def verification_receipt(directory: Path, tenant: str, sha: str, release_id: str,
-                         customer: dict[str, Any], approval_id: int | None = None,
+                         customer: dict[str, Any], release_purpose: str,
+                         approval_id: int | None = None,
                          initialization_head: str | None = None) -> dict[str, Any]:
     receipt = json.loads((directory / "receipt.json").read_text())
+    require_release_purpose(release_purpose, initialization_head)
+    recorded_purpose = "workspace-bootstrap" if receipt.get("initialSchemaHead") is not None else "website"
+    if recorded_purpose != release_purpose:
+        raise ValueError("verification purpose differs from the exact queued release operation")
     expected = {"tenant": tenant, "sourceSha": sha, "releaseId": release_id,
                 "worker": customer["worker"], "repository": customer["repository"],
                 "payloadAdmin": customer["payloadAdmin"], "payloadCore": customer["payloadCore"],
                 "contentContract": customer["contentContract"],
                 "schemaRevision": customer["schemaRevision"], "schemaIdentity": customer["schemaIdentity"],
-                "migrationHead": customer["migrationHead"]}
+                "migrationHead": customer["migrationHead"], "websitePresent": customer["websitePresent"]}
     if approval_id is not None:
         expected["approvalId"] = approval_id
     if initialization_head is not None:
@@ -432,9 +703,13 @@ def verification_receipt(directory: Path, tenant: str, sha: str, release_id: str
         raise ValueError("only a promoted release may resume read-only verification")
     if not receipt.get("uploadedVersion") or not receipt.get("deployment"):
         raise ValueError("release has no recorded immutable production promotion")
-    archive = directory / "worker-artifact.tar.gz"
-    if hashlib.sha256(archive.read_bytes()).hexdigest() != receipt.get("archiveSha256"):
-        raise ValueError("recorded release artifact is missing or changed")
+    artifact_hashes = receipt.get("artifactHashes")
+    if (not isinstance(artifact_hashes, dict) or not artifact_hashes
+            or any(not isinstance(path, str) or not path or Path(path).is_absolute()
+                   or ".." in Path(path).parts or not isinstance(digest, str)
+                   or not SHA256_RE.fullmatch(digest)
+                   for path, digest in artifact_hashes.items())):
+        raise ValueError("release has no valid verified artifact manifest")
     receipt.setdefault("verificationHistory", []).append({key: receipt.get(key) for key in
         ("status", "stage", "error", "finishedAt")})
     receipt.pop("error", None)
@@ -518,6 +793,8 @@ def main() -> int:
     parser.add_argument("--release-id", required=True)
     parser.add_argument("--approval-id", type=int)
     parser.add_argument("--initialize-schema-head", help="hash of the exact Payload migration chain for an empty new tenant")
+    parser.add_argument("--release-purpose", choices=("workspace-bootstrap", "website"), required=True,
+                        help="explicit release contract selected by the canonical release queue")
     parser.add_argument("--schema-migration-from-ledger-identity", help="exact identity of the current Payload ledger for an approved tenant schema migration")
     parser.add_argument("--verify-only", action="store_true",
                         help="Recheck an already promoted version; never build, upload or promote")
@@ -529,7 +806,14 @@ def main() -> int:
     if customer is None:
         parser.error("tenant is not registered")
     validate_target(customer, args.tenant, args.ref, args.release_id)
-    directory = Path(manifest["releaseRoot"]) / "runs" / args.tenant / args.release_id
+    try:
+        require_release_purpose(args.release_purpose, args.initialize_schema_head)
+    except ValueError as error:
+        parser.error(str(error))
+    release_root = Path(manifest["releaseRoot"])
+    directory = release_root / "runs" / args.tenant / args.release_id
+    workspace = None
+    workspace_path = None
     # Serialize read-only continuation with the queue, which owns this lock
     # during normal releases. Keep the handle alive until main returns.
     verification_lock = None
@@ -547,6 +831,7 @@ def main() -> int:
         "payloadAdmin": customer["payloadAdmin"], "payloadCore": customer["payloadCore"],
         "contentContract": customer["contentContract"], "schemaRevision": customer["schemaRevision"],
         "schemaIdentity": customer["schemaIdentity"], "migrationHead": customer["migrationHead"],
+        "websitePresent": customer["websitePresent"],
         "d1DatabaseId": customer["d1DatabaseId"], "d1DatabaseName": customer["d1DatabaseName"],
         "r2BucketName": customer["r2BucketName"],
         "startedAt": utc_now(), "status": "running", "stage": "preflight",
@@ -568,7 +853,7 @@ def main() -> int:
         receipt["schemaMigrationTargetHead"] = customer["migrationHead"]
     if args.verify_only:
         receipt = verification_receipt(directory, args.tenant, args.ref, args.release_id, customer,
-                                       args.approval_id, args.initialize_schema_head)
+                                       args.release_purpose, args.approval_id, args.initialize_schema_head)
 
     def stage(name: str) -> None:
         receipt["stage"] = name
@@ -578,17 +863,32 @@ def main() -> int:
     try:
         stage("credentials")
         sys.path.insert(0, str(ROOT / "src"))
-        from site_agent.credentials import credential_environment, credential_profile, github_remote, github_ssh_command
+        from site_agent.credentials import credential_environment, credential_profile, github_remote, github_ssh_command, github_api_token
         profile = {"credentials": {"profile_file": manifest["credentialProfile"]}}
         cloudflare = dict(credential_profile(profile, "cloudflare"))
         if not cloudflare.get("env_file") or not Path(cloudflare["env_file"]).is_file():
             raise RuntimeError("declared Cloudflare credential file is missing")
         base = {k: os.environ[k] for k in ("HOME", "USER", "LANG", "TZ", "TMPDIR") if k in os.environ}
-        base.update({"PATH": manifest["npmBin"] + ":" + manifest["nodeBin"] + ":/usr/local/bin:/usr/bin:/bin", "CI": "1",
-                     "npm_config_cache": str(Path(manifest["releaseRoot"]) / "npm-cache")})
+        base.update({"PATH": manifest["npmBin"] + ":" + manifest["nodeBin"] + ":/usr/local/bin:/usr/bin:/bin",
+                     "CI": "1"})
+        if not args.verify_only:
+            ensure_build_capacity(release_root)
+            work_root = release_root / "work"
+            work_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            work_root.chmod(0o700)
+            workspace = tempfile.TemporaryDirectory(
+                prefix=f"{args.tenant}-{args.release_id}-", dir=str(work_root),
+            )
+            workspace_path = Path(workspace.name)
+            checkout = workspace_path / "source"
+            temporary_root = workspace_path / "temporary"
+            temporary_root.mkdir(mode=0o700)
+            base["npm_config_cache"] = str(workspace_path / "npm-cache")
+            base["TMPDIR"] = str(temporary_root)
         deploy_env = credential_environment({"credentials": {"cloudflare": cloudflare}}, base)
         if not deploy_env.get("CLOUDFLARE_API_TOKEN") or not deploy_env.get("CLOUDFLARE_ACCOUNT_ID"):
             raise RuntimeError("declared Cloudflare profile is incomplete")
+        workers_dev_provisioner(customer, deploy_env)
         if args.verify_only:
             verify_live(receipt, customer, manifest, deploy_env, base, stage)
             receipt.update({"status": "deployed", "stage": "awaiting-browser-verification", "finishedAt": utc_now()})
@@ -616,6 +916,7 @@ def main() -> int:
             raise RuntimeError("checkout SHA mismatch")
         if run(["git", "status", "--porcelain"], checkout, base).strip():
             raise RuntimeError("fresh release checkout is dirty")
+        validate_payload_verifier(checkout)
         source = list((checkout / "src").rglob("*.ts")) + list((checkout / "src").rglob("*.tsx"))
         if any("/api/atelier" in p.read_text() for p in source):
             raise RuntimeError("obsolete /api/atelier source must be removed")
@@ -623,7 +924,9 @@ def main() -> int:
 
         stage("dependencies")
         npm = str(Path(manifest["npmBin"], "npm"))
-        run([npm, "ci", "--ignore-scripts", "--no-audit", "--no-fund"], checkout, base)
+        from github_release_assets import prepare_release_dependencies
+        receipt["sharedPackageAssets"] = prepare_release_dependencies(checkout, github_api_token(profile, base), npm, base, run)
+        run([npm, "ci", "--ignore-scripts", "--no-audit", "--no-fund", "--prefer-offline"], checkout, base)
         # TypeScript's pinned JSONC parser accepts comments and trailing commas.
         parsed = run(["node", "-e", "const fs=require('node:fs');const ts=require('typescript');"
                       "const r=ts.parseConfigFileTextToJson('wrangler.jsonc',fs.readFileSync('wrangler.jsonc','utf8'));"
@@ -639,15 +942,9 @@ def main() -> int:
                       "d1DatabaseId:c.d1_databases?.[0]?.database_id,"
                       "d1DatabaseName:c.d1_databases?.[0]?.database_name,"
                       "r2Count:Array.isArray(c.r2_buckets)?c.r2_buckets.length:0,"
-                      "r2BucketName:c.r2_buckets?.find(x=>x.binding==='R2')?.bucket_name,"
-                      "privateEmailR2BucketName:c.r2_buckets?.find(x=>x.binding==='PRIVATE_EMAIL')?.bucket_name,"
-                      "messagesQueueName:c.queues?.producers?.find(x=>x.binding==='HELLOADA_MESSAGES_QUEUE')?.queue,"
-                      "messagesDlqName:c.queues?.consumers?.find(x=>x.dead_letter_queue)?.dead_letter_queue,"
-                      "messagesQueueConsumer:Array.isArray(c.queues?.consumers)&&c.queues.consumers.some(x=>x.queue===c.queues.producers?.find(p=>p.binding==='HELLOADA_MESSAGES_QUEUE')?.queue),"
-                      "messagesDlqConsumer:Array.isArray(c.queues?.consumers)&&c.queues.consumers.some(x=>x.queue===c.queues.consumers?.find(p=>p.dead_letter_queue)?.dead_letter_queue),"
-                      "turnstileSiteKey:c.vars?.HELLOADA_TURNSTILE_SITE_KEY,"
-                      "rateLimitBinding:Array.isArray(c.ratelimits)&&c.ratelimits.some(x=>x.name==='HELLOADA_FORM_RATE_LIMIT'),"
-                      "sendEmailBinding:Array.isArray(c.send_email)&&c.send_email.some(x=>x.name==='EMAIL')}));"], checkout, base)
+                      "r2BucketName:c.r2_buckets?.[0]?.bucket_name,"
+                      "compatibilityDate:c.compatibility_date,compatibilityFlags:c.compatibility_flags||[],"
+                      "d1Binding:c.d1_databases?.[0]?.binding,r2Binding:c.r2_buckets?.[0]?.binding}));"], checkout, base)
         wrangler = json.loads(parsed)
         worker_entry = (checkout / "worker.ts").read_text(encoding="utf-8")
         wrangler["handlers"] = worker_handlers(worker_entry)
@@ -673,18 +970,13 @@ def main() -> int:
         if changed:
             raise RuntimeError("build changed tracked source: " + changed)
         stage("artifact-verified")
-        run(["tar", "-czf", str(directory / "worker-artifact.tar.gz"), "-C", str(checkout),
-             ".open-next", "worker.ts", "wrangler.jsonc", "package.json", "package-lock.json",
-             "-C", str(directory), "custom-worker-dry-run"], directory, base)
-        receipt["archiveSha256"] = hashlib.sha256((directory / "worker-artifact.tar.gz").read_bytes()).hexdigest()
-
         stage("upload")
         before_deploy = cloudflare_deployment(customer, deploy_env)
         if before_deploy.get("id") != receipt["previousDeployment"].get("id"):
             raise RuntimeError("production changed during the build; reconcile that deployment before retrying")
         runtime_secrets = tenant_runtime_secrets(manifest, args.tenant)
         receipt["uploadedVersion"] = upload_worker_version(
-            checkout, args.ref, args.release_id, directory, runtime_secrets, deploy_env,
+            checkout, args.ref, args.release_id, workspace_path, runtime_secrets, deploy_env,
         )
         if worker_artifact_hashes(checkout, custom_worker_bundle) != receipt["artifactHashes"]:
             raise RuntimeError("upload changed an inspected custom Worker release input")
@@ -694,11 +986,17 @@ def main() -> int:
         # request can advance an existing tenant ledger.
         receipt["appliedMigrations"] = enforce_payload_migrations(
             checkout, customer, deploy_env, args.initialize_schema_head,
-            args.schema_migration_from_ledger_identity, base, manifest, args.tenant, stage,
+            args.schema_migration_from_ledger_identity, base, manifest, args.tenant, stage, wrangler, temporary_root,
         )
         receipt["verifiedMigrationHead"] = customer["migrationHead"]
-        stage("verify-payload-contract")
-        run(["npm", "run", "verify:payload"], checkout, {**base, **deploy_env})
+        if args.release_purpose == "workspace-bootstrap":
+            stage("verify-workspace-bootstrap-contract")
+            verify_workspace_bootstrap_contract(
+                checkout, receipt, customer, args.initialize_schema_head,
+            )
+        else:
+            stage("verify-payload-contract")
+            run_payload_contract_verifier(checkout, customer, wrangler, deploy_env, base, temporary_root)
         atomic_json(receipt_path, receipt)
 
         stage("promote")
@@ -722,6 +1020,16 @@ def main() -> int:
         atomic_json(receipt_path, receipt)
         print(f"[release] FAILED stage={receipt['stage']}: {error}", file=sys.stderr, flush=True)
         return 1
+    finally:
+        if workspace is not None:
+            try:
+                workspace.cleanup()
+                receipt["workspaceCleanupStatus"] = "complete"
+            except OSError as error:
+                receipt["workspaceCleanupStatus"] = "failed"
+                receipt["workspaceCleanupError"] = f"{type(error).__name__}: {error}"
+                print(f"[release] WORKSPACE_CLEANUP_FAILED: {error}", file=sys.stderr, flush=True)
+            atomic_json(receipt_path, receipt)
 
 
 if __name__ == "__main__":

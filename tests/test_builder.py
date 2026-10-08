@@ -722,6 +722,39 @@ def test_stage_merge_draft_supersedes_older_pending_merges(tmp_path):
     memory.close()
 
 
+def test_stage_merge_draft_binds_payload_effects_to_an_exact_revision_set(tmp_path):
+    memory = Memory(tmp_path / "m.db")
+    context = {
+        "config": {},
+        "memory": memory,
+        "_completed_payload_effects": [{
+            "kind": "collection",
+            "operation": "update",
+            "target": "pages",
+            "document_id": "17",
+            "revision": "sha256:" + "a" * 64,
+            "locale": "es-MX",
+            "fields": ["sections", "seo"],
+            "summary": "Update the homepage message",
+        }],
+    }
+    draft_id = runner.stage_merge_draft(context, "Change the copy and its layout", {"diff_stat": "Home.tsx | 4 ++"})
+    draft = next(item for item in memory.list_drafts(limit=10) if item["id"] == draft_id)
+    assert draft["meta"]["payload_effects"][0]["document_id"] == "17"
+    assert draft["meta"]["payload_effects"][0]["locale"] == "es-MX"
+    assert draft["meta"]["payload_revision_set_hash"] == draft["meta"]["preview"]["payload_revision_set_hash"]
+    assert len(draft["meta"]["payload_revision_set_hash"]) == 64
+    memory.close()
+
+
+def test_payload_revision_manifest_fails_closed_on_an_unverified_receipt():
+    with pytest.raises(runner.RunnerError, match="exact destination"):
+        runner._payload_revision_manifest({"_completed_payload_effects": [{
+            "kind": "collection", "target": "pages", "document_id": "17", "locale": "en",
+            "revision": "missing",
+        }]})
+
+
 def test_stage_build_returns_owner_ready_css_receipt(tmp_path, monkeypatch):
     memory = Memory(tmp_path / "m.db")
     candidate = "a" * 40

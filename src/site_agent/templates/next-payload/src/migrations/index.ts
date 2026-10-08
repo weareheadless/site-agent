@@ -1,7 +1,6 @@
 import * as migration_20261004_021536_helloada_initial from './20261004_021536_helloada_initial';
-import * as migration_20261004_221500_growth_operations from './20261004_221500_growth_operations';
-import * as migration_20261004_232326_helloada_messages_contacts from './20261004_232326_helloada_messages_contacts';
-import * as migration_20261005_173359_helloada_owner_notifications from './20261005_173359_helloada_owner_notifications';
+import * as migration_20261004_090000_growth_operations from './20261004_090000_growth_operations';
+import * as migration_20261006_061835_helloada_owner_handoff from './20261006_061835_helloada_owner_handoff';
 
 export const migrations = [
   {
@@ -10,18 +9,13 @@ export const migrations = [
     name: '20261004_021536_helloada_initial',
   },
   {
-    up: migration_20261004_221500_growth_operations.up,
-    down: migration_20261004_221500_growth_operations.down,
-    name: '20261004_221500_growth_operations',
+    up: migration_20261004_090000_growth_operations.up,
+    down: migration_20261004_090000_growth_operations.down,
+    name: '20261004_090000_growth_operations',
   },
   {
-    up: migration_20261004_232326_helloada_messages_contacts.up,
-    down: migration_20261004_232326_helloada_messages_contacts.down,
-    name: '20261004_232326_helloada_messages_contacts',
-  },
-  {
-    up: migration_20261005_173359_helloada_owner_notifications.up,
-    down: migration_20261005_173359_helloada_owner_notifications.down,
-    name: '20261005_173359_helloada_owner_notifications'
+    up: migration_20261006_061835_helloada_owner_handoff.up,
+    down: migration_20261006_061835_helloada_owner_handoff.down,
+    name: '20261006_061835_helloada_owner_handoff'
   },
 ];

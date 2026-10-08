@@ -1,5 +1,6 @@
 import json
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -384,6 +385,45 @@ def test_next_target_prompt_keeps_legacy_source_out_of_native_authoring():
     assert "src/app/page.tsx" not in prompt
     assert "next@16.3.4" in prompt
     assert "Do not use ranges or newer versions" in prompt
+
+
+def test_payload_first_build_prompt_does_not_send_copydeck_values_to_the_source_author():
+    secret_copy = "Never hardcode this owner-facing headline"
+    request = PageBuildRequest.from_dict({
+        "schema_version": 1,
+        "run_id": "payload-first-prompt",
+        "mode": "initial_homepage",
+        "base_sha": "a" * 40,
+        "page_path": "index.html",
+        "purpose": "Create the homepage.",
+        "acceptance_criteria": ["Use the Payload homepage draft."],
+        "content": {
+            "payload_draft_receipts": [{
+                "target": "pages", "document_id": "41", "locale": "en", "revision": "sha256:" + "1" * 64,
+                "fields": ["title", "slug", "sections", "seo"],
+                "content_keys": ["home.hero.heading"],
+            }],
+        },
+    })
+    target = BuildTarget.from_dict({
+        "mode": "local_experiment",
+        "base_sha": "a" * 40,
+        "candidate_ref": "refs/ada-design-lab/payload-first-prompt",
+        "push_mode": "none",
+        "publishable": False,
+        "clone_path": "/tmp/design-clone",
+        "allowed_paths": list(NEXT_REACT_PROFILE.writable_patterns),
+        "build_profile": "next_react",
+    })
+    plan = SimpleNamespace(to_dict=lambda: {"copy_deck": {"headline": secret_copy}, "layout": "original"})
+
+    prompt = runner._design_prompt(request, target, design_plan=plan)
+
+    assert secret_copy not in prompt
+    assert "PAYLOAD-FIRST HOMEPAGE BINDING" in prompt
+    assert "copy_deck is intentionally omitted" in prompt
+    assert "payload_draft_receipts" in prompt
+    assert "data-helloada-field" in prompt
 
 
 def test_technical_repair_manifest_keeps_the_complete_intake_route_inventory():

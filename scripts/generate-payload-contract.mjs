@@ -88,5 +88,17 @@ wrangler = wrangler.replace(migrationHeadSlot, `$1${migrationHead}$2`)
 
 writeFileSync(contractPath, `${JSON.stringify(contract, null, 2)}\n`)
 writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
+for (const [name, version] of Object.entries({
+  HELLOADA_TEMPLATE_SCHEMA: String(manifest.templateSchema),
+  HELLOADA_PAYLOAD_ADMIN_VERSION: adminPackage.version,
+  HELLOADA_PAYLOAD_CORE_VERSION: corePackage.version,
+  HELLOADA_PAYLOAD_SCHEMA_REVISION: String(contract.schemaRevision),
+  HELLOADA_CONTENT_CONTRACT_VERSION: contract.contract,
+})) {
+  const slot = new RegExp('("' + name + '":\\s*")[^"]+(")', 'g')
+  const matches = [...wrangler.matchAll(slot)]
+  if (matches.length !== 1) throw new Error(`Expected exactly one runtime package version slot: ${name}`)
+  wrangler = wrangler.replace(slot, (_match, before, after) => `${before}${version}${after}`)
+}
 writeFileSync(wranglerPath, wrangler)
 process.stdout.write(`Generated Payload contract, site identity and Wrangler pin at ${siteRoot}.\n`)

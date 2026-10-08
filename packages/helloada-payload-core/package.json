@@ -1,6 +1,6 @@
 {
   "name": "@weareheadless/helloada-payload-core",
-  "version": "0.4.0",
+  "version": "0.5.5",
   "description": "Shared tenant-isolated Payload schema and content readers for HelloAda sites.",
   "type": "module",
   "license": "UNLICENSED",
@@ -22,7 +22,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test tests/*.test.mjs",
+    "test": "node --experimental-strip-types --test tests/*.test.mjs",
     "pack": "npm pack"
   }
 }

@@ -19,6 +19,7 @@ FRONTEND_OWNED_PATTERNS: tuple[str, ...] = (
 )
 
 PLATFORM_PROTECTED_PATHS: tuple[str, ...] = (
+    "src/middleware.ts", "src/lib/workspace-preview-path.ts",
     ".env", ".github", "node_modules", ".next", ".open-next", "out",
     "package.json", "package-lock.json", "next.config.mjs", "next.config.js", "next.config.ts",
     "tsconfig.json", "eslint.config.mjs", "payload.config.ts", "open-next.config.ts", "wrangler.jsonc",

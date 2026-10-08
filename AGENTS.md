@@ -91,13 +91,28 @@ realization, autonomous repair, or end-to-end acceptance requirements.
 - HelloAda connection changes must follow `docs/helloada-connection-contract.md`.
   Never claim a customer release ready from a public health response or local
   fixture: verify the correct tenant in an authenticated production session.
+- New-site onboarding follows `docs/helloada-project-selector-to-payload-intake-contract.md`:
+  HelloAda is only the multi-project selector/create entry; Site-Agent prepares
+  the canonical Payload workspace, and the owner is handed into that admin
+  before Ada intake or design begins. The older Intake Lab journey plan is
+  superseded for UI topology; it must not be used to reintroduce a second
+  owner-facing intake/design surface.
 
 For growth orchestration, SEO/AEO, goals and owner review, follow
 `docs/ada-growth-seo-aeo-pipeline-implementation-plan.md`. Reuse the canonical
 evidence, candidate, approval and outcome path; do not introduce silent
 degradation or independent customer-specific workflows.
 
+For customer schema migrations, also follow
+`docs/workspace-preview-repair.md` for the configured preview mount and its
+distinction from exact unpublished-revision verification;
+`docs/customer-presentation-migration-repair.md`: preserve the approved frontend
+composition and motion; a canonical schema is not a generic presentation.
+
 For shared Payload content and owner review, follow
+`docs/private-package-deployment.md` for central credentials, exact authenticated
+package fetching and disk-backed build temporary storage;
+`docs/payload-context-repair.md` for the shared client-context boundary and
 `docs/helloada-shared-content-and-owner-review-status.md` and the canonical
 `packages/helloada-payload-core` contract. `site-agent` owns the schema, field
 bindings, admin and default scaffold; customer sites own only tenant data and
@@ -184,6 +199,21 @@ or unrestricted Gmail replacement.
   They may not call Wrangler/OpenNext production deployment directly or replace
   an existing tenant checkout to “repair” its baseline. A mismatched or
   untracked baseline stops with an operator-visible diagnostic.
+- New-site bootstrap provisions and durably records the Cloudflare Worker
+  identity before queueing its first version. `wrangler versions upload` only
+  uploads versions for an existing Worker; it does not create the Worker
+  resource. Use the idempotent Cloudflare resource provisioner and the same
+  version-upload/verified-promotion pipeline used for later releases. Do not
+  seed a placeholder Worker or bypass the VPS release queue with a first-deploy
+  `wrangler deploy` path. A workers.dev origin must be built from the account's
+  Workers subdomain returned by Cloudflare, never guessed as
+  `<worker>.workers.dev`. The canonical release enables that script's
+  workers.dev route only after the exact version is promoted and before live
+  health/connection verification; a custom-domain release does not change the
+  workers.dev route. Keep generated Worker script names at or below Cloudflare's
+  54-character limit when the workers.dev preview route is enabled; long tenant
+  IDs must be shortened deterministically with a tenant-specific hash, while
+  already-valid resource names stay stable.
 - Shared Python API releases use `deploy/desired-api-release.json` and the same
   VPS release timer. Queue one new release ID plus the full official `main` SHA;
   the VPS tests that exact source, builds and smoke-checks one wheel, checks its
@@ -193,6 +223,17 @@ or unrestricted Gmail replacement.
   `pip install` from a checkout, `git pull` the running `/SOCIAL/site-agent`,
   restart the API by hand, or deploy a moving branch. The current source checkout
   may be dirty and is not the API release artifact.
+- HelloAda's project-selector Worker is also released through that one VPS
+  dispatcher, using `deploy/desired-helloada-app-release.json` with a unique ID
+  and exact full SHA on `weareheadless/helloada/main`. It must pass the pinned
+  Node/npm checks, tests, lint, typecheck, Next build and local-binding OpenNext
+  build before the dispatcher uploads and promotes the exact Worker version.
+  `/api/health` must report the same SHA after promotion or the pipeline restores
+  the exact prior Worker version. The owner-handoff private key is read only from
+  the protected mode-`0600` VPS secret file and injected only into the Worker
+  upload; it must never enter Git, build processes, logs, browser bundles or
+  chat. No direct Wrangler release, manual Worker upload, or separate release
+  path is permitted. See `deploy/README.md` for queue and receipt procedure.
 - The VPS release service executes only
   `/SOCIAL/payload-releases/bin/current/dispatch-payload-releases.py`. The dispatcher
   fetches official `site-agent/main`, snapshots its exact full SHA, and runs the
@@ -329,11 +370,29 @@ identity every minute. `helloada-release.service` snapshots the exact control
 commit and runs `scripts/deploy-payload-customer.py` from that snapshot. Full
 operating and installation instructions are in `deploy/README.md`.
 
+The queue operation determines the required Payload gate. An exact
+`initializeSchema` request is passed as `--release-purpose workspace-bootstrap`:
+it proves the committed schema/migration identity and the live authenticated
+workspace contract, but it does not require or publish business content. Every
+other queued site release is passed as `--release-purpose website` and runs the
+canonical Payload verifier. The release manifest must explicitly declare
+`websitePresent`: false allows an intentionally empty intake site after all
+schema/draft/version/media/global reads pass; true additionally requires the
+published business identity, shared navigation and complete homepage. Never
+infer the flag from missing content or relax the verifier for a failed check.
+After exact live health and 100% promotion, every Worker release must use the
+authenticated `activate-runtime` handoff to pin that receipt's Payload
+identity and website state into the central tenant config before the
+authenticated API connection check. API release preflight compares each
+tenant config to its currently active Worker's health identity, not a queued
+candidate manifest. See `deploy/README.md` for the full contract.
+
 The central script is a hard gate, not a repair or fallback layer. It must:
 
 1. resolve the tenant from the manifest and reject an unregistered target;
-2. clone the configured repository into a new release directory, verify the
-   immutable SHA is on official `main`, and use a detached checkout;
+2. clone the configured repository into an isolated temporary workspace under
+   `/SOCIAL/payload-releases/work`, verify the immutable SHA is on official
+   `main`, and use a detached checkout;
 3. resolve Cloudflare through `/SOCIAL/configs/host-credentials.yaml` using
    `site_agent.credentials`, never by sourcing `/SOCIAL/site-agent/.env`;
 4. verify the exact Node/npm versions from the release manifest, then run
@@ -347,13 +406,19 @@ The central script is a hard gate, not a repair or fallback layer. It must:
    promote that immutable version, then verify that exact version receives 100%
    of traffic, check the live source SHA, and perform the authenticated
    Ada/Payload connection gate; and
-7. persist a secret-free receipt in `/SOCIAL/payload-releases/runs`. Never
-   mutate Worker secrets after promotion through Cloudflare's script-secrets
-   endpoint or `wrangler secret put`: those operations create a different
-   version, and `wrangler secret put` deploys it immediately, invalidating the
-   exact-version release receipt. Failed or
-   interrupted releases stop. Fix their cause and commit a new release ID to
-   retry; never repeat failed builds automatically or bypass their gate.
+7. persist a secret-free receipt in `/SOCIAL/payload-releases/runs`. Build
+   checkouts, `node_modules`, caches and OpenNext output exist only in the
+   isolated workspace while the release runs. The runner removes that workspace
+   after success or failure; the next locked queue poll removes any workspace
+   left by an interrupted systemd job. The receipt retains the exact Git SHA,
+   per-file artifact hashes, uploaded Cloudflare version and deployment
+   identity; GitHub and Cloudflare are the durable source/artifact stores.
+   Never mutate Worker secrets after promotion through Cloudflare's
+   script-secrets endpoint or `wrangler secret put`: those operations create a
+   different version, and `wrangler secret put` deploys it immediately,
+   invalidating the exact-version release receipt. Failed or interrupted
+   releases stop. Fix their cause and commit a new release ID to retry; never
+   repeat failed builds automatically or bypass their gate.
 
 The shared site-agent preview builder uses the same explicit toolchain policy.
 The API root config's `source_deployment` section must specify `node_path`,
@@ -365,8 +430,9 @@ machine's system `PATH` or a shell-installed Node/npm.
 
 For a promoted version whose live gate failed during rollout, the documented
 `--verify-only` command may repeat the exact read-only checks under the queue
-lock without rebuilding or deploying. It validates the retained artifact and
-exact serving version and preserves the original failure. Never edit a failed
+lock without rebuilding or deploying. It validates the receipt's artifact-hash
+manifest and exact serving version; it requires no local checkout or archived
+build. It preserves the original failure. Never edit a failed
 receipt into success by hand.
 
 There is no customer-facing legacy admin API. The canonical Payload bridge is

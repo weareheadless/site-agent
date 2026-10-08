@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'helloada-payload-core-v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing immutable Payload core tag to package and publish
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -17,11 +23,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref }}
       - uses: actions/setup-node@v4
         with:
-          node-version: '24.17.0'
+          node-version: '22.14.0'
       - name: Pin the release packer
         run: npm install --global npm@11.13.0
+      - run: test "$(npm --version)" = "11.13.0"
       - name: Install pinned dependencies
         working-directory: packages/helloada-payload-core
         run: npm ci --ignore-scripts
@@ -32,11 +41,15 @@ jobs:
           npm run typecheck
       - name: Package and inspect the tagged artifact
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
         run: node scripts/package-helloada-payload-core-release.mjs
       - name: Publish immutable release asset
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
         run: |
-          gh release create "$RELEASE_TAG" packages/helloada-payload-core/.release/*.tgz packages/helloada-payload-core/.release/release-manifest.json --verify-tag --title "HelloAda Payload core ${RELEASE_TAG#helloada-payload-core-v}" --notes "Tested shared tenant schema, validation and server content readers. Tenant database migrations and customer deployment remain separate reviewed release stages."
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" packages/helloada-payload-core/.release/*.tgz packages/helloada-payload-core/.release/release-manifest.json --clobber
+          else
+            gh release create "$RELEASE_TAG" packages/helloada-payload-core/.release/*.tgz packages/helloada-payload-core/.release/release-manifest.json --verify-tag --title "HelloAda Payload core ${RELEASE_TAG#helloada-payload-core-v}" --notes "Tested shared tenant schema, validation and server content readers. Tenant database migrations and customer deployment remain separate reviewed release stages."
+          fi

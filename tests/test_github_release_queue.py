@@ -14,6 +14,7 @@ CUSTOMER = {
     "worker": "helloada-demo",
     "health": "https://demo.example/api/health",
     "adminPath": "/api/helloada",
+    "websitePresent": False,
     "payloadAdmin": "0.8.7",
     "payloadCore": "0.2.0",
     "contentContract": "helloada-content-v2",
@@ -147,7 +148,83 @@ def test_matching_request_is_idempotent(monkeypatch):
     monkeypatch.setattr(queue, "_request", request)
     result = queue.request("demo", SHA, CUSTOMER, approval_id=42)
     assert result == {"release_id": "rel-20261003000000-abcd1234", "source_sha": SHA, "control_sha": "1" * 40}
+    retry_result = queue.request(
+        "demo",
+        SHA,
+        CUSTOMER,
+        approval_id=42,
+        release_id="rel-20261003000000-abcd1234",
+    )
+    assert retry_result == result
     assert writes == []
+    with pytest.raises(GitHubReleaseQueueError, match="already bound"):
+        queue.request(
+            "demo",
+            "b" * 40,
+            CUSTOMER,
+            approval_id=42,
+            release_id="rel-20261003000000-abcd1234",
+        )
+
+
+def test_verified_failed_release_retry_creates_a_new_attempt(monkeypatch):
+    queue = GitHubReleaseQueue("token")
+    documents = {
+        "payload-customers.json": {"schema": 1, "customers": {"demo": CUSTOMER}},
+        "desired-releases.json": {"schema": 1, "releases": {
+            "demo": {"id": "rel-20261003000000-abcd1234", "sha": SHA, "initializeSchema": {
+                "migrationHead": CUSTOMER["migrationHead"],
+            }},
+        }},
+    }
+    writes = []
+    blob_contents = {}
+
+    def request(method, path, *, payload=None):
+        if method == "GET" and path.endswith("git/ref/heads/main"):
+            return 200, {"object": {"sha": "1" * 40}}
+        if method == "GET" and path.endswith("git/commits/" + "1" * 40):
+            return 200, {"tree": {"sha": "2" * 40}}
+        if method == "GET" and "/contents/deploy/" in path:
+            name = path.split("/contents/deploy/", 1)[1].split("?", 1)[0]
+            return 200, {"encoding": "base64", "content": base64.b64encode(json.dumps(documents[name]).encode()).decode()}
+        writes.append((method, path, payload))
+        if method == "POST" and path.endswith("/git/blobs"):
+            blob_sha = f"{len(blob_contents) + 1:040x}"
+            blob_contents[blob_sha] = json.loads(base64.b64decode(payload["content"]).decode("utf-8"))
+            return 201, {"sha": blob_sha}
+        if method == "POST" and path.endswith("/git/trees"):
+            return 201, {"sha": "3" * 40}
+        if method == "POST" and path.endswith("/git/commits"):
+            return 201, {"sha": "4" * 40}
+        if method == "PATCH" and path.endswith("/git/refs/heads/main"):
+            return 200, {"object": {"sha": "4" * 40}}
+        raise AssertionError((method, path, payload))
+
+    monkeypatch.setattr(queue, "_request", request)
+    retry_release_id = "rel-20261006000000-1234abcd"
+    result = queue.request("demo", SHA, CUSTOMER, initialize_schema=True, release_id=retry_release_id)
+
+    assert result["release_id"] == retry_release_id
+    tree = next(payload for method, path, payload in writes if method == "POST" and path.endswith("/git/trees"))
+    written = {row["path"].rsplit("/", 1)[1]: blob_contents[row["sha"]] for row in tree["tree"]}
+    assert written["desired-releases.json"]["releases"]["demo"] == {
+        "id": result["release_id"],
+        "sha": SHA,
+        "initializeSchema": {"migrationHead": CUSTOMER["migrationHead"]},
+    }
+    assert sum(method == "POST" and path.endswith("/git/commits") for method, path, _ in writes) == 1
+
+
+@pytest.mark.parametrize("website_present", [None, "false", 1])
+def test_release_request_requires_boolean_website_presence(website_present):
+    customer = dict(CUSTOMER)
+    if website_present is None:
+        customer.pop("websitePresent")
+    else:
+        customer["websitePresent"] = website_present
+    with pytest.raises(GitHubReleaseQueueError, match="website-present"):
+        GitHubReleaseQueue("token").request("demo", SHA, customer)
 
 
 def test_release_request_rejects_noncanonical_or_unversioned_customer():

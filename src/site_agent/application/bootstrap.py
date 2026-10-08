@@ -9,9 +9,12 @@ already happened.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import threading
@@ -31,7 +34,7 @@ from ..credentials import (
 )
 from ..config import deep_merge
 from .. import __version__
-from ..hands.cloudflare_resources import CloudflareResourceProvisioner
+from ..hands.cloudflare_resources import CloudflareResourceError, CloudflareResourceProvisioner
 from ..hands.cloudflare_r2 import CloudflareR2Provisioner
 from ..hands.github_provisioning import GitHubRepositoryProvisioner, GitHubRepositoryReceipt
 from ..payload_contract import PayloadContractError, validate_payload_migrations
@@ -50,7 +53,10 @@ class BootstrapError(RuntimeError):
 
 _SAFE_COMPONENT = re.compile(r"^[a-z][a-z0-9-]{1,62}$")
 _SECRET_ENV = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_WORKERS_DEV_SCRIPT_NAME_MAX_LENGTH = 54
+_RESOURCE_NAME_HASH_LENGTH = 20
 _PRIVATE_RECEIPT_KEYS = frozenset({"site_dir", "config_path", "account_id", "ssh_url", "clone_url"})
+_HELLOADA_HANDOFF_ISSUER = "https://helloada.app"
 
 
 def _now() -> str:
@@ -66,6 +72,86 @@ def _component(value: str, label: str) -> str:
     if not _SAFE_COMPONENT.fullmatch(normalized):
         raise BootstrapError(f"{label} is invalid")
     return normalized
+
+
+def _resource_name(prefix: str, tenant_id: str, label: str, *, max_length: int,
+                   suffix: str = "") -> str:
+    candidate = f"{prefix}-{tenant_id}{suffix}"
+    if len(candidate) > max_length:
+        digest = hashlib.sha256(tenant_id.encode("utf-8")).hexdigest()[:_RESOURCE_NAME_HASH_LENGTH]
+        readable_length = max_length - len(prefix) - len(suffix) - len(digest) - 2
+        readable = tenant_id[:max(0, readable_length)].rstrip("-")
+        identity = f"{prefix}-{readable}-{digest}{suffix}" if readable else f"{prefix}-{digest}{suffix}"
+        if len(identity) > max_length:
+            raise BootstrapError(f"{label} cannot fit the provider's {max_length}-character limit")
+        candidate = identity
+    return _component(candidate, label)
+
+
+def _der_value(data: bytes, offset: int, tag: int) -> tuple[bytes, int]:
+    """Read one canonical DER TLV; reject BER, truncation and trailing lengths."""
+    if offset >= len(data) or data[offset] != tag or offset + 1 >= len(data):
+        raise ValueError("DER tag is invalid")
+    first_length = data[offset + 1]
+    if first_length < 0x80:
+        length = first_length
+        value_offset = offset + 2
+    else:
+        count = first_length & 0x7F
+        if count == 0 or count > 4 or offset + 2 + count > len(data):
+            raise ValueError("DER length is invalid")
+        length_bytes = data[offset + 2:offset + 2 + count]
+        if length_bytes[0] == 0:
+            raise ValueError("DER length is not canonical")
+        length = int.from_bytes(length_bytes, "big")
+        if length < 0x80 or (count > 1 and length < 1 << (8 * (count - 1))):
+            raise ValueError("DER length is not canonical")
+        value_offset = offset + 2 + count
+    end = value_offset + length
+    if end > len(data):
+        raise ValueError("DER value is truncated")
+    return data[value_offset:end], end
+
+
+def _validate_rsa_spki(der: bytes) -> None:
+    """Validate a DER SubjectPublicKeyInfo containing a 2048–4096-bit RSA key."""
+    outer, outer_end = _der_value(der, 0, 0x30)
+    if outer_end != len(der):
+        raise ValueError("SPKI has trailing bytes")
+    algorithm, offset = _der_value(outer, 0, 0x30)
+    oid, algorithm_offset = _der_value(algorithm, 0, 0x06)
+    null, algorithm_end = _der_value(algorithm, algorithm_offset, 0x05)
+    if oid != bytes.fromhex("2a864886f70d010101") or null or algorithm_end != len(algorithm):
+        raise ValueError("SPKI algorithm is not rsaEncryption")
+    bit_string, offset = _der_value(outer, offset, 0x03)
+    if offset != len(outer) or not bit_string or bit_string[0] != 0:
+        raise ValueError("SPKI bit string is invalid")
+    rsa_key, rsa_end = _der_value(bit_string[1:], 0, 0x30)
+    if rsa_end != len(bit_string) - 1:
+        raise ValueError("RSA key has trailing bytes")
+    modulus, integer_offset = _der_value(rsa_key, 0, 0x02)
+    exponent, integer_end = _der_value(rsa_key, integer_offset, 0x02)
+    if integer_end != len(rsa_key):
+        raise ValueError("RSA key has trailing fields")
+    for integer in (modulus, exponent):
+        if (
+            not integer
+            or integer[0] & 0x80
+            or (len(integer) > 1 and integer[0] == 0 and not integer[1] & 0x80)
+        ):
+            raise ValueError("RSA integer is not a canonical positive INTEGER")
+    modulus_value = int.from_bytes(modulus, "big")
+    exponent_value = int.from_bytes(exponent, "big")
+    if not 2048 <= modulus_value.bit_length() <= 4096:
+        raise ValueError("RSA modulus must be between 2048 and 4096 bits")
+    if (
+        modulus_value % 2 == 0
+        or exponent_value < 3
+        or exponent_value >= modulus_value
+        or exponent_value > 2**32
+        or exponent_value % 2 == 0
+    ):
+        raise ValueError("RSA public exponent is invalid")
 
 
 class WebsiteBootstrapService:
@@ -171,10 +257,114 @@ class WebsiteBootstrapService:
             self._refresh_release_state(state)
             return self._public_state(state)
 
+    def activate_runtime_after_health(
+        self,
+        tenant_id: str,
+        *,
+        release_id: str,
+        source_sha: str,
+    ) -> dict[str, Any]:
+        """Synchronize and mount a tenant only after its exact Worker passed live health."""
+        normalized = _component(tenant_id, "website id")
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", str(release_id or "")):
+            raise BootstrapError("runtime activation release identity is invalid")
+        if not re.fullmatch(r"[0-9a-f]{40}", str(source_sha or "")):
+            raise BootstrapError("runtime activation source identity is invalid")
+
+        with self._lock:
+            try:
+                receipt_path = release_root(self.config) / "runs" / normalized / release_id / "receipt.json"
+                receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, ValueError, ReleaseQueueError) as exc:
+                raise BootstrapError("runtime activation release receipt is unavailable") from exc
+            if (
+                not isinstance(receipt, Mapping)
+                or receipt.get("tenant") != normalized
+                or receipt.get("releaseId") != release_id
+                or receipt.get("sourceSha") != source_sha
+                or receipt.get("status") != "running"
+                or receipt.get("stage") != "verify-connection"
+                or receipt.get("approvalId") is not None
+            ):
+                raise BootstrapError("runtime activation is not at the verified Worker health boundary")
+
+            initial_schema_head = receipt.get("initialSchemaHead")
+            if initial_schema_head is not None:
+                state = self._read_state(normalized)
+                release = state.get("release") if isinstance(state.get("release"), Mapping) else {}
+                if (
+                    state.get("step") != "deploying_shell"
+                    or release.get("tenant_id") != normalized
+                    or release.get("release_id") != release_id
+                    or release.get("source_sha") != source_sha
+                    or initial_schema_head != receipt.get("migrationHead")
+                ):
+                    raise BootstrapError("runtime activation does not match the active bootstrap release")
+            else:
+                try:
+                    if not self.registration.is_registered(normalized):
+                        raise BootstrapError("tenant runtime is not present in the canonical registry")
+                except TenantRegistrationError as exc:
+                    raise BootstrapError(str(exc)) from exc
+                state = {"tenant_id": normalized}
+
+            deployment = receipt.get("deployment")
+            uploaded_version = str(receipt.get("uploadedVersion") or "")
+            versions = deployment.get("versions") if isinstance(deployment, Mapping) else None
+            if not uploaded_version or not isinstance(versions, list) or not any(
+                isinstance(version, Mapping)
+                and version.get("version_id") == uploaded_version
+                and version.get("percentage") == 100
+                for version in versions
+            ):
+                raise BootstrapError("runtime activation release is not the exact live Worker version")
+
+            health = receipt.get("health")
+            if not isinstance(health, Mapping):
+                raise BootstrapError("runtime activation has no verified Worker health receipt")
+            runtime_identity = {
+                "adminVersion": receipt.get("payloadAdmin"),
+                "contract": receipt.get("contentContract"),
+                "coreVersion": receipt.get("payloadCore"),
+                "schemaRevision": receipt.get("schemaRevision"),
+                "schemaIdentity": receipt.get("schemaIdentity"),
+                "migrationHead": receipt.get("migrationHead"),
+            }
+            expected_health = {
+                "ok": True,
+                "tenant": normalized,
+                "releaseSha": source_sha,
+                "payloadAdmin": runtime_identity["adminVersion"],
+                "payloadCore": runtime_identity["coreVersion"],
+                "contentContract": runtime_identity["contract"],
+                "schemaRevision": runtime_identity["schemaRevision"],
+                "schemaIdentity": runtime_identity["schemaIdentity"],
+                "migrationHead": runtime_identity["migrationHead"],
+            }
+            if any(health.get(key) != value for key, value in expected_health.items()):
+                raise BootstrapError("runtime activation Worker health does not match the release contract")
+            website_present = receipt.get("websitePresent")
+            if not isinstance(website_present, bool):
+                raise BootstrapError("runtime activation release has no explicit websitePresent state")
+
+            self._mount_runtime(
+                normalized,
+                state,
+                runtime_identity=runtime_identity,
+                website_present=website_present,
+            )
+            return {
+                "tenant_id": normalized,
+                "release_id": release_id,
+                "source_sha": source_sha,
+                "runtime_active": True,
+            }
+
     def start(self, tenant_id: str, *, display_name: str = "") -> dict[str, Any]:
         normalized = _component(tenant_id, "website id")
         if not bool(self.settings.get("enabled", True)):
             raise BootstrapError("website bootstrap is disabled")
+        self._handoff_public_key()
         try:
             self.registration.register(normalized, display_name=display_name, env=self.env)
         except TenantRegistrationError as exc:
@@ -202,9 +392,11 @@ class WebsiteBootstrapService:
         state: dict[str, Any],
         name: str,
         operation: Callable[[], Mapping[str, Any]],
+        *,
+        refresh_completed: bool = False,
     ) -> dict[str, Any]:
         existing = state.get("steps", {}).get(name) if isinstance(state.get("steps"), Mapping) else None
-        if isinstance(existing, Mapping) and existing.get("status") == "done":
+        if isinstance(existing, Mapping) and existing.get("status") == "done" and not refresh_completed:
             receipt = existing.get("receipt")
             return dict(receipt) if isinstance(receipt, Mapping) else {}
         state["status"] = "running"
@@ -231,25 +423,47 @@ class WebsiteBootstrapService:
     def _run(self, tenant_id: str, display_name: str) -> None:
         try:
             state = self._read_state(tenant_id)
-            tenant = self.registry.for_tenant_id(tenant_id)
-            if tenant is None:
-                raise BootstrapError("registered tenant is unavailable")
+            verified_failed_release_retry = self._prepare_failed_release_retry(state)
+            if verified_failed_release_retry:
+                self._write_state(state)
+            retry_release_id = str(state.get("release_retry_id") or "") or None
+            if retry_release_id is not None and not re.fullmatch(r"rel-\d{14}-[0-9a-f]{8}", retry_release_id):
+                raise BootstrapError("persisted bootstrap retry release identity is invalid")
             config_path = Path(str(state.get("config_path") or "") or str(self._state_path(tenant_id).parent / "config.yaml"))
             state["config_path"] = str(config_path)
             self._write_state(state)
 
+            release_step = state.get("steps", {}).get("queueing_shell_release")
+            refresh_source = not (
+                isinstance(release_step, Mapping) and release_step.get("status") == "done"
+            )
             repository = self._run_step(state, "creating_repository", lambda: self._repository(tenant_id, display_name, config_path))
             data = self._run_step(state, "creating_data", lambda: self._data_resources(tenant_id))
+            self._run_step(
+                state,
+                "creating_worker_identity",
+                lambda: self._worker_resource(tenant_id),
+                refresh_completed=refresh_source,
+            )
             worker = self._run_step(
                 state,
                 "creating_worker",
                 lambda: self._configure_source(tenant_id, display_name, config_path, repository, data),
+                # A failed release retry must reconcile generated tenant config
+                # against the current canonical Payload template before retrying.
+                refresh_completed=refresh_source,
             )
             release = self._run_step(
                 state,
                 "queueing_shell_release",
-                lambda: self._queue_release(tenant_id, config_path, worker),
+                lambda: self._queue_release(
+                    tenant_id,
+                    config_path,
+                    worker,
+                    release_id=retry_release_id,
+                ),
             )
+            state.pop("release_retry_id", None)
             state["status"] = "awaiting_release"
             state["step"] = "deploying_shell"
             state["release"] = release
@@ -303,6 +517,7 @@ class WebsiteBootstrapService:
         ):
             state.update(status="failed", step="needs_attention", diagnostic="central release receipt does not match this bootstrap", updated_at=_now())
         elif receipt.get("status") in {"deployed", "verified"} and receipt.get("connectionVerifiedAt"):
+            previously_ready = state.get("workspace_ready") is True and state.get("step") == "ready"
             state.update(
                 status="done",
                 step="ready",
@@ -316,6 +531,18 @@ class WebsiteBootstrapService:
                 },
                 updated_at=_now(),
             )
+            if not previously_ready:
+                try:
+                    self._activate_runtime(tenant_id, state)
+                except Exception as exc:  # noqa: BLE001 - activation is part of verified workspace readiness
+                    state.update(
+                        status="failed",
+                        step="needs_attention",
+                        diagnostic=f"Payload runtime could not be activated: {str(exc)[:700]}",
+                        workspace_ready=False,
+                        website_live=False,
+                        updated_at=_now(),
+                    )
         elif receipt.get("status") in {"failed", "interrupted"}:
             state.update(
                 status="failed",
@@ -326,6 +553,133 @@ class WebsiteBootstrapService:
         else:
             state.update(status="awaiting_release", workspace_ready=False, website_live=False)
         self._write_state(state)
+
+    def _prepare_failed_release_retry(self, state: dict[str, Any]) -> bool:
+        """Retire only a verified terminal release before an explicit retry."""
+        steps = state.get("steps") if isinstance(state.get("steps"), dict) else {}
+        step = steps.get("queueing_shell_release")
+        if not isinstance(step, Mapping) or step.get("status") != "done":
+            return False
+        recorded = step.get("receipt")
+        release = state.get("release")
+        if not isinstance(recorded, Mapping) or not isinstance(release, Mapping):
+            raise BootstrapError("completed bootstrap release identity is incomplete")
+
+        tenant_id = str(state.get("tenant_id") or "")
+        release_id = str(release.get("release_id") or "")
+        source_sha = str(release.get("source_sha") or "")
+        if (
+            not tenant_id
+            or not release_id
+            or not re.fullmatch(r"[0-9a-f]{40}", source_sha)
+            or recorded.get("tenant_id") != tenant_id
+            or recorded.get("release_id") != release_id
+            or recorded.get("source_sha") != source_sha
+        ):
+            raise BootstrapError("completed bootstrap release identity does not match its recorded step")
+
+        receipt_path = release_root(self.config) / "runs" / tenant_id / release_id / "receipt.json"
+        try:
+            receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return False
+        except (OSError, UnicodeError, ValueError, ReleaseQueueError) as exc:
+            raise BootstrapError("central release receipt is unreadable during retry") from exc
+        if (
+            not isinstance(receipt, Mapping)
+            or receipt.get("tenant") != tenant_id
+            or receipt.get("releaseId") != release_id
+            or receipt.get("sourceSha") != source_sha
+            or receipt.get("approvalId") is not None
+        ):
+            raise BootstrapError("central release receipt does not match the failed bootstrap request")
+        if receipt.get("status") not in {"failed", "interrupted"}:
+            return False
+
+        steps.pop("queueing_shell_release", None)
+        receipts = state.get("resource_receipts")
+        if isinstance(receipts, dict):
+            receipts.pop("queueing_shell_release", None)
+        state.pop("release", None)
+        state["release_retry_id"] = datetime.now(timezone.utc).strftime("rel-%Y%m%d%H%M%S-") + secrets.token_hex(4)
+        state.update(
+            status="queued",
+            step="requested",
+            diagnostic="",
+            workspace_ready=False,
+            website_live=False,
+            updated_at=_now(),
+        )
+        return True
+
+    def _mount_runtime(
+        self,
+        tenant_id: str,
+        state: Mapping[str, Any],
+        *,
+        runtime_identity: Mapping[str, Any] | None = None,
+        website_present: bool | None = None,
+    ) -> None:
+        """Pin and mount only a contract proven by the live Worker health receipt."""
+        config_path = Path(str(state.get("config_path") or self._state_path(tenant_id).parent / "config.yaml"))
+        token_env = tenant_token_env(tenant_id)
+        values = self._read_env(config_path.parent / "tenant.env")
+        token = str(values.get(token_env) or "").strip()
+        if not token:
+            raise BootstrapError("registered tenant API token is missing")
+
+        config_changed = False
+        if runtime_identity is not None:
+            try:
+                config_changed = self.registration.sync_payload_runtime(
+                    tenant_id,
+                    runtime_identity,
+                    website_present=website_present,
+                )
+            except TenantRegistrationError as exc:
+                raise BootstrapError(str(exc)) from exc
+
+        def mounted_contract_matches(runtime: Any) -> bool:
+            if runtime_identity is None:
+                return runtime is not None
+            if runtime is None or not isinstance(runtime.config, Mapping):
+                return False
+            site = runtime.config.get("site")
+            payload = site.get("payload") if isinstance(site, Mapping) else None
+            contract = payload.get("contract") if isinstance(payload, Mapping) else None
+            return (
+                isinstance(contract, Mapping)
+                and all(contract.get(key) == value for key, value in runtime_identity.items())
+                and isinstance(site, Mapping)
+                and site.get("website_present") is website_present
+            )
+
+        current = self.registry.for_tenant_id(tenant_id)
+        if current is None or config_changed or not mounted_contract_matches(current):
+            try:
+                self.registry.reload_tenant(
+                    tenant_id,
+                    str(config_path),
+                    api_token=token,
+                    api_token_env=token_env,
+                    env={**self.env, **values},
+                )
+            except Exception as exc:  # noqa: BLE001 - keep bootstrap diagnostics at this boundary
+                raise BootstrapError(f"tenant runtime could not be activated: {str(exc)[:400]}") from exc
+        if not mounted_contract_matches(self.registry.for_tenant_id(tenant_id)):
+            raise BootstrapError("mounted tenant runtime does not match the verified Worker contract")
+        try:
+            self.registration.mark_runtime_mounted(tenant_id)
+        except TenantRegistrationError as exc:
+            raise BootstrapError(str(exc)) from exc
+
+    def _activate_runtime(self, tenant_id: str, state: Mapping[str, Any]) -> None:
+        """Mark a mounted tenant owner-ready after its connection gate passes."""
+        self._mount_runtime(tenant_id, state)
+        try:
+            self.registration.mark_runtime_configured(tenant_id)
+        except TenantRegistrationError as exc:
+            raise BootstrapError(str(exc)) from exc
 
     def _credentials(self) -> tuple[dict[str, str], str, str, str]:
         env = credential_environment(self.config, self.env)
@@ -342,17 +696,14 @@ class WebsiteBootstrapService:
     def _names(self, tenant_id: str) -> dict[str, str]:
         prefix = str(self.settings.get("resource_prefix") or "helloada").strip().lower()
         prefix = _component(prefix, "bootstrap resource prefix")
-        worker = _component(f"{prefix}-{tenant_id}", "Worker name")
-        repo = _component(f"{prefix}-{tenant_id}", "repository name")
-        d1 = _component(f"{prefix}-{tenant_id}", "D1 database name")
-        r2 = _component(f"{prefix}-{tenant_id}-media", "R2 bucket name")
-        email_r2 = _component(f"{prefix}-{tenant_id}-email", "private email bucket name")
-        messages_queue = _component(f"{prefix}-{tenant_id}-messages", "message Queue name")
-        messages_dlq = _component(f"{prefix}-{tenant_id}-messages-dlq", "message dead-letter Queue name")
-        return {
-            "worker": worker, "repo": repo, "d1": d1, "r2": r2,
-            "email_r2": email_r2, "messages_queue": messages_queue, "messages_dlq": messages_dlq,
-        }
+        tenant = _component(tenant_id, "tenant id")
+        worker = _resource_name(
+            prefix, tenant, "Worker name", max_length=_WORKERS_DEV_SCRIPT_NAME_MAX_LENGTH,
+        )
+        repo = _resource_name(prefix, tenant, "repository name", max_length=63)
+        d1 = _resource_name(prefix, tenant, "D1 database name", max_length=63)
+        r2 = _resource_name(prefix, tenant, "R2 bucket name", max_length=63, suffix="-media")
+        return {"worker": worker, "repo": repo, "d1": d1, "r2": r2}
 
     def _repository(self, tenant_id: str, display_name: str, config_path: Path) -> Mapping[str, Any]:
         _env, github_token, _cloudflare_token, _account_id = self._credentials()
@@ -435,16 +786,18 @@ class WebsiteBootstrapService:
             "account_id": account_id,
         }
 
+    def _worker_resource(self, tenant_id: str) -> Mapping[str, Any]:
+        _env, _github_token, cloudflare_token, account_id = self._credentials()
+        worker_name = self._names(tenant_id)["worker"]
+        receipt = CloudflareResourceProvisioner(account_id, cloudflare_token).ensure_worker(worker_name)
+        return receipt.to_dict()
+
     def _worker_url(self, worker_name: str) -> str:
-        configured = str(self.settings.get("worker_url_template") or "").strip()
-        template = configured or "https://{worker_name}.workers.dev"
         try:
-            url = template.format(worker_name=worker_name).rstrip("/")
-        except (KeyError, ValueError) as exc:
-            raise BootstrapError("bootstrap worker_url_template is invalid") from exc
-        if not re.fullmatch(r"https://[^/?#]+", url):
-            raise BootstrapError("bootstrap worker URL must be an HTTPS origin")
-        return url
+            _env, _github_token, cloudflare_token, account_id = self._credentials()
+            return CloudflareResourceProvisioner(account_id, cloudflare_token).workers_dev_url(worker_name)
+        except CloudflareResourceError as exc:
+            raise BootstrapError(f"Cloudflare Workers URL could not be resolved: {exc}") from exc
 
     def _materialize_template(self, site_dir: Path) -> None:
         template_raw = str(
@@ -535,7 +888,10 @@ class WebsiteBootstrapService:
         if result.returncode:
             detail = (result.stderr or result.stdout or "git command failed").strip()[-800:]
             raise BootstrapError(f"git {' '.join(args[:3])}: {detail}")
-        return result.stdout.strip()
+        # Git porcelain output uses its leading columns to encode staged and
+        # unstaged state. Preserve those columns so callers can safely parse
+        # paths such as a modified wrangler.jsonc.
+        return result.stdout.rstrip("\r\n")
 
     def _git_init_and_push(self, site_dir: Path, receipt: GitHubRepositoryReceipt) -> None:
         if not (site_dir / ".git").is_dir():
@@ -609,6 +965,7 @@ class WebsiteBootstrapService:
         site = raw.setdefault("site", {})
         if not isinstance(site, dict):
             raise BootstrapError("tenant site config must be an object")
+        self._ensure_canonical_ignore_rules(site_dir)
         site.update({
             "adapter": "payload_gateway",
             "repository": str(repository.get("full_name") or ""),
@@ -625,7 +982,17 @@ class WebsiteBootstrapService:
                 "url": worker_url,
                 "token_env": token_env,
                 "api_prefix": "/api/workspace",
-                "contract": payload_contract,
+                "contract": {
+                    "adminVersion": payload_contract["adminVersion"],
+                    "contract": payload_contract["contract"],
+                    "coreVersion": payload_contract["coreVersion"],
+                    "schemaRevision": payload_contract["schemaRevision"],
+                    "schemaIdentity": payload_contract["schemaIdentity"],
+                    "migrationHead": payload_contract["migrationHead"],
+                    "locales": payload_contract["locales"],
+                    "defaultLocale": payload_contract["defaultLocale"],
+                    "media_fields": list(payload_contract["collections"]["media"]),
+                },
             },
             "source_deployment": {
                 "clone_path": str(site_dir),
@@ -679,18 +1046,49 @@ class WebsiteBootstrapService:
         values.setdefault("PAYLOAD_SECRET", os.urandom(36).hex())
         self._write_env(env_path, values)
 
-        self._configure_wranger(site_dir, names, worker_url, site_agent_url, data, display_name, tenant_id, payload_contract)
-        try:
-            self.registry.reload_tenant(
-                tenant_id,
-                str(config_path),
-                api_token=values.get(token_env, ""),
-                api_token_env=token_env,
-                env={**self.env, **values},
-            )
-        except Exception as exc:  # noqa: BLE001 - keep bootstrap receipt bounded
-            raise BootstrapError(f"tenant runtime could not be reloaded: {str(exc)[:400]}") from exc
+        self._configure_wranger(
+            site_dir,
+            names,
+            worker_url,
+            site_agent_url,
+            data,
+            display_name,
+            tenant_id,
+            payload_contract,
+            self._handoff_public_key(),
+        )
         return {"worker_name": names["worker"], "worker_url": worker_url, "repository": repository.get("full_name", "")}
+
+    @staticmethod
+    def _ensure_canonical_ignore_rules(site_dir: Path) -> None:
+        template_path = Path(__file__).resolve().parents[1] / "templates" / "next-payload" / ".gitignore"
+        site_path = site_dir / ".gitignore"
+        try:
+            canonical = template_path.read_bytes()
+            existing = site_path.read_bytes() if site_path.exists() else None
+        except OSError as exc:
+            raise BootstrapError("canonical Payload ignore rules are unavailable") from exc
+        if existing is None:
+            site_path.write_bytes(canonical)
+        elif existing != canonical:
+            raise BootstrapError("managed Payload ignore rules differ from the canonical template")
+
+    def _handoff_public_key(self) -> str:
+        value = str(self.env.get("HELLOADA_HANDOFF_PUBLIC_KEY") or "").strip()
+        if not 300 <= len(value) <= 4096 or not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+            raise BootstrapError("HelloAda owner-handoff public key is missing or invalid")
+        try:
+            encoded = value + "=" * ((4 - len(value) % 4) % 4)
+            der = base64.b64decode(encoded, altchars=b"-_", validate=True)
+        except (ValueError, base64.binascii.Error) as exc:
+            raise BootstrapError("HelloAda owner-handoff public key is invalid") from exc
+        if len(der) < 256 or len(der) > 3072:
+            raise BootstrapError("HelloAda owner-handoff public key is not a supported RSA public key")
+        try:
+            _validate_rsa_spki(der)
+        except ValueError as exc:
+            raise BootstrapError("HelloAda owner-handoff public key is not a supported RSA public key") from exc
+        return value
 
     @staticmethod
     def _load_payload_contract(site_dir: Path) -> Mapping[str, Any]:
@@ -752,6 +1150,7 @@ class WebsiteBootstrapService:
         display_name: str,
         tenant_id: str,
         payload_contract: Mapping[str, Any],
+        handoff_public_key: str,
     ) -> None:
         path = site_dir / "wrangler.jsonc"
         try:
@@ -780,6 +1179,8 @@ class WebsiteBootstrapService:
             "HELLOADA_CONTENT_CONTRACT_VERSION": str(payload_contract.get("contract") or ""),
             "HELLOADA_SCHEMA_IDENTITY": str(template.get("schemaIdentity") or ""),
             "HELLOADA_PAYLOAD_MIGRATION_HEAD": str(template.get("migrationHead") or ""),
+            "HELLOADA_HANDOFF_ISSUER": _HELLOADA_HANDOFF_ISSUER,
+            "HELLOADA_HANDOFF_PUBLIC_KEY": handoff_public_key,
         })
         document["name"] = names["worker"]
         document["d1_databases"] = [{
@@ -817,6 +1218,8 @@ class WebsiteBootstrapService:
         tenant_id: str,
         config_path: Path,
         worker: Mapping[str, Any],
+        *,
+        release_id: str | None = None,
     ) -> Mapping[str, Any]:
         site_dir = Path(str(worker.get("site_dir") or config_path.parent / "site"))
         try:
@@ -825,29 +1228,37 @@ class WebsiteBootstrapService:
                 raise BootstrapError("tenant source identity does not match its registration")
             site = _mapping(raw.get("site"))
             repository = str(site.get("repository") or "")
-            match = re.fullmatch(r"https://github\.com/(weareheadless/[A-Za-z0-9_.-]+)\.git", repository)
-            if not match:
+            if not re.fullmatch(r"weareheadless/[A-Za-z0-9_.-]+", repository):
                 raise BootstrapError("managed tenant repository identity is invalid")
-            expected_remote = f"git@github.com:{match.group(1)}.git"
+            expected_remote = f"git@github.com:{repository}.git"
             if self._git(site_dir, "remote", "get-url", "origin") != expected_remote:
                 raise BootstrapError("managed tenant checkout remote differs from its registered GitHub repository")
             if self._git(site_dir, "branch", "--show-current") != "main":
                 raise BootstrapError("managed tenant checkout must be on main before bootstrap release")
             changed = self._git(site_dir, "status", "--porcelain").splitlines()
-            if any(line[3:] != "wrangler.jsonc" for line in changed):
-                raise BootstrapError("bootstrap found source changes outside the declared Worker configuration")
+            changed_paths = {line[3:] for line in changed}
+            allowed_changes = {".gitignore", "wrangler.jsonc"}
+            if not changed_paths.issubset(allowed_changes):
+                raise BootstrapError("bootstrap found source changes outside canonical Worker files")
             if changed:
-                self._git(site_dir, "add", "--", "wrangler.jsonc")
+                staged_paths = sorted(changed_paths)
+                self._git(site_dir, "add", "--", *staged_paths)
                 staged = self._git(site_dir, "diff", "--cached", "--name-only").splitlines()
-                if staged != ["wrangler.jsonc"]:
-                    raise BootstrapError("bootstrap staging contains files outside the declared Worker configuration")
-                self._git(site_dir, "commit", "-qm", "Configure canonical Payload Worker bindings")
+                if staged != staged_paths:
+                    raise BootstrapError("bootstrap staging contains files outside canonical Worker files")
+                self._git(site_dir, "commit", "-qm", "Configure canonical Payload Worker files")
                 self._git(site_dir, "push", "origin", "main")
             commit = self._git(site_dir, "rev-parse", "HEAD").lower()
             if not re.fullmatch(r"[0-9a-f]{40}", commit):
                 raise BootstrapError("canonical site source has no exact Git revision")
             request_config = deep_merge(self.config, dict(raw))
-            request = request_release(request_config, self.env, commit, initialize_schema=True)
+            request = request_release(
+                request_config,
+                self.env,
+                commit,
+                initialize_schema=True,
+                release_id=release_id,
+            )
             root = release_root(self.config)
         except (OSError, UnicodeError, yaml.YAMLError, ReleaseQueueError) as exc:
             raise BootstrapError(str(exc)[:500]) from exc

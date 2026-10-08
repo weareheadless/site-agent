@@ -4,6 +4,18 @@ from site_agent.core.memory import Memory
 from site_agent.application.approvals import ApprovalService
 from site_agent.application.actions import OwnerActionService
 from site_agent.core.contracts import Artifact, ArtifactKind, EffectClass
+from datetime import datetime, timezone
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def fixed_schedule_clock(monkeypatch):
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            instant = datetime(2026, 10, 5, 12, 0, tzinfo=timezone.utc)
+            return instant.astimezone(tz) if tz else instant.replace(tzinfo=None)
+    monkeypatch.setattr('site_agent.application.growth_tasks.datetime', FixedDateTime)
 
 
 def test_linked_improvement_is_one_task_not_three_cards(tmp_path):
@@ -27,7 +39,7 @@ def test_linked_improvement_is_one_task_not_three_cards(tmp_path):
 def test_schedule_and_internal_block_are_not_fake_owner_decisions(tmp_path):
     memory = Memory(tmp_path / 'memory.db')
     tasks = growth_tasks(memory, [{'id': 1, 'title': 'Prepare an article', 'state': 'blocked', 'last_error': 'Search evidence unavailable'}], [],
-        [{'id': 'growth_weekly', 'enabled': True, 'nextRun': '2026-10-05T13:30:00Z'},
+        [{'id': 'growth_weekly', 'enabled': True, 'nextRun': '2026-10-07T13:30:00Z'},
          {'id': 'growth_monthly', 'enabled': False, 'nextRun': None}], [])
     assert [row['focus'] for row in tasks] == ['preparing', 'planned', 'paused']
     assert tasks[0]['lastError'] is None
@@ -73,7 +85,7 @@ def test_approved_work_is_with_ada_not_a_second_owner_decision(tmp_path):
 
 def test_running_and_retry_work_are_part_of_the_scheduled_task(tmp_path):
     memory = Memory(tmp_path / 'memory.db')
-    task, = growth_tasks(memory, [], [], [{'id': 'growth_weekly', 'enabled': True, 'nextRun': '2026-10-05T13:30:00Z'}], [],
+    task, = growth_tasks(memory, [], [], [{'id': 'growth_weekly', 'enabled': True, 'nextRun': '2026-10-07T13:30:00Z'}], [],
         [{'run_id': 'week-1', 'trigger': 'weekly', 'status': 'blocked', 'detail': {'error': 'Search source needs reconnection'},
           'next_due_ts': '2026-10-04T13:30:00Z', 'updated_ts': '2026-10-03T13:30:00Z'}])
     assert task['id'] == 'schedule:growth_weekly'
@@ -87,7 +99,7 @@ def test_running_and_retry_work_are_part_of_the_scheduled_task(tmp_path):
 
 def test_completed_cycle_does_not_show_an_old_failure_as_current_work(tmp_path):
     memory = Memory(tmp_path / 'memory.db')
-    task, = growth_tasks(memory, [], [], [{'id': 'growth_weekly', 'enabled': True, 'nextRun': '2026-10-05T13:30:00Z'}], [],
+    task, = growth_tasks(memory, [], [], [{'id': 'growth_weekly', 'enabled': True, 'nextRun': '2026-10-07T13:30:00Z'}], [],
         [{'run_id': 'week-1', 'trigger': 'weekly', 'status': 'blocked', 'updated_ts': '2026-09-25T13:30:00Z'},
          {'run_id': 'week-2', 'trigger': 'weekly', 'status': 'complete', 'updated_ts': '2026-10-02T13:30:00Z'}])
     assert task['focus'] == 'planned'

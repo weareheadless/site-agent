@@ -27,6 +27,27 @@ test('template pins the exact shared schema and admin releases it advertises', (
   assert.match(packageJson.dependencies['@weareheadless/helloada-payload-core'], new RegExp(`helloada-payload-core-v${manifest.payloadCore}`))
   assert.equal(lock.packages[''].dependencies['@weareheadless/helloada-payload-admin'], packageJson.dependencies['@weareheadless/helloada-payload-admin'])
   assert.equal(lock.packages[''].dependencies['@weareheadless/helloada-payload-core'], packageJson.dependencies['@weareheadless/helloada-payload-core'])
+  for (const [name, version] of [
+    ['@weareheadless/helloada-payload-admin', manifest.payloadAdmin],
+    ['@weareheadless/helloada-payload-core', manifest.payloadCore],
+  ]) {
+    const entry = lock.packages[`node_modules/${name}`]
+    assert.equal(entry.version, version)
+    assert.match(entry.integrity, /^sha512-[A-Za-z0-9+/]+={0,2}$/)
+  }
+  const runtime = JSON.parse(read('wrangler.jsonc')).vars
+  assert.equal(runtime.HELLOADA_TEMPLATE_SCHEMA, String(manifest.templateSchema))
+  assert.equal(runtime.HELLOADA_PAYLOAD_ADMIN_VERSION, manifest.payloadAdmin)
+  assert.equal(runtime.HELLOADA_PAYLOAD_CORE_VERSION, manifest.payloadCore)
+  assert.equal(runtime.HELLOADA_PAYLOAD_SCHEMA_REVISION, String(manifest.schemaRevision))
+  assert.equal(runtime.HELLOADA_CONTENT_CONTRACT_VERSION, manifest.contentContract)
+  assert.equal(runtime.HELLOADA_SCHEMA_IDENTITY, manifest.schemaIdentity)
+  assert.equal(runtime.HELLOADA_PAYLOAD_MIGRATION_HEAD, manifest.migrationHead)
+})
+
+test('health verifies the full canonical schema identity advertised by the template', () => {
+  const health = read('src/app/api/health/route.ts')
+  assert.match(health, /globals:\s*HELLOADA_CAPABILITIES\.globals/)
 })
 
 test('public page and article routes read Payload and render Payload SEO metadata', () => {
@@ -55,6 +76,8 @@ test('Growth review renders an owner-bound exact Payload revision through Next, 
   const bridge = read('src/app/api/helloada/[...path]/route.ts')
   const preview = read('src/app/(frontend)/helloada-preview/[token]/page.tsx')
   const presentation = read('src/components/site/presentation/PagePresentation.tsx')
+  const claims = read('src/lib/helloada-preview.ts')
+  const chrome = read('src/components/SiteChrome.tsx')
   assert.doesNotMatch(bridge, /react-dom\/server|renderToStaticMarkup/)
   assert.match(bridge, /createHelloAdaPreviewToken/)
   assert.match(bridge, /fetch\(previewUrl/)
@@ -64,6 +87,12 @@ test('Growth review renders an owner-bound exact Payload revision through Next, 
   assert.match(preview, /verifyHelloAdaPreviewToken/)
   assert.match(preview, /claims\.ownerId/)
   assert.match(preview, /claims\.documentHash/)
+  assert.match(preview, /claims\.globals\.map/)
+  assert.match(preview, /hashJson\(withoutPayloadMetadata\(global\)\) !== claim\.hash/)
+  assert.match(preview, /locale: claims\.locale/)
+  assert.match(claims, /globals: Array<\{ slug: 'siteSettings' \| 'navigation'; hash: string \}>/)
+  assert.match(claims, /claims\.globals\.length === 2/)
+  assert.match(chrome, /navigation: candidateNavigation/)
   assert.match(preview, /expectedPublicRoute\(claims\.collection, document\) !== claims\.route/)
   assert.match(presentation, /data-helloada-document-id/)
   assert.match(presentation, /data-helloada-updated-at/)
@@ -85,9 +114,12 @@ test('external message alerts use one verified, tenant-scoped outbox path in eve
   const processing = read('src/lib/message-processing.ts')
   const formRoute = read('src/app/api/helloada/forms/[slug]/route.ts')
   const ownerRoute = read('src/app/api/helloada/[...path]/route.ts')
-  const migration = read('src/migrations/20261005_173359_helloada_owner_notifications.ts')
+  const migrationIndex = read('src/migrations/index.ts')
+  const migration = read('src/migrations/20261006_061835_helloada_owner_handoff.ts')
   const workerConfig = read('wrangler.jsonc')
   assert.match(coreSchema, /'owner_notification'/)
+  assert.match(migrationIndex, /20261006_061835_helloada_owner_handoff/)
+  assert.doesNotMatch(migrationIndex, /20261004_232326_helloada_messages_contacts|20261005_173359_helloada_owner_notifications/)
   for (const field of ['notificationAddress', 'notificationVerifiedAt', 'notificationPendingAddress', 'notificationCodeHash', 'notificationCodeExpiresAt', 'notificationCodeSentAt', 'notificationCodeAttempts']) {
     assert.match(coreSchema, new RegExp(`name: '${field}'`))
     assert.match(migration, new RegExp(field.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)))
@@ -134,4 +166,15 @@ test('a clean scaffold inherits Payload-bound pages, posts, settings, navigation
   assert.match(chrome, /footer/)
   assert.match(siteChrome, /getNavigation/)
   assert.match(siteChrome, /getSiteSettings/)
+})
+
+test('release verification rejects tenants whose shared Payload content cannot render', () => {
+  const verifier = read('scripts/verify-payload-contract.ts')
+  assert.match(verifier, /siteSettings publishable name/)
+  assert.match(verifier, /navigation has shared header and footer links/)
+  assert.match(verifier, /published home page is complete enough to render/)
+  assert.match(verifier, /seo\.title/)
+  assert.match(verifier, /seo\.description/)
+  assert.match(verifier, /home\.summary/)
+  assert.match(verifier, /home\.sections/)
 })

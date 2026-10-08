@@ -27,19 +27,55 @@ API_DEPLOYMENT = importlib.util.module_from_spec(API_DEPLOYMENT_SPEC)
 API_DEPLOYMENT_SPEC.loader.exec_module(API_DEPLOYMENT)
 validate_api_queue = API_DEPLOYMENT.validate_api_queue
 
+HELLOADA_APP_DEPLOYMENT_MODULE = Path(__file__).with_name("deploy-helloada-app.py")
+HELLOADA_APP_DEPLOYMENT_SPEC = importlib.util.spec_from_file_location(
+    "helloada_app_deployment", HELLOADA_APP_DEPLOYMENT_MODULE,
+)
+if HELLOADA_APP_DEPLOYMENT_SPEC is None or HELLOADA_APP_DEPLOYMENT_SPEC.loader is None:
+    raise RuntimeError("HelloAda app deployment contract is unavailable")
+HELLOADA_APP_DEPLOYMENT = importlib.util.module_from_spec(HELLOADA_APP_DEPLOYMENT_SPEC)
+HELLOADA_APP_DEPLOYMENT_SPEC.loader.exec_module(HELLOADA_APP_DEPLOYMENT)
+validate_helloada_app_queue = HELLOADA_APP_DEPLOYMENT.validate_helloada_app_queue
+
 
 def mark_interrupted_runs(root: Path) -> None:
-    # The caller owns the global lock; no previous service process can still run.
+    # The caller owns the global lock; systemd has stopped the prior process group.
     for receipt in (root / "runs").glob("*/*/receipt.json"):
         result = json.loads(receipt.read_text())
         if result.get("status") != "running":
             continue
         result.update({"status": "interrupted", "error": "systemd job ended before a terminal receipt",
                        "finishedAt": datetime.now(timezone.utc).isoformat()})
+        if result.get("tenant") and result.get("worker"):
+            for name in ("source", "temporary", "open-next.tar.gz"):
+                path = receipt.parent / name
+                if path.is_symlink() or path.is_file():
+                    path.unlink(missing_ok=True)
+                elif path.is_dir():
+                    shutil.rmtree(path)
+            result["workspaceCleanupStatus"] = "interrupted-cleaned"
         temporary = receipt.with_suffix(".tmp")
         temporary.write_text(json.dumps(result, indent=2) + "\n")
         temporary.chmod(0o600)
         temporary.replace(receipt)
+
+
+def cleanup_stale_release_workspaces(root: Path) -> None:
+    work_root = root / "work"
+    if work_root.is_symlink():
+        raise RuntimeError("release workspace root must not be a symlink")
+    if not work_root.exists():
+        return
+    if not work_root.is_dir():
+        raise RuntimeError("release workspace root is not a real directory")
+    # The caller owns reconcile.lock, so no canonical build can still be using it.
+    for workspace in work_root.iterdir():
+        if workspace.is_symlink() or workspace.is_file():
+            workspace.unlink()
+        elif workspace.is_dir():
+            shutil.rmtree(workspace)
+        else:
+            raise RuntimeError("unexpected object in release workspace root")
 
 
 def validate_queue(queue: dict, registry: dict) -> None:
@@ -90,6 +126,11 @@ def validate_queue(queue: dict, registry: dict) -> None:
                 raise ValueError("tenant schema migration must identify one prior ledger and the registered target head")
 
 
+def release_purpose_for_request(request: dict) -> str:
+    """Map one validated queue operation to its exact Payload content gate."""
+    return "workspace-bootstrap" if "initializeSchema" in request else "website"
+
+
 def snapshot_api_source(mirror: Path, root: Path, source_sha: str) -> Path:
     snapshot = root / "api-sources" / source_sha
     marker = snapshot / ".site-agent-source-sha"
@@ -112,6 +153,58 @@ def snapshot_api_source(mirror: Path, root: Path, source_sha: str) -> Path:
     return snapshot
 
 
+def snapshot_helloada_source(mirror: Path, destination: Path, source_sha: str) -> Path:
+    if not re.fullmatch(r"[0-9a-f]{40}", source_sha):
+        raise ValueError("HelloAda source snapshot requires a full immutable SHA")
+    if destination.exists() or destination.is_symlink():
+        raise RuntimeError("HelloAda source destination must be a new workspace path")
+    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    staging = Path(tempfile.mkdtemp(prefix="helloada-source-", dir=destination.parent))
+    try:
+        with subprocess.Popen(
+            ["git", "-C", str(mirror), "archive", source_sha],
+            stdout=subprocess.PIPE,
+        ) as archive:
+            subprocess.run(["tar", "-x", "-C", str(staging)], stdin=archive.stdout, check=True)
+            if archive.stdout:
+                archive.stdout.close()
+            if archive.wait():
+                raise RuntimeError("could not snapshot HelloAda source commit")
+        marker_path = staging / ".helloada-source-sha"
+        marker_path.write_text(source_sha + "\n", encoding="ascii")
+        staging.rename(destination)
+    except Exception:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return destination
+
+
+def cleanup_legacy_helloada_build_caches(root: Path) -> None:
+    for name in ("helloada-sources", "npm-cache"):
+        path = root / name
+        if not path.exists() and not path.is_symlink():
+            continue
+        if path.is_symlink() or not path.is_dir():
+            raise RuntimeError(f"legacy HelloAda build cache is not a real directory: {name}")
+        shutil.rmtree(path)
+
+
+def cleanup_stale_control_snapshots(root: Path, source_sha: str) -> None:
+    snapshots = root / "control"
+    if snapshots.is_symlink():
+        raise RuntimeError("control snapshot root must not be a symlink")
+    if not snapshots.exists():
+        return
+    if not snapshots.is_dir():
+        raise RuntimeError("control snapshot root is not a real directory")
+    for stale in snapshots.iterdir():
+        if stale.name == source_sha:
+            continue
+        if stale.is_symlink() or not stale.is_dir():
+            raise RuntimeError("unexpected object in control snapshot root")
+        shutil.rmtree(stale)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path("/SOCIAL/payload-releases"))
@@ -123,6 +216,8 @@ def main() -> int:
         except BlockingIOError:
             return 0
         mark_interrupted_runs(args.root)
+        cleanup_stale_release_workspaces(args.root)
+        cleanup_legacy_helloada_build_caches(args.root)
         profile = {"credentials": {"profile_file": "/SOCIAL/configs/host-credentials.yaml"}}
         ssh_command = github_ssh_command(profile, {})
         if not ssh_command:
@@ -137,6 +232,7 @@ def main() -> int:
             raise RuntimeError("control repository remote mismatch")
         subprocess.run(["git", "-C", str(mirror), "fetch", "origin", "+refs/heads/main:refs/heads/main"], env=environment, check=True)
         sha = subprocess.check_output(["git", "-C", str(mirror), "rev-parse", "refs/heads/main"], text=True).strip()
+        cleanup_stale_control_snapshots(args.root, sha)
 
         def document(path: str) -> dict:
             return json.loads(subprocess.check_output(["git", "-C", str(mirror), "show", f"{sha}:{path}"], text=True))
@@ -144,6 +240,8 @@ def main() -> int:
         registry = document("deploy/payload-customers.json")
         queue = document("deploy/desired-releases.json")
         api_request = validate_api_queue(document("deploy/desired-api-release.json"))
+        app_request = validate_helloada_app_queue(document("deploy/desired-helloada-app-release.json"))
+        app_config = document("deploy/helloada-app.json")
         validate_queue(queue, registry)
         if Path(registry["releaseRoot"]) != args.root:
             raise RuntimeError("release root differs from installed systemd configuration")
@@ -180,6 +278,65 @@ def main() -> int:
             if code:
                 print("[queue] API release failed; customer releases are held", flush=True)
                 return 1
+        if app_request:
+            app_repository = str(app_config.get("repository") or "")
+            expected_repository = "git@github.com:weareheadless/helloada.git"
+            if app_config.get("schema") != 1 or app_repository != expected_repository:
+                raise ValueError("HelloAda app release registry must identify the official immutable source")
+            app_mirror = args.root / "helloada-control.git"
+            if not app_mirror.exists():
+                subprocess.run(["git", "clone", "--bare", app_repository, str(app_mirror)],
+                               env=environment, check=True)
+            actual_app_remote = subprocess.check_output(
+                ["git", "-C", str(app_mirror), "remote", "get-url", "origin"], text=True,
+            ).strip()
+            if actual_app_remote != app_repository:
+                raise RuntimeError("HelloAda source mirror remote mismatch")
+            subprocess.run(["git", "-C", str(app_mirror), "fetch", "origin",
+                            "+refs/heads/main:refs/heads/main"], env=environment, check=True)
+            ancestry = subprocess.run(
+                ["git", "-C", str(app_mirror), "merge-base", "--is-ancestor",
+                 app_request["sha"], "refs/heads/main"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            if ancestry.returncode:
+                raise ValueError("HelloAda app release SHA is not an ancestor of official main")
+            app_tool = snapshot / "scripts" / "deploy-helloada-app.py"
+            if not app_tool.is_file():
+                raise RuntimeError("control snapshot does not contain the HelloAda app release contract")
+            app_run = args.root / "runs" / "helloada-app" / app_request["id"]
+            app_receipt = app_run / "receipt.json"
+            if app_run.exists() or app_run.is_symlink():
+                if app_run.is_symlink() or not app_run.is_dir() or not app_receipt.is_file():
+                    print(f"[queue] HelloAda app {app_request['id']} has no terminal receipt; commit a new release ID",
+                          flush=True)
+                    failures += 1
+                else:
+                    result = json.loads(app_receipt.read_text(encoding="utf-8"))
+                    if result.get("sourceSha") != app_request["sha"] or result.get("releaseId") != app_request["id"]:
+                        raise RuntimeError("HelloAda app release ID was reused for different source")
+                    failures += int(result.get("status") != "deployed")
+            else:
+                work_root = args.root / "work"
+                work_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+                print(f"[queue] HelloAda app release={app_request['id']} source={app_request['sha']}", flush=True)
+                with tempfile.TemporaryDirectory(prefix="helloada-app-", dir=work_root) as workspace:
+                    app_source = snapshot_helloada_source(app_mirror, Path(workspace) / "source",
+                                                          app_request["sha"])
+                    code = subprocess.run(
+                        [sys.executable, str(app_tool), "--source-dir", str(app_source),
+                         "--source-sha", app_request["sha"], "--release-id", app_request["id"],
+                         "--root", str(args.root)],
+                        env={**environment, "HELLOADA_PIPELINE_SHA": sha},
+                    ).returncode
+                failures += int(code != 0)
+                if app_receipt.is_file():
+                    result = json.loads(app_receipt.read_text(encoding="utf-8"))
+                    result["workspaceCleanupStatus"] = "complete"
+                    temporary_receipt = app_receipt.with_suffix(".tmp")
+                    temporary_receipt.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+                    temporary_receipt.chmod(0o600)
+                    temporary_receipt.replace(app_receipt)
         pending = any(not (args.root / "runs" / tenant / request["id"]).exists()
                       for tenant, request in queue["releases"].items())
         if pending:
@@ -196,12 +353,14 @@ def main() -> int:
                 result = json.loads(receipt.read_text())
                 if result["sourceSha"] != request["sha"]:
                     raise RuntimeError("release ID was reused for a different SHA")
-                if result["status"] not in ("deployed", "verified"):
+                if (result["status"] not in ("deployed", "verified")
+                        or result.get("workspaceCleanupStatus") == "failed"):
                     failures += 1
                 continue
             print(f"[queue] release={tenant}/{request['id']} source={request['sha']} pipeline={sha}", flush=True)
             command = [sys.executable, str(snapshot / "scripts/deploy-payload-customer.py"),
                 "--tenant", tenant, "--ref", request["sha"], "--release-id", request["id"]]
+            command.extend(["--release-purpose", release_purpose_for_request(request)])
             if "approvalId" in request:
                 command.extend(["--approval-id", str(request["approvalId"])])
             if "initializeSchema" in request:

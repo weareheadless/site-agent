@@ -52,6 +52,7 @@ test('draft updates require the exact current Payload revision', async () => {
     '@/lib/service-auth': { serviceAuthorized: () => true },
     '@/helloada.config': { helloAdaSite: { locales: ['en'] } },
     '@/lib/payload-locale': { resolvePayloadLocale: () => undefined },
+    '@weareheadless/helloada-payload-core/schema': { validateHelloAdaAuthoringData: () => true },
     '@/lib/payload-hash': {
       hashJson: async () => revision,
       withoutPayloadMetadata: ({ id, title }) => ({ id, title }),
@@ -62,8 +63,8 @@ test('draft updates require the exact current Payload revision', async () => {
   const post = body => sandbox.exports.POST({ json: async () => body })
 
   assert.equal((await post({ operation: 'update', collection: 'pages', id: 'page-1', data: { title: 'After' } })).status, 400)
-  assert.equal((await post({ operation: 'update', collection: 'pages', id: 'page-1', expectedHash: `sha256:${'b'.repeat(64)}`, data: { title: 'After' } })).status, 409)
-  const accepted = await post({ operation: 'update', collection: 'pages', id: 'page-1', expectedHash: revision, data: { title: 'After' } })
+  assert.equal((await post({ operation: 'update', collection: 'pages', id: 'page-1', locale: 'en', expectedHash: `sha256:${'b'.repeat(64)}`, data: { title: 'After' } })).status, 409)
+  const accepted = await post({ operation: 'update', collection: 'pages', id: 'page-1', locale: 'en', expectedHash: revision, data: { title: 'After' } })
   assert.equal(accepted.status, 200)
   assert.deepEqual(writes.map(({ data, draft }) => ({ data, draft })), [{ data: { title: 'After' }, draft: true }])
   assert.equal(accepted.body.documentHash, revision)

@@ -1228,6 +1228,138 @@ textarea:focus-visible {
   gap: 5px;
 }
 
+.helloada-onboarding-steps {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 0 auto 0 12px;
+  padding: 0;
+  color: var(--helloada-muted);
+  list-style: none;
+}
+
+.helloada-onboarding-steps li {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  font-size: 8px;
+  line-height: 1.25;
+}
+
+.helloada-onboarding-steps li.is-current {
+  color: var(--helloada-ink);
+  font-weight: 700;
+}
+
+.helloada-onboarding-steps li.is-upcoming {
+  opacity: 0.7;
+}
+
+.helloada-onboarding-number {
+  display: grid;
+  flex: 0 0 19px;
+  width: 19px;
+  height: 19px;
+  place-items: center;
+  border: 1px solid var(--helloada-soft-line);
+  border-radius: 50%;
+  color: inherit;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.helloada-onboarding-steps li.is-current .helloada-onboarding-number {
+  border-color: var(--helloada-accent);
+  color: #fff;
+  background: var(--helloada-accent);
+  box-shadow: 0 0 0 3px rgba(255, 107, 94, 0.13);
+}
+
+.helloada-onboarding-steps li.is-complete .helloada-onboarding-number {
+  border-color: var(--theme-success-500);
+  color: var(--theme-success-500);
+}
+
+.helloada-onboarding-report-state {
+  margin: 0;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--helloada-soft-line);
+  color: var(--helloada-muted);
+  font-size: 11px;
+}
+
+.helloada-onboarding-report-state.is-error { color: var(--theme-error-500); }
+
+.helloada-onboarding-report {
+  border-bottom: 1px solid var(--helloada-soft-line);
+  background: var(--helloada-panel);
+}
+
+.helloada-onboarding-report > summary {
+  padding: 10px 14px;
+  color: var(--helloada-accent);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  list-style-position: inside;
+}
+
+.helloada-onboarding-report-content {
+  display: grid;
+  gap: 12px;
+  max-height: min(54vh, 520px);
+  overflow: auto;
+  padding: 0 16px 16px;
+  color: var(--helloada-ink);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.helloada-onboarding-report-content h2,
+.helloada-onboarding-report-content h3,
+.helloada-onboarding-report-content p { margin: 0; }
+
+.helloada-onboarding-report-content h2 {
+  font-size: 16px;
+  letter-spacing: -0.025em;
+}
+
+.helloada-onboarding-report-content h3 {
+  margin-bottom: 4px;
+  color: var(--helloada-accent);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.helloada-onboarding-report-summary,
+.helloada-onboarding-report-evidence { color: var(--helloada-muted); }
+
+.helloada-onboarding-report-content dl,
+.helloada-onboarding-report-content ol,
+.helloada-onboarding-report-content ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.helloada-onboarding-report-content dl { padding: 0; }
+.helloada-onboarding-report-content dl > div { display: grid; grid-template-columns: minmax(90px, 0.34fr) 1fr; gap: 8px; }
+.helloada-onboarding-report-content dt { color: var(--helloada-muted); }
+.helloada-onboarding-report-content dd { margin: 0; font-weight: 600; }
+.helloada-onboarding-report-content li strong { display: block; }
+.helloada-onboarding-research { padding-left: 18px; }
+.helloada-onboarding-research li { padding-left: 2px; }
+.helloada-onboarding-research a,
+.helloada-onboarding-research small { display: block; margin-top: 3px; color: var(--helloada-muted); font-size: 10px; }
+.helloada-onboarding-research a { color: var(--helloada-accent); text-decoration: underline; text-underline-offset: 2px; }
+.helloada-onboarding-unknowns { color: var(--helloada-muted); }
+.helloada-onboarding-unknowns summary { cursor: pointer; font-size: 11px; font-weight: 700; }
+.helloada-onboarding-report-content .helloada-phase-action { justify-self: start; text-decoration: none; }
+
 .helloada-phase-action {
   min-height: 27px;
   padding: 0 9px;
@@ -3288,6 +3420,18 @@ textarea:focus-visible {
 
   .helloada-phase-bar {
     align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .helloada-onboarding-steps {
+    order: 3;
+    flex-basis: 100%;
+    margin: 0 0 0 17px;
+    gap: 10px;
+  }
+
+  .helloada-onboarding-steps li {
+    font-size: 8px;
   }
 
   .helloada-phase-copy > span:not(.helloada-sr-only) {
