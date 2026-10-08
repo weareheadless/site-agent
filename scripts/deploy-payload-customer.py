@@ -17,7 +17,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Mapping
 
 ROOT = Path(__file__).resolve().parents[1]
 if TYPE_CHECKING:
@@ -848,6 +848,7 @@ def activate_tenant_runtime(
     release_id: str,
     source_sha: str,
     token: str,
+    verification: Mapping[str, Any] | None = None,
 ) -> None:
     """Mount the pending tenant after Worker health and before connection auth."""
     endpoint = (
@@ -856,7 +857,10 @@ def activate_tenant_runtime(
         + urllib.parse.quote(tenant, safe="")
         + "/activate-runtime"
     )
-    payload = json.dumps({"release_id": release_id, "source_sha": source_sha}).encode("utf-8")
+    body: dict[str, Any] = {"release_id": release_id, "source_sha": source_sha}
+    if verification is not None:
+        body["verification"] = dict(verification)
+    payload = json.dumps(body).encode("utf-8")
     request = urllib.request.Request(
         endpoint,
         data=payload,
@@ -944,10 +948,14 @@ def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dic
                                              customer, receipt["sourceSha"])
             stage("verify-connection")
             activation_token = control_plane_token(gate["envFile"], base)
-            activate_tenant_runtime(
+            activation = (
                 gate["apiUrl"], receipt["tenant"], receipt["releaseId"],
                 receipt["sourceSha"], activation_token,
             )
+            if verify_only:
+                activate_tenant_runtime(*activation, receipt["currentVerification"])
+            else:
+                activate_tenant_runtime(*activation)
             run([sys.executable, str(ROOT / "scripts/check-helloada-connections.py"),
                  "--config", gate["config"], "--env-file", gate["envFile"],
                  "--api-url", gate["apiUrl"], "--tenant", receipt["tenant"]], ROOT,

@@ -72,23 +72,28 @@ registration is `pending`. The canonical release sequence must therefore be:
 3. Persist stage `verify-connection`, including the health response, then call
    the authenticated control-plane `activate-runtime` handoff with the exact
    tenant, release ID, and source SHA.
-4. The API validates that handoff against the bootstrap state and central
-   release receipt: matching tenant/release/SHA, a running `verify-connection`
-   stage, the exact 100%-traffic uploaded Worker version, and matching shared
-   Payload health identity. Only then does it mount the tenant and change its
-   registry state from `pending` to `runtime` so the API can serve the
-   authenticated connection gate. This is not owner-ready state.
+4. For a new bootstrap release, the API validates that handoff against the
+   bootstrap state and central release receipt: matching tenant/release/SHA, a
+   running `verify-connection` stage, the exact 100%-traffic uploaded Worker
+   version, and matching shared Payload health identity. For read-only adoption
+   of an existing release, the authenticated verifier supplies a structured
+   proof of the active Worker version; the API checks its release identity,
+   100% traffic, and matching code/binding fingerprints against the canonical
+   receipt. Only then does it mount the tenant and change its registry state
+   from `pending` to `runtime` so the API can serve the authenticated connection
+   gate. This is not owner-ready state.
 5. Run the existing tenant-token-authenticated connection check, including a
    read-only Payload gateway round trip. Only after this succeeds and the
    release receipt records `connectionVerifiedAt` does bootstrap change the
    tenant from `runtime` to `ready` and expose the owner workspace as ready.
 
 This ordering is part of the shared release contract, not a UI polling side
-effect. It must complete when the owner's browser is closed. Existing website
-releases do not run bootstrap activation; they use the same health and
-connection checks against the already-mounted tenant. Do not expose pending
-tenants to the public workspace API, skip the authenticated connection gate,
-or treat a successful Worker health check alone as owner readiness.
+effect. It must complete when the owner's browser is closed. Regular website
+releases synchronize the same exact runtime contract before the connection
+check; read-only adoption uses the separate verified-version proof and does not
+rewrite the canonical promotion receipt. Do not expose pending tenants to the
+public workspace API, skip the authenticated connection gate, or treat a
+successful Worker health check alone as owner readiness.
 
 The owner-authenticated connection response exposes presence booleans,
 binding source, expected tenant and a bounded failure code only. It never
@@ -126,8 +131,9 @@ itself and checks its code and non-secret bindings against the uploaded release.
 It then checks the live Worker health contract and authenticated
 HelloAda/Payload connection, rechecking the active deployment around those
 gates. A failed read-only attempt leaves the canonical promotion receipt
-unchanged. The
-adoption then requires that receipt to be the tenant's latest successful
+unchanged. The authenticated control-plane activation receives the verifier's
+structured current-version proof rather than temporarily rewriting the receipt
+to a `running` state. The adoption then requires that receipt to be the tenant's latest successful
 release, validates its full Payload identity and explicit website-presence
 state, and verifies the registered `site.public_url` matches the health origin
 and Worker identity in the canonical deployment manifest.

@@ -68,6 +68,34 @@ def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
+def _current_worker_verification_matches(
+    receipt: Mapping[str, Any], verification: Mapping[str, Any], *,
+    release_id: str, source_sha: str,
+) -> bool:
+    if not isinstance(verification, Mapping):
+        return False
+    uploaded_version = str(receipt.get("uploadedVersion") or "")
+    worker_version = str(verification.get("workerVersion") or "")
+    mode = verification.get("mode")
+    return (
+        verification.get("releaseId") == release_id
+        and verification.get("sourceSha") == source_sha
+        and verification.get("uploadedVersion") == uploaded_version
+        and bool(uploaded_version)
+        and bool(worker_version)
+        and verification.get("trafficPercentage") == 100
+        and bool(verification.get("deploymentId"))
+        and bool(verification.get("verifiedAt"))
+        and isinstance(mode, str)
+        and mode in {"exact", "secret_rotation"}
+        and (mode == "exact") == (worker_version == uploaded_version)
+        and verification.get("uploadedScriptEtag") == verification.get("activeScriptEtag")
+        and re.fullmatch(r"[0-9a-f]{64}", str(verification.get("activeScriptEtag") or "")) is not None
+        and verification.get("uploadedBindingIdentity") == verification.get("activeBindingIdentity")
+        and re.fullmatch(r"[0-9a-f]{64}", str(verification.get("activeBindingIdentity") or "")) is not None
+    )
+
+
 def _component(value: str, label: str) -> str:
     normalized = str(value or "").strip().lower()
     if not _SAFE_COMPONENT.fullmatch(normalized):
@@ -517,6 +545,7 @@ class WebsiteBootstrapService:
         *,
         release_id: str,
         source_sha: str,
+        verification: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Synchronize and mount a tenant only after its exact Worker passed live health."""
         normalized = _component(tenant_id, "website id")
@@ -531,16 +560,36 @@ class WebsiteBootstrapService:
                 receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
             except (OSError, UnicodeError, ValueError, ReleaseQueueError) as exc:
                 raise BootstrapError("runtime activation release receipt is unavailable") from exc
+            normal_boundary = (
+                isinstance(receipt, Mapping)
+                and receipt.get("status") == "running"
+                and receipt.get("stage") == "verify-connection"
+            )
+            if verification is None:
+                boundary_valid = normal_boundary
+            else:
+                read_only_boundary = (
+                    isinstance(receipt, Mapping)
+                    and receipt.get("status") in {"deployed", "failed", "verified"}
+                    and receipt.get("stage") in {
+                        "verify-deployment", "verify-connection", "awaiting-browser-verification", "verified",
+                    }
+                )
+                boundary_valid = (
+                    read_only_boundary
+                    and _current_worker_verification_matches(
+                        receipt, verification, release_id=release_id, source_sha=source_sha,
+                    )
+                )
             if (
                 not isinstance(receipt, Mapping)
                 or receipt.get("tenant") != normalized
                 or receipt.get("releaseId") != release_id
                 or receipt.get("sourceSha") != source_sha
-                or receipt.get("status") != "running"
-                or receipt.get("stage") != "verify-connection"
+                or not boundary_valid
                 or receipt.get("approvalId") is not None
             ):
-                raise BootstrapError("runtime activation is not at the verified Worker health boundary")
+                raise BootstrapError("runtime activation is not backed by a valid verified Worker boundary")
 
             initial_schema_head = receipt.get("initialSchemaHead")
             if initial_schema_head is not None:
