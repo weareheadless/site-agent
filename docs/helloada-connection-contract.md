@@ -117,12 +117,16 @@ canonical template and the VPS caller uses the matching prefix.
 A tenant that was deployed before its HelloAda bootstrap saga was recorded must
 be adopted explicitly; a missing bootstrap receipt is not runtime evidence of
 readiness. Use `site-agent adopt-release-readiness` with the registered tenant,
-exact canonical release ID, full customer source SHA, explicit release purpose,
-and exact current Worker version.
-Before writing readiness, the command runs the standard
+exact canonical release ID, full customer source SHA, and explicit release
+purpose. The caller must not supply a Worker version. Before writing readiness,
+the command runs the standard
 `deploy-payload-customer.py --verify-only` gate for that exact tenant, release,
-and SHA. This checks Cloudflare's current 100%-active version, the live Worker
-health contract, and the authenticated HelloAda/Payload connection. The
+and SHA. The verifier resolves Cloudflare's active 100%-traffic Worker version
+itself and checks its code and non-secret bindings against the uploaded release.
+It then checks the live Worker health contract and authenticated
+HelloAda/Payload connection, rechecking the active deployment around those
+gates. A failed read-only attempt leaves the canonical promotion receipt
+unchanged. The
 adoption then requires that receipt to be the tenant's latest successful
 release, validates its full Payload identity and explicit website-presence
 state, and verifies the registered `site.public_url` matches the health origin

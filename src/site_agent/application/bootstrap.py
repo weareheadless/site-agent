@@ -329,19 +329,15 @@ class WebsiteBootstrapService:
         *,
         release_id: str,
         source_sha: str,
-        worker_version: str,
     ) -> dict[str, Any]:
         """Explicitly adopt a healthy, already-deployed tenant into bootstrap readiness."""
         normalized = _component(tenant_id, "website id")
         release_id = str(release_id or "").strip()
         source_sha = str(source_sha or "").strip().lower()
-        worker_version = str(worker_version or "").strip()
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", release_id):
             raise BootstrapError("adoption release identity is invalid")
         if not re.fullmatch(r"[0-9a-f]{40}", source_sha):
             raise BootstrapError("adoption source identity is invalid")
-        if not worker_version:
-            raise BootstrapError("adoption Worker version is required")
         try:
             if not self.registration.is_registered(normalized):
                 raise BootstrapError("tenant is not present in the canonical registry")
@@ -354,6 +350,11 @@ class WebsiteBootstrapService:
         except (OSError, UnicodeError, ValueError, ReleaseQueueError) as exc:
             raise BootstrapError("canonical release receipt is unavailable") from exc
         current_verification = receipt.get("currentVerification") if isinstance(receipt, Mapping) else None
+        worker_version = (
+            str(current_verification.get("workerVersion") or "").strip()
+            if isinstance(current_verification, Mapping)
+            else ""
+        )
         if not isinstance(receipt, Mapping) or (
             receipt.get("tenant") != normalized
             or receipt.get("releaseId") != release_id
@@ -362,7 +363,7 @@ class WebsiteBootstrapService:
             or current_verification.get("releaseId") != release_id
             or current_verification.get("sourceSha") != source_sha
             or current_verification.get("uploadedVersion") != receipt.get("uploadedVersion")
-            or current_verification.get("workerVersion") != worker_version
+            or not worker_version
             or current_verification.get("trafficPercentage") != 100
             or current_verification.get("mode") not in {"exact", "secret_rotation"}
             or not current_verification.get("deploymentId")

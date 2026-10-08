@@ -382,7 +382,6 @@ def test_adopt_verified_release_writes_readiness_and_is_idempotent(tmp_path):
         tenant,
         release_id=release,
         source_sha=source_sha,
-        worker_version=version,
     )
     state_path = service._state_path(tenant)
     saved = json.loads(state_path.read_text(encoding="utf-8"))
@@ -403,7 +402,6 @@ def test_adopt_verified_release_writes_readiness_and_is_idempotent(tmp_path):
         tenant,
         release_id=release,
         source_sha=source_sha,
-        worker_version=version,
     )
     assert again["workspace_ready"] is True
     assert activated == [tenant]
@@ -419,7 +417,7 @@ def test_adopt_verified_release_rejects_unregistered_or_mismatched_identity(tmp_
     )
     with pytest.raises(BootstrapError, match="canonical registry"):
         service.adopt_verified_release(
-            tenant, release_id=release, source_sha=source_sha, worker_version=version,
+            tenant, release_id=release, source_sha=source_sha,
         )
 
     service, tenant, release, source_sha, version, _path, _activated, _config = _adoption_fixture(
@@ -427,11 +425,7 @@ def test_adopt_verified_release_rejects_unregistered_or_mismatched_identity(tmp_
     )
     with pytest.raises(BootstrapError, match="deployed tenant identity"):
         service.adopt_verified_release(
-            tenant, release_id=release, source_sha="d" * 40, worker_version=version,
-        )
-    with pytest.raises(BootstrapError, match="deployed tenant identity"):
-        service.adopt_verified_release(
-            tenant, release_id=release, source_sha=source_sha, worker_version="wrong",
+            tenant, release_id=release, source_sha="d" * 40,
         )
     assert not service._state_path(tenant).exists()
 
@@ -456,7 +450,7 @@ def test_adopt_verified_release_rejects_stale_release_and_mismatched_admin_origi
     newer_path.write_text(json.dumps(newer), encoding="utf-8")
     with pytest.raises(BootstrapError, match="not the latest successful"):
         service.adopt_verified_release(
-            tenant, release_id=release, source_sha=source_sha, worker_version=version,
+            tenant, release_id=release, source_sha=source_sha,
         )
     assert not service._state_path(tenant).exists()
 
@@ -469,7 +463,7 @@ def test_adopt_verified_release_rejects_stale_release_and_mismatched_admin_origi
     )
     with pytest.raises(BootstrapError, match="does not match the release health origin"):
         service.adopt_verified_release(
-            tenant, release_id=release, source_sha=source_sha, worker_version=version,
+            tenant, release_id=release, source_sha=source_sha,
         )
 
 def test_adopt_verified_release_rejects_nonactive_version_and_conflicting_state(tmp_path):
@@ -482,14 +476,14 @@ def test_adopt_verified_release_rejects_nonactive_version_and_conflicting_state(
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
     with pytest.raises(BootstrapError, match="deployed tenant identity"):
         service.adopt_verified_release(
-            tenant, release_id=release, source_sha=source_sha, worker_version=version,
+            tenant, release_id=release, source_sha=source_sha,
         )
     receipt["currentVerification"]["trafficPercentage"] = 100
     receipt["health"]["schemaIdentity"] = "z" * 64
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
     with pytest.raises(BootstrapError, match="health does not match"):
         service.adopt_verified_release(
-            tenant, release_id=release, source_sha=source_sha, worker_version=version,
+            tenant, release_id=release, source_sha=source_sha,
         )
 
     receipt["health"]["schemaIdentity"] = "b" * 64
@@ -499,8 +493,24 @@ def test_adopt_verified_release_rejects_nonactive_version_and_conflicting_state(
     state_path.write_text(json.dumps({"tenant_id": tenant, "status": "queued"}), encoding="utf-8")
     with pytest.raises(BootstrapError, match="refusing to overwrite"):
         service.adopt_verified_release(
-            tenant, release_id=release, source_sha=source_sha, worker_version=version,
+            tenant, release_id=release, source_sha=source_sha,
         )
+
+
+def test_adopt_verified_release_requires_resolved_active_worker_version(tmp_path):
+    import pytest
+    from site_agent.application.bootstrap import BootstrapError
+
+    service, tenant, release, source_sha, _version, receipt_path, _activated, _config = _adoption_fixture(tmp_path)
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["currentVerification"]["workerVersion"] = ""
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    with pytest.raises(BootstrapError, match="deployed tenant identity"):
+        service.adopt_verified_release(
+            tenant, release_id=release, source_sha=source_sha,
+        )
+    assert not service._state_path(tenant).exists()
 
 
 def test_bootstrap_runtime_activation_requires_exact_live_health_receipt(tmp_path):

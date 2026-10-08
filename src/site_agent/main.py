@@ -1106,8 +1106,6 @@ def _adoption_verifier_command(verifier: Path, args: argparse.Namespace) -> list
         args.release_id,
         "--release-purpose",
         args.release_purpose,
-        "--expected-worker-version",
-        args.worker_version,
         "--verify-only",
     ]
 
@@ -1150,13 +1148,11 @@ def _cmd_adopt_release_readiness(args: argparse.Namespace) -> int:
             args.tenant,
             release_id=args.release_id,
             source_sha=args.source_sha,
-            worker_version=args.worker_version,
         )
         print(json.dumps({
             "tenant": args.tenant,
             "releaseId": args.release_id,
             "sourceSha": args.source_sha,
-            "workerVersion": args.worker_version,
             "workspaceReady": result["workspace_ready"],
             "status": result["status"],
         }, indent=2))
@@ -1192,7 +1188,6 @@ def main(argv: list[str] | None = None) -> int:
     adopt_parser.add_argument("--tenant", required=True, help="registered tenant ID")
     adopt_parser.add_argument("--release-id", required=True, help="exact canonical VPS release ID")
     adopt_parser.add_argument("--source-sha", required=True, help="exact full 40-character customer source SHA")
-    adopt_parser.add_argument("--worker-version", required=True, help="exact active Cloudflare Worker version ID")
     adopt_parser.add_argument(
         "--release-purpose",
         choices=("workspace-bootstrap", "website"),
