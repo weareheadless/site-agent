@@ -950,6 +950,7 @@ def test_bootstrap_pins_message_queues_and_consumes_the_dead_letter_queue(tmp_pa
             "schemaRevision": template["schemaRevision"],
             "contract": template["contentContract"],
         },
+        _TEST_HANDOFF_PUBLIC_KEY,
     )
     wrangler = json.loads((site_dir / "wrangler.jsonc").read_text())
     assert wrangler["vars"]["HELLOADA_MESSAGES_QUEUE_NAME"] == names["messages_queue"]

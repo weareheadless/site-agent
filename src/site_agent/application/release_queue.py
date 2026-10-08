@@ -59,19 +59,48 @@ def customer_release_identity(config: Mapping[str, Any]) -> tuple[str, dict[str,
     buckets = wrangler.get("r2_buckets")
     if not isinstance(databases, list) or len(databases) != 1 or not isinstance(databases[0], Mapping):
         raise ReleaseQueueError("canonical Worker must have exactly one tenant D1 database")
-    if not isinstance(buckets, list) or len(buckets) != 1 or not isinstance(buckets[0], Mapping):
-        raise ReleaseQueueError("canonical Worker must have exactly one tenant R2 bucket")
+    if not isinstance(buckets, list) or len(buckets) != 2 or any(not isinstance(item, Mapping) for item in buckets):
+        raise ReleaseQueueError("canonical Worker must have exactly one public-media and one private-email R2 bucket")
     database = databases[0]
-    bucket = buckets[0]
-    if database.get("binding") != "D1" or bucket.get("binding") != "R2":
-        raise ReleaseQueueError("canonical D1 and R2 bindings are missing")
+    buckets_by_binding = {str(item.get("binding") or ""): item for item in buckets}
+    if database.get("binding") != "D1" or set(buckets_by_binding) != {"R2", "PRIVATE_EMAIL"}:
+        raise ReleaseQueueError("canonical D1, public-media and private-email bindings are missing or duplicated")
     database_id = str(database.get("database_id") or "")
     database_name = str(database.get("database_name") or "")
-    bucket_name = str(bucket.get("bucket_name") or "")
+    bucket_name = str(buckets_by_binding["R2"].get("bucket_name") or "")
+    private_email_bucket_name = str(buckets_by_binding["PRIVATE_EMAIL"].get("bucket_name") or "")
     if not re.fullmatch(r"[0-9a-fA-F-]{36}", database_id) or database_id == "00000000-0000-0000-0000-000000000000":
         raise ReleaseQueueError("canonical tenant D1 database identity is invalid")
-    if not re.fullmatch(r"[a-z0-9-]{1,63}", database_name) or not re.fullmatch(r"[a-z0-9-]{3,63}", bucket_name):
+    if (
+        not re.fullmatch(r"[a-z0-9-]{1,63}", database_name)
+        or not re.fullmatch(r"[a-z0-9-]{3,63}", bucket_name)
+        or not re.fullmatch(r"[a-z0-9-]{3,63}", private_email_bucket_name)
+        or private_email_bucket_name == bucket_name
+    ):
         raise ReleaseQueueError("canonical tenant D1/R2 resource names are invalid")
+    queues = wrangler.get("queues")
+    producers = queues.get("producers") if isinstance(queues, Mapping) else None
+    consumers = queues.get("consumers") if isinstance(queues, Mapping) else None
+    if (
+        not isinstance(producers, list) or len(producers) != 1 or not isinstance(producers[0], Mapping)
+        or producers[0].get("binding") != "HELLOADA_MESSAGES_QUEUE"
+        or not isinstance(consumers, list) or len(consumers) != 2
+        or any(not isinstance(item, Mapping) for item in consumers)
+    ):
+        raise ReleaseQueueError("canonical Worker must declare one Messages producer and both Queue consumers")
+    messages_queue_name = str(producers[0].get("queue") or "")
+    consumer_names = {str(item.get("queue") or ""): item for item in consumers}
+    message_dlq_name = str(
+        consumer_names.get(messages_queue_name, {}).get("dead_letter_queue") or ""
+    )
+    if (
+        len(consumer_names) != 2
+        or not re.fullmatch(r"[a-z][a-z0-9-]{2,62}", messages_queue_name)
+        or not re.fullmatch(r"[a-z][a-z0-9-]{2,62}", message_dlq_name)
+        or messages_queue_name == message_dlq_name
+        or set(consumer_names) != {messages_queue_name, message_dlq_name}
+    ):
+        raise ReleaseQueueError("canonical Messages and dead-letter Queue identities are invalid")
     contract = {
         "repository": repository,
         "worker": worker,
@@ -87,6 +116,9 @@ def customer_release_identity(config: Mapping[str, Any]) -> tuple[str, dict[str,
         "d1DatabaseId": database_id.lower(),
         "d1DatabaseName": database_name,
         "r2BucketName": bucket_name,
+        "privateEmailR2BucketName": private_email_bucket_name,
+        "messagesQueueName": messages_queue_name,
+        "messagesDlqName": message_dlq_name,
     }
     payload = site.get("payload") if isinstance(site.get("payload"), Mapping) else {}
     payload_contract = payload.get("contract") if isinstance(payload.get("contract"), Mapping) else {}

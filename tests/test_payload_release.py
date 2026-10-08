@@ -319,7 +319,17 @@ def test_customer_release_identity_serializes_the_canonical_owner_repository(tmp
         "database_id": "56d3f277-fbaf-43d4-91e5-b3a195653a05",
         "database_name": "helloada-demo",
     }]
-    wrangler["r2_buckets"] = [{"binding": "R2", "bucket_name": "helloada-demo-media"}]
+    wrangler["r2_buckets"] = [
+        {"binding": "R2", "bucket_name": "helloada-demo-media"},
+        {"binding": "PRIVATE_EMAIL", "bucket_name": "helloada-demo-email"},
+    ]
+    wrangler["queues"] = {
+        "producers": [{"binding": "HELLOADA_MESSAGES_QUEUE", "queue": "helloada-demo-messages"}],
+        "consumers": [
+            {"queue": "helloada-demo-messages", "dead_letter_queue": "helloada-demo-messages-dlq"},
+            {"queue": "helloada-demo-messages-dlq"},
+        ],
+    }
     wrangler_path.write_text(json.dumps(wrangler), encoding="utf-8")
     config = {
         "instance_name": "demo",
@@ -347,6 +357,9 @@ def test_customer_release_identity_serializes_the_canonical_owner_repository(tmp
     assert tenant == "demo"
     assert customer["repository"] == "https://github.com/weareheadless/helloada-demo.git"
     assert customer["websitePresent"] is False
+    assert customer["privateEmailR2BucketName"] == "helloada-demo-email"
+    assert customer["messagesQueueName"] == "helloada-demo-messages"
+    assert customer["messagesDlqName"] == "helloada-demo-messages-dlq"
     config["ada_journey"] = {"website_present": True}
     assert customer_release_identity(config)[1]["websitePresent"] is True
     config.pop("ada_journey")
