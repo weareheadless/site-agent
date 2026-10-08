@@ -65,9 +65,30 @@ WORKER_CONFIG = {
     "d1Binding": "D1",
     "d1DatabaseId": CUSTOMER["d1DatabaseId"],
     "d1DatabaseName": CUSTOMER["d1DatabaseName"],
-    "r2Count": 1,
+    "r2Count": 2,
     "r2Binding": "R2",
     "r2BucketName": CUSTOMER["r2BucketName"],
+    "privateEmailR2BucketName": CUSTOMER["privateEmailR2BucketName"],
+    "r2Bindings": [
+        {"binding": "R2", "bucketName": CUSTOMER["r2BucketName"]},
+        {"binding": "PRIVATE_EMAIL", "bucketName": CUSTOMER["privateEmailR2BucketName"]},
+    ],
+    "messagesQueueName": CUSTOMER["messagesQueueName"],
+    "messagesDlqName": CUSTOMER["messagesDlqName"],
+    "messagesQueueProducerBinding": "HELLOADA_MESSAGES_QUEUE",
+    "messagesQueueProducerCount": 1,
+    "messagesQueueConsumerCount": 2,
+    "messagesQueueConsumer": True,
+    "messagesDlqConsumer": True,
+    "sendEmailBinding": True,
+    "sendEmailBindingCount": 1,
+    "rateLimitBindings": [
+        {"name": "HELLOADA_FORM_RATE_LIMIT", "namespaceId": "2701"},
+        {"name": "HELLOADA_NOTIFICATION_RATE_LIMIT", "namespaceId": "2702"},
+    ],
+    "turnstileSiteKey": None,
+    "turnstileSecretInVars": False,
+    "publicDomains": ["oceanicvibes.com"],
     "compatibilityDate": "2025-08-15",
     "compatibilityFlags": ["nodejs_compat", "global_fetch_strictly_public"],
 }
@@ -390,27 +411,43 @@ def test_release_registry_requires_exact_shared_payload_versions(field):
         release.validate_target(customer, "oceanicvibes", SHA, "release-1")
 
 
+
 def test_worker_contract_requires_the_registered_tenant_and_all_shared_versions():
     customer = CUSTOMER
-    worker = {"name": "oceanicvibes", "tenant": "oceanicvibes", "d1Count": 1, "d1Binding": "D1", "r2Count": 1, "r2Binding": "R2",
-        "admin": customer["payloadAdmin"], "core": customer["payloadCore"],
-        "contract": customer["contentContract"], "schemaRevision": customer["schemaRevision"],
-        "schemaIdentity": customer["schemaIdentity"], "migrationHead": customer["migrationHead"],
-        "d1DatabaseId": customer["d1DatabaseId"], "d1DatabaseName": customer["d1DatabaseName"],
-        "r2BucketName": customer["r2BucketName"],
-        "privateEmailR2BucketName": customer["privateEmailR2BucketName"],
-        "messagesQueueName": customer["messagesQueueName"],
-        "messagesDlqName": customer["messagesDlqName"],
-        "messagesQueueConsumer": True, "messagesDlqConsumer": True,
-        "sendEmailBinding": True,
-        "main": "worker.ts", "turnstileSiteKey": "test-site-key", "rateLimitBinding": True,
+    worker = {
+        **WORKER_CONFIG,
+        "name": customer["worker"],
+        "tenant": "oceanicvibes",
+        "admin": customer["payloadAdmin"],
+        "core": customer["payloadCore"],
+        "contract": customer["contentContract"],
+        "schemaRevision": customer["schemaRevision"],
+        "schemaIdentity": customer["schemaIdentity"],
+        "migrationHead": customer["migrationHead"],
+        "d1Count": 1,
+        "d1Binding": "D1",
+        "d1DatabaseId": customer["d1DatabaseId"],
+        "d1DatabaseName": customer["d1DatabaseName"],
+        "main": "worker.ts",
         "handlers": ["fetch", "email", "queue", "scheduled"],
-        "compatibilityDate": "2025-08-15", "compatibilityFlags": ["nodejs_compat", "global_fetch_strictly_public"]}
+    }
     release.validate_worker_contract(worker, customer, "oceanicvibes")
     with pytest.raises(RuntimeError, match="shared Payload contract"):
         release.validate_worker_contract({**worker, "core": "0.0.9"}, customer, "oceanicvibes")
-
-
+    with pytest.raises(RuntimeError, match="R2 bindings"):
+        release.validate_worker_contract({**worker, "r2Count": 1}, customer, "oceanicvibes")
+    with pytest.raises(RuntimeError, match="dead-letter Queue"):
+        release.validate_worker_contract({**worker, "messagesDlqName": "shared-dlq"}, customer, "oceanicvibes")
+    with pytest.raises(RuntimeError, match="Turnstile sitekeys"):
+        release.validate_worker_contract({**worker, "turnstileSiteKey": "hard-coded"}, customer, "oceanicvibes")
+    with pytest.raises(RuntimeError, match="rate-limit namespaces"):
+        release.validate_worker_contract({
+            **worker,
+            "rateLimitBindings": [
+                {"name": "HELLOADA_FORM_RATE_LIMIT", "namespaceId": "2701"},
+                {"name": "HELLOADA_NOTIFICATION_RATE_LIMIT", "namespaceId": "2701"},
+            ],
+        }, customer, "oceanicvibes")
 def test_promotion_uses_the_uploaded_version_and_rejects_ambiguous_output():
     version = "12345678-1234-1234-1234-123456789abc"
     output = f"Uploaded Worker\nWorker Version ID: {version}\n"
@@ -797,14 +834,19 @@ def test_worker_upload_bundles_secrets_with_immutable_candidate_and_cleans_file(
         return f"Worker Version ID: {version_id}\n"
 
     monkeypatch.setattr(release, "run", fake_run)
-    result = release.upload_worker_version(TEMPLATE, SHA, "release-1", tmp_path, secrets, {})
+    result = release.upload_worker_version(
+        TEMPLATE, SHA, "release-1", tmp_path, secrets, {},
+        {"HELLOADA_TURNSTILE_SITE_KEY": "turnstile-public-key"},
+    )
 
     assert result == version_id
     command = commands[0]
     secret_path = Path(command[command.index("--secrets-file") + 1])
     assert command == [
         str(TEMPLATE / "node_modules/.bin/opennextjs-cloudflare"), "upload",
-        "--secrets-file", str(secret_path), "--var", f"HELLOADA_RELEASE_SHA:{SHA}",
+        "--secrets-file", str(secret_path),
+        "--var", "HELLOADA_TURNSTILE_SITE_KEY:turnstile-public-key",
+        "--var", f"HELLOADA_RELEASE_SHA:{SHA}",
         "--tag", "release-1",
     ]
     assert not secret_path.exists()
@@ -823,6 +865,7 @@ def test_worker_upload_cleans_secrets_file_when_upload_fails(monkeypatch, tmp_pa
         release.upload_worker_version(
             TEMPLATE, SHA, "release-1", tmp_path,
             {"PAYLOAD_SECRET": "payload-secret-for-test"}, {},
+            {"HELLOADA_TURNSTILE_SITE_KEY": "turnstile-public-key"},
         )
 
     secret_path = Path(commands[0][commands[0].index("--secrets-file") + 1])
@@ -936,6 +979,9 @@ def promoted_receipt(tmp_path):
               "contentContract": customer["contentContract"], "schemaRevision": customer["schemaRevision"],
               "schemaIdentity": customer["schemaIdentity"], "migrationHead": customer["migrationHead"],
               "websitePresent": customer["websitePresent"],
+              "privateEmailR2BucketName": customer["privateEmailR2BucketName"],
+              "messagesQueueName": customer["messagesQueueName"],
+              "messagesDlqName": customer["messagesDlqName"],
               "status": "failed", "stage": "verify-connection", "error": "connection failed",
               "deployment": {"id": "deployment-1"}, "uploadedVersion": "version-1",
               "artifactHashes": {"worker.js": "b" * 64}}
@@ -1101,3 +1147,37 @@ def test_live_verification_enables_only_the_exact_promoted_workers_dev_route(mon
         REGISTRY["connectionGate"]["apiUrl"], "demo", "release-1", SHA, "control-token",
     )]
     assert result["connectionVerifiedAt"]
+
+
+def test_turnstile_pair_is_written_only_to_the_exact_registered_tenant_env(tmp_path):
+    tenant = "oceanicvibes"
+    root = tmp_path / "websites"
+    tenant_dir = root / tenant
+    tenant_dir.mkdir(parents=True)
+    config_path = tenant_dir / "config.yaml"
+    config_path.write_text(f"instance_name: {tenant}\n", encoding="utf-8")
+    env_path = tenant_dir / "tenant.env"
+    env_path.write_text(
+        "PAYLOAD_SECRET=payload-secret\nPROVISIONED_OCEANICVIBES_TOKEN=site-agent-token\n",
+        encoding="utf-8",
+    )
+    (root / "tenants.json").write_text(json.dumps({
+        tenant: {"config_path": str(config_path), "api_token_env": "PROVISIONED_OCEANICVIBES_TOKEN"},
+    }), encoding="utf-8")
+    host_config = tmp_path / "host.yaml"
+    host_config.write_text(f"workspace_api:\n  provisioned_root: {root}\n", encoding="utf-8")
+    manifest = {"connectionGate": {"config": str(host_config)}}
+
+    release.write_tenant_environment(manifest, tenant, {
+        "HELLOADA_TURNSTILE_SITE_KEY": "public-site-key",
+        "HELLOADA_TURNSTILE_SECRET_KEY": "private-site-secret",
+    })
+
+    values = release.read_tenant_environment(env_path)
+    assert values == {
+        "PAYLOAD_SECRET": "payload-secret",
+        "PROVISIONED_OCEANICVIBES_TOKEN": "site-agent-token",
+        "HELLOADA_TURNSTILE_SITE_KEY": "public-site-key",
+        "HELLOADA_TURNSTILE_SECRET_KEY": "private-site-secret",
+    }
+    assert env_path.stat().st_mode & 0o777 == 0o600

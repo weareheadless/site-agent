@@ -265,11 +265,23 @@ def validate_toolchain_manifest(manifest: dict[str, Any]) -> None:
             raise ValueError(f"release toolchain requires an exact {field}")
 
 
+
 def validate_worker_contract(worker_config: dict[str, Any], customer: dict[str, Any], tenant: str) -> None:
-    if worker_config.get("d1Count") != 1 or worker_config.get("r2Count") != 1:
-        raise RuntimeError("Worker must have exactly one canonical tenant D1 and R2 binding")
-    if worker_config.get("d1Binding") != "D1" or worker_config.get("r2Binding") != "R2":
-        raise RuntimeError("Worker must use the canonical D1 and R2 binding names")
+    if worker_config.get("d1Count") != 1 or worker_config.get("r2Count") != 2:
+        raise RuntimeError("Worker must have one tenant D1 and exactly two canonical R2 bindings")
+    if worker_config.get("d1Binding") != "D1":
+        raise RuntimeError("Worker must use the canonical D1 binding name")
+    r2_bindings = worker_config.get("r2Bindings")
+    if not isinstance(r2_bindings, list) or len(r2_bindings) != 2:
+        raise RuntimeError("Worker must declare exactly the public and private-email R2 bindings")
+    buckets = {
+        str(item.get("binding") or ""): str(item.get("bucketName") or "")
+        for item in r2_bindings if isinstance(item, dict)
+    }
+    if buckets != {"R2": customer["r2BucketName"], "PRIVATE_EMAIL": customer["privateEmailR2BucketName"]}:
+        raise RuntimeError("Worker R2 bindings differ from the exact registered tenant buckets")
+    if worker_config.get("r2Binding") != "R2" or worker_config.get("r2BucketName") != customer["r2BucketName"]:
+        raise RuntimeError("Worker must use the canonical public R2 binding")
     try:
         datetime.strptime(str(worker_config.get("compatibilityDate") or ""), "%Y-%m-%d")
     except ValueError as error:
@@ -288,26 +300,38 @@ def validate_worker_contract(worker_config: dict[str, Any], customer: dict[str, 
         raise RuntimeError("Worker shared Payload contract does not match the registry")
     if (worker_config.get("migrationHead") != customer["migrationHead"]
             or worker_config.get("d1DatabaseId") != customer["d1DatabaseId"]
-            or worker_config.get("d1DatabaseName") != customer["d1DatabaseName"]
-            or worker_config.get("r2BucketName") != customer["r2BucketName"]):
-        raise RuntimeError("Worker migration chain or tenant data-resource identity does not match the registry")
-    if worker_config.get("privateEmailR2BucketName") != customer["privateEmailR2BucketName"]:
-        raise RuntimeError("Worker private email storage does not match the registered tenant resource")
-    if (worker_config.get("messagesQueueName") != customer["messagesQueueName"]
-            or worker_config.get("messagesDlqName") != customer["messagesDlqName"]):
-        raise RuntimeError("Worker message Queues do not match the registered tenant resources")
-    if not worker_config.get("messagesQueueConsumer") or not worker_config.get("messagesDlqConsumer"):
-        raise RuntimeError("Worker must consume both the message Queue and its dead-letter Queue")
-    if worker_config.get("main") != "worker.ts" or not worker_config.get("sendEmailBinding"):
-        raise RuntimeError("Worker must upload the canonical custom entrypoint and Cloudflare email binding")
-    site_key = str(worker_config.get("turnstileSiteKey") or "").strip()
-    if not site_key or site_key.startswith("__HELLOADA_") or not worker_config.get("rateLimitBinding"):
-        raise RuntimeError("Worker form protection is not provisioned with Turnstile and rate limiting")
+            or worker_config.get("d1DatabaseName") != customer["d1DatabaseName"]):
+        raise RuntimeError("Worker migration chain or tenant D1 identity does not match the registry")
+    if worker_config.get("messagesQueueName") != customer["messagesQueueName"]:
+        raise RuntimeError("Worker Messages producer differs from the exact registered Queue")
+    if worker_config.get("messagesDlqName") != customer["messagesDlqName"]:
+        raise RuntimeError("Worker dead-letter Queue differs from the exact registered resource")
+    if (worker_config.get("messagesQueueProducerBinding") != "HELLOADA_MESSAGES_QUEUE"
+            or worker_config.get("messagesQueueProducerCount") != 1
+            or worker_config.get("messagesQueueConsumerCount") != 2
+            or not worker_config.get("messagesQueueConsumer")
+            or not worker_config.get("messagesDlqConsumer")):
+        raise RuntimeError("Worker must produce to its Messages Queue and consume it plus its dead-letter Queue")
+    if (worker_config.get("main") != "worker.ts" or worker_config.get("sendEmailBinding") is not True
+            or worker_config.get("sendEmailBindingCount") != 1):
+        raise RuntimeError("Worker must upload the canonical custom entrypoint and exactly one Cloudflare email binding")
+    if worker_config.get("turnstileSiteKey"):
+        raise RuntimeError("Turnstile sitekeys must be provisioned by the release pipeline, not committed in tenant source")
+    if worker_config.get("turnstileSecretInVars"):
+        raise RuntimeError("Turnstile secrets must be supplied through the protected Worker secret file")
+    limits = worker_config.get("rateLimitBindings")
+    if not isinstance(limits, list) or len(limits) != 2:
+        raise RuntimeError("Worker must define the canonical form and notification rate-limit bindings")
+    limits_by_name = {str(item.get("name") or ""): str(item.get("namespaceId") or "")
+                      for item in limits if isinstance(item, dict)}
+    if set(limits_by_name) != {"HELLOADA_FORM_RATE_LIMIT", "HELLOADA_NOTIFICATION_RATE_LIMIT"}:
+        raise RuntimeError("Worker rate-limit binding names do not match the site-agent contract")
+    namespace_ids = list(limits_by_name.values())
+    if any(not value.isdigit() or int(value) < 1 for value in namespace_ids) or len(set(namespace_ids)) != 2:
+        raise RuntimeError("Worker rate-limit namespaces must be distinct positive Cloudflare account identifiers")
     required_handlers = {"fetch", "email", "queue", "scheduled"}
     if not required_handlers.issubset(set(worker_config.get("handlers") or [])):
         raise RuntimeError("Worker custom entrypoint is missing a required event handler")
-
-
 def d1_query(customer: dict[str, Any], sql: str, env: dict[str, str]) -> list[dict[str, Any]]:
     url = ("https://api.cloudflare.com/client/v4/accounts/" + urllib.parse.quote(env["CLOUDFLARE_ACCOUNT_ID"], safe="")
            + "/d1/database/" + urllib.parse.quote(customer["d1DatabaseId"], safe="") + "/query")
@@ -451,60 +475,158 @@ def cloudflare_deployment(customer: dict[str, Any], env: dict[str, str]) -> dict
     return max(deployments, key=lambda item: item["created_on"])
 
 
-def tenant_runtime_secrets(manifest: dict[str, Any], tenant: str) -> dict[str, str]:
-    """Load only this tenant's Worker secrets from the registered host workspace."""
+
+def tenant_environment_path(manifest: dict[str, Any], tenant: str) -> Path:
+    """Resolve the exact registered tenant environment file on the protected VPS."""
+    import yaml
+    from site_agent.application.tenant_registration import provisioned_root
+
+    config_path = Path(manifest["connectionGate"]["config"]).resolve()
+    host_config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    if not isinstance(host_config, dict):
+        raise ValueError("host API config root is invalid")
+    root = provisioned_root(host_config).resolve()
+    index = json.loads((root / "tenants.json").read_text(encoding="utf-8"))
+    entry = index.get(tenant)
+    if not isinstance(entry, dict):
+        raise ValueError("tenant is not registered on this VPS")
+    registered_config = Path(str(entry.get("config_path") or "")).resolve()
+    expected_config = (root / tenant / "config.yaml").resolve()
+    env_path = (root / tenant / "tenant.env").resolve()
+    if (registered_config != expected_config or root not in registered_config.parents
+            or env_path.parent != expected_config.parent or root not in env_path.parents
+            or not env_path.is_file()):
+        raise ValueError("registered tenant environment path is inconsistent")
+    return env_path
+
+
+def read_tenant_environment(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if "=" not in line:
+            raise ValueError("tenant secret file contains a malformed line")
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) or key in values:
+            raise ValueError("tenant secret file contains an invalid or duplicate name")
+        values[key] = value.strip()
+    return values
+
+
+def write_tenant_environment(manifest: dict[str, Any], tenant: str, updates: dict[str, str]) -> None:
+    """Atomically persist only the pipeline-owned Turnstile pair in the registered tenant env."""
+    allowed = {"HELLOADA_TURNSTILE_SITE_KEY", "HELLOADA_TURNSTILE_SECRET_KEY"}
+    if set(updates) != allowed or any(not value or "\n" in value or "\r" in value for value in updates.values()):
+        raise ValueError("Turnstile provisioning returned an invalid tenant credential pair")
+    path = tenant_environment_path(manifest, tenant)
+    lock_path = path.parent / ".tenant-env.lock"
+    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    temporary: Path | None = None
     try:
-        import yaml
+        os.fchmod(lock_fd, 0o600)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        values = read_tenant_environment(path)
+        values.update(updates)
+        descriptor, filename = tempfile.mkstemp(prefix=".tenant-env-", suffix=".tmp", dir=path.parent)
+        temporary = Path(filename)
+        try:
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                for key, value in sorted(values.items()):
+                    stream.write(f"{key}={value}\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+            temporary = None
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+
+
+def provision_message_resources(customer: dict[str, Any], env: dict[str, str]) -> dict[str, Any]:
+    """Idempotently create only the registered tenant's private inbox bucket and Queues."""
+    from site_agent.hands.cloudflare_resources import CloudflareResourceProvisioner
+    from site_agent.hands.cloudflare_r2 import CloudflareR2Provisioner
+
+    account_id = env["CLOUDFLARE_ACCOUNT_ID"]
+    token = env["CLOUDFLARE_API_TOKEN"]
+    resources = CloudflareResourceProvisioner(account_id, token)
+    private_bucket_created = CloudflareR2Provisioner(account_id, token).ensure_bucket(
+        customer["privateEmailR2BucketName"],
+    )
+    messages = resources.ensure_queue(customer["messagesQueueName"])
+    dead_letter = resources.ensure_queue(customer["messagesDlqName"])
+    return {
+        "privateEmailR2": {"bucket": customer["privateEmailR2BucketName"], "created": bool(private_bucket_created)},
+        "messagesQueue": messages.to_dict(),
+        "messagesDeadLetterQueue": dead_letter.to_dict(),
+    }
+
+
+def provision_turnstile_for_tenant(
+    tenant: str,
+    customer: dict[str, Any],
+    worker_config: dict[str, Any],
+    manifest: dict[str, Any],
+    env: dict[str, str],
+) -> dict[str, Any]:
+    """Ensure the per-tenant Turnstile widget exactly matches registered production hostnames."""
+    from site_agent.hands.cloudflare_turnstile import CloudflareTurnstileProvisioner
+
+    domains = {str(domain).strip().lower().rstrip(".") for domain in worker_config.get("publicDomains", []) if str(domain).strip()}
+    health = urllib.parse.urlsplit(str(customer.get("health") or ""))
+    if health.scheme != "https" or not health.hostname:
+        raise RuntimeError("registered tenant health URL cannot establish a verified Turnstile hostname")
+    domains.add(health.hostname.lower().rstrip("."))
+    if not domains:
+        raise RuntimeError("tenant source and registry contain no production Turnstile hostname")
+    tenant_env_path = tenant_environment_path(manifest, tenant)
+    stored = read_tenant_environment(tenant_env_path)
+    provisioner = CloudflareTurnstileProvisioner(env["CLOUDFLARE_ACCOUNT_ID"], env["CLOUDFLARE_API_TOKEN"])
+    receipt = provisioner.ensure_widget(
+        tenant, sorted(domains),
+        sitekey=stored.get("HELLOADA_TURNSTILE_SITE_KEY"),
+        secret=stored.get("HELLOADA_TURNSTILE_SECRET_KEY"),
+    )
+    write_tenant_environment(manifest, tenant, {
+        "HELLOADA_TURNSTILE_SITE_KEY": receipt.sitekey,
+        "HELLOADA_TURNSTILE_SECRET_KEY": receipt.secret,
+    })
+    return {"sitekey": receipt.sitekey, "domains": list(receipt.domains), "created": receipt.created}
+
+
+
+def tenant_runtime_secrets(manifest: dict[str, Any], tenant: str) -> dict[str, str]:
+    """Load only this registered tenant's explicit Worker secrets from its protected VPS env."""
+    try:
         from site_agent.application.tenant_registration import (
             WORKER_SITE_AGENT_TOKEN_ENV,
-            provisioned_root,
             tenant_token_env,
         )
 
-        config_path = Path(manifest["connectionGate"]["config"]).resolve()
-        host_config = yaml.safe_load(config_path.read_text())
-        if not isinstance(host_config, dict):
-            raise ValueError("host API config root is invalid")
-        root = provisioned_root(host_config)
-        index = json.loads((root / "tenants.json").read_text())
-        entry = index.get(tenant)
-        if not isinstance(entry, dict):
-            raise ValueError("tenant is not registered on this VPS")
-        registered_config = Path(str(entry.get("config_path") or "")).resolve()
-        expected_config = (root / tenant / "config.yaml").resolve()
-        if registered_config != expected_config or root not in registered_config.parents:
-            raise ValueError("registered tenant config path is inconsistent")
-        env_path = root / tenant / "tenant.env"
-        values: dict[str, str] = {}
-        for line in env_path.read_text().splitlines():
-            if not line.strip() or line.lstrip().startswith("#"):
-                continue
-            if "=" not in line:
-                raise ValueError("tenant secret file contains a malformed line")
-            key, value = line.split("=", 1)
-            key = key.strip()
-            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) or key in values:
-                raise ValueError("tenant secret file contains an invalid or duplicate name")
-            values[key] = value.strip()
         worker_manifest_path = ROOT / "src/site_agent/templates/next-payload/template-manifest.json"
         worker_manifest = json.loads(worker_manifest_path.read_text(encoding="utf-8"))
         worker_token_env = str(worker_manifest.get("workerTokenEnv") or "").strip()
         if worker_token_env != WORKER_SITE_AGENT_TOKEN_ENV:
             raise ValueError("canonical Worker token binding differs from the tenant registration contract")
+        values = read_tenant_environment(tenant_environment_path(manifest, tenant))
         required = {"PAYLOAD_SECRET", tenant_token_env(tenant)}
         if any(not values.get(key) for key in required):
             raise ValueError("registered tenant runtime secrets are incomplete")
-        # The site-agent keeps a tenant-specific environment name in its
-        # protected host file; the canonical Worker contract uses one stable
-        # binding name. This is an explicit mapping, not a second token.
-        return {
+        result = {
             "PAYLOAD_SECRET": values["PAYLOAD_SECRET"],
             worker_token_env: values[tenant_token_env(tenant)],
         }
+        if values.get("HELLOADA_TURNSTILE_SECRET_KEY"):
+            result["HELLOADA_TURNSTILE_SECRET_KEY"] = values["HELLOADA_TURNSTILE_SECRET_KEY"]
+        return result
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise RuntimeError(f"tenant runtime secrets are unavailable: {str(error)[:240]}") from error
-
-
 def worker_secrets_file(directory: Path, values: dict[str, str]) -> Path:
     """Create a private, short-lived file for one immutable Worker upload."""
     descriptor, filename = tempfile.mkstemp(prefix=".worker-secrets-", suffix=".json", dir=directory)
@@ -524,17 +646,27 @@ def worker_secrets_file(directory: Path, values: dict[str, str]) -> Path:
         raise
 
 
+
 def upload_worker_version(checkout: Path, sha: str, release_id: str, directory: Path,
-                          secrets: dict[str, str], env: dict[str, str]) -> str:
+                          secrets: dict[str, str], env: dict[str, str],
+                          variables: dict[str, str]) -> str:
+    if set(variables) != {"HELLOADA_TURNSTILE_SITE_KEY"}:
+        raise ValueError("Worker upload requires the one pipeline-provisioned Turnstile sitekey")
+    if any(not value or "\n" in value or "\r" in value for value in variables.values()):
+        raise ValueError("Worker upload variables contain an invalid value")
     secrets_path = worker_secrets_file(directory, secrets)
     try:
-        output = run([str(checkout / "node_modules/.bin/opennextjs-cloudflare"), "upload",
-                      "--secrets-file", str(secrets_path), "--var",
-                      "HELLOADA_RELEASE_SHA:" + sha, "--tag", release_id], checkout, env)
+        command = [
+            str(checkout / "node_modules/.bin/opennextjs-cloudflare"),
+            "upload", "--secrets-file", str(secrets_path),
+        ]
+        for name, value in sorted(variables.items()):
+            command.extend(["--var", f"{name}:{value}"])
+        command.extend(["--var", f"HELLOADA_RELEASE_SHA:{sha}", "--tag", release_id])
+        output = run(command, checkout, env)
         return uploaded_version_id(output)
     finally:
         secrets_path.unlink(missing_ok=True)
-
 def check_health(url: str, tenant: str, customer: dict[str, Any], sha: str) -> dict[str, Any]:
     separator = "&" if "?" in url else "?"
     request = urllib.request.Request(url + separator + urllib.parse.urlencode({"release": sha}),
@@ -691,7 +823,10 @@ def verification_receipt(directory: Path, tenant: str, sha: str, release_id: str
                 "payloadAdmin": customer["payloadAdmin"], "payloadCore": customer["payloadCore"],
                 "contentContract": customer["contentContract"],
                 "schemaRevision": customer["schemaRevision"], "schemaIdentity": customer["schemaIdentity"],
-                "migrationHead": customer["migrationHead"], "websitePresent": customer["websitePresent"]}
+                "migrationHead": customer["migrationHead"], "websitePresent": customer["websitePresent"],
+                "privateEmailR2BucketName": customer["privateEmailR2BucketName"],
+                "messagesQueueName": customer["messagesQueueName"],
+                "messagesDlqName": customer["messagesDlqName"]}
     if approval_id is not None:
         expected["approvalId"] = approval_id
     if initialization_head is not None:
@@ -834,6 +969,9 @@ def main() -> int:
         "websitePresent": customer["websitePresent"],
         "d1DatabaseId": customer["d1DatabaseId"], "d1DatabaseName": customer["d1DatabaseName"],
         "r2BucketName": customer["r2BucketName"],
+        "privateEmailR2BucketName": customer["privateEmailR2BucketName"],
+        "messagesQueueName": customer["messagesQueueName"],
+        "messagesDlqName": customer["messagesDlqName"],
         "startedAt": utc_now(), "status": "running", "stage": "preflight",
         "browserVerification": "pending"}
     if args.approval_id is not None:
@@ -942,9 +1080,26 @@ def main() -> int:
                       "d1DatabaseId:c.d1_databases?.[0]?.database_id,"
                       "d1DatabaseName:c.d1_databases?.[0]?.database_name,"
                       "r2Count:Array.isArray(c.r2_buckets)?c.r2_buckets.length:0,"
-                      "r2BucketName:c.r2_buckets?.[0]?.bucket_name,"
+                      "r2Bindings:(c.r2_buckets||[]).map(b=>({binding:b.binding,bucketName:b.bucket_name})),"
+                      "r2BucketName:c.r2_buckets?.find(b=>b.binding==='R2')?.bucket_name,"
+                      "privateEmailR2BucketName:c.r2_buckets?.find(b=>b.binding==='PRIVATE_EMAIL')?.bucket_name,"
+                      "messagesQueueName:c.queues?.producers?.find(q=>q.binding==='HELLOADA_MESSAGES_QUEUE')?.queue,"
+                      "messagesDlqName:c.queues?.consumers?.find(q=>q.dead_letter_queue)?.dead_letter_queue,"
+                      "messagesQueueProducerBinding:c.queues?.producers?.find(q=>q.binding==='HELLOADA_MESSAGES_QUEUE')?.binding,"
+                      "messagesQueueProducerCount:Array.isArray(c.queues?.producers)?c.queues.producers.length:0,"
+                      "messagesQueueConsumerCount:Array.isArray(c.queues?.consumers)?c.queues.consumers.length:0,"
+                      "messagesQueueConsumer:(c.queues?.consumers||[]).some(q=>q.queue===c.queues?.producers?.find(p=>p.binding==='HELLOADA_MESSAGES_QUEUE')?.queue&&!!q.dead_letter_queue),"
+                      "messagesDlqConsumer:(c.queues?.consumers||[]).some(q=>q.queue===c.queues?.consumers?.find(x=>x.dead_letter_queue)?.dead_letter_queue&&!q.dead_letter_queue),"
+                      "sendEmailBinding:(c.send_email||[]).some(b=>b.name==='EMAIL'),"
+                      "sendEmailBindingCount:Array.isArray(c.send_email)?c.send_email.length:0,"
+                      "rateLimitBindings:(c.ratelimits||[]).map(r=>({name:r.name,namespaceId:String(r.namespace_id||'')})),"
+                      "turnstileSiteKey:c.vars?.HELLOADA_TURNSTILE_SITE_KEY||null,"
+                      "turnstileSecretInVars:Object.prototype.hasOwnProperty.call(c.vars||{},'HELLOADA_TURNSTILE_SECRET_KEY'),"
+                      "publicDomains:(()=>{const d=new Set();const addUrl=v=>{try{const u=new URL(v);if(u.protocol==='https:'||u.protocol==='http:')d.add(u.hostname.toLowerCase())}catch{}};"
+                      "addUrl(c.vars?.NEXT_PUBLIC_SITE_URL);for(const r of c.routes||[]){const p=typeof r==='string'?r:r?.pattern;if(typeof p!=='string')continue;"
+                      "const h=p.split('/')[0].toLowerCase().replace(/^\\*\\./,'');if(h&&!h.includes('*'))d.add(h)}return [...d].sort()})(),"
                       "compatibilityDate:c.compatibility_date,compatibilityFlags:c.compatibility_flags||[],"
-                      "d1Binding:c.d1_databases?.[0]?.binding,r2Binding:c.r2_buckets?.[0]?.binding}));"], checkout, base)
+                      "d1Binding:c.d1_databases?.[0]?.binding,r2Binding:c.r2_buckets?.find(b=>b.binding==='R2')?.binding}));"], checkout, base)
         wrangler = json.loads(parsed)
         worker_entry = (checkout / "worker.ts").read_text(encoding="utf-8")
         wrangler["handlers"] = worker_handlers(worker_entry)
@@ -970,13 +1125,22 @@ def main() -> int:
         if changed:
             raise RuntimeError("build changed tracked source: " + changed)
         stage("artifact-verified")
-        stage("upload")
         before_deploy = cloudflare_deployment(customer, deploy_env)
         if before_deploy.get("id") != receipt["previousDeployment"].get("id"):
             raise RuntimeError("production changed during the build; reconcile that deployment before retrying")
+        stage("provision-messages-resources")
+        receipt["messagesResources"] = provision_message_resources(customer, deploy_env)
+        stage("provision-turnstile")
+        receipt["turnstile"] = provision_turnstile_for_tenant(
+            args.tenant, customer, wrangler, manifest, deploy_env,
+        )
         runtime_secrets = tenant_runtime_secrets(manifest, args.tenant)
+        if not runtime_secrets.get("HELLOADA_TURNSTILE_SECRET_KEY"):
+            raise RuntimeError("tenant Turnstile secret was not persisted before Worker upload")
+        stage("upload")
         receipt["uploadedVersion"] = upload_worker_version(
             checkout, args.ref, args.release_id, workspace_path, runtime_secrets, deploy_env,
+            {"HELLOADA_TURNSTILE_SITE_KEY": receipt["turnstile"]["sitekey"]},
         )
         if worker_artifact_hashes(checkout, custom_worker_bundle) != receipt["artifactHashes"]:
             raise RuntimeError("upload changed an inspected custom Worker release input")
