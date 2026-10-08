@@ -29,6 +29,7 @@ SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 D1_SYSTEM_TABLES = frozenset({"_cf_KV"})
 MINIMUM_BUILD_FREE_BYTES = 8 * 1024 ** 3
+NPM_INSTALL_ARGUMENTS = ("ci", "--ignore-scripts", "--no-audit", "--no-fund", "--prefer-offline", "--maxsockets=1")
 
 
 def utc_now() -> str:
@@ -1064,7 +1065,7 @@ def main() -> int:
         npm = str(Path(manifest["npmBin"], "npm"))
         from github_release_assets import prepare_release_dependencies
         receipt["sharedPackageAssets"] = prepare_release_dependencies(checkout, github_api_token(profile, base), npm, base, run)
-        run([npm, "ci", "--ignore-scripts", "--no-audit", "--no-fund", "--prefer-offline"], checkout, base)
+        run([npm, *NPM_INSTALL_ARGUMENTS], checkout, base)
         # TypeScript's pinned JSONC parser accepts comments and trailing commas.
         parsed = run(["node", "-e", "const fs=require('node:fs');const ts=require('typescript');"
                       "const r=ts.parseConfigFileTextToJson('wrangler.jsonc',fs.readFileSync('wrangler.jsonc','utf8'));"

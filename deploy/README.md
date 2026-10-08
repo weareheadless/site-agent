@@ -266,7 +266,11 @@ verification code stops the release before D1 can change. The pipeline then
 checks its source SHA is on
 official `main`, verifies the exact Node/npm versions in
 `deploy/payload-customers.json`, runs `npm ci` with that absolute npm executable,
-then typechecks and builds OpenNext with local bindings. The shared site-agent
+then typechecks and builds OpenNext with local bindings. The committed npm
+install uses one registry connection (`--maxsockets=1`): on this pinned npm
+runtime, parallel fetches can race while committing duplicate integrity objects
+to the job-scoped cache. This makes the install deterministic without changing
+package selection or lockfile integrity. The shared site-agent
 preview builder receives the same four-value toolchain contract (`node_path`,
 `node_version`, `npm_command`, `npm_version`) from the host config; tenant
 registrations inherit it centrally. Missing or mismatched versions stop the

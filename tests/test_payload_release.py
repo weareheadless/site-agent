@@ -199,6 +199,12 @@ def test_release_toolchain_is_exact_and_absolute():
             release.validate_toolchain_manifest(invalid)
 
 
+def test_customer_release_uses_serial_npm_fetches_for_integrity_cache():
+    assert release.NPM_INSTALL_ARGUMENTS == (
+        "ci", "--ignore-scripts", "--no-audit", "--no-fund", "--prefer-offline", "--maxsockets=1",
+    )
+
+
 def test_payload_build_requires_disk_headroom(monkeypatch, tmp_path):
     class DiskUsage:
         free = release.MINIMUM_BUILD_FREE_BYTES - 1
