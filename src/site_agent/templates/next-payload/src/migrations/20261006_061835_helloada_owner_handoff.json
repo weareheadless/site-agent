@@ -90,7 +90,7 @@
           "name": "helloada_subject",
           "type": "text",
           "primaryKey": false,
-          "notNull": true,
+          "notNull": false,
           "autoincrement": false
         },
         "updated_at": {
