@@ -2,19 +2,23 @@
   "schema": 1,
   "releases": {
     "atelier-harmonie": {
-      "id": "20261005-atelier-preview-mount-7",
-      "sha": "fd9910cb176cd3cc3b19aa6d9ef67785dd8c509a"
+      "id": "20261008-atelier-email-runtime-1",
+      "schemaMigration": {
+        "fromLedgerIdentity": "543a53ba1ec6a7a539aa109006581d66c91fcf332663cdb96504068c02abce0c",
+        "targetMigrationHead": "a0478d982818456d91de4e286759ed91273e8ddbced83ecc0184bf05b189a63a"
+      },
+      "sha": "0029a20d4afc2dc08796f21b7e8351324af23110"
     },
     "northstar-coffee-full-intake-validation-5a8564dae07494ec": {
-      "id": "rel-20261007-payload-handoff-jwt-1",
-      "sha": "8a7fb1fcb50c2b12e0942c789ab50feb9071d507"
+      "id": "20261008-northstar-email-runtime-1",
+      "schemaMigration": {
+        "fromLedgerIdentity": "40432d0eb27425771300860d9223e02ca4c3f0981f9433d51c1e646e0bdd1ca5",
+        "targetMigrationHead": "1fa0ea60e14f27d7026525dd807e9d37111ac7032f8086ea3782ea5c53944818"
+      },
+      "sha": "b44a1e154aa72dcd91115135ddb5fefb8fc83d71"
     },
     "oceanicvibes": {
-      "id": "20261008-oceanic-messages-schema-3",
-      "schemaMigration": {
-        "fromLedgerIdentity": "2e1b5a515b7f2029804188d11de51a4ee71b796373c2e823d5581ae468dc2688",
-        "targetMigrationHead": "0a3c897981ad305bcc81be848e4ef8969abe20425b9137538bd560017d498d0e"
-      },
+      "id": "20261008-oceanic-email-runtime-1",
       "sha": "738807785d870e65829076be10e43bf1be98a59a"
     }
   }
