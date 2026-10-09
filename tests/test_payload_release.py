@@ -90,6 +90,10 @@ WORKER_CONFIG = {
     "turnstileSecretInVars": False,
     "publicDomains": ["oceanicvibes.com"],
     "crons": ["*/5 * * * *"],
+    "main": "worker.ts",
+    "handlers": ["fetch", "email", "queue", "scheduled"],
+    "sendEmailBinding": True,
+    "sendEmailBindingCount": 1,
     "compatibilityDate": "2025-08-15",
     "compatibilityFlags": ["nodejs_compat", "global_fetch_strictly_public"],
 }
@@ -437,8 +441,27 @@ def test_worker_contract_requires_the_registered_tenant_and_all_shared_versions(
         "d1DatabaseName": customer["d1DatabaseName"],
         "main": "worker.ts",
         "handlers": ["fetch", "email", "queue", "scheduled"],
+        "sendEmailBinding": True,
+        "sendEmailBindingCount": 1,
+        "crons": ["*/5 * * * *"],
     }
     release.validate_worker_contract(worker, customer, "oceanicvibes")
+    with pytest.raises(RuntimeError, match="shared Payload contract"):
+        release.validate_worker_contract({**worker, "core": "0.0.9"}, customer, "oceanicvibes")
+    with pytest.raises(RuntimeError, match="R2 bindings"):
+        release.validate_worker_contract({**worker, "r2Count": 1}, customer, "oceanicvibes")
+    with pytest.raises(RuntimeError, match="dead-letter Queue"):
+        release.validate_worker_contract({**worker, "messagesDlqName": "shared-dlq"}, customer, "oceanicvibes")
+    with pytest.raises(RuntimeError, match="Turnstile sitekeys"):
+        release.validate_worker_contract({**worker, "turnstileSiteKey": "hard-coded"}, customer, "oceanicvibes")
+    with pytest.raises(RuntimeError, match="rate-limit namespaces"):
+        release.validate_worker_contract({
+            **worker,
+            "rateLimitBindings": [
+                {"name": "HELLOADA_FORM_RATE_LIMIT", "namespaceId": "2701"},
+                {"name": "HELLOADA_NOTIFICATION_RATE_LIMIT", "namespaceId": "2701"},
+            ],
+        }, customer, "oceanicvibes")
 
 
 def test_worker_contract_requires_the_durable_messages_cron():
@@ -508,22 +531,21 @@ def test_d1_table_inspection_uses_bound_sqlite_metadata_parameters(monkeypatch):
         "sql": "SELECT name FROM sqlite_master WHERE type = ? AND name NOT LIKE ? ORDER BY name",
         "params": ["table", "sqlite_%"],
     }
-    with pytest.raises(RuntimeError, match="shared Payload contract"):
-        release.validate_worker_contract({**worker, "core": "0.0.9"}, customer, "oceanicvibes")
-    with pytest.raises(RuntimeError, match="R2 bindings"):
-        release.validate_worker_contract({**worker, "r2Count": 1}, customer, "oceanicvibes")
-    with pytest.raises(RuntimeError, match="dead-letter Queue"):
-        release.validate_worker_contract({**worker, "messagesDlqName": "shared-dlq"}, customer, "oceanicvibes")
-    with pytest.raises(RuntimeError, match="Turnstile sitekeys"):
-        release.validate_worker_contract({**worker, "turnstileSiteKey": "hard-coded"}, customer, "oceanicvibes")
-    with pytest.raises(RuntimeError, match="rate-limit namespaces"):
-        release.validate_worker_contract({
-            **worker,
-            "rateLimitBindings": [
-                {"name": "HELLOADA_FORM_RATE_LIMIT", "namespaceId": "2701"},
-                {"name": "HELLOADA_NOTIFICATION_RATE_LIMIT", "namespaceId": "2701"},
-            ],
-        }, customer, "oceanicvibes")
+
+
+def seed_cron_contract(receipt):
+    receipt["cronTriggers"] = {
+        "before": [],
+        "desired": ["*/5 * * * *"],
+        "after": ["*/5 * * * *"],
+        "changed": True,
+        "verifiedAt": "2026-10-08T00:00:00Z",
+    }
+    return receipt
+
+
+def stub_canonical_cron_schedule(monkeypatch):
+    monkeypatch.setattr(release, "worker_cron_schedules", lambda *_args: ["*/5 * * * *"])
 def test_promotion_uses_the_uploaded_version_and_rejects_ambiguous_output():
     version = "12345678-1234-1234-1234-123456789abc"
     output = f"Uploaded Worker\nWorker Version ID: {version}\n"
@@ -1049,7 +1071,7 @@ def test_completed_schema_migration_request_is_idempotent(monkeypatch, tmp_path)
 
 def promoted_receipt(tmp_path):
     customer = CUSTOMER
-    result = {"tenant": "oceanicvibes", "sourceSha": SHA, "releaseId": "release-1",
+    result = seed_cron_contract({"tenant": "oceanicvibes", "sourceSha": SHA, "releaseId": "release-1",
               "worker": customer["worker"], "repository": customer["repository"],
               "payloadAdmin": customer["payloadAdmin"], "payloadCore": customer["payloadCore"],
               "contentContract": customer["contentContract"], "schemaRevision": customer["schemaRevision"],
@@ -1060,7 +1082,7 @@ def promoted_receipt(tmp_path):
               "messagesDlqName": customer["messagesDlqName"],
               "status": "failed", "stage": "verify-connection", "error": "connection failed",
               "deployment": {"id": "deployment-1"}, "uploadedVersion": "version-1",
-              "artifactHashes": {"worker.js": "b" * 64}}
+              "artifactHashes": {"worker.js": "b" * 64}})
     (tmp_path / "receipt.json").write_text(json.dumps(result))
     return result, customer
 
@@ -1095,9 +1117,10 @@ def test_read_only_continuation_rejects_unproven_release(tmp_path, changed):
 
 
 def test_edge_convergence_repeats_identical_checks_without_deploying(monkeypatch):
-    result = {"tenant": "oceanicvibes", "sourceSha": SHA, "releaseId": "release-1",
-              "uploadedVersion": "version-1", "initialSchemaHead": CUSTOMER["migrationHead"]}
+    result = seed_cron_contract({"tenant": "oceanicvibes", "sourceSha": SHA, "releaseId": "release-1",
+              "uploadedVersion": "version-1", "initialSchemaHead": CUSTOMER["migrationHead"]})
     customer = CUSTOMER
+    stub_canonical_cron_schedule(monkeypatch)
     monkeypatch.setattr(release, "cloudflare_deployment", lambda *args: {
         "versions": [{"percentage": 100, "version_id": "version-1"}]})
     events = []
@@ -1166,6 +1189,7 @@ def test_read_only_gate_accepts_secret_rotation_only_with_identical_code_and_bin
         "uploadedVersion": "version-1",
         "deployment": {"id": "original-deployment"},
     }
+    seed_cron_contract(result)
     deployment = {
         "id": "secret-rotation-deployment",
         "annotations": {"workers/triggered_by": "secret"},
@@ -1174,6 +1198,7 @@ def test_read_only_gate_accepts_secret_rotation_only_with_identical_code_and_bin
     identity = {"script_etag": "a" * 64, "binding_identity": "b" * 64}
     monkeypatch.setattr(release, "cloudflare_deployment", lambda *_args: deployment)
     monkeypatch.setattr(release, "cloudflare_worker_version_identity", lambda *_args: identity)
+    stub_canonical_cron_schedule(monkeypatch)
     monkeypatch.setattr(release, "workers_dev_provisioner", lambda *_args: None)
     monkeypatch.setattr(release, "check_health", lambda *_args: {"ok": True, "tenant": "oceanicvibes"})
     monkeypatch.setattr(release, "control_plane_token", lambda *_args: "control-token")
@@ -1247,8 +1272,9 @@ def test_read_only_gate_rejects_code_drift_and_resolves_active_deployment_change
     monkeypatch.setattr(release, "activate_tenant_runtime", lambda *_args: None)
     monkeypatch.setattr(release, "run", lambda *_args: None)
     monkeypatch.setattr(release.time, "sleep", lambda *_args: None)
-    result = {"tenant": "oceanicvibes", "sourceSha": SHA, "releaseId": "release-1",
-              "uploadedVersion": "version-1"}
+    result = seed_cron_contract({"tenant": "oceanicvibes", "sourceSha": SHA, "releaseId": "release-1",
+              "uploadedVersion": "version-1"})
+    stub_canonical_cron_schedule(monkeypatch)
 
     release.verify_live(result, CUSTOMER, REGISTRY, {}, {}, lambda _: None, verify_only=True)
 
@@ -1272,6 +1298,7 @@ def test_read_only_gate_rejects_worker_change_during_connection_check(monkeypatc
     monkeypatch.setattr(release, "cloudflare_worker_version_identity", lambda *_args: {
         "script_etag": "a" * 64, "binding_identity": "b" * 64,
     })
+    stub_canonical_cron_schedule(monkeypatch)
     monkeypatch.setattr(release, "workers_dev_provisioner", lambda *_args: None)
     health_checks = []
 
@@ -1286,10 +1313,11 @@ def test_read_only_gate_rejects_worker_change_during_connection_check(monkeypatc
     monkeypatch.setattr(release, "activate_tenant_runtime", lambda *_args: None)
     monkeypatch.setattr(release, "run", lambda *_args: None)
 
-    result = {
+    result = seed_cron_contract({
         "tenant": "oceanicvibes", "sourceSha": SHA, "releaseId": "release-1",
         "uploadedVersion": "version-1",
-    }
+    })
+    stub_canonical_cron_schedule(monkeypatch)
     release.verify_live(
         result, CUSTOMER, REGISTRY, {}, {}, lambda name: result.update(stage=name),
         verify_only=True,
@@ -1300,8 +1328,9 @@ def test_read_only_gate_rejects_worker_change_during_connection_check(monkeypatc
 
 
 def test_failed_connection_gate_is_bounded_and_remains_failed(monkeypatch):
-    result = {"tenant": "oceanicvibes", "sourceSha": SHA, "releaseId": "release-1",
-              "uploadedVersion": "version-1"}
+    result = seed_cron_contract({"tenant": "oceanicvibes", "sourceSha": SHA, "releaseId": "release-1",
+              "uploadedVersion": "version-1"})
+    stub_canonical_cron_schedule(monkeypatch)
     monkeypatch.setattr(release, "cloudflare_deployment", lambda *args: {
         "versions": [{"percentage": 100, "version_id": "version-1"}]})
     monkeypatch.setattr(release, "check_health", lambda *args: {"ok": True})
@@ -1349,8 +1378,9 @@ def test_workers_dev_health_url_must_match_the_cloudflare_account_subdomain(monk
 
 @pytest.mark.parametrize("initial_bootstrap", [True, False])
 def test_live_verification_enables_only_the_exact_promoted_workers_dev_route(monkeypatch, initial_bootstrap):
-    result = {"tenant": "demo", "sourceSha": SHA, "releaseId": "release-1",
-              "uploadedVersion": "version-1"}
+    result = seed_cron_contract({"tenant": "demo", "sourceSha": SHA, "releaseId": "release-1",
+              "uploadedVersion": "version-1"})
+    stub_canonical_cron_schedule(monkeypatch)
     if initial_bootstrap:
         result["initialSchemaHead"] = CUSTOMER["migrationHead"]
     customer = {
