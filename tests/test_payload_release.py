@@ -80,6 +80,15 @@ WORKER_CONFIG = {
     "messagesQueueConsumerCount": 2,
     "messagesQueueConsumer": True,
     "messagesDlqConsumer": True,
+    "queues": {
+        "consumers": [
+            {"queue": CUSTOMER["messagesQueueName"], "max_batch_size": 1, "max_batch_timeout": 5,
+             "max_retries": 8, "retry_delay": 30, "max_concurrency": 1,
+             "dead_letter_queue": CUSTOMER["messagesDlqName"]},
+            {"queue": CUSTOMER["messagesDlqName"], "max_batch_size": 1, "max_batch_timeout": 5,
+             "max_retries": 3, "retry_delay": 30, "max_concurrency": 1},
+        ],
+    },
     "sendEmailBinding": True,
     "sendEmailBindingCount": 1,
     "rateLimitBindings": [
@@ -472,6 +481,26 @@ def test_worker_contract_requires_the_durable_messages_cron():
             release.validate_worker_contract({**worker, "crons": crons}, CUSTOMER, "oceanicvibes")
 
 
+def test_worker_contract_requires_an_exact_tenant_queue_consumer_contract():
+    worker = {**WORKER_CONFIG, "crons": ["*/5 * * * *"]}
+    release.validate_worker_contract(worker, CUSTOMER, "oceanicvibes")
+    invalid = [
+        {"consumers": []},
+        {"consumers": [WORKER_CONFIG["queues"]["consumers"][0]]},
+        {"consumers": [
+            {**WORKER_CONFIG["queues"]["consumers"][0], "dead_letter_queue": "other-dlq"},
+            WORKER_CONFIG["queues"]["consumers"][1],
+        ]},
+        {"consumers": [
+            {**WORKER_CONFIG["queues"]["consumers"][0], "max_retries": None},
+            WORKER_CONFIG["queues"]["consumers"][1],
+        ]},
+    ]
+    for queues in invalid:
+        with pytest.raises(RuntimeError, match="Queue"):
+            release.validate_worker_contract({**worker, "queues": queues}, CUSTOMER, "oceanicvibes")
+
+
 def test_worker_cron_reconciliation_reads_applies_and_verifies(monkeypatch):
     class Response:
         def __init__(self, payload):
@@ -509,6 +538,127 @@ def test_worker_cron_reconciliation_rejects_noncanonical_schedules():
         release.reconcile_worker_cron_schedules(CUSTOMER, [], {})
 
 
+def test_worker_queue_consumer_is_created_and_read_back(monkeypatch):
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return False
+        def read(self):
+            return json.dumps(self.payload).encode()
+
+    calls = []
+    state = []
+    desired = {
+        "script_name": CUSTOMER["worker"],
+        "type": "worker",
+        "dead_letter_queue": CUSTOMER["messagesDlqName"],
+        "settings": {"batch_size": 1, "max_concurrency": 1, "max_retries": 8,
+                     "max_wait_time_ms": 5000, "retry_delay": 30},
+    }
+
+    def open_url(request, timeout):
+        assert timeout == 30
+        calls.append((request.get_method(), request.full_url))
+        if request.get_method() == "POST":
+            assert json.loads(request.data) == desired
+            state[:] = [{**desired, "consumer_id": "c" * 32, "queue_name": CUSTOMER["messagesQueueName"]}]
+            return Response({"success": True, "result": state[0]})
+        return Response({"success": True, "result": list(state)})
+
+    monkeypatch.setattr(release.urllib.request, "urlopen", open_url)
+    result = release.reconcile_worker_queue_consumer(
+        "q" * 32, CUSTOMER["messagesQueueName"], desired,
+        {"CLOUDFLARE_ACCOUNT_ID": "account", "CLOUDFLARE_API_TOKEN": "not-printed"},
+    )
+    assert result["verified"] is True and result["changed"] is True
+    assert [method for method, _url in calls] == ["GET", "POST", "GET"]
+
+
+def test_worker_queue_consumer_updates_only_the_registered_workers_drifted_settings(monkeypatch):
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return False
+        def read(self):
+            return json.dumps(self.payload).encode()
+
+    desired = {
+        "script_name": CUSTOMER["worker"], "type": "worker",
+        "settings": {"batch_size": 1, "max_concurrency": 1, "max_retries": 8,
+                     "max_wait_time_ms": 5000, "retry_delay": 30},
+        "dead_letter_queue": CUSTOMER["messagesDlqName"],
+    }
+    state = [{**desired, "consumer_id": "c" * 32,
+              "settings": {**desired["settings"], "max_retries": 3}}]
+    calls = []
+
+    def open_url(request, timeout):
+        calls.append((request.get_method(), request.full_url))
+        if request.get_method() == "PUT":
+            assert request.full_url.endswith("/consumers/" + "c" * 32)
+            assert json.loads(request.data) == desired
+            state[0] = {**desired, "consumer_id": "c" * 32}
+            return Response({"success": True, "result": state[0]})
+        return Response({"success": True, "result": list(state)})
+
+    monkeypatch.setattr(release.urllib.request, "urlopen", open_url)
+    result = release.reconcile_worker_queue_consumer(
+        "q" * 32, CUSTOMER["messagesQueueName"], desired,
+        {"CLOUDFLARE_ACCOUNT_ID": "account", "CLOUDFLARE_API_TOKEN": "not-printed"},
+    )
+    assert result["changed"] is True
+    assert [method for method, _url in calls] == ["GET", "PUT", "GET"]
+
+
+def test_worker_queue_consumer_fails_closed_on_an_unregistered_consumer(monkeypatch):
+    class Response:
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return False
+        def read(self):
+            return json.dumps({"success": True, "result": [{
+                "consumer_id": "c" * 32, "type": "worker", "script_name": "other-worker",
+            }]}).encode()
+
+    calls = []
+    monkeypatch.setattr(release.urllib.request, "urlopen", lambda request, timeout: calls.append(request) or Response())
+    with pytest.raises(RuntimeError, match="unexpected consumer"):
+        release.reconcile_worker_queue_consumer(
+            "q" * 32, CUSTOMER["messagesQueueName"],
+            {"script_name": CUSTOMER["worker"], "type": "worker", "settings": {}},
+            {"CLOUDFLARE_ACCOUNT_ID": "account", "CLOUDFLARE_API_TOKEN": "not-printed"},
+        )
+    assert [request.get_method() for request in calls] == ["GET"]
+
+
+def test_worker_queue_consumer_reconciliation_uses_the_registered_queue_ids(monkeypatch):
+    calls = []
+    monkeypatch.setattr(release, "reconcile_worker_queue_consumer", lambda queue_id, name, desired, _env:
+                        calls.append((queue_id, name, desired)) or {"verified": True})
+    resources = {
+        "messagesQueue": {"queue_id": "a" * 32},
+        "messagesDeadLetterQueue": {"queue_id": "b" * 32},
+    }
+    result = release.reconcile_worker_queue_consumers(
+        CUSTOMER, WORKER_CONFIG, resources,
+        {"CLOUDFLARE_ACCOUNT_ID": "account", "CLOUDFLARE_API_TOKEN": "not-printed"},
+    )
+    assert result["verified"] is True
+    assert [item[:2] for item in calls] == [
+        ("a" * 32, CUSTOMER["messagesQueueName"]),
+        ("b" * 32, CUSTOMER["messagesDlqName"]),
+    ]
+    assert calls[0][2]["dead_letter_queue"] == CUSTOMER["messagesDlqName"]
+    assert "dead_letter_queue" not in calls[1][2]
+
+
 def test_d1_table_inspection_uses_bound_sqlite_metadata_parameters(monkeypatch):
     class Response:
         def __enter__(self):
@@ -541,11 +691,40 @@ def seed_cron_contract(receipt):
         "changed": True,
         "verifiedAt": "2026-10-08T00:00:00Z",
     }
+    receipt["queueConsumers"] = {
+        "verified": True,
+        "consumers": [
+            {"queue": CUSTOMER["messagesQueueName"], "queueId": "a" * 32,
+             "consumerId": "c" * 32, "desired": {
+                 "script_name": CUSTOMER["worker"], "type": "worker",
+                 "dead_letter_queue": CUSTOMER["messagesDlqName"],
+                 "settings": {"batch_size": 1, "max_concurrency": 1, "max_retries": 8,
+                              "max_wait_time_ms": 5000, "retry_delay": 30},
+             }, "verified": True},
+            {"queue": CUSTOMER["messagesDlqName"], "queueId": "b" * 32,
+             "consumerId": "d" * 32, "desired": {
+                 "script_name": CUSTOMER["worker"], "type": "worker",
+                 "settings": {"batch_size": 1, "max_concurrency": 1, "max_retries": 3,
+                              "max_wait_time_ms": 5000, "retry_delay": 30},
+             }, "verified": True},
+        ],
+    }
     return receipt
 
 
 def stub_canonical_cron_schedule(monkeypatch):
     monkeypatch.setattr(release, "worker_cron_schedules", lambda *_args: ["*/5 * * * *"])
+    main, dead_letter = WORKER_CONFIG["queues"]["consumers"]
+    expected = {
+        "a" * 32: {"consumer_id": "c" * 32, "queue_name": CUSTOMER["messagesQueueName"],
+                   "script_name": CUSTOMER["worker"], "type": "worker",
+                   "dead_letter_queue": CUSTOMER["messagesDlqName"],
+                   "settings": release.worker_queue_consumer_settings(main)},
+        "b" * 32: {"consumer_id": "d" * 32, "queue_name": CUSTOMER["messagesDlqName"],
+                   "script_name": CUSTOMER["worker"], "type": "worker",
+                   "settings": release.worker_queue_consumer_settings(dead_letter)},
+    }
+    monkeypatch.setattr(release, "worker_queue_consumers", lambda queue_id, _env: [expected[queue_id]])
 def test_promotion_uses_the_uploaded_version_and_rejects_ambiguous_output():
     version = "12345678-1234-1234-1234-123456789abc"
     output = f"Uploaded Worker\nWorker Version ID: {version}\n"
@@ -1388,6 +1567,14 @@ def test_live_verification_enables_only_the_exact_promoted_workers_dev_route(mon
         "worker": "helloada-demo",
         "health": "https://helloada-demo.weareheadless.workers.dev/api/health",
     }
+    for consumer in result["queueConsumers"]["consumers"]:
+        consumer["desired"]["script_name"] = customer["worker"]
+    monkeypatch.setattr(release, "worker_queue_consumers", lambda queue_id, _env: [{
+        **next(item["desired"] for item in result["queueConsumers"]["consumers"]
+               if item["queueId"] == queue_id),
+        "consumer_id": next(item["consumerId"] for item in result["queueConsumers"]["consumers"]
+                             if item["queueId"] == queue_id),
+    }])
     calls = []
 
     class Provisioner:

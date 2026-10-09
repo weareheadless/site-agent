@@ -313,6 +313,17 @@ def validate_worker_contract(worker_config: dict[str, Any], customer: dict[str, 
             or not worker_config.get("messagesQueueConsumer")
             or not worker_config.get("messagesDlqConsumer")):
         raise RuntimeError("Worker must produce to its Messages Queue and consume it plus its dead-letter Queue")
+    queues = worker_config.get("queues")
+    consumers = queues.get("consumers") if isinstance(queues, dict) else None
+    if not isinstance(consumers, list) or len(consumers) != 2 or any(not isinstance(item, dict) for item in consumers):
+        raise RuntimeError("Worker must declare the exact message and dead-letter Queue consumers")
+    by_queue = {item.get("queue"): item for item in consumers}
+    if (set(by_queue) != {customer["messagesQueueName"], customer["messagesDlqName"]}
+            or by_queue[customer["messagesQueueName"]].get("dead_letter_queue") != customer["messagesDlqName"]
+            or by_queue[customer["messagesDlqName"]].get("dead_letter_queue")):
+        raise RuntimeError("Worker Queue consumer names or dead-letter relationship differ from the tenant contract")
+    for config in consumers:
+        worker_queue_consumer_settings(config)
     if (worker_config.get("main") != "worker.ts" or worker_config.get("sendEmailBinding") is not True
             or worker_config.get("sendEmailBindingCount") != 1):
         raise RuntimeError("Worker must upload the canonical custom entrypoint and exactly one Cloudflare email binding")
@@ -411,6 +422,164 @@ def reconcile_worker_cron_schedules(
     if after != desired:
         raise RuntimeError("Cloudflare Worker schedules differ from the committed deployment contract")
     return {"before": before, "desired": desired, "after": after, "changed": changed, "verifiedAt": utc_now()}
+
+
+def worker_queue_consumers(queue_id: str, env: dict[str, str]) -> list[dict[str, Any]]:
+    """Read the live consumer registrations for one provisioned Cloudflare Queue."""
+    url = (
+        "https://api.cloudflare.com/client/v4/accounts/"
+        + urllib.parse.quote(env["CLOUDFLARE_ACCOUNT_ID"], safe="")
+        + "/queues/" + urllib.parse.quote(queue_id, safe="") + "/consumers"
+    )
+    request = urllib.request.Request(url, headers={
+        "Authorization": "Bearer " + env["CLOUDFLARE_API_TOKEN"],
+        "Accept": "application/json",
+    })
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.load(response)
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(f"Cloudflare Queue consumer inspection failed with HTTP {error.code}") from error
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        raise RuntimeError("Cloudflare Queue consumer inspection returned no valid response") from error
+    consumers = payload.get("result")
+    if payload.get("success") is not True or not isinstance(consumers, list):
+        raise RuntimeError("Cloudflare Queue consumer inspection failed")
+    if any(not isinstance(item, dict) or not isinstance(item.get("consumer_id"), str)
+           or not item["consumer_id"] for item in consumers):
+        raise RuntimeError("Cloudflare Queue consumer response contains an invalid consumer")
+    return consumers
+
+
+def worker_queue_consumer_settings(config: dict[str, Any]) -> dict[str, Any]:
+    """Translate the committed Wrangler consumer settings to Cloudflare's API shape."""
+    settings = {
+        "batch_size": config.get("max_batch_size"),
+        "max_concurrency": config.get("max_concurrency"),
+        "max_retries": config.get("max_retries"),
+        "max_wait_time_ms": config.get("max_batch_timeout", 5) * 1000,
+        "retry_delay": config.get("retry_delay", 0),
+    }
+    if any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in settings.values()):
+        raise RuntimeError("committed Worker Queue consumer settings are invalid")
+    if settings["batch_size"] < 1 or settings["max_concurrency"] < 1:
+        raise RuntimeError("committed Worker Queue consumer limits must be positive")
+    return settings
+
+
+def worker_queue_consumer_matches(actual: dict[str, Any], desired: dict[str, Any]) -> bool:
+    settings = actual.get("settings")
+    if not isinstance(settings, dict):
+        return False
+    return (
+        actual.get("type") == desired["type"]
+        and actual.get("script_name") == desired["script_name"]
+        and (actual.get("dead_letter_queue") or "") == desired.get("dead_letter_queue", "")
+        and all(settings.get(key) == value for key, value in desired["settings"].items())
+    )
+
+
+def reconcile_worker_queue_consumer(
+    queue_id: str, queue_name: str, desired: dict[str, Any], env: dict[str, str],
+) -> dict[str, Any]:
+    """Idempotently attach one registered Worker and fail closed on competing consumers."""
+    before = worker_queue_consumers(queue_id, env)
+    if len(before) > 1:
+        raise RuntimeError(f"Cloudflare Queue {queue_name} has multiple consumers; refusing ambiguous ownership")
+    if before:
+        existing = before[0]
+        if existing.get("type") != "worker" or existing.get("script_name") != desired["script_name"]:
+            raise RuntimeError(f"Cloudflare Queue {queue_name} is attached to an unexpected consumer")
+        changed = not worker_queue_consumer_matches(existing, desired)
+        method = "PUT"
+        url = (
+            "https://api.cloudflare.com/client/v4/accounts/"
+            + urllib.parse.quote(env["CLOUDFLARE_ACCOUNT_ID"], safe="")
+            + "/queues/" + urllib.parse.quote(queue_id, safe="")
+            + "/consumers/" + urllib.parse.quote(existing["consumer_id"], safe="")
+        )
+    else:
+        changed = True
+        method = "POST"
+        url = (
+            "https://api.cloudflare.com/client/v4/accounts/"
+            + urllib.parse.quote(env["CLOUDFLARE_ACCOUNT_ID"], safe="")
+            + "/queues/" + urllib.parse.quote(queue_id, safe="") + "/consumers"
+        )
+    if changed:
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(desired).encode("utf-8"),
+            method=method,
+            headers={
+                "Authorization": "Bearer " + env["CLOUDFLARE_API_TOKEN"],
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                payload = json.load(response)
+        except urllib.error.HTTPError as error:
+            raise RuntimeError(f"Cloudflare Queue consumer reconciliation failed with HTTP {error.code}") from error
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            raise RuntimeError("Cloudflare Queue consumer reconciliation returned no valid response") from error
+        if payload.get("success") is not True:
+            raise RuntimeError("Cloudflare Queue consumer reconciliation failed")
+    after = worker_queue_consumers(queue_id, env)
+    if len(after) != 1 or not worker_queue_consumer_matches(after[0], desired):
+        raise RuntimeError(f"Cloudflare Queue {queue_name} differs from the committed consumer contract")
+    return {
+        "queue": queue_name,
+        "queueId": queue_id,
+        "consumerId": after[0]["consumer_id"],
+        "desired": desired,
+        "verified": True,
+        "changed": changed,
+        "verifiedAt": utc_now(),
+    }
+
+
+def reconcile_worker_queue_consumers(
+    customer: dict[str, Any], worker_config: dict[str, Any], resources: dict[str, Any],
+    env: dict[str, str],
+) -> dict[str, Any]:
+    """Apply and verify the exact message and dead-letter consumer contract from Wrangler."""
+    queue_config = worker_config.get("queues")
+    configured = queue_config.get("consumers") if isinstance(queue_config, dict) else None
+    if not isinstance(configured, list) or len(configured) != 2:
+        raise RuntimeError("committed Worker must define exactly the message and dead-letter Queue consumers")
+    if any(not isinstance(item, dict) for item in configured):
+        raise RuntimeError("committed Worker Queue consumer contract is invalid")
+    expected_names = {customer["messagesQueueName"], customer["messagesDlqName"]}
+    if {item.get("queue") for item in configured} != expected_names:
+        raise RuntimeError("committed Worker Queue consumers do not match the registered tenant Queues")
+    by_name = {item["queue"]: item for item in configured}
+    if (by_name[customer["messagesQueueName"]].get("dead_letter_queue") != customer["messagesDlqName"]
+            or by_name[customer["messagesDlqName"]].get("dead_letter_queue")):
+        raise RuntimeError("committed Worker Queue dead-letter relationship differs from the tenant contract")
+    provisioned = {
+        customer["messagesQueueName"]: resources.get("messagesQueue", {}),
+        customer["messagesDlqName"]: resources.get("messagesDeadLetterQueue", {}),
+    }
+    queue_ids = {name: item.get("queue_id") for name, item in provisioned.items()}
+    if (any(not isinstance(queue_id, str) or not queue_id for queue_id in queue_ids.values())
+            or len(set(queue_ids.values())) != 2):
+        raise RuntimeError("provisioned tenant Queue IDs are required before consumer reconciliation")
+    results = []
+    for config in configured:
+        queue_name = config["queue"]
+        desired = {
+            "script_name": customer["worker"],
+            "type": "worker",
+            "settings": worker_queue_consumer_settings(config),
+        }
+        if config.get("dead_letter_queue"):
+            desired["dead_letter_queue"] = config["dead_letter_queue"]
+        results.append(reconcile_worker_queue_consumer(
+            queue_ids[queue_name], queue_name, desired, env,
+        ))
+    return {"consumers": results, "verified": all(item["verified"] for item in results)}
 def d1_query(
     customer: dict[str, Any], sql: str, env: dict[str, str], params: tuple[Any, ...] = (),
 ) -> list[dict[str, Any]]:
@@ -1000,6 +1169,28 @@ def workers_dev_provisioner(
     return provisioner
 
 
+def verify_worker_queue_consumers(
+    receipt: dict[str, Any], customer: dict[str, Any], env: dict[str, str],
+) -> None:
+    """Read back each live queue consumer and enforce the release's exact identity/settings."""
+    contract = receipt.get("queueConsumers")
+    consumers = contract.get("consumers") if isinstance(contract, dict) else None
+    expected_names = {customer["messagesQueueName"], customer["messagesDlqName"]}
+    if (not isinstance(contract, dict) or contract.get("verified") is not True or not isinstance(consumers, list)
+            or len(consumers) != 2
+            or {item.get("queue") for item in consumers if isinstance(item, dict)} != expected_names):
+        raise RuntimeError("release receipt has no exact message and dead-letter consumer contract")
+    for item in consumers:
+        queue_id = item.get("queueId")
+        desired = item.get("desired")
+        if not isinstance(queue_id, str) or not queue_id or not isinstance(desired, dict):
+            raise RuntimeError("release receipt has an invalid Queue consumer identity")
+        active = worker_queue_consumers(queue_id, env)
+        if len(active) != 1 or not worker_queue_consumer_matches(active[0], desired):
+            raise RuntimeError(f"Cloudflare Queue {item['queue']} differs from the committed consumer contract")
+        item["verifiedAt"] = utc_now()
+
+
 def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dict[str, Any],
                 deploy_env: dict[str, str], base: dict[str, str], stage: Any, *,
                 verify_only: bool = False) -> None:
@@ -1028,6 +1219,8 @@ def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dic
     if active_crons != cron_contract["desired"]:
         raise RuntimeError("active Cloudflare Worker schedules differ from the exact release contract")
     cron_contract["verifiedAt"] = utc_now()
+    stage("verify-queue-consumers")
+    verify_worker_queue_consumers(receipt, customer, deploy_env)
     workers_dev = workers_dev_provisioner(customer, deploy_env)
     if workers_dev is not None and not verify_only:
         stage("enable-workers-dev")
@@ -1114,11 +1307,16 @@ def verification_receipt(directory: Path, tenant: str, sha: str, release_id: str
     if any(receipt.get(key) != value for key, value in expected.items()):
         raise ValueError("verification target differs from the recorded release")
     if receipt.get("status") not in ("failed", "deployed", "verified") or receipt.get("stage") not in (
-            "verify-deployment", "verify-cron-triggers", "verify-connection",
+            "verify-deployment", "verify-cron-triggers", "verify-queue-consumers", "verify-connection",
             "awaiting-browser-verification", "verified"):
         raise ValueError("only a promoted release may resume read-only verification")
     if receipt.get("cronTriggers", {}).get("desired") != ["*/5 * * * *"]:
         raise ValueError("release has no verified durable message schedule contract")
+    queue_contract = receipt.get("queueConsumers")
+    queue_consumers = queue_contract.get("consumers") if isinstance(queue_contract, dict) else None
+    if (not isinstance(queue_contract, dict) or queue_contract.get("verified") is not True
+            or not isinstance(queue_consumers, list) or len(queue_consumers) != 2):
+        raise ValueError("release has no verified message and dead-letter consumer contract")
     if not receipt.get("uploadedVersion") or not receipt.get("deployment"):
         raise ValueError("release has no recorded immutable production promotion")
     artifact_hashes = receipt.get("artifactHashes")
@@ -1377,6 +1575,7 @@ def main() -> int:
                       "messagesQueueConsumerCount:Array.isArray(c.queues?.consumers)?c.queues.consumers.length:0,"
                       "messagesQueueConsumer:(c.queues?.consumers||[]).some(q=>q.queue===c.queues?.producers?.find(p=>p.binding==='HELLOADA_MESSAGES_QUEUE')?.queue&&!!q.dead_letter_queue),"
                       "messagesDlqConsumer:(c.queues?.consumers||[]).some(q=>q.queue===c.queues?.consumers?.find(x=>x.dead_letter_queue)?.dead_letter_queue&&!q.dead_letter_queue),"
+                      "queues:c.queues||{},"
                       "crons:c.triggers?.crons||[],"
                       "sendEmailBinding:(c.send_email||[]).some(b=>b.name==='EMAIL'),"
                       "sendEmailBindingCount:Array.isArray(c.send_email)?c.send_email.length:0,"
@@ -1460,6 +1659,12 @@ def main() -> int:
         stage("reconcile-cron-triggers")
         receipt["cronTriggers"] = reconcile_worker_cron_schedules(
             customer, wrangler["crons"], deploy_env,
+        )
+        atomic_json(receipt_path, receipt)
+
+        stage("reconcile-queue-consumers")
+        receipt["queueConsumers"] = reconcile_worker_queue_consumers(
+            customer, wrangler, receipt["messagesResources"], deploy_env,
         )
         atomic_json(receipt_path, receipt)
 

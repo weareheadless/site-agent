@@ -374,14 +374,30 @@ activation endpoint to synchronize the central tenant config before performing
 the Ada/Payload connection gate.
 
 Application releases use OpenNext `upload` and Wrangler `versions deploy`.
+Worker version promotion does not by itself prove that the live Queue consumer
+registrations match the committed consumer configuration. After promotion, the
+release pipeline therefore reconciles the exact two tenant consumers from the
+immutable `wrangler.jsonc`: the Messages Queue consumer attached to that tenant
+Worker, with its registered dead-letter Queue, and the dead-letter Queue
+consumer attached to the same Worker. It resolves Queue IDs only from the
+provisioning receipt, fails closed if either Queue has multiple or unrelated
+consumers, applies only a missing or drifted registration, then reads both
+registrations back. The final live gate repeats that read and records the
+consumer IDs, settings, and verification times in the receipt. A release cannot
+be called deployed if a consumer is missing or differs from the source
+contract. Never attach consumers manually in the dashboard or through an
+ad-hoc Wrangler command; correct the source and queue a new release ID.
+
 The release contract also reconciles the Worker Cron Triggers declared in the
 exact committed `wrangler.jsonc` after promotion, then reads them back and
 records before/desired/after state in the release receipt. The shared inbox
 runtime requires exactly `*/5 * * * *` to sweep durable messages; a missing or
 drifted schedule is not treated as a successful deployment. DNS and domain
 routes remain a separate explicit provisioning operation. The deployment token
-must include Workers Scripts Read and Write for schedule reconciliation. See
-[Cloudflare's schedule API](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/schedules/)
+must include Workers Scripts Read and Write for schedule reconciliation and
+Queues Read and Write (or Workers Scripts Write) for consumer reconciliation.
+See [Cloudflare's schedule API](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/schedules/),
+[Cloudflare's Queue consumer API](https://developers.cloudflare.com/api/resources/queues/subresources/consumers/),
 and [OpenNext's upload command](https://opennext.js.org/cloudflare/cli).
 
 For a `workers.dev` health target, the account subdomain is read from Cloudflare
