@@ -3,14 +3,17 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "prebuild": "cross-env PAYLOAD_CLI=1 payload generate:importmap",
+    "prebuild": "cross-env PAYLOAD_CLI=1 payload generate:importmap && npm run generate:types",
     "build": "cross-env PAYLOAD_LOCAL_BUILD=1 next build --webpack",
     "dev": "next dev",
     "lint": "eslint src",
     "payload": "cross-env PAYLOAD_CLI=1 payload",
     "test": "node --import tsx --test tests/*.test.mjs",
     "typecheck": "tsc --noEmit",
-    "verify:payload": "cross-env NODE_ENV=production PAYLOAD_CLI=1 PAYLOAD_SECRET=ignore tsx scripts/verify-payload-contract.ts"
+    "verify:payload": "cross-env NODE_ENV=production PAYLOAD_CLI=1 PAYLOAD_SECRET=ignore tsx scripts/verify-payload-contract.ts",
+    "generate:importmap": "npm run payload -- generate:importmap",
+    "generate:types": "npm run payload -- generate:types",
+    "pretypecheck": "npm run generate:types"
   },
   "dependencies": {
     "@weareheadless/helloada-payload-admin": "https://github.com/weareheadless/site-agent/releases/download/payload-admin-v0.10.2/weareheadless-helloada-payload-admin-0.10.2.tgz",
