@@ -24,6 +24,7 @@ def test_payload_template_has_remote_payload_contract_gate():
     script = package['scripts']['verify:payload']
     assert 'PAYLOAD_CLI=1' in script
     assert 'verify-payload-contract.ts' in script
+    assert script.endswith('node --import tsx scripts/verify-payload-contract.ts')
     verifier = (TEMPLATE / 'scripts' / 'verify-payload-contract.ts').read_text(encoding='utf-8')
     for expected in ['draft: false', 'draft: true', 'findVersions', 'findGlobal', "collection: 'media'"]:
         assert expected in verifier

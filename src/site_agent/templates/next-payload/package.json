@@ -10,7 +10,7 @@
     "payload": "cross-env PAYLOAD_CONFIG_PATH=payload.config.ts PAYLOAD_CLI=1 payload",
     "test": "node --import tsx --test tests/*.test.mjs",
     "typecheck": "tsc --noEmit",
-    "verify:payload": "cross-env NODE_ENV=production PAYLOAD_CLI=1 PAYLOAD_SECRET=ignore tsx scripts/verify-payload-contract.ts",
+    "verify:payload": "cross-env NODE_ENV=production PAYLOAD_CLI=1 PAYLOAD_SECRET=ignore node --import tsx scripts/verify-payload-contract.ts",
     "generate:importmap": "npm run payload -- generate:importmap",
     "generate:types": "npm run payload -- generate:types",
     "pretypecheck": "npm run generate:types"
