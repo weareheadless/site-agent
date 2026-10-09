@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "prebuild": "npm run generate:importmap && npm run generate:types",
+    "prebuild": "cross-env PAYLOAD_CLI=1 payload generate:importmap && npm run generate:types",
     "build": "cross-env PAYLOAD_LOCAL_BUILD=1 next build --webpack",
     "dev": "next dev",
     "lint": "eslint src",
