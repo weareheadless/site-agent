@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { helloAdaIdempotencyKey, normalizeHelloAdaEmail, validateHelloAdaRecipients, validateHelloAdaReplyText, validateHelloAdaSubject } from '@weareheadless/helloada-payload-core/messages'
+import { isHelloAdaMessageDraftHash } from '@weareheadless/helloada-payload-admin/message-draft-contract'
 import { hashJson } from '@/lib/payload-hash'
 import type { HelloAdaAuth } from '@/lib/helloada-auth'
 import { helloAdaSite } from '@/helloada.config'
@@ -413,7 +414,7 @@ const sendDraft = async (conversationId: string, request: Request, auth: HelloAd
   let requestId: string
   try { requestId = helloAdaIdempotencyKey(input.requestId) } catch { return fail('Reload the reply before sending.', 400) }
   const draftHash = text(input.draftHash)
-  if (!/^[a-f0-9]{64}$/.test(draftHash)) return fail('Save and review this reply before sending.', 409)
+  if (!isHelloAdaMessageDraftHash(draftHash)) return fail('Save and review this reply before sending.', 409)
   const idempotencyKey = `send:${tenantIdentity()}:${conversationId}:${requestId}`
   const previousOperation = await findMessageRecord(auth.payload, 'messageOperations', { idempotencyKey: { equals: idempotencyKey } })
   if (previousOperation) {
@@ -663,7 +664,7 @@ const sendOwnerMessageDraft = async (messageId: string, request: Request, auth: 
   let requestId: string
   try { requestId = helloAdaIdempotencyKey(input.requestId) } catch { return fail('Review the saved message before sending.', 400) }
   const draftHash = text(input.draftHash)
-  if (!/^[a-f0-9]{64}$/.test(draftHash)) return fail('Save and review this message before sending.', 409)
+  if (!isHelloAdaMessageDraftHash(draftHash)) return fail('Save and review this message before sending.', 409)
   const draft = await auth.payload.findByID({ collection: 'messages', id: messageId, depth: 0, overrideAccess: false, req: auth.req, user: auth.user }).catch(() => undefined)
   if (!draft || draft.direction !== 'owner_message' || draft.deliveryState !== 'draft') return fail('This outgoing draft is no longer available.', 409)
   const row = draft as unknown as MessageRecord

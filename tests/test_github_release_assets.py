@@ -98,7 +98,7 @@ def test_default_worker_and_manifest_use_the_released_shared_versions():
     assert locked_admin['version'] == admin_version
     assert locked_admin['resolved'] == release_asset
     assert locked_admin['integrity'] == (
-        'sha512-UdZlA/sJz/2NgLIExnlMMOhZ+4wVQ1w6SV8C05/35Ivy9FHwalQiXfje492PpNTe6avsvkXWa3wh5tcp8bdIKQ=='
+        'sha512-ceV3msM40nnuMTWB0jADlfdISAEE2CSKXQyWNT7aO8itWeAg8m6AtmLQ1FSg9AFZc8dlCcNo06NcUPJWATqB5g=='
     )
 
     core_version = json.loads((root / 'packages/helloada-payload-core/package.json').read_text())['version']

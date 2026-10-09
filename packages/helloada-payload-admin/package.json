@@ -1,6 +1,6 @@
 {
   "name": "@weareheadless/helloada-payload-admin",
-  "version": "0.10.5",
+  "version": "0.10.6",
   "description": "The shared HelloAda owner workspace for Payload-powered customer websites.",
   "type": "module",
   "license": "UNLICENSED",
@@ -13,6 +13,7 @@
     "./version": "./src/version.ts",
     "./server": "./src/server/runtime-env.ts",
     "./config": "./src/config/site.tsx",
+    "./message-draft-contract": "./src/lib/message-draft-contract.ts",
     "./styles/admin.scss": "./src/styles/admin.scss"
   },
   "peerDependencies": {

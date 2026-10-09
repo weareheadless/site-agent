@@ -17,7 +17,7 @@ mkdirSync(output, { recursive: true })
 const packed = JSON.parse(execFileSync('npm', ['pack', '--json', '--pack-destination', output], { cwd: packageRoot, encoding: 'utf8' }))[0]
 const archive = path.join(output, packed.filename)
 const files = new Set(execFileSync('tar', ['-tzf', archive], { encoding: 'utf8' }).trim().split('\n'))
-for (const file of ['src/components/GrowthTasks.tsx', 'src/components/HelloAdaMessages.tsx', 'src/components/WebsiteWorkspace.tsx', 'src/server/runtime-env.ts', 'src/styles/growth.scss', 'src/styles/messages.scss']) {
+for (const file of ['src/components/GrowthTasks.tsx', 'src/components/HelloAdaMessages.tsx', 'src/components/WebsiteWorkspace.tsx', 'src/lib/message-draft-contract.ts', 'src/server/runtime-env.ts', 'src/styles/growth.scss', 'src/styles/messages.scss']) {
   if (!files.has(`package/${file}`)) throw new Error(`Packed artifact is missing ${file}`)
 }
 const packedText = file => execFileSync('tar', ['-xOf', archive, `package/${file}`], { encoding: 'utf8' })

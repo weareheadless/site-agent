@@ -8,6 +8,7 @@ import { fetchHelloAda } from '../api/fetchHelloAda'
 import { useHelloAdaTranslations } from '../api/useHelloAdaTranslations'
 import { useHelloAdaSite } from '../config/provider'
 import { isBusinessCorrespondenceReady } from '../lib/message-capabilities'
+import { isHelloAdaMessageDraftHash } from '../lib/message-draft-contract'
 import { WorkspaceIcon } from './WorkspaceIcon'
 
 type Contact = { id: string | number; name?: string; email: string; phone?: string; company?: string; notes?: string; source?: string; lastSeenAt?: string }
@@ -245,7 +246,7 @@ export function HelloAdaMessages() {
         method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(requestBody),
       })
       const resultBody = await response.json() as { draftHash?: string; draftRevision?: number; message?: string }
-      if (!response.ok || !resultBody.draftHash || !Number.isInteger(resultBody.draftRevision)) throw new Error(resultBody.message || t('owner.messagesFailure'))
+      if (!response.ok || !isHelloAdaMessageDraftHash(resultBody.draftHash) || !Number.isInteger(resultBody.draftRevision)) throw new Error(resultBody.message || t('owner.messagesFailure'))
       setDraftHash(resultBody.draftHash)
       setDraftRevision(resultBody.draftRevision!)
       draftDirtyRef.current = false
@@ -276,7 +277,7 @@ export function HelloAdaMessages() {
   }
 
   const sendReply = async () => {
-    if (!activeId || !draftHash || sending) return
+    if (!activeId || !isHelloAdaMessageDraftHash(draftHash) || sending) return
     setSending(true); setError(''); setNotice('')
     try {
       const activeDraft = [...(detail?.messages || [])].reverse().find((item) => ['reply', 'owner_message'].includes(item.direction) && item.deliveryState === 'draft')
@@ -431,7 +432,7 @@ export function HelloAdaMessages() {
   const canSend = mailbox?.state === 'active' && Boolean(mailbox.address)
   const canSendBusinessEmail = isBusinessCorrespondenceReady(mailbox)
   const currentDraft = [...(detail?.messages || [])].reverse().find((item) => ['reply', 'owner_message'].includes(item.direction) && item.deliveryState === 'draft')
-  const canSendCurrentDraft = canSendBusinessEmail
+  const canSendCurrentDraft = canSendBusinessEmail && isHelloAdaMessageDraftHash(draftHash)
 
   return <main className="helloada-messages" aria-label={t('owner.messages')}>
     <header className="helloada-messages-header">
