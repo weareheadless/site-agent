@@ -1,6 +1,9 @@
+from io import BytesIO
+from urllib.error import HTTPError
+
 import pytest
 
-from site_agent.hands.resend import ResendProvisioner, ResendVerificationPending
+from site_agent.hands.resend import ResendCredentialError, ResendProvisioner, ResendVerificationPending
 
 
 class FakeCloudflare:
@@ -20,6 +23,23 @@ class FakeCloudflare:
         assert zone_id == "zone-1"
         self.created.append(record)
         self.records.append({**record, "id": f"record-{len(self.records) + 1}"})
+
+
+def test_send_only_key_is_rejected_during_read_only_management_preflight(monkeypatch):
+    def reject_management(*_args, **_kwargs):
+        raise HTTPError(
+            "https://api.resend.com/domains?limit=1",
+            401,
+            "restricted_api_key",
+            {},
+            BytesIO(b'{"message":"restricted_api_key"}'),
+        )
+
+    monkeypatch.setattr("site_agent.hands.resend.urllib.request.urlopen", reject_management)
+    provisioner = ResendProvisioner("send-only-key", FakeCloudflare())
+
+    with pytest.raises(ResendCredentialError, match="Full access API key is required"):
+        provisioner.validate_management_access()
 
 
 def test_new_sender_domain_is_created_then_verified_on_reconciliation():

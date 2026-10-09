@@ -21,7 +21,7 @@ from urllib.parse import urlsplit
 from ..credentials import cloudflare_api_token, cloudflare_dns_api_token, cloudflare_email_api_token, cloudflare_env_names, credential_environment, resend_api_key
 from ..hands.cloudflare_email import CloudflareEmailClient
 from ..hands.cloudflare_worker import CloudflareWorkerSecretsClient
-from ..hands.resend import ResendProvisioner, ResendVerificationPending
+from ..hands.resend import ResendCredentialError, ResendError, ResendProvisioner, ResendVerificationPending
 from .email_provisioning import EmailProvisioningError, EmailProvisioningService
 from .mailbox_identity import PLATFORM_EMAIL_DOMAIN
 from .tenant_registration import tenant_token_env
@@ -29,6 +29,10 @@ from .tenant_registration import tenant_token_env
 
 class EmailWorkerReadinessError(EmailProvisioningError):
     """The exact registered Worker release is not ready for email routing."""
+
+
+class EmailProvisioningActionRequired(EmailProvisioningError):
+    """An owner/operator must fix a provider credential before provisioning."""
 
 
 def _now() -> str:
@@ -352,6 +356,15 @@ def prepare_email_plan(
     if readiness_error:
         raise EmailWorkerReadinessError(readiness_error)
     client = CloudflareEmailClient(email_token, dns_token)
+    management_key = resend_api_key(config, resolved_env)
+    if not management_key:
+        raise EmailProvisioningActionRequired("The protected Resend Full access API key is not configured")
+    try:
+        ResendProvisioner(management_key, client).validate_management_access()
+    except ResendCredentialError as exc:
+        raise EmailProvisioningActionRequired(str(exc)) from exc
+    except ResendError as exc:
+        raise EmailProvisioningError(str(exc)) from exc
     zone = client.zone(domain)
     zone_name = str(zone.get("name") or "").strip().lower().rstrip(".")
     if not zone_name or (domain != zone_name and not domain.endswith("." + zone_name)):
@@ -631,6 +644,22 @@ def auto_provision_email(
         if memory is not None:
             memory.kv_set("email_provisioning_state", result)
         return result, resolved_env
+    except (EmailProvisioningActionRequired, ResendCredentialError) as exc:
+        result = {
+            **state,
+            **attempt,
+            "state": "action_required",
+            "tenant": tenant_id,
+            "domain": resolved_email_domain,
+            "emailDomainSetting": requested_email_domain,
+            "siteDomain": raw_domain,
+            "address": address,
+            "error": str(exc)[:500],
+            "lastAttemptAt": _now(),
+        }
+        if memory is not None:
+            memory.kv_set("email_provisioning_state", result)
+        return result, resolved_env
     except EmailWorkerReadinessError as exc:
         result = {
             **state,
@@ -664,4 +693,4 @@ def auto_provision_email(
         return result, resolved_env
 
 
-__all__ = ["EmailWorkerReadinessError", "auto_provision_email", "prepare_email_plan"]
+__all__ = ["EmailProvisioningActionRequired", "EmailWorkerReadinessError", "auto_provision_email", "prepare_email_plan"]

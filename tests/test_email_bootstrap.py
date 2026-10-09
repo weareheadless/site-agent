@@ -30,6 +30,18 @@ def _config(tmp_path: Path):
     }
 
 
+def _mock_resend_management(monkeypatch):
+    class Resend:
+        def __init__(self, api_key, _cloudflare):
+            assert api_key == "management-key"
+
+        def validate_management_access(self):
+            return None
+
+    monkeypatch.setattr(bootstrap, "resend_api_key", lambda _config, _env: "management-key")
+    monkeypatch.setattr(bootstrap, "ResendProvisioner", Resend)
+
+
 def test_worker_readiness_uses_registered_public_origin(monkeypatch, tmp_path):
     config = _config(tmp_path)
     config["site"]["preview_url"] = "https://oceanicvibes.weareheadless.workers.dev/"
@@ -174,6 +186,7 @@ def test_prepare_plan_derives_mailbox_from_current_domain_and_local_part(monkeyp
     monkeypatch.setattr(bootstrap, "_worker_readiness", lambda config, tenant, env=None: ("oceanicvibes", ""))
     monkeypatch.setattr(bootstrap, "cloudflare_dns_api_token", lambda config, env: "dns-token")
     monkeypatch.setattr(bootstrap, "cloudflare_email_api_token", lambda config, env: "email-token")
+    _mock_resend_management(monkeypatch)
 
     class Client:
         def __init__(self, email_token, dns_token):
@@ -210,6 +223,7 @@ def test_prepare_plan_uses_managed_zone_apex_by_default_for_a_www_site(monkeypat
     monkeypatch.setattr(bootstrap, "_worker_readiness", lambda config, tenant, env=None: ("oceanicvibes", ""))
     monkeypatch.setattr(bootstrap, "cloudflare_dns_api_token", lambda config, env: "dns-token")
     monkeypatch.setattr(bootstrap, "cloudflare_email_api_token", lambda config, env: "email-token")
+    _mock_resend_management(monkeypatch)
 
     class Client:
         def __init__(self, email_token, dns_token):
@@ -248,6 +262,7 @@ def test_prepare_plan_uses_registered_platform_email_domain_for_worker_site(monk
     monkeypatch.setattr(bootstrap, "_worker_readiness", lambda config, tenant, env=None: ("atelier-harmonie", ""))
     monkeypatch.setattr(bootstrap, "cloudflare_dns_api_token", lambda config, env: "dns-token")
     monkeypatch.setattr(bootstrap, "cloudflare_email_api_token", lambda config, env: "email-token")
+    _mock_resend_management(monkeypatch)
 
     class Client:
         def __init__(self, email_token, dns_token):
@@ -285,6 +300,7 @@ def test_prepare_plan_rejects_email_subdomain_until_routing_onboarding_is_suppor
     monkeypatch.setattr(bootstrap, "_worker_readiness", lambda config, tenant, env=None: ("atelier-harmonie", ""))
     monkeypatch.setattr(bootstrap, "cloudflare_dns_api_token", lambda config, env: "dns-token")
     monkeypatch.setattr(bootstrap, "cloudflare_email_api_token", lambda config, env: "email-token")
+    _mock_resend_management(monkeypatch)
 
     class Client:
         def __init__(self, email_token, dns_token):
@@ -323,6 +339,26 @@ def test_auto_provision_requires_resend_management_key_before_provider_access(tm
     assert state["tenant"] == "atelier-harmonie"
     assert state["domain"] == "helloada.app"
     assert "protected Resend management API key" in state["error"]
+
+
+def test_auto_provision_classifies_restricted_resend_key_as_action_required(tmp_path, monkeypatch):
+    config = _config(tmp_path)
+    memory = FakeMemory()
+    monkeypatch.setattr(bootstrap, "resend_api_key", lambda _config, _env: "restricted-key")
+    monkeypatch.setattr(
+        bootstrap,
+        "prepare_email_plan",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            bootstrap.EmailProvisioningActionRequired("Resend requires Full access")
+        ),
+    )
+
+    state, _ = bootstrap.auto_provision_email(config, tenant_id="oceanicvibes", memory=memory, env={})
+
+    assert state["state"] == "action_required"
+    assert state["tenant"] == "oceanicvibes"
+    assert "Full access" in state["error"]
+    assert memory.state["email_provisioning_state"] == state
 
 
 def test_auto_provision_requires_a_registered_unique_local_part_for_an_explicit_domain(tmp_path):
@@ -382,6 +418,7 @@ def test_failed_payload_activation_preserves_cloudflare_progress_for_retry(monke
     monkeypatch.setattr(bootstrap, "resend_api_key", lambda config, env: "management-key")
     monkeypatch.setattr(bootstrap, "ResendProvisioner", Resend)
     monkeypatch.setattr(bootstrap, "_ensure_tenant_resend_key", lambda **_kwargs: "tenant-sending-key-id")
+    monkeypatch.setattr(bootstrap, "_tenant_env_path", lambda _config, _tenant: tmp_path / "tenant.env")
 
     class Client:
         def __init__(self, email_token, dns_token):

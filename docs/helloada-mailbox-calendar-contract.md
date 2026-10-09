@@ -100,6 +100,11 @@ creation is reconciled by exact key name, and a domain change installs the new
 key before revoking the prior one. Domain changes are provisioned before Payload
 switches the active mailbox identity.
 
+The read-only provisioning preflight verifies the Full access credential against
+Resend before it reports `ready_to_apply`. Missing or send-only credentials are
+an explicit action required and stop before tenant configuration, DNS, domain,
+or key writes. Do not present a Cloudflare-only plan as a complete email plan.
+
 `outboundProvider` and `outboundMode` are service-owned. Ordinary sends are
 enabled only after the exact sender domain is verified, a tenant sending-only
 key is installed in the Worker, Cloudflare inbound routing is active, and

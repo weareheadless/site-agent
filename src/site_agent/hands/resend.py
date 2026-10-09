@@ -17,6 +17,10 @@ class ResendError(RuntimeError):
     """A Resend API or DNS preflight error safe for provisioning diagnostics."""
 
 
+class ResendCredentialError(ResendError):
+    """The configured credential cannot perform management operations."""
+
+
 class ResendVerificationPending(ResendError):
     """Resend accepted domain verification but has not completed it yet."""
 
@@ -76,6 +80,10 @@ class ResendProvisioner:
                 error_payload = json.loads(exc.read(64 * 1024).decode("utf-8", "replace"))
             except (ValueError, UnicodeError):
                 error_payload = {}
+            if exc.code in {401, 403}:
+                raise ResendCredentialError(
+                    f"Resend rejected the management credential (HTTP {exc.code}); a Full access API key is required"
+                ) from exc
             message = str(error_payload.get("message") or error_payload.get("name") or "Resend rejected the request")[:300]
             raise ResendError(f"Resend API returned HTTP {exc.code}: {message}") from exc
         except (urllib.error.URLError, TimeoutError, OSError, ValueError, UnicodeError) as exc:
@@ -100,6 +108,12 @@ class ResendProvisioner:
                 raise ResendError("Resend domain pagination returned no continuation identity")
             after = str(batch[-1]["id"])
         raise ResendError("Resend domain lookup exceeded the safe pagination limit")
+
+    def validate_management_access(self) -> None:
+        """Prove this key can read managed domains without changing provider state."""
+        payload = self._request("GET", "/domains?limit=1")
+        if not isinstance(payload.get("data"), list):
+            raise ResendError("Resend domain preflight did not return a data array")
 
     def _get_domain(self, domain_id: str) -> dict[str, Any]:
         payload = self._request("GET", f"/domains/{urllib.parse.quote(domain_id, safe='')}")
@@ -287,4 +301,4 @@ class ResendProvisioner:
         return identity, token
 
 
-__all__ = ["ResendError", "ResendProvisioner", "ResendVerificationPending"]
+__all__ = ["ResendCredentialError", "ResendError", "ResendProvisioner", "ResendVerificationPending"]
