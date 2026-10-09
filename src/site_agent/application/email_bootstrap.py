@@ -582,8 +582,8 @@ def auto_provision_email(
             raise EmailProvisioningError("The Cloudflare DNS and Email Service API tokens must both be configured")
         cloudflare_email = CloudflareEmailClient(email_token, dns_token)
         resend = ResendProvisioner(resend_api_key(config, resolved_env), cloudflare_email)
-        resend_domain = resend.ensure_domain(resolved_email_domain)
         secret_path = _tenant_env_path(tenant_config_path, tenant_id)
+        resend_domain = resend.ensure_domain(resolved_email_domain)
         send_key_id = _ensure_tenant_resend_key(
             path=secret_path,
             tenant_id=tenant_id,
