@@ -570,7 +570,10 @@ def test_worker_queue_consumer_is_created_and_read_back(monkeypatch):
             return Response({"success": True, "result": state[0]})
         if request.full_url.endswith("/consumers/" + "c" * 32):
             return Response({"success": True, "result": state[0]})
-        return Response({"success": True, "result": list(state)})
+        listed = [{**item, "script_name": None} for item in state]
+        for item in listed:
+            item.pop("script", None)
+        return Response({"success": True, "result": listed})
 
     monkeypatch.setattr(release.urllib.request, "urlopen", open_url)
     result = release.reconcile_worker_queue_consumer(
@@ -614,7 +617,10 @@ def test_worker_queue_consumer_updates_only_the_registered_workers_drifted_setti
             return Response({"success": True, "result": state[0]})
         if request.full_url.endswith("/consumers/" + "c" * 32):
             return Response({"success": True, "result": state[0]})
-        return Response({"success": True, "result": list(state)})
+        listed = [{**item, "script_name": None} for item in state]
+        for item in listed:
+            item.pop("script", None)
+        return Response({"success": True, "result": listed})
 
     monkeypatch.setattr(release.urllib.request, "urlopen", open_url)
     result = release.reconcile_worker_queue_consumer(
@@ -640,7 +646,8 @@ def test_worker_queue_consumer_fails_closed_on_an_unregistered_consumer(monkeypa
     def open_url(request, timeout):
         calls.append(request)
         result = {"consumer_id": "c" * 32, "type": "worker", "script": "other-worker"}
-        return Response({"success": True, "result": [result]} if request.full_url.endswith("/consumers")
+        listed = {"consumer_id": "c" * 32, "type": "worker", "script_name": None}
+        return Response({"success": True, "result": [listed]} if request.full_url.endswith("/consumers")
                         else {"success": True, "result": result})
     monkeypatch.setattr(release.urllib.request, "urlopen", open_url)
     with pytest.raises(RuntimeError, match="unexpected consumer"):
