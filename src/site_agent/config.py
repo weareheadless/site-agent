@@ -417,7 +417,7 @@ def validate_credentials_config(config: dict[str, Any]) -> None:
     profile_file = credentials.get("profile_file")
     if profile_file is not None and not isinstance(profile_file, str):
         raise ConfigError("credentials.profile_file must be text")
-    for name in ("github", "cloudflare"):
+    for name in ("github", "cloudflare", "resend"):
         profile = credentials.get(name) or {}
         if not isinstance(profile, dict):
             raise ConfigError(f"credentials.{name} must be an object")
@@ -425,10 +425,14 @@ def validate_credentials_config(config: dict[str, Any]) -> None:
             value = profile.get(key)
             if value is not None and not isinstance(value, str):
                 raise ConfigError(f"credentials.{name}.{key} must be text")
-        for key, fallback in (
-            ("api_token_env", "CLOUDFLARE_API_TOKEN" if name == "cloudflare" else "GITHUB_TOKEN"),
-            ("account_id_env", "CLOUDFLARE_ACCOUNT_ID"),
-        ):
+        environment_names = []
+        if name in {"github", "cloudflare"}:
+            environment_names.append(("api_token_env", "CLOUDFLARE_API_TOKEN" if name == "cloudflare" else "GITHUB_TOKEN"))
+        if name == "resend":
+            environment_names.append(("api_key_env", "RESEND_API"))
+        if name == "cloudflare":
+            environment_names.append(("account_id_env", "CLOUDFLARE_ACCOUNT_ID"))
+        for key, fallback in environment_names:
             if key not in profile:
                 continue
             value = str(profile.get(key) or fallback).strip()

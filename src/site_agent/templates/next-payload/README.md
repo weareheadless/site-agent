@@ -10,6 +10,23 @@ the exact `@weareheadless/helloada-payload-admin` release in `package.json`;
 do not copy the package into a customer repository or replace it with the
 retired FastAPI admin.
 
+## Mail delivery boundary
+
+Resend sends approved owner replies and new messages. The site-agent VPS keeps
+the Resend management key in its protected `resend` credential profile and
+creates a domain-restricted `sending_access` key for each tenant. Only that
+tenant key is installed as the Worker secret `RESEND_API_KEY`; it never belongs
+in source, GitHub, public Worker variables, or this repository. Resend sends
+are bound to the durable approved Payload operation and use its stable
+idempotency identity. An ambiguous send is marked uncertain and is not
+automatically retried.
+
+Cloudflare Email Routing delivers inbound mail to the same Worker, and the
+Cloudflare `EMAIL` binding sends transactional notices and booking confirmations.
+It is not a fallback sender for ordinary correspondence. Read
+`deploy/README.md` and `docs/helloada-mailbox-calendar-contract.md` for the
+provider credential and tenant provisioning contract.
+
 Production releases use the central VPS pipeline. Register the tenant in
 `weareheadless/site-agent/deploy/payload-customers.json`, then commit its full
 customer source SHA and a new release ID to `deploy/desired-releases.json` on

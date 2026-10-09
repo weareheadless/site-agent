@@ -219,10 +219,11 @@ read-only/`--apply` CLI flow below. A tenant scheduler retries automatically
 every hour after a new Worker release becomes ready; it does not need a
 dashboard visit or a manual API restart. The VPS is the provisioning control
 plane, not a mail server. Its protected Cloudflare API tokens are used only to
-configure Cloudflare DNS, Email Routing and Email Sending. They are never
-copied into tenant Worker secrets. At runtime, each tenant Worker receives mail
-through its native `email()` event and sends through the Cloudflare `EMAIL`
-binding; no SMTP credentials or external mail service are involved.
+configure Cloudflare DNS, Email Routing and transactional Email Sending. They
+are never copied into tenant Worker secrets. Cloudflare Email Routing delivers
+inbound messages to the tenant Worker, and the Cloudflare `EMAIL` binding sends
+transactional notifications and booking confirmations. Resend is the sole
+provider for ordinary owner-approved replies and new messages.
 Unknown existing MX, SPF, DMARC or routing state stops before Cloudflare writes.
 The provisioner uses separate protected host profiles. The `cloudflare_dns`
 token needs Zone Read, DNS Read and DNS Write, restricted to the zones
@@ -233,13 +234,43 @@ permissions. Missing permissions, an unavailable account entitlement, or an
 unsupported provider response is a hard error; the workflow never asks an
 operator to finish onboarding in the dashboard or silently substitutes a
 manual DNS recipe. The general Cloudflare token remains dedicated to Worker
-origin/resource operations and is not reused for email provisioning. Store
-the token values only in the corresponding protected host environment files;
-the non-secret profile in `/SOCIAL/configs/host-credentials.yaml` names those
-files and environment variable names. Store `CLOUDFLARE_EMAIL_API_TOKEN` in
+origin/resource operations and is not reused for email provisioning. Store the
+token values only in corresponding protected host environment files; the
+non-secret profile in `/SOCIAL/configs/host-credentials.yaml` names those files
+and environment variable names. The `resend` profile uses an account-level
+`full_access` management key because provisioning creates verified domains and
+tenant keys. This key is high impact and remains only on the protected VPS.
+Store `RESEND_API` in
+`/SOCIAL/configs/helloada-resend.env`. Each tenant receives a
+`sending_access` key restricted to its exact verified Resend domain. Only that
+key is stored in the tenant's mode-0600 `tenant.env` and installed as the
+encrypted Worker secret `RESEND_API_KEY`. It is never added to a repo, GitHub
+Actions, Wrangler variables or logs. Store `CLOUDFLARE_EMAIL_API_TOKEN` in
 `/SOCIAL/configs/helloada-cloudflare-email.env`; use the existing configured
 DNS-profile file for `CLOUDFLARE_DNS_API_TOKEN`. Never put token values in
 tenant config, source, GitHub or issue comments.
+
+The non-secret host profile entry is:
+
+```yaml
+resend:
+  api_key_env: RESEND_API
+  env_file: /SOCIAL/configs/helloada-resend.env
+```
+
+When a tenant is first provisioned, or its registered sender domain changes,
+site-agent creates that exact domain in Resend if it does not already exist,
+adds only Resend-declared DNS records after conflict checks, and waits for
+Resend to report it verified before issuing the tenant-scoped sending key. New
+sender domains must be active Cloudflare zones
+managed by the configured host DNS credentials; unsupported domains fail
+closed instead of silently skipping verification or asking the owner to finish
+provider setup manually.
+
+Provisioning persists a unique key-creation intent before calling Resend,
+reconciles an interrupted create by deleting only the exact named orphan, and
+serializes per-tenant key rotation. A sender-domain change installs a new
+domain-restricted key before revoking the previous key.
 
 For a one-time existing-tenant setup, invoke the exact active immutable API
 release on the VPS using the protected host config:
@@ -278,10 +309,11 @@ mode-0600 before/after receipt beneath the tenant data directory before
 provider mutations. Do not make corresponding dashboard changes by hand.
 
 Cloudflare Email Routing delivers inbound messages to the registered tenant
-Worker; Cloudflare Email Sending supports transactional replies. This
-provisions an application-managed business inbox, not a general mailbox or a
-Gmail replacement. The Payload mailbox is marked active only after both
-Cloudflare and the exact Worker confirm the same address.
+Worker; Resend delivers ordinary approved replies and new messages; Cloudflare
+Email Sending remains for transactional notices. This provisions an
+application-managed business inbox, not a general mailbox or a Gmail
+replacement. The Payload mailbox is marked active only after Cloudflare and
+the exact Worker confirm the same address and Resend confirms the sender domain.
 
 ## What executes
 

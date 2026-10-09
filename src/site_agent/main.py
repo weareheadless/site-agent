@@ -26,6 +26,7 @@ from .config import (
     validate_intake_config,
 )
 from .credentials import cloudflare_api_token, credential_environment, credential_status
+from .application.mailbox_identity import PLATFORM_EMAIL_DOMAIN
 from .core.jobs import register_builtin
 from .core.memory import Memory
 from .core.reflect import effective_persona
@@ -213,6 +214,16 @@ def _cmd_provision_email(args: argparse.Namespace) -> int:
         policy_overrides["emailDomain"] = email_domain_override
     if local_part_override:
         policy_overrides["localPart"] = local_part_override
+    raw_messages = raw_tenant.get("messages") if isinstance(raw_tenant.get("messages"), dict) else {}
+    raw_email = raw_messages.get("email") if isinstance(raw_messages.get("email"), dict) else {}
+    raw_site = raw_tenant.get("site") if isinstance(raw_tenant.get("site"), dict) else {}
+    effective_email_domain = str(
+        email_domain_override or raw_email.get("domain") or raw_site.get("custom_domain") or ""
+    ).strip().lower().rstrip(".")
+    if not local_part_override and not str(raw_email.get("local_part") or "").strip() and (
+        effective_email_domain == PLATFORM_EMAIL_DOMAIN or not effective_email_domain
+    ):
+        policy_overrides["localPart"] = tenant_id
 
     try:
         plan, _policy, _ = prepare_email_plan(
@@ -295,9 +306,17 @@ def _cmd_provision_email(args: argparse.Namespace) -> int:
     email = messages.get("email") if isinstance(messages.get("email"), dict) else {}
     email = dict(email)
     email["enabled"] = True
-    email.setdefault("local_part", "hello")
     if email_domain_override:
         email["domain"] = email_domain_override.lower().rstrip(".")
+    configured_email_domain = str(email.get("domain") or summary["domain"] or "").strip().lower().rstrip(".")
+    email["domain"] = configured_email_domain
+    if configured_email_domain == PLATFORM_EMAIL_DOMAIN:
+        if not email.get("local_part") or str(email.get("local_part")).strip().lower() == "hello":
+            email["local_part"] = str(policy_overrides.get("localPart") or tenant_id).lower()
+        email["domain_source"] = "helloada_platform"
+    else:
+        email.setdefault("local_part", "hello")
+        email["domain_source"] = "site_custom_domain"
     if local_part_override:
         email["local_part"] = local_part_override.lower()
     provisioning = email.get("provisioning") if isinstance(email.get("provisioning"), dict) else {}

@@ -6,13 +6,13 @@ import { readSchemaReleaseMetadata } from '../../../scripts/package-helloada-pay
 test('release manifest metadata follows the packed canonical schema', () => {
   const schema = `
     export const HELLOADA_CONTENT_CONTRACT_VERSION = 'helloada-content-v3'
-    export const HELLOADA_CORE_VERSION = '0.5.6'
-    export const HELLOADA_SCHEMA_REVISION = 6
+    export const HELLOADA_CORE_VERSION = '0.5.7'
+    export const HELLOADA_SCHEMA_REVISION = 7
   `
   assert.deepEqual(readSchemaReleaseMetadata(schema), {
     contentContract: 'helloada-content-v3',
-    coreVersion: '0.5.6',
-    schemaRevision: 6,
+    coreVersion: '0.5.7',
+    schemaRevision: 7,
   })
 })
 
@@ -20,7 +20,7 @@ test('release metadata fails closed when a schema constant is absent or invalid'
   assert.throws(() => readSchemaReleaseMetadata("export const HELLOADA_CONTENT_CONTRACT_VERSION = 'helloada-content-v3'"), /HELLOADA_CORE_VERSION/)
   assert.throws(() => readSchemaReleaseMetadata(`
     export const HELLOADA_CONTENT_CONTRACT_VERSION = 'helloada-content-v3'
-    export const HELLOADA_CORE_VERSION = '0.5.6'
+    export const HELLOADA_CORE_VERSION = '0.5.7'
     export const HELLOADA_SCHEMA_REVISION = 0
   `), /invalid schema revision/)
 })

@@ -9,6 +9,7 @@ from site_agent.credentials import (
     cloudflare_email_api_token,
     github_remote,
     github_ssh_command,
+    resend_api_key,
 )
 
 
@@ -39,6 +40,27 @@ def test_email_profiles_never_fall_back_to_the_general_cloudflare_token():
     assert cloudflare_email_api_token({}, env) == "email-token"
     assert cloudflare_dns_api_token({}, {"CLOUDFLARE_API_TOKEN": "worker-management-token"}) == ""
     assert cloudflare_email_api_token({}, {"CLOUDFLARE_API_TOKEN": "worker-management-token"}) == ""
+
+
+def test_resend_management_key_uses_the_configured_host_env_file_and_name(tmp_path):
+    env_file = tmp_path / "helloada-resend.env"
+    env_file.write_text("RESEND_API=resend-management-secret\n", encoding="utf-8")
+    config = {
+        "credentials": {
+            "resend": {
+                "api_key_env": "RESEND_API",
+                "env_file": str(env_file),
+            },
+        },
+    }
+
+    resolved = credential_environment(config, {})
+    status = credential_status(config, {})
+
+    assert resend_api_key(config, resolved) == "resend-management-secret"
+    assert status["resend"]["api_key_env"] == "RESEND_API"
+    assert status["resend"]["api_key_configured"] is True
+    assert "resend-management-secret" not in str(status)
 
 
 def test_canonical_profile_file_is_loaded_once_with_explicit_overrides(tmp_path):

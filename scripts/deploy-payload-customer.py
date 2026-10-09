@@ -848,6 +848,12 @@ def tenant_runtime_secrets(manifest: dict[str, Any], tenant: str) -> dict[str, s
             "PAYLOAD_SECRET": values["PAYLOAD_SECRET"],
             worker_token_env: values[tenant_token_env(tenant)],
         }
+        if bool(values.get("RESEND_API_KEY")) != bool(values.get("RESEND_API_KEY_ID")):
+            raise ValueError("registered tenant Resend sender credential is incomplete")
+        if bool(values.get("RESEND_API_KEY")) != bool(values.get("RESEND_API_KEY_DOMAIN_ID")):
+            raise ValueError("registered tenant Resend sender key is not bound to an exact domain")
+        if values.get("RESEND_API_KEY"):
+            result["RESEND_API_KEY"] = values["RESEND_API_KEY"]
         if values.get("HELLOADA_TURNSTILE_SECRET_KEY"):
             result["HELLOADA_TURNSTILE_SECRET_KEY"] = values["HELLOADA_TURNSTILE_SECRET_KEY"]
         return result

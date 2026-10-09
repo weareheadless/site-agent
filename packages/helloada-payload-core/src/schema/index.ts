@@ -2,8 +2,8 @@ import { JWTAuthentication } from 'payload'
 import type { Block, CollectionConfig, GlobalConfig } from 'payload'
 
 export const HELLOADA_CONTENT_CONTRACT_VERSION = 'helloada-content-v3'
-export const HELLOADA_CORE_VERSION = '0.5.6'
-export const HELLOADA_SCHEMA_REVISION = 6
+export const HELLOADA_CORE_VERSION = '0.5.7'
+export const HELLOADA_SCHEMA_REVISION = 7
 
 export const validateHelloAdaLink = (value: unknown): true | string => {
   if (typeof value !== 'string' || !value.trim()) return 'Enter a destination for this link.'
@@ -371,6 +371,14 @@ const sectionBlocks: Block[] = [
       { name: 'form', type: 'relationship' as const, relationTo: 'contactForms' as const, required: true, label: 'Form' },
     ],
   },
+  {
+    slug: 'helloAdaBooking', labels: { singular: 'Booking calendar', plural: 'Booking calendars' },
+    fields: [
+      { name: 'key', type: 'text' as const, required: true, admin: { readOnly: true }, label: 'Stable content ID' },
+      { name: 'label', type: 'text' as const, required: true, label: 'What this booking is for' },
+      { name: 'appointmentType', type: 'relationship' as const, relationTo: 'appointmentTypes' as const, required: true, label: 'Appointment type' },
+    ],
+  },
 ]
 
 const contentBlockSlugs = sectionBlocks.map((block) => block.slug)
@@ -380,8 +388,8 @@ const supportedContentBlocks = new Set(contentBlockSlugs)
 export const HELLOADA_CAPABILITIES = {
   contract: HELLOADA_CONTENT_CONTRACT_VERSION,
   schemaRevision: HELLOADA_SCHEMA_REVISION,
-  collections: ['pages', 'posts', 'postCategories', 'products', 'productCategories', 'media', 'contactForms', 'contacts', 'conversations', 'messages', 'messageOperations'],
-  globals: ['siteSettings', 'navigation', 'messageMailbox'],
+  collections: ['pages', 'posts', 'postCategories', 'products', 'productCategories', 'media', 'contactForms', 'appointmentTypes', 'calendarEvents', 'calendarSlotLocks', 'contacts', 'conversations', 'messages', 'messageOperations'],
+  globals: ['siteSettings', 'navigation', 'messageMailbox', 'calendarSettings'],
   contentBlocks: contentBlockSlugs,
 } as const
 
@@ -707,6 +715,86 @@ export const createContactFormsCollection = (): CollectionConfig => ({
   },
 })
 
+export const createAppointmentTypesCollection = (): CollectionConfig => ({
+  slug: 'appointmentTypes',
+  admin: { useAsTitle: 'name', defaultColumns: ['name', 'durationMinutes', 'enabled', 'updatedAt'] },
+  versions: { drafts: true, maxPerDoc: 20 },
+  access: privateOwnerAccess,
+  fields: [
+    { name: 'name', type: 'text', required: true, localized: true, label: 'Appointment name' },
+    { name: 'slug', type: 'text', required: true, unique: true, label: 'Appointment ID' },
+    { name: 'description', type: 'textarea', localized: true, label: 'Description' },
+    { name: 'durationMinutes', type: 'number', required: true, min: 10, max: 480, defaultValue: 30, label: 'Duration (minutes)' },
+    { name: 'bufferMinutes', type: 'number', min: 0, max: 120, defaultValue: 0, label: 'Buffer between bookings (minutes)' },
+    { name: 'weeklyAvailability', type: 'array', maxRows: 42, label: 'Weekly availability', fields: [
+      { name: 'day', type: 'select', required: true, options: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] },
+      { name: 'startTime', type: 'text', required: true, label: 'Start (HH:MM)' },
+      { name: 'endTime', type: 'text', required: true, label: 'End (HH:MM)' },
+  ] },
+  { name: 'enabled', type: 'checkbox', defaultValue: false, label: 'Accept bookings' },
+  ],
+  hooks: { beforeValidate: [async ({ data, originalDoc }) => {
+    const rawAvailability = data?.weeklyAvailability ?? originalDoc?.weeklyAvailability
+    const intervals = Array.isArray(rawAvailability) ? rawAvailability as Array<Record<string, unknown>> : []
+    const byDay = new Map<string, Array<{ start: string; end: string }>>()
+    for (const interval of intervals) {
+      for (const field of ['startTime', 'endTime']) {
+        if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(String(interval[field] || ''))) throw new Error('Availability times must use 24-hour HH:MM format.')
+      }
+      if (String(interval.startTime) >= String(interval.endTime)) throw new Error('An availability end time must be later than its start time.')
+      const day = String(interval.day || '')
+      const dayIntervals = byDay.get(day) || []
+      if (dayIntervals.some((existing) => String(interval.startTime) < existing.end && String(interval.endTime) > existing.start)) {
+        throw new Error('Availability periods on the same day cannot overlap.')
+      }
+      dayIntervals.push({ start: String(interval.startTime), end: String(interval.endTime) })
+      byDay.set(day, dayIntervals)
+    }
+    if ((data?.enabled ?? originalDoc?.enabled) === true && intervals.length === 0) throw new Error('Add at least one availability period before accepting bookings.')
+    for (const field of ['durationMinutes', 'bufferMinutes']) {
+      const fallback = originalDoc?.[field] ?? (field === 'durationMinutes' ? 30 : 0)
+      const value = Number(data?.[field] ?? fallback)
+      if (!Number.isInteger(value) || value % 5 !== 0) throw new Error('Appointment duration and buffer must use five-minute increments.')
+    }
+    return data
+  }] },
+})
+
+export const createCalendarEventsCollection = (): CollectionConfig => ({
+  slug: 'calendarEvents',
+  admin: { useAsTitle: 'title', defaultColumns: ['title', 'startsAt', 'state'], hidden: true },
+  access: serviceOwnedAccess,
+  fields: [
+    { name: 'title', type: 'text', required: true, access: { update: serviceOnly } },
+    { name: 'appointmentType', type: 'relationship', relationTo: 'appointmentTypes', required: true, access: { update: serviceOnly } },
+    { name: 'contact', type: 'relationship', relationTo: 'contacts', required: true, access: { update: serviceOnly } },
+    { name: 'startsAt', type: 'date', required: true, index: true, access: { update: serviceOnly } },
+    { name: 'endsAt', type: 'date', required: true, access: { update: serviceOnly } },
+    { name: 'bufferMinutes', type: 'number', min: 0, max: 120, access: { update: serviceOnly } },
+    { name: 'timeZone', type: 'text', required: true, access: { update: serviceOnly } },
+    { name: 'state', type: 'select', required: true, defaultValue: 'confirmed', options: ['confirmed', 'cancelled', 'rescheduled'], access: { update: serviceOnly } },
+    { name: 'sourcePage', type: 'text', access: { update: serviceOnly } },
+    { name: 'receiptId', type: 'text', required: true, unique: true, index: true, access: { update: serviceOnly } },
+    { name: 'answers', type: 'json', access: { update: serviceOnly } },
+    { name: 'consentAcceptedAt', type: 'date', access: { update: serviceOnly } },
+    { name: 'notificationState', type: 'select', defaultValue: 'pending', options: ['pending', 'accepted', 'failed', 'uncertain'], access: { update: serviceOnly } },
+  ],
+})
+
+/** Short-lived unique reservations prevent two Workers from confirming the
+ * same five-minute interval concurrently. Confirmed calendarEvents become the
+ * durable availability source; reservations are removed after materializing. */
+export const createCalendarSlotLocksCollection = (): CollectionConfig => ({
+  slug: 'calendarSlotLocks',
+  admin: { useAsTitle: 'slotKey', hidden: true },
+  access: serviceOwnedAccess,
+  fields: [
+    { name: 'slotKey', type: 'text', required: true, unique: true, index: true, access: { update: serviceOnly } },
+    { name: 'operationId', type: 'text', required: true, index: true, access: { update: serviceOnly } },
+    { name: 'expiresAt', type: 'date', required: true, index: true, access: { update: serviceOnly } },
+  ],
+})
+
 export const createContactsCollection = (): CollectionConfig => ({
   slug: 'contacts',
   admin: { useAsTitle: 'name', defaultColumns: ['name', 'email', 'source', 'updatedAt'], hidden: true },
@@ -723,7 +811,7 @@ export const createContactsCollection = (): CollectionConfig => ({
     { name: 'phone', type: 'text', access: { update: ownerCanWrite } },
     { name: 'company', type: 'text', access: { update: ownerCanWrite } },
     { name: 'notes', type: 'textarea', access: { update: ownerCanWrite } },
-    { name: 'source', type: 'select', required: true, options: ['form', 'email', 'owner'], access: { update: serviceOnly } },
+    { name: 'source', type: 'select', required: true, options: ['form', 'email', 'owner', 'booking'], access: { update: serviceOnly } },
     { name: 'lastSeenAt', type: 'date', access: { update: serviceOnly } },
   ],
 })
@@ -743,9 +831,9 @@ export const createConversationsCollection = (): CollectionConfig => ({
     { name: 'participantEmail', type: 'email', required: true, access: { update: serviceOnly } },
     { name: 'mailboxKey', type: 'text', required: true, index: true, admin: { hidden: true }, access: { update: serviceOnly } },
     { name: 'threadKey', type: 'text', required: true, unique: true, index: true, admin: { hidden: true }, access: { update: serviceOnly } },
-    { name: 'state', type: 'select', required: true, defaultValue: 'needs_reply', options: ['needs_reply', 'done', 'archived', 'spam'], access: { update: ownerCanWrite } },
+    { name: 'state', type: 'select', required: true, defaultValue: 'needs_reply', options: ['needs_reply', 'done', 'archived', 'spam', 'trash'], access: { update: ownerCanWrite } },
     { name: 'unread', type: 'checkbox', defaultValue: true, access: { update: ownerCanWrite } },
-    { name: 'source', type: 'select', required: true, options: ['form', 'email'], access: { update: serviceOnly } },
+    { name: 'source', type: 'select', required: true, options: ['form', 'email', 'owner', 'booking'], access: { update: serviceOnly } },
     { name: 'sourcePage', type: 'text', access: { update: serviceOnly } },
     { name: 'lastActivityAt', type: 'date', required: true, access: { update: serviceOnly } },
     { name: 'lastMessagePreview', type: 'textarea', maxLength: 500, access: { update: serviceOnly } },
@@ -758,9 +846,11 @@ export const createMessagesCollection = (): CollectionConfig => ({
   access: serviceOwnedAccess,
   fields: [
     { name: 'conversation', type: 'relationship', relationTo: 'conversations', required: true, index: true, access: { update: serviceOnly } },
-    { name: 'direction', type: 'select', required: true, options: ['form_enquiry', 'received_email', 'reply'], access: { update: serviceOnly } },
+    { name: 'direction', type: 'select', required: true, options: ['form_enquiry', 'received_email', 'reply', 'owner_message', 'booking_notice'], access: { update: serviceOnly } },
     { name: 'from', type: 'email', access: { update: serviceOnly } },
     { name: 'to', type: 'email', access: { update: serviceOnly } },
+    { name: 'ccRecipients', type: 'json', access: { update: serviceOnly } },
+    { name: 'bccRecipients', type: 'json', access: { update: serviceOnly } },
     { name: 'subject', type: 'text', required: true, access: { update: serviceOnly } },
     { name: 'text', type: 'textarea', required: true, access: { update: serviceOnly } },
     { name: 'draftText', type: 'textarea', access: { update: serviceOnly } },
@@ -787,7 +877,7 @@ export const createMessageOperationsCollection = (): CollectionConfig => ({
   access: serviceOwnedAccess,
   fields: [
     { name: 'operationId', type: 'text', required: true, unique: true, index: true, access: { update: serviceOnly } },
-    { name: 'operationType', type: 'select', required: true, options: ['form_accept', 'inbound_email', 'owner_notification', 'save_draft', 'send_reply'], access: { update: serviceOnly } },
+    { name: 'operationType', type: 'select', required: true, options: ['form_accept', 'inbound_email', 'owner_notification', 'save_draft', 'send_reply', 'send_message', 'book_appointment', 'booking_notification'], access: { update: serviceOnly } },
     { name: 'idempotencyKey', type: 'text', required: true, unique: true, index: true, access: { update: serviceOnly } },
     { name: 'requestHash', type: 'text', required: true, defaultValue: '', index: true, access: { update: serviceOnly } },
     { name: 'state', type: 'select', required: true, defaultValue: 'accepted', options: ['accepted', 'queued', 'processing', 'completed', 'failed', 'uncertain'], access: { update: serviceOnly } },
@@ -808,6 +898,8 @@ export const createMessageMailboxGlobal = (): GlobalConfig => ({
   fields: [
     { name: 'domain', type: 'text', access: { update: serviceOnly } },
     { name: 'address', type: 'email', access: { update: serviceOnly } },
+    { name: 'outboundProvider', type: 'select', defaultValue: 'resend', options: ['resend'], access: { update: serviceOnly } },
+    { name: 'outboundMode', type: 'select', defaultValue: 'transactional_only', options: ['transactional_only', 'business_correspondence'], access: { update: serviceOnly } },
     { name: 'state', type: 'select', required: true, defaultValue: 'domain_required', options: ['domain_required', 'provisioning', 'action_required', 'active', 'failed'], access: { update: serviceOnly } },
     { name: 'statusDetail', type: 'textarea', access: { update: serviceOnly } },
     { name: 'activatedAt', type: 'date', access: { update: serviceOnly } },
@@ -818,6 +910,18 @@ export const createMessageMailboxGlobal = (): GlobalConfig => ({
     { name: 'notificationCodeExpiresAt', type: 'date', admin: { hidden: true }, access: { update: serviceOnly } },
     { name: 'notificationCodeSentAt', type: 'date', admin: { hidden: true }, access: { update: serviceOnly } },
     { name: 'notificationCodeAttempts', type: 'number', defaultValue: 0, admin: { hidden: true }, access: { update: serviceOnly } },
+  ],
+})
+
+export const createCalendarSettingsGlobal = (): GlobalConfig => ({
+  slug: 'calendarSettings',
+  admin: { hidden: true },
+  access: { read: ownerCanRead, update: ownerCanWrite },
+  fields: [
+    { name: 'enabled', type: 'checkbox', defaultValue: false, label: 'Offer online bookings' },
+    { name: 'timeZone', type: 'text', required: true, label: 'Business time zone' },
+    { name: 'minimumNoticeHours', type: 'number', min: 0, max: 8760, defaultValue: 24, label: 'Minimum booking notice (hours)' },
+    { name: 'bookingWindowDays', type: 'number', min: 1, max: 365, defaultValue: 60, label: 'How far ahead visitors can book (days)' },
   ],
 })
 
@@ -1148,12 +1252,15 @@ export const createHelloAdaSchema = (guard: NativeWriteGuard) => ({
     createProductCategoriesCollection(guard),
     Media,
     createContactFormsCollection(),
+    createAppointmentTypesCollection(),
+    createCalendarEventsCollection(),
+    createCalendarSlotLocksCollection(),
     createContactsCollection(),
     createConversationsCollection(),
     createMessagesCollection(),
     createMessageOperationsCollection(),
   ],
-  globals: [createSiteSettingsGlobal(guard), createNavigationGlobal(guard), createMessageMailboxGlobal()],
+  globals: [createSiteSettingsGlobal(guard), createNavigationGlobal(guard), createMessageMailboxGlobal(), createCalendarSettingsGlobal()],
 })
 
 /**

@@ -235,6 +235,23 @@ class CloudflareEmailClient:
     def delete_dns_record(self, zone_id: str, record_id: str) -> None:
         self.request("DELETE", f"/zones/{urllib.parse.quote(zone_id, safe='')}/dns_records/{urllib.parse.quote(record_id, safe='')}")
 
+    def create_dns_record(self, zone_id: str, record: Mapping[str, Any]) -> dict[str, Any]:
+        record_type = str(record.get("type") or "").upper()
+        name = str(record.get("name") or "").strip().lower().rstrip(".")
+        content = str(record.get("content") or "").strip()
+        if record_type not in {"TXT", "MX", "CNAME"} or not name or not content:
+            raise CloudflareEmailError("The requested DNS record is incomplete or unsupported")
+        body: dict[str, Any] = {"type": record_type, "name": name, "content": content, "ttl": 1}
+        if record_type == "MX":
+            body["priority"] = int(record.get("priority") or 10)
+        if record_type == "CNAME":
+            body["proxied"] = False
+        return dict(self.request(
+            "POST",
+            f"/zones/{urllib.parse.quote(zone_id, safe='')}/dns_records",
+            body,
+        ).get("result") or {})
+
     def upsert_dns_txt(self, zone_id: str, record: Mapping[str, Any]) -> dict[str, Any]:
         name = str(record.get("name") or "")
         existing = [item for item in self.dns_records(zone_id) if item.get("type") == "TXT" and item.get("name") == name]

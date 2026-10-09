@@ -131,6 +131,17 @@ VPS release/migration contract. Do not report production readiness until the
 plan's OceanicVibes and Atelier live evidence, provisioning, licensing and
 authenticated-browser gates are complete.
 
+For the expanded HelloAda mailbox and optional booking calendar, also follow
+`docs/helloada-mailbox-calendar-contract.md`. Forms become Inbox conversations;
+bookings become Calendar events linked to the same Contact and mailbox thread.
+Calendar records and public availability are tenant-scoped, and booking
+confirmation is transactional. Do not enable general one-to-one New Message
+sending until the sender domain is verified and the Resend tenant key is
+installed. Resend is the approved provider for owner-approved one-to-one
+correspondence. Cloudflare Email Service remains the inbound route and
+transactional binding; it is not the ordinary-mail sender. This feature does
+not add a second mailbox store, calendar provider, or customer-local schema.
+
 Domain email uses the same registered-tenant lifecycle as GA4/GSC. Workspace
 bootstrap enables automatic reconciliation with the `hello` local part;
 custom-origin tenants derive their email domain from the registered custom
@@ -139,9 +150,12 @@ remains `domain_required`; fully automatic shared-domain assignment for every
 new workspace is still the separately tracked phase-two work. The shared
 tenant scheduler retries readiness and transient failures hourly after
 bootstrap/deployment. The API adapter is the only path that changes Cloudflare
-Email Service/DNS. Unknown MX/SPF/routing state is a hard stop; do not click
-through Cloudflare or substitute another provider. For one existing tenant,
-run `site-agent provision-email --tenant <registered-id>` first (read only),
+Email Service/DNS or Resend domains/keys. Unknown MX/SPF/routing state is a
+hard stop; do not click through Cloudflare or substitute another provider.
+The protected host Resend management key provisions verified sender domains
+and domain-restricted `sending_access` keys; only each tenant's restricted
+sending key is installed in its Worker. For one existing tenant, run
+`site-agent provision-email --tenant <registered-id>` first (read only),
 inspect its domain/address/operation summary, then use `--apply` to persist
 the tenant setting and perform the reviewed plan. The command resolves
 tenant identity only from `provisioned_root/tenants.json`; it accepts no

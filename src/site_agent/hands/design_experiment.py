@@ -197,7 +197,7 @@ def _validate_managed_payload_scaffold(root: Path) -> None:
     core_version = str(manifest.get("payloadCore") or "") if isinstance(manifest, dict) else ""
     if (
         not isinstance(manifest, dict)
-        or manifest.get("templateSchema") != 4
+        or manifest.get("templateSchema") != 7
         or not re.fullmatch(r"helloada-content-v\d+", str(manifest.get("contentContract") or ""))
         or not re.fullmatch(r"\d+\.\d+\.\d+", admin_version)
         or not re.fullmatch(r"\d+\.\d+\.\d+", core_version)

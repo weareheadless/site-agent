@@ -12,7 +12,7 @@ export const helloAdaSite = defineHelloAdaSite({
   locales: ['en'],
   routes: { workspaceApi: '/api/helloada', liveSite: '/' },
   content: { primaryCollections: ['pages', 'posts', 'products', 'media'], settingsGlobals: ['siteSettings', 'navigation'] },
-  features: { commerce: false, posts: true, social: false },
+  features: { commerce: false, posts: true, social: false, bookings: false },
 })
 
 setHelloAdaSite(helloAdaSite)

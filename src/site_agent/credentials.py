@@ -100,7 +100,7 @@ def credential_environment(
     root_file = str(profiles.get("env_file") or "").strip()
     if root_file:
         paths.append(root_file)
-    for name in ("github", "cloudflare", "cloudflare_dns", "cloudflare_email", "crawlseo"):
+    for name in ("github", "cloudflare", "cloudflare_dns", "cloudflare_email", "crawlseo", "resend"):
         path = str(credential_profile(config, name).get("env_file") or "").strip()
         if path:
             paths.append(path)
@@ -219,6 +219,13 @@ def cloudflare_email_api_token(config: Mapping[str, Any] | None, env: Mapping[st
     return _profile_api_token(config, env, "cloudflare_email", "CLOUDFLARE_EMAIL_API_TOKEN")
 
 
+def resend_api_key(config: Mapping[str, Any] | None, env: Mapping[str, str] | None = None) -> str:
+    """Resolve the protected Resend management credential used only by provisioning."""
+    profile = credential_profile(config, "resend")
+    key_name = _valid_env_name(profile.get("api_key_env"), "RESEND_API")
+    return credential_environment(config, env).get(key_name, "")
+
+
 def github_api_token(config: Mapping[str, Any] | None, env: Mapping[str, str] | None = None) -> str:
     """Resolve the trusted GitHub API token from the shared profile."""
     return credential_environment(config, env).get(github_api_token_env(config), "")
@@ -243,6 +250,10 @@ def credential_status(
     dns_file = str(dns_profile.get("env_file") or "").strip()
     dns_file_path = Path(dns_file).expanduser() if dns_file else None
     dns_token_name = _valid_env_name(dns_profile.get("api_token_env"), "CLOUDFLARE_DNS_API_TOKEN")
+    resend_profile = credential_profile(config, "resend")
+    resend_file = str(resend_profile.get("env_file") or "").strip()
+    resend_file_path = Path(resend_file).expanduser() if resend_file else None
+    resend_key_name = _valid_env_name(resend_profile.get("api_key_env"), "RESEND_API")
     profile_path = credential_profile_file(config)
     return {
         "profile_file": str(profile_path) if profile_path else "",
@@ -275,6 +286,12 @@ def credential_status(
             "api_token_env": dns_token_name,
             "api_token_configured": bool(resolved.get(dns_token_name)),
         },
+        "resend": {
+            "env_file_configured": bool(resend_file),
+            "env_file_available": bool(resend_file_path and resend_file_path.is_file()),
+            "api_key_env": resend_key_name,
+            "api_key_configured": bool(resolved.get(resend_key_name)),
+        },
     }
 
 
@@ -283,6 +300,7 @@ __all__ = [
     "cloudflare_api_token",
     "cloudflare_dns_api_token",
     "cloudflare_email_api_token",
+    "resend_api_key",
     "credential_environment",
     "credential_profile_file",
     "credential_profile",
