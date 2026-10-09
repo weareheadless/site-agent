@@ -521,6 +521,35 @@ def _email_provisioning(context: dict[str, Any]) -> dict[str, str]:
     return {"status": "pending" if state.get("state") in {"domain_required", "waiting_for_worker_release"} else "ok"}
 
 
+def register_email_provisioning_job(
+    scheduler: Scheduler,
+    config: Mapping[str, Any],
+    context: dict[str, Any],
+    schedule: str | int | dict[str, Any] | None = None,
+) -> bool:
+    """Register tenant email setup and persist its initial due time if absent."""
+    if not _email_provisioning_enabled(config):
+        return False
+    if any(name == "email_provisioning" for name, _spec, _fn in scheduler.jobs):
+        return True
+    scheduler.job(
+        "email_provisioning",
+        schedule if schedule is not None else _JOB_DEFAULTS["email_provisioning"],
+        lambda: _email_provisioning(context),
+    )
+    next_run_key = "next_run:email_provisioning"
+    next_run = scheduler.memory.kv_get(next_run_key)
+    last_run = scheduler.memory.kv_get("last_run:email_provisioning")
+    state = scheduler.memory.kv_get("email_provisioning_state", {})
+    needs_initial_run = (
+        last_run is None
+        and not (isinstance(state, Mapping) and state.get("state") == "active")
+    )
+    if not isinstance(next_run, (int, float)) or needs_initial_run:
+        scheduler.memory.kv_set(next_run_key, round(scheduler.clock(), 3))
+    return True
+
+
 def _strategist(context: dict[str, Any]) -> None:
     from ..brain.strategist import run as strategist_run
 
@@ -548,9 +577,15 @@ def register_growth_jobs(scheduler: Scheduler, config: dict[str, Any], context: 
     if not (site.get("website_present") and (site.get("payload") or {}).get("enabled")):
         return False
     settings = config.get("scheduler") or {}
-    if not settings.get("enabled"):
-        return True  # Explicit operational pause: never activate a legacy producer.
     overrides = settings.get("schedule") or {}
+    register_email_provisioning_job(
+        scheduler,
+        config,
+        context,
+        overrides.get("email_provisioning", _JOB_DEFAULTS["email_provisioning"]),
+    )
+    if not settings.get("enabled"):
+        return True  # Explicit pause for growth work; email bootstrap remains operational.
     schedules = {
         "growth_initial": {"every": "daily", "at": "07:00"},
         "growth_daily": {"every": "daily", "at": "07:30"},
@@ -575,8 +610,6 @@ def register_growth_jobs(scheduler: Scheduler, config: dict[str, Any], context: 
     maintenance = []
     if _seo_provisioning_enabled(config):
         maintenance.append(("seo_provisioning", {"every": "6h"}, lambda: _seo_provisioning(context)))
-    if _email_provisioning_enabled(config):
-        maintenance.append(("email_provisioning", _JOB_DEFAULTS["email_provisioning"], lambda: _email_provisioning(context)))
     if context.get("llm") is not None:
         maintenance.append(("seo_outcomes", {"every": "daily", "at": "13:00"}, lambda: _with_persona(context, brain_seo_outcomes.run, "seo_outcomes")))
     for name, spec, operation in maintenance:
@@ -597,9 +630,14 @@ def register_jobs(scheduler: Scheduler, config: dict[str, Any], context: dict[st
     if register_growth_jobs(scheduler, config, context):
         return
     settings = config.get("scheduler") or {}
-    if not isinstance(settings, dict) or not bool(settings.get("enabled", False)):
-        return
+    if not isinstance(settings, dict):
+        settings = {}
     schedule = settings.get("schedule") if isinstance(settings.get("schedule"), dict) else {}
+    register_email_provisioning_job(
+        scheduler, config, context, schedule.get("email_provisioning", _JOB_DEFAULTS["email_provisioning"])
+    )
+    if not bool(settings.get("enabled", False)):
+        return
     scheduler.job(
         "growth_reconciler",
         schedule.get("growth_reconciler", _JOB_DEFAULTS["growth_reconciler"]),
@@ -619,12 +657,6 @@ def register_jobs(scheduler: Scheduler, config: dict[str, Any], context: dict[st
             "seo_provisioning",
             schedule.get("seo_provisioning", {"every": "6h"}),
             lambda: _seo_provisioning(context),
-        )
-    if _email_provisioning_enabled(config):
-        scheduler.job(
-            "email_provisioning",
-            schedule.get("email_provisioning", _JOB_DEFAULTS["email_provisioning"]),
-            lambda: _email_provisioning(context),
         )
     if context.get("payload_gateway") is not None:
         _mirror_article_drafts(context)
@@ -710,6 +742,7 @@ def register_builtin(scheduler: Scheduler, config: dict[str, Any], context: dict
         scheduler.job("health_check", _spec(config, "health_check"), lambda: maintenance.health_check(context))
         scheduler.job("backup", _spec(config, "backup"), lambda: maintenance.backup_data(context))
         return
+    register_email_provisioning_job(scheduler, config, context, _spec(config, "email_provisioning"))
     scheduler.job("heartbeat", _spec(config, "heartbeat"), lambda: _heartbeat(context))
     scheduler.job("growth_reconciler", _spec(config, "growth_reconciler"), lambda: run_growth_reconciler(context))
     scheduler.job("health_check", _spec(config, "health_check"), lambda: maintenance.health_check(context))
@@ -752,8 +785,6 @@ def register_builtin(scheduler: Scheduler, config: dict[str, Any], context: dict
         scheduler.job("seo_outcomes", _spec(config, "seo_outcomes"), lambda: brain_seo_outcomes.run(context))
     if _seo_provisioning_enabled(config):
         scheduler.job("seo_provisioning", _spec(config, "seo_provisioning"), lambda: _seo_provisioning(context))
-    if _email_provisioning_enabled(config):
-        scheduler.job("email_provisioning", _spec(config, "email_provisioning"), lambda: _email_provisioning(context))
     scheduler.job("reindex_memory", _spec(config, "reindex_memory"), lambda: _reindex_memory(context))
     scheduler.job("backup", _spec(config, "backup"), lambda: maintenance.backup_data(context))
 

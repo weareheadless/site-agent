@@ -139,12 +139,17 @@ def test_builtin_registry_retries_email_after_customer_worker_release(tmp_path):
     config = _config(subreddits=[])
     config["scheduler"] = {"enabled": True}
     config["messages"] = {"email": {"enabled": True, "local_part": "hello", "provisioning": {"auto": True}}}
-    memory, _clock, scheduler = _runtime(tmp_path, config)
+    memory = Memory(tmp_path / "memory.db")
+    clock = FakeClock()
+    memory.kv_set("next_run:email_provisioning", clock() + 3600)
+    scheduler = Scheduler(memory, lock_path=tmp_path / "lock", clock=clock)
+    register_builtin(scheduler, config, {"config": config, "memory": memory})
 
     jobs_by_name = {name: spec for name, spec, _fn in scheduler.jobs}
 
     assert "email_provisioning" in jobs_by_name
     assert jobs_by_name["email_provisioning"]["interval_seconds"] == 3600
+    assert memory.kv_get("next_run:email_provisioning") == clock()
     memory.close()
 
 

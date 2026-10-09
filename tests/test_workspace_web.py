@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest import mock
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import pytest
@@ -14,6 +17,7 @@ from site_agent.application.workspace import (
 )
 from site_agent.application.intake_coordinator import IntakeCoordinator
 from site_agent.core.memory import Memory
+from site_agent.core.scheduler import Scheduler
 from site_agent.core.design_contracts import SiteIntake
 from site_agent.core.design_intake_contracts import DesignIntakeDraft
 from site_agent.config import ConfigError
@@ -86,6 +90,68 @@ def test_shared_host_credentials_are_inherited_by_tenants(tmp_path, api_key):
         assert credentials["cloudflare"]["api_token_env"] == "CF_TOKEN"
     finally:
         registry.close()
+
+
+def test_registry_construction_does_not_call_email_providers(monkeypatch, tmp_path):
+    tenant_config = tmp_path / "websites" / "demo" / "config.yaml"
+    tenant_config.parent.mkdir(parents=True)
+    tenant_config.write_text(
+        f"instance_name: demo\n"
+        f"data_dir: {tmp_path / 'data'}\n"
+        "site:\n  website_present: false\n"
+        "messages:\n  email:\n    enabled: true\n    provisioning:\n      auto: true\n",
+        encoding="utf-8",
+    )
+    provision = mock.Mock()
+    monkeypatch.setattr("site_agent.application.email_bootstrap.auto_provision_email", provision)
+
+    registry = TenantRegistry.from_config(
+        {
+            "workspace_api": {
+                "enabled": True,
+                "tenants": {
+                    "demo": {
+                        "config_path": str(tenant_config),
+                        "api_token_env": "PROVISIONED_DEMO_TOKEN",
+                    }
+                },
+            }
+        },
+        {"PROVISIONED_DEMO_TOKEN": "tenant-private-token"},
+        _allow_internal_tenant_spec=True,
+    )
+    try:
+        assert "demo" in registry.tenants
+        provision.assert_not_called()
+    finally:
+        registry.close()
+
+
+def test_email_provisioning_starts_on_tenant_scheduler_when_general_scheduler_is_disabled(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    scheduler = Scheduler(memory, lock_path=tmp_path / "scheduler.lock", clock=lambda: 1234.5)
+    scheduler.run_forever = lambda *, poll_seconds, stop_event: None
+    config = {
+        "scheduler": {"enabled": False},
+        "messages": {"email": {"enabled": True, "provisioning": {"auto": True}}},
+    }
+    tenant = SimpleNamespace(
+        tenant_id="demo",
+        config=config,
+        memory=memory,
+        runtime=SimpleNamespace(scheduler=scheduler),
+        context={"tenant_id": "demo", "config": config, "memory": memory, "tenant_config_path": str(tmp_path / "config.yaml")},
+        scheduler_thread=None,
+        scheduler_stop=None,
+    )
+
+    TenantRegistry._start_scheduler(tenant)
+    tenant.scheduler_thread.join(timeout=1)
+
+    assert [name for name, _spec, _fn in scheduler.jobs] == ["email_provisioning"]
+    assert memory.kv_get("next_run:email_provisioning") == 1234.5
+    assert tenant.scheduler_thread is not None and not tenant.scheduler_thread.is_alive()
+    memory.close()
 
 
 def test_registry_reuses_loaded_payload_client_for_source_adapter(tmp_path):

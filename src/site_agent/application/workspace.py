@@ -352,21 +352,6 @@ class TenantRegistry:
                             {"state": "error", "error": str(exc)[:500]},
                         )
                         seo_state = memory.kv_get("seo_provisioning_state", {}) or {}
-                try:
-                    from .email_bootstrap import auto_provision_email
-
-                    auto_provision_email(
-                        tenant_config,
-                        tenant_id=tenant_id,
-                        tenant_config_path=config_path,
-                        memory=memory,
-                        env=tenant_env,
-                    )
-                except Exception as exc:  # noqa: BLE001 - email setup has its own durable, retryable tenant state
-                    memory.kv_set(
-                        "email_provisioning_state",
-                        {"state": "failed", "tenant": tenant_id, "error": str(exc)[:500]},
-                    )
                 scheduler = Scheduler(
                     memory,
                     lock_path=data_dir / "scheduler.lock",
@@ -863,14 +848,25 @@ class TenantRegistry:
 
     @staticmethod
     def _start_scheduler(tenant: Tenant) -> None:
-        """Start the reusable reading/editorial loop for an opted-in tenant."""
+        """Start tenant maintenance jobs without blocking API startup on providers."""
         settings = tenant.config.get("scheduler") or {}
-        if not isinstance(settings, Mapping) or not bool(settings.get("enabled", False)):
-            return
-        from ..core.jobs import register_jobs
+        settings = settings if isinstance(settings, Mapping) else {}
+        scheduler = tenant.runtime.scheduler
+        if bool(settings.get("enabled", False)):
+            from ..core.jobs import register_jobs
 
-        register_jobs(tenant.runtime.scheduler, tenant.config, tenant.context)
-        if not tenant.runtime.scheduler.jobs:
+            register_jobs(scheduler, tenant.config, tenant.context)
+        else:
+            from ..core.jobs import register_email_provisioning_job
+
+            schedule = settings.get("schedule") if isinstance(settings.get("schedule"), Mapping) else {}
+            register_email_provisioning_job(
+                scheduler,
+                tenant.config,
+                tenant.context,
+                schedule.get("email_provisioning"),
+            )
+        if not scheduler.jobs:
             return
         stop_event = threading.Event()
         try:
@@ -880,7 +876,7 @@ class TenantRegistry:
 
         def run() -> None:
             try:
-                tenant.runtime.scheduler.run_forever(poll_seconds=poll_seconds, stop_event=stop_event)
+                scheduler.run_forever(poll_seconds=poll_seconds, stop_event=stop_event)
             except Exception as exc:  # noqa: BLE001 — one tenant must not take down the API
                 try:
                     tenant.memory.record_action("scheduler_error", str(exc)[:500])
