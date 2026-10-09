@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261009-api-email-tenant-secret-path-1",
-    "sha": "749374bd1d7d2c640e25e17469eebc044b8c042b"
+    "id": "20261009-api-email-scheduler-nonblocking-1",
+    "sha": "52872e5332a2b7dd27b2a6491d073522d3c8a8f7"
   }
 }
