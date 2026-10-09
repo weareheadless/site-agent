@@ -1,7 +1,7 @@
 {
   "templateSchema": 7,
   "workspaceApi": "v1",
-  "payloadAdmin": "0.10.3",
+  "payloadAdmin": "0.10.4",
   "payloadCore": "0.5.7",
   "schemaRevision": 7,
   "contentContract": "helloada-content-v3",
@@ -34,9 +34,9 @@
     {
       "name": "20261009_123644_helloada_mailbox_calendar",
       "fileSha256": "c4127ef09482f61d2f545491e1fad6f172ea6ffe19400ebebdc071a2f4eac9bd",
-      "snapshotSha256": "8de93eda2a778d410e99d5fbcf1e48a351e569205c65896f5a97efdf159dfcf8"
+      "snapshotSha256": "a25c9738d035539529512ed3cbc8b063b71565debf4798daa24e55040c211b31"
     }
   ],
-  "migrationHead": "db45bb7215e026ec272e45e6db82e344f3ebb615dd792ac65acc4e3295035918",
+  "migrationHead": "63a934836e0868ac7cdea4716bb9a0935708399567e219bac6346950325deb9a",
   "migrationIndexSha256": "885c15dbc13b6c2b67b801a064678115466daa4fd7e790c82923964a7c087e66"
 }

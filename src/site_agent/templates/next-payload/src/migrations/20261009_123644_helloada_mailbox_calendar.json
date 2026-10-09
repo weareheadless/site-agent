@@ -98,7 +98,7 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "autoincrement": false
+          "autoincrement": false,
           "default": "(strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))"
         },
         "created_at": {
@@ -24039,7 +24039,7 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true,
-          "autoincrement": false,
+          "autoincrement": false
         },
         "minimum_notice_hours": {
           "name": "minimum_notice_hours",

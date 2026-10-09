@@ -18,6 +18,26 @@ def test_canonical_template_migration_chain_is_hash_pinned():
     assert len(manifest["migrationHead"]) == 64
 
 
+def test_canonical_migration_snapshots_are_valid_and_mailbox_precedes_calendar():
+    manifest = json.loads((TEMPLATE / "template-manifest.json").read_text())
+    snapshots = {}
+    for migration in manifest["migrations"]:
+        snapshot_path = TEMPLATE / "src/migrations" / f"{migration['name']}.json"
+        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        assert snapshot.get("dialect") == "sqlite"
+        assert isinstance(snapshot.get("tables"), dict)
+        snapshots[migration["name"]] = snapshot
+
+    owner_handoff = "20261006_061835_helloada_owner_handoff"
+    calendar = "20261009_123644_helloada_mailbox_calendar"
+    names = [migration["name"] for migration in manifest["migrations"]]
+    assert names.index(owner_handoff) < names.index(calendar)
+    mailbox_tables = snapshots[owner_handoff]["tables"]
+    assert {"contacts", "messages", "message_mailbox"} <= mailbox_tables.keys()
+    calendar_tables = snapshots[calendar]["tables"]
+    assert {"appointment_types", "calendar_events", "calendar_slot_locks"} <= calendar_tables.keys()
+
+
 @pytest.mark.parametrize(("name", "valid"), [
     ("20260917_050948", True),
     ("20261004_080109_helloada_shared_schema_additive", True),
