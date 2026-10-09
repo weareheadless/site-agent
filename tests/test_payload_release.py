@@ -564,9 +564,16 @@ def test_worker_queue_consumer_is_created_and_read_back(monkeypatch):
         calls.append((request.get_method(), request.full_url))
         if request.get_method() == "POST":
             assert json.loads(request.data) == desired
-            state[:] = [{**desired, "consumer_id": "c" * 32, "queue_name": CUSTOMER["messagesQueueName"]}]
+            created = {**desired, "consumer_id": "c" * 32, "queue_name": CUSTOMER["messagesQueueName"]}
+            created["script"] = created.pop("script_name")
+            state[:] = [created]
             return Response({"success": True, "result": state[0]})
-        return Response({"success": True, "result": list(state)})
+        if request.full_url.endswith("/consumers/" + "c" * 32):
+            return Response({"success": True, "result": state[0]})
+        listed = [{**item, "script_name": None} for item in state]
+        for item in listed:
+            item.pop("script", None)
+        return Response({"success": True, "result": listed})
 
     monkeypatch.setattr(release.urllib.request, "urlopen", open_url)
     result = release.reconcile_worker_queue_consumer(
@@ -574,7 +581,8 @@ def test_worker_queue_consumer_is_created_and_read_back(monkeypatch):
         {"CLOUDFLARE_ACCOUNT_ID": "account", "CLOUDFLARE_API_TOKEN": "not-printed"},
     )
     assert result["verified"] is True and result["changed"] is True
-    assert [method for method, _url in calls] == ["GET", "POST", "GET"]
+    assert [method for method, _url in calls] == ["GET", "POST", "GET", "GET"]
+    assert calls[-1][1].endswith("/consumers/" + "c" * 32)
 
 
 def test_worker_queue_consumer_updates_only_the_registered_workers_drifted_settings(monkeypatch):
@@ -594,8 +602,9 @@ def test_worker_queue_consumer_updates_only_the_registered_workers_drifted_setti
                      "max_wait_time_ms": 5000, "retry_delay": 30},
         "dead_letter_queue": CUSTOMER["messagesDlqName"],
     }
-    state = [{**desired, "consumer_id": "c" * 32,
+    state = [{**desired, "script": desired["script_name"], "consumer_id": "c" * 32,
               "settings": {**desired["settings"], "max_retries": 3}}]
+    state[0].pop("script_name")
     calls = []
 
     def open_url(request, timeout):
@@ -603,9 +612,15 @@ def test_worker_queue_consumer_updates_only_the_registered_workers_drifted_setti
         if request.get_method() == "PUT":
             assert request.full_url.endswith("/consumers/" + "c" * 32)
             assert json.loads(request.data) == desired
-            state[0] = {**desired, "consumer_id": "c" * 32}
+            state[0] = {**desired, "script": desired["script_name"], "consumer_id": "c" * 32}
+            state[0].pop("script_name")
             return Response({"success": True, "result": state[0]})
-        return Response({"success": True, "result": list(state)})
+        if request.full_url.endswith("/consumers/" + "c" * 32):
+            return Response({"success": True, "result": state[0]})
+        listed = [{**item, "script_name": None} for item in state]
+        for item in listed:
+            item.pop("script", None)
+        return Response({"success": True, "result": listed})
 
     monkeypatch.setattr(release.urllib.request, "urlopen", open_url)
     result = release.reconcile_worker_queue_consumer(
@@ -613,29 +628,55 @@ def test_worker_queue_consumer_updates_only_the_registered_workers_drifted_setti
         {"CLOUDFLARE_ACCOUNT_ID": "account", "CLOUDFLARE_API_TOKEN": "not-printed"},
     )
     assert result["changed"] is True
-    assert [method for method, _url in calls] == ["GET", "PUT", "GET"]
+    assert [method for method, _url in calls] == ["GET", "GET", "PUT", "GET", "GET"]
 
 
 def test_worker_queue_consumer_fails_closed_on_an_unregistered_consumer(monkeypatch):
     class Response:
+        def __init__(self, payload):
+            self.payload = payload
         def __enter__(self):
             return self
         def __exit__(self, *_args):
             return False
         def read(self):
-            return json.dumps({"success": True, "result": [{
-                "consumer_id": "c" * 32, "type": "worker", "script_name": "other-worker",
-            }]}).encode()
+            return json.dumps(self.payload).encode()
 
     calls = []
-    monkeypatch.setattr(release.urllib.request, "urlopen", lambda request, timeout: calls.append(request) or Response())
+    def open_url(request, timeout):
+        calls.append(request)
+        result = {"consumer_id": "c" * 32, "type": "worker", "script": "other-worker"}
+        listed = {"consumer_id": "c" * 32, "type": "worker", "script_name": None}
+        return Response({"success": True, "result": [listed]} if request.full_url.endswith("/consumers")
+                        else {"success": True, "result": result})
+    monkeypatch.setattr(release.urllib.request, "urlopen", open_url)
     with pytest.raises(RuntimeError, match="unexpected consumer"):
         release.reconcile_worker_queue_consumer(
             "q" * 32, CUSTOMER["messagesQueueName"],
             {"script_name": CUSTOMER["worker"], "type": "worker", "settings": {}},
             {"CLOUDFLARE_ACCOUNT_ID": "account", "CLOUDFLARE_API_TOKEN": "not-printed"},
         )
-    assert [request.get_method() for request in calls] == ["GET"]
+    assert [request.get_method() for request in calls] == ["GET", "GET"]
+
+
+def test_worker_queue_consumer_detail_normalizes_cloudflare_script_field(monkeypatch):
+    class Response:
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return False
+        def read(self):
+            return json.dumps({"success": True, "result": {
+                "consumer_id": "c" * 32, "script": CUSTOMER["worker"], "type": "worker",
+                "settings": {"batch_size": 1},
+            }}).encode()
+
+    monkeypatch.setattr(release.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
+    result = release.worker_queue_consumer_detail(
+        "q" * 32, "c" * 32,
+        {"CLOUDFLARE_ACCOUNT_ID": "account", "CLOUDFLARE_API_TOKEN": "not-printed"},
+    )
+    assert result["script_name"] == CUSTOMER["worker"]
 
 
 def test_worker_queue_consumer_reconciliation_uses_the_registered_queue_ids(monkeypatch):
