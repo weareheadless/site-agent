@@ -2,24 +2,24 @@
   "schema": 1,
   "releases": {
     "atelier-harmonie": {
-      "id": "20261009-atelier-harmonie-mailbox-calendar-r7-b748512",
-      "sha": "b748512ca8c241ad852da05083a495319896a779",
+      "id": "20261009-atelier-harmonie-mailbox-calendar-r7-corefix-1",
+      "sha": "3ce747ca1650c3af092533585e0abc8ff49d8dd4",
       "schemaMigration": {
         "fromLedgerIdentity": "8f8b672c097e2fae4d040a48c45d38f985d807423f9dc5fc7a2cc88447af4c40",
         "targetMigrationHead": "2456b18fd6b11b7a9abe562bb37214bf746d6c5815bc2cd07caef32bd05795a3"
       }
     },
     "northstar-coffee-full-intake-validation-5a8564dae07494ec": {
-      "id": "20261009-northstar-full-intake-mailbox-calendar-r7-8ad1eeb",
-      "sha": "8ad1eeb6b459dd5d909a36e9bb9b6ba9725cbba1",
+      "id": "20261009-northstar-full-intake-mailbox-calendar-r7-corefix-1",
+      "sha": "211f1b88804588d9fbfa5b620b6b763b38f1a3d3",
       "schemaMigration": {
         "fromLedgerIdentity": "afe14475842c7f65e1417b390c34e233f83ad45c8bd8d5eed73c81c7a7f3d5ea",
         "targetMigrationHead": "02fb8d92bf5f3fae2bf4b094e2ea1fb686a7121fcf660fe180f428b047b825c4"
       }
     },
     "oceanicvibes": {
-      "id": "20261009-oceanicvibes-mailbox-calendar-r7-2b08597",
-      "sha": "2b085977dc0fa69af05dfb86d352e4b563512768",
+      "id": "20261009-oceanicvibes-mailbox-calendar-r7-corefix-1",
+      "sha": "af43d6b777ad1d31df404b476a3ecb46c20e6bf2",
       "schemaMigration": {
         "fromLedgerIdentity": "e1d412dcd0b785b24fc32da2196c57a47798e77822765d9b9f48d2ca6a79bcb1",
         "targetMigrationHead": "5befad21e84b0f950d3e926afa69f29fc45c9b5a76366ea2e10b6d5225494345"
