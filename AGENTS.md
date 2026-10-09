@@ -416,6 +416,14 @@ authenticated API connection check. API release preflight compares each
 tenant config to its currently active Worker's health identity, not a queued
 candidate manifest. See `deploy/README.md` for the full contract.
 
+The same release gate owns Cloudflare's non-versioned Queue consumer
+registrations. It must attach and read back the exact Messages and
+dead-letter consumers declared in the candidate's `wrangler.jsonc`, scoped to
+the registered tenant Worker and Queue IDs. A healthy Worker or successful
+version promotion is not proof that the message pipeline is active. Fail the
+release on missing, ambiguous, or unrelated consumer registrations; do not
+repair them manually in Cloudflare or with ad-hoc Wrangler commands.
+
 The central script is a hard gate, not a repair or fallback layer. It must:
 
 1. resolve the tenant from the manifest and reject an unregistered target;
