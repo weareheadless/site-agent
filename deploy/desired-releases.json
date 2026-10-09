@@ -2,12 +2,8 @@
   "schema": 1,
   "releases": {
     "atelier-harmonie": {
-      "id": "20261009-atelier-email-runtime-6",
-      "schemaMigration": {
-        "fromLedgerIdentity": "543a53ba1ec6a7a539aa109006581d66c91fcf332663cdb96504068c02abce0c",
-        "targetMigrationHead": "a0478d982818456d91de4e286759ed91273e8ddbced83ecc0184bf05b189a63a"
-      },
-      "sha": "a64376843f15de9f9e04620df3fed643c60f96e9"
+      "id": "20261009-atelier-email-runtime-7",
+      "sha": "db3f83a9720d6c9a4929010d59b2e3fa42512770"
     },
     "northstar-coffee-full-intake-validation-5a8564dae07494ec": {
       "id": "20261009-northstar-email-runtime-4",
