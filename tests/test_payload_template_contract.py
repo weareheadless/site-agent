@@ -69,6 +69,9 @@ def test_production_payload_cli_requires_an_explicit_remote_config():
         assert expected in context
     assert 'PAYLOAD_CLI=1' in package['scripts']['prebuild']
     assert 'PAYLOAD_CLI=1' in package['scripts']['payload']
+    assert 'PAYLOAD_CONFIG_PATH=payload.config.ts' in package['scripts']['prebuild']
+    assert 'PAYLOAD_CONFIG_PATH=payload.config.ts' in package['scripts']['payload']
+    assert (TEMPLATE / 'payload.config.ts').is_file()
 
 
 def test_preview_inventory_cannot_execute_a_customer_repository_script():
