@@ -33,6 +33,7 @@ export async function sendResendMessage(
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
         'Idempotency-Key': idempotencyKey,
+        'User-Agent': 'site-agent/0.1 (+https://helloada.app)',
       },
       body: JSON.stringify({
         from: message.from,
