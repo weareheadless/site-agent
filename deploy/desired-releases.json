@@ -2,20 +2,20 @@
   "schema": 1,
   "releases": {
     "atelier-harmonie": {
-      "id": "20261009-atelier-email-runtime-4",
+      "id": "20261009-atelier-email-runtime-5",
       "schemaMigration": {
         "fromLedgerIdentity": "543a53ba1ec6a7a539aa109006581d66c91fcf332663cdb96504068c02abce0c",
         "targetMigrationHead": "a0478d982818456d91de4e286759ed91273e8ddbced83ecc0184bf05b189a63a"
       },
-      "sha": "35bada7ef0bcc6807222173234bfe7a00e0074ec"
+      "sha": "286ded34e971955f42f2d0fbdbebc5cd6791eadd"
     },
     "northstar-coffee-full-intake-validation-5a8564dae07494ec": {
-      "id": "20261009-northstar-email-runtime-3",
-      "sha": "03ad4c578055d1a004c1edef84e2b64732bd1d8a"
+      "id": "20261009-northstar-email-runtime-4",
+      "sha": "2ff61ffcbddcdf9dbf30713b4672b88d534ee507"
     },
     "oceanicvibes": {
-      "id": "20261009-oceanic-email-runtime-2",
-      "sha": "a1ec79c78ead6596831659aca558f2fc78cad195"
+      "id": "20261009-oceanic-email-runtime-3",
+      "sha": "75eeb97cf88fc258c2667f4b1c41ffb77240c2b6"
     }
   }
 }
