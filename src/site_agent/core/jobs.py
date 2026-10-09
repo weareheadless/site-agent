@@ -510,6 +510,7 @@ def _email_provisioning(context: dict[str, Any]) -> dict[str, str]:
     state, env = auto_provision_email(
         context["config"],
         tenant_id=tenant_id,
+        tenant_config_path=context["tenant_config_path"],
         memory=context["memory"],
         env=context.get("env"),
     )
