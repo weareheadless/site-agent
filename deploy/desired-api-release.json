@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261009-api-mailbox-calendar-1",
-    "sha": "1bd6bd81dc08479c8f97d5fd8204f42de86540c3"
+    "id": "20261009-api-email-tenant-secret-path-1",
+    "sha": "749374bd1d7d2c640e25e17469eebc044b8c042b"
   }
 }
