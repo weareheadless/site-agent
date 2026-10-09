@@ -75,3 +75,20 @@ def test_cloudflare_email_client_routes_dns_and_email_calls_to_separate_tokens(m
     client.request("GET", "/zones/zone-id/email/routing")
 
     assert tokens == ["Bearer dns-secret", "Bearer email-secret"]
+
+
+def test_apex_email_routing_is_enabled_without_a_subdomain_name():
+    class RoutingClient(CloudflareEmailClient):
+        def __init__(self):
+            self.calls = []
+
+        def request(self, method, path, body=None):
+            self.calls.append((method, path, body))
+            return {"result": {"enabled": True}}
+
+    client = RoutingClient()
+
+    result = client.enable_routing("zone-id")
+
+    assert result == {"enabled": True}
+    assert client.calls == [("POST", "/zones/zone-id/email/routing/dns", None)]

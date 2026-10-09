@@ -363,7 +363,7 @@ class EmailProvisioningService:
                 for item in apex_spf:
                     self.client.delete_dns_record(zone_id, str(item["id"]))
                     deleted_spf.append(item)
-                self.client.enable_routing(zone_id, domain)
+                self.client.enable_routing(zone_id)
             except Exception as exc:
                 restore_errors = []
                 for item in deleted_mx:

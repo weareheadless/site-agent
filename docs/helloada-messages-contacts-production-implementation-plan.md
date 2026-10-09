@@ -52,6 +52,10 @@ path currently supports the zone apex only and must reject a subdomain rather
 than accidentally applying apex routing semantics. If `helloada.app` has
 unexpected MX, SPF, DMARC or routing state at preflight, stop without mutation;
 do not displace any existing HelloAda mail service.
+For apex activation, call Cloudflare's Email Routing DNS endpoint with no body;
+passing the apex as `name` is interpreted as a subdomain request and returns
+HTTP 422. Subdomain onboarding remains out of scope until Cloudflare exposes a
+supported API flow for it.
 
 OceanicVibes live mail validation is mandatory. Its owner-approved first-run exception is a narrowly scoped, auditable cutover of the exact legacy Mailgun records listed above. Only the platform provisioning script may perform it. Any unrelated or unrecognized record/rule, missing Cloudflare entitlement, or missing API permission is a hard stop. Do not substitute a new tenant or different domain and declare OceanicVibes validated.
 
