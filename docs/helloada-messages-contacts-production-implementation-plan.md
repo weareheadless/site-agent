@@ -1,10 +1,8 @@
-# HelloAda Messages, Contacts and Website Forms — Production Implementation Plan
+# HelloAda Mailbox, Contacts, Website Forms and Booking Calendar — Production Implementation Plan
 
-Date: 2026-10-04; integration status reconciled 2026-10-07
+Date: 2026-10-09; architecture and scope revised 2026-10-09
 
-Status: implementation is in progress on an isolated feature branch; the
-current-mainline integration and package CI are being completed. Tenant email
-provisioning and live evidence remain incomplete. Nothing has been deployed.
+Status: this is the implementation target, not a claim of deployed functionality. Earlier inbox/provisioning work has reached shared code and live tenant releases, but end-to-end external send/receive evidence and the expanded mailbox/calendar journeys are not yet verified. Re-audit official `main`, actual tenant receipts and authenticated UI before implementing; dated status below is historical.
 
 Audience: the coding AI implementing the shared `weareheadless/site-agent` platform.
 
@@ -14,7 +12,7 @@ Build a durable production feature that reuses selected Mailflare email code ins
 
 Implement and deploy the canonical product feature, not a temporary experiment. Use the current tenants for live validation; do not create another tenant, a throwaway application, a disposable database or a parallel mail system to make the checks pass.
 
-The production feature must support this owner journey:
+The production feature must support these owner journeys:
 
 1. A visitor submits the website's contact form.
 2. The enquiry appears in the owner's HelloAda **Messages** tab and creates or links a **Contact**.
@@ -23,8 +21,10 @@ The production feature must support this owner journey:
 5. The visitor replies using their usual email application.
 6. That reply appears in the same conversation inside HelloAda.
 7. An email sent directly to the business address also appears in Messages.
+8. The owner can start a new one-to-one business message, save a draft, add an allowed attachment, review exact recipients/content and send it; Sent, Drafts, Archive, Spam and Trash behave like a normal mailbox.
+9. When the site offers appointments, a visitor books from the website into the same tenant's Calendar; the owner sees the appointment and linked Contact, and booking email replies join Messages.
 
-Success means this loop works with real email, real Cloudflare resources, the canonical shared schema, and the existing deployment pipeline. Mock screenshots and a successful build are not sufficient.
+Success means these loops work with real email, real Cloudflare resources, the canonical shared schema, and the existing deployment pipeline. Mock screenshots and a successful build are not sufficient.
 
 The scope is deliberately small, but the implementation must be production-quality: canonical schema, persistent records, access controls, durable processing, observability, documented operations and verified releases. Calling the work production does not establish that it is ready; completion requires the live evidence specified below.
 
@@ -40,7 +40,7 @@ OceanicVibes's custom domain is supplied by the owner as the intended email-vali
 
 Do not replace either existing tenant or rebuild its site from scratch. Preserve existing content, editable field mappings, owner access and tenant identifiers. Do not infer an external Atelier domain from its business name.
 
-For Atelier and Northstar, phase-one provisioning uses unique addresses on the
+For Atelier and Northstar, initial provisioning uses unique addresses on the
 HelloAda-owned `helloada.app` zone apex. The exact local part must be recorded
 against each permanent tenant ID; do not guess it from a display name. This is
 an explicit platform-owned email identity, not a fallback inferred from the
@@ -59,7 +59,7 @@ supported API flow for it.
 
 OceanicVibes live mail validation is mandatory. Its owner-approved first-run exception is a narrowly scoped, auditable cutover of the exact legacy Mailgun records listed above. Only the platform provisioning script may perform it. Any unrelated or unrecognized record/rule, missing Cloudflare entitlement, or missing API permission is a hard stop. Do not substitute a new tenant or different domain and declare OceanicVibes validated.
 
-No additional site/domain is to be provisioned for acceptance in this rollout. Future-site defaults remain a required shared-platform implementation and are verified through scaffold/provisioning tests; creating a new live site is a separate future validation task.
+No additional site/domain is to be provisioned solely for acceptance in this rollout. Future-site defaults remain a required shared-platform implementation and are verified through scaffold/provisioning tests; creating a new live site is a separate future validation task.
 
 ### Non-negotiable architecture
 
@@ -70,9 +70,9 @@ No additional site/domain is to be provisioned for acceptance in this rollout. F
 - Payload remains the authority for forms, contacts, conversations and messages. Do not import an independent Mailflare CMS, contact store, user directory or migration lifecycle.
 - One owner login and the existing HelloAda interface. No Mailflare dashboard, embedded second application or second session.
 - Ada may populate supported form configurations and draft messages. Ada may not change platform schema, authentication, provisioning, secrets or release configuration.
-- No alternate email provider, compatibility CMS, hidden endpoint selection or fake successful state when a dependency fails.
+- One explicit sending provider and verified entitlement per mailbox domain; no runtime provider fallback, compatibility CMS, hidden endpoint selection or fake successful state when a dependency fails.
 - All runtime paths are durable product paths. No experimental mode, demo inbox, temporary collection, test-only send endpoint, disposable tenant or customer-specific implementation.
-- Normal local fixtures, isolated automated test databases and immutable build/release directories are allowed for engineering verification; they are not deployed substitutes for the two existing tenants.
+- Normal local fixtures, isolated automated test databases and immutable build/release directories are allowed for engineering verification; they are not deployed substitutes for the registered rollout tenants.
 
 ## 2. What was verified, and what must still be inspected
 
@@ -133,30 +133,31 @@ This plan specifies production implementation on the current tenants. It does no
 
 ### Include
 
-- One business mailbox/address per tenant.
+- One primary business mailbox/address per tenant.
 - One supported custom domain under the configured Cloudflare account's DNS control.
-- Incoming email, owner-approved replies and sent history in the same conversation.
+- Incoming email, owner-approved replies, new-message compose, forward/reply-all within safe recipient limits, drafts and sent history in the same mailbox.
 - Website forms delivered directly into the same inbox, without email delivery being a prerequisite for saving an enquiry.
 - Basic contacts: name, email, optional phone/company, owner notes and linked conversation history.
-- Unread/read, needs-reply/done, archive and spam states.
+- Unread/read, needs-reply/done, Inbox, Sent, Drafts, Archive, Spam and Trash; reversible trash with a documented retention/deletion policy.
 - Search and cursor pagination adequate for ordinary small-business inbox use.
-- Plain-text reply composer and safe display of incoming email.
-- Private incoming attachments with conservative enforced limits; no outgoing attachments or visitor file uploads in this release.
-- Ada reply drafting, initiated by the owner, with explicit human send approval.
+- Accessible plain-text composition with optional safely rendered rich formatting; signature, To/CC/BCC, address validation, search and clear delivery states. No HTML editor is required for first release.
+- Private incoming and outgoing attachments with conservative enforced size/type/count limits and authenticated download; no visitor file uploads in this release.
+- Ada drafting of replies and new messages at the owner's request, with explicit human send approval.
+- Optional per-tenant Calendar when the website accepts bookings: availability, time zone, appointment type/duration/buffer, booking/cancel/reschedule, linked Contact, owner-visible event and transactional confirmation. Website contact forms go to Messages; website bookings go to Calendar, not a second lead list.
 - Deterministic provisioning, durable processing, operator diagnostics and tenant isolation.
 
 ### Exclude
 
-- Full Gmail replacement, IMAP/SMTP client hosting, JMAP, calendars, booking engines, campaigns and newsletters.
-- Cold outreach, bulk sending, autonomous sending and general-purpose mail merge.
+- IMAP/SMTP client hosting, JMAP, external calendar synchronization, team calendars, recurring appointments, campaigns and newsletters.
+- Cold outreach, bulk sending, autonomous sending and mail merge.
 - Shared staff mailboxes, delegation, many aliases or multiple simultaneous business domains.
 - Gmail/Workspace/Microsoft migration or replacement of an existing mail service.
 - Mailflare's independent AI agent, MCP surface, updater, account system and dashboard.
 - A heavyweight CRM with deals, sales pipelines, scoring and dashboards.
 - Email/contact data in GitHub or website rollback snapshots.
-- Provider switching and automated takeover of conflicting DNS.
+- Automatic provider switching and takeover of conflicting DNS.
 
-Cloudflare currently limits Email Service to transactional use. This release targets customer-requested enquiries and service replies, not unrestricted personal/business mail or promotional conversations. Technical two-way conversation support does not remove that policy boundary. [Email Service FAQ](https://developers.cloudflare.com/email-service/reference/faq/), [email-agent example](https://developers.cloudflare.com/agents/examples/email-agent/).
+Cloudflare Email Service's documented transactional-use boundary must be treated as a release gate, not obscured by a full-mailbox UI. Before general outbound compose is enabled, record a provider/product-policy decision for ordinary one-to-one business correspondence and verify the chosen provider/domain entitlement. If Cloudflare cannot support the promised usage, select one authorized Mailflare-supported sender (for example Resend or SES) at the provisioning boundary and explicitly provision/verify it; do not silently fail over or market an unrestricted mailbox on transactional-only delivery. Keep promotional/bulk use out of scope regardless of provider. [Email Service FAQ](https://developers.cloudflare.com/email-service/reference/faq/), [Mailflare provider options](https://github.com/hieunc229/mailflare/blob/main/docs/providers.md).
 
 ## 5. Runtime and resource design
 
@@ -173,7 +174,7 @@ The wrapper itself is part of the reviewed scaffold and inspected deployment art
 | Resource | Owner and purpose |
 | --- | --- |
 | Existing tenant Worker | Website, Payload, Messages HTTP API and event handlers |
-| Existing tenant D1 | Canonical Payload records and durable processing/delivery state |
+| Existing tenant D1 | Canonical Payload mail, contacts, calendar/booking records and durable processing/delivery state |
 | Existing public media R2 | Website assets only; never raw email or email attachments |
 | Tenant-private email R2 | Raw MIME and incoming attachments, with no public bucket exposure |
 | Tenant message-processing Queue | Typed incoming-processing and approved-send jobs |
@@ -205,7 +206,7 @@ Candidate starting points include the upstream email parsing, threading, inbound
 
 Create a narrowly scoped, permanently named shared module, such as `helloada-messages`; choose the final package/export arrangement to fit the existing repository. Keep the Mailflare transport adapter and its reused/adapted code explicitly attributed inside that module. Public product contracts use durable feature names, not experiment names. This is an engineering boundary, not a guaranteed licensing boundary.
 
-Expose only a few typed operations: parse inbound MIME, build an approved outgoing message and deliver it through the supported Cloudflare service. Keep business authorization, canonical persistence and provisioning outside those low-level operations.
+Expose only a few typed operations: parse inbound MIME, compose an approved outgoing message including attachments, and deliver it through the explicitly provisioned sender. Keep business authorization, canonical persistence and provisioning outside those low-level operations.
 
 Do not import Mailflare's Drizzle schema/migration chain or rewrite the product around its build system. Do not introduce a universal plugin framework or multiple interchangeable live implementations. There is one active canonical implementation.
 
@@ -289,7 +290,7 @@ These records support processing and operator diagnosis, not a second user task 
 
 ### Mail configuration
 
-One protected tenant configuration record/global identifies its domain, single mailbox address, Worker/resource identities and activation checks. Actual credential values remain runtime/protected-host secrets, not Payload fields exposed to the owner or Ada.
+One protected tenant configuration record/global identifies its domain, primary mailbox address, explicit sending-provider identity, Worker/resource identities and activation checks. Actual credential values remain runtime/protected-host secrets, not Payload fields exposed to the owner or Ada.
 
 Distinguish provisioning readiness from inbox contents. Example machine states: domain required, provisioning, action required, active and failed. UI labels must explain the actual cause, not display fake connection success.
 
@@ -302,6 +303,17 @@ Distinguish provisioning readiness from inbox contents. Example machine states: 
 - Keep the mainline migration index and generated contract in exact agreement. Preserve applied migrations and upgrade only through explicit release-queue migration requests. Never restore the duplicate feature-branch migrations listed in §2.
 - The selected migration must be additive and compatible with the prior serving Worker. A Worker rollback does not revert inbox data or the D1 ledger.
 - Prove the pinned Payload/D1 adapter's transaction capabilities. If multi-record atomicity is not available, establish one committed canonical receipt as the acceptance boundary and a tested idempotent materialization path. Do not claim a transaction that the adapter cannot execute, or introduce a parallel database to simulate it.
+
+### Calendar and booking records
+
+Use the shared Payload authority and an additive, versioned schema migration only where current collections do not already cover this contract. Keep one tenant-owned calendar, not a second Mailflare database.
+
+- Appointment type: stable ID, public label, duration, buffer, booking window, owner-defined availability, time zone, enabled/published state and form fields allowed for that type.
+- Calendar event: stable ID, appointment type/version, start/end as UTC instants with the original IANA time zone, linked Contact, source page, booking receipt, state (confirmed/cancelled/rescheduled), and consent/audit timestamps.
+- Slot/hold record or transaction-supported equivalent: a unique constraint or conditional write prevents overlapping confirmed bookings; an availability read alone is never the booking authority.
+- Notification operation: exact event revision, recipient, template identity, provider state and idempotency key. Visitor confirmation, cancellation and reschedule notices use the same approved delivery/outbox infrastructure; they are transactional system messages, not Ada's autonomous correspondence.
+
+Calendar data stays private and tenant-scoped. Website read endpoints expose only bounded public availability and booking receipts, never other guests, owner notes or raw calendar records.
 
 ## 8. Website form pipeline
 
@@ -348,7 +360,15 @@ Document a production retention and deletion policy for messages, raw MIME and a
 
 Cloudflare currently documents a 25 MiB incoming raw limit and a smaller general-recipient outgoing limit. Set explicit product limits below provider/runtime limits and measure MIME encoding and memory overhead. Do not rely on an upstream UI's attachment setting as a runtime guarantee. [Cloudflare email limits](https://developers.cloudflare.com/email-service/platform/limits/).
 
-## 10. Owner-approved reply pipeline
+## 10. Complete mailbox and owner-approved sending
+
+The existing reply pipeline is the base, not the only outbound path. Extend its exact-revision approval, outbox and idempotency invariants to **New Message**, Reply, Reply All and Forward. All sender/recipient/body/attachment changes invalidate an earlier approval. A compose draft is a canonical message in the mailbox, not an Ada chat transcript or website publication proposal.
+
+The owner can address a new message from Contacts or validated manual addresses, add bounded To/CC/BCC, subject, body, signature and supported attachments, save/reopen a draft, review exact content and explicitly send. Sent is the durable sent copy; a failed or uncertain delivery stays inspectable with its draft and operation reference. Deleting a draft or moving mail to Trash must be distinct from archive/spam. Thread new and forwarded mail with RFC Message-ID/References without allowing forged headers to attach an outsider to private context. Implement mailbox search/filter/pagination against canonical records rather than a second index that can disagree.
+
+Automatic booking confirmations/cancellations are a distinct transactional event path initiated by a confirmed booking/cancellation, with owner-configured templates and consent. They must not authorize Ada to send free-form mail. Website form enquiries do not automatically send a visitor reply unless the owner explicitly enables a reviewed transactional acknowledgement.
+
+### Existing owner-approved reply sequence
 
 1. The owner opens a conversation and writes a reply or asks Ada to draft one.
 2. Ada receives only authorized conversation content, relevant business facts and the owner's request. Email is untrusted source material, not an instruction channel.
@@ -360,7 +380,7 @@ Cloudflare currently documents a 25 MiB incoming raw limit and a smaller general
 8. Persist the provider's response/actual Message-ID and associate it with the internal conversation. This is particularly important for the first reply to a form enquiry, whose synthetic internal ID is not an email received by the visitor.
 9. File the sent copy in the conversation. Subsequent visitor replies match the real outbound identifier and therefore join the original form enquiry.
 
-Use the verified business sender, never the visitor's address as From. Outgoing replies go to the validated conversation participant; distrust arbitrary inbound Reply-To values and require visible confirmation for an external address change. No arbitrary multi-recipient compose surface in this release.
+Use the verified business sender, never the visitor's address as From. Outgoing replies go to the validated conversation participant; distrust arbitrary inbound Reply-To values and require visible confirmation for an external address change. New-message compose supports To/CC/BCC and reply-all/forward with explicit per-message and per-tenant recipient ceilings, verified owner action and anti-abuse controls; no mailing lists, campaigns or autonomous bulk sends.
 
 ### Delivery state and honest failure handling
 
@@ -379,7 +399,20 @@ Retry transient, definitive non-acceptance with bounded backoff. Never retry per
 
 Use a dead-letter Queue and durable failed-operation records. Retries and explicit recovery are normal processing semantics, not permission for an alternate architecture. [Cloudflare Queue retry behavior](https://developers.cloudflare.com/queues/configuration/batching-retries/).
 
-## 11. Domain and mailbox provisioning
+## 11. Website booking and Calendar pipeline
+
+Calendar is an optional capability, enabled only for a tenant whose published site offers appointments. It lives in the same HelloAda admin shell and customer Worker/D1, with one shared schema and no independent Mailflare login. Ada may propose appointment types, availability and booking-block copy as reviewed configuration/site drafts; Ada may not mutate owner availability or confirm bookings without the normal owner-approved configuration/public booking flow.
+
+1. The owner configures an IANA time zone, appointment type, weekly availability, blocked times, lead time, booking horizon, duration and buffers. The published website renders a shared booking component within its own design, using a canonical appointment-type reference; generated sites must not implement ad hoc booking APIs.
+2. A tenant-local public availability endpoint returns only current bookable slots within bounded ranges. It is advisory; the booking write rechecks the slot under an atomic/conditional uniqueness rule before confirming.
+3. The visitor submits a bounded, anti-spam-protected booking request with contact details, appointment type, selected slot and idempotency token. Reject stale/overlapping/unpublished slots and preserve the exact type revision.
+4. Commit one booking receipt, Contact and Calendar event; enqueue transactional confirmation and owner notice only after durable acceptance. Repeats return the same receipt. If delivery is unavailable, the confirmed event remains visible and the notification shows an honest failure; never fabricate a sent confirmation.
+5. The event appears in Calendar with the Contact and source page. The booking form is not duplicated as an Inbox enquiry. A guest reply to the confirmation uses the same mailbox threading identifiers, creates/links a Messages conversation and links back to the event.
+6. Owner cancellation or reschedule requires explicit action, rechecks availability and produces idempotent guest notices; record the prior event/slot and revision. The owner can inspect upcoming/past/cancelled appointments without exposing another guest's details.
+
+No external Google/Apple sync, staff assignment, payment, recurring event engine or no-show automation in the first release. If a site does not offer bookings, do not show an empty Calendar tab or provision booking-only resources. Localized slot display must preserve the stored time zone and handle DST transitions correctly.
+
+## 12. Domain and mailbox provisioning
 
 Extend the existing provisioning service and canonical tenant registry, not a Mailflare-specific wizard that duplicates onboarding.
 
@@ -417,13 +450,13 @@ The shared domain-origin operation enables the default mailbox local part (initi
 
 Existing-domain email migrations, domain renames and multiple active domains are outside this release. Explain that boundary clearly rather than adding special-case compatibility paths.
 
-## 12. Owner UX
+## 13. Owner UX
 
 ### Navigation and layout
 
 Add **Messages** to the existing owner navigation, using the current HelloAda logo, typography, orange accents and contrast conventions. Reuse shared components; do not design a new brand or resurrect the old admin.
 
-Inside Messages, provide two simple views: **Inbox** and **Contacts**. Keep the usual Ada workspace accessible, but do not add another persistent chat column that crowds the conversation.
+Inside Messages, provide a simple mailbox with Inbox, Sent, Drafts, Archive, Spam and Trash, plus Contacts. Show Calendar as a separate compact navigation item only when bookings are enabled. Keep the usual Ada workspace accessible, but do not add another persistent chat column that crowds the conversation.
 
 Desktop: one compact toolbar, readable conversation list and spacious selected-conversation area. Contact details appear in a collapsible side panel. Mobile: list, conversation and contact details are separate navigable views.
 
@@ -435,10 +468,16 @@ No marketing H1, duplicate browser bars, large empty-state hero or service-statu
 - Show website enquiries and direct emails together, with a small source label.
 - Offer All, Archived and Spam filters without extra task boards.
 - Use a chronological conversation, visibly separating received enquiries, sent replies and an unsent draft.
-- Primary actions: Reply, Ask Ada to draft, Send after review, and Mark done.
+- Primary actions: New Message, Reply, Reply All, Forward, Ask Ada to draft, Send after review, Archive/Trash and Mark done. Keep secondary actions in a small menu, not a crowded toolbar.
 - While sending, keep the pending reply visible and prevent duplicate send actions.
 - Failures preserve the draft, show a plain-language explanation and expose an optional reference/details link—not raw provider exceptions.
 - If email is not activated, enquiries remain readable, with a small actionable domain/email notice. Do not hide the entire inbox.
+
+### Calendar
+
+- Default to upcoming appointments with a clear day/week view or compact agenda; no empty analytics dashboard. Show local time zone, booking source, linked Contact, status and explicit reschedule/cancel actions.
+- Put availability and appointment-type configuration in Settings; keep event review in Calendar. A booking-enabled site must expose a predictable path from its public booking component to the owner event.
+- Surface failed confirmations as a specific actionable delivery state on the event, not as a fake booking failure or a second owner task list.
 
 ### Contacts
 
@@ -462,7 +501,7 @@ Use a single documented authenticated refresh mechanism, initially bounded polli
 
 No technical provisioning states should be mistaken for tasks the owner needs to approve. Show only an action the owner can actually take.
 
-## 13. Ada and future-site defaults
+## 14. Ada and future-site defaults
 
 The platform default must be implemented, not only enabled for OceanicVibes and Atelier. Do not hard-code these tenant names in application logic; they are rollout targets resolved through the existing registry.
 
@@ -476,9 +515,9 @@ The platform default must be implemented, not only enabled for OceanicVibes and 
 - Test an actual Ada-produced form candidate on an existing tenant, without manually repairing its generated form to make the test pass. This is a reviewed content/design update, not permission to redesign the whole website or replace its repository.
 - Cover default scaffolding, canonical schema identities, generated form references and provisioner resource mappings in automated tests. Do not provision a new live tenant as an acceptance requirement for this rollout.
 
-Default forms and Contacts can be ready without an email domain. The provisioner adds domain email when its supported prerequisites are met. This is an explicit capability lifecycle, not a fallback transport.
+Default forms and Contacts can be ready without an email domain. Optional booking configuration and calendar records can exist before outbound email activation, but the visitor-facing booking flow must disclose if confirmations cannot be sent; do not imply email delivery. The provisioner adds domain email when its supported prerequisites are met. This is an explicit capability lifecycle, not a fallback transport.
 
-## 14. Implementation sequence and completion evidence
+## 15. Implementation sequence and completion evidence
 
 Implement in this order. Do not spend days polishing the inbox before proving the deployment and email loop.
 
@@ -510,7 +549,7 @@ Exit evidence: passing canonical schema/migration, artifact and handler contract
 - Implement acceptance receipts, state transitions, deduplication, outbox recovery and private storage access.
 - Implement the shared form renderer, server validation and anti-spam setup.
 - Implement inbound parsing/materialization and matching.
-- Implement exact-revision owner approval and outbound delivery recording.
+- Implement exact-revision owner approval and outbound delivery recording for new messages, replies, reply-all and forwards; persist Drafts/Sent/Archive/Spam/Trash semantics and outgoing attachments.
 - Add safe incoming-attachment download and honest uncertain-delivery handling.
 - Keep low-level provider helpers separate from authorization and persistence.
 
@@ -518,14 +557,23 @@ Exit evidence: form acceptance, threading, race and failure-injection tests agai
 
 ### Phase D — HelloAda UI and Ada drafting
 
-- Build Inbox/Contacts in the existing admin shell with spacious functional layout.
+- Build the complete mailbox/Contacts in the existing admin shell with spacious functional layout and a conditional Calendar surface for booking-enabled tenants.
 - Add useful states, accessible controls, localized errors and unsent draft persistence.
 - Wire Ada's restricted read/draft operations through existing tenant connection contracts.
 - Keep email, settings, website publication and reports semantically distinct.
 
 Exit evidence: authenticated component/integration checks at desktop/mobile sizes and a complete real owner send/review path ready for the live release. No demo inbox or simulated production success state.
 
-### Phase E — OceanicVibes production rollout and live email validation
+### Phase E — Mailbox and optional booking contract validation
+
+- Prove the chosen provider's authorization for ordinary one-to-one business correspondence before enabling general New Message. Record the exact domain/provider configuration and limits; transactional-only transport must not be advertised as unrestricted mail.
+- Exercise new compose, saved draft, To/CC/BCC, safe attachment, explicit send, Sent copy, direct inbound, reply-all/forward, archive/spam/trash, search and contact linkage against the canonical contracts.
+- Exercise a booking-enabled site fixture against the shared component/endpoint and schema: availability across time zones/DST, race for the final slot, confirmation, cancellation/reschedule, linked Contact, Calendar display and booking-email reply to Inbox. No separate booking Worker or DB.
+- Verify form enquiry creates one Inbox conversation and booking creates one Calendar event, not two unrelated task records.
+
+Exit evidence: focused integration, security and concurrency tests pass; any provider-policy gap is documented as a release blocker, not masked by the UI.
+
+### Phase F — OceanicVibes production rollout and live email validation
 
 - Add recorded, idempotent resource/domain/email provisioning with a read-only planning step.
 - Publish immutable shared package artifacts and update the canonical template/pins.
@@ -539,19 +587,19 @@ Exit evidence: authenticated component/integration checks at desktop/mobile size
 
 Exit evidence: OceanicVibes's passing release/provisioning receipts, real custom-domain roundtrip and fresh signed-in browser checks. A local fixture, different tenant or different domain is not a pass. No manual production upload.
 
-### Phase F — Atelier production rollout and cross-tenant validation
+### Phase G — Atelier and Northstar rollout and cross-tenant validation
 
 - Upgrade Atelier through the same exact shared package versions and schema/release route, with its own existing Worker/D1 and private resource identities.
 - Map an existing appropriate form to the canonical form path without rewriting the website. Verify form receipt, contact creation, Messages, Ada drafting and the no-domain readiness state when applicable.
 - If Atelier already has a supported registered custom domain and activation is approved, validate its real email too. Otherwise retain the explicit inactive-mail capability; do not invent a domain or treat OceanicVibes's mailbox as Atelier's sender.
-- Prove A/B isolation for sessions, messages, contacts, attachments, Queue jobs, provisioning and Ada access on the two existing tenants.
+- Prove A/B isolation for sessions, messages, contacts, attachments, Queue jobs, provisioning and Ada access on the registered rollout tenants.
 - Verify no tenant-specific implementation or copy of the schema/provider code exists.
 
-Exit evidence: both existing tenants serve the same shared capability/package identity with passing tenant-specific migration/release and authenticated UI receipts; OceanicVibes email remains operational after Atelier's rollout.
+Exit evidence: all registered rollout tenants serve the same shared capability/package identity with passing tenant-specific migration/release and authenticated UI receipts; OceanicVibes email remains operational after Atelier's rollout.
 
-### Phase G — Default-platform contract and operational handoff
+### Phase H — Default-platform contract and operational handoff
 
-- Update the canonical HelloAda intake/scaffold/provisioning defaults to inherit the production capability without customer-specific edits.
+- Update the canonical HelloAda intake/scaffold/provisioning defaults to inherit the production mailbox/forms capability without customer-specific edits. Booking capability is an explicit site requirement/owner choice; if enabled, the canonical Calendar schema, appointment-type reference and booking component are required. Sites without bookings do not render Calendar.
 - Add automated generation/bootstrap tests for schema identity, form references, package pins, Worker handlers and per-tenant resource mappings. Use ordinary local test fixtures, not a third deployed site.
 - Exercise an Ada-generated form on an existing tenant and verify canonical data/transport rules without a coding-agent repair.
 - Finish operational monitoring, backup/restore, retention, recovery and source/licence procedures.
@@ -559,9 +607,9 @@ Exit evidence: both existing tenants serve the same shared capability/package id
 
 Exit evidence: shared-default tests pass, current-tenant live validation is complete and durable operating instructions are available. A full new live site created from scratch is outside this rollout; do not claim it has been validated.
 
-## 15. Required validation matrix
+## 16. Required validation matrix
 
-The live validation targets are OceanicVibes and Atelier, with their exact registered resource identities named in the implementation report. Local fixtures must not substitute for required live checks. Failure-injection, abusive-input and concurrency tests run locally against the canonical contracts; do not deliberately disrupt the serving tenants or send unsolicited mail to real contacts.
+The live validation targets are OceanicVibes, Atelier and Northstar, with their exact registered resource identities named in the implementation report. Local fixtures must not substitute for required live checks. Failure-injection, abusive-input and concurrency tests run locally against the canonical contracts; do not deliberately disrupt the serving tenants or send unsolicited mail to real contacts.
 
 | Area | Required checks |
 | --- | --- |
@@ -571,15 +619,16 @@ The live validation targets are OceanicVibes and Atelier, with their exact regis
 | Threading | Form enquiry → first real outgoing ID → visitor reply; direct email → reply → reply; different conversations from same sender remain distinct; forged references cannot join unauthorized context |
 | Contacts | Conservative deduplication; owner notes/name preserved; no public reads or cross-tenant lookup |
 | Private data | Anonymous REST/GraphQL/local-adapter misuse denied; attachment/raw-MIME URLs require permission; media/gallery cannot expose mail |
-| Replies | Owner approval required; edited draft invalidates approval; double click and replay do not create another operation; revoked/expired session denied |
+| Outbound mailbox | Owner approval required for new/reply/reply-all/forward; edited draft/recipient/attachment invalidates approval; double click/replay does not create another operation; revoked/expired session denied; Sent/Drafts/Archive/Spam/Trash/search consistent |
 | Delivery | Definitive failure visible; bounded retry; provider acceptance distinguished from delivery; crash/timeout uncertainty does not trigger unsafe resend |
 | Jobs | Duplicate/concurrent Queue events; consumer crash after commit; lost dispatch; exhausted retries retained; terminal jobs not retried forever |
 | Email safety | Header injection rejected; HTML/script/remote tracking blocked; prompt injection cannot authorize tools; unsafe attachments not rendered |
-| Domain setup | No-domain forms still work; clean authorized domain activates; conflicting MX untouched; rerun does not duplicate resources; wrong tenant/zone/Worker rejected |
+| Domain/provider setup | No-domain forms still work; clean authorized domain activates; conflicting MX untouched; rerun does not duplicate resources; wrong tenant/zone/Worker rejected; chosen sender is authorized for promised one-to-one usage and is not silently switched |
 | Isolation | A/B sessions, endpoint IDs, storage keys, Queues, Ada access and provisioning identities cannot reach the other tenant |
 | Build/release | Exact pinned packages; custom wrapper included; full supported OpenNext build; immutable inspected artifact; explicit schema ledger migration; rollback preserves data |
-| UI | Signed-in desktop/mobile; readable contrast; useful empty/error states; real Send action; fresh messages appear; session expiry preserves draft |
-| Platform defaults | Automated HelloAda intake/scaffold/provisioning contract tests enforce shared forms/inbox; Ada cannot change schema or create an alternate transport; no new live tenant is required |
+| UI | Signed-in desktop/mobile; readable contrast; useful empty/error states; New Message and real Send action; Sent/Drafts/Archive/Spam/Trash accessible; fresh messages appear; session expiry preserves draft; Calendar appears only when bookings enabled |
+| Booking | Public slots bounded; concurrent last-slot race admits one event; DST/time-zone correctness; idempotent confirmation/cancellation/reschedule; guest reply joins Messages; no cross-tenant event or contact read |
+| Platform defaults | Automated HelloAda intake/scaffold/provisioning contract tests enforce shared forms/inbox and optional canonical booking component/calendar; Ada cannot change schema or create alternate transport; no new live tenant is required |
 | Existing-site regressions | Both current sites retain frontend content, mapped editable fields, working preview, owner sessions, Ada connection and existing Growth functionality |
 | Operations | Durable state survives Worker upgrades; explicit retention; private backup/restore; sanitized logs; alerts for failed/uncertain sends, failed processing and increasing Queue lag |
 
@@ -587,7 +636,7 @@ Use OceanicVibes's approved business-domain mailbox and a controlled external ma
 
 Do not transmit customer enquiries to Ada/model providers without the established processing consent and minimization policy. Validate on the actual tenant endpoints using clearly identified owner-controlled enquiries, not real leads' personal data. These are ordinary canonical records, not a separate test mode or schema.
 
-## 16. Deployment and rollback contract
+## 17. Deployment and rollback contract
 
 Read the existing runbooks; extend them minimally. Do not create a new GitHub-to-Cloudflare deploy action just for mail.
 
@@ -613,7 +662,7 @@ The proof must cover additive schema compatibility with the rollback target. Dom
 
 References: [canonical deployment procedure](https://github.com/weareheadless/site-agent/blob/main/deploy/README.md), [platform release boundaries](https://github.com/weareheadless/site-agent/blob/main/docs/platform-release-runbook.md).
 
-## 17. Required documentation and handoff
+## 18. Required documentation and handoff
 
 Update `AGENTS.md` and the appropriate platform docs so future coding AIs know:
 
@@ -625,7 +674,8 @@ Update `AGENTS.md` and the appropriate platform docs so future coding AIs know:
 - Provisioning versus application-release boundaries, supported domain prerequisites and MX conflict behavior.
 - Approval semantics, uncertain-delivery handling, Queue recovery and operator diagnostics.
 - The exact existing queue-based release and migration procedure; no handwritten deployment commands from arbitrary checkouts.
-- Ada's allowed read/draft/form-data operations and prohibited schema/send/provisioning operations.
+- Ada's allowed read/draft/form-data/booking-configuration proposals and prohibited schema/send/provisioning operations.
+- The single-provider decision for one-to-one mail, its usage limits, and the explicit Calendar booking lifecycle.
 - How to repeat a real-email validation without disclosing secrets or using personal data.
 
 The final implementation report must include:
@@ -640,22 +690,24 @@ The final implementation report must include:
 - Any account/manual activation, legal, provider or runtime limitations still unresolved.
 - A clear implemented/validated/not-validated distinction. Do not report completion while a required evidence row remains unproven.
 
-## 18. Definition of done
+## 19. Definition of done
 
 The production rollout is complete only when:
 
 - OceanicVibes's owner can receive a website enquiry, ask Ada for a draft, approve/send it from the approved domain address and receive the external visitor's reply in the same conversation on the existing live deployment.
+- The owner can start a new message, save a draft, explicitly send an ordinary one-to-one business email through an authorized provider, find its Sent copy, and use Inbox/Archive/Spam/Trash/search without a second login.
+- A booking-enabled tenant can accept one website appointment into Calendar with linked Contact, enforce availability without double booking, issue an honest confirmation state, and receive a guest's email reply in Messages. Non-booking tenants do not show Calendar.
 - Direct incoming business email works in that same OceanicVibes inbox.
 - Contacts/forms/messages have one canonical Payload authority with private access.
 - The selected Mailflare primitives run inside the existing customer Worker, without importing the upstream application or parallel ORM/schema/deployment system.
-- OceanicVibes and Atelier consume the same canonical packages/schema and their required live feature/isolation checks pass, without replacement tenants or customer-local implementations.
+- OceanicVibes, Atelier and Northstar consume the same canonical packages/schema and their required live feature/isolation checks pass, without replacement tenants or customer-local implementations.
 - The canonical template, intake and provisioning defaults inherit the capability and pass automated contract tests. No extra live site is spawned for this rollout, and no unperformed fresh-site validation is claimed.
 - The required migrations and application release pass through the established VPS pipeline with verifiable receipts.
 - Tested replays/failures do not lose accepted enquiries or create preventable duplicate sends; ambiguous external delivery is reported honestly.
 - Supported domain provisioning is reproducible and never takes over an existing mail provider silently.
-- Reused upstream code has a recorded source commit and provenance. Licensing is not a deployment gate for this owner-authorized implementation.
-- Existing website content, editable field mapping, preview, owner sessions, Ada connectivity and Growth functionality remain working on both current tenants.
+- Reused upstream code has a recorded source commit and provenance. The reviewed AGPL compliance route is a deployment gate; owner authorization alone does not remove license obligations.
+- Existing website content, editable field mapping, preview, owner sessions, Ada connectivity and Growth functionality remain working on the registered rollout tenants.
 - Retention, private backup/restore, failed-job monitoring and recovery are implemented and documented as durable product operations, not left for a later cleanup.
 - No secrets or inbox data are committed to source; no old admin surface, unused Mailflare agent/updater or fallback provider remain in the implementation.
 
-Do not turn this into a full email suite. Ship the useful small-business feature as canonical production code, validate it on OceanicVibes and Atelier, and keep the architecture shared and the UX simple. A later independent adapter replacement is a separate reviewed product change, not permission to ship temporary architecture now.
+Do not turn this into an enterprise groupware suite. Ship a real small-business mailbox and optional booking calendar as canonical production code, validate the mail loop on OceanicVibes, Atelier and Northstar where provisioned, and keep the architecture shared and the UX simple. A later independent adapter replacement is a separate reviewed product change, not permission to ship temporary architecture now.
