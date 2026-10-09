@@ -27,3 +27,21 @@ test('Resend delivery identifies the site-agent client', async (t) => {
   assert.equal(headers.get('User-Agent'), 'site-agent/0.1 (+https://helloada.app)')
   assert.equal(headers.get('Idempotency-Key'), 'helloada:tenant:operation')
 })
+
+test('Resend rejection preserves a safe HTTP error code for operation diagnostics', async (t) => {
+  const originalFetch = globalThis.fetch
+  t.after(() => {
+    globalThis.fetch = originalFetch
+  })
+  globalThis.fetch = async () => new Response(null, { status: 403 })
+
+  await assert.rejects(
+    sendResendMessage('test-key', 'tenant', 'operation', {
+      from: 'owner@example.com',
+      to: 'visitor@example.net',
+      subject: 'Test',
+      text: 'Test message',
+    }),
+    (error) => error.code === 'resend_rejected_http_403' && error.permanent === true,
+  )
+})
