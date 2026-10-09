@@ -43,14 +43,14 @@ def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
 
 
-def _tenant_env_path(config: Mapping[str, Any], tenant_id: str) -> Path:
-    raw_data_dir = Path(str(config.get("data_dir") or "")).expanduser()
-    raw_tenant_dir = raw_data_dir.parent
-    if raw_data_dir.is_symlink() or raw_tenant_dir.is_symlink():
+def _tenant_env_path(tenant_config_path: str | Path, tenant_id: str) -> Path:
+    raw_config_path = Path(str(tenant_config_path or "")).expanduser()
+    raw_tenant_dir = raw_config_path.parent
+    if raw_config_path.is_symlink() or raw_tenant_dir.is_symlink():
         raise EmailProvisioningError("The registered tenant secret path cannot contain symbolic links")
-    data_dir = raw_data_dir.resolve(strict=True)
-    tenant_dir = data_dir.parent
-    if data_dir.name != "data" or tenant_dir.name != tenant_id or tenant_dir == Path(tenant_dir.anchor):
+    config_path = raw_config_path.resolve(strict=True)
+    tenant_dir = config_path.parent
+    if config_path.name != "config.yaml" or tenant_dir.name != tenant_id or tenant_dir == Path(tenant_dir.anchor):
         raise EmailProvisioningError("The registered tenant secret path is not canonical")
     path = tenant_dir / "tenant.env"
     if path.is_symlink() or not path.is_file() or tenant_dir.is_symlink():
@@ -459,6 +459,7 @@ def auto_provision_email(
     config: Mapping[str, Any],
     *,
     tenant_id: str,
+    tenant_config_path: str | Path,
     memory: Any,
     env: Mapping[str, str] | None = None,
     policy_overrides: Mapping[str, Any] | None = None,
@@ -582,7 +583,7 @@ def auto_provision_email(
         cloudflare_email = CloudflareEmailClient(email_token, dns_token)
         resend = ResendProvisioner(resend_api_key(config, resolved_env), cloudflare_email)
         resend_domain = resend.ensure_domain(resolved_email_domain)
-        secret_path = _tenant_env_path(config, tenant_id)
+        secret_path = _tenant_env_path(tenant_config_path, tenant_id)
         send_key_id = _ensure_tenant_resend_key(
             path=secret_path,
             tenant_id=tenant_id,
