@@ -358,6 +358,7 @@ class TenantRegistry:
                     auto_provision_email(
                         tenant_config,
                         tenant_id=tenant_id,
+                        tenant_config_path=config_path,
                         memory=memory,
                         env=tenant_env,
                     )
@@ -398,6 +399,7 @@ class TenantRegistry:
                 context.update({
                     "payload_gateway": payload_client,
                     "tenant_id": tenant_id,
+                    "tenant_config_path": str(config_path),
                     "journey": journey,
                     "seo_provisioning_state": seo_state,
                     "google_platform": google_platform,

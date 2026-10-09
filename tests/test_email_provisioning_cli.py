@@ -89,7 +89,8 @@ def test_email_cli_apply_saves_protected_before_state_and_sanitizes_output(monke
 
     monkeypatch.setattr(email_bootstrap, "prepare_email_plan", prepare)
 
-    def apply(config, *, tenant_id, memory, env, policy_overrides, expected_snapshot_sha256):
+    def apply(config, *, tenant_id, tenant_config_path, memory, env, policy_overrides, expected_snapshot_sha256):
+        assert tenant_config_path == config_path
         assert expected_snapshot_sha256 == "preflight-hash"
         return {"state": "active", "tenant": tenant_id, "domain": "demo.example", "address": "hello@demo.example", "completedAt": "2026-10-04T00:00:00+00:00"}, env
 

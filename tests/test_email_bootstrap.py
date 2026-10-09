@@ -30,6 +30,25 @@ def _config(tmp_path: Path):
     }
 
 
+def _tenant_config_path(tmp_path: Path, tenant_id: str) -> Path:
+    return tmp_path / "websites" / tenant_id / "config.yaml"
+
+
+def test_tenant_env_path_uses_registered_config_parent_not_data_dir(tmp_path):
+    tenant_id = "atelier-harmonie"
+    tenant_dir = tmp_path / "websites" / tenant_id
+    tenant_dir.mkdir(parents=True)
+    config_path = tenant_dir / "config.yaml"
+    config_path.write_text("data_dir: /legacy/separate/data\n", encoding="utf-8")
+    tenant_env = tenant_dir / "tenant.env"
+    tenant_env.write_text("EXISTING_SECRET=kept\n", encoding="utf-8")
+
+    resolved = bootstrap._tenant_env_path(config_path, tenant_id)
+
+    assert resolved == tenant_env
+    assert bootstrap._tenant_secret_values(resolved) == {"EXISTING_SECRET": "kept"}
+
+
 def _mock_resend_management(monkeypatch):
     class Resend:
         def __init__(self, api_key, _cloudflare):
@@ -172,7 +191,7 @@ def test_email_bootstrap_is_not_enabled_implicitly_for_existing_tenants(monkeypa
     memory = FakeMemory()
     monkeypatch.setattr(bootstrap, "prepare_email_plan", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not call provider")))
 
-    state, _ = bootstrap.auto_provision_email(config, tenant_id="oceanicvibes", memory=memory, env={})
+    state, _ = bootstrap.auto_provision_email(config, tenant_id="oceanicvibes", tenant_config_path=_tenant_config_path(tmp_path, "oceanicvibes"), memory=memory, env={})
 
     assert state["state"] == "disabled"
     assert memory.state["email_provisioning_state"]["state"] == "disabled"
@@ -333,7 +352,7 @@ def test_auto_provision_requires_resend_management_key_before_provider_access(tm
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("missing management key must stop before provider access")),
     )
 
-    state, _ = bootstrap.auto_provision_email(config, tenant_id="atelier-harmonie", memory=memory, env={})
+    state, _ = bootstrap.auto_provision_email(config, tenant_id="atelier-harmonie", tenant_config_path=_tenant_config_path(tmp_path, "atelier-harmonie"), memory=memory, env={})
 
     assert state["state"] == "action_required"
     assert state["tenant"] == "atelier-harmonie"
@@ -353,7 +372,7 @@ def test_auto_provision_classifies_restricted_resend_key_as_action_required(tmp_
         ),
     )
 
-    state, _ = bootstrap.auto_provision_email(config, tenant_id="oceanicvibes", memory=memory, env={})
+    state, _ = bootstrap.auto_provision_email(config, tenant_id="oceanicvibes", tenant_config_path=_tenant_config_path(tmp_path, "oceanicvibes"), memory=memory, env={})
 
     assert state["state"] == "action_required"
     assert state["tenant"] == "oceanicvibes"
@@ -369,7 +388,7 @@ def test_auto_provision_requires_a_registered_unique_local_part_for_an_explicit_
     config["messages"]["email"].pop("local_part")
     memory = FakeMemory()
 
-    state, _ = bootstrap.auto_provision_email(config, tenant_id="atelier-harmonie", memory=memory, env={})
+    state, _ = bootstrap.auto_provision_email(config, tenant_id="atelier-harmonie", tenant_config_path=_tenant_config_path(tmp_path, "atelier-harmonie"), memory=memory, env={})
 
     assert state["state"] == "failed"
     assert "tenant-unique mailbox local part" in state["error"]
@@ -388,7 +407,7 @@ def test_auto_provision_persists_invalid_site_origin_as_a_failure(tmp_path, monk
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("invalid origin must stop before provider access")),
     )
 
-    state, _ = bootstrap.auto_provision_email(config, tenant_id="atelier-harmonie", memory=memory, env={})
+    state, _ = bootstrap.auto_provision_email(config, tenant_id="atelier-harmonie", tenant_config_path=_tenant_config_path(tmp_path, "atelier-harmonie"), memory=memory, env={})
 
     assert state["state"] == "failed"
     assert state["error"] == "The registered website origin is invalid"
@@ -398,6 +417,7 @@ def test_auto_provision_persists_invalid_site_origin_as_a_failure(tmp_path, monk
 def test_failed_payload_activation_preserves_cloudflare_progress_for_retry(monkeypatch, tmp_path):
     config = _config(tmp_path)
     memory = FakeMemory()
+    provider_calls = []
     plan = {
         "tenant": "oceanicvibes", "domain": "oceanicvibes.com", "address": "contact@oceanicvibes.com",
         "worker": "oceanicvibes", "snapshotSha256": "preflight-hash", "operations": [],
@@ -413,12 +433,19 @@ def test_failed_payload_activation_preserves_cloudflare_progress_for_retry(monke
             assert api_key == "management-key"
 
         def ensure_domain(self, domain):
+            provider_calls.append("ensure_domain")
             return {"id": "resend-domain-id", "domain": domain, "status": "verified"}
 
     monkeypatch.setattr(bootstrap, "resend_api_key", lambda config, env: "management-key")
     monkeypatch.setattr(bootstrap, "ResendProvisioner", Resend)
     monkeypatch.setattr(bootstrap, "_ensure_tenant_resend_key", lambda **_kwargs: "tenant-sending-key-id")
-    monkeypatch.setattr(bootstrap, "_tenant_env_path", lambda _config, _tenant: tmp_path / "tenant.env")
+    def registered_secret_path(config_path, tenant_id):
+        assert config_path == _tenant_config_path(tmp_path, "oceanicvibes")
+        assert tenant_id == "oceanicvibes"
+        provider_calls.append("tenant_secret_path")
+        return tmp_path / "tenant.env"
+
+    monkeypatch.setattr(bootstrap, "_tenant_env_path", registered_secret_path)
 
     class Client:
         def __init__(self, email_token, dns_token):
@@ -435,9 +462,10 @@ def test_failed_payload_activation_preserves_cloudflare_progress_for_retry(monke
     monkeypatch.setattr(bootstrap, "EmailProvisioningService", Service)
     monkeypatch.setattr(bootstrap, "_configure_payload_mailbox", lambda *args, **kwargs: (_ for _ in ()).throw(bootstrap.EmailProvisioningError("Payload timeout")))
 
-    state, _ = bootstrap.auto_provision_email(config, tenant_id="oceanicvibes", memory=memory, env={})
+    state, _ = bootstrap.auto_provision_email(config, tenant_id="oceanicvibes", tenant_config_path=_tenant_config_path(tmp_path, "oceanicvibes"), memory=memory, env={})
 
     assert state["state"] == "failed"
+    assert provider_calls == ["tenant_secret_path", "ensure_domain"]
     assert state["cloudflareRouteId"] == "rule-id"
     assert "Payload timeout" in state["error"]
     assert memory.state["email_provisioning_state"]["cloudflareRouteId"] == "rule-id"
