@@ -333,12 +333,92 @@ def validate_worker_contract(worker_config: dict[str, Any], customer: dict[str, 
     required_handlers = {"fetch", "email", "queue", "scheduled"}
     if not required_handlers.issubset(set(worker_config.get("handlers") or [])):
         raise RuntimeError("Worker custom entrypoint is missing a required event handler")
-def d1_query(customer: dict[str, Any], sql: str, env: dict[str, str]) -> list[dict[str, Any]]:
+    crons = worker_config.get("crons")
+    if crons != ["*/5 * * * *"]:
+        raise RuntimeError("Worker must declare the canonical five-minute durable message sweep")
+
+
+def worker_cron_schedules(customer: dict[str, Any], env: dict[str, str]) -> list[str]:
+    """Read the exact active Cloudflare schedules for this registered Worker."""
+    url = (
+        "https://api.cloudflare.com/client/v4/accounts/"
+        + urllib.parse.quote(env["CLOUDFLARE_ACCOUNT_ID"], safe="")
+        + "/workers/scripts/"
+        + urllib.parse.quote(customer["worker"], safe="")
+        + "/schedules"
+    )
+    request = urllib.request.Request(url, headers={
+        "Authorization": "Bearer " + env["CLOUDFLARE_API_TOKEN"],
+        "Accept": "application/json",
+    })
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.load(response)
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(f"Cloudflare Worker schedule inspection failed with HTTP {error.code}") from error
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        raise RuntimeError("Cloudflare Worker schedule inspection returned no valid response") from error
+    if payload.get("success") is not True:
+        raise RuntimeError("Cloudflare Worker schedule inspection failed")
+    result = payload.get("result")
+    schedules = result.get("schedules") if isinstance(result, dict) else None
+    if not isinstance(schedules, list):
+        raise RuntimeError("Cloudflare Worker schedule response has no schedules list")
+    crons = [item.get("cron") for item in schedules if isinstance(item, dict)]
+    if len(crons) != len(schedules) or any(not isinstance(cron, str) or not cron.strip() for cron in crons):
+        raise RuntimeError("Cloudflare Worker schedule response contains an invalid schedule")
+    if len(crons) != len(set(crons)):
+        raise RuntimeError("Cloudflare Worker schedule response contains duplicate cron expressions")
+    return sorted(crons)
+
+
+def reconcile_worker_cron_schedules(
+    customer: dict[str, Any], desired: list[str], env: dict[str, str],
+) -> dict[str, Any]:
+    """Reconcile schedules to the committed Wrangler contract and verify Cloudflare's result."""
+    if desired != ["*/5 * * * *"]:
+        raise ValueError("release requires the exact canonical five-minute message sweep")
+    before = worker_cron_schedules(customer, env)
+    changed = before != desired
+    if changed:
+        url = (
+            "https://api.cloudflare.com/client/v4/accounts/"
+            + urllib.parse.quote(env["CLOUDFLARE_ACCOUNT_ID"], safe="")
+            + "/workers/scripts/"
+            + urllib.parse.quote(customer["worker"], safe="")
+            + "/schedules"
+        )
+        request = urllib.request.Request(
+            url,
+            data=json.dumps([{"cron": cron} for cron in desired]).encode("utf-8"),
+            method="PUT",
+            headers={
+                "Authorization": "Bearer " + env["CLOUDFLARE_API_TOKEN"],
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                payload = json.load(response)
+        except urllib.error.HTTPError as error:
+            raise RuntimeError(f"Cloudflare Worker schedule update failed with HTTP {error.code}") from error
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            raise RuntimeError("Cloudflare Worker schedule update returned no valid response") from error
+        if payload.get("success") is not True:
+            raise RuntimeError("Cloudflare Worker schedule update failed")
+    after = worker_cron_schedules(customer, env)
+    if after != desired:
+        raise RuntimeError("Cloudflare Worker schedules differ from the committed deployment contract")
+    return {"before": before, "desired": desired, "after": after, "changed": changed, "verifiedAt": utc_now()}
+def d1_query(
+    customer: dict[str, Any], sql: str, env: dict[str, str], params: tuple[Any, ...] = (),
+) -> list[dict[str, Any]]:
     url = ("https://api.cloudflare.com/client/v4/accounts/" + urllib.parse.quote(env["CLOUDFLARE_ACCOUNT_ID"], safe="")
            + "/d1/database/" + urllib.parse.quote(customer["d1DatabaseId"], safe="") + "/query")
     request = urllib.request.Request(
         url,
-        data=json.dumps({"sql": sql}).encode(),
+        data=json.dumps({"sql": sql, "params": list(params)}).encode(),
         method="POST",
         headers={"Authorization": "Bearer " + env["CLOUDFLARE_API_TOKEN"],
                  "Content-Type": "application/json", "Accept": "application/json"},
@@ -357,8 +437,12 @@ def d1_query(customer: dict[str, Any], sql: str, env: dict[str, str]) -> list[di
 
 
 def applied_payload_migrations(customer: dict[str, Any], env: dict[str, str]) -> tuple[list[str], list[str]]:
-    tables = d1_query(customer,
-        "SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name", env)
+    tables = d1_query(
+        customer,
+        "SELECT name FROM sqlite_master WHERE type = ? AND name NOT LIKE ? ORDER BY name",
+        env,
+        ("table", "sqlite_%"),
+    )
     # Cloudflare creates _cf_KV in every D1 database; it is provider-owned,
     # reserved, and not application data. Ignore this exact system table only.
     table_names = []
@@ -930,6 +1014,14 @@ def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dic
         if active_version != receipt["uploadedVersion"]:
             raise RuntimeError("the exact uploaded Worker version does not receive 100% of production traffic")
         receipt["deployment"] = deployment
+    cron_contract = receipt.get("cronTriggers")
+    if not isinstance(cron_contract, dict) or cron_contract.get("desired") != ["*/5 * * * *"]:
+        raise RuntimeError("release receipt has no exact durable message schedule contract")
+    stage("verify-cron-triggers")
+    active_crons = worker_cron_schedules(customer, deploy_env)
+    if active_crons != cron_contract["desired"]:
+        raise RuntimeError("active Cloudflare Worker schedules differ from the exact release contract")
+    cron_contract["verifiedAt"] = utc_now()
     workers_dev = workers_dev_provisioner(customer, deploy_env)
     if workers_dev is not None and not verify_only:
         stage("enable-workers-dev")
@@ -1016,8 +1108,11 @@ def verification_receipt(directory: Path, tenant: str, sha: str, release_id: str
     if any(receipt.get(key) != value for key, value in expected.items()):
         raise ValueError("verification target differs from the recorded release")
     if receipt.get("status") not in ("failed", "deployed", "verified") or receipt.get("stage") not in (
-            "verify-deployment", "verify-connection", "awaiting-browser-verification", "verified"):
+            "verify-deployment", "verify-cron-triggers", "verify-connection",
+            "awaiting-browser-verification", "verified"):
         raise ValueError("only a promoted release may resume read-only verification")
+    if receipt.get("cronTriggers", {}).get("desired") != ["*/5 * * * *"]:
+        raise ValueError("release has no verified durable message schedule contract")
     if not receipt.get("uploadedVersion") or not receipt.get("deployment"):
         raise ValueError("release has no recorded immutable production promotion")
     artifact_hashes = receipt.get("artifactHashes")
@@ -1276,6 +1371,7 @@ def main() -> int:
                       "messagesQueueConsumerCount:Array.isArray(c.queues?.consumers)?c.queues.consumers.length:0,"
                       "messagesQueueConsumer:(c.queues?.consumers||[]).some(q=>q.queue===c.queues?.producers?.find(p=>p.binding==='HELLOADA_MESSAGES_QUEUE')?.queue&&!!q.dead_letter_queue),"
                       "messagesDlqConsumer:(c.queues?.consumers||[]).some(q=>q.queue===c.queues?.consumers?.find(x=>x.dead_letter_queue)?.dead_letter_queue&&!q.dead_letter_queue),"
+                      "crons:c.triggers?.crons||[],"
                       "sendEmailBinding:(c.send_email||[]).some(b=>b.name==='EMAIL'),"
                       "sendEmailBindingCount:Array.isArray(c.send_email)?c.send_email.length:0,"
                       "rateLimitBindings:(c.ratelimits||[]).map(r=>({name:r.name,namespaceId:String(r.namespace_id||'')})),"
@@ -1354,6 +1450,12 @@ def main() -> int:
             raise RuntimeError("production changed during upload; reconcile before promotion")
         run([str(checkout / "node_modules/.bin/wrangler"), "versions", "deploy",
              receipt["uploadedVersion"] + "@100%", "--name", customer["worker"], "--yes"], checkout, deploy_env)
+
+        stage("reconcile-cron-triggers")
+        receipt["cronTriggers"] = reconcile_worker_cron_schedules(
+            customer, wrangler["crons"], deploy_env,
+        )
+        atomic_json(receipt_path, receipt)
 
         stage("verify-deployment")
         deployment = cloudflare_deployment(customer, deploy_env)

@@ -217,8 +217,12 @@ the current validation, existing platform-hosted tenants can receive an
 explicit HelloAda email domain and tenant-unique local part through the
 read-only/`--apply` CLI flow below. A tenant scheduler retries automatically
 every hour after a new Worker release becomes ready; it does not need a
-dashboard visit or a manual API restart. Provider secrets remain in protected
-host credential profiles.
+dashboard visit or a manual API restart. The VPS is the provisioning control
+plane, not a mail server. Its protected Cloudflare API tokens are used only to
+configure Cloudflare DNS, Email Routing and Email Sending. They are never
+copied into tenant Worker secrets. At runtime, each tenant Worker receives mail
+through its native `email()` event and sends through the Cloudflare `EMAIL`
+binding; no SMTP credentials or external mail service are involved.
 Unknown existing MX, SPF, DMARC or routing state stops before Cloudflare writes.
 The provisioner uses separate protected host profiles. The `cloudflare_dns`
 token needs Zone Read, DNS Read and DNS Write, restricted to the zones
@@ -237,12 +241,19 @@ files and environment variable names. Store `CLOUDFLARE_EMAIL_API_TOKEN` in
 DNS-profile file for `CLOUDFLARE_DNS_API_TOKEN`. Never put token values in
 tenant config, source, GitHub or issue comments.
 
-For a one-time existing-tenant setup, run the installed site-agent CLI on the
-VPS using the API's protected host config:
+For a one-time existing-tenant setup, invoke the exact active immutable API
+release on the VPS using the protected host config:
 
 ```sh
-site-agent --config /SOCIAL/configs/site-agent-api/config.yaml provision-email --tenant <registered-tenant-id>
+PYTHONPATH=/SOCIAL/payload-releases/api/current/site-packages \
+  /SOCIAL/site-agent/.venv/bin/python -m site_agent \
+  --config /SOCIAL/configs/site-agent-api/config.yaml \
+  provision-email --tenant <registered-tenant-id>
 ```
+
+Do not use `/SOCIAL/site-agent/.venv/bin/site-agent` for provisioning: that
+entrypoint can load the older package installed in the mutable source checkout
+instead of the active API release.
 
 For a tenant on a platform `workers.dev` website, include its pre-registered
 HelloAda zone-apex email domain with `--email-domain helloada.app` and its
@@ -255,10 +266,11 @@ to the protected DNS profile. These values are persisted only by the matching
 `--apply` after the plan is reviewed; the Worker and tenant identity still
 come exclusively from the registry.
 
-That invocation is read-only and resolves the tenant only from the canonical
+The command above is read-only and resolves the tenant only from the canonical
 `provisioned_root/tenants.json`; it prints the intended mailbox and operations
 without exposing a forwarding destination. After reviewing that exact plan,
-apply it with `--apply`. A legacy Mailgun transition requires the narrow
+repeat the exact command with the approved `--email-domain` and `--local-part`
+values plus `--apply`. A legacy Mailgun transition requires the narrow
 `--approve-mailgun-cutover` allowlist (only the known apex Mailgun MX pair and
 standard SPF value); replacing an exact-address Cloudflare forwarding rule
 additionally requires `--allow-forwarding-cutover`. Each apply writes a
@@ -330,9 +342,14 @@ activation endpoint to synchronize the central tenant config before performing
 the Ada/Payload connection gate.
 
 Application releases use OpenNext `upload` and Wrangler `versions deploy`.
-Domain routes, DNS and cron triggers are provisioned separately and are never
-rewritten by an application release. This keeps the existing deployment token's
-Worker permissions sufficient. See [Cloudflare's deployment permissions](https://developers.cloudflare.com/workers/authorization/workers/)
+The release contract also reconciles the Worker Cron Triggers declared in the
+exact committed `wrangler.jsonc` after promotion, then reads them back and
+records before/desired/after state in the release receipt. The shared inbox
+runtime requires exactly `*/5 * * * *` to sweep durable messages; a missing or
+drifted schedule is not treated as a successful deployment. DNS and domain
+routes remain a separate explicit provisioning operation. The deployment token
+must include Workers Scripts Read and Write for schedule reconciliation. See
+[Cloudflare's schedule API](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/schedules/)
 and [OpenNext's upload command](https://opennext.js.org/cloudflare/cli).
 
 For a `workers.dev` health target, the account subdomain is read from Cloudflare
