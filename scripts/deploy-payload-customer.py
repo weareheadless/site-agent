@@ -424,6 +424,39 @@ def reconcile_worker_cron_schedules(
     return {"before": before, "desired": desired, "after": after, "changed": changed, "verifiedAt": utc_now()}
 
 
+def worker_queue_consumer_detail(
+    queue_id: str, consumer_id: str, env: dict[str, str],
+) -> dict[str, Any]:
+    """Read one consumer's authoritative Worker identity and normalize its API field."""
+    url = (
+        "https://api.cloudflare.com/client/v4/accounts/"
+        + urllib.parse.quote(env["CLOUDFLARE_ACCOUNT_ID"], safe="")
+        + "/queues/" + urllib.parse.quote(queue_id, safe="") + "/consumers"
+        + "/" + urllib.parse.quote(consumer_id, safe="")
+    )
+    request = urllib.request.Request(url, headers={
+        "Authorization": "Bearer " + env["CLOUDFLARE_API_TOKEN"],
+        "Accept": "application/json",
+    })
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = json.load(response)
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(f"Cloudflare Queue consumer inspection failed with HTTP {error.code}") from error
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        raise RuntimeError("Cloudflare Queue consumer inspection returned no valid response") from error
+    consumer = payload.get("result")
+    if (payload.get("success") is not True or not isinstance(consumer, dict)
+            or consumer.get("consumer_id") != consumer_id):
+        raise RuntimeError("Cloudflare Queue consumer detail did not match the requested identity")
+    # Cloudflare's list endpoint currently returns script_name as null while
+    # the detail endpoint returns the actual Worker under `script`. Normalize
+    # that provider response to one internal contract before comparing it.
+    if consumer.get("script_name") is None and isinstance(consumer.get("script"), str):
+        consumer["script_name"] = consumer["script"]
+    return consumer
+
+
 def worker_queue_consumers(queue_id: str, env: dict[str, str]) -> list[dict[str, Any]]:
     """Read the live consumer registrations for one provisioned Cloudflare Queue."""
     url = (
@@ -448,7 +481,7 @@ def worker_queue_consumers(queue_id: str, env: dict[str, str]) -> list[dict[str,
     if any(not isinstance(item, dict) or not isinstance(item.get("consumer_id"), str)
            or not item["consumer_id"] for item in consumers):
         raise RuntimeError("Cloudflare Queue consumer response contains an invalid consumer")
-    return consumers
+    return [worker_queue_consumer_detail(queue_id, item["consumer_id"], env) for item in consumers]
 
 
 def worker_queue_consumer_settings(config: dict[str, Any]) -> dict[str, Any]:
