@@ -1,7 +1,7 @@
 {
   "templateSchema": 7,
   "workspaceApi": "v1",
-  "payloadAdmin": "0.10.3",
+  "payloadAdmin": "0.10.4",
   "payloadCore": "0.5.7",
   "schemaRevision": 7,
   "contentContract": "helloada-content-v3",
