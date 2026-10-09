@@ -14,9 +14,48 @@ spec.loader.exec_module(module)
 def test_artifact_must_match_exact_locked_integrity():
     data = b'approved immutable artifact'
     integrity = 'sha512-' + base64.b64encode(hashlib.sha512(data).digest()).decode()
-    module.verify_integrity(data, integrity)
-    with pytest.raises(RuntimeError, match='integrity'):
-        module.verify_integrity(b'different artifact', integrity)
+    module.verify_integrity(data, integrity, '@weareheadless/example')
+    with pytest.raises(RuntimeError, match='@weareheadless/example.*SHA-512'):
+        module.verify_integrity(b'different artifact', integrity, '@weareheadless/example')
+
+
+def test_verify_release_dependencies_checks_published_artifact_bytes(tmp_path, monkeypatch):
+    import json
+
+    names = ('@weareheadless/helloada-payload-admin', '@weareheadless/helloada-payload-core')
+    packages = {}
+    locked = {}
+    release_assets = {}
+    artifact_bytes = {}
+    for index, name in enumerate(names, start=1):
+        tag = f'test-release-{index}'
+        filename = f'{name.rsplit("/", 1)[-1]}.tgz'
+        url = f'https://github.com/weareheadless/site-agent/releases/download/{tag}/{filename}'
+        data = f'published bytes for {name}'.encode()
+        integrity = 'sha512-' + base64.b64encode(hashlib.sha512(data).digest()).decode()
+        packages[name] = url
+        locked['node_modules/' + name] = {'resolved': url, 'integrity': integrity}
+        release_assets[tag] = {'tag_name': tag, 'draft': False, 'assets': [
+            {'id': index, 'name': filename, 'digest': 'sha256:' + hashlib.sha256(data).hexdigest()}
+        ]}
+        artifact_bytes[str(index)] = data
+
+    (tmp_path / 'package.json').write_text(json.dumps({'dependencies': packages}))
+    (tmp_path / 'package-lock.json').write_text(json.dumps({'packages': locked}))
+
+    def fake_fetch(path, token, binary=False):
+        if '/releases/tags/' in path:
+            tag = path.rsplit('/', 1)[-1]
+            return release_assets[tag]
+        asset_id = path.rsplit('/', 1)[-1]
+        return artifact_bytes[asset_id]
+
+    monkeypatch.setattr(module, 'github_fetch', fake_fetch)
+    evidence = module.verify_release_dependencies(tmp_path, 'test-token')
+
+    assert [item['package'] for item in evidence] == list(names)
+    assert all(item['integrity'].startswith('sha512-') for item in evidence)
+    assert len(evidence) == 2
 
 
 def test_signed_download_does_not_receive_api_credential():
@@ -72,5 +111,5 @@ def test_default_worker_and_manifest_use_the_released_shared_versions():
     assert locked_core['version'] == core_version
     assert locked_core['resolved'] == core_asset
     assert locked_core['integrity'] == (
-        'sha512-siUhbZ2kTnvK57ptHyX492P0IfVr+o5SfnwUERf+Ga69BJvPlPf4jkAKOGG0yUhav7/OSQpgEpLOkRXrPksMgQ=='
+        'sha512-XN/gKliID2RYQ4ByfyfM84VLhOdByiY0CX77lRBizn5QISrFfn3rmpdmuJl9JVxe1PlZwKSh6vNWpnBllZ0lQA=='
     )
