@@ -7,6 +7,7 @@ import type { FormEvent } from 'react'
 import { fetchHelloAda } from '../api/fetchHelloAda'
 import { useHelloAdaTranslations } from '../api/useHelloAdaTranslations'
 import { useHelloAdaSite } from '../config/provider'
+import { isBusinessCorrespondenceReady } from '../lib/message-capabilities'
 import { WorkspaceIcon } from './WorkspaceIcon'
 
 type Contact = { id: string | number; name?: string; email: string; phone?: string; company?: string; notes?: string; source?: string; lastSeenAt?: string }
@@ -428,8 +429,9 @@ export function HelloAdaMessages() {
 
   const activeContact = detail?.conversation ? contactOf(detail.conversation.contact) : undefined
   const canSend = mailbox?.state === 'active' && Boolean(mailbox.address)
+  const canSendBusinessEmail = isBusinessCorrespondenceReady(mailbox)
   const currentDraft = [...(detail?.messages || [])].reverse().find((item) => ['reply', 'owner_message'].includes(item.direction) && item.deliveryState === 'draft')
-  const canSendCurrentDraft = canSend && currentDraft?.direction !== 'owner_message'
+  const canSendCurrentDraft = canSendBusinessEmail
 
   return <main className="helloada-messages" aria-label={t('owner.messages')}>
     <header className="helloada-messages-header">
@@ -541,7 +543,7 @@ export function HelloAdaMessages() {
               <button type="button" onClick={() => setConfirmSend(true)} disabled={!draftHash || !canSendCurrentDraft || sending}>{t('owner.messagesSend')}</button>
             </div>
             {!canSend ? <small>{t('owner.messagesNoMailbox')}</small> : null}
-            {currentDraft?.direction === 'owner_message' ? <small className="helloada-messages-policy-note">{t('owner.messagesOutboundPolicy')}</small> : null}
+            {currentDraft && mailbox?.state === 'active' && !canSendBusinessEmail ? <small className="helloada-messages-policy-note">{t('owner.messagesOutboundPolicy')}</small> : null}
           </div>
         </> : <div className="helloada-messages-empty helloada-message-placeholder">{loading ? t('owner.messagesLoading') : t('owner.messagesSelect')}</div>}
       </section>
