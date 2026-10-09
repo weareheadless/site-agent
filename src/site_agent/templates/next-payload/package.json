@@ -3,11 +3,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "prebuild": "cross-env PAYLOAD_CLI=1 payload generate:importmap && npm run generate:types",
+    "prebuild": "cross-env PAYLOAD_CONFIG_PATH=payload.config.ts PAYLOAD_CLI=1 payload generate:importmap && npm run generate:types",
     "build": "cross-env PAYLOAD_LOCAL_BUILD=1 next build --webpack",
     "dev": "next dev",
     "lint": "eslint src",
-    "payload": "cross-env PAYLOAD_CLI=1 payload",
+    "payload": "cross-env PAYLOAD_CONFIG_PATH=payload.config.ts PAYLOAD_CLI=1 payload",
     "test": "node --import tsx --test tests/*.test.mjs",
     "typecheck": "tsc --noEmit",
     "verify:payload": "cross-env NODE_ENV=production PAYLOAD_CLI=1 PAYLOAD_SECRET=ignore tsx scripts/verify-payload-contract.ts",
