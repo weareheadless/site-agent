@@ -417,6 +417,7 @@ def test_auto_provision_persists_invalid_site_origin_as_a_failure(tmp_path, monk
 def test_failed_payload_activation_preserves_cloudflare_progress_for_retry(monkeypatch, tmp_path):
     config = _config(tmp_path)
     memory = FakeMemory()
+    provider_calls = []
     plan = {
         "tenant": "oceanicvibes", "domain": "oceanicvibes.com", "address": "contact@oceanicvibes.com",
         "worker": "oceanicvibes", "snapshotSha256": "preflight-hash", "operations": [],
@@ -432,12 +433,19 @@ def test_failed_payload_activation_preserves_cloudflare_progress_for_retry(monke
             assert api_key == "management-key"
 
         def ensure_domain(self, domain):
+            provider_calls.append("ensure_domain")
             return {"id": "resend-domain-id", "domain": domain, "status": "verified"}
 
     monkeypatch.setattr(bootstrap, "resend_api_key", lambda config, env: "management-key")
     monkeypatch.setattr(bootstrap, "ResendProvisioner", Resend)
     monkeypatch.setattr(bootstrap, "_ensure_tenant_resend_key", lambda **_kwargs: "tenant-sending-key-id")
-    monkeypatch.setattr(bootstrap, "_tenant_env_path", lambda _config, _tenant: tmp_path / "tenant.env")
+    def registered_secret_path(config_path, tenant_id):
+        assert config_path == _tenant_config_path(tmp_path, "oceanicvibes")
+        assert tenant_id == "oceanicvibes"
+        provider_calls.append("tenant_secret_path")
+        return tmp_path / "tenant.env"
+
+    monkeypatch.setattr(bootstrap, "_tenant_env_path", registered_secret_path)
 
     class Client:
         def __init__(self, email_token, dns_token):
@@ -457,6 +465,7 @@ def test_failed_payload_activation_preserves_cloudflare_progress_for_retry(monke
     state, _ = bootstrap.auto_provision_email(config, tenant_id="oceanicvibes", tenant_config_path=_tenant_config_path(tmp_path, "oceanicvibes"), memory=memory, env={})
 
     assert state["state"] == "failed"
+    assert provider_calls == ["tenant_secret_path", "ensure_domain"]
     assert state["cloudflareRouteId"] == "rule-id"
     assert "Payload timeout" in state["error"]
     assert memory.state["email_provisioning_state"]["cloudflareRouteId"] == "rule-id"
