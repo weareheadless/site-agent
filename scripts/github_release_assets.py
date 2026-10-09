@@ -95,5 +95,5 @@ def prepare_release_dependencies(checkout, token, npm, environment, run):
 if __name__ == '__main__':
     import os
 
-    for item in verify_release_dependencies(Path.cwd(), os.environ.get('GITHUB_TOKEN', '')):
+    for item in verify_release_dependencies(Path.cwd() / 'src/site_agent/templates/next-payload', os.environ.get('GITHUB_TOKEN', '')):
         print(f"Verified {item['package']} {item['release']} ({item['digest']})")
