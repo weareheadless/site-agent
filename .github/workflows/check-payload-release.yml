@@ -41,6 +41,10 @@ jobs:
           python-version: '3.11'
       - run: python -m pip install -e '.[dev]'
       - run: python -m pytest -q
+      - name: Verify locked shared package release assets
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/github_release_assets.py
 
   shared-payload-packages:
     runs-on: ubuntu-latest
