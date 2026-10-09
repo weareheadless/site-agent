@@ -59,7 +59,7 @@ def test_default_worker_and_manifest_use_the_released_shared_versions():
     assert locked_admin['version'] == admin_version
     assert locked_admin['resolved'] == release_asset
     assert locked_admin['integrity'] == (
-        'sha512-emr3+N6Ol3hBcgj3SxstlabjDsR0JPGbVGPBYJhWD+IxiVE2QZlb6l6QxkdgnvJ2T9JrUcPvQT/azdmbIZaKoA=='
+        'sha512-CU1YeJMOuA5EEuAGO5ff1Dixr6ts8TEHdnm7puAfxF7cAOcFkbwNbEaglcW2O0hSmcJNP+UOAcAiztnOSegZtw=='
     )
 
     core_version = json.loads((root / 'packages/helloada-payload-core/package.json').read_text())['version']
@@ -72,5 +72,5 @@ def test_default_worker_and_manifest_use_the_released_shared_versions():
     assert locked_core['version'] == core_version
     assert locked_core['resolved'] == core_asset
     assert locked_core['integrity'] == (
-        'sha512-pMOmBe0K3KySHtrh8WLqCmzydC6iQwvrCDsfsMCmoGA4jYFxSBX7M5b66gyN2Qhorfs3C3yXIPq5OWormCh0dw=='
+        'sha512-siUhbZ2kTnvK57ptHyX492P0IfVr+o5SfnwUERf+Ga69BJvPlPf4jkAKOGG0yUhav7/OSQpgEpLOkRXrPksMgQ=='
     )

@@ -41,6 +41,7 @@ from ..hands.github_provisioning import GitHubRepositoryProvisioner, GitHubRepos
 from ..payload_contract import PayloadContractError, validate_payload_migrations
 from ..site_scaffold import payload_template_copy_ignore
 from .release_queue import ReleaseQueueError, request_release, release_root
+from .mailbox_identity import PLATFORM_EMAIL_DOMAIN, default_mailbox_identity
 from .tenant_registration import (
     TenantRegistrationError,
     TenantRegistrationService,
@@ -1318,12 +1319,21 @@ class WebsiteBootstrapService:
         raw["display_name"] = display_name or raw.get("display_name") or tenant_id
         messages = _mapping(raw.get("messages"))
         email_settings = _mapping(messages.get("email"))
+        configured_email_domain = str(email_settings.get("domain") or "").strip().lower().rstrip(".")
+        mailbox_identity = (
+            {
+                "domain": configured_email_domain,
+                "local_part": str(email_settings.get("local_part") or (tenant_id if configured_email_domain == PLATFORM_EMAIL_DOMAIN else "hello")),
+                "domain_source": str(email_settings.get("domain_source") or ("helloada_platform" if configured_email_domain == PLATFORM_EMAIL_DOMAIN else "site_custom_domain")),
+            }
+            if configured_email_domain else default_mailbox_identity(tenant_id)
+        )
         messages = {
             **messages,
             "email": {
                 **email_settings,
                 "enabled": True,
-                "local_part": str(email_settings.get("local_part") or "hello"),
+                **mailbox_identity,
                 "provisioning": {
                     **_mapping(email_settings.get("provisioning")),
                     "auto": True,

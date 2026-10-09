@@ -3,7 +3,9 @@ import type { SerializedEditorState } from 'lexical'
 import { helloAdaBindingId } from '@weareheadless/helloada-payload-core/bindings'
 import { mediaAlt, mediaUrl } from '@/lib/content'
 import ContactForm from './ContactForm'
+import BookingForm from './BookingForm'
 import { runtimeValue } from '@/lib/runtime-env'
+import { helloAdaSite } from '@/helloada.config'
 
 type ContentEntry = Record<string, unknown> & { key: string; blockType: string }
 type Section = Record<string, unknown> & { key: string; label: string }
@@ -122,6 +124,19 @@ function ContentEntryView({ entry, collection, documentId, sectionKey, preview }
           choices: Array.isArray(field.choices) ? (field.choices as Array<Record<string, unknown>>).map((choice) => ({ key: String(choice.key || ''), label: String(choice.label || '') })) : [],
         })),
       }} />
+    }
+    case 'helloAdaBooking': {
+      if (!helloAdaSite.features.bookings) throw new Error('A published booking block requires the shared bookings capability in src/helloada.config.ts.')
+      const appointmentType = entry.appointmentType && typeof entry.appointmentType === 'object' && !Array.isArray(entry.appointmentType)
+        ? entry.appointmentType as Record<string, unknown>
+        : undefined
+      if (!appointmentType || !String(appointmentType.slug || '')) throw new Error(`Published booking block “${key}” has no valid appointment type.`)
+      if (preview) return <p className="helloada-form-unavailable" key={key}>Preview only — appointments will not be created.</p>
+      const siteKey = runtimeValue('HELLOADA_TURNSTILE_SITE_KEY')
+      if (!siteKey) throw new Error('The booking security check is not configured for this website.')
+      return <BookingForm key={key} appointmentType={{
+        slug: String(appointmentType.slug), name: String(appointmentType.name || entry.label || ''), description: String(appointmentType.description || ''),
+      }} siteKey={siteKey} locale={helloAdaSite.defaultLocale} />
     }
     default:
       throw new Error(`Payload content “${key}” uses unsupported block type “${entry.blockType}”.`)

@@ -18,6 +18,7 @@ type TenantEnv = {
   HELLOADA_MESSAGES_QUEUE_NAME: string
   HELLOADA_MESSAGES_DLQ_NAME: string
   PRIVATE_EMAIL: PrivateEmailBucket
+  RESEND_API_KEY?: string
 }
 
 type WorkerContext = { waitUntil: (promise: Promise<unknown>) => void }

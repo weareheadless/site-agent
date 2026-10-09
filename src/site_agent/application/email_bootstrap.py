@@ -4,23 +4,35 @@ from __future__ import annotations
 
 import copy
 import datetime
+import fcntl
 import json
+import os
 import re
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
+from uuid import uuid4
 from urllib.parse import urlsplit
 
-from ..credentials import cloudflare_dns_api_token, cloudflare_email_api_token, credential_environment
+from ..credentials import cloudflare_api_token, cloudflare_dns_api_token, cloudflare_email_api_token, cloudflare_env_names, credential_environment, resend_api_key
 from ..hands.cloudflare_email import CloudflareEmailClient
+from ..hands.cloudflare_worker import CloudflareWorkerSecretsClient
+from ..hands.resend import ResendCredentialError, ResendError, ResendProvisioner, ResendVerificationPending
 from .email_provisioning import EmailProvisioningError, EmailProvisioningService
+from .mailbox_identity import PLATFORM_EMAIL_DOMAIN
 from .tenant_registration import tenant_token_env
 
 
 class EmailWorkerReadinessError(EmailProvisioningError):
     """The exact registered Worker release is not ready for email routing."""
+
+
+class EmailProvisioningActionRequired(EmailProvisioningError):
+    """An owner/operator must fix a provider credential before provisioning."""
 
 
 def _now() -> str:
@@ -29,6 +41,162 @@ def _now() -> str:
 
 def _mapping(value: Any) -> Mapping[str, Any]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _tenant_env_path(config: Mapping[str, Any], tenant_id: str) -> Path:
+    raw_data_dir = Path(str(config.get("data_dir") or "")).expanduser()
+    raw_tenant_dir = raw_data_dir.parent
+    if raw_data_dir.is_symlink() or raw_tenant_dir.is_symlink():
+        raise EmailProvisioningError("The registered tenant secret path cannot contain symbolic links")
+    data_dir = raw_data_dir.resolve(strict=True)
+    tenant_dir = data_dir.parent
+    if data_dir.name != "data" or tenant_dir.name != tenant_id or tenant_dir == Path(tenant_dir.anchor):
+        raise EmailProvisioningError("The registered tenant secret path is not canonical")
+    path = tenant_dir / "tenant.env"
+    if path.is_symlink() or not path.is_file() or tenant_dir.is_symlink():
+        raise EmailProvisioningError("The registered tenant secret file is unavailable")
+    return path
+
+
+def _tenant_secret_values(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            if "=" not in line:
+                raise EmailProvisioningError("The registered tenant secret file is malformed")
+            name, value = line.split("=", 1)
+            name = name.strip()
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) or name in values:
+                raise EmailProvisioningError("The registered tenant secret names are invalid")
+            values[name] = value.strip()
+    except (OSError, UnicodeError) as exc:
+        raise EmailProvisioningError("The registered tenant secret file could not be read") from exc
+    return values
+
+
+def _write_tenant_secrets(path: Path, values: Mapping[str, str]) -> None:
+    for name, value in values.items():
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(name)) or any(char in str(value) for char in "\r\n\0"):
+            raise EmailProvisioningError("The tenant secret update contains an invalid name or value")
+    lock_fd = os.open(path.with_name(".tenant-env.lock"), os.O_CREAT | os.O_RDWR, 0o600)
+    temporary: Path | None = None
+    try:
+        os.fchmod(lock_fd, 0o600)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        current = _tenant_secret_values(path)
+        for name, value in current.items():
+            if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) or any(char in value for char in "\r\n\0"):
+                raise EmailProvisioningError("The registered tenant secret file contains an invalid name or value")
+        current.update({name: str(value) for name, value in values.items()})
+        descriptor, filename = tempfile.mkstemp(prefix=".tenant-env-", suffix=".tmp", dir=path.parent)
+        temporary = Path(filename)
+        try:
+            os.fchmod(descriptor, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                for name, value in sorted(current.items()):
+                    stream.write(f"{name}={value}\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+            temporary = None
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+
+
+def _ensure_tenant_resend_key(
+    *,
+    path: Path,
+    tenant_id: str,
+    domain_id: str,
+    worker: str,
+    config: Mapping[str, Any],
+    env: Mapping[str, str],
+    resend: ResendProvisioner,
+) -> str:
+    """Install one domain-scoped sender key and reconcile interrupted rotations."""
+    lock_fd = os.open(path.with_name(".resend-key-provisioning.lock"), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        os.fchmod(lock_fd, 0o600)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        values = _tenant_secret_values(path)
+        api_key = str(values.get("RESEND_API_KEY") or "").strip()
+        key_id = str(values.get("RESEND_API_KEY_ID") or "").strip()
+        key_domain_id = str(values.get("RESEND_API_KEY_DOMAIN_ID") or "").strip()
+        installed_id = str(values.get("RESEND_API_KEY_INSTALLED_ID") or "").strip()
+        previous_ids = [
+            item for item in str(values.get("RESEND_API_KEY_PREVIOUS_IDS") or "").split(",")
+            if item.strip()
+        ]
+        pending_name = str(values.get("RESEND_API_KEY_PENDING_NAME") or "").strip()
+
+        if bool(api_key) != bool(key_id):
+            raise EmailProvisioningError("The tenant Resend sending credential is incomplete; operator reconciliation is required")
+        key_id_pattern = r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"
+        if (key_id and not re.fullmatch(key_id_pattern, key_id)) or any(
+            not re.fullmatch(key_id_pattern, item) for item in previous_ids
+        ):
+            raise EmailProvisioningError("The tenant Resend key ledger contains an invalid provider identity")
+
+        # A create request may have succeeded at Resend while its response was
+        # lost. The intent name is persisted before POST; remove any matching
+        # token (which cannot be retrieved again) before starting a new create.
+        if pending_name:
+            pending = resend.api_keys_named(pending_name)
+            for item in pending:
+                identity = str(item.get("id") or "").strip()
+                if not identity:
+                    raise EmailProvisioningError("Resend returned an API key without an identity during retry reconciliation")
+                resend.delete_api_key(identity)
+            if resend.api_keys_named(pending_name):
+                raise EmailProvisioningError("Resend did not confirm cleanup of an interrupted tenant key creation")
+            _write_tenant_secrets(path, {"RESEND_API_KEY_PENDING_NAME": ""})
+
+        if api_key and key_id and key_domain_id == domain_id:
+            if installed_id != key_id:
+                _worker_secret_client(config, env, worker).put_secret("RESEND_API_KEY", api_key)
+                _write_tenant_secrets(path, {"RESEND_API_KEY_INSTALLED_ID": key_id})
+            for old_id in dict.fromkeys(previous_ids):
+                if old_id and old_id != key_id:
+                    resend.delete_api_key(old_id)
+            if previous_ids:
+                _write_tenant_secrets(path, {"RESEND_API_KEY_PREVIOUS_IDS": ""})
+            return key_id
+
+        old_ids = list(dict.fromkeys([*previous_ids, *([key_id] if key_id else [])]))
+        pending_name = f"HA-{tenant_id[:20]}-{uuid4().hex[:12]}"
+        _write_tenant_secrets(path, {"RESEND_API_KEY_PENDING_NAME": pending_name})
+        new_id, new_key = resend.create_sending_key(pending_name, domain_id)
+        _write_tenant_secrets(path, {
+            "RESEND_API_KEY": new_key,
+            "RESEND_API_KEY_ID": new_id,
+            "RESEND_API_KEY_DOMAIN_ID": domain_id,
+            "RESEND_API_KEY_PREVIOUS_IDS": ",".join(old_ids),
+            "RESEND_API_KEY_PENDING_NAME": "",
+        })
+        _worker_secret_client(config, env, worker).put_secret("RESEND_API_KEY", new_key)
+        _write_tenant_secrets(path, {"RESEND_API_KEY_INSTALLED_ID": new_id})
+        for old_id in old_ids:
+            if old_id and old_id != new_id:
+                resend.delete_api_key(old_id)
+        if old_ids:
+            _write_tenant_secrets(path, {"RESEND_API_KEY_PREVIOUS_IDS": ""})
+        return new_id
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+
+
+def _worker_secret_client(config: Mapping[str, Any], env: Mapping[str, str], worker: str) -> CloudflareWorkerSecretsClient:
+    token = cloudflare_api_token(config, env)
+    _token_name, account_name = cloudflare_env_names(config)
+    account = str(env.get(account_name) or "").strip()
+    return CloudflareWorkerSecretsClient(token, account, worker)
 
 
 def _registered_site_origin(config: Mapping[str, Any], env: Mapping[str, str] | None = None) -> str:
@@ -128,7 +296,12 @@ def _configure_payload_mailbox(
     origin = _registered_site_origin(config, env)
     request = urllib.request.Request(
         origin + "/api/helloada/internal/messages/configure-mailbox",
-        data=json.dumps({"domain": domain, "address": address}).encode("utf-8"),
+        data=json.dumps({
+            "domain": domain,
+            "address": address,
+            "outboundProvider": "resend",
+            "outboundMode": "business_correspondence",
+        }).encode("utf-8"),
         method="POST",
         headers={
             "Authorization": f"Bearer {token}",
@@ -152,7 +325,7 @@ def _configure_payload_mailbox(
         or str(result.get("address") or "").lower() != address
     ):
         raise EmailProvisioningError("Payload did not confirm the requested mailbox as active")
-    return {"state": "active", "domain": domain, "address": address}
+    return {"state": "active", "domain": domain, "address": address, "outboundProvider": "resend"}
 
 
 def prepare_email_plan(
@@ -172,7 +345,7 @@ def prepare_email_plan(
     if not domain:
         raise EmailProvisioningError("A registered email domain is required before email can be provisioned")
 
-    local_part = _configured_local_part(email, policy_overrides)
+    local_part = _configured_local_part(email, policy_overrides, tenant_id=tenant_id, domain=domain)
     dns_token = cloudflare_dns_api_token(config, resolved_env)
     email_token = cloudflare_email_api_token(config, resolved_env)
     if not dns_token:
@@ -183,6 +356,15 @@ def prepare_email_plan(
     if readiness_error:
         raise EmailWorkerReadinessError(readiness_error)
     client = CloudflareEmailClient(email_token, dns_token)
+    management_key = resend_api_key(config, resolved_env)
+    if not management_key:
+        raise EmailProvisioningActionRequired("The protected Resend Full access API key is not configured")
+    try:
+        ResendProvisioner(management_key, client).validate_management_access()
+    except ResendCredentialError as exc:
+        raise EmailProvisioningActionRequired(str(exc)) from exc
+    except ResendError as exc:
+        raise EmailProvisioningError(str(exc)) from exc
     zone = client.zone(domain)
     zone_name = str(zone.get("name") or "").strip().lower().rstrip(".")
     if not zone_name or (domain != zone_name and not domain.endswith("." + zone_name)):
@@ -205,6 +387,11 @@ def prepare_email_plan(
         "worker": worker,
     }
     plan = EmailProvisioningService(client).plan(tenant_id, policy)
+    plan["operations"] = [
+        *list(plan.get("operations") or []),
+        f"verify the Resend sending domain and add only its declared, conflict-free DNS records for {domain}",
+        f"install or rotate the domain-restricted Resend sending key for {address}",
+    ]
     return plan, policy, resolved_env
 
 
@@ -232,14 +419,24 @@ def _configured_email_domain(config: Mapping[str, Any]) -> str:
         host = str(urlsplit(origin if "://" in origin else f"https://{origin}").hostname or "").lower().rstrip(".")
     except ValueError as exc:
         raise EmailProvisioningError("The registered website origin is invalid") from exc
-    return host if host and not host.endswith(".workers.dev") else ""
+    if host and host.endswith(".workers.dev"):
+        return PLATFORM_EMAIL_DOMAIN
+    return host
 
 
-def _configured_local_part(email: Mapping[str, Any], policy_overrides: Mapping[str, Any] | None) -> str:
+def _configured_local_part(
+    email: Mapping[str, Any],
+    policy_overrides: Mapping[str, Any] | None,
+    *,
+    tenant_id: str,
+    domain: str,
+) -> str:
     overrides = _mapping(policy_overrides)
     configured = str(overrides.get("localPart") or email.get("local_part") or "").strip().lower()
-    if (overrides.get("emailDomain") or email.get("domain")) and not configured:
-        raise EmailProvisioningError("A tenant-unique mailbox local part must be registered for an explicit email domain")
+    if domain == PLATFORM_EMAIL_DOMAIN:
+        if not configured or (configured == "hello" and str(tenant_id).strip().lower() != "hello"):
+            raise EmailProvisioningError("A tenant-unique mailbox local part must be registered for helloada.app")
+        return configured
     return configured or "hello"
 
 
@@ -290,7 +487,9 @@ def auto_provision_email(
         raw_domain = _registered_site_domain(config)
         domain_override = str(_mapping(policy_overrides).get("emailDomain") or "").strip()
         requested_email_domain = _validated_email_domain(domain_override) if domain_override else _configured_email_domain(config)
-        local_part = _configured_local_part(email, policy_overrides)
+        local_part = _configured_local_part(
+            email, policy_overrides, tenant_id=tenant_id, domain=requested_email_domain,
+        )
     except EmailProvisioningError as exc:
         result = {
             **state,
@@ -308,6 +507,19 @@ def auto_provision_email(
             memory.kv_set("email_provisioning_state", result)
         return result, resolved_env
 
+    if not resend_api_key(config, resolved_env):
+        result = {
+            **state,
+            "state": "action_required",
+            "tenant": tenant_id,
+            "domain": requested_email_domain,
+            "error": "The protected Resend management API key is not configured.",
+            "lastAttemptAt": _now(),
+        }
+        if memory is not None:
+            memory.kv_set("email_provisioning_state", result)
+        return result, resolved_env
+
     address = f"{local_part}@{requested_email_domain}"
     configured_worker = str(_mapping(site.get("source_deployment")).get("worker_name") or "").strip().lower()
     if (
@@ -315,6 +527,7 @@ def auto_provision_email(
         and state.get("state") == "active"
         and state.get("siteDomain") == raw_domain
         and state.get("emailDomainSetting") == requested_email_domain
+        and state.get("outboundProvider") == "resend"
         and str(state.get("address") or "").split("@", 1)[0] == local_part
         and state.get("worker") == configured_worker
     ):
@@ -366,7 +579,21 @@ def auto_provision_email(
         email_token = cloudflare_email_api_token(config, resolved_env)
         if not dns_token or not email_token:
             raise EmailProvisioningError("The Cloudflare DNS and Email Service API tokens must both be configured")
-        provider = EmailProvisioningService(CloudflareEmailClient(email_token, dns_token)).provision(preflight, policy)
+        cloudflare_email = CloudflareEmailClient(email_token, dns_token)
+        resend = ResendProvisioner(resend_api_key(config, resolved_env), cloudflare_email)
+        resend_domain = resend.ensure_domain(resolved_email_domain)
+        secret_path = _tenant_env_path(config, tenant_id)
+        send_key_id = _ensure_tenant_resend_key(
+            path=secret_path,
+            tenant_id=tenant_id,
+            domain_id=str(resend_domain["id"]),
+            worker=worker,
+            config=config,
+            env=resolved_env,
+            resend=resend,
+        )
+
+        provider = EmailProvisioningService(cloudflare_email).provision(preflight, policy)
         attempt.update(state="configuring_payload", cloudflareRouteId=provider["routingRuleId"])
         if memory is not None:
             memory.kv_set("email_provisioning_state", attempt)
@@ -390,9 +617,45 @@ def auto_provision_email(
             "sendingDomainId": provider["sendingDomainId"],
             "routingRuleId": provider["routingRuleId"],
             "routingStatus": provider["routingStatus"],
+            "outboundProvider": "resend",
+            "resendDomain": resend_domain["domain"],
+            "resendDomainStatus": resend_domain["status"],
+            "resendSendingKeyProvisioned": True,
             "payloadMailboxState": payload["state"],
             "preflightSha256": preflight["snapshotSha256"],
             "completedAt": _now(),
+        }
+        if memory is not None:
+            memory.kv_set("email_provisioning_state", result)
+        return result, resolved_env
+    except ResendVerificationPending as exc:
+        result = {
+            **state,
+            **attempt,
+            "state": "provisioning",
+            "tenant": tenant_id,
+            "domain": resolved_email_domain,
+            "emailDomainSetting": requested_email_domain,
+            "siteDomain": raw_domain,
+            "address": address,
+            "error": str(exc)[:500],
+            "lastAttemptAt": _now(),
+        }
+        if memory is not None:
+            memory.kv_set("email_provisioning_state", result)
+        return result, resolved_env
+    except (EmailProvisioningActionRequired, ResendCredentialError) as exc:
+        result = {
+            **state,
+            **attempt,
+            "state": "action_required",
+            "tenant": tenant_id,
+            "domain": resolved_email_domain,
+            "emailDomainSetting": requested_email_domain,
+            "siteDomain": raw_domain,
+            "address": address,
+            "error": str(exc)[:500],
+            "lastAttemptAt": _now(),
         }
         if memory is not None:
             memory.kv_set("email_provisioning_state", result)
@@ -430,4 +693,4 @@ def auto_provision_email(
         return result, resolved_env
 
 
-__all__ = ["EmailWorkerReadinessError", "auto_provision_email", "prepare_email_plan"]
+__all__ = ["EmailProvisioningActionRequired", "EmailWorkerReadinessError", "auto_provision_email", "prepare_email_plan"]

@@ -9,6 +9,7 @@ import { HelloAdaHistory } from './HelloAdaHistory'
 import { HelloAdaGrowth } from './HelloAdaGrowth'
 import { HelloAdaGallery } from './HelloAdaGallery'
 import { HelloAdaMessages } from './HelloAdaMessages'
+import { HelloAdaCalendar } from './HelloAdaCalendar'
 import { EditableRichTextEditor } from './EditableRichTextEditor'
 import { fetchHelloAda } from '../api/fetchHelloAda'
 import { useHelloAdaTranslations } from '../api/useHelloAdaTranslations'
@@ -690,10 +691,12 @@ const researchEntriesFrom = (research: IntakeResearchStatus | undefined): BriefE
 
 export function WebsiteWorkspace() {
   const searchParams = useSearchParams()
+  const site = useHelloAdaSite()
   if (searchParams.get('view') === 'history') return <HelloAdaHistory />
   if (searchParams.get('view') === 'growth') return <HelloAdaGrowth />
   if (searchParams.get('view') === 'gallery') return <HelloAdaGallery />
   if (searchParams.get('view') === 'messages') return <HelloAdaMessages />
+  if (searchParams.get('view') === 'calendar' && site.features.bookings) return <HelloAdaCalendar />
   return <ReviewWorkspace />
 }
 

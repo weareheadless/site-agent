@@ -16,6 +16,7 @@ export type HelloAdaSiteConfig = {
     commerce: boolean
     posts: boolean
     social: boolean
+    bookings?: boolean
   }
 }
 
@@ -31,7 +32,7 @@ const defaultHelloAdaSite: HelloAdaSiteConfig = {
   locales: ['en'],
   routes: { workspaceApi: '/api/helloada', liveSite: '/', preview: '/helloada-preview' },
   content: { primaryCollections: ['pages', 'posts', 'products', 'media'], settingsGlobals: ['siteSettings', 'navigation'] },
-  features: { commerce: false, posts: true, social: false },
+  features: { commerce: false, posts: true, social: false, bookings: false },
 }
 
 let activeHelloAdaSite = defaultHelloAdaSite

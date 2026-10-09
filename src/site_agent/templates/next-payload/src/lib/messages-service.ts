@@ -6,12 +6,12 @@ import config from '@payload-config'
 import { hashJson } from '@/lib/payload-hash'
 
 export type MessageRecord = Record<string, unknown>
-export type MessageOperationType = 'form_accept' | 'inbound_email' | 'owner_notification' | 'save_draft' | 'send_reply'
+export type MessageOperationType = 'form_accept' | 'inbound_email' | 'owner_notification' | 'save_draft' | 'send_reply' | 'send_message' | 'book_appointment' | 'booking_notification'
 export const MAX_MESSAGE_PROCESSING_ATTEMPTS = 5
 
 type Payload = Awaited<ReturnType<typeof getPayload>>
 type Queue = { send: (message: unknown) => Promise<unknown> }
-type EmailSender = { send: (message: { from: string; to: string; subject: string; text: string; headers?: Record<string, string> }) => Promise<{ messageId?: string }> }
+type EmailSender = { send: (message: { from: string; to: string; cc?: string[]; bcc?: string[]; subject: string; text: string; headers?: Record<string, string> }) => Promise<{ messageId?: string }> }
 type RateLimiter = { limit: (input: { key: string }) => Promise<{ success: boolean }> }
 type ObjectBody = { arrayBuffer: () => Promise<ArrayBuffer> }
 type PrivateBucket = {
@@ -29,7 +29,9 @@ export type MessageBindings = {
   HELLOADA_SITE_AGENT_TOKEN?: string
   PRIVATE_EMAIL?: PrivateBucket
   EMAIL?: EmailSender
+  RESEND_API_KEY?: string
   HELLOADA_FORM_RATE_LIMIT?: RateLimiter
+  HELLOADA_BOOKING_RATE_LIMIT?: RateLimiter
   HELLOADA_NOTIFICATION_RATE_LIMIT?: RateLimiter
   HELLOADA_TURNSTILE_SECRET_KEY?: string
   D1?: D1Database
@@ -167,7 +169,7 @@ export const markMessageOperation = async (
 
 export const createOrUpdateContact = async (
   payload: Payload,
-  details: { email: string; emailKey: string; name?: string; phone?: string; company?: string; source: 'form' | 'email' },
+  details: { email: string; emailKey: string; name?: string; phone?: string; company?: string; source: 'form' | 'email' | 'owner' | 'booking' },
 ) => {
   const existing = await findMessageRecord(payload, 'contacts', { emailKey: { equals: details.emailKey } })
   if (existing) {
@@ -234,7 +236,7 @@ export const enqueueDueMessageOperations = async (payload: Payload, env: Message
     WHERE state = 'processing' AND lease_until IS NOT NULL AND lease_until < ?1
     ORDER BY updated_at ASC LIMIT 100`).bind(now).all<MessageRecord>()
   for (const row of stale.results || []) {
-    if (['send_reply', 'owner_notification'].includes(String(row.operation_type))) {
+    if (['send_reply', 'send_message', 'owner_notification', 'booking_notification'].includes(String(row.operation_type))) {
       await env.D1.prepare(`UPDATE message_operations SET state = 'uncertain', lease_until = NULL,
         error_code = 'delivery_uncertain', updated_at = ?1 WHERE operation_id = ?2 AND state = 'processing'`)
         .bind(now, row.operation_id).run()
@@ -291,7 +293,7 @@ export const markDeadLetterMessageOperation = async (
     .bind(operationId).all<MessageRecord>()
   const row = result.results?.[0]
   if (!row || ['completed', 'failed', 'uncertain'].includes(String(row.state))) return String(row?.state || 'missing')
-  const finalState = ['send_reply', 'owner_notification'].includes(String(row.operation_type)) && row.state === 'processing' ? 'uncertain' : 'failed'
+  const finalState = ['send_reply', 'send_message', 'owner_notification', 'booking_notification'].includes(String(row.operation_type)) && row.state === 'processing' ? 'uncertain' : 'failed'
   const errorCode = finalState === 'uncertain' ? 'delivery_uncertain' : 'queue_dead_letter'
   const now = nowIso()
   const changed = await env.D1.prepare(`UPDATE message_operations SET state = ?1, lease_until = NULL,
@@ -303,7 +305,7 @@ export const markDeadLetterMessageOperation = async (
     state: finalState, attempts: Number(row.attempts || operation.attempts || 0),
     leaseUntil: null, nextAttemptAt: null, errorCode,
   })
-  if (row.operation_type === 'send_reply') {
+  if (['send_reply', 'send_message'].includes(String(row.operation_type))) {
     const body = operationBody(operation)
     const reply = await findMessageRecord(payload, 'messages', { id: { equals: body.messageId } })
     if (reply) await payload.update({ collection: 'messages', id: reply.id as string, data: { deliveryState: finalState } as never, overrideAccess: true })

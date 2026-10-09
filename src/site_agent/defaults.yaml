@@ -13,7 +13,7 @@ observability:
 # names only; secret values stay outside tenant configuration and are loaded by
 # the trusted parent/deployment process.
 credentials:
-  # The host profile is the single source of truth for GitHub/Cloudflare
+  # The host profile is the single source of truth for GitHub/Cloudflare/Resend
   # wiring. Tenant configs may override this only for an intentional isolated
   # deployment.
   profile_file: /SOCIAL/configs/host-credentials.yaml

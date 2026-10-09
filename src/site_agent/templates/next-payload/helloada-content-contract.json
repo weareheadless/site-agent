@@ -1,8 +1,8 @@
 {
   "contract": "helloada-content-v3",
   "corePackage": "@weareheadless/helloada-payload-core",
-  "coreVersion": "0.5.6",
-  "schemaRevision": 6,
+  "coreVersion": "0.5.7",
+  "schemaRevision": 7,
   "collections": {
     "pages": [
       "sourceId",
@@ -104,6 +104,35 @@
       "fields",
       "enabled"
     ],
+    "appointmentTypes": [
+      "name",
+      "slug",
+      "description",
+      "durationMinutes",
+      "bufferMinutes",
+      "weeklyAvailability",
+      "enabled"
+    ],
+    "calendarEvents": [
+      "title",
+      "appointmentType",
+      "contact",
+      "startsAt",
+      "endsAt",
+      "bufferMinutes",
+      "timeZone",
+      "state",
+      "sourcePage",
+      "receiptId",
+      "answers",
+      "consentAcceptedAt",
+      "notificationState"
+    ],
+    "calendarSlotLocks": [
+      "slotKey",
+      "operationId",
+      "expiresAt"
+    ],
     "contacts": [
       "emailKey",
       "email",
@@ -132,6 +161,8 @@
       "direction",
       "from",
       "to",
+      "ccRecipients",
+      "bccRecipients",
       "subject",
       "text",
       "draftText",
@@ -199,6 +230,8 @@
     "messageMailbox": [
       "domain",
       "address",
+      "outboundProvider",
+      "outboundMode",
       "state",
       "statusDetail",
       "activatedAt",
@@ -209,6 +242,12 @@
       "notificationCodeExpiresAt",
       "notificationCodeSentAt",
       "notificationCodeAttempts"
+    ],
+    "calendarSettings": [
+      "enabled",
+      "timeZone",
+      "minimumNoticeHours",
+      "bookingWindowDays"
     ]
   },
   "contentBlocks": [
@@ -218,6 +257,7 @@
     "helloAdaImage",
     "helloAdaLink",
     "helloAdaContentList",
-    "helloAdaContactForm"
+    "helloAdaContactForm",
+    "helloAdaBooking"
   ]
 }

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { helloAdaIdempotencyKey, normalizeHelloAdaEmail, validateHelloAdaReplyText } from '@weareheadless/helloada-payload-core/messages'
+import { helloAdaIdempotencyKey, normalizeHelloAdaEmail, validateHelloAdaRecipients, validateHelloAdaReplyText, validateHelloAdaSubject } from '@weareheadless/helloada-payload-core/messages'
 import { hashJson } from '@/lib/payload-hash'
 import type { HelloAdaAuth } from '@/lib/helloada-auth'
 import { helloAdaSite } from '@/helloada.config'
@@ -12,6 +12,9 @@ import {
 } from '@/lib/message-notifications'
 import {
   createMessageOperation,
+  createMessageOnce,
+  createOrFindConversation,
+  createOrUpdateContact,
   dispatchMessageOperation,
   enqueueDueMessageOperations,
   findMailbox,
@@ -20,6 +23,7 @@ import {
   markMessageOperation,
   messageRuntime,
   nowIso,
+  newMessageId,
   tenantIdentity,
   updateMessageOperation,
 } from '@/lib/messages-service'
@@ -32,6 +36,23 @@ const noStore = { 'Cache-Control': 'private, no-store' }
 const fail = (message: string, status = 400) => NextResponse.json({ error: 'helloada_messages_error', message }, { status, headers: noStore })
 const object = (value: unknown) => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 const text = (value: unknown) => String(value ?? '').trim()
+const MESSAGE_PAGE_SIZE = 30
+const parseCursor = (value: string) => {
+  if (!value) return undefined
+  const separator = value.indexOf('|')
+  if (separator < 1) throw new Error('The message list cursor is invalid. Refresh the mailbox.')
+  const timestamp = value.slice(0, separator)
+  const id = value.slice(separator + 1)
+  if (!Number.isFinite(Date.parse(timestamp)) || !/^\d+$/.test(id) || !Number.isSafeInteger(Number(id))) {
+    throw new Error('The message list cursor is invalid. Refresh the mailbox.')
+  }
+  return { timestamp, id: Number(id) }
+}
+const cursorWhere = (field: 'createdAt' | 'lastActivityAt', cursor: ReturnType<typeof parseCursor>) => cursor ? ({ or: [
+  { [field]: { less_than: cursor.timestamp } },
+  { and: [{ [field]: { equals: cursor.timestamp } }, { id: { less_than: cursor.id } }] },
+] }) : undefined
+const cursorFor = (row: Record<string, unknown>, field: 'createdAt' | 'lastActivityAt') => `${String(row[field] || '')}|${String(row.id || '')}`
 const hasOwnerOrigin = (request: Request) => {
   const origin = request.headers.get('origin')
   if (!origin) return false
@@ -44,9 +65,13 @@ const bodyOf = async (request: Request, max = 16_384) => {
   if (new TextEncoder().encode(raw).byteLength > max) throw new Error('The request is too large.')
   try { return object(JSON.parse(raw)) } catch { throw new Error('The request could not be read.') }
 }
-const listConversationWhere = (state: string, query: string) => {
+const listConversationWhere = (state: string, query: string, folder: string) => {
   const and: Record<string, unknown>[] = []
-  if (['needs_reply', 'done', 'archived', 'spam'].includes(state)) and.push({ state: { equals: state } })
+  if (['needs_reply', 'done', 'archived', 'spam', 'trash'].includes(state)) and.push({ state: { equals: state } })
+  if (folder === 'inbox') and.push({ or: [
+    { source: { not_in: ['owner', 'booking'] } },
+    { state: { equals: 'needs_reply' } },
+  ] })
   if (query) and.push({ or: [
     { subject: { like: query } }, { participantEmail: { like: query } }, { lastMessagePreview: { like: query } },
   ] })
@@ -57,11 +82,16 @@ const readInbox = async (request: Request, auth: HelloAdaAuth) => {
   const url = new URL(request.url)
   const view = url.searchParams.get('view') === 'contacts' ? 'contacts' : 'inbox'
   const state = text(url.searchParams.get('state') || 'needs_reply')
+  const folder = text(url.searchParams.get('folder') || 'inbox')
   const query = text(url.searchParams.get('q')).slice(0, 120)
   const requestedConversation = text(url.searchParams.get('conversation')).slice(0, 120)
+  let cursor: ReturnType<typeof parseCursor>
+  try { cursor = parseCursor(text(url.searchParams.get('cursor'))) }
+  catch (error) { return fail(error instanceof Error ? error.message : 'Refresh the mailbox.', 400) }
   const rawMailbox = await auth.payload.findGlobal({ slug: 'messageMailbox' as never, depth: 0, overrideAccess: false, req: auth.req, user: auth.user }) as unknown as MessageRecord
   const mailbox = {
     address: rawMailbox.address, domain: rawMailbox.domain, state: rawMailbox.state,
+    outboundProvider: rawMailbox.outboundProvider, outboundMode: rawMailbox.outboundMode,
     statusDetail: rawMailbox.statusDetail,
     notificationAddress: rawMailbox.notificationAddress,
     notificationVerifiedAt: rawMailbox.notificationVerifiedAt,
@@ -73,12 +103,50 @@ const readInbox = async (request: Request, auth: HelloAdaAuth) => {
     const result = await auth.payload.find({ collection: 'contacts', depth: 0, limit: 100, pagination: false, sort: 'name', overrideAccess: false, req: auth.req, user: auth.user, where: where as never })
     return NextResponse.json({ contacts: result.docs, mailbox }, { headers: noStore })
   }
+  if (['sent', 'drafts'].includes(folder)) {
+    const messageWhere: Record<string, unknown>[] = [
+      { direction: { in: ['reply', 'owner_message'] } },
+      { deliveryState: { equals: folder === 'sent' ? 'accepted' : 'draft' } },
+    ]
+    if (query) messageWhere.push({ or: [
+      { subject: { like: query } }, { text: { like: query } }, { from: { like: query } }, { to: { like: query } },
+    ] })
+    const pageCursor = cursorWhere('createdAt', cursor)
+    if (pageCursor) messageWhere.push(pageCursor)
+    const matching = await auth.payload.find({
+      collection: 'messages', depth: 1, limit: MESSAGE_PAGE_SIZE + 1, pagination: false, sort: '-createdAt,-id',
+      overrideAccess: false, req: auth.req, user: auth.user,
+      where: { and: messageWhere } as never,
+    })
+    const messageRows = matching.docs.slice(0, MESSAGE_PAGE_SIZE)
+    const ids = [...new Set(messageRows.map((message) => String(object(message.conversation).id || message.conversation || '')).filter(Boolean))]
+    if (!ids.length) return NextResponse.json({ conversations: [], mailbox, nextCursor: null }, { headers: noStore })
+    const result = await auth.payload.find({
+      collection: 'conversations', depth: 1, limit: MESSAGE_PAGE_SIZE, pagination: false, sort: '-lastActivityAt,-id',
+      overrideAccess: false, req: auth.req, user: auth.user,
+      where: { id: { in: ids } } as never,
+    })
+    const byId = new Map(result.docs.map((row) => [String(row.id), row]))
+    const rows = ids.map((id) => byId.get(id)).filter((row): row is NonNullable<typeof row> => Boolean(row))
+    if (requestedConversation && !rows.some((item) => String(item.id) === requestedConversation)) {
+      const linked = await auth.payload.findByID({ collection: 'conversations', id: requestedConversation, depth: 1, overrideAccess: false, req: auth.req, user: auth.user }).catch(() => undefined)
+      if (linked) rows.unshift(linked)
+    }
+    const nextCursor = matching.docs.length > MESSAGE_PAGE_SIZE && messageRows.length
+      ? cursorFor(object(messageRows[messageRows.length - 1]), 'createdAt') : null
+    return NextResponse.json({ conversations: rows, mailbox, nextCursor }, { headers: noStore })
+  }
+  const conversationWhere = object(listConversationWhere(folder === 'trash' ? 'trash' : folder === 'spam' || folder === 'archived' ? folder : state, query, folder))
+  const conversationFilters = Array.isArray(conversationWhere.and) ? [...conversationWhere.and as Record<string, unknown>[]] : []
+  const conversationCursor = cursorWhere('lastActivityAt', cursor)
+  if (conversationCursor) conversationFilters.push(conversationCursor)
   const result = await auth.payload.find({
-    collection: 'conversations', depth: 1, limit: 100, pagination: false, sort: '-lastActivityAt',
+    collection: 'conversations', depth: 1, limit: MESSAGE_PAGE_SIZE + 1, pagination: false, sort: '-lastActivityAt,-id',
     overrideAccess: false, req: auth.req, user: auth.user,
-    where: listConversationWhere(state, query) as never,
+    where: { and: conversationFilters } as never,
   })
-  const rows = [...result.docs]
+  const pageRows = result.docs.slice(0, MESSAGE_PAGE_SIZE)
+  const rows = [...pageRows]
   if (requestedConversation && !rows.some((item) => String(item.id) === requestedConversation)) {
     const linked = await auth.payload.findByID({
       collection: 'conversations', id: requestedConversation, depth: 1,
@@ -86,7 +154,9 @@ const readInbox = async (request: Request, auth: HelloAdaAuth) => {
     }).catch(() => undefined)
     if (linked) rows.unshift(linked)
   }
-  return NextResponse.json({ conversations: rows.slice(0, 100), mailbox }, { headers: noStore })
+  const nextCursor = result.docs.length > MESSAGE_PAGE_SIZE && pageRows.length
+    ? cursorFor(object(pageRows[pageRows.length - 1]), 'lastActivityAt') : null
+  return NextResponse.json({ conversations: rows, mailbox, nextCursor }, { headers: noStore })
 }
 
 const readConversation = async (id: string, auth: HelloAdaAuth) => {
@@ -101,12 +171,112 @@ const readConversation = async (id: string, auth: HelloAdaAuth) => {
     }) : []
     return {
       id: item.id, direction: item.direction, from: item.from, to: item.to, subject: item.subject,
+      ccRecipients: Array.isArray(item.ccRecipients) ? item.ccRecipients : [],
+      bccRecipients: Array.isArray(item.bccRecipients) ? item.bccRecipients : [],
       text: item.text, ...(item.deliveryState === 'draft' ? { draftText: item.draftText || item.text } : {}),
       draftRevision: item.draftRevision, deliveryState: item.deliveryState, createdAt: item.createdAt,
       attachmentManifest,
     }
   })
   return NextResponse.json({ conversation, messages: safeMessages }, { headers: noStore })
+}
+
+const readCalendar = async (auth: HelloAdaAuth) => {
+  const [settings, appointmentTypes, events] = await Promise.all([
+    auth.payload.findGlobal({ slug: 'calendarSettings' as never, depth: 0, overrideAccess: false, req: auth.req, user: auth.user }),
+    auth.payload.find({ collection: 'appointmentTypes', depth: 0, draft: true, limit: 100, pagination: false, sort: 'name', overrideAccess: false, req: auth.req, user: auth.user }),
+    auth.payload.find({
+      collection: 'calendarEvents', depth: 1, limit: 200, pagination: false, sort: 'startsAt', overrideAccess: true,
+      where: { startsAt: { greater_than_equal: new Date(Date.now() - 7 * 86_400_000).toISOString() } } as never,
+    }),
+  ])
+  return NextResponse.json({ settings, appointmentTypes: appointmentTypes.docs, events: events.docs }, { headers: noStore })
+}
+
+const saveCalendarSettings = async (request: Request, auth: HelloAdaAuth) => {
+  if (!hasOwnerOrigin(request)) return fail('The request could not be verified.', 403)
+  const input = await bodyOf(request, 4_096)
+  if (Object.keys(input).some((key) => !['enabled', 'timeZone', 'minimumNoticeHours', 'bookingWindowDays'].includes(key))) return fail('The calendar settings contain unsupported fields.')
+  const timeZone = text(input.timeZone)
+  try { new Intl.DateTimeFormat('en', { timeZone }).format(new Date()) } catch { return fail('Choose a valid business time zone.') }
+  const minimumNoticeHours = Number(input.minimumNoticeHours)
+  const bookingWindowDays = Number(input.bookingWindowDays)
+  if (typeof input.enabled !== 'boolean' || !Number.isInteger(minimumNoticeHours) || minimumNoticeHours < 0 || minimumNoticeHours > 8760
+    || !Number.isInteger(bookingWindowDays) || bookingWindowDays < 1 || bookingWindowDays > 365) return fail('Review the calendar settings and try again.')
+  try {
+    if (input.enabled) {
+      const activeTypes = await auth.payload.find({
+        collection: 'appointmentTypes', depth: 0, draft: false, limit: 1, pagination: false,
+        overrideAccess: false, req: auth.req, user: auth.user,
+        where: { enabled: { equals: true } } as never,
+      })
+      if (!activeTypes.docs.length) return fail('Enable at least one appointment type before accepting online bookings.', 409)
+    }
+    const settings = await auth.payload.updateGlobal({ slug: 'calendarSettings' as never, data: { enabled: input.enabled, timeZone, minimumNoticeHours, bookingWindowDays } as never, overrideAccess: false, req: auth.req, user: auth.user })
+    return NextResponse.json({ settings }, { headers: noStore })
+  } catch { return fail('The calendar settings could not be saved.', 503) }
+}
+
+const saveAppointmentType = async (request: Request, auth: HelloAdaAuth) => {
+  if (!hasOwnerOrigin(request)) return fail('The request could not be verified.', 403)
+  const input = await bodyOf(request, 12_000)
+  const allowed = ['id', 'name', 'slug', 'description', 'durationMinutes', 'bufferMinutes', 'weeklyAvailability', 'enabled']
+  if (Object.keys(input).some((key) => !allowed.includes(key))) return fail('The appointment type contains unsupported fields.')
+  const name = text(input.name)
+  const slug = text(input.slug)
+  const durationMinutes = Number(input.durationMinutes)
+  const bufferMinutes = Number(input.bufferMinutes)
+  const weeklyAvailability = Array.isArray(input.weeklyAvailability) ? input.weeklyAvailability : []
+  if (!name || name.length > 120 || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) || slug.length > 80
+    || !Number.isInteger(durationMinutes) || durationMinutes < 10 || durationMinutes > 480 || durationMinutes % 5 !== 0
+    || !Number.isInteger(bufferMinutes) || bufferMinutes < 0 || bufferMinutes > 120 || bufferMinutes % 5 !== 0
+    || typeof input.enabled !== 'boolean') return fail('Review the appointment type details and try again.')
+  const data = { name, slug, description: text(input.description).slice(0, 2_000), durationMinutes, bufferMinutes, weeklyAvailability, enabled: input.enabled }
+  try {
+    const doc = input.id
+      ? await auth.payload.update({ collection: 'appointmentTypes', id: String(input.id), data: data as never, draft: false, overrideAccess: false, req: auth.req, user: auth.user })
+      : await auth.payload.create({ collection: 'appointmentTypes', data: data as never, draft: false, overrideAccess: false, req: auth.req, user: auth.user })
+    return NextResponse.json({ appointmentType: doc }, { status: input.id ? 200 : 201, headers: noStore })
+  } catch (error) { return fail(error instanceof Error ? error.message : 'The appointment type could not be saved.', 409) }
+}
+
+const cancelCalendarEvent = async (eventId: string, request: Request, auth: HelloAdaAuth) => {
+  if (!hasOwnerOrigin(request)) return fail('The request could not be verified.', 403)
+  const input = await bodyOf(request, 2_048)
+  if (Object.keys(input).some((key) => key !== 'reason')) return fail('The cancellation contains unsupported fields.')
+  const event = await auth.payload.findByID({ collection: 'calendarEvents', id: eventId, depth: 1, overrideAccess: true }).catch(() => undefined)
+  if (!event || event.state !== 'confirmed') return fail('This appointment is no longer active.', 409)
+  try {
+    await auth.payload.update({ collection: 'calendarEvents', id: eventId, data: { state: 'cancelled' } as never, overrideAccess: true })
+    const mailbox = await findMailbox(auth.payload)
+    if (mailbox.state === 'active' && mailbox.address) {
+      const contact = object(event.contact)
+      const appointment = object(event.appointmentType)
+      const email = normalizeHelloAdaEmail(contact.email)
+      const sender = normalizeHelloAdaEmail(mailbox.address)
+      const operationId = newMessageId()
+      const conversation = await createOrFindConversation(auth.payload, {
+        subject: `Booking cancelled: ${text(event.title)}`, contact: contact.id, participantEmail: email,
+        mailboxKey: sender, threadKey: `booking:${text(event.receiptId)}`, state: 'done', unread: false,
+        source: 'booking', sourcePage: text(event.sourcePage), lastActivityAt: nowIso(), lastMessagePreview: 'Appointment cancelled',
+      })
+      const when = new Intl.DateTimeFormat(helloAdaSite.defaultLocale || 'en', { timeZone: String(event.timeZone), dateStyle: 'long', timeStyle: 'short' }).format(new Date(String(event.startsAt)))
+      const subject = `Your ${text(appointment.name || event.title)} appointment was cancelled`
+      const messageText = `Hello ${text(contact.name)},\n\nYour ${text(appointment.name || event.title)} appointment scheduled for ${when} has been cancelled.\n\n${String(helloAdaSite.siteName || 'The team')}`
+      const message = await createMessageOnce(auth.payload, {
+        conversation: conversation.id, direction: 'booking_notice', from: sender, to: email,
+        subject, text: messageText, deliveryState: 'queued', operationId: `${operationId}:notice`, receiptId: `${operationId}:notice`,
+      })
+      await auth.payload.update({ collection: 'calendarEvents', id: eventId, data: { notificationState: 'pending' } as never, overrideAccess: true })
+      const notice = await createMessageOperation(auth.payload, 'booking_notification', `booking-cancel:${tenantIdentity()}:${operationId}`, {
+        eventId, eventState: 'cancelled', messageId: message.id, conversationId: conversation.id,
+        from: sender, to: email, subject, text: messageText,
+      })
+      try { await dispatchMessageOperation((await messageRuntime()).env, notice.operation) }
+      catch (error) { console.error('helloada_booking_cancellation_queue_deferred', { tenant: tenantIdentity(), operationId: notice.operation.operationId, error: error instanceof Error ? error.message : 'unknown' }) }
+    }
+    return NextResponse.json({ cancelled: true }, { headers: noStore })
+  } catch (error) { return fail(error instanceof Error ? error.message : 'The appointment could not be cancelled.', 503) }
 }
 
 const downloadAttachment = async (messageId: string, index: number, auth: HelloAdaAuth) => {
@@ -142,15 +312,22 @@ const downloadAttachment = async (messageId: string, index: number, auth: HelloA
 }
 
 const selectedDraft = async (payload: HelloAdaAuth['payload'], conversationId: string) => findMessageRecord(payload, 'messages', {
-  conversation: { equals: conversationId }, direction: { equals: 'reply' }, deliveryState: { equals: 'draft' },
+  conversation: { equals: conversationId }, direction: { in: ['reply', 'owner_message'] }, deliveryState: { equals: 'draft' },
 }, { sort: '-createdAt' })
 
-const draftHashFor = (conversationId: string, messageId: string, revision: number, recipient: string, subject: string, replyText: string) =>
-  hashJson({ conversationId, messageId, revision, recipient, subject, replyText })
+const draftHashFor = (conversationId: string, messageId: string, revision: number, recipient: string, subject: string, replyText: string, cc: string[] = [], bcc: string[] = []) =>
+  hashJson({ conversationId, messageId, revision, recipient, cc, bcc, subject, replyText })
+
+const ownerMessageDraftHash = (message: MessageRecord, conversationId: string, sender: string, revision: number, subject: string, messageText: string) => hashJson({
+  messageId: message.id, conversationId, revision, from: sender, to: message.to,
+  cc: Array.isArray(message.ccRecipients) ? message.ccRecipients : [],
+  bcc: Array.isArray(message.bccRecipients) ? message.bccRecipients : [], subject, text: messageText,
+})
 
 const saveDraft = async (conversationId: string, request: Request, auth: HelloAdaAuth) => {
   if (!hasOwnerOrigin(request)) return fail('The request could not be verified.', 403)
   const input = await bodyOf(request)
+  if (Object.keys(input).some((key) => !['replyText', 'cc', 'bcc', 'subject', 'expectedRevision'].includes(key))) return fail('The reply contains unsupported fields.')
   let replyText: string
   try { replyText = validateHelloAdaReplyText(input.replyText) } catch (error) { return fail(error instanceof Error ? error.message : 'Write a reply before saving.') }
   const expectedRevision = Number(input.expectedRevision)
@@ -158,11 +335,19 @@ const saveDraft = async (conversationId: string, request: Request, auth: HelloAd
   const conversation = await auth.payload.findByID({ collection: 'conversations', id: conversationId, depth: 1, overrideAccess: false, req: auth.req, user: auth.user }).catch(() => undefined)
   if (!conversation) return fail('This conversation could not be found.', 404)
   const participant = text((conversation as unknown as MessageRecord).participantEmail)
-  try { normalizeHelloAdaEmail(participant) } catch { return fail('This conversation has no valid reply address.', 409) }
-  const idempotencyKey = `draft:${tenantIdentity()}:${conversationId}:${expectedRevision}`
+  let recipients: ReturnType<typeof validateHelloAdaRecipients>
+  let subject: string
+  try {
+    subject = validateHelloAdaSubject(input.subject ?? (text((conversation as unknown as MessageRecord).subject).startsWith('Re:')
+      ? text((conversation as unknown as MessageRecord).subject)
+      : `Re: ${text((conversation as unknown as MessageRecord).subject) || 'your message'}`))
+    recipients = validateHelloAdaRecipients({ to: participant, cc: input.cc, bcc: input.bcc })
+  } catch (error) { return fail(error instanceof Error ? error.message : 'Review the reply recipients and subject.') }
+  const contentIdentity = { replyText, subject, cc: recipients.cc, bcc: recipients.bcc }
+  const idempotencyKey = `draft:${tenantIdentity()}:${conversationId}:${expectedRevision}:${await hashJson(contentIdentity)}`
   let operationResult: Awaited<ReturnType<typeof createMessageOperation>>
   try {
-    operationResult = await createMessageOperation(auth.payload, 'save_draft', idempotencyKey, { conversationId, expectedRevision, replyText })
+    operationResult = await createMessageOperation(auth.payload, 'save_draft', idempotencyKey, { conversationId, expectedRevision, ...contentIdentity })
   } catch (error) { return fail(error instanceof Error ? error.message : 'This draft revision was already used.', 409) }
   const operation = operationResult.operation
   if (String(operation.state) === 'completed') {
@@ -173,12 +358,17 @@ const saveDraft = async (conversationId: string, request: Request, auth: HelloAd
   }
   if (['failed', 'uncertain'].includes(String(operation.state))) return fail('This draft revision is already closed. Reload the conversation.', 409)
   const previous = await selectedDraft(auth.payload, conversationId)
+  if (previous?.direction === 'owner_message') return fail('This is a new-message draft. Open it in Drafts to edit recipients.', 409)
+  const recipient = participant
+  try { normalizeHelloAdaEmail(recipient) } catch { return fail('This conversation has no valid reply address.', 409) }
   const currentRevision = Number(previous?.draftRevision || 0)
   if (currentRevision !== expectedRevision) {
-    // A lost HTTP response is safe to retry: return success only if this exact
-    // text was already committed as the immediately following revision.
-    if (currentRevision === expectedRevision + 1 && String(previous?.text || '') === replyText) {
-      const draftHash = await draftHashFor(conversationId, String(previous?.id), currentRevision, participant, text((conversation as unknown as MessageRecord).subject), replyText)
+    const priorCc = Array.isArray(previous?.ccRecipients) ? previous.ccRecipients.map(String) : []
+    const priorBcc = Array.isArray(previous?.bccRecipients) ? previous.bccRecipients.map(String) : []
+    if (currentRevision === expectedRevision + 1 && String(previous?.text || '') === replyText
+      && text(previous?.subject) === subject && JSON.stringify(priorCc) === JSON.stringify(recipients.cc)
+      && JSON.stringify(priorBcc) === JSON.stringify(recipients.bcc)) {
+      const draftHash = await draftHashFor(conversationId, String(previous?.id), currentRevision, recipient, subject, replyText, recipients.cc, recipients.bcc)
       await updateMessageOperation(auth.payload, operation, { state: 'completed', payload: { draftHash, draftRevision: currentRevision }, leaseUntil: null })
       return NextResponse.json({ draftHash, draftRevision: currentRevision }, { headers: noStore })
     }
@@ -190,16 +380,19 @@ const saveDraft = async (conversationId: string, request: Request, auth: HelloAd
   try {
     if (previous) {
       draft = await auth.payload.update({ collection: 'messages', id: previous.id as string, data: {
-        text: replyText, draftText: replyText, draftRevision: revision, to: participant,
+        text: replyText, draftText: replyText, draftRevision: revision, to: recipient,
+        ccRecipients: recipients.cc, bccRecipients: recipients.bcc, subject,
       } as never, overrideAccess: true }) as unknown as MessageRecord
     } else {
       draft = await auth.payload.create({ collection: 'messages', data: {
         conversation: conversationId,
         direction: 'reply',
         to: participant,
-        subject: text((conversation as unknown as MessageRecord).subject) || 'Re: your message',
+        subject,
         text: replyText,
         draftText: replyText,
+        ccRecipients: recipients.cc,
+        bccRecipients: recipients.bcc,
         draftRevision: revision,
         deliveryState: 'draft',
       } as never, overrideAccess: true }) as unknown as MessageRecord
@@ -208,7 +401,8 @@ const saveDraft = async (conversationId: string, request: Request, auth: HelloAd
     console.error('helloada_message_draft_save_failed', { tenant: helloAdaSite.tenantId, conversationId, error: error instanceof Error ? error.message : 'unknown' })
     return fail('The draft could not be saved. Your text is still in the editor.', 503)
   }
-  const draftHash = await draftHashFor(conversationId, String(draft.id), revision, participant, text((conversation as unknown as MessageRecord).subject), replyText)
+  const draftHash = await draftHashFor(conversationId, String(draft.id), revision, recipient, subject, replyText, recipients.cc, recipients.bcc)
+  await auth.payload.update({ collection: 'messages', id: draft.id as string, data: { approvalHash: draftHash } as never, overrideAccess: true })
   await updateMessageOperation(auth.payload, operation, { state: 'completed', payload: { draftHash, draftRevision: revision }, leaseUntil: null })
   return NextResponse.json({ draftHash, draftRevision: revision }, { headers: noStore })
 }
@@ -234,6 +428,9 @@ const sendDraft = async (conversationId: string, request: Request, auth: HelloAd
   const row = conversation as unknown as MessageRecord
   const mailbox = await auth.payload.findGlobal({ slug: 'messageMailbox' as never, depth: 0, overrideAccess: false, req: auth.req, user: auth.user }) as unknown as MessageRecord
   if (mailbox.state !== 'active' || !mailbox.address) return fail('Domain email is not active for this website.', 409)
+  if (mailbox.outboundProvider !== 'resend' || mailbox.outboundMode !== 'business_correspondence') return fail('Business email sending is not configured for this website yet.', 409)
+  const { env } = await messageRuntime()
+  if (!env.RESEND_API_KEY) return fail('The Resend sender is not ready for this website yet.', 503)
   const recipient = text(row.participantEmail)
   const from = text(mailbox.address)
   try { normalizeHelloAdaEmail(recipient); normalizeHelloAdaEmail(from) } catch { return fail('The sender or recipient address is not valid.', 409) }
@@ -242,11 +439,15 @@ const sendDraft = async (conversationId: string, request: Request, auth: HelloAd
   const draftRevision = Number(draft.draftRevision || 0)
   const replyText = String(draft.text || draft.draftText || '')
   const subject = text(draft.subject || row.subject)
-  const currentHash = await draftHashFor(conversationId, String(draft.id), draftRevision, recipient, subject, replyText)
+  let recipients: ReturnType<typeof validateHelloAdaRecipients>
+  try { recipients = validateHelloAdaRecipients({ to: draft.to || recipient, cc: draft.ccRecipients, bcc: draft.bccRecipients }) }
+  catch (error) { return fail(error instanceof Error ? error.message : 'Review the saved reply recipients.', 409) }
+  if (recipients.to !== normalizeHelloAdaEmail(recipient)) return fail('The reply must remain addressed to the original conversation participant.', 409)
+  const currentHash = await draftHashFor(conversationId, String(draft.id), draftRevision, recipient, subject, replyText, recipients.cc, recipients.bcc)
   if (currentHash !== draftHash) return fail('The reply changed after you reviewed it. Save and review it again.', 409)
   const approvedAt = nowIso()
   const approvedBy = String(auth.user.id)
-  const operationBody = { messageId: draft.id, conversationId, draftHash, draftRevision, from, to: recipient, subject, text: replyText, approvedBy, approvedAt }
+  const operationBody = { messageId: draft.id, conversationId, draftHash, approvalHash: draftHash, draftRevision, from, to: recipient, cc: recipients.cc, bcc: recipients.bcc, subject, text: replyText, approvedBy, approvedAt }
   let created: Awaited<ReturnType<typeof createMessageOperation>>
   try {
     created = await createMessageOperation(auth.payload, 'send_reply', idempotencyKey, operationBody, await hashJson({ draftHash }))
@@ -276,7 +477,7 @@ const updateConversationState = async (conversationId: string, request: Request,
   if (!hasOwnerOrigin(request)) return fail('The request could not be verified.', 403)
   const input = await bodyOf(request, 4_096)
   const state = text(input.state)
-  if (!['needs_reply', 'done', 'archived', 'spam'].includes(state)) return fail('Choose a valid conversation state.')
+  if (!['needs_reply', 'done', 'archived', 'spam', 'trash'].includes(state)) return fail('Choose a valid conversation state.')
   try {
     await auth.payload.update({ collection: 'conversations', id: conversationId, data: { state, unread: false } as never, overrideAccess: false, req: auth.req, user: auth.user })
     return NextResponse.json({ updated: true }, { headers: noStore })
@@ -330,6 +531,193 @@ const updateContact = async (contactId: string, request: Request, auth: HelloAda
     const contact = await auth.payload.update({ collection: 'contacts', id: contactId, data: data as never, overrideAccess: false, req: auth.req, user: auth.user })
     return NextResponse.json({ contact }, { headers: noStore })
   } catch { return fail('The contact could not be updated.', 503) }
+}
+
+const createOwnerMessageDraft = async (request: Request, auth: HelloAdaAuth) => {
+  if (!hasOwnerOrigin(request)) return fail('The request could not be verified.', 403)
+  const input = await bodyOf(request, 16_384)
+  let requestId: string
+  let recipients: ReturnType<typeof validateHelloAdaRecipients>
+  let subject: string
+  let messageText: string
+  try {
+    requestId = helloAdaIdempotencyKey(input.requestId)
+    recipients = validateHelloAdaRecipients({ to: input.to, cc: input.cc, bcc: input.bcc })
+    subject = validateHelloAdaSubject(input.subject)
+    messageText = validateHelloAdaReplyText(input.text)
+  } catch (error) { return fail(error instanceof Error ? error.message : 'Complete the message fields before saving.') }
+  const mailbox = await auth.payload.findGlobal({ slug: 'messageMailbox' as never, depth: 0, overrideAccess: false, req: auth.req, user: auth.user }) as unknown as MessageRecord
+  if (mailbox.state !== 'active' || !mailbox.address) return fail('Business email is not active for this website.', 409)
+  const sender = normalizeHelloAdaEmail(mailbox.address)
+  const receiptId = `owner-compose:${tenantIdentity()}:${requestId}`
+  const previous = await findMessageRecord(auth.payload, 'messages', { receiptId: { equals: receiptId } })
+  if (previous) {
+    if (previous.direction !== 'owner_message' || previous.deliveryState !== 'draft') return fail('That compose request has already been processed.', 409)
+    const matches = String(previous.from) === sender && String(previous.to) === recipients.to
+      && JSON.stringify(previous.ccRecipients || []) === JSON.stringify(recipients.cc)
+      && JSON.stringify(previous.bccRecipients || []) === JSON.stringify(recipients.bcc)
+      && String(previous.subject) === subject && String(previous.text) === messageText
+    if (!matches) return fail('That compose request was already used for different content.', 409)
+    const conversationId = text(typeof previous.conversation === 'object' ? object(previous.conversation).id : previous.conversation)
+    const draftHash = await ownerMessageDraftHash(previous, conversationId, sender, Number(previous.draftRevision || 1), subject, messageText)
+    return NextResponse.json({ messageId: previous.id, conversationId, draftHash }, { headers: noStore })
+  }
+  const contactEmail = recipients.to
+  let contact: MessageRecord
+  try {
+    contact = await createOrUpdateContact(auth.payload, { email: contactEmail, emailKey: contactEmail, source: 'owner' }) as unknown as MessageRecord
+  } catch (error) {
+    console.error('helloada_owner_compose_contact_failed', { tenant: helloAdaSite.tenantId, error: error instanceof Error ? error.message : 'unknown' })
+    return fail('The recipient could not be added to Contacts.', 503)
+  }
+  const operationId = await hashJson({ tenant: tenantIdentity(), requestId })
+  const conversation = await createOrFindConversation(auth.payload, {
+    subject, contact: contact.id, participantEmail: contactEmail, mailboxKey: sender,
+    threadKey: `owner:${operationId}`, state: 'done', unread: false, source: 'owner',
+    lastActivityAt: nowIso(), lastMessagePreview: messageText.slice(0, 500),
+  })
+  try {
+    const message = await createMessageOnce(auth.payload, {
+      conversation: conversation.id, direction: 'owner_message', from: sender, to: recipients.to,
+      ccRecipients: recipients.cc, bccRecipients: recipients.bcc, subject, text: messageText, draftText: messageText,
+      draftRevision: 1, deliveryState: 'draft', receiptId, operationId,
+    })
+    const draftHash = await ownerMessageDraftHash(message, String(conversation.id), sender, 1, subject, messageText)
+    await auth.payload.update({ collection: 'messages', id: message.id as string, data: { approvalHash: draftHash } as never, overrideAccess: true })
+    return NextResponse.json({ messageId: message.id, conversationId: conversation.id, draftHash }, { status: 201, headers: noStore })
+  } catch (error) {
+    console.error('helloada_owner_compose_draft_failed', { tenant: helloAdaSite.tenantId, error: error instanceof Error ? error.message : 'unknown' })
+    return fail('The message could not be saved as a draft.', 503)
+  }
+}
+
+const saveOwnerMessageDraft = async (messageId: string, request: Request, auth: HelloAdaAuth) => {
+  if (!hasOwnerOrigin(request)) return fail('The request could not be verified.', 403)
+  const input = await bodyOf(request, 16_384)
+  const allowed = ['to', 'cc', 'bcc', 'subject', 'text', 'expectedRevision']
+  if (Object.keys(input).some((key) => !allowed.includes(key))) return fail('The draft contains unsupported fields.')
+  let recipients: ReturnType<typeof validateHelloAdaRecipients>
+  let subject: string
+  let messageText: string
+  try {
+    recipients = validateHelloAdaRecipients({ to: input.to, cc: input.cc, bcc: input.bcc })
+    subject = validateHelloAdaSubject(input.subject)
+    messageText = validateHelloAdaReplyText(input.text)
+  } catch (error) { return fail(error instanceof Error ? error.message : 'Complete the message before saving.') }
+  const expectedRevision = Number(input.expectedRevision)
+  if (!Number.isInteger(expectedRevision) || expectedRevision < 1) return fail('Reload this draft before saving it.', 409)
+  const draft = await auth.payload.findByID({ collection: 'messages', id: messageId, depth: 0, overrideAccess: false, req: auth.req, user: auth.user }).catch(() => undefined)
+  if (!draft || draft.direction !== 'owner_message' || draft.deliveryState !== 'draft') return fail('This outgoing draft is no longer editable.', 409)
+  const row = draft as unknown as MessageRecord
+  const revision = Number(row.draftRevision || 0)
+  const conversationId = text(typeof row.conversation === 'object' ? object(row.conversation).id : row.conversation)
+  if (!conversationId) return fail('This draft is not linked to a conversation.', 409)
+  const mailbox = await auth.payload.findGlobal({ slug: 'messageMailbox' as never, depth: 0, overrideAccess: false, req: auth.req, user: auth.user }) as unknown as MessageRecord
+  let sender: string
+  try { sender = normalizeHelloAdaEmail(mailbox.address || row.from) }
+  catch { return fail('The sender address is not configured for this draft.', 409) }
+  const savedRecipients = validateHelloAdaRecipients({ to: row.to, cc: row.ccRecipients, bcc: row.bccRecipients })
+  const alreadySaved = revision === expectedRevision + 1
+    && savedRecipients.to === recipients.to
+    && JSON.stringify(savedRecipients.cc) === JSON.stringify(recipients.cc)
+    && JSON.stringify(savedRecipients.bcc) === JSON.stringify(recipients.bcc)
+    && text(row.subject) === subject
+    && String(row.text || row.draftText || '') === messageText
+  if (revision !== expectedRevision && !alreadySaved) return fail('This draft changed in another session. Reload it before saving.', 409)
+  if (alreadySaved) {
+    try {
+      const contact = await createOrUpdateContact(auth.payload, { email: recipients.to, emailKey: recipients.to, source: 'owner' }) as unknown as MessageRecord
+      const draftHash = await ownerMessageDraftHash(row, conversationId, sender, revision, subject, messageText)
+      await auth.payload.update({ collection: 'messages', id: messageId, data: { approvalHash: draftHash } as never, overrideAccess: true })
+      await auth.payload.update({ collection: 'conversations', id: conversationId, data: {
+        subject, contact: contact.id, participantEmail: recipients.to, lastActivityAt: nowIso(), lastMessagePreview: messageText.slice(0, 500),
+      } as never, overrideAccess: true })
+      return NextResponse.json({ draftHash, draftRevision: revision }, { headers: noStore })
+    } catch (error) {
+      console.error('helloada_owner_compose_draft_recovery_failed', { tenant: helloAdaSite.tenantId, messageId, error: error instanceof Error ? error.message : 'unknown' })
+      return fail('The draft save is still being synchronized. Reload before making another change.', 503)
+    }
+  }
+  const nextRevision = revision + 1
+  try {
+    const contact = await createOrUpdateContact(auth.payload, { email: recipients.to, emailKey: recipients.to, source: 'owner' }) as unknown as MessageRecord
+    const updated = await auth.payload.update({ collection: 'messages', id: messageId, data: {
+      from: sender, to: recipients.to, ccRecipients: recipients.cc, bccRecipients: recipients.bcc,
+      subject, text: messageText, draftText: messageText, draftRevision: nextRevision, approvalHash: null,
+    } as never, overrideAccess: true }) as unknown as MessageRecord
+    const draftHash = await ownerMessageDraftHash(updated, conversationId, sender, nextRevision, subject, messageText)
+    await auth.payload.update({ collection: 'messages', id: messageId, data: { approvalHash: draftHash } as never, overrideAccess: true })
+    await auth.payload.update({ collection: 'conversations', id: conversationId, data: {
+      subject, contact: contact.id, participantEmail: recipients.to, lastActivityAt: nowIso(), lastMessagePreview: messageText.slice(0, 500),
+    } as never, overrideAccess: true })
+    return NextResponse.json({ draftHash, draftRevision: nextRevision }, { headers: noStore })
+  } catch (error) {
+    console.error('helloada_owner_compose_draft_update_failed', { tenant: helloAdaSite.tenantId, messageId, error: error instanceof Error ? error.message : 'unknown' })
+    return fail('The draft could not be saved. Reload it before continuing.', 503)
+  }
+}
+
+const sendOwnerMessageDraft = async (messageId: string, request: Request, auth: HelloAdaAuth) => {
+  if (!hasOwnerOrigin(request)) return fail('The request could not be verified.', 403)
+  const input = await bodyOf(request, 4_096)
+  let requestId: string
+  try { requestId = helloAdaIdempotencyKey(input.requestId) } catch { return fail('Review the saved message before sending.', 400) }
+  const draftHash = text(input.draftHash)
+  if (!/^[a-f0-9]{64}$/.test(draftHash)) return fail('Save and review this message before sending.', 409)
+  const draft = await auth.payload.findByID({ collection: 'messages', id: messageId, depth: 0, overrideAccess: false, req: auth.req, user: auth.user }).catch(() => undefined)
+  if (!draft || draft.direction !== 'owner_message' || draft.deliveryState !== 'draft') return fail('This outgoing draft is no longer available.', 409)
+  const row = draft as unknown as MessageRecord
+  const mailbox = await auth.payload.findGlobal({ slug: 'messageMailbox' as never, depth: 0, overrideAccess: false, req: auth.req, user: auth.user }) as unknown as MessageRecord
+  if (mailbox.state !== 'active' || !mailbox.address) return fail('Business email is not active for this website.', 409)
+  if (mailbox.outboundProvider !== 'resend' || mailbox.outboundMode !== 'business_correspondence') return fail('Business email sending is not configured for this website yet.', 409)
+  const { env } = await messageRuntime()
+  if (!env.RESEND_API_KEY) return fail('The Resend sender is not ready for this website yet.', 503)
+  const recipients = validateHelloAdaRecipients({ to: row.to, cc: row.ccRecipients, bcc: row.bccRecipients })
+  const conversationId = text(typeof row.conversation === 'object' ? object(row.conversation).id : row.conversation)
+  const revision = Number(row.draftRevision || 0)
+  const subject = validateHelloAdaSubject(row.subject)
+  const messageText = validateHelloAdaReplyText(row.text)
+  const from = normalizeHelloAdaEmail(mailbox.address)
+  const currentHash = await ownerMessageDraftHash({ ...row, to: recipients.to, ccRecipients: recipients.cc, bccRecipients: recipients.bcc }, conversationId, from, revision, subject, messageText)
+  if (currentHash !== draftHash || row.approvalHash !== draftHash) return fail('The message changed after review. Reload and review it again.', 409)
+  const operationKey = `send-message:${tenantIdentity()}:${messageId}:${requestId}`
+  const requestHash = await hashJson({ draftHash })
+  const previous = await findMessageRecord(auth.payload, 'messageOperations', { idempotencyKey: { equals: operationKey } })
+  if (previous) {
+    if (String(previous.requestHash || '') !== requestHash) return fail('That send request ID belongs to a different reviewed message.', 409)
+    const state = String(previous.state)
+    if (['uncertain', 'failed'].includes(state)) return NextResponse.json({ state, message: state === 'uncertain' ? 'The email service response is uncertain. Do not send this message again yet.' : 'This send request failed and will not be retried automatically.' }, { status: 409, headers: noStore })
+    return NextResponse.json({ queued: true, operationId: previous.operationId, state }, { status: 202, headers: noStore })
+  }
+  const approvedAt = nowIso()
+  const approvedBy = String(auth.user.id)
+  const operationBody = {
+    messageId, conversationId, draftHash, approvalHash: draftHash, draftRevision: revision,
+    from, to: recipients.to, cc: recipients.cc, bcc: recipients.bcc, subject, text: messageText,
+    approvedBy, approvedAt,
+  }
+  let created: Awaited<ReturnType<typeof createMessageOperation>>
+  try {
+    created = await createMessageOperation(auth.payload, 'send_message', operationKey, operationBody, requestHash)
+  } catch (error) { return fail(error instanceof Error ? error.message : 'This send request could not be accepted.', 409) }
+  const operation = created.operation
+  if (!created.created) {
+    if (['uncertain', 'failed'].includes(String(operation.state))) return NextResponse.json({ state: operation.state, message: operation.state === 'uncertain' ? 'The email service response is uncertain. Do not send this message again yet.' : 'This send request failed and will not be retried automatically.' }, { status: 409, headers: noStore })
+    return NextResponse.json({ queued: true, operationId: operation.operationId, state: operation.state }, { status: 202, headers: noStore })
+  }
+  try {
+    await auth.payload.update({ collection: 'messages', id: messageId, data: {
+      from, to: recipients.to, ccRecipients: recipients.cc, bccRecipients: recipients.bcc,
+      approvedBy, approvedAt, operationId: String(operation.operationId), deliveryState: 'queued',
+    } as never, overrideAccess: true })
+  } catch (error) {
+    await markMessageOperation(auth.payload, operation, 'failed', { errorCode: 'approval_persistence_failed', clearPayload: true })
+    console.error('helloada_owner_message_approval_persist_failed', { tenant: helloAdaSite.tenantId, operationId: operation.operationId, error: error instanceof Error ? error.message : 'unknown' })
+    return fail('Your approval could not be recorded, so the message was not sent.', 503)
+  }
+  try { await dispatchMessageOperation(env, operation) }
+  catch (error) { console.error('helloada_owner_message_queue_deferred', { tenant: helloAdaSite.tenantId, operationId: operation.operationId, error: error instanceof Error ? error.message : 'unknown' }) }
+  return NextResponse.json({ queued: true, operationId: operation.operationId }, { status: 202, headers: noStore })
 }
 
 const saveMailboxNotifications = async (
@@ -494,7 +882,17 @@ const disableMessageNotifications = async (request: Request, auth: HelloAdaAuth)
 
 export async function ownerMessagesRoute(request: Request, path: string, auth: HelloAdaAuth) {
   try {
+    if (request.method === 'GET' && path === '/calendar') return await readCalendar(auth)
+    if (request.method === 'POST' && path === '/calendar/settings') return await saveCalendarSettings(request, auth)
+    if (request.method === 'POST' && path === '/calendar/appointment-types') return await saveAppointmentType(request, auth)
+    const calendarCancel = path.match(/^\/calendar\/events\/([^/]+)\/cancel$/)
+    if (request.method === 'POST' && calendarCancel) return await cancelCalendarEvent(decodeURIComponent(calendarCancel[1]), request, auth)
     if (request.method === 'GET' && path === '/messages') return await readInbox(request, auth)
+    if (request.method === 'POST' && path === '/messages/compose') return await createOwnerMessageDraft(request, auth)
+    const outgoingDraftRoute = path.match(/^\/messages\/outgoing\/([^/]+)\/draft$/)
+    if (request.method === 'POST' && outgoingDraftRoute) return await saveOwnerMessageDraft(decodeURIComponent(outgoingDraftRoute[1]), request, auth)
+    const outgoingSendRoute = path.match(/^\/messages\/outgoing\/([^/]+)\/send$/)
+    if (request.method === 'POST' && outgoingSendRoute) return await sendOwnerMessageDraft(decodeURIComponent(outgoingSendRoute[1]), request, auth)
     if (request.method === 'POST' && path === '/messages/notifications/start') return await startNotificationVerification(request, auth)
     if (request.method === 'POST' && path === '/messages/notifications/verify') return await verifyNotificationAddress(request, auth)
     if (request.method === 'POST' && path === '/messages/notifications/disable') return await disableMessageNotifications(request, auth)
@@ -598,16 +996,23 @@ const configureMailbox = async (request: Request) => {
   try { input = await bodyOf(request, 4_096) }
   catch { return fail('The mailbox configuration is invalid.', 400) }
   const domain = text(input.domain).toLowerCase().replace(/\.$/, '')
+  if (input.outboundProvider !== 'resend' || input.outboundMode !== 'business_correspondence') {
+    return fail('The mailbox must be provisioned with the canonical Resend sender.', 400)
+  }
   let address: string
   try { address = normalizeHelloAdaEmail(input.address) }
   catch { return fail('The mailbox address is invalid.', 400) }
   if (!/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(domain)
     || address.split('@')[1] !== domain) return fail('The mailbox address must belong to its registered domain.', 400)
   try {
-    const { payload } = await messageRuntime()
+    const { payload, env } = await messageRuntime()
+    if (!env.EMAIL || !env.RESEND_API_KEY) return fail('The tenant email services are not ready to activate business correspondence.', 503)
     const mailbox = await payload.updateGlobal({
       slug: 'messageMailbox' as never,
-      data: { domain, address, state: 'active', statusDetail: '', activatedAt: new Date().toISOString() } as never,
+      data: {
+        domain, address, outboundProvider: 'resend', outboundMode: 'business_correspondence',
+        state: 'active', statusDetail: '', activatedAt: new Date().toISOString(),
+      } as never,
       overrideAccess: true,
     }) as unknown as MessageRecord
     if (String(mailbox.state) !== 'active' || String(mailbox.address).toLowerCase() !== address) {

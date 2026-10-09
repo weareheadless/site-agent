@@ -35,6 +35,7 @@ from ..runtime import Runtime
 from .tenant_registration import tenant_token_env
 from .site_origin import SiteOriginError, normalize_site_origin, origin_hostname, origins_equal
 from .worker_origin import WorkerOriginError, canonical_worker_preview_url
+from .mailbox_identity import default_mailbox_identity
 
 
 class BridgeError(ValueError):
@@ -825,7 +826,7 @@ class TenantRegistry:
         email = messages.get("email") if isinstance(messages.get("email"), Mapping) else {}
         email = dict(email)
         email.setdefault("enabled", True)
-        email.setdefault("local_part", "hello")
+        email.update(default_mailbox_identity(normalized, str(site.get("custom_domain") or "")))
         provisioning = email.get("provisioning") if isinstance(email.get("provisioning"), Mapping) else {}
         email["provisioning"] = {**dict(provisioning), "auto": True}
         messages["email"] = email

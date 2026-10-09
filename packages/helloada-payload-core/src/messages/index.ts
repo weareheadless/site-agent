@@ -107,6 +107,55 @@ export const validateHelloAdaReplyText = (value: unknown): string => {
   return reply
 }
 
+export type HelloAdaMessageRecipients = { to: string; cc: string[]; bcc: string[] }
+
+/** Owner initiated messages are intentionally small, individual correspondence. */
+export const validateHelloAdaRecipients = (input: unknown): HelloAdaMessageRecipients => {
+  const body = objectValue(input)
+  const list = (value: unknown, required: boolean) => {
+    const values = value == null ? [] : Array.isArray(value) ? value : [value]
+    const normalized = values.map(normalizeHelloAdaEmail)
+    if (normalized.length > 4 || new Set(normalized).size !== normalized.length) throw new Error('Use up to four unique addresses in each recipient field.')
+    if (required && normalized.length !== 1) throw new Error('A new message needs one To recipient.')
+    return normalized
+  }
+  const to = list(body.to, true)
+  const cc = list(body.cc, false)
+  const bcc = list(body.bcc, false)
+  const all = [...to, ...cc, ...bcc]
+  if (new Set(all).size !== all.length || all.length > 5) throw new Error('Recipients must be unique, with up to five addresses total.')
+  return { to: to[0], cc, bcc }
+}
+
+export const validateHelloAdaSubject = (value: unknown): string => {
+  if (typeof value !== 'string') throw new Error('Add a subject before sending.')
+  const subject = value.replace(/[\r\n\0]/g, ' ').trim()
+  if (!subject || subject.length > 180 || /[\u0000-\u001F\u007F]/.test(subject)) throw new Error('The subject must be 1 to 180 characters.')
+  return subject
+}
+
+export const validateHelloAdaBookingRequest = (input: unknown) => {
+  const body = objectValue(input)
+  const name = String(body.name ?? '').trim()
+  const email = normalizeHelloAdaEmail(body.email)
+  const appointmentType = String(body.appointmentType ?? '').trim()
+  const startsAt = String(body.startsAt ?? '').trim()
+  const timeZone = String(body.timeZone ?? '').trim()
+  if (!name || name.length > 160 || /[\u0000-\u001F\u007F]/.test(name)) throw new Error('Enter a valid name.')
+  if (!/^[a-z0-9][a-z0-9-]{0,79}$/.test(appointmentType)) throw new Error('Choose a valid appointment type.')
+  const date = new Date(startsAt)
+  if (!startsAt || Number.isNaN(date.getTime()) || date.toISOString() !== startsAt) throw new Error('Choose a valid appointment time.')
+  try { new Intl.DateTimeFormat('en', { timeZone }).format(date) } catch { throw new Error('The business time zone is not valid.') }
+  const rawAnswers = objectValue(body.answers)
+  if (Object.keys(rawAnswers).some((key) => key !== 'notes')) throw new Error('The booking form contains an unsupported answer.')
+  const notes = rawAnswers.notes == null ? '' : String(rawAnswers.notes).trim()
+  if (notes.length > 2_000 || /[\0-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(notes)) throw new Error('Keep booking notes under 2,000 characters.')
+  if (body.consent !== true) throw new Error('Confirm that your details may be used to manage this appointment.')
+  const answers = notes ? { notes } : {}
+  if (new TextEncoder().encode(JSON.stringify(body)).byteLength > 8_192) throw new Error('The booking request is too large.')
+  return { name, email, appointmentType, startsAt, timeZone, answers, consent: true }
+}
+
 export const helloAdaIdempotencyKey = (value: unknown): string => {
   const key = String(value ?? '').trim()
   if (!/^[A-Za-z0-9_-]{16,128}$/.test(key)) throw new Error('A valid request ID is required.')

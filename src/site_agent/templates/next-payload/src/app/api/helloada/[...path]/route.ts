@@ -389,6 +389,7 @@ export async function GET(request: Request, { params }: RouteProps) {
   if (!auth) return errorResponse('authentication_required', 401)
   if (path === '/messages' || path.startsWith('/messages/')) return ownerMessagesRoute(request, path, auth)
   if (path === '/contacts' || path.startsWith('/contacts/')) return ownerMessagesRoute(request, path, auth)
+  if (path === '/calendar' || path.startsWith('/calendar/')) return ownerMessagesRoute(request, path, auth)
   if (path === '/connection') {
     const upstream = await fetchHelloAdaUpstream('/api/helloada/connection', request)
     const result = helloAdaConnection(helloAdaSite.tenantId, upstream ? { status: upstream.status, body: await upstream.json().catch(() => ({})) } : undefined)
@@ -476,7 +477,7 @@ export async function POST(request: Request, { params }: RouteProps) {
   if (path.startsWith('/internal/messages/')) return internalMessagesRoute(request, path)
   const auth = await authenticateHelloAdaRequest(request)
   if (!auth) return errorResponse('authentication_required', 401)
-  if (path.startsWith('/messages/') || path.startsWith('/contacts/')) return ownerMessagesRoute(request, path, auth)
+  if (path.startsWith('/messages/') || path.startsWith('/contacts/') || path.startsWith('/calendar/')) return ownerMessagesRoute(request, path, auth)
   if (path === '/language') {
     const body = await request.json().catch(() => ({})) as { language?: string }
     const language = ['en', 'es', 'fr'].includes(String(body.language || '')) ? String(body.language) : 'en'

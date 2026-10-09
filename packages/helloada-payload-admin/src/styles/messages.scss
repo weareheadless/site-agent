@@ -5,6 +5,7 @@
     display: grid; gap: 16px; width: min(1540px, calc(100% - 56px)); margin: 24px auto 48px; color: var(--helloada-ink);
   }
   .helloada-messages-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; }
+  .helloada-messages-header-links { display: flex; flex-wrap: wrap; gap: 8px; }
   .helloada-messages-header h1 { margin: 5px 0 4px; font-size: clamp(24px, 3vw, 34px); line-height: 1.1; letter-spacing: -.04em; }
   .helloada-messages-header p { margin: 0; color: var(--helloada-muted); font-size: 14px; }
   .helloada-messages-manage-form { display: inline-flex; align-items: center; gap: 8px; padding: 10px 14px; border: 1px solid var(--helloada-line); border-radius: 11px; background: var(--helloada-top); color: var(--helloada-ink); text-decoration: none; font-size: 13px; font-weight: 650; }
@@ -34,6 +35,11 @@
   .helloada-messages-search { width: min(280px, 32vw); margin-left: auto; padding: 0 12px; }
   .helloada-messages-refresh { display: grid; place-items: center; width: 38px; height: 38px; border: 1px solid var(--helloada-line); border-radius: 9px; background: var(--helloada-top); color: var(--helloada-ink); cursor: pointer; }
   .helloada-messages-refresh:disabled { opacity: .5; cursor: wait; }
+  .helloada-messages-compose { min-height: 38px; padding: 0 14px; border: 0; border-radius: 9px; background: var(--helloada-accent); color: #2d2117; font: inherit; font-size: 12px; font-weight: 750; cursor: pointer; }
+  .helloada-messages-compose:disabled { opacity: .5; cursor: not-allowed; }
+  .helloada-messages-load-more { display: block; width: calc(100% - 24px); min-height: 38px; margin: 12px; border: 1px solid var(--helloada-line); border-radius: 9px; background: var(--helloada-panel); color: var(--helloada-ink); font: inherit; font-size: 12px; font-weight: 650; cursor: pointer; }
+  .helloada-messages-load-more:hover { border-color: var(--helloada-accent); background: #fff6ec; }
+  .helloada-messages-load-more:focus-visible { outline: 2px solid var(--helloada-accent); outline-offset: 2px; }
   .helloada-messages-error, .helloada-messages-notice { margin: 0; padding: 12px 14px; border-radius: 10px; font-size: 13px; }
   .helloada-messages-error { background: #fff1ef; color: #9d3d30; }
   .helloada-messages-notice { background: #edf7ef; color: #267343; }
@@ -52,7 +58,9 @@
   .helloada-message-detail-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 18px 22px; border-bottom: 1px solid var(--helloada-line); }
   .helloada-message-detail-header h2, .helloada-contact-detail h2 { margin: 4px 0; color: var(--helloada-ink); font-size: 19px; letter-spacing: -.02em; }
   .helloada-message-detail-header p, .helloada-contact-detail p { margin: 0; color: var(--helloada-muted); font-size: 12px; }
-  .helloada-message-detail-header > button, .helloada-message-reply-actions > button, .helloada-send-confirm > div > button { min-height: 38px; padding: 0 14px; border: 0; border-radius: 9px; background: var(--helloada-accent); color: #2d2117; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
+  .helloada-message-detail-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+  .helloada-message-detail-actions > button, .helloada-message-reply-actions > button, .helloada-send-confirm > div > button { min-height: 38px; padding: 0 12px; border: 0; border-radius: 9px; background: var(--helloada-accent); color: #2d2117; font: inherit; font-size: 11px; font-weight: 700; cursor: pointer; }
+  .helloada-message-detail-actions > button.is-secondary { border: 1px solid var(--helloada-line); background: #fff; color: var(--helloada-ink); }
   .helloada-message-thread { display: flex; flex-direction: column; gap: 12px; overflow-y: auto; padding: 22px; }
   .helloada-message-bubble { width: min(88%, 700px); padding: 14px 16px; border: 1px solid var(--helloada-line); border-radius: 13px; background: #fff; }
   .helloada-message-bubble.is-reply { align-self: flex-end; border-color: rgba(234, 131, 57, .25); background: #fff6ed; }
@@ -61,7 +69,10 @@
   .helloada-message-bubble p { margin: 10px 0 0; color: var(--helloada-ink); font-size: 13px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
   .helloada-message-attachment { display: inline-flex; align-items: center; gap: 6px; width: fit-content; color: var(--helloada-ink); font-size: 11px; text-decoration: underline; text-underline-offset: 3px; }
   .helloada-message-bubble > small { display: block; margin-top: 8px; color: var(--helloada-muted); font-size: 10px; }
+  .helloada-message-bubble > button { margin-top: 10px; padding: 5px 9px; border: 1px solid var(--helloada-line); border-radius: 7px; background: #fff; color: var(--helloada-ink); font: inherit; font-size: 10px; font-weight: 650; cursor: pointer; }
   .helloada-message-reply { display: grid; gap: 9px; padding: 16px 20px 20px; border-top: 1px solid var(--helloada-line); }
+  .helloada-message-recipient-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+  .helloada-message-recipient-actions > button { min-height: 30px; padding: 0 9px; border: 1px solid var(--helloada-line); border-radius: 7px; background: #fff; color: var(--helloada-ink); font: inherit; font-size: 10px; font-weight: 650; cursor: pointer; }
   .helloada-message-ada-draft { justify-self: start; }
   .helloada-message-reply label { color: var(--helloada-ink); font-size: 12px; font-weight: 650; }
   .helloada-message-reply textarea { width: 100%; resize: vertical; min-height: 110px; padding: 12px; border: 1px solid var(--helloada-line); border-radius: 11px; background: #fff; color: var(--helloada-ink); font: inherit; font-size: 13px; line-height: 1.6; }
@@ -87,6 +98,42 @@
   .helloada-send-confirm dt { color: var(--helloada-muted); }
   .helloada-send-confirm dd { margin: 0; color: var(--helloada-ink); overflow-wrap: anywhere; }
   .helloada-send-confirm > div { display: flex; justify-content: flex-end; gap: 8px; }
+  .helloada-compose-dialog { display: grid; gap: 12px; max-height: min(90vh, 780px); overflow-y: auto; }
+  .helloada-compose-dialog > label { display: grid; gap: 5px; color: var(--helloada-muted); font-size: 11px; font-weight: 700; }
+  .helloada-compose-dialog input, .helloada-compose-dialog textarea { width: 100%; min-height: 40px; padding: 10px 12px; border: 1px solid var(--helloada-line); border-radius: 9px; background: #fff; color: var(--helloada-ink); font: inherit; font-size: 13px; }
+  .helloada-compose-dialog textarea { min-height: 120px; resize: vertical; line-height: 1.5; }
+  .helloada-compose-dialog input:focus, .helloada-compose-dialog textarea:focus { outline: 2px solid var(--helloada-accent); outline-offset: 2px; }
+  .helloada-messages-policy-note { color: #8b4d1d !important; }
+  .helloada-calendar-layout { display: grid; grid-template-columns: minmax(320px, 1fr) minmax(320px, 1fr); align-items: start; gap: 16px; }
+  .helloada-calendar-panel { min-width: 0; padding: 22px; border: 1px solid var(--helloada-line); border-radius: 16px; background: var(--helloada-top); box-shadow: 0 10px 35px rgba(36, 29, 20, .05); }
+  .helloada-calendar-panel h2 { margin: 0 0 16px; color: var(--helloada-ink); font-size: 16px; letter-spacing: -.02em; }
+  .helloada-calendar-form { display: grid; gap: 13px; }
+  .helloada-calendar-form > label:not(.helloada-calendar-check), .helloada-calendar-two label { display: grid; gap: 6px; color: var(--helloada-muted); font-size: 11px; font-weight: 700; }
+  .helloada-calendar-form input:not([type="checkbox"]), .helloada-calendar-form textarea, .helloada-calendar-type-head select { width: 100%; min-height: 40px; padding: 9px 11px; border: 1px solid var(--helloada-line); border-radius: 9px; background: #fff; color: var(--helloada-ink); font: inherit; font-size: 13px; }
+  .helloada-calendar-form textarea { resize: vertical; }
+  .helloada-calendar-form input:focus, .helloada-calendar-form textarea:focus, .helloada-calendar-type-head select:focus { outline: 2px solid var(--helloada-accent); outline-offset: 2px; }
+  .helloada-calendar-check { display: flex; align-items: center; gap: 9px; color: var(--helloada-ink); font-size: 13px; font-weight: 650; }
+  .helloada-calendar-check input, .helloada-calendar-day input[type="checkbox"] { width: 17px; height: 17px; accent-color: var(--helloada-accent); }
+  .helloada-calendar-two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .helloada-calendar-form > button { justify-self: start; min-height: 39px; padding: 0 15px; border: 0; border-radius: 9px; background: var(--helloada-accent); color: var(--helloada-accent-ink); font: inherit; font-size: 12px; font-weight: 750; cursor: pointer; }
+  .helloada-calendar-form > button:disabled { opacity: .55; cursor: wait; }
+  .helloada-calendar-type-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 28px 0 14px; padding-top: 20px; border-top: 1px solid var(--helloada-line); }
+  .helloada-calendar-type-head h2 { margin: 0; }
+  .helloada-calendar-type-head select { width: auto; max-width: 55%; }
+  .helloada-calendar-form fieldset { display: grid; gap: 7px; min-width: 0; margin: 0; padding: 0; border: 0; }
+  .helloada-calendar-form fieldset legend { margin-bottom: 3px; color: var(--helloada-muted); font-size: 11px; font-weight: 700; }
+  .helloada-calendar-day { display: grid; grid-template-columns: minmax(95px, 1fr) minmax(90px, .7fr) minmax(90px, .7fr); align-items: center; gap: 8px; }
+  .helloada-calendar-day > label:first-child { display: flex; align-items: center; gap: 8px; color: var(--helloada-ink); font-size: 12px; text-transform: capitalize; }
+  .helloada-calendar-day > label:not(:first-child) { display: block; }
+  .helloada-calendar-events { display: grid; gap: 10px; }
+  .helloada-calendar-events article { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px; border: 1px solid var(--helloada-line); border-radius: 12px; background: var(--helloada-panel); }
+  .helloada-calendar-events article > div { display: grid; gap: 4px; min-width: 0; }
+  .helloada-calendar-events strong { color: var(--helloada-ink); font-size: 13px; }
+  .helloada-calendar-events span, .helloada-calendar-events time, .helloada-calendar-events small { color: var(--helloada-muted); font-size: 11px; }
+  .helloada-calendar-events time { color: var(--helloada-ink); }
+  .helloada-calendar-events button { flex: 0 0 auto; min-height: 34px; padding: 0 10px; border: 1px solid var(--helloada-line); border-radius: 8px; background: white; color: var(--helloada-ink); font: inherit; font-size: 11px; cursor: pointer; }
+  .helloada-calendar-nav { display: inline-flex; align-items: center; min-height: 35px; padding: 0 12px; border-radius: 8px; color: var(--helloada-muted); font-size: 12px; font-weight: 650; text-decoration: none; }
+  .helloada-calendar-nav.is-active { background: var(--helloada-accent); color: var(--helloada-accent-ink); }
   @media (max-width: 900px) {
     .helloada-messages-layout, .helloada-contacts-layout { grid-template-columns: minmax(230px, .7fr) minmax(0, 1.3fr); }
     .helloada-messages { width: min(100% - 28px, 1540px); }
@@ -94,6 +141,7 @@
   @media (max-width: 680px) {
     .helloada-messages { width: calc(100% - 24px); margin-top: 14px; }
     .helloada-messages-header { align-items: flex-start; flex-direction: column; gap: 12px; }
+    .helloada-messages-header-links { width: 100%; }
     .helloada-message-notifications { grid-template-columns: 1fr; gap: 14px; padding: 14px; }
     .helloada-messages-toolbar { flex-wrap: wrap; }
     .helloada-messages-filter { margin-left: auto; }
@@ -101,5 +149,7 @@
     .helloada-messages-layout, .helloada-contacts-layout { grid-template-columns: 1fr; }
     .helloada-messages-list, .helloada-contact-list { max-height: 280px; border-right: 0; border-bottom: 1px solid var(--helloada-line); }
     .helloada-message-detail { min-height: 60vh; }
+    .helloada-calendar-layout { grid-template-columns: 1fr; }
+    .helloada-calendar-panel { padding: 16px; }
   }
 }

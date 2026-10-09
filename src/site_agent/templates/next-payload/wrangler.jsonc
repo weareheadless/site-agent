@@ -12,14 +12,14 @@
     "HELLOADA_SITE_NAME": "__SITE_NAME__",
     "HELLOADA_HANDOFF_ISSUER": "https://helloada.app",
     "HELLOADA_HANDOFF_PUBLIC_KEY": "__HELLOADA_HANDOFF_PUBLIC_KEY__",
-    "HELLOADA_TEMPLATE_SCHEMA": "6",
+    "HELLOADA_TEMPLATE_SCHEMA": "7",
     "HELLOADA_WORKSPACE_API_VERSION": "v1",
-    "HELLOADA_PAYLOAD_ADMIN_VERSION": "0.10.2",
-    "HELLOADA_PAYLOAD_CORE_VERSION": "0.5.6",
-    "HELLOADA_PAYLOAD_SCHEMA_REVISION": "6",
+    "HELLOADA_PAYLOAD_ADMIN_VERSION": "0.10.3",
+    "HELLOADA_PAYLOAD_CORE_VERSION": "0.5.7",
+    "HELLOADA_PAYLOAD_SCHEMA_REVISION": "7",
     "HELLOADA_CONTENT_CONTRACT_VERSION": "helloada-content-v3",
-    "HELLOADA_SCHEMA_IDENTITY": "e7665ac18ba1b2263d2d1b66218416d288c8851ab6dc9eb55bd0014d0ff9b75c",
-    "HELLOADA_PAYLOAD_MIGRATION_HEAD": "e7c54b9bfb982f75ca5a69d9f9a5b986fd0954ea450e88485dc692514ee802d4",
+    "HELLOADA_SCHEMA_IDENTITY": "af92eb2228b2e8fdaeccfe578f684db9388f12f58e8ee23c72bfed4dee59a927",
+    "HELLOADA_PAYLOAD_MIGRATION_HEAD": "db45bb7215e026ec272e45e6db82e344f3ebb615dd792ac65acc4e3295035918",
     "HELLOADA_SITE_AGENT_VERSION": "__SITE_AGENT_VERSION__"
   },
   "d1_databases": [
@@ -36,7 +36,8 @@
   "send_email": [{ "name": "EMAIL" }],
   "ratelimits": [
     { "name": "HELLOADA_FORM_RATE_LIMIT", "namespace_id": "2701", "simple": { "limit": 10, "period": 60 } },
-    { "name": "HELLOADA_NOTIFICATION_RATE_LIMIT", "namespace_id": "2702", "simple": { "limit": 5, "period": 60 } }
+    { "name": "HELLOADA_NOTIFICATION_RATE_LIMIT", "namespace_id": "2702", "simple": { "limit": 5, "period": 60 } },
+    { "name": "HELLOADA_BOOKING_RATE_LIMIT", "namespace_id": "2703", "simple": { "limit": 5, "period": 60 } }
   ],
   "queues": {
     "producers": [{ "binding": "HELLOADA_MESSAGES_QUEUE", "queue": "helloada-template-messages" }],
