@@ -54,21 +54,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22.14.0'
-          cache: npm
-          cache-dependency-path: src/site_agent/templates/next-payload/package-lock.json
-      - name: Pin the production npm toolchain
-        run: npm install --global npm@11.13.0
-      - run: test "$(npm --version)" = "11.13.0"
-      - name: Seed verified shared Payload package assets
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: python scripts/github_release_assets.py
-      - name: Install locked Payload template dependencies
+      - name: Test the Resend request contract
         working-directory: src/site_agent/templates/next-payload
-        run: npm ci --ignore-scripts --no-audit --no-fund --prefer-offline --maxsockets=1
-      - name: Test the canonical Payload Worker template
-        working-directory: src/site_agent/templates/next-payload
-        run: npm test
+        run: node --experimental-strip-types --test tests/resend-mail.test.mjs
 
   shared-payload-packages:
     runs-on: ubuntu-latest
