@@ -346,6 +346,7 @@ def _cmd_provision_email(args: argparse.Namespace) -> int:
         state, _resolved = auto_provision_email(
             config,
             tenant_id=tenant_id,
+            tenant_config_path=config_path,
             memory=memory,
             env=resolved_env,
             policy_overrides=policy_overrides,
