@@ -2,16 +2,16 @@
   "schema": 1,
   "releases": {
     "atelier-harmonie": {
-      "id": "20261009-atelier-resend-hash-1",
-      "sha": "4d401ba67cb5c8cbf69c8a489deba5caa27de934"
+      "id": "20261009-atelier-resend-runtime-2",
+      "sha": "7f5635a2e469263ba0d514be1e8ebb41e72ab209"
     },
     "northstar-coffee-full-intake-validation-5a8564dae07494ec": {
-      "id": "20261009-northstar-resend-hash-1",
-      "sha": "4434d11d3422a28bc8766b74cab0d71bb58c8c60"
+      "id": "20261009-northstar-resend-runtime-2",
+      "sha": "dfbb78286bf5df6a1154f971549e598faf58e4cf"
     },
     "oceanicvibes": {
-      "id": "20261009-oceanic-resend-hash-1",
-      "sha": "87e89f1442fa3b8b6eb9a250509a295ad237e500"
+      "id": "20261009-oceanic-resend-runtime-2",
+      "sha": "70aaf7781e99ccf01c04ab8f76006324c58b1cb8"
     }
   }
 }
