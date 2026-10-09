@@ -35,6 +35,13 @@ def _records(value: Any) -> list[dict[str, Any]]:
     return []
 
 
+def _txt_content(value: Any) -> str:
+    content = str(value or "").strip()
+    if not re.fullmatch(r'(?:\s*"(?:\\.|[^"\\])*"\s*)+', content):
+        return content
+    return "".join(re.findall(r'"((?:\\.|[^"\\])*)"', content))
+
+
 def _record_key(record: Mapping[str, Any], domain: str) -> tuple[str, str, str, int]:
     name = str(record.get("name") or "").strip().lower().rstrip(".")
     if name in ("", "@"):
@@ -43,7 +50,9 @@ def _record_key(record: Mapping[str, Any], domain: str) -> tuple[str, str, str, 
         name = f"{name}.{domain}"
     record_type = str(record.get("type") or "").strip().upper()
     content = str(record.get("content") or "").strip().rstrip(".")
-    if record_type != "TXT":
+    if record_type == "TXT":
+        content = _txt_content(content)
+    else:
         content = content.lower()
     return (
         record_type,
@@ -51,6 +60,11 @@ def _record_key(record: Mapping[str, Any], domain: str) -> tuple[str, str, str, 
         content,
         int(record.get("priority") or 0),
     )
+
+
+def _has_txt_prefix(record: Mapping[str, Any], domain: str, prefix: str) -> bool:
+    key = _record_key(record, domain)
+    return key[0] == "TXT" and key[2].lower().startswith(prefix.lower())
 
 
 def _require_declared_dns(
@@ -78,13 +92,13 @@ def _verify_sending_dns(
     declared_dmarc = [
         item for item in declared
         if _record_key(item, domain)[:2] == ("TXT", f"_dmarc.{domain}")
-        and str(item.get("content") or "").strip().lower().startswith("v=dmarc1")
+        and _has_txt_prefix(item, domain, "v=dmarc1")
     ]
     strict_records = [
         item for item in declared
         if not (
             _record_key(item, domain)[:2] == ("TXT", f"_dmarc.{domain}")
-            and str(item.get("content") or "").strip().lower().startswith("v=dmarc1")
+            and _has_txt_prefix(item, domain, "v=dmarc1")
         )
     ]
     _require_declared_dns(strict_records, actual, domain, "Cloudflare Email Sending")
@@ -92,7 +106,7 @@ def _verify_sending_dns(
         actual_dmarc = [
             item for item in actual
             if _record_key(item, domain)[:2] == ("TXT", f"_dmarc.{domain}")
-            and str(item.get("content") or "").strip().lower().startswith("v=dmarc1")
+            and _has_txt_prefix(item, domain, "v=dmarc1")
         ]
         if len(actual_dmarc) != 1:
             raise EmailProvisioningError("Cloudflare Email Sending requires exactly one valid owner-managed DMARC record")
@@ -166,7 +180,7 @@ class EmailProvisioningService:
         apex_spf = [
             item for item in dns
             if _record_key(item, domain)[:2] == ("TXT", domain)
-            and str(item.get("content") or "").strip().lower().startswith("v=spf1")
+            and _has_txt_prefix(item, domain, "v=spf1")
         ]
         legacy_mx = sorted(str(item).lower().rstrip(".") for item in policy.get("approvedLegacyMx", []))
         actual_mx = sorted(str(item.get("content") or "").lower().rstrip(".") for item in apex_mx)
@@ -198,7 +212,7 @@ class EmailProvisioningService:
             expected_spf = {
                 _record_key(item, domain)[2].lower() for item in routing_dns
                 if _record_key(item, domain)[0:2] == ("TXT", domain)
-                and str(item.get("content") or "").strip().lower().startswith("v=spf1")
+                and _has_txt_prefix(item, domain, "v=spf1")
             }
             if len(expected_spf) != 1 or _record_key(apex_spf[0], domain)[2].lower() not in expected_spf:
                 raise EmailProvisioningError("Enabled Email Routing SPF differs from Cloudflare's declared set")
@@ -213,7 +227,7 @@ class EmailProvisioningService:
             if len(apex_spf) > 1:
                 raise EmailProvisioningError("Multiple apex SPF records exist; no DNS was changed")
             if apex_spf:
-                is_approved_legacy = str(apex_spf[0].get("content") or "").strip().lower() == legacy_spf
+                is_approved_legacy = _record_key(apex_spf[0], domain)[2].lower() == legacy_spf
                 if not is_approved_legacy:
                     raise EmailProvisioningError("Apex SPF is not the exact approved legacy record; no DNS was changed")
                 if not bool(policy.get("allowLegacyMailgunCutover")):
@@ -325,17 +339,17 @@ class EmailProvisioningService:
             apex_spf = [
                 item for item in fresh_records
                 if _record_key(item, domain)[:2] == ("TXT", domain)
-                and str(item.get("content") or "").strip().lower().startswith("v=spf1")
+                and _has_txt_prefix(item, domain, "v=spf1")
             ]
             original_spf = [
                 item for item in records
                 if _record_key(item, domain)[:2] == ("TXT", domain)
-                and str(item.get("content") or "").strip().lower().startswith("v=spf1")
+                and _has_txt_prefix(item, domain, "v=spf1")
             ]
             if sorted(_record_key(item, domain) for item in apex_spf) != sorted(_record_key(item, domain) for item in original_spf):
                 raise EmailProvisioningError("Apex SPF records changed after preflight; no mail cutover was applied")
             approved_spf = str(policy.get("approvedLegacySpf") or "").strip().lower()
-            if len(apex_spf) > 1 or (apex_spf and str(apex_spf[0].get("content") or "").strip().lower() != approved_spf):
+            if len(apex_spf) > 1 or (apex_spf and _record_key(apex_spf[0], domain)[2].lower() != approved_spf):
                 raise EmailProvisioningError("Apex SPF changed after preflight; no mail cutover was applied")
             if (apex_mx or apex_spf) and not bool(policy.get("allowLegacyMailgunCutover")):
                 raise EmailProvisioningError("Legacy Mailgun records are present without an explicit cutover authorization")
@@ -437,12 +451,12 @@ class EmailProvisioningService:
         expected_spf = {
             _record_key(item, domain)[2].lower() for item in declared_routing_dns
             if _record_key(item, domain)[:2] == ("TXT", domain)
-            and str(item.get("content") or "").strip().lower().startswith("v=spf1")
+            and _has_txt_prefix(item, domain, "v=spf1")
         }
         actual_spf = [
             item for item in after_dns
             if _record_key(item, domain)[:2] == ("TXT", domain)
-            and str(item.get("content") or "").strip().lower().startswith("v=spf1")
+            and _has_txt_prefix(item, domain, "v=spf1")
         ]
         if len(actual_spf) != 1 or len(expected_spf) != 1 or _record_key(actual_spf[0], domain)[2].lower() not in expected_spf:
             raise EmailProvisioningError("Cloudflare Email Routing SPF verification did not match the provider-declared record")
@@ -464,7 +478,7 @@ class EmailProvisioningService:
             "previousStateSha256": current["snapshotSha256"],
             "previousDmarcSha256": _canonical_hash(old_dmarc) if old_dmarc else "",
             "previousMx": [{"content": item.get("content"), "priority": item.get("priority")} for item in records if _record_key(item, domain)[:2] == ("MX", domain)],
-            "previousSpfSha256": _canonical_hash([item.get("content") for item in records if _record_key(item, domain)[:2] == ("TXT", domain) and str(item.get("content") or "").lower().startswith("v=spf1")]),
+            "previousSpfSha256": _canonical_hash([item.get("content") for item in records if _record_key(item, domain)[:2] == ("TXT", domain) and _has_txt_prefix(item, domain, "v=spf1")]),
             "forwardRuleWasPresent": bool(snapshot.get("existingMailboxRule")),
             "catchAllWasEnabled": bool(snapshot.get("existingCatchAll", {}).get("enabled")) if isinstance(snapshot.get("existingCatchAll"), Mapping) else False,
             "completedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),

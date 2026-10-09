@@ -191,6 +191,46 @@ def test_active_cloudflare_routing_must_match_provider_declared_mx_and_spf():
     assert len(plan["snapshot"]["sendingDns"]) == 3
 
 
+def test_plan_accepts_equivalent_chunked_cloudflare_dkim_txt_record():
+    client = FakeCloudflare()
+    client.enabled = True
+    dkim_value = "d" * 420
+    declared_dkim = f'"{dkim_value}"'
+    zone_dkim = f'"{dkim_value[:255]}" "{dkim_value[255:]}"'
+    client.dns = [
+        {"id": "mx-a", "type": "MX", "name": DOMAIN, "content": "route1.mx.cloudflare.net", "priority": 13},
+        {"id": "mx-b", "type": "MX", "name": DOMAIN, "content": "route2.mx.cloudflare.net", "priority": 86},
+        {"id": "spf", "type": "TXT", "name": DOMAIN, "content": "v=spf1 include:_spf.mx.cloudflare.net ~all"},
+        {"id": "send-mx", "type": "MX", "name": f"cf-bounce.{DOMAIN}", "content": "route1.mx.cloudflare.net", "priority": 12},
+        {"id": "send-spf", "type": "TXT", "name": f"cf-bounce.{DOMAIN}", "content": "v=spf1 include:_spf.mx.cloudflare.net ~all"},
+        {"id": "send-dkim", "type": "TXT", "name": f"cf-bounce._domainkey.{DOMAIN}", "content": zone_dkim},
+        {"id": "dmarc", "type": "TXT", "name": f"_dmarc.{DOMAIN}", "content": '"v=DMARC1; " "p=reject"'},
+    ]
+    client.rules = [{
+        "id": "worker-route", "source": "api", "enabled": True,
+        "matchers": [{"type": "literal", "field": "to", "value": f"hello@{DOMAIN}"}],
+        "actions": [{"type": "worker", "value": [WORKER]}],
+    }]
+    client.sendings = [{"name": DOMAIN, "enabled": True, "tag": "sending-1"}]
+    client.sender_dns = [
+        {"type": "MX", "name": f"cf-bounce.{DOMAIN}", "content": "route1.mx.cloudflare.net", "priority": 12},
+        {"type": "TXT", "name": f"cf-bounce.{DOMAIN}", "content": "v=spf1 include:_spf.mx.cloudflare.net ~all"},
+        {"type": "TXT", "name": f"cf-bounce._domainkey.{DOMAIN}", "content": declared_dkim},
+        {"type": "TXT", "name": f"_dmarc.{DOMAIN}", "content": '"v=DMARC1; p=none"'},
+    ]
+
+    service = EmailProvisioningService(client)
+    plan = service.plan("oceanicvibes", _policy())
+
+    assert plan["operations"] == []
+    assert client.writes == []
+
+    dkim_record = next(record for record in client.dns if record["id"] == "send-dkim")
+    dkim_record["content"] = f'"{"e" * 255}" "{"e" * 165}"'
+    with pytest.raises(EmailProvisioningError, match="Email Sending DNS records declared by Cloudflare"):
+        service.plan("oceanicvibes", _policy())
+
+
 def test_plan_stops_when_cloudflare_sending_authentication_dns_is_missing():
     client = FakeCloudflare()
     client.sendings = [{"name": DOMAIN, "enabled": True, "tag": "sending-1"}]
