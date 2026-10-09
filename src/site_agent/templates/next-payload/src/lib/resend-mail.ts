@@ -8,10 +8,10 @@ type ResendMessage = {
   headers?: Record<string, string>
 }
 
-type ResendFailure = Error & { permanent?: boolean; uncertain?: boolean }
+type ResendFailure = Error & { permanent?: boolean; uncertain?: boolean; code?: string }
 
-const deliveryFailure = (message: string, kind: 'permanent' | 'uncertain'): ResendFailure =>
-  Object.assign(new Error(message), { [kind]: true })
+const deliveryFailure = (message: string, kind: 'permanent' | 'uncertain', code: string): ResendFailure =>
+  Object.assign(new Error(message), { [kind]: true, code })
 
 export async function sendResendMessage(
   apiKey: string,
@@ -19,10 +19,10 @@ export async function sendResendMessage(
   operationId: string,
   message: ResendMessage,
 ) {
-  if (!apiKey.trim()) throw deliveryFailure('The tenant Resend sender secret is unavailable.', 'permanent')
+  if (!apiKey.trim()) throw deliveryFailure('The tenant Resend sender secret is unavailable.', 'permanent', 'resend_secret_unavailable')
   const idempotencyKey = `helloada:${tenant}:${operationId}`
   if (!tenant || !operationId || idempotencyKey.length > 256) {
-    throw deliveryFailure('The email operation identity is invalid.', 'permanent')
+    throw deliveryFailure('The email operation identity is invalid.', 'permanent', 'resend_operation_identity_invalid')
   }
 
   let response: Response
@@ -46,25 +46,25 @@ export async function sendResendMessage(
       }),
     })
   } catch {
-    throw deliveryFailure('Resend did not confirm whether it accepted the email.', 'uncertain')
+    throw deliveryFailure('Resend did not confirm whether it accepted the email.', 'uncertain', 'resend_network_uncertain')
   }
 
   if (!response.ok) {
     if (response.status >= 500 || response.status === 408 || response.status === 409) {
-      throw deliveryFailure(`Resend returned an ambiguous response (HTTP ${response.status}).`, 'uncertain')
+      throw deliveryFailure(`Resend returned an ambiguous response (HTTP ${response.status}).`, 'uncertain', `resend_ambiguous_http_${response.status}`)
     }
-    throw deliveryFailure(`Resend rejected the email (HTTP ${response.status}).`, 'permanent')
+    throw deliveryFailure(`Resend rejected the email (HTTP ${response.status}).`, 'permanent', `resend_rejected_http_${response.status}`)
   }
 
   let payload: { id?: unknown }
   try {
     payload = await response.json() as { id?: unknown }
   } catch {
-    throw deliveryFailure('Resend accepted the request but did not return a readable receipt.', 'uncertain')
+    throw deliveryFailure('Resend accepted the request but did not return a readable receipt.', 'uncertain', 'resend_receipt_unreadable')
   }
   const id = typeof payload.id === 'string' ? payload.id.trim() : ''
   if (!id || id.length > 998 || /[\r\n\0]/.test(id)) {
-    throw deliveryFailure('Resend accepted the request but did not return a valid email ID.', 'uncertain')
+    throw deliveryFailure('Resend accepted the request but did not return a valid email ID.', 'uncertain', 'resend_receipt_invalid')
   }
   return id
 }

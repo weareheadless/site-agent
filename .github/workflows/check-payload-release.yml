@@ -54,9 +54,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22.14.0'
-      - name: Test the Resend request contract
+      - name: Test Resend and owner-message hash contracts
         working-directory: src/site_agent/templates/next-payload
-        run: node --experimental-strip-types --test tests/resend-mail.test.mjs
+        run: node --experimental-strip-types --test tests/resend-mail.test.mjs tests/owner-message-draft-hash.test.mjs
 
   shared-payload-packages:
     runs-on: ubuntu-latest
