@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { helloAdaIdempotencyKey, normalizeHelloAdaEmail, validateHelloAdaRecipients, validateHelloAdaReplyText, validateHelloAdaSubject } from '@weareheadless/helloada-payload-core/messages'
 import { isHelloAdaMessageDraftHash } from '@weareheadless/helloada-payload-admin/message-draft-contract'
 import { hashJson } from '@/lib/payload-hash'
+import { hashOwnerMessageDraft } from '@/lib/owner-message-draft-hash'
 import type { HelloAdaAuth } from '@/lib/helloada-auth'
 import { helloAdaSite } from '@/helloada.config'
 import { processHelloAdaMessageOperation } from '@/lib/message-processing'
@@ -319,10 +320,16 @@ const selectedDraft = async (payload: HelloAdaAuth['payload'], conversationId: s
 const draftHashFor = (conversationId: string, messageId: string, revision: number, recipient: string, subject: string, replyText: string, cc: string[] = [], bcc: string[] = []) =>
   hashJson({ conversationId, messageId, revision, recipient, cc, bcc, subject, replyText })
 
-const ownerMessageDraftHash = (message: MessageRecord, conversationId: string, sender: string, revision: number, subject: string, messageText: string) => hashJson({
-  messageId: message.id, conversationId, revision, from: sender, to: message.to,
+const ownerMessageDraftHash = (message: MessageRecord, conversationId: string, sender: string, revision: number, subject: string, messageText: string) => hashOwnerMessageDraft({
+  messageId: message.id as string | number,
+  conversationId,
+  revision,
+  from: sender,
+  to: String(message.to || ''),
   cc: Array.isArray(message.ccRecipients) ? message.ccRecipients : [],
-  bcc: Array.isArray(message.bccRecipients) ? message.bccRecipients : [], subject, text: messageText,
+  bcc: Array.isArray(message.bccRecipients) ? message.bccRecipients : [],
+  subject,
+  text: messageText,
 })
 
 const saveDraft = async (conversationId: string, request: Request, auth: HelloAdaAuth) => {
