@@ -35,10 +35,15 @@ if (JSON.stringify([...declaredNames].sort()) !== JSON.stringify(actualNames)) {
 }
 const migrations = declaredNames.map((name) => {
   const hash = (file) => createHash('sha256').update(readFileSync(file)).digest('hex')
+  const snapshotPath = path.join(migrationsPath, `${name}.json`)
+  const snapshot = JSON.parse(readFileSync(snapshotPath, 'utf8'))
+  if (snapshot.dialect !== 'sqlite' || !snapshot.tables || typeof snapshot.tables !== 'object') {
+    throw new Error(`Payload migration snapshot is not a SQLite schema: ${name}`)
+  }
   return {
     name,
     fileSha256: hash(path.join(migrationsPath, `${name}.ts`)),
-    snapshotSha256: hash(path.join(migrationsPath, `${name}.json`)),
+    snapshotSha256: hash(snapshotPath),
   }
 })
 const migrationIndexSha256 = createHash('sha256').update(migrationIndex).digest('hex')
