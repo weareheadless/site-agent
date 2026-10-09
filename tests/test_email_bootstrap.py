@@ -128,6 +128,7 @@ def test_payload_mailbox_configuration_uses_registered_public_origin(monkeypatch
                 "state": "active",
                 "domain": "oceanicvibes.com",
                 "address": "contact@oceanicvibes.com",
+                "outboundProvider": "resend",
             }).encode()
 
     def urlopen(request, timeout):
@@ -145,7 +146,12 @@ def test_payload_mailbox_configuration_uses_registered_public_origin(monkeypatch
         address="contact@oceanicvibes.com",
     )
 
-    assert result == {"state": "active", "domain": "oceanicvibes.com", "address": "contact@oceanicvibes.com"}
+    assert result == {
+        "state": "active",
+        "domain": "oceanicvibes.com",
+        "address": "contact@oceanicvibes.com",
+        "outboundProvider": "resend",
+    }
 
 
 def test_email_bootstrap_is_not_enabled_implicitly_for_existing_tenants(monkeypatch, tmp_path):
@@ -298,19 +304,25 @@ def test_prepare_plan_rejects_email_subdomain_until_routing_onboarding_is_suppor
         raise AssertionError("subdomain email provisioning must not use the apex-only API path")
 
 
-def test_auto_provision_accepts_platform_email_domain_without_custom_website_domain(tmp_path):
+def test_auto_provision_requires_resend_management_key_before_provider_access(tmp_path, monkeypatch):
     config = _config(tmp_path)
     config["site"].pop("custom_domain")
     config["site"]["public_url"] = "https://atelier-harmonie.weareheadless.workers.dev/"
     config["messages"]["email"].update(domain="helloada.app", local_part="atelier-harmonie")
     memory = FakeMemory()
 
+    monkeypatch.setattr(
+        bootstrap,
+        "prepare_email_plan",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("missing management key must stop before provider access")),
+    )
+
     state, _ = bootstrap.auto_provision_email(config, tenant_id="atelier-harmonie", memory=memory, env={})
 
-    assert state["state"] == "failed"
+    assert state["state"] == "action_required"
+    assert state["tenant"] == "atelier-harmonie"
     assert state["domain"] == "helloada.app"
-    assert state["address"] == "atelier-harmonie@helloada.app"
-    assert "Cloudflare DNS API token" in state["error"]
+    assert "protected Resend management API key" in state["error"]
 
 
 def test_auto_provision_requires_a_registered_unique_local_part_for_an_explicit_domain(tmp_path):
@@ -359,6 +371,17 @@ def test_failed_payload_activation_preserves_cloudflare_progress_for_retry(monke
     monkeypatch.setattr(bootstrap, "tenant_token_env", lambda tenant: "PROVISIONED_OCEANICVIBES_TOKEN")
     monkeypatch.setattr(bootstrap, "cloudflare_dns_api_token", lambda config, env: "dns-token")
     monkeypatch.setattr(bootstrap, "cloudflare_email_api_token", lambda config, env: "email-token")
+
+    class Resend:
+        def __init__(self, api_key, _cloudflare_email):
+            assert api_key == "management-key"
+
+        def ensure_domain(self, domain):
+            return {"id": "resend-domain-id", "domain": domain, "status": "verified"}
+
+    monkeypatch.setattr(bootstrap, "resend_api_key", lambda config, env: "management-key")
+    monkeypatch.setattr(bootstrap, "ResendProvisioner", Resend)
+    monkeypatch.setattr(bootstrap, "_ensure_tenant_resend_key", lambda **_kwargs: "tenant-sending-key-id")
 
     class Client:
         def __init__(self, email_token, dns_token):
