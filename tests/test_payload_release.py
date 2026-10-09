@@ -89,6 +89,7 @@ WORKER_CONFIG = {
     "turnstileSiteKey": None,
     "turnstileSecretInVars": False,
     "publicDomains": ["oceanicvibes.com"],
+    "crons": ["*/5 * * * *"],
     "compatibilityDate": "2025-08-15",
     "compatibilityFlags": ["nodejs_compat", "global_fetch_strictly_public"],
 }
@@ -438,6 +439,75 @@ def test_worker_contract_requires_the_registered_tenant_and_all_shared_versions(
         "handlers": ["fetch", "email", "queue", "scheduled"],
     }
     release.validate_worker_contract(worker, customer, "oceanicvibes")
+
+
+def test_worker_contract_requires_the_durable_messages_cron():
+    worker = {**WORKER_CONFIG, "crons": ["*/5 * * * *"]}
+    release.validate_worker_contract(worker, CUSTOMER, "oceanicvibes")
+    for crons in ([], ["0 * * * *"], ["*/5 * * * *", "0 * * * *"]):
+        with pytest.raises(RuntimeError, match="five-minute durable message sweep"):
+            release.validate_worker_contract({**worker, "crons": crons}, CUSTOMER, "oceanicvibes")
+
+
+def test_worker_cron_reconciliation_reads_applies_and_verifies(monkeypatch):
+    class Response:
+        def __init__(self, payload):
+            self.payload = payload
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return False
+        def read(self):
+            return json.dumps(self.payload).encode()
+
+    calls = []
+    schedules = [[]]
+    def open_url(request, timeout):
+        assert timeout == 30
+        calls.append((request.get_method(), request.full_url, request.data))
+        if request.get_method() == "PUT":
+            assert json.loads(request.data) == [{"cron": "*/5 * * * *"}]
+            schedules[0] = ["*/5 * * * *"]
+        return Response({"success": True, "result": {"schedules": [{"cron": cron} for cron in schedules[0]]}})
+
+    monkeypatch.setattr(release.urllib.request, "urlopen", open_url)
+    result = release.reconcile_worker_cron_schedules(CUSTOMER, ["*/5 * * * *"], {
+        "CLOUDFLARE_ACCOUNT_ID": "account",
+        "CLOUDFLARE_API_TOKEN": "not-printed",
+    })
+    assert result["before"] == []
+    assert result["after"] == ["*/5 * * * *"]
+    assert result["changed"] is True
+    assert [method for method, _url, _body in calls] == ["GET", "PUT", "GET"]
+
+
+def test_worker_cron_reconciliation_rejects_noncanonical_schedules():
+    with pytest.raises(ValueError, match="exact canonical five-minute"):
+        release.reconcile_worker_cron_schedules(CUSTOMER, [], {})
+
+
+def test_d1_table_inspection_uses_bound_sqlite_metadata_parameters(monkeypatch):
+    class Response:
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return False
+        def read(self):
+            return json.dumps({"success": True, "result": [{"success": True, "results": []}]}).encode()
+
+    captured = {}
+    def open_url(request, timeout):
+        captured["body"] = json.loads(request.data)
+        return Response()
+
+    monkeypatch.setattr(release.urllib.request, "urlopen", open_url)
+    release.d1_query(CUSTOMER, "SELECT name FROM sqlite_master WHERE type = ? AND name NOT LIKE ? ORDER BY name",
+                     {"CLOUDFLARE_ACCOUNT_ID": "account", "CLOUDFLARE_API_TOKEN": "not-printed"},
+                     ("table", "sqlite_%"))
+    assert captured["body"] == {
+        "sql": "SELECT name FROM sqlite_master WHERE type = ? AND name NOT LIKE ? ORDER BY name",
+        "params": ["table", "sqlite_%"],
+    }
     with pytest.raises(RuntimeError, match="shared Payload contract"):
         release.validate_worker_contract({**worker, "core": "0.0.9"}, customer, "oceanicvibes")
     with pytest.raises(RuntimeError, match="R2 bindings"):
