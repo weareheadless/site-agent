@@ -80,8 +80,8 @@ class FakeCloudflare:
         self.writes.append(("delete-dns", record_id))
         self.dns = [record for record in self.dns if record.get("id") != record_id]
 
-    def enable_routing(self, zone_id, domain):
-        self.writes.append(("routing", domain))
+    def enable_routing(self, zone_id):
+        self.writes.append(("routing", DOMAIN))
         self.enabled = True
         self.dns.extend([
             {"id": "routing-mx-a", "type": "MX", "name": "@", "content": "route1.mx.cloudflare.net", "priority": 13},

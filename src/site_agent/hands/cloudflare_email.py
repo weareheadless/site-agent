@@ -205,8 +205,10 @@ class CloudflareEmailClient:
                 return item
         return dict(self.request("POST", f"/zones/{urllib.parse.quote(zone_id, safe='')}/email/sending/subdomains", {"name": domain}).get("result") or {})
 
-    def enable_routing(self, zone_id: str, domain: str) -> dict[str, Any]:
-        return dict(self.request("POST", f"/zones/{urllib.parse.quote(zone_id, safe='')}/email/routing/dns", {"name": domain}).get("result") or {})
+    def enable_routing(self, zone_id: str) -> dict[str, Any]:
+        # The API enables zone-apex routing when the POST body is omitted.
+        # A `name` is only valid for a subdomain; sending the apex returns 422.
+        return dict(self.request("POST", f"/zones/{urllib.parse.quote(zone_id, safe='')}/email/routing/dns").get("result") or {})
 
     def create_routing_rule(self, zone_id: str, *, address: str, worker: str, priority: int = 0) -> dict[str, Any]:
         body = {
