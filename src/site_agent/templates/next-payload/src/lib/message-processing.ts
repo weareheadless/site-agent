@@ -20,6 +20,7 @@ import {
 } from '@/lib/messages-service'
 import type { MessageBindings, MessageRecord } from '@/lib/messages-service'
 import { hashJson } from '@/lib/payload-hash'
+import { hashOwnerMessageDraft } from '@/lib/owner-message-draft-hash'
 import { helloAdaSite } from '@/helloada.config'
 import { buildOwnerMessageNotification } from '@/lib/message-notifications'
 import { bookingSlotsForDate, calendarSettings, findAppointmentType, localDateForInstant, releaseBookingSlots, reserveBookingSlot } from '@/lib/calendar'
@@ -30,7 +31,7 @@ const safeSubject = (value: unknown) => safeHeader(value, 180) || 'No subject'
 const cleanBody = (value: unknown, max = 50_000) => String(value || '').replace(/\0/g, '').slice(0, max)
 const relationId = (value: unknown) => value && typeof value === 'object' ? String((value as MessageRecord).id || '') : String(value || '')
 const referencesOf = (value: unknown) => String(value || '').split(/\s+/).map((item) => safeHeader(item, 998)).filter(Boolean).slice(-30)
-const permanentOperationError = (message: string) => Object.assign(new Error(message), { permanent: true })
+const permanentOperationError = (message: string, code?: string) => Object.assign(new Error(message), { permanent: true, ...(code ? { code } : {}) })
 const cloudflareTransactionalSender = (env: MessageBindings) => {
   if (!env.EMAIL) throw new Error('The tenant transactional email binding is unavailable.')
   return env.EMAIL
@@ -407,9 +408,16 @@ const sendApprovedOwnerMessage = async (
   const revision = Number(message.draftRevision || 0)
   const subject = safeSubject(body.subject)
   const text = cleanBody(body.text)
-  const expectedHash = await hashJson({
-    messageId: String(message.id), conversationId, revision, from: normalizeHelloAdaEmail(body.from),
-    to: recipients.to, cc: recipients.cc, bcc: recipients.bcc, subject, text,
+  const expectedHash = await hashOwnerMessageDraft({
+    messageId: message.id as string | number,
+    conversationId,
+    revision,
+    from: normalizeHelloAdaEmail(body.from),
+    to: recipients.to,
+    cc: recipients.cc,
+    bcc: recipients.bcc,
+    subject,
+    text,
   })
   if (message.deliveryState !== 'queued'
     || String(message.operationId) !== String(operation.operationId)
@@ -423,7 +431,7 @@ const sendApprovedOwnerMessage = async (
     || expectedHash !== String(body.draftHash || '')
     || expectedHash !== String(body.approvalHash || '')
     || expectedHash !== String(message.approvalHash || '')) {
-    throw permanentOperationError('The outgoing message changed after approval. Review and save it again.')
+    throw permanentOperationError('The outgoing message changed after approval. Review and save it again.', 'message_integrity_mismatch')
   }
   await payload.update({ collection: 'messages', id: message.id as string, data: { deliveryState: 'sending' } as never, overrideAccess: true })
   let providerId: string
@@ -625,7 +633,9 @@ export async function processHelloAdaMessageOperation(operationId: string, env: 
       const body = operationBody(operation)
       const reply = await findMessageRecord(payload, 'messages', { id: { equals: body.messageId } })
       if (reply && String(reply.deliveryState) !== 'uncertain') await payload.update({ collection: 'messages', id: reply.id as string, data: { deliveryState: 'failed' } as never, overrideAccess: true })
-      await markMessageOperation(payload, operation, 'failed', { errorCode: 'send_rejected' })
+      const candidateCode = error && typeof error === 'object' ? String((error as { code?: unknown }).code || '') : ''
+      const errorCode = /^[a-z0-9_]{1,64}$/.test(candidateCode) ? candidateCode : 'send_rejected'
+      await markMessageOperation(payload, operation, 'failed', { errorCode })
       return { accepted: true, state: 'failed' }
     }
     const recovery = await retryOrFailMessageOperation(payload, env, operation, 'message_processing_retry')
