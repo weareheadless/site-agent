@@ -54,3 +54,19 @@ test('saved draft detail restores only the currently approved send-review hash',
   assert.equal(templateApi.split('item.approvalHash === currentHash').length - 1, 2)
   assert.equal(messagesUi.split('setDraftHash(isHelloAdaMessageDraftHash(').length - 1, 2)
 })
+
+test('new-message composition stays in the mailbox and separates saved review from sending', () => {
+  assert.match(messagesUi, /helloada-inline-composer/)
+  assert.doesNotMatch(messagesUi, /helloada-compose-dialog/)
+  assert.match(messagesUi, /name="intent" value="save"/)
+  assert.match(messagesUi, /name="intent" value="review"/)
+  assert.match(messagesUi, /setConfirmSend\(true\)/)
+  assert.match(messagesUi, /helloada-send-preview/)
+  assert.match(messagesUi, /owner\.messagesSendNow/)
+})
+
+test('selected mailbox folder survives a page reconnect', () => {
+  assert.match(messagesUi, /initialMessageFilter/)
+  assert.match(messagesUi, /searchParams\.get\('folder'\)/)
+  assert.match(messagesUi, /searchParams\.set\('folder', filter\)/)
+})
