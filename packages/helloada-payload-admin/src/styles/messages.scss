@@ -156,7 +156,11 @@
     .helloada-messages-toolbar { flex-wrap: wrap; }
     .helloada-messages-filter { margin-left: auto; }
     .helloada-messages-search { width: 100%; margin-left: 0; order: 3; }
-    .helloada-messages-layout, .helloada-contacts-layout { grid-template-columns: 1fr; }\n    .helloada-inline-composer-fields { grid-template-columns: 1fr; }\n    .helloada-inline-composer-fields label:nth-child(n + 4) { grid-column: auto; }\n    .helloada-inline-composer { padding: 18px; }\n    .helloada-inline-composer-actions { bottom: -18px; margin: auto -18px -18px; padding: 12px 18px 16px; }
+    .helloada-messages-layout, .helloada-contacts-layout { grid-template-columns: 1fr; }
+    .helloada-inline-composer-fields { grid-template-columns: 1fr; }
+    .helloada-inline-composer-fields label:nth-child(n + 4) { grid-column: auto; }
+    .helloada-inline-composer { padding: 18px; }
+    .helloada-inline-composer-actions { bottom: -18px; margin: auto -18px -18px; padding: 12px 18px 16px; }
     .helloada-messages-list, .helloada-contact-list { max-height: 280px; border-right: 0; border-bottom: 1px solid var(--helloada-line); }
     .helloada-message-detail { min-height: 60vh; }
     .helloada-calendar-layout { grid-template-columns: 1fr; }
