@@ -34,6 +34,7 @@ type Message = {
   text: string
   draftText?: string
   draftRevision?: number
+  draftHash?: string
   deliveryState?: string
   createdAt?: string
   attachmentManifest?: Array<{ index: number; filename: string; mimeType: string; size: number; allowed: boolean }>
@@ -182,7 +183,7 @@ export function HelloAdaMessages() {
         setDraftSubject(latestDraft?.subject || (/^re:/i.test(originalSubject) ? originalSubject : `Re: ${originalSubject || t('owner.messagesNoSubject')}`))
         setReplyRecipientsOpen(Boolean(latestDraft?.ccRecipients?.length || latestDraft?.bccRecipients?.length))
         draftDirtyRef.current = false
-        setDraftHash('')
+        setDraftHash(isHelloAdaMessageDraftHash(latestDraft?.draftHash) ? latestDraft.draftHash : '')
         setError('')
       })
       .catch((cause) => { if (!controller.signal.aborted) setError(cause instanceof Error ? cause.message : t('owner.messagesFailure')) })
@@ -207,6 +208,7 @@ export function HelloAdaMessages() {
           setDetail(next)
           const latestDraft = [...(next.messages || [])].reverse().find((item) => ['reply', 'owner_message'].includes(item.direction) && item.deliveryState === 'draft' && item.draftText)
           if (latestDraft) {
+            setDraftHash(isHelloAdaMessageDraftHash(latestDraft.draftHash) ? latestDraft.draftHash : '')
             setDraft(latestDraft.draftText || '')
             setDraftRevision(Number(latestDraft.draftRevision || 0))
             setDraftTo(latestDraft.to || '')
@@ -216,6 +218,7 @@ export function HelloAdaMessages() {
             setDraftSubject(latestDraft.subject || (/^re:/i.test(originalSubject) ? originalSubject : `Re: ${originalSubject || t('owner.messagesNoSubject')}`))
             setReplyRecipientsOpen(Boolean(latestDraft.ccRecipients?.length || latestDraft.bccRecipients?.length))
           } else {
+            setDraftHash('')
             setDraft('')
             setDraftRevision(0)
             const originalSubject = next.conversation?.subject || ''

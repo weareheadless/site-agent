@@ -49,3 +49,8 @@ test('the shared Messages UI uses the verified sender capability for every send 
   assert.match(messagesUi, /const canSendCurrentDraft = canSendBusinessEmail/)
   assert.doesNotMatch(messagesUi, /const canSendCurrentDraft = canSend && currentDraft\?\.direction !== 'owner_message'/)
 })
+
+test('saved draft detail restores only the currently approved send-review hash', () => {
+  assert.equal(templateApi.split('item.approvalHash === currentHash').length - 1, 2)
+  assert.equal(messagesUi.split('setDraftHash(isHelloAdaMessageDraftHash(').length - 1, 2)
+})

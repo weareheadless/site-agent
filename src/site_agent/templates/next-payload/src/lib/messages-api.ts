@@ -164,25 +164,40 @@ const readInbox = async (request: Request, auth: HelloAdaAuth) => {
 const readConversation = async (id: string, auth: HelloAdaAuth) => {
   const conversation = await auth.payload.findByID({ collection: 'conversations', id, depth: 1, overrideAccess: false, req: auth.req, user: auth.user }).catch(() => undefined)
   if (!conversation) return fail('This conversation could not be found.', 404)
+  const mailbox = await auth.payload.findGlobal({ slug: 'messageMailbox' as never, depth: 0, overrideAccess: false, req: auth.req, user: auth.user }) as unknown as MessageRecord
+  const sender = String(mailbox.address || '')
   const messages = await auth.payload.find({ collection: 'messages', depth: 0, limit: 200, pagination: false, sort: 'createdAt', overrideAccess: false, req: auth.req, user: auth.user, where: { conversation: { equals: id } } as never })
-  const safeMessages = messages.docs.map((raw) => {
+  const safeMessages = await Promise.all(messages.docs.map(async (raw) => {
     const item = raw as unknown as MessageRecord
     const attachmentManifest = Array.isArray(item.attachmentManifest) ? item.attachmentManifest.map((attachment) => {
       const row = object(attachment)
       return { index: Number(row.index), filename: text(row.filename), mimeType: text(row.mimeType), size: Number(row.size), allowed: row.allowed === true }
     }) : []
+    const draftText = text(item.draftText || item.text)
+    let draftHash: string | undefined
+    if (item.deliveryState === 'draft' && item.direction === 'owner_message' && sender) {
+      const currentHash = await ownerMessageDraftHash(item, id, sender, Number(item.draftRevision || 1), text(item.subject), draftText)
+      if (isHelloAdaMessageDraftHash(currentHash) && item.approvalHash === currentHash) draftHash = currentHash
+    } else if (item.deliveryState === 'draft' && item.direction === 'reply') {
+      const currentHash = await draftHashFor(
+        id, String(item.id), Number(item.draftRevision || 0), text(item.to), text(item.subject), draftText,
+        Array.isArray(item.ccRecipients) ? item.ccRecipients : [],
+        Array.isArray(item.bccRecipients) ? item.bccRecipients : [],
+      )
+      if (isHelloAdaMessageDraftHash(currentHash) && item.approvalHash === currentHash) draftHash = currentHash
+    }
     return {
       id: item.id, direction: item.direction, from: item.from, to: item.to, subject: item.subject,
       ccRecipients: Array.isArray(item.ccRecipients) ? item.ccRecipients : [],
       bccRecipients: Array.isArray(item.bccRecipients) ? item.bccRecipients : [],
-      text: item.text, ...(item.deliveryState === 'draft' ? { draftText: item.draftText || item.text } : {}),
-      draftRevision: item.draftRevision, deliveryState: item.deliveryState, createdAt: item.createdAt,
+      text: item.text, ...(item.deliveryState === 'draft' ? { draftText } : {}),
+      draftRevision: item.draftRevision, ...(draftHash ? { draftHash } : {}),
+      deliveryState: item.deliveryState, createdAt: item.createdAt,
       attachmentManifest,
     }
-  })
+  }))
   return NextResponse.json({ conversation, messages: safeMessages }, { headers: noStore })
 }
-
 const readCalendar = async (auth: HelloAdaAuth) => {
   const [settings, appointmentTypes, events] = await Promise.all([
     auth.payload.findGlobal({ slug: 'calendarSettings' as never, depth: 0, overrideAccess: false, req: auth.req, user: auth.user }),
