@@ -53,6 +53,14 @@ type Mailbox = {
 }
 type ResponseData = { conversations?: Conversation[]; contacts?: Contact[]; conversation?: Conversation; messages?: Message[]; mailbox?: Mailbox; nextCursor?: string | null }
 
+type MessageFilter = 'needs_reply' | 'all' | 'done' | 'archived' | 'spam' | 'sent' | 'drafts' | 'trash'
+const MESSAGE_FILTERS: MessageFilter[] = ['needs_reply', 'all', 'done', 'archived', 'spam', 'sent', 'drafts', 'trash']
+const initialMessageFilter = (): MessageFilter => {
+  if (typeof window === 'undefined') return 'needs_reply'
+  const folder = new URLSearchParams(window.location.search).get('folder')
+  return MESSAGE_FILTERS.includes(folder as MessageFilter) ? folder as MessageFilter : 'needs_reply'
+}
+
 const contactOf = (value: Conversation['contact']): Contact | undefined =>
   value && typeof value === 'object' ? value as Contact : undefined
 const recipientList = (value: string) => value.split(/[;,\n]/).map((item) => item.trim()).filter(Boolean)
@@ -61,7 +69,7 @@ export function HelloAdaMessages() {
   const { t } = useHelloAdaTranslations()
   const site = useHelloAdaSite()
   const [tab, setTab] = useState<'inbox' | 'contacts'>('inbox')
-  const [filter, setFilter] = useState<'needs_reply' | 'all' | 'done' | 'archived' | 'spam' | 'sent' | 'drafts' | 'trash'>('needs_reply')
+  const [filter, setFilter] = useState<MessageFilter>(initialMessageFilter)
   const [search, setSearch] = useState('')
   const [conversations, setConversations] = useState<Conversation[]>([])
   const [nextCursor, setNextCursor] = useState('')
@@ -106,15 +114,15 @@ export function HelloAdaMessages() {
   const [forwardedAttachmentCount, setForwardedAttachmentCount] = useState(0)
   const [composing, setComposing] = useState(false)
 
-  const load = useCallback(async (quiet = false, cursor = '') => {
+  const load = useCallback(async (quiet = false, cursor = '', selectedFilter: MessageFilter = filter) => {
     if (cursor && loadingMoreRef.current) return
     const requestNumber = ++listRequestRef.current
     if (cursor) { loadingMoreRef.current = true; setLoadingMore(true) }
     else { loadingMoreRef.current = false; setLoadingMore(false) }
     if (!quiet) { setLoading(true); setError('') }
     try {
-      const query = new URLSearchParams({ view: tab, state: filter })
-      query.set('folder', ['sent', 'drafts', 'trash', 'spam', 'archived'].includes(filter) ? filter : 'inbox')
+      const query = new URLSearchParams({ view: tab, state: selectedFilter })
+      query.set('folder', ['sent', 'drafts', 'trash', 'spam', 'archived'].includes(selectedFilter) ? selectedFilter : 'inbox')
       if (search.trim()) query.set('q', search.trim())
       if (deepLinkConversation) query.set('conversation', deepLinkConversation)
       if (cursor) query.set('cursor', cursor)
@@ -151,6 +159,13 @@ export function HelloAdaMessages() {
   }, [deepLinkConversation, filter, search, t, tab])
 
   useEffect(() => { void load() }, [load])
+
+  useEffect(() => {
+    const url = new URL(window.location.href)
+    if (filter === 'needs_reply') url.searchParams.delete('folder')
+    else url.searchParams.set('folder', filter)
+    window.history.replaceState(window.history.state, '', url)
+  }, [filter])
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
@@ -375,6 +390,8 @@ export function HelloAdaMessages() {
   const createOwnerDraft = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (composing) return
+    const submitter = (event.nativeEvent as SubmitEvent).submitter as HTMLButtonElement | null
+    const shouldReview = submitter?.value === 'review'
     setComposing(true); setError(''); setNotice('')
     try {
       const composePayload = { to: composeTo, cc: recipientList(composeCc), bcc: recipientList(composeBcc), subject: composeSubject, text: composeText }
@@ -389,12 +406,48 @@ export function HelloAdaMessages() {
       })
       const body = await response.json() as { conversationId?: string | number; message?: string }
       if (!response.ok || !body.conversationId) throw new Error(body.message || t('owner.messagesFailure'))
+
+      const conversationId = String(body.conversationId)
       composeRequestRef.current = undefined
       setComposeOpen(false); setComposeTo(''); setComposeCc(''); setComposeBcc(''); setComposeSubject(''); setComposeText('')
       setForwardedAttachmentCount(0)
-      setTab('inbox'); setFilter('drafts'); setActiveId(String(body.conversationId)); setDeepLinkConversation(String(body.conversationId))
+      setTab('inbox'); setFilter('drafts'); setActiveId(conversationId); setDeepLinkConversation(conversationId)
+      setConfirmSend(false)
+
+      const detailResponse = await fetchHelloAda(`/api/helloada/messages/${encodeURIComponent(conversationId)}`, { cache: 'no-store' })
+      if (!detailResponse.ok) {
+        setError(t('owner.messagesFailure'))
+        setNotice(t('owner.messagesDraftSaved'))
+        await load(false, '', 'drafts')
+        return
+      }
+      const savedDetail = await detailResponse.json() as ResponseData
+      const savedDraft = [...(savedDetail.messages || [])].reverse().find((item) =>
+        item.direction === 'owner_message' && item.deliveryState === 'draft')
+      setDetail(savedDetail)
+      if (!savedDraft) {
+        setError(t('owner.messagesFailure'))
+        setNotice(t('owner.messagesDraftSaved'))
+        await load(false, '', 'drafts')
+        return
+      }
+
+      setDraft(savedDraft.draftText || savedDraft.text || '')
+      setDraftRevision(Number(savedDraft.draftRevision || 0))
+      setDraftTo(savedDraft.to || '')
+      setDraftCc(Array.isArray(savedDraft.ccRecipients) ? savedDraft.ccRecipients.join(', ') : '')
+      setDraftBcc(Array.isArray(savedDraft.bccRecipients) ? savedDraft.bccRecipients.join(', ') : '')
+      setDraftSubject(savedDraft.subject || composeSubject)
+      setDraftHash(isHelloAdaMessageDraftHash(savedDraft.draftHash) ? savedDraft.draftHash : '')
+      draftDirtyRef.current = false
+      sendRequestRef.current = undefined
+
+      if (shouldReview) {
+        if (isHelloAdaMessageDraftHash(savedDraft.draftHash)) setConfirmSend(true)
+        else setError(t('owner.messagesFailure'))
+      }
       setNotice(t('owner.messagesDraftSaved'))
-      await load()
+      await load(false, '', 'drafts')
     } catch (cause) { setError(cause instanceof Error ? cause.message : t('owner.messagesFailure')) }
     finally { setComposing(false) }
   }
@@ -481,7 +534,7 @@ export function HelloAdaMessages() {
         <option value="needs_reply">{t('owner.messagesFilterNeedsReply')}</option><option value="all">{t('owner.messagesFilterAll')}</option><option value="sent">{t('owner.messagesSentFolder')}</option><option value="drafts">{t('owner.messagesDraftsFolder')}</option><option value="done">{t('owner.messagesFilterDone')}</option><option value="archived">{t('owner.messagesFilterArchived')}</option><option value="spam">{t('owner.messagesFilterSpam')}</option><option value="trash">{t('owner.messagesTrashFolder')}</option>
       </select></label> : null}
       <input className="helloada-messages-search" type="search" value={search} placeholder={t('owner.messagesSearch')} onChange={(event) => setSearch(event.target.value)} />
-      {tab === 'inbox' ? <button type="button" className="helloada-messages-compose" onClick={() => { setForwardedAttachmentCount(0); setComposeTo(''); setComposeCc(''); setComposeBcc(''); setComposeSubject(''); setComposeText(''); setComposeOpen(true) }} disabled={!canSend}>{t('owner.messagesNew')}</button> : null}
+      {tab === 'inbox' ? <button type="button" className="helloada-messages-compose" onClick={() => { setForwardedAttachmentCount(0); setComposeTo(''); setComposeCc(''); setComposeBcc(''); setComposeSubject(''); setComposeText(''); setComposeOpen(true); setConfirmSend(false) }} disabled={!canSend || composeOpen}>{t('owner.messagesNew')}</button> : null}
       <button type="button" className="helloada-messages-refresh" onClick={() => void load()} disabled={loading} aria-label={t('owner.retry')}><WorkspaceIcon name="refresh" size={17} /></button>
     </div>
     {error ? <p className="helloada-messages-error" role="alert">{error}</p> : null}
@@ -501,7 +554,22 @@ export function HelloAdaMessages() {
         {nextCursor ? <button type="button" className="helloada-messages-load-more" onClick={() => void load(true, nextCursor)} disabled={loadingMore} aria-busy={loadingMore}>{loadingMore ? t('owner.messagesLoading') : t('owner.messagesLoadMore')}</button> : null}
       </aside>
       <section className="helloada-message-detail" aria-label={t('owner.messages')}>
-        {detail?.conversation ? <>
+        {composeOpen ? <form className="helloada-inline-composer" onSubmit={createOwnerDraft}>
+          <div className="helloada-inline-composer-header"><span className="helloada-eyebrow">{t('owner.messages')}</span><h2>{t('owner.messagesNew')}</h2><p>{t('owner.messagesFrom')}: {mailbox?.address}</p></div>
+          <div className="helloada-inline-composer-fields">
+            <label>{t('owner.messagesTo')}<input type="email" required autoComplete="email" value={composeTo} onChange={(event) => setComposeTo(event.target.value)} /></label>
+            <label>CC<input type="text" value={composeCc} onChange={(event) => setComposeCc(event.target.value)} placeholder="name@example.com, …" /></label>
+            <label>BCC<input type="text" value={composeBcc} onChange={(event) => setComposeBcc(event.target.value)} placeholder="name@example.com, …" /></label>
+            <label>{t('owner.messagesSubject')}<input type="text" required maxLength={180} value={composeSubject} onChange={(event) => setComposeSubject(event.target.value)} /></label>
+            <label className="helloada-inline-composer-body">{t('owner.messagesMessage')}<textarea required rows={10} maxLength={10000} value={composeText} onChange={(event) => setComposeText(event.target.value)} /></label>
+          </div>
+          {forwardedAttachmentCount > 0 ? <p className="helloada-messages-policy-note" role="note">{t('owner.messagesForwardAttachmentsNotIncluded').replace('{count}', String(forwardedAttachmentCount))}</p> : null}
+          <div className="helloada-inline-composer-actions">
+            <button type="button" className="is-secondary" onClick={() => { setComposeOpen(false); setForwardedAttachmentCount(0) }} disabled={composing}>{t('owner.messagesCancel')}</button>
+            <button type="submit" name="intent" value="save" className="is-secondary" disabled={composing || !canSend}>{composing ? t('owner.messagesLoading') : t('owner.messagesSaveDraft')}</button>
+            <button type="submit" name="intent" value="review" disabled={composing || !canSend}>{composing ? t('owner.messagesLoading') : t('owner.messagesSend')}</button>
+          </div>
+        </form> : detail?.conversation ? <>
           <header className="helloada-message-detail-header">
             <div><span className="helloada-eyebrow">{detail.conversation.source === 'form' ? t('owner.messagesFromForm') : detail.conversation.source === 'booking' ? t('owner.calendar') : t('owner.messagesFromEmail')}</span><h2>{detail.conversation.subject || t('owner.messagesNoSubject')}</h2><p>{activeContact?.name ? `${activeContact.name} · ` : ''}{activeContact?.email || detail.conversation.participantEmail}</p></div>
             <div className="helloada-message-detail-actions">
@@ -565,24 +633,11 @@ export function HelloAdaMessages() {
       </section>
     </div>}
 
-    {composeOpen ? <div className="helloada-send-confirm-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !composing) setComposeOpen(false) }}>
-      <form className="helloada-send-confirm helloada-compose-dialog" onSubmit={createOwnerDraft}>
-        <span className="helloada-eyebrow">{t('owner.messages')}</span><h2>{t('owner.messagesNew')}</h2>
-        <label>{t('owner.messagesTo')}<input type="email" required autoComplete="email" value={composeTo} onChange={(event) => setComposeTo(event.target.value)} /></label>
-        <label>CC<input type="text" value={composeCc} onChange={(event) => setComposeCc(event.target.value)} placeholder="name@example.com, …" /></label>
-        <label>BCC<input type="text" value={composeBcc} onChange={(event) => setComposeBcc(event.target.value)} placeholder="name@example.com, …" /></label>
-        <label>{t('owner.messagesSubject')}<input type="text" required maxLength={180} value={composeSubject} onChange={(event) => setComposeSubject(event.target.value)} /></label>
-        <label>{t('owner.messagesReply')}<textarea required rows={6} maxLength={10000} value={composeText} onChange={(event) => setComposeText(event.target.value)} /></label>
-        {forwardedAttachmentCount > 0 ? <p className="helloada-messages-policy-note" role="note">{t('owner.messagesForwardAttachmentsNotIncluded').replace('{count}', String(forwardedAttachmentCount))}</p> : null}
-        <div><button type="button" className="is-secondary" onClick={() => { setComposeOpen(false); setForwardedAttachmentCount(0) }} disabled={composing}>{t('owner.messagesCancel')}</button><button type="submit" disabled={composing || !canSend}>{composing ? t('owner.messagesLoading') : t('owner.messagesSaveDraft')}</button></div>
-      </form>
-    </div> : null}
-
     {confirmSend ? <div className="helloada-send-confirm-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setConfirmSend(false) }}>
       <section className="helloada-send-confirm" role="dialog" aria-modal="true" aria-labelledby="helloada-send-title">
-        <span className="helloada-eyebrow">{t('owner.messagesReply')}</span><h2 id="helloada-send-title">{t('owner.messagesSendConfirm')}</h2><p>{t('owner.messagesSendConfirmBody')}</p>
-        <dl><div><dt>{t('owner.messagesFrom')}</dt><dd>{mailbox?.address}</dd></div><div><dt>{t('owner.messagesTo')}</dt><dd>{currentDraft?.to || activeContact?.email || detail?.conversation?.participantEmail}</dd></div>{currentDraft?.ccRecipients?.length ? <div><dt>CC</dt><dd>{currentDraft.ccRecipients.join(', ')}</dd></div> : null}{currentDraft?.bccRecipients?.length ? <div><dt>BCC</dt><dd>{currentDraft.bccRecipients.join(', ')}</dd></div> : null}<div><dt>{t('owner.messagesSubject')}</dt><dd>{currentDraft?.subject || draftSubject || detail?.conversation?.subject || t('owner.messagesNoSubject')}</dd></div></dl>
-        <div><button type="button" className="is-secondary" onClick={() => setConfirmSend(false)}>{t('owner.messagesCancel')}</button><button type="button" onClick={() => void sendReply()} disabled={sending}>{sending ? t('owner.messagesLoading') : t('owner.messagesSend')}</button></div>
+        <span className="helloada-eyebrow">{currentDraft?.direction === 'owner_message' ? t('owner.messagesNew') : t('owner.messagesReply')}</span><h2 id="helloada-send-title">{t('owner.messagesSendConfirm')}</h2><p>{t('owner.messagesSendConfirmBody')}</p>
+        <dl><div><dt>{t('owner.messagesFrom')}</dt><dd>{mailbox?.address}</dd></div><div><dt>{t('owner.messagesTo')}</dt><dd>{currentDraft?.to || activeContact?.email || detail?.conversation?.participantEmail}</dd></div>{currentDraft?.ccRecipients?.length ? <div><dt>CC</dt><dd>{currentDraft.ccRecipients.join(', ')}</dd></div> : null}{currentDraft?.bccRecipients?.length ? <div><dt>BCC</dt><dd>{currentDraft.bccRecipients.join(', ')}</dd></div> : null}<div><dt>{t('owner.messagesSubject')}</dt><dd>{currentDraft?.subject || draftSubject || detail?.conversation?.subject || t('owner.messagesNoSubject')}</dd></div><div><dt>{t('owner.messagesMessage')}</dt><dd className="helloada-send-preview">{currentDraft?.text || currentDraft?.draftText}</dd></div></dl>
+        <div><button type="button" className="is-secondary" onClick={() => setConfirmSend(false)}>{t('owner.messagesCancel')}</button><button type="button" onClick={() => void sendReply()} disabled={sending}>{sending ? t('owner.messagesLoading') : t('owner.messagesSendNow')}</button></div>
       </section>
     </div> : null}
   </main>
