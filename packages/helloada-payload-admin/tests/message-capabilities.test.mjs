@@ -56,17 +56,17 @@ test('saved draft detail restores only the currently approved send-review hash',
 })
 
 test('new-message composition stays in the mailbox and separates saved review from sending', () => {
-  assert.match(messagesUi, /helloada-inline-composer/)
-  assert.doesNotMatch(messagesUi, /helloada-compose-dialog/)
-  assert.match(messagesUi, /name="intent" value="save"/)
-  assert.match(messagesUi, /name="intent" value="review"/)
-  assert.match(messagesUi, /setConfirmSend\(true\)/)
-  assert.match(messagesUi, /helloada-send-preview/)
-  assert.match(messagesUi, /owner\.messagesSendNow/)
+  assert.ok(messagesUi.includes('helloada-inline-composer'))
+  assert.ok(!messagesUi.includes('helloada-compose-dialog'))
+  assert.ok(messagesUi.includes('name="intent" value="save"'))
+  assert.ok(messagesUi.includes('name="intent" value="review"'))
+  assert.ok(messagesUi.includes('setConfirmSend(true)'))
+  assert.ok(messagesUi.includes('helloada-send-preview'))
+  assert.ok(messagesUi.includes('owner.messagesSendNow'))
 })
 
 test('selected mailbox folder survives a page reconnect', () => {
-  assert.match(messagesUi, /initialMessageFilter/)
-  assert.match(messagesUi, /searchParams\.get\('folder'\)/)
-  assert.match(messagesUi, /searchParams\.set\('folder', filter\)/)
+  assert.ok(messagesUi.includes('initialMessageFilter'))
+  assert.ok(messagesUi.includes("searchParams.get('folder')"))
+  assert.ok(messagesUi.includes("searchParams.set('folder', filter)"))
 })
