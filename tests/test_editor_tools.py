@@ -272,6 +272,8 @@ def test_payload_tool_schema_uses_the_gateway_contract(env):
     contract = payload.require_authoring_contract()
     tools = _tools_spec({**env[2], "payload_gateway": payload}, authoring_contract=contract)
     by_name = {tool["function"]["name"]: tool for tool in tools}
+    for name in ("create_payload_draft", "update_payload_draft", "update_payload_global"):
+        assert by_name[name]["function"]["parameters"]["type"] == "object"
     assert by_name["read_payload_content"]["function"]["parameters"]["properties"]["collection"]["enum"] == ["pages"]
     assert by_name["read_payload_global"]["function"]["parameters"]["properties"]["global"]["enum"] == ["settings"]
     assert "publish_payload_document" not in by_name

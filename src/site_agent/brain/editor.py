@@ -531,6 +531,8 @@ def _tools_spec(
         }
 
     def raw_fn(name: str, desc: str, parameters: dict[str, Any]) -> dict[str, Any]:
+        if parameters.get("type") != "object":
+            raise ValueError(f"OpenAI function tool {name} must declare an object root schema")
         return {"type": "function", "function": {"name": name, "description": desc, "parameters": parameters}}
 
     tools = [
@@ -682,13 +684,13 @@ def _tools_spec(
             tools.append(raw_fn(
                 "create_payload_draft",
                 "Create a schema-valid Payload draft. Required fields follow the selected document type; never invent business facts.",
-                {"oneOf": create_variants},
+                {"type": "object", "oneOf": create_variants},
             ))
         if update_variants:
             tools.append(raw_fn(
                 "update_payload_draft",
                 "Update only requested fields on an existing Payload draft. Read the document first and pass its exact expectedHash. Never publish as part of this tool.",
-                {"oneOf": update_variants},
+                {"type": "object", "oneOf": update_variants},
             ))
         tools.append(fn(
             "read_payload_global",
@@ -712,7 +714,7 @@ def _tools_spec(
             tools.append(raw_fn(
                 "update_payload_global",
                 "Update selected fields on a shared Payload global draft. Read it first and pass its exact expectedHash. Never publish as part of this tool.",
-                {"oneOf": global_update_variants},
+                {"type": "object", "oneOf": global_update_variants},
             ))
     if use_existing_builder:
         tools.append(fn(
