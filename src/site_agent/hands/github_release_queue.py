@@ -82,8 +82,10 @@ class GitHubReleaseQueue:
         result = {key: customer.get(key) for key in (
             "repository", "worker", "health", "adminPath", "websitePresent", "payloadAdmin", "payloadCore",
             "contentContract", "schemaRevision", "schemaIdentity", "migrationHead",
-            "d1DatabaseId", "d1DatabaseName", "r2BucketName", "privateEmailR2BucketName",
-            "messagesQueueName", "messagesDlqName",
+            "d1DatabaseId", "d1DatabaseName", "mailflareD1DatabaseId", "mailflareD1DatabaseName",
+            "r2BucketName", "privateEmailR2BucketName", "mailflareR2BucketName",
+            "mailflareInboundQueueName",
+            "mailflareOutboundQueueName", "mailflareAgentQueueName",
         )}
         if not re.fullmatch(r"https://github\.com/weareheadless/[A-Za-z0-9_.-]+\.git", str(result["repository"] or "")):
             raise GitHubReleaseQueueError("release source must be an official weareheadless repository")
@@ -111,11 +113,24 @@ class GitHubReleaseQueue:
             raise GitHubReleaseQueueError("template D1 database identity cannot be registered")
         if not re.fullmatch(r"[a-z0-9-]{1,63}", str(result["d1DatabaseName"] or "")):
             raise GitHubReleaseQueueError("tenant D1 database name is invalid")
+        if (not re.fullmatch(r"[0-9a-fA-F-]{36}", str(result["mailflareD1DatabaseId"] or ""))
+                or str(result["mailflareD1DatabaseId"]).replace("-", "") == "0" * 32):
+            raise GitHubReleaseQueueError("exact tenant Mailflare D1 database identity is required")
+        if not re.fullmatch(r"[a-z0-9-]{1,63}", str(result["mailflareD1DatabaseName"] or "")):
+            raise GitHubReleaseQueueError("tenant Mailflare D1 database name is invalid")
+        if result["mailflareD1DatabaseName"] == result["d1DatabaseName"]:
+            raise GitHubReleaseQueueError("Payload and Mailflare databases must be isolated")
         if not re.fullmatch(r"[a-z0-9-]{3,63}", str(result["r2BucketName"] or "")):
             raise GitHubReleaseQueueError("tenant R2 bucket name is invalid")
-        for field in ("privateEmailR2BucketName", "messagesQueueName", "messagesDlqName"):
+        for field in ("privateEmailR2BucketName", "mailflareR2BucketName", "mailflareInboundQueueName",
+                      "mailflareOutboundQueueName", "mailflareAgentQueueName"):
             if not re.fullmatch(r"[a-z0-9-]{3,63}", str(result[field] or "")):
                 raise GitHubReleaseQueueError(f"tenant {field} resource name is invalid")
+        if len({result["r2BucketName"], result["privateEmailR2BucketName"], result["mailflareR2BucketName"]}) != 3:
+            raise GitHubReleaseQueueError("public media, private email and Mailflare objects must be isolated")
+        if len({result["mailflareInboundQueueName"], result["mailflareOutboundQueueName"],
+                result["mailflareAgentQueueName"]}) != 3:
+            raise GitHubReleaseQueueError("tenant Mailflare queues must be isolated")
         return result
 
     def request(

@@ -44,7 +44,7 @@ jobs:
       - name: Verify locked shared package release assets
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python scripts/github_release_assets.py
+        run: python -m site_agent.application.release_dependencies
 
   next-payload-template:
     runs-on: ubuntu-latest
@@ -53,10 +53,39 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.14.0'
-      - name: Test Resend and owner-message hash contracts
+          node-version: '22.23.3'
+      - name: Test Resend and Mailflare Worker contracts
         working-directory: src/site_agent/templates/next-payload
-        run: node --experimental-strip-types --test tests/resend-mail.test.mjs tests/owner-message-draft-hash.test.mjs
+        run: node --experimental-strip-types --test tests/resend-mail.test.mjs tests/mailflare-runtime.test.mjs tests/mailflare-inbox.test.mjs
+
+  mailflare-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.23.3'
+      - name: Pin the production npm toolchain
+        run: npm install --global npm@11.13.0
+      - run: test "$(npm --version)" = "11.13.0"
+      - name: Test pinned Mailflare integration patches
+        working-directory: packages/helloada-mailflare
+        run: npm test
+      - name: Build and verify the exact tenant Mailflare assets
+        run: |
+          set -euo pipefail
+          tenant_root="$(mktemp -d)"
+          trap 'rm -rf -- "$tenant_root"' EXIT
+          mkdir -p "$tenant_root/public"
+          cp src/site_agent/templates/next-payload/template-manifest.json "$tenant_root/public/helloada-release.json"
+          npm run build --prefix packages/helloada-mailflare -- --tenant-root "$tenant_root"
+          test -s "$tenant_root/.mailflare/server/index.js"
+          test -s "$tenant_root/.mailflare/server/ssr/index.js"
+          test -d "$tenant_root/.mailflare/client/_next/static"
+          test -f "$tenant_root/.mailflare/migrations/0061_helloada_booking_idempotency.sql"
+          test -f "$tenant_root/.mailflare/migrations/0062_helloada_payload_migration.sql"
+          node -e 'const p=require(process.argv[1]); if(p.commit!=="ca41c56a0781bf848b9898ddcc5615b3eacfbf8e") process.exit(1)' "$tenant_root/.mailflare/provenance.json"
 
   shared-payload-packages:
     runs-on: ubuntu-latest
@@ -69,7 +98,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.14.0'
+          node-version: '22.23.3'
           cache: npm
           cache-dependency-path: packages/${{ matrix.package }}/package-lock.json
       - name: Pin the production npm toolchain

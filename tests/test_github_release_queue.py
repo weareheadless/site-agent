@@ -23,17 +23,23 @@ CUSTOMER = {
     "migrationHead": "c" * 64,
     "d1DatabaseId": "12345678-1234-1234-1234-123456789abc",
     "d1DatabaseName": "helloada-demo",
+    "mailflareD1DatabaseId": "22345678-1234-1234-1234-123456789abc",
+    "mailflareD1DatabaseName": "helloada-demo-mail",
     "r2BucketName": "helloada-demo-media",
     "privateEmailR2BucketName": "helloada-demo-email",
-    "messagesQueueName": "helloada-demo-messages",
-    "messagesDlqName": "helloada-demo-messages-dlq",
+    "mailflareR2BucketName": "helloada-demo-mail-files",
+    "mailflareInboundQueueName": "helloada-demo-mail-inbound",
+    "mailflareOutboundQueueName": "helloada-demo-mail-outbound",
+    "mailflareAgentQueueName": "helloada-demo-mail-agent",
 }
 
 
 def test_release_request_commits_registry_and_exact_approval_together(monkeypatch):
     queue = GitHubReleaseQueue("token")
     legacy_customer = {key: value for key, value in CUSTOMER.items() if key not in {
-        "privateEmailR2BucketName", "messagesQueueName", "messagesDlqName",
+        "privateEmailR2BucketName",
+        "mailflareD1DatabaseId", "mailflareD1DatabaseName", "mailflareR2BucketName",
+        "mailflareInboundQueueName", "mailflareOutboundQueueName", "mailflareAgentQueueName",
     }}
     documents = {
         "payload-customers.json": {

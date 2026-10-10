@@ -828,8 +828,9 @@ def test_bootstrap_resource_names_remain_bounded_for_maximum_tenant_ids():
     assert len(names["d1"]) <= 63
     assert len(names["r2"]) <= 63
     assert len(names["email_r2"]) <= 63
-    assert len(names["messages_queue"]) <= 63
-    assert len(names["messages_dlq"]) <= 63
+    assert len(names["mailflare_inbound"]) <= 63
+    assert len(names["mailflare_outbound"]) <= 63
+    assert len(names["mailflare_agent"]) <= 63
 
 
 def test_bootstrap_short_resource_names_keep_the_existing_stable_identity():
@@ -844,8 +845,11 @@ def test_bootstrap_short_resource_names_keep_the_existing_stable_identity():
         "d1": "helloada-oceanicvibes",
         "r2": "helloada-oceanicvibes-media",
         "email_r2": "helloada-oceanicvibes-email",
-        "messages_queue": "helloada-oceanicvibes-messages",
-        "messages_dlq": "helloada-oceanicvibes-messages-dlq",
+        "mailflare_d1": "helloada-oceanicvibes-mail",
+        "mailflare_r2": "helloada-oceanicvibes-mail-files",
+        "mailflare_inbound": "helloada-oceanicvibes-mail-inbound",
+        "mailflare_outbound": "helloada-oceanicvibes-mail-outbound",
+        "mailflare_agent": "helloada-oceanicvibes-mail-agent",
     }
 
 
@@ -879,6 +883,21 @@ def test_bootstrap_configures_generic_seo_provisioning_for_new_sites(tmp_path):
             "d1": {
                 "name": "helloada-demo",
                 "database_id": "56d3f277-fbaf-43d4-91e5-b3a195653a05",
+            },
+            "mailflare_d1": {
+                "name": "helloada-demo-mail",
+                "database_id": "66d3f277-fbaf-43d4-91e5-b3a195653a05",
+            },
+            "private_email_r2": {"bucket": "helloada-demo-email"},
+            "mailflare_r2": {"bucket": "helloada-demo-mail-files"},
+            "queues": {
+                "messages": {"name": "helloada-demo-messages"},
+                "dead_letter": {"name": "helloada-demo-messages-dlq"},
+            },
+            "mailflare_queues": {
+                "inbound": {"name": "helloada-demo-mail-inbound"},
+                "outbound": {"name": "helloada-demo-mail-outbound"},
+                "agent": {"name": "helloada-demo-mail-agent"},
             },
         },
     )
@@ -1199,7 +1218,7 @@ def test_bootstrap_configures_one_explicit_tenant_ownership_marker(tmp_path):
     assert 'tenantId: "demo"' in (site_dir / "src/helloada.config.ts").read_text()
 
 
-def test_bootstrap_pins_message_queues_and_consumes_the_dead_letter_queue(tmp_path):
+def test_bootstrap_provisions_only_the_three_mailflare_queues(tmp_path):
     from site_agent.site_scaffold import initialize_managed_site
 
     site_dir = initialize_managed_site(tmp_path / "site")
@@ -1211,12 +1230,15 @@ def test_bootstrap_pins_message_queues_and_consumes_the_dead_letter_queue(tmp_pa
     WebsiteBootstrapService._configure_wranger(
         site_dir, names, "https://helloada-demo.workers.dev", "https://site-agent.test",
         {
-            "d1": {"database_id": "d1-id", "name": names["d1"]},
-            "queues": {
-                "messages": {"name": names["messages_queue"]},
-                "dead_letter": {"name": names["messages_dlq"]},
-            },
+            "d1": {"database_id": "56d3f277-fbaf-43d4-91e5-b3a195653a05", "name": names["d1"]},
+            "mailflare_d1": {"database_id": "66d3f277-fbaf-43d4-91e5-b3a195653a05", "name": names["mailflare_d1"]},
+            "mailflare_r2": {"bucket": names["mailflare_r2"]},
             "private_email_r2": {"bucket": names["email_r2"]},
+            "mailflare_queues": {
+                "inbound": {"name": names["mailflare_inbound"]},
+                "outbound": {"name": names["mailflare_outbound"]},
+                "agent": {"name": names["mailflare_agent"]},
+            },
         },
         "Demo", "demo", {
             "coreVersion": template["payloadCore"],
@@ -1226,11 +1248,16 @@ def test_bootstrap_pins_message_queues_and_consumes_the_dead_letter_queue(tmp_pa
         _TEST_HANDOFF_PUBLIC_KEY,
     )
     wrangler = json.loads((site_dir / "wrangler.jsonc").read_text())
-    assert wrangler["vars"]["HELLOADA_MESSAGES_QUEUE_NAME"] == names["messages_queue"]
-    assert wrangler["vars"]["HELLOADA_MESSAGES_DLQ_NAME"] == names["messages_dlq"]
+    assert wrangler["d1_databases"][1]["migrations_dir"] == ".mailflare/migrations"
     assert [consumer["queue"] for consumer in wrangler["queues"]["consumers"]] == [
-        names["messages_queue"], names["messages_dlq"],
+        names["mailflare_inbound"], names["mailflare_outbound"], names["mailflare_agent"],
     ]
+    assert wrangler["durable_objects"]["bindings"] == [
+        {"name": "MAILFLARE_REALTIME", "class_name": "RealtimeHub"},
+    ]
+    assert wrangler["d1_databases"][1]["migrations_dir"] == ".mailflare/migrations"
+    assert wrangler["ai"] == {"binding": "MAILFLARE_AI"}
+    assert wrangler["triggers"]["crons"] == ["*/5 * * * *", "0 2 * * *"]
 
 
 def test_bootstrap_never_replaces_an_existing_site_directory(tmp_path):

@@ -1,16 +1,13 @@
 import { NextResponse } from 'next/server'
 
 import { validateHelloAdaFormSubmission, helloAdaIdempotencyKey } from '@weareheadless/helloada-payload-core/messages'
-import { hashJson } from '@/lib/payload-hash'
+import { writeMailflareFormMessage } from '@/lib/mailflare-inbox'
 import {
-  createMessageOperation,
-  dispatchMessageOperation,
-  findMailbox,
-  findMessageRecord,
   messageRuntime,
   tenantIdentity,
   verifyTurnstile,
-} from '@/lib/messages-service'
+} from '@/lib/helloada-form-runtime'
+import type { MailflareD1 } from '../../../../../../mailflare-provisioning'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
@@ -43,13 +40,6 @@ export async function POST(request: Request, { params }: RouteProps) {
   const { payload, env } = await messageRuntime()
   const tenant = tenantIdentity()
   if (!tenant) return fail('This website is not ready to receive form messages.', 503)
-  const idempotencyKey = `form:${tenant}:${slug}:${requestId}`
-  const clientFingerprint = await hashJson({ slug, answers: input.answers })
-  const existing = await findMessageRecord(payload, 'messageOperations', { idempotencyKey: { equals: idempotencyKey } })
-  if (existing) {
-    if (String(existing.requestHash || '') !== clientFingerprint) return fail('This request ID was already used for different form answers. Refresh the form and try again.', 409)
-    return NextResponse.json({ accepted: true, receiptId: String(existing.operationId) }, { status: 202, headers: { 'Cache-Control': 'no-store' } })
-  }
   if (String(input.website || '').trim()) return fail('This form request was not accepted.', 400)
   const rateLimit = env.HELLOADA_FORM_RATE_LIMIT
   const remoteIp = request.headers.get('cf-connecting-ip') || ''
@@ -96,30 +86,28 @@ export async function POST(request: Request, { params }: RouteProps) {
     const parsed = new URL(referer)
     if (parsed.origin === new URL(request.url).origin) sourcePage = `${parsed.pathname}${parsed.search}`.slice(0, 500)
   } catch { /* Referrer is optional and never trusted as a destination. */ }
-  const formSnapshot = {
-    id: definition.id,
-    slug,
-    title: String(definition.title || slug).slice(0, 160),
-    updatedAt: String(definition.updatedAt || ''),
+  const mailflareEnv = env as typeof env & { MAILFLARE_DB?: MailflareD1; MAILFLARE_ADDRESS?: string }
+  if (!mailflareEnv.MAILFLARE_DB || !mailflareEnv.MAILFLARE_ADDRESS) {
+    return fail('This website inbox is not ready to receive form messages.', 503)
   }
-  const mailbox = await findMailbox(payload)
-  const notificationAddress = String(mailbox.notificationAddress || '')
-  const notificationVerifiedAt = String(mailbox.notificationVerifiedAt || '')
-  const ownerNotification = notificationAddress && notificationVerifiedAt
-    ? { recipientAddress: notificationAddress, verifiedAt: notificationVerifiedAt }
-    : undefined
-  const body = { submission, formSnapshot, sourcePage, clientFingerprint, ...(ownerNotification ? { ownerNotification } : {}) }
-  let operation: Record<string, unknown>
   try {
-    ({ operation } = await createMessageOperation(payload, 'form_accept', idempotencyKey, body, clientFingerprint))
+    const fields = Array.isArray(definition.fields) ? definition.fields.map(jsonObject) : []
+    const result = await writeMailflareFormMessage({
+      database: mailflareEnv.MAILFLARE_DB,
+      tenantId: tenant,
+      mailboxAddress: mailflareEnv.MAILFLARE_ADDRESS,
+      formSlug: slug,
+      formTitle: String(definition.title || slug),
+      requestId,
+      sourcePage,
+      fields: fields as Array<{ key: string; label?: string; mapsTo?: string; type?: string }>,
+      submission,
+    })
+    return NextResponse.json({ accepted: true, receiptId: result.messageId }, { status: 202, headers: { 'Cache-Control': 'no-store' } })
   } catch (error) {
-    return fail(error instanceof Error ? error.message : 'This form request could not be accepted.', 409)
+    const message = error instanceof Error ? error.message : 'This form request could not be accepted.'
+    const status = message.includes('already used for different answers') ? 409 : 503
+    console.error('helloada_form_mailflare_write_failed', { tenant, form: slug, error: message })
+    return fail(status === 409 ? message : 'This form request could not be accepted right now. Please try again.', status)
   }
-  try { await dispatchMessageOperation(env, operation) }
-  catch (error) {
-    // Payload is the durable acceptance boundary. The scheduled outbox sweep
-    // dispatches this receipt if the Queue is unavailable here.
-    console.error('helloada_form_queue_deferred', { tenant, operationId: operation.operationId, error: error instanceof Error ? error.message : 'unknown' })
-  }
-  return NextResponse.json({ accepted: true, receiptId: String(operation.operationId) }, { status: 202, headers: { 'Cache-Control': 'no-store' } })
 }
