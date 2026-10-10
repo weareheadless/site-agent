@@ -52,5 +52,21 @@ test('the shared Messages UI uses the verified sender capability for every send 
 
 test('saved draft detail restores only the currently approved send-review hash', () => {
   assert.equal(templateApi.split('item.approvalHash === currentHash').length - 1, 2)
-  assert.equal(messagesUi.split('setDraftHash(isHelloAdaMessageDraftHash(').length - 1, 2)
+  assert.equal(messagesUi.split('setDraftHash(isHelloAdaMessageDraftHash(').length - 1, 3)
+})
+
+test('new-message composition stays in the mailbox and separates saved review from sending', () => {
+  assert.ok(messagesUi.includes('helloada-inline-composer'))
+  assert.ok(!messagesUi.includes('helloada-compose-dialog'))
+  assert.ok(messagesUi.includes('name="intent" value="save"'))
+  assert.ok(messagesUi.includes('name="intent" value="review"'))
+  assert.ok(messagesUi.includes('setConfirmSend(true)'))
+  assert.ok(messagesUi.includes('helloada-send-preview'))
+  assert.ok(messagesUi.includes('owner.messagesSendNow'))
+})
+
+test('selected mailbox folder survives a page reconnect', () => {
+  assert.ok(messagesUi.includes('initialMessageFilter'))
+  assert.ok(messagesUi.includes("get('folder')"))
+  assert.ok(messagesUi.includes("searchParams.set('folder', filter)"))
 })
