@@ -149,7 +149,7 @@
       "messagesDlqName": "helloada-oceanicvibes-messages-dlq",
       "messagesQueueName": "helloada-oceanicvibes-messages",
       "migrationHead": "5befad21e84b0f950d3e926afa69f29fc45c9b5a76366ea2e10b6d5225494345",
-      "payloadAdmin": "0.10.6",
+      "payloadAdmin": "0.10.8",
       "payloadCore": "0.5.7",
       "privateEmailR2BucketName": "helloada-oceanicvibes-email",
       "r2BucketName": "helloada-oceanicvibes-media",
