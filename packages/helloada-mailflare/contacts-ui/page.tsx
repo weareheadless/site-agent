@@ -101,7 +101,9 @@ export default function ContactsPage() {
 	}
 
 	function sourceLabel(source: Contact["source"]) {
-		return t("contacts.source." + source);
+		if (source === "manual") return t("contacts.source.manual");
+		if (source === "inbound") return t("contacts.source.inbound");
+		return t("contacts.source.outbound");
 	}
 
 	return (
@@ -139,7 +141,7 @@ export default function ContactsPage() {
 								<input id="contact-email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} required maxLength={254} autoComplete="email" className="h-10 w-full rounded-xl border border-neutral-200 bg-white px-3 text-sm text-neutral-900 outline-none transition focus:border-orange-400 focus:ring-2 focus:ring-orange-100" />
 							</div>
 							<button type="submit" disabled={saving || !selectedMailbox?.id} className="h-10 rounded-xl bg-neutral-900 px-5 text-sm font-semibold text-white transition hover:bg-neutral-800 disabled:cursor-not-allowed disabled:opacity-50">
-								{saving ? "…" : t("contacts.save")}
+								{saving ? t("contacts.saving") : t("contacts.save")}
 							</button>
 							{saveError && <p role="alert" className="text-sm text-red-600 sm:col-span-3">{saveError}</p>}
 						</form>
@@ -155,7 +157,7 @@ export default function ContactsPage() {
 
 					<section aria-label={t("contacts.title")} className="overflow-hidden rounded-2xl border border-neutral-200/80 bg-white shadow-sm">
 						{loading ? (
-							<div role="status" className="px-5 py-12 text-center text-sm text-neutral-500">{t("navigation.loading")}</div>
+							<div role="status" className="px-5 py-12 text-center text-sm text-neutral-500">{t("contacts.loading")}</div>
 						) : error ? (
 							<div role="alert" className="px-5 py-12 text-center text-sm text-red-600">{error}</div>
 						) : filteredContacts.length === 0 ? (
