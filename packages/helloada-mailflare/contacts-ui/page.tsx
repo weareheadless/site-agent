@@ -148,7 +148,7 @@ export default function ContactsPage() {
 					)}
 
 					<div className="flex flex-wrap items-center justify-between gap-3">
-						<p className="text-sm font-medium text-neutral-600">{contacts.length}</p>
+						<p className="text-sm font-medium text-neutral-600">{contacts.length} {t("contacts.title").toLocaleLowerCase()}</p>
 						<label className="relative block w-full sm:w-80">
 							<Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-400" />
 							<input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("contacts.search")} aria-label={t("contacts.search")} className="h-10 w-full rounded-full border border-neutral-200 bg-white pl-9 pr-4 text-sm text-neutral-900 outline-none transition focus:border-orange-400 focus:ring-2 focus:ring-orange-100" />
@@ -181,7 +181,7 @@ export default function ContactsPage() {
 										</div>
 										<div className="flex shrink-0 items-center gap-5 text-xs text-neutral-500">
 											<span className="rounded-full bg-neutral-100 px-2.5 py-1 font-medium text-neutral-600">{sourceLabel(contact.source)}</span>
-											<span className="hidden min-w-28 text-right sm:block">{activityLabel(contact.lastSeenAt)}</span>
+											<span className="hidden min-w-28 text-right sm:block">{t("contacts.lastActivity")}: {activityLabel(contact.lastSeenAt)}</span>
 										</div>
 									</li>
 								))}
