@@ -1,6 +1,6 @@
 # HelloAda Messages, Contacts and Website Forms — Production Implementation Plan
 
-Date: 2026-10-04; integration status reconciled 2026-10-07
+> Superseded by [docs/mailflare-single-worker-contract.md](./mailflare-single-worker-contract.md).\n> Retained as historical implementation context only; its Payload/Resend data\n> ownership and mailbox architecture are no longer authoritative.\n\nDate: 2026-10-04; integration status reconciled 2026-10-07
 
 Status: implementation is in progress on an isolated feature branch; the
 current-mainline integration and package CI are being completed. Tenant email
