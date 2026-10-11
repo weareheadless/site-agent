@@ -518,8 +518,7 @@ def main() -> int:
             if "schemaMigration" in request:
                 command.extend(["--schema-migration-from-ledger-identity",
                                 request["schemaMigration"]["fromLedgerIdentity"]])
-            if requested_fingerprint:
-                command.extend(["--shared-runtime-fingerprint", requested_fingerprint])
+            command.extend(["--shared-runtime-fingerprint", shared_fingerprint])
             code = subprocess.run(command,
                 env={**environment, "HELLOADA_PIPELINE_SHA": sha}).returncode
             failures += int(code != 0)
