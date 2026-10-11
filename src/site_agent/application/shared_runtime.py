@@ -282,20 +282,22 @@ def _merge_wrangler(template: dict[str, Any], tenant: dict[str, Any], customer: 
         "MAILFLARE_OUTBOUND_QUEUE": customer["mailflareOutboundQueueName"],
         "MAILFLARE_AGENT_QUEUE": customer["mailflareAgentQueueName"],
     }
+    producer_bindings = {}
     for producer in producers:
         if not isinstance(producer, dict) or producer.get("binding") not in queue_names:
             raise SharedRuntimeError("canonical Mailflare Queue producer binding is invalid")
-        producer["queue"] = queue_names[producer["binding"]]
-    for consumer in config["queues"].get("consumers", []):
-        if not isinstance(consumer, dict):
-            raise SharedRuntimeError("canonical Mailflare Queue consumer is invalid")
-        producer = next((item for item in producers if item["queue"] == consumer.get("queue")), None)
-        if producer is None:
+        producer_bindings[producer.get("queue")] = producer["binding"]
+    if len(producer_bindings) != 3 or len(config["queues"].get("consumers", [])) != 3:
+        raise SharedRuntimeError("canonical Mailflare Queue producer and consumer identities must be unique")
+    consumer_bindings = {}
+    for consumer in config["queues"]["consumers"]:
+        if not isinstance(consumer, dict) or consumer.get("queue") not in producer_bindings:
             raise SharedRuntimeError("canonical Mailflare Queue consumer has no producer")
+        consumer_bindings[consumer["queue"]] = producer_bindings[consumer["queue"]]
+    for producer in producers:
+        producer["queue"] = queue_names[producer["binding"]]
     config["queues"]["consumers"] = [
-        {**consumer, "queue": queue_names[next(
-            producer["binding"] for producer in producers if producer["queue"] == consumer["queue"]
-        )]}
+        {**consumer, "queue": queue_names[consumer_bindings[consumer["queue"]]]}
         for consumer in config["queues"]["consumers"]
     ]
     return config
