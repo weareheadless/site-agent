@@ -7,6 +7,7 @@
     "mailflare-payload-migration.ts",
     "mailflare-provisioning.ts",
     "mailflare-runtime.ts",
+    "mailflare-bindings.ts",
     "src/app/api/health/route.ts",
     "src/app/api/helloada/[...path]/route.ts",
     "src/app/api/helloada/forms/[slug]/route.ts",

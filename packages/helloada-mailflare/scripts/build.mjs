@@ -32,7 +32,7 @@ function replaceExactlyOnce(source, before, after, filename) {
   return source.slice(0, first) + after + source.slice(first + before.length)
 }
 
-export function applyTenantPatches(nextConfig, workerEntry) {
+export function applyTenantPatches(nextConfig, workerEntry, cloudflareModule) {
   return {
     nextConfig: replaceExactlyOnce(
       nextConfig,
@@ -45,6 +45,17 @@ export function applyTenantPatches(nextConfig, workerEntry) {
       'if (url.pathname === "/api/realtime") {',
       'if (url.pathname === "/mail/api/realtime") {',
       'worker.ts',
+    ),
+    cloudflareModule: replaceExactlyOnce(
+      replaceExactlyOnce(
+        cloudflareModule,
+        'import { withStorage } from "@/lib/storage";',
+        'import { withStorage } from "@/lib/storage";\nimport { asMailflareEnv } from "@/lib/helloada-tenant-bindings";',
+        'src/lib/cloudflare.ts binding adapter import',
+      ),
+      'return withStorage(getNodeEnv() ?? (env as CloudflareEnv));',
+      'return withStorage(asMailflareEnv(getNodeEnv() ?? (env as CloudflareEnv)));',
+      'src/lib/cloudflare.ts environment boundary',
     ),
   }
 }
@@ -122,16 +133,21 @@ async function prepareBuildCopy(destination) {
       return relative !== 'next-env.d.ts' && relative !== 'src/lib/migrations/bundle.json'
     },
   })
+  const sharedBindingsPath = path.resolve(packageRoot, '../../src/site_agent/templates/next-payload/mailflare-bindings.ts')
+  await cp(sharedBindingsPath, path.join(destination, 'src/lib/helloada-tenant-bindings.ts'))
   await applyBookingPatches(destination)
 
   const nextPath = path.join(destination, 'next.config.ts')
   const workerPath = path.join(destination, 'worker.ts')
+  const cloudflarePath = path.join(destination, 'src/lib/cloudflare.ts')
   const patched = applyTenantPatches(
     await readFile(nextPath, 'utf8'),
     await readFile(workerPath, 'utf8'),
+    await readFile(cloudflarePath, 'utf8'),
   )
   await writeFile(nextPath, patched.nextConfig)
   await writeFile(workerPath, patched.workerEntry)
+  await writeFile(cloudflarePath, patched.cloudflareModule)
 
   let referencesChanged = 0
   for (const file of await sourceFiles(path.join(destination, 'src'))) {
