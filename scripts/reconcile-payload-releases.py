@@ -385,7 +385,7 @@ def main() -> int:
             registry, queue, args.root, shared_fingerprint,
         )
         automatic_rollout = any(
-            customer.get("sharedRuntimeUpdate") == "automatic"
+            customer.get("sharedRuntimeUpdate", "automatic") == "automatic"
             for customer in registry["customers"].values()
         )
         canary_passed = not automatic_rollout or initial_rollout["state"] not in {
