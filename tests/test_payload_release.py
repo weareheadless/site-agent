@@ -1909,7 +1909,7 @@ def test_shared_runtime_release_queue_requires_an_exact_fingerprint():
         queue.validate_queue(invalid, registry)
 
 
-def test_durable_object_migration_identity_and_release_mode_are_receipt-driven(tmp_path):
+def test_durable_object_migration_identity_and_release_mode_are_receipt_driven(tmp_path):
     migrations = WORKER_CONFIG["durableObjectMigrations"]
     identity = release.durable_object_migration_identity(migrations)
     assert len(identity) == 64
