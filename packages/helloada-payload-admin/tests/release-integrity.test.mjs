@@ -12,6 +12,7 @@ const repositoryRoot = path.resolve(packageRoot, '../..')
 test('the default Payload template locks the exact reproducible admin artifact', () => {
   const pkg = JSON.parse(readFileSync(path.join(packageRoot, 'package.json'), 'utf8'))
   const lock = JSON.parse(readFileSync(path.join(repositoryRoot, 'src/site_agent/templates/next-payload/package-lock.json'), 'utf8'))
+  const worker = JSON.parse(readFileSync(path.join(repositoryRoot, 'src/site_agent/templates/next-payload/wrangler.jsonc'), 'utf8'))
   const output = mkdtempSync(path.join(tmpdir(), 'helloada-admin-pack-'))
 
   try {
@@ -27,6 +28,9 @@ test('the default Payload template locks the exact reproducible admin artifact',
     assert.equal(pinned.resolved, expectedUrl)
     assert.equal(pinned.integrity, artifact.integrity,
       `Update the template lock's admin integrity to the reproducible package value: ${artifact.integrity}`)
+    assert.equal(worker.observability.enabled, true)
+    assert.equal(worker.observability.issues.enabled, true)
+    assert.equal(worker.observability.head_sampling_rate, 1)
   } finally {
     rmSync(output, { recursive: true, force: true })
   }

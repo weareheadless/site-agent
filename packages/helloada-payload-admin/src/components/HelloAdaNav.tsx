@@ -47,6 +47,9 @@ export function HelloAdaNav({ user }: { user?: TypedUser | null }) {
   const isHistory = pathname === '/admin' && searchParams.get('view') === 'history'
   const isGrowth = pathname === '/admin' && searchParams.get('view') === 'growth'
   const isGallery = pathname === '/admin' && searchParams.get('view') === 'gallery'
+  const isMessages = pathname === '/admin' && searchParams.get('view') === 'messages'
+  const isCalendar = pathname === '/admin' && searchParams.get('view') === 'calendar'
+  const isWorkspace = pathname === '/admin' && !isHistory && !isGrowth && !isGallery && !isMessages && !isCalendar
   const isActive = (href: string) => pathname.startsWith(href)
   const managing = pathname.startsWith('/admin/collections') || pathname.startsWith('/admin/globals') || pathname.startsWith('/admin/account')
 
@@ -79,9 +82,9 @@ export function HelloAdaNav({ user }: { user?: TypedUser | null }) {
       <span className="helloada-nav-divider" aria-hidden="true" />
       <span className="helloada-nav-site" title={site.siteName}>{site.siteName}</span>
       <div className="helloada-payload-links">
-        <Link className={pathname === '/admin' && !isHistory && !isGrowth && !isGallery ? 'is-active' : undefined} href="/admin" aria-current={pathname === '/admin' && !isHistory && !isGrowth && !isGallery ? 'page' : undefined}>{t('owner.workspace')}</Link>
+        <Link className={isWorkspace ? 'is-active' : undefined} href="/admin" aria-current={isWorkspace ? 'page' : undefined}>{t('owner.workspace')}</Link>
         <Link className={isGrowth ? 'is-active' : undefined} href="/admin?view=growth" aria-current={isGrowth ? 'page' : undefined}>{t('growth.title')}</Link>
-        <a className="helloada-payload-link" href="/mail/inbox">{t('owner.messages')}</a>
+        <Link className={isMessages ? 'is-active' : undefined} href="/admin?view=messages" aria-current={isMessages ? 'page' : undefined}>{t('owner.messages')}</Link>
         <Link className={isGallery ? 'is-active' : undefined} href="/admin?view=gallery" aria-current={isGallery ? 'page' : undefined}>{t('owner.gallery')}</Link>
         <Link className={isHistory ? 'is-active' : undefined} href="/admin?view=history" aria-current={isHistory ? 'page' : undefined}>{t('owner.activity')}</Link>
       </div>

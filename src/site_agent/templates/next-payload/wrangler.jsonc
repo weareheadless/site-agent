@@ -5,6 +5,11 @@
   "compatibility_date": "2025-08-15",
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "assets": { "directory": ".open-next/assets", "binding": "ASSETS" },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "issues": { "enabled": true }
+  },
   "vars": {
     "SITE_AGENT_URL": "__SITE_AGENT_URL__",
     "NEXT_PUBLIC_SITE_URL": "__WORKER_URL__",
@@ -14,7 +19,7 @@
     "HELLOADA_HANDOFF_PUBLIC_KEY": "__HELLOADA_HANDOFF_PUBLIC_KEY__",
     "HELLOADA_TEMPLATE_SCHEMA": "7",
     "HELLOADA_WORKSPACE_API_VERSION": "v1",
-    "HELLOADA_PAYLOAD_ADMIN_VERSION": "0.10.9",
+    "HELLOADA_PAYLOAD_ADMIN_VERSION": "0.10.10",
     "HELLOADA_PAYLOAD_CORE_VERSION": "0.5.7",
     "HELLOADA_PAYLOAD_SCHEMA_REVISION": "7",
     "HELLOADA_CONTENT_CONTRACT_VERSION": "helloada-content-v3",

@@ -17,7 +17,7 @@ TEMPLATE = ROOT / "src/site_agent/templates/next-payload"
 CUSTOMER = {
     "tenantId": "oceanicvibes",
     "worker": "oceanicvibes",
-    "payloadAdmin": "0.10.9",
+    "payloadAdmin": "0.10.10",
     "payloadCore": "0.5.7",
     "contentContract": "helloada-content-v3",
     "schemaRevision": 7,
@@ -108,8 +108,8 @@ def test_shared_overlay_updates_runtime_and_preserves_tenant_owned_content(tmp_p
     assert (checkout / "src/components/site/TenantSections.tsx").read_bytes() == design_before
     assert (checkout / "src/migrations/tenant-migration.ts").read_bytes() == migration_before
     package = json.loads((checkout / "package.json").read_text())
-    assert "payload-admin-v0.10.9" in package["dependencies"]["@weareheadless/helloada-payload-admin"]
-    assert result["payloadAdmin"] == "0.10.9"
+    assert "payload-admin-v0.10.10" in package["dependencies"]["@weareheadless/helloada-payload-admin"]
+    assert result["payloadAdmin"] == "0.10.10"
     assert len(result["fingerprint"]) == 64
     assert "worker.ts" in result["changedPaths"]
 
@@ -117,7 +117,7 @@ def test_shared_overlay_updates_runtime_and_preserves_tenant_owned_content(tmp_p
 def test_shared_package_versions_are_taken_from_pinned_canonical_lock():
     versions = shared_package_versions(ROOT)
 
-    assert versions == {"@weareheadless/helloada-payload-admin": "0.10.9",
+    assert versions == {"@weareheadless/helloada-payload-admin": "0.10.10",
                         "@weareheadless/helloada-payload-core": "0.5.7"}
 
 
