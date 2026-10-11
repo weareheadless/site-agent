@@ -1,5 +1,5 @@
-import { provisionTenantMailflareMailbox } from './mailflare-provisioning'
-import { migratePayloadMailbox, type PayloadMailboxMigrationEnv } from './mailflare-payload-migration'
+import { provisionTenantMailflareMailbox } from './mailflare-provisioning.ts'
+import { migratePayloadMailbox, type PayloadMailboxMigrationEnv } from './mailflare-payload-migration.ts'
 
 type D1Statement = {
   bind: (...values: unknown[]) => D1Statement
