@@ -67,7 +67,7 @@ def shared_package_versions(control_root: Path) -> dict[str, str]:
     for name in _PACKAGE_NAMES:
         entry = packages.get(f"node_modules/{name}")
         version = entry.get("version") if isinstance(entry, dict) else None
-        if not isinstance(version, str) or not re.fullmatch(r"\\d+\\.\\d+\\.\\d+", version):
+        if not isinstance(version, str) or not re.fullmatch(r"\d+\.\d+\.\d+", version):
             raise SharedRuntimeError(f"canonical shared package version is invalid: {name}")
         result[name] = version
     return result
