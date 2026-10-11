@@ -9,7 +9,7 @@
       "sha": "dfbb78286bf5df6a1154f971549e598faf58e4cf"
     },
     "oceanicvibes": {
-      "id": "runtime-20261011023653-oceanic-cli-fix",
+      "id": "runtime-20261011025645-oceanic-do-lifecycle",
       "sha": "98b9c0452213449ad49dc76fdf64cbe30285f5e9",
       "sharedRuntimeFingerprint": "edb3149680ea9d8c017d616f8a13617b47f43932fb60ea16a0132d2de965ca3d"
     }
