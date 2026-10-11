@@ -86,7 +86,15 @@ def _health_json(url: str) -> dict[str, Any]:
 def reconciliation_path(release_root: Path, tenant: str, release_id: str) -> Path:
     if not _TENANT.fullmatch(tenant) or not _RELEASE_ID.fullmatch(release_id):
         raise LifecycleReconciliationError("unsafe lifecycle reconciliation identity")
-    return release_root / "reconciliations" / tenant / f"{release_id}.json"
+    root = release_root / "reconciliations"
+    tenant_root = root / tenant
+    if root.is_symlink() or tenant_root.is_symlink():
+        raise LifecycleReconciliationError("lifecycle reconciliation path must not contain symlinks")
+    if root.exists() and not root.is_dir():
+        raise LifecycleReconciliationError("lifecycle reconciliation root is not a directory")
+    if tenant_root.exists() and not tenant_root.is_dir():
+        raise LifecycleReconciliationError("tenant reconciliation path is not a directory")
+    return tenant_root / f"{release_id}.json"
 
 
 def read_lifecycle_reconciliation(
@@ -100,8 +108,12 @@ def read_lifecycle_reconciliation(
         return None
     if not path.is_file():
         raise LifecycleReconciliationError("lifecycle reconciliation evidence is not a regular file")
-    receipt_path = release_root / "runs" / tenant / release_id / "receipt.json"
-    if receipt_path.is_symlink() or not receipt_path.is_file():
+    runs_root = release_root / "runs"
+    tenant_runs = runs_root / tenant
+    run_root = tenant_runs / release_id
+    receipt_path = run_root / "receipt.json"
+    if (runs_root.is_symlink() or tenant_runs.is_symlink() or run_root.is_symlink()
+            or receipt_path.is_symlink() or not receipt_path.is_file()):
         raise LifecycleReconciliationError("reconciled release receipt is missing or unsafe")
     try:
         receipt_bytes = receipt_path.read_bytes()
@@ -151,7 +163,8 @@ def read_lifecycle_reconciliation(
 
 def _write_lifecycle_reconciliation(path: Path, evidence: dict[str, Any]) -> None:
     parent = path.parent
-    if parent.is_symlink():
+    root = parent.parent
+    if parent.is_symlink() or root.is_symlink():
         raise LifecycleReconciliationError("lifecycle reconciliation directory must not be a symlink")
     parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     parent.chmod(0o700)
