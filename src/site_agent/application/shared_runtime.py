@@ -101,26 +101,36 @@ def _validate_manifest(root: Path, path: Path) -> tuple[dict[str, Any], bytes]:
         raise SharedRuntimeError("shared-runtime overlay manifest is missing or invalid") from error
     if (
         not isinstance(manifest, dict)
-        or manifest.get("schema") != 1
-        or manifest.get("contract") != "helloada-shared-runtime-v1"
-        or set(manifest) != {"schema", "contract", "copy", "remove"}
+        or manifest.get("schema") != 2
+        or manifest.get("contract") != "helloada-shared-runtime-v2"
+        or set(manifest) != {"schema", "contract", "copy", "remove", "fingerprintTrees"}
         or not isinstance(manifest.get("copy"), list)
         or not isinstance(manifest.get("remove"), list)
+        or not isinstance(manifest.get("fingerprintTrees"), list)
     ):
-        raise SharedRuntimeError("shared-runtime overlay manifest does not match schema 1")
+        raise SharedRuntimeError("shared-runtime overlay manifest does not match schema 2")
     copy_paths = [str(item) for item in manifest["copy"]]
     remove_paths = [str(item) for item in manifest["remove"]]
+    fingerprint_trees = [str(item) for item in manifest["fingerprintTrees"]]
+    if len(fingerprint_trees) != len(set(fingerprint_trees)):
+        raise SharedRuntimeError("shared-runtime fingerprint trees must be unique")
     if (
         len(copy_paths) != len(set(copy_paths))
         or len(remove_paths) != len(set(remove_paths))
         or set(copy_paths) & set(remove_paths)
     ):
         raise SharedRuntimeError("shared-runtime overlay paths must be unique and non-overlapping")
-    for raw_path in copy_paths + remove_paths:
+    for raw_path in copy_paths + remove_paths + fingerprint_trees:
         relative = Path(raw_path)
         if relative.is_absolute() or not relative.parts or ".." in relative.parts:
-            raise SharedRuntimeError("shared-runtime overlay contains an unsafe path")
-        if any(relative == forbidden or forbidden in relative.parents for forbidden in _FORBIDDEN_PATHS):
+            raise SharedRuntimeError("shared-runtime manifest contains an unsafe path")
+        if raw_path in fingerprint_trees and any(
+            relative == forbidden or forbidden in relative.parents for forbidden in _FORBIDDEN_PATHS
+        ):
+            raise SharedRuntimeError("shared runtime cannot fingerprint tenant Payload schema or presentation")
+        if raw_path in copy_paths + remove_paths and any(
+            relative == forbidden or forbidden in relative.parents for forbidden in _FORBIDDEN_PATHS
+        ):
             raise SharedRuntimeError("shared runtime cannot replace tenant Payload schema or presentation")
     if "wrangler.jsonc" in copy_paths or "wrangler.jsonc" in remove_paths:
         raise SharedRuntimeError("Wrangler configuration must be merged through the typed runtime contract")
@@ -147,6 +157,21 @@ def shared_runtime_fingerprint(root: Path, manifest_path: Path | None = None) ->
         if not source.is_file() or source.is_symlink():
             raise SharedRuntimeError(f"central runtime package contract is missing: {relative}")
         entries.append((f"template/{relative}", source.read_bytes()))
+    for raw_tree in sorted(str(item) for item in manifest["fingerprintTrees"]):
+        directory = _safe_path(root, raw_tree)
+        if not directory.is_dir() or directory.is_symlink():
+            raise SharedRuntimeError(f"central runtime fingerprint tree is missing or unsafe: {raw_tree}")
+        files = sorted(directory.rglob("*"))
+        if not files:
+            raise SharedRuntimeError(f"central runtime fingerprint tree is empty: {raw_tree}")
+        for source in files:
+            if source.is_symlink():
+                raise SharedRuntimeError(f"central runtime fingerprint tree contains a symlink: {source}")
+            if source.is_dir():
+                continue
+            if not source.is_file():
+                raise SharedRuntimeError(f"central runtime fingerprint tree contains a special file: {source}")
+            entries.append((source.relative_to(root).as_posix(), source.read_bytes()))
     digest = hashlib.sha256()
     for name, data in entries:
         digest.update(name.encode("utf-8"))
