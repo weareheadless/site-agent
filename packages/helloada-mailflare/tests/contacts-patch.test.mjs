@@ -9,6 +9,7 @@ const dashboardNav = [
 	'import {',
 	'  MailPlus,',
 	'  Trash2,',
+	'  CalendarClock',
 	'} from "lucide-react";',
 	'const links = [',
 	'  { href: "/compose", labelKey: "navigation.compose", icon: MailPlus, primary: true },',
@@ -19,6 +20,7 @@ const dashboardNav = [
 test("adds first-class Contacts and Calendar links to the shared mailbox navigation", () => {
 	const result = patchDashboardNavigation(dashboardNav);
 	assert.match(result, /UsersRound/);
+	assert.match(result, /CalendarClock/);
 	assert.match(result, /href: "\/contacts".*navigation\.contacts/);
 	assert.match(result, /href: "\/calendar".*navigation\.calendar/);
 });
