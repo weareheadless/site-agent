@@ -1953,7 +1953,7 @@ def test_durable_object_migration_identity_and_release_mode_are_receipt_driven(t
         "rolloutMode": "atomic",
     })
     prior["durableObjectLifecycle"].update({"state": "outcome-unknown", "strategy": "atomic"})
-    receipt_bytes = (json.dumps(prior, sort_keys=True) + "\\n").encode()
+    receipt_bytes = (json.dumps(prior, sort_keys=True) + "\n").encode()
     prior_path.write_bytes(receipt_bytes)
     evidence = {
         "schema": 1,
