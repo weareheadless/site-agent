@@ -248,7 +248,7 @@ def test_payload_build_requires_disk_headroom(monkeypatch, tmp_path):
 
 
 def test_schema_initialization_queue_is_exactly_registered_and_cannot_be_an_approval():
-    registry = {"customers": {"demo": {"migrationHead": "c" * 64}}}
+    registry = {"customers": {"demo": {"migrationHead": "c" * 64, "sharedRuntimeUpdate": "manual"}}}
     request = {"id": "bootstrap-1", "sha": SHA, "initializeSchema": {"migrationHead": "c" * 64}}
     queue.validate_queue({"schema": 1, "releases": {"demo": request}}, registry)
     for invalid in (
@@ -294,7 +294,7 @@ def test_workspace_bootstrap_contract_requires_exact_registered_schema_and_ledge
 
 
 def test_schema_migration_queue_requires_exact_old_and_registered_target_heads():
-    registry = {"customers": {"demo": {"migrationHead": "c" * 64}}}
+    registry = {"customers": {"demo": {"migrationHead": "c" * 64, "sharedRuntimeUpdate": "manual"}}}
     request = {"id": "schema-2", "sha": SHA, "schemaMigration": {
         "fromLedgerIdentity": "b" * 64, "targetMigrationHead": "c" * 64,
     }}
@@ -990,6 +990,69 @@ def test_checks_compiled_server_instead_of_thin_worker_entry(tmp_path):
     assert hashes["wrangler.jsonc"]
     assert hashes["package-lock.json"]
     assert hashes["custom-worker/worker.js"]
+
+
+def _integrity_git_checkout(path):
+    path.mkdir()
+    (path / "worker.ts").write_text("export default {}\\n")
+    (path / "src").mkdir()
+    (path / "src/page.tsx").write_text("export default 1;\\n")
+    release.subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+    release.subprocess.run(["git", "config", "user.name", "Release Test"], cwd=path, check=True)
+    release.subprocess.run(["git", "config", "user.email", "release-test@example.invalid"], cwd=path, check=True)
+    release.subprocess.run(["git", "add", "."], cwd=path, check=True)
+    release.subprocess.run(["git", "commit", "-qm", "fixture"], cwd=path, check=True)
+    return path
+
+
+def test_post_build_integrity_allows_only_declared_generated_outputs(tmp_path, monkeypatch):
+    checkout = _integrity_git_checkout(tmp_path / "checkout")
+    monkeypatch.setattr(
+        release,
+        "run",
+        lambda command, cwd, environment: release.subprocess.run(
+            command, cwd=cwd, env=environment, check=True, text=True, capture_output=True,
+        ).stdout,
+    )
+    (checkout / "worker.ts").write_text("export default { fetch() {} };\\n")
+    generated = checkout / ".mailflare/client/chunk.js"
+    generated.parent.mkdir(parents=True)
+    generated.write_text("generated runtime bundle")
+    marker = checkout / "public/helloada-release.json"
+    marker.parent.mkdir()
+    marker.write_text("{}\\n")
+
+    assert release.tracked_changes_outside_runtime_overlay(
+        checkout, ["worker.ts"], release.os.environ,
+        generated_untracked_roots=(".mailflare", "public/helloada-release.json"),
+    ) == []
+
+    (checkout / "src/page.tsx").write_text("unexpected source mutation")
+    assert release.tracked_changes_outside_runtime_overlay(
+        checkout, ["worker.ts"], release.os.environ,
+        generated_untracked_roots=(".mailflare", "public/helloada-release.json"),
+    ) == ["src/page.tsx"]
+
+
+def test_pre_build_integrity_rejects_build_outputs_without_explicit_allowlist(tmp_path, monkeypatch):
+    checkout = _integrity_git_checkout(tmp_path / "checkout")
+    monkeypatch.setattr(
+        release,
+        "run",
+        lambda command, cwd, environment: release.subprocess.run(
+            command, cwd=cwd, env=environment, check=True, text=True, capture_output=True,
+        ).stdout,
+    )
+    generated = checkout / ".mailflare/client/chunk.js"
+    generated.parent.mkdir(parents=True)
+    generated.write_text("generated runtime bundle")
+    marker = checkout / "public/helloada-release.json"
+    marker.parent.mkdir()
+    marker.write_text("{}\\n")
+
+    changed = release.tracked_changes_outside_runtime_overlay(checkout, [], release.os.environ)
+    assert ".mailflare/client/chunk.js" in changed
+    assert "public/helloada-release.json" in changed
 
 
 def test_release_artifact_requires_all_custom_worker_event_handlers(tmp_path):
@@ -1825,3 +1888,20 @@ def test_read_only_continuation_requires_mailflare_migration_provenance_to_match
     (tmp_path / "receipt.json").write_text(json.dumps(result))
     with pytest.raises(ValueError, match="Mailflare migration provenance"):
         release.verification_receipt(tmp_path, "oceanicvibes", SHA, "release-1", customer, "website")
+
+
+def test_shared_runtime_release_queue_requires_an_exact_fingerprint():
+    registry = {"customers": {"demo": {"sharedRuntimeUpdate": "canary"}}}
+    valid = {"schema": 1, "releases": {"demo": {
+        "id": "runtime-20261010000000-abcd1234",
+        "sha": "a" * 40,
+        "sharedRuntimeFingerprint": "b" * 64,
+    }}}
+    queue.validate_queue(valid, registry)
+
+    invalid = {"schema": 1, "releases": {"demo": {
+        **valid["releases"]["demo"],
+        "sharedRuntimeFingerprint": "short",
+    }}}
+    with pytest.raises(ValueError, match="SHA-256"):
+        queue.validate_queue(invalid, registry)

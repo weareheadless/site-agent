@@ -20,7 +20,8 @@
       "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
       "schemaRevision": 5,
       "websitePresent": false,
-      "worker": "helloada-ada-direct-admin-sso-e2e-a76df8a18660acea"
+      "worker": "helloada-ada-direct-admin-sso-e2e-a76df8a18660acea",
+      "sharedRuntimeUpdate": "manual"
     },
     "ada-e2e-studio-b39ae17e77014b8c": {
       "adminPath": "/api/helloada",
@@ -36,7 +37,8 @@
       "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
       "schemaRevision": 5,
       "websitePresent": false,
-      "worker": "helloada-ada-e2e-studio-b39ae17e77014b8c"
+      "worker": "helloada-ada-e2e-studio-b39ae17e77014b8c",
+      "sharedRuntimeUpdate": "manual"
     },
     "ada-e2e-studio-intake-0aa0b1a55ae48348": {
       "adminPath": "/api/helloada",
@@ -52,7 +54,8 @@
       "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
       "schemaRevision": 5,
       "websitePresent": false,
-      "worker": "helloada-ada-e2e-studio-intake-0aa0b1a55ae48348"
+      "worker": "helloada-ada-e2e-studio-intake-0aa0b1a55ae48348",
+      "sharedRuntimeUpdate": "manual"
     },
     "atelier-harmonie": {
       "adminPath": "/api/helloada",
@@ -69,7 +72,14 @@
       "schemaIdentity": "af92eb2228b2e8fdaeccfe578f684db9388f12f58e8ee23c72bfed4dee59a927",
       "schemaRevision": 7,
       "websitePresent": true,
-      "worker": "atelier-harmonie"
+      "worker": "atelier-harmonie",
+      "sharedRuntimeUpdate": "automatic",
+      "mailflareD1DatabaseId": "041b717f-f9b2-4e3d-907e-d9008842751a",
+      "mailflareD1DatabaseName": "helloada-atelier-harmonie-mail",
+      "mailflareR2BucketName": "helloada-atelier-harmonie-mail-files",
+      "mailflareInboundQueueName": "helloada-atelier-harmonie-mail-inbound",
+      "mailflareOutboundQueueName": "helloada-atelier-harmonie-mail-outbound",
+      "mailflareAgentQueueName": "helloada-atelier-harmonie-mail-agent"
     },
     "northstar-coffee-e2e-validation-8fbf2e6fea671768": {
       "adminPath": "/api/helloada",
@@ -85,7 +95,8 @@
       "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
       "schemaRevision": 5,
       "websitePresent": false,
-      "worker": "helloada-northstar-coffee-e2e-validation-8fbf2e6fea671768"
+      "worker": "helloada-northstar-coffee-e2e-validation-8fbf2e6fea671768",
+      "sharedRuntimeUpdate": "manual"
     },
     "northstar-coffee-e2e-validation-long-name-d719295b4d086bd3": {
       "adminPath": "/api/helloada",
@@ -101,7 +112,8 @@
       "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
       "schemaRevision": 5,
       "websitePresent": false,
-      "worker": "helloada-northstar-coffee-e2e-val-8c5745f57bbce7efb441"
+      "worker": "helloada-northstar-coffee-e2e-val-8c5745f57bbce7efb441",
+      "sharedRuntimeUpdate": "manual"
     },
     "northstar-coffee-full-intake-validation-5a8564dae07494ec": {
       "adminPath": "/api/helloada",
@@ -118,7 +130,14 @@
       "schemaIdentity": "af92eb2228b2e8fdaeccfe578f684db9388f12f58e8ee23c72bfed4dee59a927",
       "schemaRevision": 7,
       "websitePresent": false,
-      "worker": "helloada-northstar-coffee-full-in-ad820fa9f96521e91211"
+      "worker": "helloada-northstar-coffee-full-in-ad820fa9f96521e91211",
+      "sharedRuntimeUpdate": "automatic",
+      "mailflareD1DatabaseId": "08224fe1-e4ea-4265-9372-58f1ec8b75a6",
+      "mailflareD1DatabaseName": "helloada-northstar-coffee-full-intake-ad820fa9f96521e91211-mail",
+      "mailflareR2BucketName": "helloada-northstar-coffee-full-ad820fa9f96521e91211-mail-files",
+      "mailflareInboundQueueName": "helloada-northstar-coffee-full-intake-ad820fa9f96521e91211-mail-inbound",
+      "mailflareOutboundQueueName": "helloada-northstar-coffee-ful-ad820fa9f96521e91211-mail-outbound",
+      "mailflareAgentQueueName": "helloada-northstar-coffee-full-intake-ad820fa9f96521e91211-mail-agent"
     },
     "northstar-coffee-house-afd6a0232bf10fd4": {
       "adminPath": "/api/helloada",
@@ -134,7 +153,8 @@
       "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
       "schemaRevision": 5,
       "websitePresent": false,
-      "worker": "helloada-northstar-coffee-house-afd6a0232bf10fd4"
+      "worker": "helloada-northstar-coffee-house-afd6a0232bf10fd4",
+      "sharedRuntimeUpdate": "manual"
     },
     "oceanicvibes": {
       "adminPath": "/api/helloada",
@@ -151,7 +171,14 @@
       "schemaIdentity": "af92eb2228b2e8fdaeccfe578f684db9388f12f58e8ee23c72bfed4dee59a927",
       "schemaRevision": 7,
       "websitePresent": true,
-      "worker": "oceanicvibes"
+      "worker": "oceanicvibes",
+      "sharedRuntimeUpdate": "canary",
+      "mailflareD1DatabaseId": "5e503625-c5a5-4a9a-ad28-be26dd602fd7",
+      "mailflareD1DatabaseName": "helloada-oceanicvibes-mail",
+      "mailflareR2BucketName": "helloada-oceanicvibes-mail-files",
+      "mailflareInboundQueueName": "helloada-oceanicvibes-mail-inbound",
+      "mailflareOutboundQueueName": "helloada-oceanicvibes-mail-outbound",
+      "mailflareAgentQueueName": "helloada-oceanicvibes-mail-agent"
     }
   },
   "nodeBin": "/home/admin/.local/share/site-agent-node22.23.3/bin",

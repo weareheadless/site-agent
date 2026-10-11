@@ -1,0 +1,30 @@
+{
+  "schema": 2,
+  "contract": "helloada-shared-runtime-v2",
+  "copy": [
+    "worker.ts",
+    "mailflare-owner-gate.ts",
+    "mailflare-payload-migration.ts",
+    "mailflare-provisioning.ts",
+    "mailflare-runtime.ts",
+    "src/app/api/health/route.ts",
+    "src/app/api/helloada/[...path]/route.ts",
+    "src/app/api/helloada/forms/[slug]/route.ts",
+    "src/app/api/helloada/mailflare-identity/route.ts",
+    "src/lib/helloada-form-runtime.ts",
+    "src/lib/mailflare-inbox.ts",
+    "src/lib/mailflare-provisioning-api.ts"
+  ],
+  "remove": [
+    "src/app/api/helloada/bookings/route.ts",
+    "src/lib/calendar.ts",
+    "src/lib/message-notifications.ts",
+    "src/lib/message-processing.ts",
+    "src/lib/messages-api.ts",
+    "src/lib/messages-service.ts",
+    "src/lib/owner-message-draft-hash.ts"
+  ],
+  "fingerprintTrees": [
+    "packages/helloada-mailflare"
+  ]
+}

@@ -135,7 +135,7 @@ def test_bootstrap_queues_only_the_exact_registered_migration_chain(monkeypatch)
         "sha": SHA,
         "initializeSchema": {"migrationHead": CUSTOMER["migrationHead"]},
     }
-    assert written["payload-customers.json"]["customers"]["demo"] == CUSTOMER
+    assert written["payload-customers.json"]["customers"]["demo"] == {**CUSTOMER, "sharedRuntimeUpdate": "automatic"}
 
 
 def test_matching_request_is_idempotent(monkeypatch):

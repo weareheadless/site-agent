@@ -539,3 +539,16 @@ contract and regenerating tenant lockfiles with that version.
   health and authenticated connection checks pass.
 - Source, artifact, deployment and authenticated browser verification are
   separately recorded. Report only what those records prove.
+
+
+## Shared runtime changes and automatic tenant fan-out
+
+Common Worker behavior is owned by the Site-Agent template and the explicit shared-runtime overlay manifest. Tenant repositories remain inputs for each tenant’s approved design/content and schema history; the release runner composes the common runtime into an isolated build directory. A normal shared-runtime update does not require a commit or manual inspection in each tenant repository.
+
+Each VPS timer pass computes a SHA-256 fingerprint over the overlay contract, all centrally copied runtime files, shared package pins and the full Mailflare build source. A changed fingerprint causes the queue coordinator to request a release for the configured canary using its last successfully deployed tenant SHA. Only after that release passes the standard artifact, Cloudflare deployment and live-health gates does the coordinator enqueue automatic tenants, at most five at a time. Later timer passes continue the rollout from receipts; each request is an auditable commit to desired-releases.json.
+
+The registry field sharedRuntimeUpdate is explicit: canary for the one rollout gate, automatic for enrolled customer sites, and manual only for intentionally excluded sandboxes. New tenant registration defaults to automatic. First-site provisioning already builds the current shared runtime, so fan-out applies to subsequent central changes.
+
+Every fan-out release carries sharedRuntimeFingerprint. The Worker build compares it with the materialized runtime before upload, and the receipt preserves sourceSha, pipelineSha and the exact shared runtime fingerprint. A pending queue request is preserved. Failed or interrupted IDs are terminal: the coordinator does not retry that same attempt or silently replace a tenant’s failed request. A failed canary holds the fleet; an individual automatic tenant failure is recorded and does not trigger an automatic retry.
+
+This does not make separate Cloudflare Workers share one deployed bundle. Each Worker must still be generated and promoted with its tenant-specific design/content, but the VPS automates that work from one Site-Agent change—there is no per-tenant repo engineering step. Do not deploy customer Workers using local Wrangler commands; use the queue and inspect the matching run receipt plus helloada-release.service journal.

@@ -516,3 +516,14 @@ Never print, paste, commit, or pass credential values to Ada/model prompts.
   Worker/build output.
 - Keep the packaged intake defaults stable; database-only intake/research must
   never trigger a design build or production publish.
+
+
+## Shared runtime ownership and customer fan-out
+
+- src/site_agent/templates/next-payload plus the declared deploy/shared-runtime-overlay.json boundary is the source of truth for code shared by tenant Workers. Tenant repositories own approved site design, content, migration history and domain routes; the release runner overlays the shared runtime into a disposable build workspace and never rewrites those repositories.
+- A central runtime change is identified by shared_runtime_fingerprint. The fingerprint covers the overlay contract, exact central runtime files, package pins and the complete packages/helloada-mailflare build source. If a runtime input changes, the VPS timer records a new, immutable fan-out release in deploy/desired-releases.json.
+- Runtime rollout is canary-first and bounded: the registered canary must pass the normal build, Cloudflare deployment and live-health gates before automatic tenants are released in batches of five. New tenants are enrolled as automatic; the first release already includes the current runtime. Existing one-off test workspaces can explicitly remain manual.
+- Each fan-out request uses that tenant’s last successfully deployed full source SHA and a unique release ID. It does not inspect, modify, commit or push a tenant repository. The tenant still receives its own generated Worker artifact because its site design/content is bundled into that Worker; builds and promotions are automated by the single VPS queue.
+- The queue pins the requested runtime fingerprint, the build rejects a mismatch, and the receipt records both tenant source SHA and shared-runtime fingerprint. Pending requests are never overwritten, failed/interrupted IDs are never retried, and failed canaries hold the automatic rollout until the failure is addressed.
+- Do not use customer-specific Wrangler commands or ad-hoc repo commits to propagate common code. The only customer release path is the GitHub desired-release queue processed by helloada-release.timer; inspect its per-tenant receipt and journal on failure.
+- A deployed receipt and health check do not prove the customer-visible UI. Use a fresh authenticated browser document for user-facing verification before reporting the experience as verified.

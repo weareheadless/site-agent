@@ -90,8 +90,14 @@ def validate_queue(queue: dict, registry: dict) -> None:
             {"id", "sha", "initializeSchema"},
             {"id", "sha", "schemaMigration"},
         )
-        if set(request) not in permitted:
-            raise ValueError("release must be an owner approval, a schema initialization, or an exact tenant schema migration")
+        request_shape = set(request)
+        runtime_fingerprint = request.get("sharedRuntimeFingerprint")
+        if runtime_fingerprint is not None:
+            request_shape.remove("sharedRuntimeFingerprint")
+            if not re.fullmatch(r"[0-9a-f]{64}", str(runtime_fingerprint)):
+                raise ValueError("shared-runtime release requires a full SHA-256 fingerprint")
+        if request_shape not in permitted:
+            raise ValueError("release must be an owner approval, a schema initialization, an exact schema migration, or a shared-runtime release")
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", request["id"]):
             raise ValueError("unsafe release ID")
         if not re.fullmatch(r"[0-9a-f]{40}", request["sha"]):
@@ -124,11 +130,129 @@ def validate_queue(queue: dict, registry: dict) -> None:
                 or migration["fromLedgerIdentity"] == migration["targetMigrationHead"]
             ):
                 raise ValueError("tenant schema migration must identify one prior ledger and the registered target head")
+    policies = {
+        tenant: customer.get("sharedRuntimeUpdate", "automatic")
+        for tenant, customer in registry["customers"].items()
+        if isinstance(customer, dict)
+    }
+    if any(policy not in {"manual", "canary", "automatic"} for policy in policies.values()):
+        raise ValueError("tenant shared-runtime rollout policy is invalid")
+    if any(policy == "automatic" for policy in policies.values()) and sum(
+        policy == "canary" for policy in policies.values()
+    ) != 1:
+        raise ValueError("automatic shared-runtime fan-out requires exactly one canary")
 
 
 def release_purpose_for_request(request: dict) -> str:
     """Map one validated queue operation to its exact Payload content gate."""
     return "workspace-bootstrap" if "initializeSchema" in request else "website"
+
+
+def queue_shared_runtime_fanout(
+    mirror: Path,
+    remote: str,
+    environment: dict[str, str],
+    release_root: Path,
+    expected_control_sha: str,
+    fingerprint: str,
+    *,
+    batch_size: int = 5,
+) -> dict:
+    """Queue one canary or bounded automatic tenant batch in an atomic Git commit."""
+    from site_agent.application.shared_runtime_rollout import plan_shared_runtime_rollout
+
+    subprocess.run(
+        ["git", "-C", str(mirror), "fetch", "origin", "+refs/heads/main:refs/heads/main"],
+        env=environment, check=True,
+    )
+    actual_sha = subprocess.check_output(
+        ["git", "-C", str(mirror), "rev-parse", "refs/heads/main"], text=True,
+    ).strip()
+    if actual_sha != expected_control_sha:
+        print("[runtime-rollout] control branch changed during this run; next timer pass will plan from its new snapshot",
+              flush=True)
+        return {"state": "deferred-control-branch-changed", "queued": {}}
+
+    def document(path: str) -> dict:
+        return json.loads(subprocess.check_output(
+            ["git", "-C", str(mirror), "show", f"{actual_sha}:{path}"], text=True,
+        ))
+
+    registry = document("deploy/payload-customers.json")
+    queue = document("deploy/desired-releases.json")
+    plan = plan_shared_runtime_rollout(
+        registry, queue, release_root, fingerprint, batch_size=batch_size,
+    )
+    print(
+        f"[runtime-rollout] state={plan['state']} canary={plan.get('canaryTenant')} "
+        f"blocked={','.join(plan.get('blocked', [])) or 'none'}",
+        flush=True,
+    )
+    if not plan["queued"]:
+        return plan
+
+    for tenant, request in plan["queued"].items():
+        queue["releases"][tenant] = request
+    validate_queue(queue, registry)
+
+    work_root = release_root / "work"
+    work_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with tempfile.TemporaryDirectory(prefix="runtime-rollout-", dir=work_root) as workspace:
+        checkout = Path(workspace) / "control"
+        subprocess.run(
+            ["git", "clone", "--shared", "--no-checkout", str(mirror), str(checkout)],
+            env=environment, check=True, stdout=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            ["git", "-C", str(checkout), "checkout", "--detach", actual_sha],
+            env=environment, check=True, stdout=subprocess.DEVNULL,
+        )
+        queue_path = checkout / "deploy/desired-releases.json"
+        queue_path.write_text(json.dumps(queue, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(checkout), "add", "--", "deploy/desired-releases.json"],
+                       env=environment, check=True)
+        subprocess.run(["git", "-C", str(checkout), "config", "user.name", "Site-Agent Release Automation"],
+                       env=environment, check=True)
+        subprocess.run(["git", "-C", str(checkout), "config", "user.email", "site-agent-release@users.noreply.github.com"],
+                       env=environment, check=True)
+        subprocess.run(
+            ["git", "-C", str(checkout), "commit", "-m",
+             f"chore(release): fan out shared runtime {fingerprint[:12]}"],
+            env=environment, check=True, stdout=subprocess.DEVNULL,
+        )
+        commit_sha = subprocess.check_output(
+            ["git", "-C", str(checkout), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        subprocess.run(["git", "-C", str(checkout), "remote", "set-url", "origin", remote],
+                       env=environment, check=True)
+        pushed = subprocess.run(
+            ["git", "-C", str(checkout), "push", "origin", "HEAD:refs/heads/main"],
+            env=environment, text=True, capture_output=True,
+        )
+        if pushed.returncode:
+            subprocess.run(
+                ["git", "-C", str(mirror), "fetch", "origin", "+refs/heads/main:refs/heads/main"],
+                env=environment, check=True,
+            )
+            latest_sha = subprocess.check_output(
+                ["git", "-C", str(mirror), "rev-parse", "refs/heads/main"], text=True,
+            ).strip()
+            if latest_sha != commit_sha:
+                if latest_sha != expected_control_sha:
+                    print("[runtime-rollout] concurrent control commit won; fan-out will be recalculated next timer pass",
+                          flush=True)
+                    return {"state": "deferred-control-branch-changed", "queued": {}}
+                raise RuntimeError("could not commit the shared-runtime release fan-out")
+        subprocess.run(
+            ["git", "-C", str(mirror), "fetch", "origin", "+refs/heads/main:refs/heads/main"],
+            env=environment, check=True,
+        )
+    print(
+        f"[runtime-rollout] committed {plan['state']}: "
+        + ", ".join(f"{tenant}/{request['id']}" for tenant, request in plan["queued"].items()),
+        flush=True,
+    )
+    return plan
 
 
 def snapshot_api_source(mirror: Path, root: Path, source_sha: str) -> Path:
@@ -254,6 +378,24 @@ def main() -> int:
                 if archive.wait():
                     raise RuntimeError("could not snapshot control commit")
             staging.rename(snapshot)
+        from site_agent.application.shared_runtime import shared_runtime_fingerprint
+        shared_fingerprint = shared_runtime_fingerprint(snapshot)
+        from site_agent.application.shared_runtime_rollout import plan_shared_runtime_rollout
+        initial_rollout = plan_shared_runtime_rollout(
+            registry, queue, args.root, shared_fingerprint,
+        )
+        automatic_rollout = any(
+            customer.get("sharedRuntimeUpdate", "automatic") == "automatic"
+            for customer in registry["customers"].values()
+        )
+        canary_passed = not automatic_rollout or initial_rollout["state"] not in {
+            "canary-queued", "canary-pending", "canary-failed", "canary-contract-mismatch", "canary-needs-first-release",
+        }
+        print(
+            f"[runtime-rollout] target={shared_fingerprint[:12]} state={initial_rollout['state']} "
+            f"canary={initial_rollout.get('canaryTenant')} passed={str(canary_passed).lower()}",
+            flush=True,
+        )
         failures = 0
         if api_request:
             ancestry = subprocess.run(
@@ -343,6 +485,14 @@ def main() -> int:
             subprocess.run([sys.executable, "-m", "pytest", "-q", "tests/test_payload_release.py"],
                            cwd=snapshot, env={**environment, "PYTHONPATH": str(snapshot / "src")}, check=True)
         for tenant, request in queue["releases"].items():
+            policy = registry["customers"][tenant].get("sharedRuntimeUpdate", "automatic")
+            if automatic_rollout and not canary_passed and policy != "canary":
+                print(f"[queue] {tenant}/{request['id']} held until the shared-runtime canary passes", flush=True)
+                continue
+            requested_fingerprint = request.get("sharedRuntimeFingerprint")
+            if requested_fingerprint and requested_fingerprint != shared_fingerprint:
+                print(f"[queue] {tenant}/{request['id']} held because its runtime fingerprint is stale", flush=True)
+                continue
             directory = args.root / "runs" / tenant / request["id"]
             receipt = directory / "receipt.json"
             if directory.exists():
@@ -368,9 +518,17 @@ def main() -> int:
             if "schemaMigration" in request:
                 command.extend(["--schema-migration-from-ledger-identity",
                                 request["schemaMigration"]["fromLedgerIdentity"]])
+            command.extend(["--shared-runtime-fingerprint", shared_fingerprint])
             code = subprocess.run(command,
                 env={**environment, "HELLOADA_PIPELINE_SHA": sha}).returncode
             failures += int(code != 0)
+        try:
+            queue_shared_runtime_fanout(
+                mirror, remote, environment, args.root, sha, shared_fingerprint,
+            )
+        except Exception as error:
+            print(f"[runtime-rollout] planning or queue commit failed: {type(error).__name__}: {error}", flush=True)
+            failures += 1
         return int(failures != 0)
 
 
