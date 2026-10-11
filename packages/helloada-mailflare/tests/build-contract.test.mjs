@@ -11,6 +11,7 @@ import { applyBookingParityPatches } from '../scripts/booking-parity-patches.mjs
 import { applyBookingEditorPatches } from '../scripts/booking-editor-patches-clean.mjs'
 import { applyBookingUiPatch } from '../scripts/booking-ui-patches.mjs'
 import { applyTenantPatches, namespaceApiReferences } from '../scripts/build.mjs'
+import { asMailflareEnv } from '../../../src/site_agent/templates/next-payload/mailflare-bindings.ts'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -28,13 +29,28 @@ test('Mailflare vendor is fixed to the reviewed upstream revision and lockfile',
 test('upstream remains pristine and HelloAda changes are explicit build patches', async () => {
   const nextConfig = await readFile(path.join(root, 'upstream/next.config.ts'), 'utf8')
   const worker = await readFile(path.join(root, 'upstream/worker.ts'), 'utf8')
+  const cloudflare = await readFile(path.join(root, 'upstream/src/lib/cloudflare.ts'), 'utf8')
   assert.match(nextConfig, /const nextConfig: NextConfig = \{/)
   assert.doesNotMatch(nextConfig, /basePath:/)
   assert.match(worker, /url\.pathname === "\/api\/realtime"/)
   assert.doesNotMatch(worker, /url\.pathname === "\/mail\/api\/realtime"/)
-  const patched = applyTenantPatches(nextConfig, worker)
+  assert.ok(cloudflare.includes('return withStorage(getNodeEnv() ?? (env as CloudflareEnv));'))
+  assert.ok(!cloudflare.includes('asMailflareEnv'))
+  const patched = applyTenantPatches(nextConfig, worker, cloudflare)
   assert.match(patched.nextConfig, /basePath: process\.env\.HELLOADA_MAILFLARE_BASE_PATH/)
   assert.match(patched.workerEntry, /url\.pathname === "\/mail\/api\/realtime"/)
+  assert.ok(patched.cloudflareModule.includes('import { asMailflareEnv } from "@/lib/helloada-tenant-bindings";'))
+  assert.ok(patched.cloudflareModule.includes('return withStorage(asMailflareEnv(getNodeEnv() ?? (env as CloudflareEnv)));'))
+})
+
+test('tenant Mailflare adapter exposes the canonical DB binding without crossing tenant databases', () => {
+  const mailDb = { name: 'tenant-mail-db' }
+  const payloadDb = { name: 'tenant-payload-db' }
+  const env = asMailflareEnv({ MAILFLARE_DB: mailDb, D1: payloadDb, DB: { name: 'unrelated-db' } })
+
+  assert.equal(env.DB, mailDb)
+  assert.equal(env.D1, payloadDb)
+  assert.equal(asMailflareEnv({ DB: { name: 'unrelated-db' } }).DB, undefined)
 })
 
 test('booking integration patches only the disposable pinned source and require secure idempotent requests', async () => {
