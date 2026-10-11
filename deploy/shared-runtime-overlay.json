@@ -1,6 +1,6 @@
 {
-  "schema": 1,
-  "contract": "helloada-shared-runtime-v1",
+  "schema": 2,
+  "contract": "helloada-shared-runtime-v2",
   "copy": [
     "worker.ts",
     "mailflare-owner-gate.ts",
@@ -23,5 +23,8 @@
     "src/lib/messages-api.ts",
     "src/lib/messages-service.ts",
     "src/lib/owner-message-draft-hash.ts"
+  ],
+  "fingerprintTrees": [
+    "packages/helloada-mailflare"
   ]
 }
