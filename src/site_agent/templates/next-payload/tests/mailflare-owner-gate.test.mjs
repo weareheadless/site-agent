@@ -195,7 +195,7 @@ test('Payload logout clears only the Mailflare session cookie and invokes Payloa
 })
 
 
-test('serves the fixed HelloAda mark without requiring an owner session', async () => {
+test('redirects the Mailflare favicon to the shared HelloAda mark without an owner session', async () => {
   const db = database()
   let identities = 0
   const gate = createPayloadOwnerGate({
@@ -204,12 +204,12 @@ test('serves the fixed HelloAda mark without requiring an owner session', async 
     resolveIdentity: async () => { identities++; return { subject: 'payload-subject-1' } },
     logout: async () => new Response(null, { status: 204 }),
   })
-  const dispatch = async () => new Response('helloada-mark', { status: 200 })
+  let dispatched = 0
+  const dispatch = async () => { dispatched++; return new Response('unexpected', { status: 200 }) }
 
   const favicon = await gate(new Request('https://tenant.test/mail/favicon.ico'), env(db.binding), {}, dispatch)
   assert.equal(favicon.status, 302)
-  assert.equal(favicon.headers.get('location'), 'https://tenant.test/mail/helloada-logo.svg')
-  const mark = await gate(new Request('https://tenant.test/mail/helloada-logo.svg'), env(db.binding), {}, dispatch)
-  assert.equal(await mark.text(), 'helloada-mark')
+  assert.equal(favicon.headers.get('location'), 'https://tenant.test/brand/helloada-logo.svg')
+  assert.equal(dispatched, 0)
   assert.equal(identities, 0)
 })
