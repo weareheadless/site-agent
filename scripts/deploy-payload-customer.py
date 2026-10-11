@@ -307,6 +307,29 @@ def deployed_worker_version_id(deployment: Any, previous_deployment: Any) -> str
     return version_id
 
 
+
+
+def wait_for_atomic_worker_version(customer: dict[str, Any], env: dict[str, str],
+                                  previous_deployment: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    last_error: Exception = RuntimeError("Cloudflare has not recorded the atomic deployment yet")
+    for attempt in range(12):
+        try:
+            deployment = cloudflare_deployment(customer, env)
+        except OSError as error:
+            last_error = error
+        else:
+            if deployment and deployment.get("id") != previous_deployment.get("id"):
+                try:
+                    version_id = deployed_worker_version_id(deployment, previous_deployment)
+                except RuntimeError as error:
+                    last_error = error
+                else:
+                    return deployment, version_id
+        if attempt < 11:
+            time.sleep(5)
+    raise RuntimeError("Cloudflare did not expose the exact atomic 100% Worker deployment after 12 checks") from last_error
+
+
 def validate_target(customer: dict[str, Any], tenant: str, sha: str, release_id: str) -> None:
     if not SHA_RE.fullmatch(sha) or not ID_RE.fullmatch(release_id):
         raise ValueError("release requires a full commit SHA and a safe release ID")
@@ -2143,9 +2166,8 @@ def main() -> int:
                 raise
             lifecycle.update({"state": "applied", "appliedAt": utc_now()})
             atomic_json(receipt_path, receipt)
-            receipt["deployment"] = cloudflare_deployment(customer, deploy_env)
-            receipt["uploadedVersion"] = deployed_worker_version_id(
-                receipt["deployment"], before_deploy,
+            receipt["deployment"], receipt["uploadedVersion"] = wait_for_atomic_worker_version(
+                customer, deploy_env, before_deploy,
             )
             lifecycle.update({
                 "versionId": receipt["uploadedVersion"],

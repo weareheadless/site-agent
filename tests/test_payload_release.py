@@ -1908,7 +1908,8 @@ def test_shared_runtime_release_queue_requires_an_exact_fingerprint():
     with pytest.raises(ValueError, match="SHA-256"):
         queue.validate_queue(invalid, registry)
 
-def test_durable_object_migration_identity_and_release_mode_are_receipt_driven(tmp_path):
+
+def test_durable_object_migration_identity_and_release_mode_are_receipt-driven(tmp_path):
     migrations = WORKER_CONFIG["durableObjectMigrations"]
     identity = release.durable_object_migration_identity(migrations)
     assert len(identity) == 64
@@ -2025,3 +2026,19 @@ def test_atomic_deployment_requires_a_new_exact_100_percent_version():
             {"id": "deployment-new", "versions": [{"percentage": 100, "version_id": "not-a-uuid"}]},
             {"id": "deployment-old"},
         )
+
+def test_atomic_deployment_waits_for_the_exact_cloudflare_version(monkeypatch):
+    version_id = "01234567-89ab-cdef-0123-456789abcdef"
+    deployments = iter([
+        {"id": "deployment-old", "versions": [{"percentage": 100, "version_id": "11111111-1111-1111-1111-111111111111"}]},
+        {"id": "deployment-new", "versions": [{"percentage": 100, "version_id": version_id}]},
+    ])
+    monkeypatch.setattr(release, "cloudflare_deployment", lambda *_args: next(deployments))
+    monkeypatch.setattr(release.time, "sleep", lambda _seconds: None)
+
+    deployment, selected_version = release.wait_for_atomic_worker_version(
+        CUSTOMER, {}, {"id": "deployment-old"},
+    )
+
+    assert deployment["id"] == "deployment-new"
+    assert selected_version == version_id
