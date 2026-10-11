@@ -136,3 +136,18 @@ def test_manual_only_registry_does_not_queue_any_releases(tmp_path):
 
     assert plan["state"] == "no-automatic-tenants"
     assert plan["queued"] == {}
+
+
+def test_existing_run_without_receipt_blocks_canary_retry(tmp_path):
+    _receipt(tmp_path, "oceanicvibes", "oceanic-last")
+    incomplete = tmp_path / "runs" / "oceanicvibes" / "runtime-incomplete"
+    incomplete.mkdir(parents=True)
+    queue = {"releases": {"oceanicvibes": {
+        "id": "runtime-incomplete", "sha": SHA, "sharedRuntimeFingerprint": FINGERPRINT,
+    }}}
+
+    plan = plan_shared_runtime_rollout(_registry(), queue, tmp_path, FINGERPRINT)
+
+    assert plan["state"] == "canary-failed"
+    assert plan["blocked"] == ["oceanicvibes"]
+    assert plan["queued"] == {}
