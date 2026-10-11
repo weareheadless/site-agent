@@ -149,7 +149,7 @@ async function applyHelloAdaCopyBranding(destination) {
     if (!(await exists(directory))) continue
     for (const file of await jsonFiles(directory)) {
       const source = await readFile(file, 'utf8')
-      const branded = JSON.stringify(sanitizeHelloAdaLocaleValues(JSON.parse(source)), null, 2) + '\\n'
+      const branded = JSON.stringify(sanitizeHelloAdaLocaleValues(JSON.parse(source)), null, 2) + '\n'
       if (branded !== source) await writeFile(file, branded)
     }
   }
@@ -162,7 +162,7 @@ async function assertHelloAdaClientBranding(directory) {
   ]
   for (const file of files) {
     const source = await readFile(file, 'utf8')
-    if (/\\bMailflare\\b/.test(source)) {
+    if (/\bMailflare\b/.test(source)) {
       throw new Error('Customer-facing Mailflare brand remains in the compiled client asset: ' + path.relative(directory, file))
     }
   }
