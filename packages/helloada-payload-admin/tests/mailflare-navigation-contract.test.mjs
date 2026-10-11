@@ -8,9 +8,14 @@ const read = (path) => readFileSync(new URL(path, root), 'utf8')
 test('the shared admin routes mailbox and calendar users into the Mailflare application', () => {
   const navigation = read('src/components/HelloAdaNav.tsx')
   const workspace = read('src/components/WebsiteWorkspace.tsx')
-  assert.match(navigation, /href="\/mail\/inbox"/)
-  assert.match(workspace, /MailflareRedirect href="\/mail\/inbox"/)
-  assert.match(workspace, /MailflareRedirect href="\/mail\/calendar"/)
+  const view = read('src/components/MailflarePayloadView.tsx')
+  assert.match(navigation, /href="\/admin\?view=messages"/)
+  assert.match(workspace, /MailflarePayloadView \/>/)
+  assert.match(workspace, /MailflarePayloadView surface="calendar" \/>/)
+  assert.match(view, /src=\{src\}/)
+  assert.match(view, /\/mail\/inbox/)
+  assert.match(view, /\/mail\/calendar/)
+  assert.doesNotMatch(workspace, /window\.location\.replace\(['"]\/mail\//)
 })
 
 test('the Payload admin package does not ship a parallel mailbox or calendar UI', () => {
