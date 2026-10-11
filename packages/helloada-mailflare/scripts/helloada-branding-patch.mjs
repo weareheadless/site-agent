@@ -113,6 +113,7 @@ export function applyHelloAdaBrandingPatch(sources, basePath) {
 
 const replacedUpstreamBrandIcons = new Set([
   'public/favicon.ico',
+  'public/icon-48.png',
   'public/icon-96.png',
   'public/icon-192.png',
   'public/icon-512.png',
