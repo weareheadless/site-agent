@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
 if TYPE_CHECKING:
     from site_agent.hands.cloudflare_resources import CloudflareResourceProvisioner
 
@@ -1534,7 +1535,8 @@ def verification_receipt(directory: Path, tenant: str, sha: str, release_id: str
 
 
 def inspect_artifact(checkout: Path, customer: dict[str, Any], sha: str,
-                     custom_worker_bundle: Path | None = None) -> dict[str, str]:
+                     custom_worker_bundle: Path | None = None,
+                     shared_runtime_fingerprint: str | None = None) -> dict[str, str]:
     artifact = checkout / ".open-next"
     if not (artifact / "worker.js").is_file():
         raise RuntimeError("OpenNext produced no Worker")
@@ -1614,6 +1616,8 @@ def inspect_artifact(checkout: Path, customer: dict[str, Any], sha: str,
     if not any("/growth/contract" in path.read_text(errors="replace") for path in javascript):
         raise RuntimeError("compiled server is missing the Growth contract")
     marker = json.loads((artifact / "assets/helloada-release.json").read_text())
+    if shared_runtime_fingerprint is not None and not SHA256_RE.fullmatch(shared_runtime_fingerprint):
+        raise RuntimeError("shared runtime fingerprint is invalid")
     expected_marker = {
         "sourceSha": sha,
         "payloadAdmin": customer["payloadAdmin"],
@@ -1622,12 +1626,25 @@ def inspect_artifact(checkout: Path, customer: dict[str, Any], sha: str,
         "schemaRevision": customer["schemaRevision"],
         "schemaIdentity": customer["schemaIdentity"],
         "migrationHead": customer["migrationHead"],
+        **({"sharedRuntimeFingerprint": shared_runtime_fingerprint}
+           if shared_runtime_fingerprint is not None else {}),
         "mailflareCommit": mailflare_source["commit"],
         "mailflarePatchSet": mailflare_source["integrationPatchSet"],
     }
     if any(marker.get(key) != value for key, value in expected_marker.items()):
         raise RuntimeError("built release marker does not match the pinned source")
     return worker_artifact_hashes(checkout, custom_worker_bundle)
+
+
+def tracked_changes_outside_runtime_overlay(
+    checkout: Path,
+    allowed_paths: list[str],
+    environment: dict[str, str],
+) -> list[str]:
+    """Allow only the centrally declared disposable-workspace overlay edits."""
+    output = run(["git", "status", "--porcelain", "--untracked-files=all"], checkout, environment)
+    changed = {line[3:].strip() for line in output.splitlines() if len(line) >= 4}
+    return sorted(changed - set(allowed_paths))
 
 
 def main() -> int:
@@ -1646,9 +1663,14 @@ def main() -> int:
     args = parser.parse_args()
     manifest = json.loads(args.manifest.read_text())
     validate_toolchain_manifest(manifest)
-    customer = manifest["customers"].get(args.tenant)
-    if customer is None:
+    registered_customer = manifest["customers"].get(args.tenant)
+    if registered_customer is None:
         parser.error("tenant is not registered")
+    customer = dict(registered_customer)
+    from site_agent.application.shared_runtime import shared_package_versions
+    package_versions = shared_package_versions(ROOT)
+    customer["payloadAdmin"] = package_versions["@weareheadless/helloada-payload-admin"]
+    customer["payloadCore"] = package_versions["@weareheadless/helloada-payload-core"]
     validate_target(customer, args.tenant, args.ref, args.release_id)
     try:
         require_release_purpose(args.release_purpose, args.initialize_schema_head)
@@ -1670,6 +1692,8 @@ def main() -> int:
     checkout = directory / "source"
     receipt: dict[str, Any] = {"schema": 2, "tenant": args.tenant, "releaseId": args.release_id,
         "sourceSha": args.ref, "pipelineSha": os.environ.get("HELLOADA_PIPELINE_SHA"),
+        "sharedRuntimeFingerprint": None,
+        "sharedRuntimeSourceSha": os.environ.get("HELLOADA_PIPELINE_SHA"),
         "nodeVersion": manifest["nodeVersion"], "npmVersion": manifest["npmVersion"],
         "worker": customer["worker"], "repository": customer["repository"],
         "payloadAdmin": customer["payloadAdmin"], "payloadCore": customer["payloadCore"],
@@ -1771,6 +1795,23 @@ def main() -> int:
             raise RuntimeError("checkout SHA mismatch")
         if run(["git", "status", "--porcelain"], checkout, base).strip():
             raise RuntimeError("fresh release checkout is dirty")
+        stage("shared-runtime-overlay")
+        host_runtime_values = read_tenant_environment(Path(manifest["connectionGate"]["envFile"]))
+        from site_agent.application.shared_runtime import apply_shared_runtime_overlay
+        runtime_provenance = apply_shared_runtime_overlay(
+            ROOT,
+            checkout,
+            {**customer, "tenantId": args.tenant},
+            shared_vars={
+                "HELLOADA_HANDOFF_PUBLIC_KEY": host_runtime_values.get("HELLOADA_HANDOFF_PUBLIC_KEY", ""),
+            },
+        )
+        if (runtime_provenance["payloadAdmin"] != customer["payloadAdmin"]
+                or runtime_provenance["payloadCore"] != customer["payloadCore"]):
+            raise RuntimeError("materialized shared package versions differ from the release contract")
+        receipt["sharedRuntime"] = runtime_provenance
+        receipt["sharedRuntimeFingerprint"] = runtime_provenance["fingerprint"]
+        atomic_json(receipt_path, receipt)
         validate_payload_verifier(checkout)
         source = list((checkout / "src").rglob("*.ts")) + list((checkout / "src").rglob("*.tsx"))
         if any("/api/atelier" in p.read_text() for p in source):
@@ -1834,8 +1875,11 @@ def main() -> int:
         wrangler["handlers"] = worker_handlers(worker_entry)
         validate_worker_contract(wrangler, customer, args.tenant)
         run(["npm", "run", "typecheck"], checkout, base)
-        if run(["git", "status", "--porcelain"], checkout, base).strip():
-            raise RuntimeError("dependency/type checks changed tracked source")
+        unexpected_changes = tracked_changes_outside_runtime_overlay(
+            checkout, runtime_provenance["changedPaths"], base,
+        )
+        if unexpected_changes:
+            raise RuntimeError("dependency/type checks changed non-runtime source: " + ", ".join(unexpected_changes))
 
         stage("build")
         mailflare_source = json.loads((ROOT / "packages/helloada-mailflare/UPSTREAM.json").read_text())
@@ -1844,6 +1888,7 @@ def main() -> int:
                   "payloadCore": customer["payloadCore"], "contentContract": customer["contentContract"],
                   "schemaRevision": customer["schemaRevision"], "schemaIdentity": customer["schemaIdentity"],
                   "migrationHead": customer["migrationHead"],
+                  "sharedRuntimeFingerprint": receipt["sharedRuntimeFingerprint"],
                   "mailflareCommit": mailflare_source["commit"],
                   "mailflarePatchSet": mailflare_source["integrationPatchSet"]}
         atomic_json(checkout / "public/helloada-release.json", marker)
@@ -1870,10 +1915,15 @@ def main() -> int:
         custom_worker_bundle = directory / "custom-worker-dry-run"
         run([str(checkout / "node_modules/.bin/wrangler"), "deploy", "--dry-run",
              "--outdir", str(custom_worker_bundle)], checkout, build_env)
-        receipt["artifactHashes"] = inspect_artifact(checkout, customer, args.ref, custom_worker_bundle)
-        changed = run(["git", "diff", "--name-only"], checkout, base).strip()
-        if changed:
-            raise RuntimeError("build changed tracked source: " + changed)
+        receipt["artifactHashes"] = inspect_artifact(
+            checkout, customer, args.ref, custom_worker_bundle,
+            receipt["sharedRuntimeFingerprint"],
+        )
+        unexpected_changes = tracked_changes_outside_runtime_overlay(
+            checkout, runtime_provenance["changedPaths"], base,
+        )
+        if unexpected_changes:
+            raise RuntimeError("build changed non-runtime source: " + ", ".join(unexpected_changes))
         stage("artifact-verified")
         before_deploy = cloudflare_deployment(customer, deploy_env)
         if before_deploy.get("id") != receipt["previousDeployment"].get("id"):
