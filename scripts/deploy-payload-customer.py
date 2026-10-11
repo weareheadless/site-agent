@@ -747,8 +747,8 @@ def reconcile_mailflare_migrations(checkout: Path, customer: dict[str, Any],
     changed = applied != expected
     if changed:
         command = [str(checkout / "node_modules/.bin/wrangler"), "d1", "migrations", "apply",
-                   "MAILFLARE_DB", "--remote", "--config", "wrangler.jsonc", "--yes"]
-        run(command, checkout, {**base, **env})
+                   "MAILFLARE_DB", "--remote", "--config", "wrangler.jsonc"]
+        run(command, checkout, {**base, **env, "CI": "1"})
         tables, applied = applied_mailflare_migrations(customer, env)
     if "d1_migrations" not in tables or applied != expected:
         raise RuntimeError("Mailflare D1 migration ledger differs from the pinned schema after Wrangler apply")
