@@ -22,13 +22,13 @@ test('Mailflare UI build copy uses only the canonical HelloAda identity and mark
     assert.doesNotMatch(patched[name], /Mailflare/)
   }
   assert.match(patched.layout, /title: "HelloAda"/)
-  assert.match(patched.layout, /helloada-logo\\.svg/)
-  assert.match(patched.manifest, /start_url: "\\/mail\\/inbox"/)
-  assert.match(patched.manifest, /image\\/svg\\+xml/)
+  assert.ok(patched.layout.includes('/mail/helloada-logo.svg'))
+  assert.ok(patched.manifest.includes('start_url: "/mail/inbox"'))
+  assert.ok(patched.manifest.includes('image/svg+xml'))
   assert.match(patched.brandingService, /canCustomizeBranding: false/)
   assert.match(patched.brandingService, /HelloAda branding is fixed/)
-  assert.match(patched.brandingIconRoute, /\\/mail\\/helloada-logo\\.svg/)
-  assert.doesNotMatch(patched.brandingIconRoute, /icon-96\\.png/)
+  assert.ok(patched.brandingIconRoute.includes('/mail/helloada-logo.svg'))
+  assert.ok(!patched.brandingIconRoute.includes('icon-96.png'))
 
   const canonicalLogo = await readFile(path.resolve(packageRoot, '../../src/site_agent/templates/next-payload/public/brand/helloada-logo.svg'), 'utf8')
   assert.match(canonicalLogo, /#FF6B5E/)
