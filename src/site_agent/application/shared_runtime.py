@@ -221,7 +221,7 @@ def _merge_wrangler(template: dict[str, Any], tenant: dict[str, Any], customer: 
             merged_vars[key] = central_values[key]
         elif key == "HELLOADA_HANDOFF_ISSUER":
             merged_vars[key] = "https://helloada.app"
-        elif key in tenant_identity:
+        elif key in tenant_identity or key == "HELLOADA_SITE_NAME":
             continue
         elif key == "HELLOADA_HANDOFF_PUBLIC_KEY":
             continue
@@ -355,12 +355,14 @@ def apply_shared_runtime_overlay(
     _update_shared_packages(tenant_root, template_root)
     tenant_config_path.write_text(json.dumps(rendered, indent=2) + "\n", encoding="utf-8")
     config_hash = hashlib.sha256(tenant_config_path.read_bytes()).hexdigest()
+    package = json.loads((template_root / "package.json").read_text(encoding="utf-8"))
+    lock = json.loads((template_root / "package-lock.json").read_text(encoding="utf-8"))
     return {
         "contract": manifest["contract"],
         "fingerprint": runtime_fingerprint,
         "wranglerSha256": config_hash,
         "copiedPaths": sorted(manifest["copy"]),
         "removedPaths": sorted(manifest["remove"]),
-        "payloadAdmin": json.loads((template_root / "package.json").read_text())["dependencies"][_PACKAGE_NAMES[0]],
-        "payloadCore": json.loads((template_root / "package.json").read_text())["dependencies"][_PACKAGE_NAMES[1]],
+        "payloadAdmin": lock["packages"][f"node_modules/{_PACKAGE_NAMES[0]}"]["version"],
+        "payloadCore": lock["packages"][f"node_modules/{_PACKAGE_NAMES[1]}"]["version"],
     }
