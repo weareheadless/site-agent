@@ -11,7 +11,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from urllib.parse import urlsplit
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -135,14 +135,24 @@ def read_lifecycle_reconciliation(
     version = proof.get("version")
     namespace = proof.get("namespace")
     health = proof.get("health")
-    if not all(isinstance(item, dict) for item in (deployment, version, namespace, health)):
+    post = proof.get("postDeploymentVerification")
+    if not all(isinstance(item, dict) for item in (deployment, version, namespace, health, post)):
         raise LifecycleReconciliationError("lifecycle evidence is incomplete")
-    if (not deployment.get("id") or not version.get("id")
-            or deployment.get("versionId") != version.get("id")
+    if (not deployment.get("id") or deployment.get("percentage") != 100
+            or not version.get("id") or deployment.get("versionId") != version.get("id")
+            or version.get("releaseSha") != receipt.get("sourceSha") or version.get("tenant") != tenant
             or not namespace.get("id") or namespace.get("class") != "RealtimeHub"
+            or namespace.get("name") != f"{receipt.get('worker')}_RealtimeHub"
+            or namespace.get("binding") != "MAILFLARE_REALTIME"
             or health.get("tenant") != tenant or health.get("releaseSha") != receipt.get("sourceSha")
             or health.get("ok") is not True or health.get("payloadSchema") != "ready"):
         raise LifecycleReconciliationError("lifecycle evidence does not prove the exact live release")
+    if (post.get("cronTriggers") != ["*/5 * * * *", "0 2 * * *"]
+            or post.get("queueConsumersVerified") is not True
+            or post.get("mailflareMigrationsVerified") is not True
+            or post.get("connectionVerified") is not True):
+        raise LifecycleReconciliationError("post-deployment release gates are incomplete")
+    _utc(post.get("connectionVerifiedAt"), "connection verification")
     return evidence
 
 
@@ -178,8 +188,13 @@ def reconcile_lifecycle_receipt(
     customer: Mapping[str, Any],
     environment: Mapping[str, str],
     pipeline_sha: str,
+    *,
+    post_deployment_verifier: Callable[
+        [str, Mapping[str, Any], Mapping[str, Any], Mapping[str, Any], str, Mapping[str, str]],
+        Mapping[str, Any],
+    ],
 ) -> dict[str, Any]:
-    """Record proof only when the exact immutable release is demonstrably live."""
+    """Record proof only after the exact live release passes all normal release gates."""
     receipt_path = release_root / "runs" / tenant / str(receipt.get("releaseId") or "") / "receipt.json"
     if receipt_path.is_symlink() or not receipt_path.is_file():
         raise LifecycleReconciliationError("failed release receipt is missing or unsafe")
@@ -299,6 +314,19 @@ def reconcile_lifecycle_receipt(
     if any(health.get(key) != expected for key, expected in required_health.items()):
         raise LifecycleReconciliationError("public health does not match the failed release receipt")
 
+    post_verification = post_deployment_verifier(
+        tenant, immutable_receipt, customer, deployment, version_id, environment,
+    )
+    if not isinstance(post_verification, Mapping):
+        raise LifecycleReconciliationError("canonical post-deployment verifier returned no evidence")
+    post_verification = dict(post_verification)
+    if (post_verification.get("cronTriggers") != ["*/5 * * * *", "0 2 * * *"]
+            or post_verification.get("queueConsumersVerified") is not True
+            or post_verification.get("mailflareMigrationsVerified") is not True
+            or post_verification.get("connectionVerified") is not True):
+        raise LifecycleReconciliationError("canonical post-deployment release gates did not all pass")
+    _utc(post_verification.get("connectionVerifiedAt"), "connection verification")
+
     evidence = {
         "schema": 1,
         "tenant": tenant,
@@ -348,8 +376,13 @@ def reconcile_unresolved_lifecycle_receipts(
     registry: Mapping[str, Any],
     environment: Mapping[str, str],
     pipeline_sha: str,
+    *,
+    post_deployment_verifier: Callable[
+        [str, Mapping[str, Any], Mapping[str, Any], Mapping[str, Any], str, Mapping[str, str]],
+        Mapping[str, Any],
+    ],
 ) -> dict[str, list[dict[str, str]]]:
-    """Automatically attest only exact live state; ambiguous state stays blocked."""
+    """Automatically attest only exact live state after every release gate passes."""
     customers = registry.get("customers")
     if not isinstance(customers, Mapping):
         raise LifecycleReconciliationError("tenant registry is invalid")
@@ -385,6 +418,7 @@ def reconcile_unresolved_lifecycle_receipts(
                 if evidence is None:
                     evidence = reconcile_lifecycle_receipt(
                         release_root, tenant, receipt, customer, environment, pipeline_sha,
+                        post_deployment_verifier=post_deployment_verifier,
                     )
                 verified.append({"tenant": tenant, "releaseId": str(receipt["releaseId"])})
             except LifecycleReconciliationError as error:
