@@ -64,8 +64,12 @@ export function applyHelloAdaBrandingPatch(sources, basePath) {
     'head favicon',
   )
 
-  let manifest = replaceExactlyOnce(sources.manifest, 'name: "Mailflare",', 'name: "HelloAda",', 'manifest name')
-  manifest = replaceExactlyOnce(manifest, 'short_name: "Mailflare",', 'short_name: "HelloAda",', 'manifest short name')
+  let manifest = replaceExactlyOnce(
+    sources.manifest,
+    ['name: "Mailflare",', '\t\tshort_name: "Mailflare",'].join(newline),
+    ['name: "HelloAda",', '\t\tshort_name: "HelloAda",'].join(newline),
+    'manifest name',
+  )
   manifest = replaceExactlyOnce(manifest, 'description: "Email, anywhere.",', 'description: "HelloAda business inbox, contacts and booking calendar",', 'manifest description')
   manifest = replaceExactlyOnce(manifest, 'start_url: "/inbox",', 'start_url: "' + basePath + '/inbox",', 'manifest start URL')
   manifest = replaceExactlyOnce(
