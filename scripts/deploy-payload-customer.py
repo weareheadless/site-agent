@@ -1640,11 +1640,27 @@ def tracked_changes_outside_runtime_overlay(
     checkout: Path,
     allowed_paths: list[str],
     environment: dict[str, str],
+    generated_untracked_roots: tuple[str, ...] = (),
 ) -> list[str]:
-    """Allow only the centrally declared disposable-workspace overlay edits."""
+    """Reject source mutations except the declared overlay and known build outputs."""
     output = run(["git", "status", "--porcelain", "--untracked-files=all"], checkout, environment)
-    changed = {line[3:].strip() for line in output.splitlines() if len(line) >= 4}
-    return sorted(changed - set(allowed_paths))
+    allowed = set(allowed_paths)
+    generated_roots = tuple(path.rstrip("/") for path in generated_untracked_roots)
+
+    def is_generated_output(path: str) -> bool:
+        return any(path == root or path.startswith(root + "/") for root in generated_roots)
+
+    unexpected = set()
+    for line in output.splitlines():
+        if len(line) < 4:
+            continue
+        status, path = line[:2], line[3:].strip()
+        if path in allowed:
+            continue
+        if status == "??" and is_generated_output(path):
+            continue
+        unexpected.add(path)
+    return sorted(unexpected)
 
 
 def main() -> int:
@@ -1931,6 +1947,7 @@ def main() -> int:
         )
         unexpected_changes = tracked_changes_outside_runtime_overlay(
             checkout, runtime_provenance["changedPaths"], base,
+            generated_untracked_roots=(".mailflare", "public/helloada-release.json"),
         )
         if unexpected_changes:
             raise RuntimeError("build changed non-runtime source: " + ", ".join(unexpected_changes))
