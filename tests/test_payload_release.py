@@ -992,6 +992,69 @@ def test_checks_compiled_server_instead_of_thin_worker_entry(tmp_path):
     assert hashes["custom-worker/worker.js"]
 
 
+def _integrity_git_checkout(path):
+    path.mkdir()
+    (path / "worker.ts").write_text("export default {}\\n")
+    (path / "src").mkdir()
+    (path / "src/page.tsx").write_text("export default 1;\\n")
+    release.subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+    release.subprocess.run(["git", "config", "user.name", "Release Test"], cwd=path, check=True)
+    release.subprocess.run(["git", "config", "user.email", "release-test@example.invalid"], cwd=path, check=True)
+    release.subprocess.run(["git", "add", "."], cwd=path, check=True)
+    release.subprocess.run(["git", "commit", "-qm", "fixture"], cwd=path, check=True)
+    return path
+
+
+def test_post_build_integrity_allows_only_declared_generated_outputs(tmp_path, monkeypatch):
+    checkout = _integrity_git_checkout(tmp_path / "checkout")
+    monkeypatch.setattr(
+        release,
+        "run",
+        lambda command, cwd, environment: release.subprocess.run(
+            command, cwd=cwd, env=environment, check=True, text=True, capture_output=True,
+        ).stdout,
+    )
+    (checkout / "worker.ts").write_text("export default { fetch() {} };\\n")
+    generated = checkout / ".mailflare/client/chunk.js"
+    generated.parent.mkdir(parents=True)
+    generated.write_text("generated runtime bundle")
+    marker = checkout / "public/helloada-release.json"
+    marker.parent.mkdir()
+    marker.write_text("{}\\n")
+
+    assert release.tracked_changes_outside_runtime_overlay(
+        checkout, ["worker.ts"], release.os.environ,
+        generated_untracked_roots=(".mailflare", "public/helloada-release.json"),
+    ) == []
+
+    (checkout / "src/page.tsx").write_text("unexpected source mutation")
+    assert release.tracked_changes_outside_runtime_overlay(
+        checkout, ["worker.ts"], release.os.environ,
+        generated_untracked_roots=(".mailflare", "public/helloada-release.json"),
+    ) == ["src/page.tsx"]
+
+
+def test_pre_build_integrity_rejects_build_outputs_without_explicit_allowlist(tmp_path, monkeypatch):
+    checkout = _integrity_git_checkout(tmp_path / "checkout")
+    monkeypatch.setattr(
+        release,
+        "run",
+        lambda command, cwd, environment: release.subprocess.run(
+            command, cwd=cwd, env=environment, check=True, text=True, capture_output=True,
+        ).stdout,
+    )
+    generated = checkout / ".mailflare/client/chunk.js"
+    generated.parent.mkdir(parents=True)
+    generated.write_text("generated runtime bundle")
+    marker = checkout / "public/helloada-release.json"
+    marker.parent.mkdir()
+    marker.write_text("{}\\n")
+
+    changed = release.tracked_changes_outside_runtime_overlay(checkout, [], release.os.environ)
+    assert ".mailflare/client/chunk.js" in changed
+    assert "public/helloada-release.json" in changed
+
+
 def test_release_artifact_requires_all_custom_worker_event_handlers(tmp_path):
     checkout = artifact(tmp_path)
     (checkout / "worker.ts").write_text("export default { fetch() {} }\n")
