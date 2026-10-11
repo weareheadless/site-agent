@@ -47,10 +47,10 @@ type TenantEnv = {
 }
 
 type MailflareBindings = Record<string, unknown>
-type MailflareWorker = WorkerHandlerSet<MailflareBindings>
 type WorkerContext = { waitUntil: (promise: Promise<unknown>) => void }
+type MailflareWorker = WorkerHandlerSet<MailflareBindings, WorkerContext>
 
-const siteAgentHandlers: WorkerHandlerSet<TenantEnv> = {
+const siteAgentHandlers: WorkerHandlerSet<TenantEnv, WorkerContext> = {
   fetch(request, env, context) {
     const handler = openNextWorker as unknown as {
       fetch: (request: Request, env: TenantEnv, context: WorkerContext) => Promise<Response>

@@ -150,39 +150,56 @@ def plan_shared_runtime_rollout(
                 "blocked": [canary],
             }
         if current_receipt and current_receipt.get("status") in _TERMINAL_FAILURE:
-            evidence = None
-            lifecycle = current_receipt.get("durableObjectLifecycle")
-            if isinstance(lifecycle, Mapping) and lifecycle.get("state") in {"applying", "outcome-unknown"}:
-                try:
-                    evidence = read_lifecycle_reconciliation(release_root, canary, current_receipt)
-                except LifecycleReconciliationError as error:
-                    raise SharedRuntimeRolloutError(
-                        f"canary lifecycle reconciliation is invalid: {error}"
-                    ) from error
-            if evidence is None:
+            if (not isinstance(current, Mapping)
+                    or current.get("id") != current_receipt.get("releaseId")
+                    or current.get("sha") != current_receipt.get("sourceSha")):
                 return {
                     "state": "canary-failed",
                     "canaryTenant": canary,
                     "queued": {},
                     "blocked": [canary],
                 }
-            if (not isinstance(current, Mapping)
-                    or current.get("id") != current_receipt.get("releaseId")
-                    or current.get("sha") != current_receipt.get("sourceSha")):
-                raise SharedRuntimeRolloutError("reconciled canary queue identity differs from its immutable receipt")
-            if not canary_history and not _SHA.fullmatch(str(current.get("sha") or "")):
+            lifecycle = current_receipt.get("durableObjectLifecycle")
+            lifecycle_uncertain = (
+                isinstance(lifecycle, Mapping)
+                and lifecycle.get("state") in {"applying", "outcome-unknown"}
+            )
+            evidence = None
+            if lifecycle_uncertain:
+                try:
+                    evidence = read_lifecycle_reconciliation(release_root, canary, current_receipt)
+                except LifecycleReconciliationError as error:
+                    raise SharedRuntimeRolloutError(
+                        f"canary lifecycle reconciliation is invalid: {error}"
+                    ) from error
+                if evidence is None:
+                    return {
+                        "state": "canary-failed",
+                        "canaryTenant": canary,
+                        "queued": {},
+                        "blocked": [canary],
+                    }
+            elif current.get("sharedRuntimeFingerprint") == fingerprint:
+                return {
+                    "state": "canary-failed",
+                    "canaryTenant": canary,
+                    "queued": {},
+                    "blocked": [canary],
+                }
+            source_sha = canary_history[0]["sourceSha"] if canary_history else str(current["sha"])
+            if (
+                evidence
+                and current.get("sharedRuntimeFingerprint") == fingerprint
+                and evidence.get("sharedRuntimeFingerprint") == fingerprint
+            ):
+                source_sha = str(current["sha"])
+            if not _SHA.fullmatch(source_sha):
                 return {
                     "state": "canary-needs-first-release",
                     "canaryTenant": canary,
                     "queued": {},
                     "blocked": [canary],
                 }
-            source_sha = (
-                current["sha"]
-                if current.get("sharedRuntimeFingerprint") == fingerprint
-                and evidence.get("sharedRuntimeFingerprint") == fingerprint
-                else (canary_history[0]["sourceSha"] if canary_history else current["sha"])
-            )
             queued[canary] = {
                 "id": _release_id(now),
                 "sha": source_sha,
@@ -238,8 +255,23 @@ def plan_shared_runtime_rollout(
             blocked.append(tenant)
             continue
         if current_receipt and current_receipt.get("status") in _TERMINAL_FAILURE:
-            blocked.append(tenant)
-            continue
+            if (not isinstance(current, Mapping)
+                    or current.get("id") != current_receipt.get("releaseId")
+                    or current.get("sha") != current_receipt.get("sourceSha")
+                    or current.get("sharedRuntimeFingerprint") == fingerprint):
+                blocked.append(tenant)
+                continue
+            lifecycle = current_receipt.get("durableObjectLifecycle")
+            if isinstance(lifecycle, Mapping) and lifecycle.get("state") in {"applying", "outcome-unknown"}:
+                try:
+                    evidence = read_lifecycle_reconciliation(release_root, tenant, current_receipt)
+                except LifecycleReconciliationError as error:
+                    raise SharedRuntimeRolloutError(
+                        f"tenant lifecycle reconciliation is invalid: {error}"
+                    ) from error
+                if evidence is None:
+                    blocked.append(tenant)
+                    continue
         if not history:
             continue
         queued[tenant] = {
