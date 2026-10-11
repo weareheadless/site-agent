@@ -16,7 +16,7 @@ export function patchDashboardNavigation(source) {
 	let patched = replaceExactlyOnce(
 		source,
 		'  Trash2,\n} from "lucide-react";',
-		'  Trash2,\n  UsersRound,\n} from "lucide-react";',
+		'  Trash2,\n  UsersRound,\n  CalendarClock,\n} from "lucide-react";',
 		"dashboard-nav.tsx Contacts icon",
 	);
 	patched = replaceExactlyOnce(
