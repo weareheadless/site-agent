@@ -160,3 +160,20 @@ const replacedUpstreamBrandIcons = new Set([
 export function shouldSkipUpstreamBrandIcon(relativePath) {
   return replacedUpstreamBrandIcons.has(relativePath)
 }
+
+/**
+ * Rebrand only the standalone upstream product name. Compound identifiers and
+ * tenant binding names remain stable because they do not match this boundary.
+ */
+export function sanitizeHelloAdaBrandCopy(source) {
+  return source.replace(/\\bMailflare\\b/g, 'HelloAda')
+}
+
+export function sanitizeHelloAdaLocaleValues(value) {
+  if (typeof value === 'string') return sanitizeHelloAdaBrandCopy(value)
+  if (Array.isArray(value)) return value.map(sanitizeHelloAdaLocaleValues)
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, sanitizeHelloAdaLocaleValues(child)]))
+  }
+  return value
+}
