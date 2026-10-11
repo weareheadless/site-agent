@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -83,6 +84,86 @@ def test_failed_canary_holds_automatic_rollout_without_retry(tmp_path):
         "queued": {},
         "blocked": ["oceanicvibes"],
     }
+
+
+def test_reconciled_atomic_canary_gets_a_new_id_before_any_fanout(tmp_path):
+    _receipt(tmp_path, "oceanicvibes", "oceanic-last", source_sha="1" * 40)
+    release_id = "failed-runtime"
+    source_sha = "2" * 40
+    receipt = {
+        "tenant": "oceanicvibes",
+        "releaseId": release_id,
+        "sourceSha": source_sha,
+        "sharedRuntimeFingerprint": FINGERPRINT,
+        "worker": "oceanicvibes",
+        "status": "failed",
+        "rolloutMode": "atomic",
+        "durableObjectLifecycle": {
+            "identity": "d" * 64,
+            "state": "outcome-unknown",
+            "strategy": "atomic",
+        },
+    }
+    receipt_bytes = (json.dumps(receipt, indent=2) + "\\n").encode()
+    receipt_path = tmp_path / "runs" / "oceanicvibes" / release_id / "receipt.json"
+    receipt_path.parent.mkdir(parents=True)
+    receipt_path.write_bytes(receipt_bytes)
+    evidence = {
+        "schema": 1,
+        "tenant": "oceanicvibes",
+        "releaseId": release_id,
+        "receiptSha256": hashlib.sha256(receipt_bytes).hexdigest(),
+        "sourceSha": source_sha,
+        "sharedRuntimeFingerprint": FINGERPRINT,
+        "migrationIdentity": "d" * 64,
+        "pipelineSha": "e" * 40,
+        "status": "verified",
+        "verifiedAt": "2026-10-11T04:00:00+00:00",
+        "proof": {
+            "deployment": {
+                "id": "deployment-new",
+                "versionId": "version-new",
+                "percentage": 100,
+            },
+            "version": {
+                "id": "version-new",
+                "releaseSha": source_sha,
+                "tenant": "oceanicvibes",
+            },
+            "namespace": {
+                "id": "namespace-id",
+                "class": "RealtimeHub",
+                "name": "oceanicvibes_RealtimeHub",
+                "binding": "MAILFLARE_REALTIME",
+            },
+            "health": {
+                "tenant": "oceanicvibes",
+                "releaseSha": source_sha,
+                "ok": True,
+                "payloadSchema": "ready",
+            },
+        },
+    }
+    evidence_path = tmp_path / "reconciliations" / "oceanicvibes" / f"{release_id}.json"
+    evidence_path.parent.mkdir(parents=True)
+    evidence_path.write_text(json.dumps(evidence))
+    queue = {"releases": {"oceanicvibes": {
+        "id": release_id,
+        "sha": source_sha,
+        "sharedRuntimeFingerprint": FINGERPRINT,
+    }}}
+
+    plan = plan_shared_runtime_rollout(
+        _registry(), queue, tmp_path, FINGERPRINT,
+        now=datetime(2026, 10, 11, 4, 1, tzinfo=timezone.utc),
+    )
+
+    request = plan["queued"]["oceanicvibes"]
+    assert plan["state"] == "canary-queued"
+    assert set(plan["queued"]) == {"oceanicvibes"}
+    assert request["id"] != release_id
+    assert request["sha"] == source_sha
+    assert request["sharedRuntimeFingerprint"] == FINGERPRINT
 
 
 def test_successful_canary_queues_bounded_batch_with_exact_customer_source(tmp_path):
