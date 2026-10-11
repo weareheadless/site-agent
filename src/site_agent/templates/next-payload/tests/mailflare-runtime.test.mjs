@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { composeTenantWorker } from '../mailflare-runtime.ts'
+import { asMailflareEnv } from '../mailflare-bindings.ts'
 
 const queueNames = ['tenant-mailflare-inbound', 'tenant-mailflare-outbound', 'tenant-mailflare-agent']
 
@@ -90,4 +91,44 @@ test('scheduled events are owned only by Mailflare', async () => {
   const { calls, worker } = handlers()
   await worker.scheduled({ cron: '*/5 * * * *' }, { name: 'tenant' }, {})
   assert.deepEqual(calls, [['mail.scheduled', '*/5 * * * *', 'mailflare-env']])
+})
+
+test('Mailflare resolves namespaced tenant bindings without changing Payload bindings', () => {
+  const mailDb = { name: 'mail-db' }
+  const payloadDb = { name: 'payload-db' }
+  const mailflareEnv = asMailflareEnv({
+    D1: payloadDb,
+    MAILFLARE_DB: mailDb,
+    MAILFLARE_BUCKET: { name: 'mail-files' },
+    MAILFLARE_INBOUND_QUEUE: { name: 'inbound' },
+    MAILFLARE_OUTBOUND_QUEUE: { name: 'outbound' },
+    MAILFLARE_AGENT_QUEUE: { name: 'agent' },
+    MAILFLARE_REALTIME: { name: 'realtime' },
+    MAILFLARE_AI: { name: 'ai' },
+    MAILFLARE_LOGIN_RATE_LIMIT: { name: 'login-limit' },
+    MAILFLARE_AGENT_RATE_LIMIT: { name: 'agent-limit' },
+    MAILFLARE_BOOKING_RATE_LIMIT: { name: 'booking-limit' },
+    HELLOADA_TURNSTILE_SECRET_KEY: 'turnstile-secret',
+    HELLOADA_TURNSTILE_SITE_KEY: 'turnstile-site',
+    MAILFLARE_ADDRESS: 'hello@example.test',
+  })
+
+  assert.equal(mailflareEnv.DB, mailDb)
+  assert.equal(mailflareEnv.D1, payloadDb)
+  assert.equal(mailflareEnv.BUCKET.name, 'mail-files')
+  assert.equal(mailflareEnv.INBOUND_QUEUE.name, 'inbound')
+  assert.equal(mailflareEnv.OUTBOUND_QUEUE.name, 'outbound')
+  assert.equal(mailflareEnv.AGENT_QUEUE.name, 'agent')
+  assert.equal(mailflareEnv.REALTIME.name, 'realtime')
+  assert.equal(mailflareEnv.AI.name, 'ai')
+  assert.equal(mailflareEnv.LOGIN_RATE_LIMIT.name, 'login-limit')
+  assert.equal(mailflareEnv.AGENT_RATE_LIMIT.name, 'agent-limit')
+  assert.equal(mailflareEnv.BOOKING_RATE_LIMIT.name, 'booking-limit')
+  assert.equal(mailflareEnv.TURNSTILE_SECRET_KEY, 'turnstile-secret')
+  assert.equal(mailflareEnv.TURNSTILE_SITE_KEY, 'turnstile-site')
+  assert.equal(mailflareEnv.MAILFLARE_ADDRESS, 'hello@example.test')
+})
+
+test('Mailflare binding adapter does not fall back to an unrelated DB binding', () => {
+  assert.equal(asMailflareEnv({ DB: { name: 'unrelated-db' } }).DB, undefined)
 })
