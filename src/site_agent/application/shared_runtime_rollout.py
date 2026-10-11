@@ -41,7 +41,15 @@ def _request_receipt(root: Path, tenant: str, request: Mapping[str, Any] | None)
     release_id = str(request.get("id") or "")
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", release_id):
         raise SharedRuntimeRolloutError("queued release has an invalid receipt identity")
-    return _receipt(root / "runs" / tenant / release_id / "receipt.json")
+    run = root / "runs" / tenant / release_id
+    if run.is_symlink():
+        raise SharedRuntimeRolloutError("queued release directory must not be a symlink")
+    if run.exists() and not run.is_dir():
+        raise SharedRuntimeRolloutError("queued release path is not a directory")
+    result = _receipt(run / "receipt.json")
+    if result is None and run.exists():
+        return {"status": "interrupted"}
+    return result
 
 
 def _successful_receipts(root: Path, tenant: str) -> list[dict[str, Any]]:
@@ -127,6 +135,15 @@ def plan_shared_runtime_rollout(
     if not canary_has_target:
         current = releases.get(canary)
         current_receipt = _request_receipt(release_root, canary, current)
+        if (current_receipt and current.get("sharedRuntimeFingerprint") == fingerprint
+                and current_receipt.get("status") in _SUCCESS
+                and current_receipt.get("sharedRuntimeFingerprint") != fingerprint):
+            return {
+                "state": "canary-contract-mismatch",
+                "canaryTenant": canary,
+                "queued": {},
+                "blocked": [canary],
+            }
         if current_receipt and current_receipt.get("status") in _TERMINAL_FAILURE:
             return {
                 "state": "canary-failed",
@@ -171,6 +188,11 @@ def plan_shared_runtime_rollout(
         current_receipt = _request_receipt(release_root, tenant, current)
         if (current and current_receipt is None
                 and current.get("sharedRuntimeFingerprint") in (None, fingerprint)):
+            continue
+        if (current_receipt and current.get("sharedRuntimeFingerprint") == fingerprint
+                and current_receipt.get("status") in _SUCCESS
+                and current_receipt.get("sharedRuntimeFingerprint") != fingerprint):
+            blocked.append(tenant)
             continue
         if current_receipt and current_receipt.get("status") in _TERMINAL_FAILURE:
             blocked.append(tenant)
