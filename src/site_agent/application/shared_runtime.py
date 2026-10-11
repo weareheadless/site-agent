@@ -361,6 +361,7 @@ def apply_shared_runtime_overlay(
     *,
     shared_vars: Mapping[str, str],
     manifest_path: Path | None = None,
+    expected_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     """Apply exact Site-Agent-owned runtime files to one fresh disposable checkout."""
     control_root = control_root.resolve()
@@ -378,7 +379,12 @@ def apply_shared_runtime_overlay(
     version_match = re.search(r'(?m)^version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"\s*$', (control_root / "pyproject.toml").read_text())
     if not version_match:
         raise SharedRuntimeError("Site-Agent version is not pinned in pyproject.toml")
-    runtime_fingerprint = shared_runtime_fingerprint(control_root, manifest_path)
+    if expected_fingerprint is not None:
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_fingerprint):
+            raise SharedRuntimeError("expected shared runtime fingerprint is invalid")
+        runtime_fingerprint = expected_fingerprint
+    else:
+        runtime_fingerprint = shared_runtime_fingerprint(control_root, manifest_path)
     rendered = _merge_wrangler(template_config, tenant_config, customer, tenant_id,
                                shared_vars, version_match.group(1))
 
