@@ -1,5 +1,5 @@
-import { provisionTenantMailflareMailbox } from './mailflare-provisioning'
-import { migratePayloadMailbox, type PayloadMailboxMigrationEnv } from './mailflare-payload-migration'
+import { provisionTenantMailflareMailbox } from './mailflare-provisioning.ts'
+import { migratePayloadMailbox, type PayloadMailboxMigrationEnv } from './mailflare-payload-migration.ts'
 
 type D1Statement = {
   bind: (...values: unknown[]) => D1Statement
@@ -79,7 +79,7 @@ const under = (pathname: string, root: string) => pathname === root || pathname.
 const isStatic = (request: Request, pathname: string, basePath: string) =>
   ['GET', 'HEAD'].includes(request.method)
   && (pathname.startsWith(`${basePath}/_next/static/`)
-    || [`${basePath}/favicon.ico`, `${basePath}/manifest.webmanifest`].includes(pathname)
+    || [`${basePath}/favicon.ico`, `${basePath}/manifest.webmanifest`].includes(pathname))
 
 const isPublic = (request: Request, pathname: string, basePath: string) => {
   if (isStatic(request, pathname, basePath)) return true
