@@ -33,7 +33,7 @@ export async function GET(request: Request) {
 		.from(contacts)
 		.where(eq(contacts.userId, access.mailbox.userId))
 		.orderBy(desc(contacts.lastSeenAt), desc(contacts.createdAt))
-		.limit(500);
+		;
 
 	return NextResponse.json({ contacts: items });
 }
