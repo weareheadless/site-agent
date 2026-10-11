@@ -8,6 +8,7 @@ import { applyContactsPatch, patchDashboardNavigation, patchLocale } from "../sc
 const dashboardNav = [
 	'import {',
 	'  MailPlus,',
+	'  CalendarClock,',
 	'  Trash2,',
 	'} from "lucide-react";',
 	'const links = [',
