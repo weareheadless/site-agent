@@ -394,9 +394,11 @@ records before/desired/after state in the release receipt. The shared inbox
 runtime requires exactly `*/5 * * * *` to sweep durable messages; a missing or
 drifted schedule is not treated as a successful deployment. DNS and domain
 routes remain a separate explicit provisioning operation. The deployment token
-must include Workers Scripts Read and Write for schedule reconciliation and
-Queues Read and Write (or Workers Scripts Write) for consumer reconciliation.
-See [Cloudflare's schedule API](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/schedules/),
+must include Workers Scripts Read and Write for schedule reconciliation,
+Queues Read and Write (or Workers Scripts Write) for consumer reconciliation,
+and Workers Routes Write scoped to the Cloudflare zones managed by Site-Agent
+for Wrangler's domain/route configuration. Do not widen that route permission
+to the whole account. See [Cloudflare's schedule API](https://developers.cloudflare.com/api/resources/workers/subresources/scripts/subresources/schedules/),
 [Cloudflare's Queue consumer API](https://developers.cloudflare.com/api/resources/queues/subresources/consumers/),
 and [OpenNext's upload command](https://opennext.js.org/cloudflare/cli).
 
@@ -559,6 +561,8 @@ Cloudflare Durable Object migrations are not compatible with Worker version uplo
 
 The runner records the lifecycle identity and command state in the tenant receipt, then reads Cloudflare's deployment record and requires a new deployment with exactly one version at 100%. The normal live-health, runtime-fingerprint, queue, schedule and authenticated connection gates still apply. A later release for that tenant uses immutable version upload and verified promotion once a prior receipt proves the same migration identity was applied. A changed Durable Object migration chain requires its own new atomic lifecycle rollout.
 
-An interrupted or failed atomic command is terminal. If the receipt says `applying` or `outcome-unknown`, the coordinator refuses another release for that tenant until the exact Cloudflare deployment is reconciled; it never guesses, reuses an ID or silently switches modes. The canary continues to gate fan-out. Because a Durable Object lifecycle migration cannot be undone by promoting the prior code version, the receipt and live checks must be preserved, and recovery must be a new explicitly queued release after the applied state is established.
+An interrupted or failed atomic command is terminal. If the receipt says `applying` or `outcome-unknown`, the coordinator first performs a read-only reconciliation against Cloudflare's exact deployment/version record, the release SHA and tenant bindings, the matching Durable Object namespace, and the tenant's registered health endpoint. The resulting private reconciliation record is bound to the immutable receipt hash; the receipt itself is never edited. If any proof is missing or disagrees, the tenant remains blocked and no fan-out occurs.
+
+Lifecycle proof is deliberately not a canary pass. When the migration is proven applied, the coordinator queues a fresh release ID for the canary using the exact source SHA and runtime fingerprint. That normal versioned release must pass the complete deployment, Payload, schedule, Queue consumer, health, and authenticated connection gates before the coordinator fans out to other tenants. The original failed ID is never reused, and recovery is not a manual tenant-repo change or a silent deployment fallback.
 
 This is a one-time platform lifecycle operation per tenant and migration identity, not per-tenant source engineering. After each tenant has crossed that boundary, normal shared-runtime releases remain centrally built and versioned through the same queue and timer.
