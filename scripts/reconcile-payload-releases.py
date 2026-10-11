@@ -90,8 +90,14 @@ def validate_queue(queue: dict, registry: dict) -> None:
             {"id", "sha", "initializeSchema"},
             {"id", "sha", "schemaMigration"},
         )
-        if set(request) not in permitted:
-            raise ValueError("release must be an owner approval, a schema initialization, or an exact tenant schema migration")
+        request_shape = set(request)
+        runtime_fingerprint = request.get("sharedRuntimeFingerprint")
+        if runtime_fingerprint is not None:
+            request_shape.remove("sharedRuntimeFingerprint")
+            if not re.fullmatch(r"[0-9a-f]{64}", str(runtime_fingerprint)):
+                raise ValueError("shared-runtime release requires a full SHA-256 fingerprint")
+        if request_shape not in permitted:
+            raise ValueError("release must be an owner approval, a schema initialization, an exact schema migration, or a shared-runtime release")
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,79}", request["id"]):
             raise ValueError("unsafe release ID")
         if not re.fullmatch(r"[0-9a-f]{40}", request["sha"]):
@@ -124,6 +130,17 @@ def validate_queue(queue: dict, registry: dict) -> None:
                 or migration["fromLedgerIdentity"] == migration["targetMigrationHead"]
             ):
                 raise ValueError("tenant schema migration must identify one prior ledger and the registered target head")
+    policies = {
+        tenant: customer.get("sharedRuntimeUpdate", "manual")
+        for tenant, customer in registry["customers"].items()
+        if isinstance(customer, dict)
+    }
+    if any(policy not in {"manual", "canary", "automatic"} for policy in policies.values()):
+        raise ValueError("tenant shared-runtime rollout policy is invalid")
+    if any(policy == "automatic" for policy in policies.values()) and sum(
+        policy == "canary" for policy in policies.values()
+    ) != 1:
+        raise ValueError("automatic shared-runtime fan-out requires exactly one canary")
 
 
 def release_purpose_for_request(request: dict) -> str:
