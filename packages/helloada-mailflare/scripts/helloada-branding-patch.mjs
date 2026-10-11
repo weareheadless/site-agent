@@ -166,7 +166,7 @@ export function shouldSkipUpstreamBrandIcon(relativePath) {
  * tenant binding names remain stable because they do not match this boundary.
  */
 export function sanitizeHelloAdaBrandCopy(source) {
-  return source.replace(/\\bMailflare\\b/g, 'HelloAda')
+  return source.replace(/\bMailflare\b/g, 'HelloAda')
 }
 
 export function sanitizeHelloAdaLocaleValues(value) {
