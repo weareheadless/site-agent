@@ -121,6 +121,12 @@ export function applyHelloAdaBrandingPatch(sources, basePath) {
   )
 
   let sidebarFooter = replaceExactlyOnce(sources.sidebarFooter, 'import packageJson from "../../package.json";', '', 'vendor version import')
+  sidebarFooter = replaceExactlyOnce(
+    sidebarFooter,
+    '/** The "Powered by Mailflare vX" credit, shared by the mail and Drive sidebars. */',
+    '/** HelloAda brand link for the mail and Drive sidebars. */',
+    'vendor footer description',
+  )
   sidebarFooter = replaceLine(
     sidebarFooter,
     'href={' + String.fromCharCode(96) + 'https://mailflare.co/',
