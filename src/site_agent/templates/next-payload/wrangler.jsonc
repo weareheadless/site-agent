@@ -5,6 +5,11 @@
   "compatibility_date": "2025-08-15",
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "assets": { "directory": ".open-next/assets", "binding": "ASSETS" },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "issues": { "enabled": true }
+  },
   "vars": {
     "SITE_AGENT_URL": "__SITE_AGENT_URL__",
     "NEXT_PUBLIC_SITE_URL": "__WORKER_URL__",
