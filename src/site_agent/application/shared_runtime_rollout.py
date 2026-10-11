@@ -134,7 +134,8 @@ def plan_shared_runtime_rollout(
                 "queued": {},
                 "blocked": [canary],
             }
-        if current and current_receipt is None:
+        if (current and current_receipt is None
+                and current.get("sharedRuntimeFingerprint") in (None, fingerprint)):
             return {
                 "state": "canary-pending",
                 "canaryTenant": canary,
@@ -168,7 +169,8 @@ def plan_shared_runtime_rollout(
             continue
         current = releases.get(tenant)
         current_receipt = _request_receipt(release_root, tenant, current)
-        if current and current_receipt is None:
+        if (current and current_receipt is None
+                and current.get("sharedRuntimeFingerprint") in (None, fingerprint)):
             continue
         if current_receipt and current_receipt.get("status") in _TERMINAL_FAILURE:
             blocked.append(tenant)
