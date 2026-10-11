@@ -8,6 +8,7 @@ import { applyBookingParityPatches } from './booking-parity-patches.mjs'
 import { applyBookingEditorPatches } from './booking-editor-patches-clean.mjs'
 import { applyBookingUiPatch } from './booking-ui-patches.mjs'
 import { applyMailboxAccessPatch } from './mailbox-access-patch.mjs'
+import { applyHelloAdaBrandingPatch, shouldSkipUpstreamBrandIcon } from './helloada-branding-patch.mjs'
 
 const minimumNodeVersion = [22, 22, 2]
 const actualNodeVersion = process.versions.node.split('.').map(Number)
@@ -130,12 +131,35 @@ async function prepareBuildCopy(destination) {
     filter(source) {
       const relative = path.relative(upstreamRoot, source)
       const first = relative.split(path.sep)[0]
+      const normalizedRelative = relative.split(path.sep).join('/')
       if (['node_modules', 'dist', '.next', '.vinext', '.wrangler'].includes(first)) return false
+      if (shouldSkipUpstreamBrandIcon(normalizedRelative)) return false
       return relative !== 'next-env.d.ts' && relative !== 'src/lib/migrations/bundle.json'
     },
   })
   const sharedBindingsPath = path.resolve(packageRoot, '../../src/site_agent/templates/next-payload/mailflare-bindings.ts')
   await cp(sharedBindingsPath, path.join(destination, 'src/lib/helloada-tenant-bindings.ts'))
+  const helloAdaLogoPath = path.resolve(packageRoot, '../../src/site_agent/templates/next-payload/public/brand/helloada-logo.svg')
+  const helloAdaLogo = await readFile(helloAdaLogoPath, 'utf8')
+  if (!helloAdaLogo.includes('<svg') || !helloAdaLogo.includes('#FF6B5E') || !helloAdaLogo.includes('#FFC857')) {
+    throw new Error('Canonical HelloAda logo asset is missing or does not match the fixed brand colors')
+  }
+  await writeFile(path.join(destination, 'public/helloada-logo.svg'), helloAdaLogo)
+  const brandingPaths = {
+    layout: 'src/app/layout.tsx',
+    manifest: 'src/app/manifest.ts',
+    brandingDefaults: 'src/components/branding-provider-utils.ts',
+    brandingProvider: 'src/components/branding-provider.tsx',
+    brandingService: 'src/lib/branding/service.ts',
+    brandingIconRoute: 'src/app/api/branding/icon/route.ts',
+  }
+  const brandingSources = Object.fromEntries(await Promise.all(
+    Object.entries(brandingPaths).map(async ([key, relative]) => [key, await readFile(path.join(destination, relative), 'utf8')]),
+  ))
+  const brandedSources = applyHelloAdaBrandingPatch(brandingSources, sourceMetadata.basePath)
+  await Promise.all(Object.entries(brandingPaths).map(([key, relative]) =>
+    writeFile(path.join(destination, relative), brandedSources[key]),
+  ))
   await applyBookingPatches(destination)
 
   const mailboxAccessPath = path.join(destination, 'src/lib/mailboxes/access.ts')
