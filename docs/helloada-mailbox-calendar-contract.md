@@ -1,8 +1,8 @@
 # HelloAda Mailbox and Booking Calendar Contract
 
-This document defines the shared runtime boundary for the HelloAda Messages
-mailbox and optional booking Calendar. It complements the production
-implementation plan; it is not a separate product or a deployment procedure.
+> Superseded by [docs/mailflare-single-worker-contract.md](./mailflare-single-worker-contract.md).
+> This historical document is retained for context only; do not use its data
+> ownership or Resend architecture where it conflicts with the canonical contract.
 
 ## One tenant, one source of truth
 

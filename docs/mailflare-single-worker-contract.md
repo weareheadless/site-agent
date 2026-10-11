@@ -6,6 +6,9 @@ and the earlier `helloada-mailbox-calendar-contract.md` wherever they conflict.
 
 ## Product boundary
 
+- The customer-facing identity is HelloAda: the mailbox title, manifest, browser/PWA icon and sidebar mark use the canonical HelloAda SVG from the Payload scaffold. The upstream product name and mark do not appear in the owner UI; upstream provenance, required license notices and internal identifiers remain intact. Tenant owners cannot customize the platform brand.
+- Contacts and Calendar are native mailbox capabilities. Website enquiries create or update a Contact and appear in Inbox; a confirmed website booking creates a Calendar event linked to that Contact and its conversation. Do not add a separate CRM/calendar store or duplicate live workflow.
+
 - Reuse Mailflare's upstream inbox, composer, mail-processing and calendar code;
   do not design a second mailbox UI or reimplement those capabilities.
 - `site-agent` remains the only source of tenant application code. Its shared
