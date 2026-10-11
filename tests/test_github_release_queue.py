@@ -88,7 +88,7 @@ def test_release_request_commits_registry_and_exact_approval_together(monkeypatc
     assert result["release_id"].startswith("rel-")
     tree = next(payload for method, path, payload in calls if method == "POST" and path.endswith("/git/trees"))
     written = {row["path"].rsplit("/", 1)[1]: blob_contents[row["sha"]] for row in tree["tree"]}
-    assert written["payload-customers.json"]["customers"]["demo"] == {**CUSTOMER, "sharedRuntimeUpdate": "automatic"}
+    assert written["payload-customers.json"]["customers"]["demo"] == CUSTOMER
     assert written["desired-releases.json"]["releases"]["demo"] == {
         "id": result["release_id"], "sha": SHA, "approvalId": 42,
     }
