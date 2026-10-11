@@ -12,6 +12,7 @@
     "src/app/api/helloada/[...path]/route.ts",
     "src/app/api/helloada/forms/[slug]/route.ts",
     "src/app/api/helloada/mailflare-identity/route.ts",
+    "src/lib/cloudflare-context.ts",
     "src/lib/helloada-form-runtime.ts",
     "src/lib/mailflare-inbox.ts",
     "src/lib/mailflare-provisioning-api.ts"
