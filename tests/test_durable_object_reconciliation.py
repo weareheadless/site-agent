@@ -173,3 +173,31 @@ def test_existing_evidence_is_bound_to_exact_receipt_bytes(tmp_path, monkeypatch
 
     with pytest.raises(reconciliation.LifecycleReconciliationError, match="immutable failed receipt"):
         reconciliation.read_lifecycle_reconciliation(tmp_path, TENANT, receipt)
+
+def test_health_probe_identifies_release_verifier(monkeypatch):
+    url = "https://oceanicvibes.com/api/health"
+    captured = {}
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def geturl(self):
+            return url
+
+        def read(self):
+            return b'{"ok":true}'
+
+    def open_request(request, timeout):
+        captured["user_agent"] = request.get_header("User-agent")
+        return Response()
+
+    monkeypatch.setattr(reconciliation.urllib.request, "urlopen", open_request)
+
+    assert reconciliation._health_json(url) == {"ok": True}
+    assert captured["user_agent"] == "HelloAda-ReleaseVerifier/1.0 (+https://helloada.app)"
