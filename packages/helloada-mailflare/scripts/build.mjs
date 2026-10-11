@@ -4,6 +4,7 @@ import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promi
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { applyBookingIntegrationPatch } from './booking-patches.mjs'
+import { applyContactsPatch } from './contacts-patch.mjs'
 import { applyBookingParityPatches } from './booking-parity-patches.mjs'
 import { applyBookingEditorPatches } from './booking-editor-patches-clean.mjs'
 import { applyBookingUiPatch } from './booking-ui-patches.mjs'
@@ -199,6 +200,7 @@ async function prepareBuildCopy(destination) {
     writeFile(path.join(destination, relative), brandedSources[key]),
   ))
   await applyBookingPatches(destination)
+  await applyContactsPatch(destination)
 
   const mailboxAccessPath = path.join(destination, 'src/lib/mailboxes/access.ts')
   const mailboxAccessSource = await readFile(mailboxAccessPath, 'utf8')
