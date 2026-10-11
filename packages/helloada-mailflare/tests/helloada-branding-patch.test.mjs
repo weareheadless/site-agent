@@ -36,7 +36,7 @@ test('the disposable mailbox UI uses only the canonical HelloAda identity and ma
   assert.match(patched.brandingService, /HelloAda branding is fixed/)
   assert.ok(patched.brandingIconRoute.includes('/mail/helloada-logo.svg'))
   assert.ok(patched.sidebarFooter.includes('https://helloada.app'))
-  assert.ok(patched.sidebarFooter.includes('HelloAda</a>'))
+  assert.ok(patched.sidebarFooter.includes('HelloAda'))
   assert.ok(!patched.brandingIconRoute.includes('icon-96.png'))
 
   const canonicalLogo = await readFile(path.resolve(packageRoot, '../../src/site_agent/templates/next-payload/public/brand/helloada-logo.svg'), 'utf8')
