@@ -135,9 +135,9 @@
       "mailflareD1DatabaseId": "08224fe1-e4ea-4265-9372-58f1ec8b75a6",
       "mailflareD1DatabaseName": "helloada-northstar-coffee-full-intake-ad820fa9f96521e91211-mail",
       "mailflareR2BucketName": "helloada-northstar-coffee-full-ad820fa9f96521e91211-mail-files",
-      "mailflareInboundQueueName": "helloada-northstar-coffee-full-intake-ad820fa9f96521e91211-mail-inbound",
-      "mailflareOutboundQueueName": "helloada-northstar-coffee-ful-ad820fa9f96521e91211-mail-outbound",
-      "mailflareAgentQueueName": "helloada-northstar-coffee-full-intake-ad820fa9f96521e91211-mail-agent"
+      "mailflareInboundQueueName": "helloada-northstar-coffee-ful-ad820fa9f96521e91211-mail-inbound",
+      "mailflareOutboundQueueName": "helloada-northstar-coffee-fu-ad820fa9f96521e91211-mail-outbound",
+      "mailflareAgentQueueName": "helloada-northstar-coffee-full-ad820fa9f96521e91211-mail-agent"
     },
     "northstar-coffee-house-afd6a0232bf10fd4": {
       "adminPath": "/api/helloada",

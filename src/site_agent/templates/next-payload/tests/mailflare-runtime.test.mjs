@@ -36,6 +36,25 @@ test('HTTP dispatch is isolated to the exact Mailflare base path', async () => {
   assert.deepEqual(calls.map(([name]) => name), ['mail.fetch', 'mail.fetch', 'site.fetch', 'site.fetch'])
 })
 
+test('owner gate dispatch always receives a Promise for synchronous Mailflare handlers', async () => {
+  const worker = composeTenantWorker({
+    site: { fetch: () => new Response('site') },
+    mailflare: { fetch: () => new Response('mail') },
+    mailflareEnv: (env) => env,
+    mailflareQueueNames: () => [...queueNames],
+    mailflareRequest: (request, _env, _context, dispatch) => {
+      const response = dispatch(request)
+      assert.equal(typeof response.then, 'function')
+      return response
+    },
+    basePath: '/mail',
+  })
+
+  const response = await worker.fetch(new Request('https://tenant.test/mail'), {}, {})
+
+  assert.equal(await response.text(), 'mail')
+})
+
 test('inbound email has one Mailflare owner and is never sent to the legacy site inbox', async () => {
   const { calls, worker } = handlers()
   await worker.email({ to: 'owner@example.test' }, { name: 'tenant' }, {})

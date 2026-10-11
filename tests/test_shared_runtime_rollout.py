@@ -18,16 +18,20 @@ SHA = "a" * 40
 
 
 def _receipt(root: Path, tenant: str, release_id: str, *, source_sha: str = SHA,
-             fingerprint: str = OLD_FINGERPRINT, status: str = "deployed", finished: str = "2026-10-01T00:00:00Z"):
+             fingerprint: str = OLD_FINGERPRINT, status: str = "deployed",
+             lifecycle: dict | None = None, finished: str = "2026-10-01T00:00:00Z"):
     run = root / "runs" / tenant / release_id
     run.mkdir(parents=True, exist_ok=True)
-    (run / "receipt.json").write_text(json.dumps({
+    receipt = {
         "releaseId": release_id,
         "sourceSha": source_sha,
         "sharedRuntimeFingerprint": fingerprint,
         "status": status,
         "finishedAt": finished,
-    }))
+    }
+    if lifecycle is not None:
+        receipt["durableObjectLifecycle"] = lifecycle
+    (run / "receipt.json").write_text(json.dumps(receipt))
 
 
 def _registry():
@@ -84,6 +88,54 @@ def test_failed_canary_holds_automatic_rollout_without_retry(tmp_path):
         "queued": {},
         "blocked": ["oceanicvibes"],
     }
+
+
+
+
+def test_failed_canary_from_an_older_fingerprint_queues_a_fresh_release(tmp_path):
+    _receipt(tmp_path, "oceanicvibes", "oceanic-last", source_sha="1" * 40)
+    _receipt(
+        tmp_path, "oceanicvibes", "failed-older-runtime", source_sha="2" * 40,
+        fingerprint=OLD_FINGERPRINT, status="failed",
+    )
+    queue = {"releases": {"oceanicvibes": {
+        "id": "failed-older-runtime",
+        "sha": "2" * 40,
+        "sharedRuntimeFingerprint": OLD_FINGERPRINT,
+    }}}
+
+    plan = plan_shared_runtime_rollout(
+        _registry(), queue, tmp_path, FINGERPRINT,
+        now=datetime(2026, 10, 11, 4, 1, tzinfo=timezone.utc),
+    )
+
+    request = plan["queued"]["oceanicvibes"]
+    assert plan["state"] == "canary-queued"
+    assert request["id"] != "failed-older-runtime"
+    assert request["sha"] == "1" * 40
+    assert request["sharedRuntimeFingerprint"] == FINGERPRINT
+
+
+def test_ambiguous_older_canary_failure_stays_blocked_until_reconciled(tmp_path):
+    _receipt(tmp_path, "oceanicvibes", "oceanic-last", source_sha="1" * 40)
+    failed_id = "failed-ambiguous-runtime"
+    failed_sha = "2" * 40
+    _receipt(
+        tmp_path, "oceanicvibes", failed_id, source_sha=failed_sha,
+        fingerprint=OLD_FINGERPRINT, status="failed",
+        lifecycle={"identity": "d" * 64, "state": "outcome-unknown", "strategy": "atomic"},
+    )
+    queue = {"releases": {"oceanicvibes": {
+        "id": failed_id,
+        "sha": failed_sha,
+        "sharedRuntimeFingerprint": OLD_FINGERPRINT,
+    }}}
+
+    plan = plan_shared_runtime_rollout(_registry(), queue, tmp_path, FINGERPRINT)
+
+    assert plan["state"] == "canary-failed"
+    assert plan["blocked"] == ["oceanicvibes"]
+    assert plan["queued"] == {}
 
 
 def test_reconciled_atomic_canary_gets_a_new_id_before_any_fanout(tmp_path):
@@ -198,6 +250,54 @@ def test_successful_tenant_is_not_queued_twice_and_failed_tenant_is_reported(tmp
     assert plan["state"] == "blocked"
     assert plan["queued"] == {}
     assert plan["blocked"] == ["northstar"]
+
+
+
+
+def test_previous_fingerprint_failure_gets_a_new_tenant_release_id(tmp_path):
+    _receipt(tmp_path, "oceanicvibes", "oceanic-current", fingerprint=FINGERPRINT)
+    _receipt(tmp_path, "atelier-harmonie", "atelier-latest", source_sha="1" * 40)
+    _receipt(
+        tmp_path, "atelier-harmonie", "atelier-failed-old-runtime",
+        source_sha="3" * 40, fingerprint=OLD_FINGERPRINT, status="failed",
+    )
+    queue = {"releases": {"atelier-harmonie": {
+        "id": "atelier-failed-old-runtime",
+        "sha": "3" * 40,
+        "sharedRuntimeFingerprint": OLD_FINGERPRINT,
+    }}}
+
+    plan = plan_shared_runtime_rollout(
+        _registry(), queue, tmp_path, FINGERPRINT,
+        now=datetime(2026, 10, 11, 4, 2, tzinfo=timezone.utc),
+    )
+
+    request = plan["queued"]["atelier-harmonie"]
+    assert plan["state"] == "batch-queued"
+    assert request["id"] != "atelier-failed-old-runtime"
+    assert request["sha"] == "1" * 40
+    assert request["sharedRuntimeFingerprint"] == FINGERPRINT
+
+
+def test_ambiguous_old_tenant_failure_is_not_retried_without_reconciliation(tmp_path):
+    _receipt(tmp_path, "oceanicvibes", "oceanic-current", fingerprint=FINGERPRINT)
+    _receipt(tmp_path, "atelier-harmonie", "atelier-latest", source_sha="1" * 40)
+    _receipt(
+        tmp_path, "atelier-harmonie", "atelier-failed-old-runtime",
+        source_sha="3" * 40, fingerprint=OLD_FINGERPRINT, status="failed",
+        lifecycle={"identity": "d" * 64, "state": "outcome-unknown", "strategy": "atomic"},
+    )
+    queue = {"releases": {"atelier-harmonie": {
+        "id": "atelier-failed-old-runtime",
+        "sha": "3" * 40,
+        "sharedRuntimeFingerprint": OLD_FINGERPRINT,
+    }}}
+
+    plan = plan_shared_runtime_rollout(_registry(), queue, tmp_path, FINGERPRINT)
+
+    assert plan["state"] == "blocked"
+    assert plan["blocked"] == ["atelier-harmonie"]
+    assert plan["queued"] == {}
 
 
 def test_automatic_rollout_requires_exactly_one_canary(tmp_path):
