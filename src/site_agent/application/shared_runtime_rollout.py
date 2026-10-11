@@ -106,12 +106,12 @@ def plan_shared_runtime_rollout(
     )
     automatic = sorted(
         tenant for tenant, customer in customers.items()
-        if isinstance(customer, Mapping) and customer.get("sharedRuntimeUpdate") == "automatic"
+        if isinstance(customer, Mapping) and customer.get("sharedRuntimeUpdate", "automatic") == "automatic"
     )
     invalid_policies = [
         tenant for tenant, customer in customers.items()
         if not isinstance(customer, Mapping)
-        or customer.get("sharedRuntimeUpdate", "manual") not in {"manual", "canary", "automatic"}
+        or customer.get("sharedRuntimeUpdate", "automatic") not in {"manual", "canary", "automatic"}
     ]
     if invalid_policies:
         raise SharedRuntimeRolloutError("tenant sharedRuntimeUpdate policy is invalid")
