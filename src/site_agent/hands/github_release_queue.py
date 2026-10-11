@@ -192,7 +192,7 @@ class GitHubReleaseQueue:
                 raise GitHubReleaseQueueError("canonical release queue schema is invalid")
             existing = customers.get(tenant)
             if existing is None:
-                customers[tenant] = normalized_customer
+                customers[tenant] = {**normalized_customer, "sharedRuntimeUpdate": "automatic"}
             elif not isinstance(existing, dict):
                 raise GitHubReleaseQueueError("registered tenant contract is not an object")
             else:
