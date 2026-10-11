@@ -1656,6 +1656,8 @@ def main() -> int:
     parser.add_argument("--initialize-schema-head", help="hash of the exact Payload migration chain for an empty new tenant")
     parser.add_argument("--release-purpose", choices=("workspace-bootstrap", "website"), required=True,
                         help="explicit release contract selected by the canonical release queue")
+    parser.add_argument("--shared-runtime-fingerprint",
+                        help="exact central runtime fingerprint authorized by the release queue")
     parser.add_argument("--schema-migration-from-ledger-identity", help="exact identity of the current Payload ledger for an approved tenant schema migration")
     parser.add_argument("--verify-only", action="store_true",
                         help="Recheck an already promoted version; never build, upload or promote")
@@ -1806,11 +1808,18 @@ def main() -> int:
                 "HELLOADA_HANDOFF_PUBLIC_KEY": host_runtime_values.get("HELLOADA_HANDOFF_PUBLIC_KEY", ""),
             },
         )
+        if (args.shared_runtime_fingerprint is not None and not SHA256_RE.fullmatch(args.shared_runtime_fingerprint)):
+            raise RuntimeError("queued shared-runtime fingerprint is invalid")
+        if (args.shared_runtime_fingerprint is not None
+                and runtime_provenance["fingerprint"] != args.shared_runtime_fingerprint):
+            raise RuntimeError("materialized shared runtime differs from the immutable queued fingerprint")
         if (runtime_provenance["payloadAdmin"] != customer["payloadAdmin"]
                 or runtime_provenance["payloadCore"] != customer["payloadCore"]):
             raise RuntimeError("materialized shared package versions differ from the release contract")
         receipt["sharedRuntime"] = runtime_provenance
         receipt["sharedRuntimeFingerprint"] = runtime_provenance["fingerprint"]
+        if args.shared_runtime_fingerprint is not None:
+            receipt["requestedSharedRuntimeFingerprint"] = args.shared_runtime_fingerprint
         atomic_json(receipt_path, receipt)
         validate_payload_verifier(checkout)
         source = list((checkout / "src").rglob("*.ts")) + list((checkout / "src").rglob("*.tsx"))
