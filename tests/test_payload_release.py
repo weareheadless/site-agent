@@ -248,7 +248,7 @@ def test_payload_build_requires_disk_headroom(monkeypatch, tmp_path):
 
 
 def test_schema_initialization_queue_is_exactly_registered_and_cannot_be_an_approval():
-    registry = {"customers": {"demo": {"migrationHead": "c" * 64}}}
+    registry = {"customers": {"demo": {"migrationHead": "c" * 64, "sharedRuntimeUpdate": "manual"}}}
     request = {"id": "bootstrap-1", "sha": SHA, "initializeSchema": {"migrationHead": "c" * 64}}
     queue.validate_queue({"schema": 1, "releases": {"demo": request}}, registry)
     for invalid in (
@@ -294,7 +294,7 @@ def test_workspace_bootstrap_contract_requires_exact_registered_schema_and_ledge
 
 
 def test_schema_migration_queue_requires_exact_old_and_registered_target_heads():
-    registry = {"customers": {"demo": {"migrationHead": "c" * 64}}}
+    registry = {"customers": {"demo": {"migrationHead": "c" * 64, "sharedRuntimeUpdate": "manual"}}}
     request = {"id": "schema-2", "sha": SHA, "schemaMigration": {
         "fromLedgerIdentity": "b" * 64, "targetMigrationHead": "c" * 64,
     }}
