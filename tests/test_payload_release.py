@@ -1322,6 +1322,72 @@ def test_tenant_token_is_mapped_to_the_canonical_worker_binding(tmp_path):
     }
 
 
+def test_automatic_email_bootstrap_releases_worker_without_mailbox_secrets_and_wakes_scheduler(tmp_path):
+    from site_agent.core.memory import Memory
+
+    tenant = "atelier-harmonie"
+    tenant_token_name = "PROVISIONED_ATELIER_HARMONIE_TOKEN"
+    provisioned_root = tmp_path / "websites"
+    tenant_dir = provisioned_root / tenant
+    tenant_dir.mkdir(parents=True)
+    data_dir = tmp_path / "registered-data" / tenant / "data"
+    data_dir.mkdir(parents=True)
+    config_path = tenant_dir / "config.yaml"
+    config_path.write_text(
+        f"instance_name: {tenant}\n"
+        f"data_dir: {data_dir}\n"
+        "messages:\n"
+        "  email:\n"
+        "    enabled: true\n"
+        "    provisioning:\n"
+        "      auto: true\n"
+    )
+    env_path = tenant_dir / "tenant.env"
+    env_path.write_text(
+        "PAYLOAD_SECRET=payload-secret-for-test\n"
+        f"{tenant_token_name}=site-agent-token-for-test\n"
+    )
+    (provisioned_root / "tenants.json").write_text(json.dumps({
+        tenant: {"config_path": str(config_path), "api_token_env": tenant_token_name},
+    }))
+    host_config = tmp_path / "host.yaml"
+    host_config.write_text(f"workspace_api:\n  provisioned_root: {provisioned_root}\n")
+    manifest = {
+        "connectionGate": {"config": str(host_config)},
+        "customers": {tenant: {"mailflareD1DatabaseId": "mailflare-d1-for-test"}},
+    }
+
+    secrets = release.tenant_runtime_secrets(manifest, tenant)
+    assert secrets == {
+        "PAYLOAD_SECRET": "payload-secret-for-test",
+        "HELLOADA_SITE_AGENT_TOKEN": "site-agent-token-for-test",
+    }
+
+    memory = Memory(data_dir / "memory.db")
+    memory.kv_set("email_provisioning_state", {
+        "state": "waiting_for_worker_release",
+        "tenant": tenant,
+    })
+    memory.close()
+
+    result = release.trigger_email_provisioning_after_worker_release(manifest, tenant)
+
+    assert result == {"state": "scheduled", "previousState": "waiting_for_worker_release"}
+    memory = Memory(data_dir / "memory.db")
+    assert isinstance(memory.kv_get("next_run:email_provisioning"), (int, float))
+    memory.close()
+
+    # Bootstrap accepts the all-absent state only; partial runtime settings
+    # remain an error even for an auto-provisioned tenant.
+    env_path.write_text(
+        "PAYLOAD_SECRET=payload-secret-for-test\n"
+        f"{tenant_token_name}=site-agent-token-for-test\n"
+        "MAILFLARE_ADDRESS=hello@helloada.app\n"
+    )
+    with pytest.raises(RuntimeError, match="registered tenant Mailflare runtime settings are incomplete"):
+        release.tenant_runtime_secrets(manifest, tenant)
+
+
 def test_mailflare_worker_release_rejects_missing_runtime_settings(tmp_path):
     tenant = "oceanicvibes"
     tenant_token_name = "PROVISIONED_OCEANICVIBES_TOKEN"
