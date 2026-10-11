@@ -73,7 +73,13 @@
       "schemaRevision": 7,
       "websitePresent": true,
       "worker": "atelier-harmonie",
-      "sharedRuntimeUpdate": "automatic"
+      "sharedRuntimeUpdate": "automatic",
+      "mailflareD1DatabaseId": "041b717f-f9b2-4e3d-907e-d9008842751a",
+      "mailflareD1DatabaseName": "helloada-atelier-harmonie-mail",
+      "mailflareR2BucketName": "helloada-atelier-harmonie-mail-files",
+      "mailflareInboundQueueName": "helloada-atelier-harmonie-mail-inbound",
+      "mailflareOutboundQueueName": "helloada-atelier-harmonie-mail-outbound",
+      "mailflareAgentQueueName": "helloada-atelier-harmonie-mail-agent"
     },
     "northstar-coffee-e2e-validation-8fbf2e6fea671768": {
       "adminPath": "/api/helloada",
@@ -125,7 +131,13 @@
       "schemaRevision": 7,
       "websitePresent": false,
       "worker": "helloada-northstar-coffee-full-in-ad820fa9f96521e91211",
-      "sharedRuntimeUpdate": "automatic"
+      "sharedRuntimeUpdate": "automatic",
+      "mailflareD1DatabaseId": "08224fe1-e4ea-4265-9372-58f1ec8b75a6",
+      "mailflareD1DatabaseName": "helloada-northstar-coffee-full-intake-ad820fa9f96521e91211-mail",
+      "mailflareR2BucketName": "helloada-northstar-coffee-full-ad820fa9f96521e91211-mail-files",
+      "mailflareInboundQueueName": "helloada-northstar-coffee-full-intake-ad820fa9f96521e91211-mail-inbound",
+      "mailflareOutboundQueueName": "helloada-northstar-coffee-ful-ad820fa9f96521e91211-mail-outbound",
+      "mailflareAgentQueueName": "helloada-northstar-coffee-full-intake-ad820fa9f96521e91211-mail-agent"
     },
     "northstar-coffee-house-afd6a0232bf10fd4": {
       "adminPath": "/api/helloada",
@@ -160,7 +172,13 @@
       "schemaRevision": 7,
       "websitePresent": true,
       "worker": "oceanicvibes",
-      "sharedRuntimeUpdate": "canary"
+      "sharedRuntimeUpdate": "canary",
+      "mailflareD1DatabaseId": "5e503625-c5a5-4a9a-ad28-be26dd602fd7",
+      "mailflareD1DatabaseName": "helloada-oceanicvibes-mail",
+      "mailflareR2BucketName": "helloada-oceanicvibes-mail-files",
+      "mailflareInboundQueueName": "helloada-oceanicvibes-mail-inbound",
+      "mailflareOutboundQueueName": "helloada-oceanicvibes-mail-outbound",
+      "mailflareAgentQueueName": "helloada-oceanicvibes-mail-agent"
     }
   },
   "nodeBin": "/home/admin/.local/share/site-agent-node22.23.3/bin",
