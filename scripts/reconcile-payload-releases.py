@@ -17,7 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-from site_agent.credentials import github_ssh_command
+from site_agent.credentials import credential_environment, credential_profile, github_ssh_command
 
 API_DEPLOYMENT_MODULE = Path(__file__).with_name("deploy-site-agent-api.py")
 API_DEPLOYMENT_SPEC = importlib.util.spec_from_file_location("site_agent_api_deployment", API_DEPLOYMENT_MODULE)
@@ -380,6 +380,33 @@ def main() -> int:
             staging.rename(snapshot)
         from site_agent.application.shared_runtime import shared_runtime_fingerprint
         shared_fingerprint = shared_runtime_fingerprint(snapshot)
+        from site_agent.application.durable_object_reconciliation import (
+            read_lifecycle_reconciliation,
+            reconcile_unresolved_lifecycle_receipts,
+        )
+        cloudflare_profile = credential_profile(profile, "cloudflare")
+        credential_base = {
+            key: os.environ[key]
+            for key in ("HOME", "USER", "LANG", "TZ", "TMPDIR")
+            if key in os.environ
+        }
+        cloudflare_environment = credential_environment(
+            {"credentials": {"cloudflare": cloudflare_profile}}, credential_base,
+        )
+        reconciliation = reconcile_unresolved_lifecycle_receipts(
+            args.root, registry, cloudflare_environment, sha,
+        )
+        for item in reconciliation["verified"]:
+            print(
+                f"[lifecycle-reconcile] {item['tenant']}/{item['releaseId']} "
+                "has exact live Durable Object evidence; a fresh canary release is still required",
+                flush=True,
+            )
+        for item in reconciliation["unresolved"]:
+            print(
+                f"[lifecycle-reconcile] {item['tenant']}/{item['releaseId']} remains blocked: {item['reason']}",
+                flush=True,
+            )
         from site_agent.application.shared_runtime_rollout import plan_shared_runtime_rollout
         initial_rollout = plan_shared_runtime_rollout(
             registry, queue, args.root, shared_fingerprint,
@@ -505,7 +532,15 @@ def main() -> int:
                     raise RuntimeError("release ID was reused for a different SHA")
                 if (result["status"] not in ("deployed", "verified")
                         or result.get("workspaceCleanupStatus") == "failed"):
-                    failures += 1
+                    evidence = read_lifecycle_reconciliation(args.root, tenant, result)
+                    if evidence is None:
+                        failures += 1
+                    else:
+                        print(
+                            f"[queue] {tenant}/{request['id']} remains terminal; "
+                            "only Durable Object lifecycle state was reconciled",
+                            flush=True,
+                        )
                 continue
             print(f"[queue] release={tenant}/{request['id']} source={request['sha']} pipeline={sha}", flush=True)
             command = [sys.executable, str(snapshot / "scripts/deploy-payload-customer.py"),
