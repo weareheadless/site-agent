@@ -43,7 +43,7 @@ export function applyHelloAdaBrandingPatch(sources, basePath) {
   if (basePath !== '/mail') throw new Error('HelloAda branding requires the registered /mail base path')
   const iconPath = basePath + '/helloada-logo.svg'
 
-  let layout = replaceExactlyOnce(sources.layout, 'title: "Mailflare",', 'title: "HelloAda",', 'document title')
+  let layout = replaceExactlyOnce(sources.layout, 'title: "Mailflare",\n\tdescription: "Multi-tenant email on Cloudflare",', 'title: "HelloAda",\n\tdescription: "Multi-tenant email on Cloudflare",', 'document title')
   layout = replaceExactlyOnce(layout, 'description: "Multi-tenant email on Cloudflare",', 'description: "HelloAda business inbox, contacts and booking calendar",', 'document description')
   layout = replaceExactlyOnce(layout, 'icons: { icon: "/api/branding/icon", apple: "/icon-192.png" },', 'icons: { icon: "' + iconPath + '", apple: "' + iconPath + '" },', 'browser and Apple icons')
   layout = replaceExactlyOnce(layout, 'title: "Mailflare",', 'title: "HelloAda",', 'Apple web app title')
