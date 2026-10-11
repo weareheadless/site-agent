@@ -75,6 +75,7 @@ async function applyBookingPatches(destination) {
     availability: 'src/lib/booking/availability.ts',
     bookingCreateRoute: 'src/app/api/booking/route.ts',
     bookingEditorTypes: 'src/app/(calendar)/booking/types.d.ts',
+    bookingDefaultEvents: 'src/app/(calendar)/booking/default-events.ts',
     bookingPageUtils: 'src/app/(calendar)/booking/utils.ts',
     bookingEditor: 'src/app/(calendar)/booking/booking-editor.tsx',
     bookingUpdateRoute: 'src/app/api/booking/[eventId]/route.ts',

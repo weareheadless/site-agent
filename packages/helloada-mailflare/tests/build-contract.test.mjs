@@ -83,6 +83,7 @@ test('booking integration patches only the disposable pinned source and require 
     bookingCreateRoute: await read('src/app/api/booking/route.ts'),
     bookingUpdateRoute: await read('src/app/api/booking/[eventId]/route.ts'),
     bookingEditorTypes: await read('src/app/(calendar)/booking/types.d.ts'),
+    bookingDefaultEvents: await read('src/app/(calendar)/booking/default-events.ts'),
     bookingPageUtils: await read('src/app/(calendar)/booking/utils.ts'),
     bookingEditor: await read('src/app/(calendar)/booking/booking-editor.tsx'),
     bookingTypes: await read('src/app/api/public/booking/[eventId]/types.d.ts'),
@@ -111,6 +112,8 @@ test('booking integration patches only the disposable pinned source and require 
   assert.match(patched.bookingEditor, /updateRangesForDay/)
   assert.match(patched.bookingEditorTypes, /helloadaWeeklyAvailability: string/)
   assert.match(patched.bookingEditorTypes, /weeklyAvailability: BookingWeeklyAvailability\[\]/)
+  assert.match(patched.bookingDefaultEvents, /helloadaWeeklyAvailability: JSON\.stringify\(\[1, 2, 3, 4, 5\]\.map/)
+  assert.match(patched.bookingDefaultEvents, /helloadaBufferMinutes: 0/)
   assert.match(patched.bookingUpdateRoute, /helloadaWeeklyAvailability: JSON\.stringify\(input\.weeklyAvailability\)/)
   const uiSources = {
     page: await uiRead('src/app/book/[userId]/[eventId]/page.tsx'),

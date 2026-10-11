@@ -98,6 +98,11 @@ export function applyBookingEditorPatches(sources, patched) {
   editorUtils = replaceSection(editorUtils, "export function availabilityLabel(event: BookingEvent", "export function formAvailabilityLabel(", 'export function availabilityLabel(event: BookingEvent, t: Translator = defaultTranslator): string {\n\treturn formAvailabilityLabel(formFromEvent(event), t);\n}', "booking event availability label")
   editorUtils = replaceSection(editorUtils, "export function formAvailabilityLabel(form: BookingForm", "export function nextBookingTimeRange(", formAvailabilityLabelFunction, "per-day availability summary")
 
+  let bookingDefaultEvents = replaceExactlyOnce(sources.bookingDefaultEvents,
+    'timeRanges: JSON.stringify([{ startTime: template.startTime, endTime: template.endTime }]),',
+    'timeRanges: JSON.stringify([{ startTime: template.startTime, endTime: template.endTime }]),\n\t\thelloadaWeeklyAvailability: JSON.stringify([1, 2, 3, 4, 5].map((day) => ({ day, startTime: template.startTime, endTime: template.endTime }))),\n\t\thelloadaBufferMinutes: 0,',
+    "booking template HelloAda schedule")
+
   let editor = replaceExactlyOnce(sources.bookingEditor,
     "bookingFormWithName, durationLabel, formAvailabilityLabel, matchBookingHost, nextBookingTimeRange, WEEKDAYS",
     "bookingFormWithName, durationLabel, formAvailabilityLabel, formWithWeeklyAvailability, matchBookingHost, nextBookingTimeRange, WEEKDAYS",
@@ -119,5 +124,5 @@ export function applyBookingEditorPatches(sources, patched) {
     '\n\t\t\t\t<section className={sectionClass}>\n\t\t\t\t\t<button type="button" onClick={() => toggle("host")}',
     bookingAvailabilitySection,
     "booking editor availability section")
-  return { ...patched, bookingEditorTypes: editorTypes, bookingPageUtils: editorUtils, bookingEditor: editor }
+  return { ...patched, bookingDefaultEvents, bookingEditorTypes: editorTypes, bookingPageUtils: editorUtils, bookingEditor: editor }
 }
