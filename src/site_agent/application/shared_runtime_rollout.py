@@ -153,7 +153,12 @@ def plan_shared_runtime_rollout(
             if (not isinstance(current, Mapping)
                     or current.get("id") != current_receipt.get("releaseId")
                     or current.get("sha") != current_receipt.get("sourceSha")):
-                raise SharedRuntimeRolloutError("failed canary queue identity differs from its immutable receipt")
+                return {
+                    "state": "canary-failed",
+                    "canaryTenant": canary,
+                    "queued": {},
+                    "blocked": [canary],
+                }
             lifecycle = current_receipt.get("durableObjectLifecycle")
             lifecycle_uncertain = (
                 isinstance(lifecycle, Mapping)
