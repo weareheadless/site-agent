@@ -49,6 +49,86 @@ def test_tenant_env_path_uses_registered_config_parent_not_data_dir(tmp_path):
     assert bootstrap._tenant_secret_values(resolved) == {"EXISTING_SECRET": "kept"}
 
 
+def test_active_email_state_reconciles_missing_mailflare_runtime_settings(monkeypatch, tmp_path):
+    tenant_id = "oceanicvibes"
+    tenant_config_path = _tenant_config_path(tmp_path, tenant_id)
+    tenant_config_path.parent.mkdir(parents=True)
+    tenant_config_path.write_text(f"instance_name: {tenant_id}\n", encoding="utf-8")
+    (tenant_config_path.parent / "tenant.env").write_text("RESEND_API_KEY=restricted-key\n", encoding="utf-8")
+    active_state = {
+        "state": "active",
+        "siteDomain": "oceanicvibes.com",
+        "emailDomainSetting": "oceanicvibes.com",
+        "outboundProvider": "resend",
+        "address": "contact@oceanicvibes.com",
+        "worker": "oceanicvibes",
+        "cloudflareZoneId": "zone-id",
+        "routingStatus": "active",
+    }
+    memory = FakeMemory({"email_provisioning_state": active_state})
+    preflight_calls = []
+    monkeypatch.setattr(bootstrap, "resend_api_key", lambda *_args: "management-key")
+
+    def require_preflight(*_args, **_kwargs):
+        preflight_calls.append(True)
+        raise bootstrap.EmailProvisioningError("mailbox preflight reached")
+
+    monkeypatch.setattr(bootstrap, "prepare_email_plan", require_preflight)
+
+    state, _ = bootstrap.auto_provision_email(
+        _config(tmp_path),
+        tenant_id=tenant_id,
+        tenant_config_path=tenant_config_path,
+        memory=memory,
+        env={},
+    )
+
+    assert preflight_calls == [True]
+    assert state["state"] == "failed"
+    assert state["error"] == "mailbox preflight reached"
+
+
+def test_active_email_state_skips_provider_work_only_when_mailflare_settings_match(monkeypatch, tmp_path):
+    tenant_id = "oceanicvibes"
+    tenant_config_path = _tenant_config_path(tmp_path, tenant_id)
+    tenant_config_path.parent.mkdir(parents=True)
+    tenant_config_path.write_text(f"instance_name: {tenant_id}\n", encoding="utf-8")
+    (tenant_config_path.parent / "tenant.env").write_text(
+        "MAILFLARE_ADDRESS=contact@oceanicvibes.com\n"
+        "MAILFLARE_ZONE_ID=zone-id\n"
+        "MAILFLARE_ROUTING_STATUS=active\n",
+        encoding="utf-8",
+    )
+    active_state = {
+        "state": "active",
+        "siteDomain": "oceanicvibes.com",
+        "emailDomainSetting": "oceanicvibes.com",
+        "outboundProvider": "resend",
+        "address": "contact@oceanicvibes.com",
+        "worker": "oceanicvibes",
+        "cloudflareZoneId": "zone-id",
+        "routingStatus": "active",
+    }
+    memory = FakeMemory({"email_provisioning_state": active_state})
+    monkeypatch.setattr(bootstrap, "resend_api_key", lambda *_args: "management-key")
+    monkeypatch.setattr(
+        bootstrap,
+        "prepare_email_plan",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("matching active mailbox must remain idempotent")),
+    )
+
+    state, _ = bootstrap.auto_provision_email(
+        _config(tmp_path),
+        tenant_id=tenant_id,
+        tenant_config_path=tenant_config_path,
+        memory=memory,
+        env={},
+    )
+
+    assert state == active_state
+    assert memory.state["email_provisioning_state"] == active_state
+
+
 def _mock_resend_management(monkeypatch):
     class Resend:
         def __init__(self, api_key, _cloudflare):
