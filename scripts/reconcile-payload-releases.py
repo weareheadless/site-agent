@@ -131,7 +131,7 @@ def validate_queue(queue: dict, registry: dict) -> None:
             ):
                 raise ValueError("tenant schema migration must identify one prior ledger and the registered target head")
     policies = {
-        tenant: customer.get("sharedRuntimeUpdate", "manual")
+        tenant: customer.get("sharedRuntimeUpdate", "automatic")
         for tenant, customer in registry["customers"].items()
         if isinstance(customer, dict)
     }
@@ -389,7 +389,7 @@ def main() -> int:
             for customer in registry["customers"].values()
         )
         canary_passed = not automatic_rollout or initial_rollout["state"] not in {
-            "canary-queued", "canary-pending", "canary-failed", "canary-needs-first-release",
+            "canary-queued", "canary-pending", "canary-failed", "canary-contract-mismatch", "canary-needs-first-release",
         }
         print(
             f"[runtime-rollout] target={shared_fingerprint[:12]} state={initial_rollout['state']} "
@@ -485,7 +485,7 @@ def main() -> int:
             subprocess.run([sys.executable, "-m", "pytest", "-q", "tests/test_payload_release.py"],
                            cwd=snapshot, env={**environment, "PYTHONPATH": str(snapshot / "src")}, check=True)
         for tenant, request in queue["releases"].items():
-            policy = registry["customers"][tenant].get("sharedRuntimeUpdate", "manual")
+            policy = registry["customers"][tenant].get("sharedRuntimeUpdate", "automatic")
             if automatic_rollout and not canary_passed and policy != "canary":
                 print(f"[queue] {tenant}/{request['id']} held until the shared-runtime canary passes", flush=True)
                 continue
