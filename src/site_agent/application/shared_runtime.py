@@ -56,6 +56,23 @@ class SharedRuntimeError(RuntimeError):
     """A shared runtime overlay cannot be materialized without changing tenant-owned state."""
 
 
+def shared_package_versions(control_root: Path) -> dict[str, str]:
+    """Return package versions from the canonical, integrity-pinned lockfile."""
+    template = control_root / _TEMPLATE_PATH
+    lock = _read_json(template / "package-lock.json", "canonical package lock")
+    packages = lock.get("packages")
+    if not isinstance(packages, dict):
+        raise SharedRuntimeError("canonical package lock must use npm lockfile version 3")
+    result: dict[str, str] = {}
+    for name in _PACKAGE_NAMES:
+        entry = packages.get(f"node_modules/{name}")
+        version = entry.get("version") if isinstance(entry, dict) else None
+        if not isinstance(version, str) or not re.fullmatch(r"\\d+\\.\\d+\\.\\d+", version):
+            raise SharedRuntimeError(f"canonical shared package version is invalid: {name}")
+        result[name] = version
+    return result
+
+
 def _safe_path(root: Path, raw: Any) -> Path:
     relative = Path(str(raw or ""))
     if relative.is_absolute() or not relative.parts or ".." in relative.parts:
@@ -363,6 +380,9 @@ def apply_shared_runtime_overlay(
         "wranglerSha256": config_hash,
         "copiedPaths": sorted(manifest["copy"]),
         "removedPaths": sorted(manifest["remove"]),
+        "changedPaths": sorted(set(manifest["copy"]) | set(manifest["remove"]) | {
+            "wrangler.jsonc", "package.json", "package-lock.json",
+        }),
         "payloadAdmin": lock["packages"][f"node_modules/{_PACKAGE_NAMES[0]}"]["version"],
         "payloadCore": lock["packages"][f"node_modules/{_PACKAGE_NAMES[1]}"]["version"],
     }
