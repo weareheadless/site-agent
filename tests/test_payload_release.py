@@ -1907,3 +1907,121 @@ def test_shared_runtime_release_queue_requires_an_exact_fingerprint():
     }}}
     with pytest.raises(ValueError, match="SHA-256"):
         queue.validate_queue(invalid, registry)
+
+def test_durable_object_migration_identity_and_release_mode_are_receipt_driven(tmp_path):
+    migrations = WORKER_CONFIG["durableObjectMigrations"]
+    identity = release.durable_object_migration_identity(migrations)
+    assert len(identity) == 64
+    assert release.durable_object_migration_identity(json.loads(json.dumps(migrations))) == identity
+    assert release.durable_object_migration_identity([]) is None
+    assert release.durable_object_migration_identity([{**migrations[0], "tag": "v2"}]) != identity
+
+    tenant_runs = tmp_path / "runs" / "oceanicvibes"
+    tenant_runs.mkdir(parents=True)
+    assert release.select_worker_rollout_mode(tenant_runs, identity) == ("atomic", None)
+
+    prior_dir = tenant_runs / "runtime-1"
+    prior_dir.mkdir()
+    prior_path = prior_dir / "receipt.json"
+    prior = {
+        "releaseId": "runtime-1",
+        "durableObjectLifecycle": {
+            "identity": identity, "state": "planned", "strategy": "atomic",
+        },
+    }
+    prior_path.write_text(json.dumps(prior))
+    assert release.select_worker_rollout_mode(tenant_runs, identity) == ("atomic", None)
+
+    prior["durableObjectLifecycle"]["state"] = "applying"
+    prior_path.write_text(json.dumps(prior))
+    with pytest.raises(RuntimeError, match="outcome is unresolved"):
+        release.select_worker_rollout_mode(tenant_runs, identity)
+
+    prior["durableObjectLifecycle"].update({"state": "applied", "strategy": "atomic"})
+    prior_path.write_text(json.dumps(prior))
+    assert release.select_worker_rollout_mode(tenant_runs, identity) == ("versioned", "runtime-1")
+    assert release.select_worker_rollout_mode(
+        tenant_runs, release.durable_object_migration_identity([{**migrations[0], "tag": "v2"}]),
+    ) == ("atomic", None)
+
+
+def test_durable_object_release_mode_rejects_unproven_receipt_states(tmp_path):
+    tenant_runs = tmp_path / "runs" / "tenant"
+    receipt_dir = tenant_runs / "release-1"
+    receipt_dir.mkdir(parents=True)
+    (receipt_dir / "receipt.json").write_text(json.dumps({
+        "releaseId": "release-1",
+        "durableObjectLifecycle": {"identity": "a" * 64, "state": "future-state"},
+    }))
+    with pytest.raises(RuntimeError, match="unknown Durable Object lifecycle state"):
+        release.select_worker_rollout_mode(tenant_runs, "a" * 64)
+
+
+def test_atomic_worker_deploy_bundles_secrets_and_records_same_release_identity(monkeypatch, tmp_path):
+    secrets = {"PAYLOAD_SECRET": "payload-secret-for-test"}
+    commands = []
+
+    def fake_run(command, cwd, env):
+        commands.append(command)
+        return "deployed"
+
+    monkeypatch.setattr(release, "run", fake_run)
+    release.deploy_worker_with_lifecycle(
+        TEMPLATE, SHA, "release-atomic", tmp_path, secrets, {},
+        {"HELLOADA_TURNSTILE_SITE_KEY": "turnstile-public-key"},
+    )
+
+    command = commands[0]
+    secret_path = Path(command[command.index("--secrets-file") + 1])
+    assert command == [
+        str(TEMPLATE / "node_modules/.bin/opennextjs-cloudflare"), "deploy",
+        "--secrets-file", str(secret_path),
+        "--var", "HELLOADA_TURNSTILE_SITE_KEY:turnstile-public-key",
+        "--var", f"HELLOADA_RELEASE_SHA:{SHA}",
+        "--tag", "release-atomic",
+    ]
+    assert not secret_path.exists()
+    assert "payload-secret-for-test" not in " ".join(command)
+
+
+def test_atomic_worker_deploy_cleans_secrets_when_cloudflare_rejects_it(monkeypatch, tmp_path):
+    commands = []
+
+    def fake_run(command, cwd, env):
+        commands.append(command)
+        raise RuntimeError("atomic deploy failed")
+
+    monkeypatch.setattr(release, "run", fake_run)
+    with pytest.raises(RuntimeError, match="atomic deploy failed"):
+        release.deploy_worker_with_lifecycle(
+            TEMPLATE, SHA, "release-atomic", tmp_path,
+            {"PAYLOAD_SECRET": "payload-secret-for-test"}, {},
+            {"HELLOADA_TURNSTILE_SITE_KEY": "turnstile-public-key"},
+        )
+
+    secret_path = Path(commands[0][commands[0].index("--secrets-file") + 1])
+    assert not secret_path.exists()
+
+
+def test_atomic_deployment_requires_a_new_exact_100_percent_version():
+    version_id = "01234567-89ab-cdef-0123-456789abcdef"
+    assert release.deployed_worker_version_id(
+        {"id": "deployment-new", "versions": [{"percentage": 100, "version_id": version_id}]},
+        {"id": "deployment-old"},
+    ) == version_id
+
+    with pytest.raises(RuntimeError, match="did not create a new"):
+        release.deployed_worker_version_id(
+            {"id": "deployment-old", "versions": [{"percentage": 100, "version_id": version_id}]},
+            {"id": "deployment-old"},
+        )
+    with pytest.raises(RuntimeError, match="one version at 100%"):
+        release.deployed_worker_version_id(
+            {"id": "deployment-new", "versions": [{"percentage": 50, "version_id": version_id}]},
+            {"id": "deployment-old"},
+        )
+    with pytest.raises(RuntimeError, match="exact immutable version"):
+        release.deployed_worker_version_id(
+            {"id": "deployment-new", "versions": [{"percentage": 100, "version_id": "not-a-uuid"}]},
+            {"id": "deployment-old"},
+        )

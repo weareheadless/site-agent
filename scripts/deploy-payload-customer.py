@@ -238,6 +238,75 @@ def uploaded_version_id(output: str) -> str:
     return versions[0]
 
 
+def durable_object_migration_identity(migrations: Any) -> str | None:
+    if not isinstance(migrations, list):
+        raise RuntimeError("Worker Durable Object migrations are not an ordered list")
+    if not migrations:
+        return None
+    if any(not isinstance(item, dict) or not isinstance(item.get("tag"), str) or not item["tag"]
+           for item in migrations):
+        raise RuntimeError("Worker Durable Object migrations have no exact tags")
+    canonical = json.dumps(migrations, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def select_worker_rollout_mode(tenant_runs: Path,
+                               migration_identity: str | None) -> tuple[str, str | None]:
+    if migration_identity is None:
+        return "versioned", None
+    proven_release = None
+    for path in sorted(tenant_runs.glob("*/receipt.json")):
+        try:
+            prior = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise RuntimeError(f"cannot establish Durable Object lifecycle history from {path.parent.name}") from error
+        lifecycle = prior.get("durableObjectLifecycle")
+        if lifecycle is None:
+            continue
+        if not isinstance(lifecycle, dict):
+            raise RuntimeError(f"invalid Durable Object lifecycle receipt: {path.parent.name}")
+        if lifecycle.get("identity") != migration_identity:
+            continue
+        state = lifecycle.get("state")
+        if state in {"applying", "outcome-unknown"}:
+            raise RuntimeError(
+                f"Durable Object lifecycle outcome is unresolved in release {prior.get('releaseId')}; "
+                "reconcile that exact Cloudflare deployment before queueing another release"
+            )
+        if state == "planned":
+            continue
+        if state == "applied":
+            if lifecycle.get("strategy") != "atomic" or not prior.get("releaseId"):
+                raise RuntimeError(f"Durable Object lifecycle proof is incomplete: {path.parent.name}")
+            proven_release = prior["releaseId"]
+            continue
+        if state == "reused":
+            source_release = lifecycle.get("appliedByReleaseId")
+            if not isinstance(source_release, str) or not source_release:
+                raise RuntimeError(f"Durable Object lifecycle reuse proof is incomplete: {path.parent.name}")
+            proven_release = source_release
+            continue
+        raise RuntimeError(f"unknown Durable Object lifecycle state in receipt: {path.parent.name}")
+    if proven_release:
+        return "versioned", proven_release
+    return "atomic", None
+
+
+def deployed_worker_version_id(deployment: Any, previous_deployment: Any) -> str:
+    if not isinstance(deployment, dict) or not deployment.get("id"):
+        raise RuntimeError("atomic Worker deploy created no Cloudflare deployment identity")
+    if isinstance(previous_deployment, dict) and deployment.get("id") == previous_deployment.get("id"):
+        raise RuntimeError("atomic Worker deploy did not create a new Cloudflare deployment")
+    versions = deployment.get("versions")
+    if (not isinstance(versions, list) or len(versions) != 1
+            or versions[0].get("percentage") != 100):
+        raise RuntimeError("atomic Durable Object lifecycle deploy is not serving one version at 100%")
+    version_id = versions[0].get("version_id")
+    if not isinstance(version_id, str) or not UUID_RE.fullmatch(version_id):
+        raise RuntimeError("atomic Worker deployment has no exact immutable version identity")
+    return version_id
+
+
 def validate_target(customer: dict[str, Any], tenant: str, sha: str, release_id: str) -> None:
     if not SHA_RE.fullmatch(sha) or not ID_RE.fullmatch(release_id):
         raise ValueError("release requires a full commit SHA and a safe release ID")
@@ -1237,26 +1306,54 @@ def worker_secrets_file(directory: Path, values: dict[str, str]) -> Path:
 
 
 
+def worker_deployment_command(checkout: Path, action: str, secrets_path: Path,
+                               sha: str, release_id: str,
+                               variables: dict[str, str]) -> list[str]:
+    if action not in {"upload", "deploy"}:
+        raise ValueError("Worker release action must be upload or deploy")
+    if set(variables) != {"HELLOADA_TURNSTILE_SITE_KEY"}:
+        raise ValueError("Worker release requires the one pipeline-provisioned Turnstile sitekey")
+    if any(not value or "\n" in value or "\r" in value for value in variables.values()):
+        raise ValueError("Worker release variables contain an invalid value")
+    command = [
+        str(checkout / "node_modules/.bin/opennextjs-cloudflare"), action,
+        "--secrets-file", str(secrets_path),
+    ]
+    for name, value in sorted(variables.items()):
+        command.extend(["--var", f"{name}:{value}"])
+    command.extend(["--var", f"HELLOADA_RELEASE_SHA:{sha}", "--tag", release_id])
+    return command
+
+
+def run_worker_deployment(checkout: Path, action: str, sha: str, release_id: str,
+                          directory: Path, secrets: dict[str, str], env: dict[str, str],
+                          variables: dict[str, str]) -> str:
+    secrets_path = worker_secrets_file(directory, secrets)
+    try:
+        command = worker_deployment_command(
+            checkout, action, secrets_path, sha, release_id, variables,
+        )
+        return run(command, checkout, env)
+    finally:
+        secrets_path.unlink(missing_ok=True)
+
+
 def upload_worker_version(checkout: Path, sha: str, release_id: str, directory: Path,
                           secrets: dict[str, str], env: dict[str, str],
                           variables: dict[str, str]) -> str:
-    if set(variables) != {"HELLOADA_TURNSTILE_SITE_KEY"}:
-        raise ValueError("Worker upload requires the one pipeline-provisioned Turnstile sitekey")
-    if any(not value or "\n" in value or "\r" in value for value in variables.values()):
-        raise ValueError("Worker upload variables contain an invalid value")
-    secrets_path = worker_secrets_file(directory, secrets)
-    try:
-        command = [
-            str(checkout / "node_modules/.bin/opennextjs-cloudflare"),
-            "upload", "--secrets-file", str(secrets_path),
-        ]
-        for name, value in sorted(variables.items()):
-            command.extend(["--var", f"{name}:{value}"])
-        command.extend(["--var", f"HELLOADA_RELEASE_SHA:{sha}", "--tag", release_id])
-        output = run(command, checkout, env)
-        return uploaded_version_id(output)
-    finally:
-        secrets_path.unlink(missing_ok=True)
+    return uploaded_version_id(run_worker_deployment(
+        checkout, "upload", sha, release_id, directory, secrets, env, variables,
+    ))
+
+
+def deploy_worker_with_lifecycle(checkout: Path, sha: str, release_id: str,
+                                 directory: Path, secrets: dict[str, str],
+                                 env: dict[str, str],
+                                 variables: dict[str, str]) -> None:
+    run_worker_deployment(
+        checkout, "deploy", sha, release_id, directory, secrets, env, variables,
+    )
+
 def check_health(url: str, tenant: str, customer: dict[str, Any], sha: str) -> dict[str, Any]:
     separator = "&" if "?" in url else "?"
     request = urllib.request.Request(url + separator + urllib.parse.urlencode({"release": sha}),
@@ -1385,6 +1482,22 @@ def verify_worker_queue_consumers(
 def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dict[str, Any],
                 deploy_env: dict[str, str], base: dict[str, str], stage: Any, *,
                 verify_only: bool = False) -> None:
+    rollout_mode = receipt.get("rolloutMode")
+    if rollout_mode not in (None, "versioned", "atomic"):
+        raise RuntimeError("release receipt has an unknown Worker rollout mode")
+    if rollout_mode == "atomic":
+        lifecycle = receipt.get("durableObjectLifecycle")
+        deployment_proof = receipt.get("deployment")
+        if (not isinstance(lifecycle, dict) or lifecycle.get("state") != "applied"
+                or lifecycle.get("strategy") != "atomic"
+                or lifecycle.get("versionId") != receipt.get("uploadedVersion")
+                or not isinstance(deployment_proof, dict)
+                or lifecycle.get("deploymentId") != deployment_proof.get("id")):
+            raise RuntimeError("atomic Durable Object rollout receipt has no exact applied lifecycle proof")
+    elif rollout_mode == "versioned":
+        lifecycle = receipt.get("durableObjectLifecycle")
+        if not isinstance(lifecycle, dict) or lifecycle.get("state") not in ("reused", "not-required"):
+            raise RuntimeError("versioned rollout has no prior Durable Object lifecycle proof")
     stage("verify-deployment")
     if verify_only:
         deployment, active_version, uploaded_identity, active_identity = resolve_verified_active_worker(
@@ -1900,6 +2013,23 @@ def main() -> int:
         worker_entry = (checkout / "worker.ts").read_text(encoding="utf-8")
         wrangler["handlers"] = worker_handlers(worker_entry)
         validate_worker_contract(wrangler, customer, args.tenant)
+        lifecycle_identity = durable_object_migration_identity(wrangler["durableObjectMigrations"])
+        rollout_mode, applied_lifecycle_release = select_worker_rollout_mode(
+            directory.parent, lifecycle_identity,
+        )
+        receipt["rolloutMode"] = rollout_mode
+        if lifecycle_identity is None:
+            receipt["durableObjectLifecycle"] = {"identity": None, "state": "not-required"}
+        elif rollout_mode == "atomic":
+            receipt["durableObjectLifecycle"] = {
+                "identity": lifecycle_identity, "state": "planned", "strategy": "atomic",
+            }
+        else:
+            receipt["durableObjectLifecycle"] = {
+                "identity": lifecycle_identity, "state": "reused",
+                "appliedByReleaseId": applied_lifecycle_release,
+            }
+        atomic_json(receipt_path, receipt)
         run(["npm", "run", "typecheck"], checkout, base)
         unexpected_changes = tracked_changes_outside_runtime_overlay(
             checkout, runtime_provenance["changedPaths"], base,
@@ -1970,37 +2100,77 @@ def main() -> int:
         runtime_secrets = tenant_runtime_secrets(manifest, args.tenant)
         if not runtime_secrets.get("HELLOADA_TURNSTILE_SECRET_KEY"):
             raise RuntimeError("tenant Turnstile secret was not persisted before Worker upload")
-        stage("upload")
-        receipt["uploadedVersion"] = upload_worker_version(
-            checkout, args.ref, args.release_id, workspace_path, runtime_secrets, deploy_env,
-            {"HELLOADA_TURNSTILE_SITE_KEY": receipt["turnstile"]["sitekey"]},
-        )
-        if worker_artifact_hashes(checkout, custom_worker_bundle) != receipt["artifactHashes"]:
-            raise RuntimeError("upload changed an inspected custom Worker release input")
-
-        # Keep the previous Worker serving while the exact candidate's committed
-        # migration is applied and checked. Only an explicitly queued migration
-        # request can advance an existing tenant ledger.
-        receipt["appliedMigrations"] = enforce_payload_migrations(
-            checkout, customer, deploy_env, args.initialize_schema_head,
-            args.schema_migration_from_ledger_identity, base, manifest, args.tenant, stage, wrangler, temporary_root,
-        )
-        receipt["verifiedMigrationHead"] = customer["migrationHead"]
-        if args.release_purpose == "workspace-bootstrap":
-            stage("verify-workspace-bootstrap-contract")
-            verify_workspace_bootstrap_contract(
-                checkout, receipt, customer, args.initialize_schema_head,
+        def verify_candidate_schema() -> None:
+            # Schema changes are explicitly queued and fully verified before an
+            # atomic Durable Object lifecycle deployment. Ordinary versioned
+            # releases retain the previous Worker until these gates pass.
+            receipt["appliedMigrations"] = enforce_payload_migrations(
+                checkout, customer, deploy_env, args.initialize_schema_head,
+                args.schema_migration_from_ledger_identity, base, manifest, args.tenant, stage, wrangler, temporary_root,
             )
-        else:
-            stage("verify-payload-contract")
-            run_payload_contract_verifier(checkout, customer, wrangler, deploy_env, base, temporary_root)
-        atomic_json(receipt_path, receipt)
+            receipt["verifiedMigrationHead"] = customer["migrationHead"]
+            if args.release_purpose == "workspace-bootstrap":
+                stage("verify-workspace-bootstrap-contract")
+                verify_workspace_bootstrap_contract(
+                    checkout, receipt, customer, args.initialize_schema_head,
+                )
+            else:
+                stage("verify-payload-contract")
+                run_payload_contract_verifier(checkout, customer, wrangler, deploy_env, base, temporary_root)
+            atomic_json(receipt_path, receipt)
 
-        stage("promote")
-        if cloudflare_deployment(customer, deploy_env).get("id") != before_deploy.get("id"):
-            raise RuntimeError("production changed during upload; reconcile before promotion")
-        run([str(checkout / "node_modules/.bin/wrangler"), "versions", "deploy",
-             receipt["uploadedVersion"] + "@100%", "--name", customer["worker"], "--yes"], checkout, deploy_env)
+        release_variables = {
+            "HELLOADA_TURNSTILE_SITE_KEY": receipt["turnstile"]["sitekey"],
+        }
+        if receipt["rolloutMode"] == "atomic":
+            if worker_artifact_hashes(checkout, custom_worker_bundle) != receipt["artifactHashes"]:
+                raise RuntimeError("atomic deploy inputs differ from the verified Worker artifact")
+            verify_candidate_schema()
+            if cloudflare_deployment(customer, deploy_env).get("id") != before_deploy.get("id"):
+                raise RuntimeError("production changed during the build; reconcile before atomic deployment")
+            stage("deploy-durable-object-lifecycle")
+            lifecycle = receipt["durableObjectLifecycle"]
+            lifecycle.update({"state": "applying", "startedAt": utc_now()})
+            atomic_json(receipt_path, receipt)
+            try:
+                deploy_worker_with_lifecycle(
+                    checkout, args.ref, args.release_id, workspace_path, runtime_secrets,
+                    deploy_env, release_variables,
+                )
+            except Exception as error:
+                lifecycle.update({"state": "outcome-unknown", "errorType": type(error).__name__})
+                atomic_json(receipt_path, receipt)
+                raise
+            lifecycle.update({"state": "applied", "appliedAt": utc_now()})
+            atomic_json(receipt_path, receipt)
+            receipt["deployment"] = cloudflare_deployment(customer, deploy_env)
+            receipt["uploadedVersion"] = deployed_worker_version_id(
+                receipt["deployment"], before_deploy,
+            )
+            lifecycle.update({
+                "versionId": receipt["uploadedVersion"],
+                "deploymentId": receipt["deployment"]["id"],
+            })
+            atomic_json(receipt_path, receipt)
+            if worker_artifact_hashes(checkout, custom_worker_bundle) != receipt["artifactHashes"]:
+                raise RuntimeError("atomic deploy changed an inspected Worker release input")
+        else:
+            stage("upload")
+            receipt["uploadedVersion"] = upload_worker_version(
+                checkout, args.ref, args.release_id, workspace_path, runtime_secrets,
+                deploy_env, release_variables,
+            )
+            if worker_artifact_hashes(checkout, custom_worker_bundle) != receipt["artifactHashes"]:
+                raise RuntimeError("upload changed an inspected custom Worker release input")
+            verify_candidate_schema()
+
+            # Version upload is immutable; production must still be the snapshot
+            # captured before the candidate was built when it is promoted.
+            stage("promote")
+            if cloudflare_deployment(customer, deploy_env).get("id") != before_deploy.get("id"):
+                raise RuntimeError("production changed during upload; reconcile before promotion")
+            run([str(checkout / "node_modules/.bin/wrangler"), "versions", "deploy",
+                 receipt["uploadedVersion"] + "@100%", "--name", customer["worker"], "--yes"], checkout, deploy_env)
 
         stage("reconcile-cron-triggers")
         receipt["cronTriggers"] = reconcile_worker_cron_schedules(
