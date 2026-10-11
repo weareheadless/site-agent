@@ -8,6 +8,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
+from .durable_object_reconciliation import (
+    LifecycleReconciliationError,
+    read_lifecycle_reconciliation,
+)
+
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _FINGERPRINT = re.compile(r"^[0-9a-f]{64}$")
 _TENANT = re.compile(r"^[a-z][a-z0-9-]{1,62}$")
@@ -145,11 +150,49 @@ def plan_shared_runtime_rollout(
                 "blocked": [canary],
             }
         if current_receipt and current_receipt.get("status") in _TERMINAL_FAILURE:
+            evidence = None
+            lifecycle = current_receipt.get("durableObjectLifecycle")
+            if isinstance(lifecycle, Mapping) and lifecycle.get("state") in {"applying", "outcome-unknown"}:
+                try:
+                    evidence = read_lifecycle_reconciliation(release_root, canary, current_receipt)
+                except LifecycleReconciliationError as error:
+                    raise SharedRuntimeRolloutError(
+                        f"canary lifecycle reconciliation is invalid: {error}"
+                    ) from error
+            if evidence is None:
+                return {
+                    "state": "canary-failed",
+                    "canaryTenant": canary,
+                    "queued": {},
+                    "blocked": [canary],
+                }
+            if (not isinstance(current, Mapping)
+                    or current.get("id") != current_receipt.get("releaseId")
+                    or current.get("sha") != current_receipt.get("sourceSha")):
+                raise SharedRuntimeRolloutError("reconciled canary queue identity differs from its immutable receipt")
+            if not canary_history and not _SHA.fullmatch(str(current.get("sha") or "")):
+                return {
+                    "state": "canary-needs-first-release",
+                    "canaryTenant": canary,
+                    "queued": {},
+                    "blocked": [canary],
+                }
+            source_sha = (
+                current["sha"]
+                if current.get("sharedRuntimeFingerprint") == fingerprint
+                and evidence.get("sharedRuntimeFingerprint") == fingerprint
+                else (canary_history[0]["sourceSha"] if canary_history else current["sha"])
+            )
+            queued[canary] = {
+                "id": _release_id(now),
+                "sha": source_sha,
+                "sharedRuntimeFingerprint": fingerprint,
+            }
             return {
-                "state": "canary-failed",
+                "state": "canary-queued",
                 "canaryTenant": canary,
-                "queued": {},
-                "blocked": [canary],
+                "queued": queued,
+                "blocked": [],
             }
         if (current and current_receipt is None
                 and current.get("sharedRuntimeFingerprint") in (None, fingerprint)):
