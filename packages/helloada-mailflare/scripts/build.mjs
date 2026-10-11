@@ -50,7 +50,7 @@ export function applyTenantPatches(nextConfig, workerEntry, cloudflareModule) {
       replaceExactlyOnce(
         cloudflareModule,
         'import { withStorage } from "@/lib/storage";',
-        'import { withStorage } from "@/lib/storage";\\nimport { asMailflareEnv } from "@/lib/helloada-tenant-bindings";',
+        'import { withStorage } from "@/lib/storage";\nimport { asMailflareEnv } from "@/lib/helloada-tenant-bindings";',
         'src/lib/cloudflare.ts binding adapter import',
       ),
       'return withStorage(getNodeEnv() ?? (env as CloudflareEnv));',
