@@ -36,7 +36,7 @@ test('Mailflare UI build copy uses only the canonical HelloAda identity and mark
 })
 
 test('the built app omits the pinned upstream brand icon files', () => {
-  for (const icon of ['public/favicon.ico', 'public/icon-96.png', 'public/icon-192.png', 'public/icon-512.png']) {
+  for (const icon of ['public/favicon.ico', 'public/icon-48.png', 'public/icon-96.png', 'public/icon-192.png', 'public/icon-512.png']) {
     assert.equal(shouldSkipUpstreamBrandIcon(icon), true)
   }
   assert.equal(shouldSkipUpstreamBrandIcon('public/helloada-logo.svg'), false)
