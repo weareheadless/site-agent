@@ -1825,3 +1825,20 @@ def test_read_only_continuation_requires_mailflare_migration_provenance_to_match
     (tmp_path / "receipt.json").write_text(json.dumps(result))
     with pytest.raises(ValueError, match="Mailflare migration provenance"):
         release.verification_receipt(tmp_path, "oceanicvibes", SHA, "release-1", customer, "website")
+
+
+def test_shared_runtime_release_queue_requires_an_exact_fingerprint():
+    registry = {"customers": {"demo": {"sharedRuntimeUpdate": "canary"}}}
+    valid = {"schema": 1, "releases": {"demo": {
+        "id": "runtime-20261010000000-abcd1234",
+        "sha": "a" * 40,
+        "sharedRuntimeFingerprint": "b" * 64,
+    }}}
+    queue.validate_queue(valid, registry)
+
+    invalid = {"schema": 1, "releases": {"demo": {
+        **valid["releases"]["demo"],
+        "sharedRuntimeFingerprint": "short",
+    }}}
+    with pytest.raises(ValueError, match="SHA-256"):
+        queue.validate_queue(invalid, registry)
