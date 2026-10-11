@@ -122,26 +122,17 @@ Save and publish exact Payload document revisions separately. The Growth write
 receipt/guard is not a substitute for proving atomic compare-and-swap against
 every possible concurrent Payload writer.
 
-For website forms, Messages, Contacts and domain email, follow
-`docs/helloada-messages-contacts-production-implementation-plan.md`. These are
-one shared Payload capability and one tenant Worker, not a customer-specific
-mail app. Preserve explicit owner approval before sending, private message
-storage, tenant-scoped access, durable idempotent processing and the existing
-VPS release/migration contract. Do not report production readiness until the
-plan's OceanicVibes and Atelier live evidence, provisioning, licensing and
-authenticated-browser gates are complete.
-
-For the expanded HelloAda mailbox and optional booking calendar, also follow
-`docs/helloada-mailbox-calendar-contract.md`. Forms become Inbox conversations;
-bookings become Calendar events linked to the same Contact and mailbox thread.
-Calendar records and public availability are tenant-scoped, and booking
-confirmation is transactional. Do not enable general one-to-one New Message
-sending until the sender domain is verified and the Resend tenant key is
-installed. Resend is the approved provider for owner-approved one-to-one
-correspondence. Cloudflare Email Service remains the inbound route and
-transactional binding; it is not the ordinary-mail sender. This feature does
-not add a second mailbox store, calendar provider, or customer-local schema.
-
+For website enquiries, Messages, Contacts, bookings and domain email, follow
+`docs/mailflare-single-worker-contract.md`. It supersedes the earlier
+Payload/Resend message and mailbox/calendar plans wherever they conflict. The
+owner-facing app uses the fixed HelloAda brand; the pinned upstream name and
+mark remain only in internal provenance and required notices. The isolated
+mailbox service owns Contacts, Inbox and Calendar records; Payload owns website
+content and owner authentication. Enquiries become Inbox conversations linked
+to Contacts; confirmed bookings become Calendar events linked to the same
+Contact and conversation. Preserve explicit owner approval for sending,
+tenant-scoped access, durable idempotency, and the official release/migration
+contract. Do not expose retired Payload mailbox/calendar stores at runtime.
 Domain email uses the same registered-tenant lifecycle as GA4/GSC. Workspace
 bootstrap enables automatic reconciliation with the `hello` local part;
 custom-origin tenants derive their email domain from the registered custom
