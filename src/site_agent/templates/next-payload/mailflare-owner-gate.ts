@@ -74,6 +74,26 @@ const jsonError = (status: number, error: string) => Response.json({ error }, {
   headers: { 'Cache-Control': 'no-store' },
 })
 
+const mailboxRuntimeReady = (env: MailflareEnv) => Boolean(
+  env.MAILFLARE_DB
+  && [env.MAILFLARE_ADDRESS, env.MAILFLARE_ZONE_ID, env.MAILFLARE_ROUTING_STATUS]
+    .every((value) => typeof value === 'string' && value.trim()),
+)
+
+const mailboxSetupResponse = (pathname: string, basePath: string) => {
+  const message = 'HelloAda is preparing your inbox and booking calendar. They will be available as soon as setup is complete.'
+  if (pathname.startsWith(`${basePath}/api/`)) return jsonError(503, message)
+  return new Response(
+    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>HelloAda · Preparing your inbox</title><style>html,body{min-height:100%;margin:0;background:#15161b;color:#f7f7f8;font:16px/1.55 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}body{display:grid;place-items:center;padding:24px;box-sizing:border-box}main{width:min(440px,100%);text-align:center}img{width:56px;height:56px;margin-bottom:24px}h1{font-size:24px;letter-spacing:-.03em;margin:0 0 10px}p{color:#b8b8c1;margin:0 auto 24px;max-width:38ch}button{border:0;border-radius:999px;background:#ff7a18;color:#171717;font:600 14px/1.2 Inter,ui-sans-serif,system-ui,sans-serif;padding:12px 18px;cursor:pointer}button:hover{background:#ff9445}</style></head><body><main><img src="/brand/helloada-logo.svg" alt="HelloAda"><h1>Your inbox is being prepared</h1><p>${message}</p><button type="button" onclick="location.reload()">Check again</button></main></body></html>`,
+    { status: 503, headers: {
+      'Cache-Control': 'no-store',
+      'Content-Type': 'text/html; charset=utf-8',
+      'Retry-After': '30',
+      'X-Content-Type-Options': 'nosniff',
+    } },
+  )
+}
+
 const under = (pathname: string, root: string) => pathname === root || pathname.startsWith(`${root}/`)
 
 const isStatic = (request: Request, pathname: string, basePath: string) =>
@@ -215,6 +235,8 @@ export function createPayloadOwnerGate<Env extends MailflareEnv, Context>({
     if (isStandaloneAuthPage(pathname, basePath)) return redirectToPayloadLogin(request)
     if (isStandaloneAuthApi(pathname, basePath)) return jsonError(403, 'Sign in and account management are provided by the HelloAda workspace.')
 
+    if (isStatic(request, pathname, basePath)) return dispatch(request)
+    if (!mailboxRuntimeReady(env)) return mailboxSetupResponse(pathname, basePath)
     if (isPublic(request, pathname, basePath)) return dispatch(request)
 
     if (!request.headers.get('cookie')) {

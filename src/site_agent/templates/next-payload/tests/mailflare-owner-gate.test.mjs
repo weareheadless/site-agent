@@ -175,6 +175,49 @@ test('blocks Mailflare native login and register routes while allowing static as
   assert.equal(called, 2)
 })
 
+test('shows a HelloAda setup state instead of crashing before mailbox provisioning', async () => {
+  const db = database()
+  const pendingEnv = {
+    ...env(db.binding),
+    MAILFLARE_ADDRESS: '',
+    MAILFLARE_ZONE_ID: '',
+    MAILFLARE_ROUTING_STATUS: '',
+  }
+  let identities = 0
+  let dispatched = 0
+  const gate = createPayloadOwnerGate({
+    basePath: '/mail',
+    defaultLocale: 'en',
+    resolveIdentity: async () => { identities++; return { subject: 'payload-subject-1' } },
+    logout: async () => new Response(null, { status: 204 }),
+  })
+  const dispatch = async () => { dispatched++; return new Response('dispatched') }
+
+  const page = await gate(
+    new Request('https://tenant.test/mail/inbox', { headers: { cookie: 'payload_session=valid' } }),
+    pendingEnv,
+    {},
+    dispatch,
+  )
+  assert.equal(page.status, 503)
+  assert.match(page.headers.get('content-type') || '', /text\/html/)
+  const body = await page.text()
+  assert.match(body, /Your inbox is being prepared/)
+  assert.match(body, /\/brand\/helloada-logo\.svg/)
+  assert.doesNotMatch(body, /Mailflare/i)
+  assert.equal(page.headers.get('retry-after'), '30')
+
+  const api = await gate(new Request('https://tenant.test/mail/api/booking'), pendingEnv, {}, dispatch)
+  assert.equal(api.status, 503)
+  assert.match((await api.json()).error, /preparing your inbox and booking calendar/i)
+
+  const asset = await gate(new Request('https://tenant.test/mail/_next/static/chunk.js'), pendingEnv, {}, dispatch)
+  assert.equal(asset.status, 200)
+  assert.equal(identities, 0)
+  assert.equal(dispatched, 1)
+})
+
+
 test('Payload logout clears only the Mailflare session cookie and invokes Payload logout', async () => {
   const db = database()
   let logoutCalls = 0

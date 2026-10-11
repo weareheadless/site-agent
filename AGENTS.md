@@ -140,8 +140,13 @@ origin. A `workers.dev` tenant without an explicitly registered email domain
 remains `domain_required`; fully automatic shared-domain assignment for every
 new workspace is still the separately tracked phase-two work. The shared
 tenant scheduler retries readiness and transient failures hourly after
-bootstrap/deployment. The API adapter is the only path that changes Cloudflare
-Email Service/DNS or Resend domains/keys. Unknown MX/SPF/routing state is a
+bootstrap/deployment. The first Worker release may omit all mailbox runtime
+settings only when the registered tenant explicitly enables automatic email
+provisioning and has registered Mailflare D1 resources; partial settings and
+manual setup remain hard failures. After exact Worker health and authenticated
+connection gates pass, the release runner wakes `next_run:email_provisioning`
+using that tenant's registered `data_dir/memory.db`. The API adapter is the
+only path that changes Cloudflare Email Service/DNS or Resend domains/keys. Unknown MX/SPF/routing state is a
 hard stop; do not click through Cloudflare or substitute another provider.
 The protected host Resend management key provisions verified sender domains
 and domain-restricted `sending_access` keys; only each tenant's restricted

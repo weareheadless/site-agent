@@ -217,7 +217,16 @@ the current validation, existing platform-hosted tenants can receive an
 explicit HelloAda email domain and tenant-unique local part through the
 read-only/`--apply` CLI flow below. A tenant scheduler retries automatically
 every hour after a new Worker release becomes ready; it does not need a
-dashboard visit or a manual API restart. The VPS is the provisioning control
+dashboard visit or a manual API restart. For an explicitly auto-provisioned
+tenant with registered Mailflare D1 resources, the first Worker release may
+omit all three mailbox runtime settings so the Worker can be deployed and pass
+its exact health/authentication gates. The release then records an immediate
+`next_run:email_provisioning` wake-up against that tenant's registered
+`data_dir/memory.db`; this removes the first-release dependency loop without
+weakening the manual-configuration gate. Partial settings remain a hard
+failure, and the provisioning receipt records whether setup was already
+active or scheduled. The scheduler then creates the provider resources and
+installs the exact tenant Worker settings. The VPS is the provisioning control
 plane, not a mail server. Its protected Cloudflare API tokens are used only to
 configure Cloudflare DNS, Email Routing and transactional Email Sending. They
 are never copied into tenant Worker secrets. Cloudflare Email Routing delivers
