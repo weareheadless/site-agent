@@ -41,7 +41,7 @@ function replaceTail(source, start, replacement, label) {
 
 export function applyHelloAdaBrandingPatch(sources, basePath) {
   if (basePath !== '/mail') throw new Error('HelloAda branding requires the registered /mail base path')
-  const iconPath = basePath + '/helloada-logo.svg'
+  const iconPath = '/brand/helloada-logo.svg'
   const newline = String.fromCharCode(10)
 
   let layout = replaceExactlyOnce(
