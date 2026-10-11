@@ -1807,6 +1807,7 @@ def main() -> int:
             shared_vars={
                 "HELLOADA_HANDOFF_PUBLIC_KEY": host_runtime_values.get("HELLOADA_HANDOFF_PUBLIC_KEY", ""),
             },
+            expected_fingerprint=args.shared_runtime_fingerprint,
         )
         if (args.shared_runtime_fingerprint is not None and not SHA256_RE.fullmatch(args.shared_runtime_fingerprint)):
             raise RuntimeError("queued shared-runtime fingerprint is invalid")
@@ -1819,7 +1820,7 @@ def main() -> int:
         receipt["sharedRuntime"] = runtime_provenance
         receipt["sharedRuntimeFingerprint"] = runtime_provenance["fingerprint"]
         if args.shared_runtime_fingerprint is not None:
-            receipt["requestedSharedRuntimeFingerprint"] = args.shared_runtime_fingerprint
+            receipt["expectedSharedRuntimeFingerprint"] = args.shared_runtime_fingerprint
         atomic_json(receipt_path, receipt)
         validate_payload_verifier(checkout)
         source = list((checkout / "src").rglob("*.ts")) + list((checkout / "src").rglob("*.tsx"))
