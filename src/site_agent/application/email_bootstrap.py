@@ -76,6 +76,18 @@ def _tenant_secret_values(path: Path) -> dict[str, str]:
     return values
 
 
+def _mailflare_runtime_settings_match(path: Path, state: Mapping[str, Any], address: str) -> bool:
+    expected = {
+        "MAILFLARE_ADDRESS": address.strip().lower(),
+        "MAILFLARE_ZONE_ID": str(state.get("cloudflareZoneId") or "").strip(),
+        "MAILFLARE_ROUTING_STATUS": str(state.get("routingStatus") or "").strip(),
+    }
+    if any(not value for value in expected.values()):
+        return False
+    persisted = _tenant_secret_values(path)
+    return all(persisted.get(name) == value for name, value in expected.items())
+
+
 def _write_tenant_secrets(path: Path, values: Mapping[str, str]) -> None:
     for name, value in values.items():
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(name)) or any(char in str(value) for char in "\r\n\0"):
@@ -525,16 +537,32 @@ def auto_provision_email(
 
     address = f"{local_part}@{requested_email_domain}"
     configured_worker = str(_mapping(site.get("source_deployment")).get("worker_name") or "").strip().lower()
-    if (
+    existing_mailbox_state_matches = (
         not expected_snapshot_sha256
         and state.get("state") == "active"
         and state.get("siteDomain") == raw_domain
         and state.get("emailDomainSetting") == requested_email_domain
         and state.get("outboundProvider") == "resend"
-        and str(state.get("address") or "").split("@", 1)[0] == local_part
+        and str(state.get("address") or "").strip().lower() == address.lower()
         and state.get("worker") == configured_worker
-    ):
-        return state, resolved_env
+    )
+    if existing_mailbox_state_matches:
+        try:
+            tenant_env_path = _tenant_env_path(tenant_config_path, tenant_id)
+            runtime_settings_match = _mailflare_runtime_settings_match(tenant_env_path, state, address)
+        except EmailProvisioningError as exc:
+            result = {
+                **state,
+                "state": "failed",
+                "tenant": tenant_id,
+                "error": str(exc)[:500],
+                "lastAttemptAt": _now(),
+            }
+            if memory is not None:
+                memory.kv_set("email_provisioning_state", result)
+            return result, resolved_env
+        if runtime_settings_match:
+            return state, resolved_env
     policy: dict[str, Any] = {
         **dict(email),
         **dict(provisioning),

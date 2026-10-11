@@ -1309,10 +1309,24 @@ def tenant_runtime_secrets(manifest: dict[str, Any], tenant: str) -> dict[str, s
         worker_token_env = str(worker_manifest.get("workerTokenEnv") or "").strip()
         if worker_token_env != WORKER_SITE_AGENT_TOKEN_ENV:
             raise ValueError("canonical Worker token binding differs from the tenant registration contract")
+        registered_customers = manifest.get("customers")
+        customer = registered_customers.get(tenant) if isinstance(registered_customers, dict) else None
+        if not isinstance(customer, dict):
+            raise ValueError("registered tenant release manifest entry is unavailable")
         values = read_tenant_environment(tenant_environment_path(manifest, tenant))
         required = {"PAYLOAD_SECRET", tenant_token_env(tenant)}
         if any(not values.get(key) for key in required):
             raise ValueError("registered tenant runtime secrets are incomplete")
+        mailflare_names = ("MAILFLARE_ADDRESS", "MAILFLARE_ZONE_ID", "MAILFLARE_ROUTING_STATUS")
+        mailflare_values = {name: str(values.get(name) or "").strip() for name in mailflare_names}
+        mailflare_present = [bool(value) for value in mailflare_values.values()]
+        mailflare_enabled = bool(customer.get("mailflareD1DatabaseId"))
+        if any(mailflare_present) and not all(mailflare_present):
+            raise ValueError("registered tenant Mailflare runtime settings are incomplete")
+        if mailflare_enabled and not all(mailflare_present):
+            raise ValueError("registered Mailflare tenant runtime settings are incomplete")
+        if any(mailflare_present) and not mailflare_enabled:
+            raise ValueError("Mailflare runtime settings exist without registered Mailflare resources")
         result = {
             "PAYLOAD_SECRET": values["PAYLOAD_SECRET"],
             worker_token_env: values[tenant_token_env(tenant)],
@@ -1325,6 +1339,8 @@ def tenant_runtime_secrets(manifest: dict[str, Any], tenant: str) -> dict[str, s
             result["RESEND_API_KEY"] = values["RESEND_API_KEY"]
         if values.get("HELLOADA_TURNSTILE_SECRET_KEY"):
             result["HELLOADA_TURNSTILE_SECRET_KEY"] = values["HELLOADA_TURNSTILE_SECRET_KEY"]
+        if all(mailflare_present):
+            result.update(mailflare_values)
         return result
     except (OSError, ValueError, KeyError, TypeError) as error:
         raise RuntimeError(f"tenant runtime secrets are unavailable: {str(error)[:240]}") from error

@@ -1297,22 +1297,55 @@ def test_tenant_token_is_mapped_to_the_canonical_worker_binding(tmp_path):
     (tenant_dir / "tenant.env").write_text(
         f"PAYLOAD_SECRET=payload-secret-for-test\n"
         f"{tenant_token_name}=site-agent-token-for-test\n"
+        "MAILFLARE_ADDRESS=contact@atelier-harmonie.example\n"
+        "MAILFLARE_ZONE_ID=zone-id-for-test\n"
+        "MAILFLARE_ROUTING_STATUS=active\n"
     )
     (provisioned_root / "tenants.json").write_text(json.dumps({
         tenant: {"config_path": str(config_path), "api_token_env": tenant_token_name},
     }))
     host_config = tmp_path / "host.yaml"
     host_config.write_text(f"workspace_api:\n  provisioned_root: {provisioned_root}\n")
+    manifest = {
+        "connectionGate": {"config": str(host_config)},
+        "customers": {tenant: {"mailflareD1DatabaseId": "mailflare-d1-for-test"}},
+    }
 
-    secrets = release.tenant_runtime_secrets(
-        {"connectionGate": {"config": str(host_config)}}, tenant,
-    )
+    secrets = release.tenant_runtime_secrets(manifest, tenant)
 
     assert secrets == {
         "PAYLOAD_SECRET": "payload-secret-for-test",
         "HELLOADA_SITE_AGENT_TOKEN": "site-agent-token-for-test",
+        "MAILFLARE_ADDRESS": "contact@atelier-harmonie.example",
+        "MAILFLARE_ZONE_ID": "zone-id-for-test",
+        "MAILFLARE_ROUTING_STATUS": "active",
     }
 
+
+def test_mailflare_worker_release_rejects_missing_runtime_settings(tmp_path):
+    tenant = "oceanicvibes"
+    tenant_token_name = "PROVISIONED_OCEANICVIBES_TOKEN"
+    provisioned_root = tmp_path / "websites"
+    tenant_dir = provisioned_root / tenant
+    tenant_dir.mkdir(parents=True)
+    config_path = tenant_dir / "config.yaml"
+    config_path.write_text(f"instance_name: {tenant}\n")
+    (tenant_dir / "tenant.env").write_text(
+        f"PAYLOAD_SECRET=payload-secret-for-test\n"
+        f"{tenant_token_name}=site-agent-token-for-test\n"
+    )
+    (provisioned_root / "tenants.json").write_text(json.dumps({
+        tenant: {"config_path": str(config_path), "api_token_env": tenant_token_name},
+    }))
+    host_config = tmp_path / "host.yaml"
+    host_config.write_text(f"workspace_api:\n  provisioned_root: {provisioned_root}\n")
+    manifest = {
+        "connectionGate": {"config": str(host_config)},
+        "customers": {tenant: {"mailflareD1DatabaseId": "mailflare-d1-for-test"}},
+    }
+
+    with pytest.raises(RuntimeError, match="registered Mailflare tenant runtime settings are incomplete"):
+        release.tenant_runtime_secrets(manifest, tenant)
 
 
 def test_worker_secrets_file_is_private_and_contains_only_explicit_bindings(tmp_path):
