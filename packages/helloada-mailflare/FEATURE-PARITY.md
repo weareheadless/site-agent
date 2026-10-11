@@ -4,7 +4,7 @@ Pinned to upstream `ca41c56a0781bf848b9898ddcc5615b3eacfbf8e`. “Built” means
 
 | Surface | HelloAda disposition | Acceptance boundary |
 | --- | --- | --- |
-| Inbox, threads, search, folders, spam, trash, snooze, archive, drafts, compose, reply, scheduled send, sent history, contacts, rules, templates, import/export | Native Mailflare UI and API at `/mail` | Owner access uses the authenticated Payload identity and Mailflare mailbox authorization. |
+| Inbox, threads, search, folders, spam, trash, snooze, archive, drafts, compose, reply, scheduled send, sent history, contacts directory and details, rules, templates, import/export | Native HelloAda UI and tenant API at `/mail` | Owner access uses the authenticated Payload identity and Mailflare mailbox authorization. |
 | Attachments, Drive, sharing | Native Mailflare UI and API | Objects remain tenant-isolated; public links are capability-scoped. |
 | Inbound, outbound, queues, scheduled work | Native Worker `email`, `queue`, and `scheduled` handlers composed with OpenNext | One Worker handles all events. Resend key is tenant-restricted; owner send is explicit and never blindly retried. |
 | Calendar and public booking | Native Mailflare Calendar and booking routes | Booking requires same-origin, rate-limit, Turnstile, consent and idempotency checks. |

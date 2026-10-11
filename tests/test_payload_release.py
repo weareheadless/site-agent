@@ -956,7 +956,7 @@ def artifact(tmp_path):
             "commit": "ca41c56a0781bf848b9898ddcc5615b3eacfbf8e",
             "packageVersion": "0.5.1",
             "packageLockSha256": "dcc70b0d3ac9b2ecbc7edb5199b9cf1c02064ea491e724939cdbe131f12c71de",
-            "integrationPatchSet": "helloada-tenant-worker-booking-owner-branding-v9",
+            "integrationPatchSet": "helloada-tenant-worker-booking-owner-branding-v10",
             "basePath": "/mail",
             "namespacedApiReferences": 1,
             "migrationNames": ["0000_initial.sql"],
@@ -972,7 +972,7 @@ def artifact(tmp_path):
             "contentContract": customer["contentContract"], "schemaRevision": customer["schemaRevision"],
             "schemaIdentity": customer["schemaIdentity"], "migrationHead": customer["migrationHead"],
             "mailflareCommit": "ca41c56a0781bf848b9898ddcc5615b3eacfbf8e",
-            "mailflarePatchSet": "helloada-tenant-worker-booking-owner-branding-v9"}),
+            "mailflarePatchSet": "helloada-tenant-worker-booking-owner-branding-v10"}),
     }
     for name, value in files.items():
         path = tmp_path / name
@@ -1526,7 +1526,7 @@ def promoted_receipt(tmp_path):
               "mailflare": {
                   "sourceCommit": "ca41c56a0781bf848b9898ddcc5615b3eacfbf8e",
                   "packageVersion": "0.5.1",
-                  "integrationPatchSet": "helloada-tenant-worker-booking-owner-branding-v9",
+                  "integrationPatchSet": "helloada-tenant-worker-booking-owner-branding-v10",
                   "basePath": "/mail",
                   "namespacedApiReferences": 307,
                   "migrationNames": ["0000_initial.sql"],
