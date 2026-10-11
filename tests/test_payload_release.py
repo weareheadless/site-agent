@@ -574,6 +574,8 @@ def test_reconcile_mailflare_migrations_uses_pinned_wrangle_chain_and_is_idempot
     assert result["changed"] is True
     assert len(calls) == 1
     assert calls[0][0][1:6] == ["d1", "migrations", "apply", "MAILFLARE_DB", "--remote"]
+    assert "--yes" not in calls[0][0]
+    assert calls[0][2]["CI"] == "1"
     assert calls[0][2]["CLOUDFLARE_API_TOKEN"] == "secret"
 
     again = release.reconcile_mailflare_migrations(tmp_path, CUSTOMER, {}, {})
