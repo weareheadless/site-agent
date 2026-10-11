@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { applyHelloAdaBrandingPatch, shouldSkipUpstreamBrandIcon } from '../scripts/helloada-branding-patch.mjs'
+import { applyHelloAdaBrandingPatch, sanitizeHelloAdaBrandCopy, sanitizeHelloAdaLocaleValues, shouldSkipUpstreamBrandIcon } from '../scripts/helloada-branding-patch.mjs'
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const source = (relative) => readFile(path.join(packageRoot, 'upstream', relative), 'utf8')
@@ -59,4 +59,23 @@ test('branding patch fails closed when its pinned source contract changes', () =
   }
   assert.throws(() => applyHelloAdaBrandingPatch(empty, '/mail'), /no longer applies exactly once/)
   assert.throws(() => applyHelloAdaBrandingPatch(empty, '/other'), /registered \/mail base path/)
+})
+
+test('customer-facing copy is HelloAda-branded without renaming internal identifiers', () => {
+  assert.equal(
+    sanitizeHelloAdaBrandCopy('Mailflare Inbox · MailflareD1 · MAILFLARE_DB · mailflare:messages-changed'),
+    'HelloAda Inbox · MailflareD1 · MAILFLARE_DB · mailflare:messages-changed',
+  )
+  assert.deepEqual(
+    sanitizeHelloAdaLocaleValues({
+      title: 'Mailflare Inbox',
+      identifiers: ['MailflareD1', 'MAILFLARE_DB', 'mailflare:messages-changed'],
+      nested: { help: 'Connect to Mailflare' },
+    }),
+    {
+      title: 'HelloAda Inbox',
+      identifiers: ['MailflareD1', 'MAILFLARE_DB', 'mailflare:messages-changed'],
+      nested: { help: 'Connect to HelloAda' },
+    },
+  )
 })
