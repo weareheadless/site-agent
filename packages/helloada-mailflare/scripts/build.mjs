@@ -151,7 +151,8 @@ async function prepareBuildCopy(destination) {
     brandingDefaults: 'src/components/branding-provider-utils.ts',
     brandingProvider: 'src/components/branding-provider.tsx',
     brandingService: 'src/lib/branding/service.ts',
-    brandingIconRoute: 'src/app/api/branding/icon/route.ts',\n    sidebarFooter: 'src/components/sidebar-footer.tsx',
+    brandingIconRoute: 'src/app/api/branding/icon/route.ts',
+    sidebarFooter: 'src/components/sidebar-footer.tsx',
   }
   const brandingSources = Object.fromEntries(await Promise.all(
     Object.entries(brandingPaths).map(async ([key, relative]) => [key, await readFile(path.join(destination, relative), 'utf8')]),
