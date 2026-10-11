@@ -1,14 +1,12 @@
 import base64
 import hashlib
-import importlib.util
+import json
 from pathlib import Path
 import urllib.request
 
 import pytest
 
-spec = importlib.util.spec_from_file_location('release_assets', Path(__file__).parents[1] / 'scripts/github_release_assets.py')
-module = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(module)
+from site_agent.application import release_dependencies as module
 
 
 def test_artifact_must_match_exact_locked_integrity():
@@ -58,6 +56,35 @@ def test_verify_release_dependencies_checks_published_artifact_bytes(tmp_path, m
     assert len(evidence) == 2
 
 
+    original_package = (tmp_path / 'package.json').read_bytes()
+    original_lock = (tmp_path / 'package-lock.json').read_bytes()
+    staged_paths = []
+    cached_bytes = []
+
+    def seed(command, cwd):
+        assert cwd == tmp_path
+        assert command[1:3] == ['cache', 'add']
+        assert command[4] == '--ignore-scripts'
+        asset_path = Path(command[3])
+        staged_paths.append(asset_path)
+        cached_bytes.append(asset_path.read_bytes())
+
+    cached_evidence = module.prepare_release_dependencies(
+        tmp_path, 'test-token', 'npm', tmp_path, seed,
+    )
+    assert cached_evidence == evidence
+    assert cached_bytes == [artifact_bytes[str(index)] for index in (1, 2)]
+    assert all(not path.exists() for path in staged_paths)
+    assert (tmp_path / 'package.json').read_bytes() == original_package
+    assert (tmp_path / 'package-lock.json').read_bytes() == original_lock
+
+    def fail_cache(_command, _cwd):
+        raise RuntimeError('npm cache add failed')
+
+    with pytest.raises(RuntimeError, match='npm cache add failed'):
+        module.prepare_release_dependencies(tmp_path, 'test-token', 'npm', tmp_path, fail_cache)
+    assert (tmp_path / 'package.json').read_bytes() == original_package
+    assert (tmp_path / 'package-lock.json').read_bytes() == original_lock
 def test_signed_download_does_not_receive_api_credential():
     request = urllib.request.Request('https://api.github.com/repos/a/b/releases/assets/1', headers={'Authorization': 'Bearer private'})
     redirected = module.ReleaseRedirect().redirect_request(request, None, 302, 'Found', {}, 'https://release-assets.githubusercontent.com/asset')

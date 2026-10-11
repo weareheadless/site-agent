@@ -16,21 +16,18 @@ Payload schema and migration files remain platform-owned, not Ada-editable.
 Routine Ada website work cannot change schema, migrations, admin, auth, server
 bridges, package pins or runtime configuration.
 
-Messages and optional booking Calendar are a single shared Payload capability.
-Website forms create Inbox conversations; confirmed bookings create Calendar
-events and link the same Contact and email thread. Public availability is
-bounded and exposes no guest data. Booking confirmations are transactional.
-The site-level `features.bookings` flag defaults to false. Set it to true only
-when the owner has chosen to offer appointments and the design includes a
-canonical `helloAdaBooking` content block; then make the shared Calendar
-available in the owner workspace. Do not expose Calendar on non-booking sites.
-Ordinary New Message and reply sending use Resend only after the verified
-sender domain and domain-restricted `sending_access` key are provisioned for
-this tenant. The tenant Worker receives only that restricted key. Cloudflare's
-`EMAIL` binding remains for inbound routing and transactional notices, never
-as a second ordinary-mail sender. Follow
-`docs/helloada-mailbox-calendar-contract.md`; do not add a customer-local schema,
-provider fallback, duplicate inbox or separate booking store.
+Mailflare is the only mailbox and booking application. Its native UI is served
+inside the tenant's single Worker under `/mail/*`; the shared Payload workspace
+must route Messages and enabled Calendar navigation there. Do not export or
+mount the retired Payload Messages or Calendar components. Website enquiries
+are validated and written into the tenant's Mailflare Inbox; confirmed booking
+events use Mailflare Calendar. Public availability is bounded and exposes no
+guest data. The site-level `features.bookings` flag defaults to false. Enable
+it only when the owner offers appointments and the design includes the
+canonical `helloAdaBooking` content block. Ordinary sending uses the tenant's
+restricted Resend key; Cloudflare Email Routing handles inbound delivery.
+Follow `docs/mailflare-single-worker-contract.md`; do not add a Payload mailbox,
+provider fallback, duplicate queue path, or separate booking store.
 
 Public article URLs have one canonical contract: `/blog` is the index and
 `/blog/{slug}` is an article. Both bases are declared in

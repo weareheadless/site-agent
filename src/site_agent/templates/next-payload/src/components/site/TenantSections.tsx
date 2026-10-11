@@ -136,7 +136,7 @@ function ContentEntryView({ entry, collection, documentId, sectionKey, preview }
       if (!siteKey) throw new Error('The booking security check is not configured for this website.')
       return <BookingForm key={key} appointmentType={{
         slug: String(appointmentType.slug), name: String(appointmentType.name || entry.label || ''), description: String(appointmentType.description || ''),
-      }} siteKey={siteKey} locale={helloAdaSite.defaultLocale} />
+      }} bookingUsername={helloAdaSite.tenantId} siteKey={siteKey} locale={helloAdaSite.defaultLocale} />
     }
     default:
       throw new Error(`Payload content “${key}” uses unsupported block type “${entry.blockType}”.`)

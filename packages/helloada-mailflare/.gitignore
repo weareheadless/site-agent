@@ -1,0 +1,7 @@
+upstream/node_modules/
+upstream/dist/
+upstream/.next/
+upstream/.vinext/
+upstream/.wrangler/
+upstream/next-env.d.ts
+upstream/src/lib/migrations/bundle.json

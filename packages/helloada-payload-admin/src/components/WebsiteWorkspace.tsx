@@ -8,8 +8,6 @@ import { HelloAdaChatMessage } from './HelloAdaChatMessage'
 import { HelloAdaHistory } from './HelloAdaHistory'
 import { HelloAdaGrowth } from './HelloAdaGrowth'
 import { HelloAdaGallery } from './HelloAdaGallery'
-import { HelloAdaMessages } from './HelloAdaMessages'
-import { HelloAdaCalendar } from './HelloAdaCalendar'
 import { EditableRichTextEditor } from './EditableRichTextEditor'
 import { fetchHelloAda } from '../api/fetchHelloAda'
 import { useHelloAdaTranslations } from '../api/useHelloAdaTranslations'
@@ -695,9 +693,14 @@ export function WebsiteWorkspace() {
   if (searchParams.get('view') === 'history') return <HelloAdaHistory />
   if (searchParams.get('view') === 'growth') return <HelloAdaGrowth />
   if (searchParams.get('view') === 'gallery') return <HelloAdaGallery />
-  if (searchParams.get('view') === 'messages') return <HelloAdaMessages />
-  if (searchParams.get('view') === 'calendar' && site.features.bookings) return <HelloAdaCalendar />
+  if (searchParams.get('view') === 'messages') return <MailflareRedirect href="/mail/inbox" />
+  if (searchParams.get('view') === 'calendar' && site.features.bookings) return <MailflareRedirect href="/mail/calendar" />
   return <ReviewWorkspace />
+}
+
+function MailflareRedirect({ href }: { href: string }) {
+  useEffect(() => { window.location.replace(href) }, [href])
+  return <main className="helloada-workspace-loading" role="status">Opening your workspace…</main>
 }
 
 function ReviewWorkspace() {

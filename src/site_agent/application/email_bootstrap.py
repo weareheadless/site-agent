@@ -278,29 +278,31 @@ def _worker_readiness(
         or body.get("ok") is not True
         or body.get("tenant") != tenant_id
         or body.get("contentContract") != "helloada-content-v3"
-        or body.get("emailProvisioningVersion") != 1
+        or body.get("mailflareProvisioningVersion") != 1
     ):
-        return "", "The tenant Worker has not confirmed the canonical Messages/email release."
+        return "", "The tenant Worker has not confirmed the canonical Mailflare release."
     return worker, ""
 
 
-def _configure_payload_mailbox(
+def _configure_mailflare_mailbox(
     config: Mapping[str, Any],
     *,
     tenant_id: str,
     token: str,
     domain: str,
     address: str,
+    zone_id: str,
+    routing_status: str,
     env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     origin = _registered_site_origin(config, env)
     request = urllib.request.Request(
-        origin + "/api/helloada/internal/messages/configure-mailbox",
+        origin + "/api/helloada/internal/mailflare/configure-mailbox",
         data=json.dumps({
             "domain": domain,
             "address": address,
-            "outboundProvider": "resend",
-            "outboundMode": "business_correspondence",
+            "zoneId": zone_id,
+            "routingStatus": routing_status,
         }).encode("utf-8"),
         method="POST",
         headers={
@@ -315,17 +317,17 @@ def _configure_payload_mailbox(
         with urllib.request.urlopen(request, timeout=20) as response:
             result = json.loads(response.read(8 * 1024).decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        raise EmailProvisioningError(f"The tenant Worker rejected Payload mailbox configuration (HTTP {exc.code})") from exc
+        raise EmailProvisioningError(f"The tenant Worker rejected Mailflare mailbox provisioning (HTTP {exc.code})") from exc
     except (urllib.error.URLError, TimeoutError, OSError, ValueError, UnicodeError) as exc:
-        raise EmailProvisioningError(f"The tenant Worker did not confirm Payload mailbox configuration ({type(exc).__name__})") from exc
+        raise EmailProvisioningError(f"The tenant Worker did not confirm Mailflare mailbox provisioning ({type(exc).__name__})") from exc
     if (
         not isinstance(result, Mapping)
         or result.get("state") != "active"
         or str(result.get("domain") or "").lower() != domain
         or str(result.get("address") or "").lower() != address
     ):
-        raise EmailProvisioningError("Payload did not confirm the requested mailbox as active")
-    return {"state": "active", "domain": domain, "address": address, "outboundProvider": "resend"}
+        raise EmailProvisioningError("Mailflare did not confirm the requested mailbox as active")
+    return {"state": "active", "domain": domain, "address": address}
 
 
 def prepare_email_plan(
@@ -595,15 +597,26 @@ def auto_provision_email(
         )
 
         provider = EmailProvisioningService(cloudflare_email).provision(preflight, policy)
-        attempt.update(state="configuring_payload", cloudflareRouteId=provider["routingRuleId"])
+        attempt.update(state="configuring_mailflare", cloudflareRouteId=provider["routingRuleId"])
+        mailbox_secrets = {
+            "MAILFLARE_ADDRESS": address,
+            "MAILFLARE_ZONE_ID": str(provider["zoneId"]),
+            "MAILFLARE_ROUTING_STATUS": str(provider["routingStatus"]),
+        }
+        _write_tenant_secrets(secret_path, mailbox_secrets)
+        worker_secrets = _worker_secret_client(config, resolved_env, worker)
+        for secret_name, secret_value in mailbox_secrets.items():
+            worker_secrets.put_secret(secret_name, secret_value)
         if memory is not None:
             memory.kv_set("email_provisioning_state", attempt)
-        payload = _configure_payload_mailbox(
+        mailbox = _configure_mailflare_mailbox(
             config,
             tenant_id=tenant_id,
             token=tenant_token,
             domain=resolved_email_domain,
             address=address,
+            zone_id=str(provider["zoneId"]),
+            routing_status=str(provider["routingStatus"]),
             env=resolved_env,
         )
         result = {
@@ -622,7 +635,7 @@ def auto_provision_email(
             "resendDomain": resend_domain["domain"],
             "resendDomainStatus": resend_domain["status"],
             "resendSendingKeyProvisioned": True,
-            "payloadMailboxState": payload["state"],
+            "mailflareMailboxState": mailbox["state"],
             "preflightSha256": preflight["snapshotSha256"],
             "completedAt": _now(),
         }

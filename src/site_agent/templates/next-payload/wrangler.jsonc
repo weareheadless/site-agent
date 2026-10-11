@@ -14,37 +14,56 @@
     "HELLOADA_HANDOFF_PUBLIC_KEY": "__HELLOADA_HANDOFF_PUBLIC_KEY__",
     "HELLOADA_TEMPLATE_SCHEMA": "7",
     "HELLOADA_WORKSPACE_API_VERSION": "v1",
-    "HELLOADA_PAYLOAD_ADMIN_VERSION": "0.10.8",
+    "HELLOADA_PAYLOAD_ADMIN_VERSION": "0.10.9",
     "HELLOADA_PAYLOAD_CORE_VERSION": "0.5.7",
     "HELLOADA_PAYLOAD_SCHEMA_REVISION": "7",
     "HELLOADA_CONTENT_CONTRACT_VERSION": "helloada-content-v3",
     "HELLOADA_SCHEMA_IDENTITY": "af92eb2228b2e8fdaeccfe578f684db9388f12f58e8ee23c72bfed4dee59a927",
     "HELLOADA_PAYLOAD_MIGRATION_HEAD": "63a934836e0868ac7cdea4716bb9a0935708399567e219bac6346950325deb9a",
-    "HELLOADA_SITE_AGENT_VERSION": "__SITE_AGENT_VERSION__"
+    "HELLOADA_SITE_AGENT_VERSION": "__SITE_AGENT_VERSION__",
+    "HELLOADA_MAILFLARE_INBOUND_QUEUE_NAME": "__MAILFLARE_INBOUND_QUEUE__",
+    "HELLOADA_MAILFLARE_OUTBOUND_QUEUE_NAME": "__MAILFLARE_OUTBOUND_QUEUE__",
+    "HELLOADA_MAILFLARE_AGENT_QUEUE_NAME": "__MAILFLARE_AGENT_QUEUE__"
   },
   "d1_databases": [
     {
       "binding": "D1",
       "database_id": "00000000-0000-0000-0000-000000000000",
       "database_name": "helloada-template"
+    },
+    {
+      "binding": "MAILFLARE_DB",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_name": "helloada-template-mail",
+      "migrations_dir": ".mailflare/migrations"
     }
   ],
   "r2_buckets": [
     { "binding": "R2", "bucket_name": "helloada-template-media" },
-    { "binding": "PRIVATE_EMAIL", "bucket_name": "helloada-template-email", "preview_bucket_name": "helloada-template-email" }
+    { "binding": "PRIVATE_EMAIL", "bucket_name": "helloada-template-email", "preview_bucket_name": "helloada-template-email" },
+    { "binding": "MAILFLARE_BUCKET", "bucket_name": "helloada-template-mail-files" }
   ],
   "send_email": [{ "name": "EMAIL" }],
   "ratelimits": [
     { "name": "HELLOADA_FORM_RATE_LIMIT", "namespace_id": "2701", "simple": { "limit": 10, "period": 60 } },
-    { "name": "HELLOADA_NOTIFICATION_RATE_LIMIT", "namespace_id": "2702", "simple": { "limit": 5, "period": 60 } },
-    { "name": "HELLOADA_BOOKING_RATE_LIMIT", "namespace_id": "2703", "simple": { "limit": 5, "period": 60 } }
+    { "name": "MAILFLARE_BOOKING_RATE_LIMIT", "namespace_id": "2703", "simple": { "limit": 5, "period": 60 } },
+    { "name": "MAILFLARE_LOGIN_RATE_LIMIT", "namespace_id": "2704", "simple": { "limit": 20, "period": 60 } },
+    { "name": "MAILFLARE_AGENT_RATE_LIMIT", "namespace_id": "2705", "simple": { "limit": 120, "period": 60 } }
   ],
+  "durable_objects": { "bindings": [{ "name": "MAILFLARE_REALTIME", "class_name": "RealtimeHub" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["RealtimeHub"] }],
+  "ai": { "binding": "MAILFLARE_AI" },
   "queues": {
-    "producers": [{ "binding": "HELLOADA_MESSAGES_QUEUE", "queue": "helloada-template-messages" }],
+    "producers": [
+      { "binding": "MAILFLARE_INBOUND_QUEUE", "queue": "helloada-template-mail-inbound" },
+      { "binding": "MAILFLARE_OUTBOUND_QUEUE", "queue": "helloada-template-mail-outbound" },
+      { "binding": "MAILFLARE_AGENT_QUEUE", "queue": "helloada-template-mail-agent" }
+    ],
     "consumers": [
-      { "queue": "helloada-template-messages", "max_batch_size": 1, "max_batch_timeout": 5, "max_retries": 8, "retry_delay": 30, "max_concurrency": 1, "dead_letter_queue": "helloada-template-messages-dlq" },
-      { "queue": "helloada-template-messages-dlq", "max_batch_size": 1, "max_batch_timeout": 5, "max_retries": 3, "retry_delay": 30, "max_concurrency": 1 }
+      { "queue": "helloada-template-mail-inbound", "max_batch_size": 5, "max_retries": 3, "max_concurrency": 1 },
+      { "queue": "helloada-template-mail-outbound", "max_batch_size": 5, "max_retries": 3, "max_concurrency": 1 },
+      { "queue": "helloada-template-mail-agent", "max_batch_size": 1, "max_retries": 3, "max_concurrency": 1 }
     ]
   },
-  "triggers": { "crons": ["*/5 * * * *"] }
+  "triggers": { "crons": ["*/5 * * * *", "0 2 * * *"] }
 }

@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from ..credentials import credential_environment, cloudflare_env_names, github_ssh_command
+from ..credentials import credential_environment, cloudflare_env_names, github_api_token, github_ssh_command
 from ..hands.github_static import GithubStatic
 from .release_queue import ReleaseQueueError, release_root, request_release
 
@@ -779,7 +779,27 @@ class SourceDeploymentService:
             self._write_revision_marker(worktree, local_head)
             checks.append(self._verify_candidate_source_boundary(worktree, local_head, job.get("draft_id")))
             npm = self._verify_toolchain(worktree)
-            checks.append(self._check([npm, "ci", "--no-audit", "--no-fund"], worktree, "dependencies", timeout, preview_secret=preview_secret))
+            from .release_dependencies import prepare_release_dependencies
+
+            def seed_private_package(command: list[str], directory: Path) -> None:
+                checks.append(self._check(
+                    command, directory, "private_package_cache", timeout,
+                    preview_secret=preview_secret,
+                ))
+
+            assets = prepare_release_dependencies(
+                worktree,
+                github_api_token(self.config, self._resolved_env()),
+                npm,
+                self._preview_home / "tmp",
+                seed_private_package,
+            )
+            checks.append(self._check(
+                [npm, "ci", "--ignore-scripts", "--no-audit", "--no-fund", "--prefer-offline"],
+                worktree, "dependencies", timeout, preview_secret=preview_secret,
+            ))
+            if len(assets) != 2:
+                raise SourceDeploymentError("candidate source did not resolve the two locked shared packages")
             checks.append(self._check(self._inventory_command(checkout, worktree), worktree, "source_inventory", timeout, parse_json=True, preview_secret=preview_secret))
             checks.append(self._check([npm, "run", "typecheck"], worktree, "typecheck", timeout, preview_secret=preview_secret))
             checks.append(self._check([npm, "run", "lint"], worktree, "lint", timeout, preview_secret=preview_secret))

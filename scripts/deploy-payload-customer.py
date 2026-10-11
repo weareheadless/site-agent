@@ -196,6 +196,13 @@ def worker_artifact_hashes(checkout: Path, custom_worker_bundle: Path | None = N
         if not path.is_file():
             raise RuntimeError(f"custom Worker release input is missing: {relative}")
         generated[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
+    mailflare_output = checkout / ".mailflare"
+    if not (mailflare_output / "provenance.json").is_file():
+        raise RuntimeError("Mailflare Worker output is missing its source receipt")
+    generated.update({
+        f".mailflare/{path}": digest
+        for path, digest in file_hashes(mailflare_output).items()
+    })
     if custom_worker_bundle is not None:
         if not (custom_worker_bundle / "worker.js").is_file():
             raise RuntimeError("Wrangler dry-run produced no compiled custom Worker")
@@ -207,10 +214,15 @@ def worker_artifact_hashes(checkout: Path, custom_worker_bundle: Path | None = N
 
 
 def worker_handlers(source: str) -> set[str]:
-    return {name for name, pattern in {
+    handlers = {name for name, pattern in {
         "fetch": r"\bfetch\s*:", "email": r"\basync\s+email\s*\(",
         "queue": r"\basync\s+queue\s*\(", "scheduled": r"\bscheduled\s*\(",
     }.items() if re.search(pattern, source)}
+    if "composeTenantWorker({" in source and all(token in source for token in (
+        "site: siteAgentHandlers", "mailflare,", "mailflareQueueNames:", "basePath: \"/mail\"",
+    )):
+        return {"fetch", "email", "queue", "scheduled"}
+    return handlers
 
 
 def migration_ledger_head(applied: list[str]) -> str:
@@ -249,11 +261,20 @@ def validate_target(customer: dict[str, Any], tenant: str, sha: str, release_id:
         raise ValueError("registered customer cannot use the template D1 identity")
     if not re.fullmatch(r"[a-z0-9-]{1,63}", str(customer.get("d1DatabaseName") or "")):
         raise ValueError("registered customer has no exact tenant D1 name")
+    if not UUID_RE.fullmatch(str(customer.get("mailflareD1DatabaseId") or "")) or customer["mailflareD1DatabaseId"].replace("-", "") == "0" * 32:
+        raise ValueError("registered customer has no exact Mailflare D1 identity")
+    if not re.fullmatch(r"[a-z0-9-]{1,63}", str(customer.get("mailflareD1DatabaseName") or "")):
+        raise ValueError("registered customer has no exact Mailflare D1 name")
     if not re.fullmatch(r"[a-z0-9-]{3,63}", str(customer.get("r2BucketName") or "")):
         raise ValueError("registered customer has no exact tenant R2 bucket")
-    for field in ("privateEmailR2BucketName", "messagesQueueName", "messagesDlqName"):
+    for field in ("privateEmailR2BucketName", "mailflareR2BucketName", "mailflareInboundQueueName",
+                  "mailflareOutboundQueueName", "mailflareAgentQueueName"):
         if not re.fullmatch(r"[a-z0-9-]{3,63}", str(customer.get(field) or "")):
             raise ValueError(f"registered customer has no exact {field} resource name")
+    if len({customer["d1DatabaseName"], customer["mailflareD1DatabaseName"]}) != 2:
+        raise ValueError("Payload and Mailflare databases must be tenant-isolated")
+    if len({customer["r2BucketName"], customer["privateEmailR2BucketName"], customer["mailflareR2BucketName"]}) != 3:
+        raise ValueError("public media, private email, and Mailflare files must use separate tenant buckets")
 
 
 def validate_toolchain_manifest(manifest: dict[str, Any]) -> None:
@@ -268,18 +289,30 @@ def validate_toolchain_manifest(manifest: dict[str, Any]) -> None:
 
 
 def validate_worker_contract(worker_config: dict[str, Any], customer: dict[str, Any], tenant: str) -> None:
-    if worker_config.get("d1Count") != 1 or worker_config.get("r2Count") != 2:
-        raise RuntimeError("Worker must have one tenant D1 and exactly two canonical R2 bindings")
+    if worker_config.get("d1Count") != 2:
+        raise RuntimeError("Worker must have isolated Payload and Mailflare D1 databases")
+    if worker_config.get("r2Count") != 3:
+        raise RuntimeError("Worker must have exactly three canonical R2 bindings")
     if worker_config.get("d1Binding") != "D1":
         raise RuntimeError("Worker must use the canonical D1 binding name")
+    d1_bindings = worker_config.get("d1Bindings")
+    if (not isinstance(d1_bindings, list) or len(d1_bindings) != 2
+            or {item.get("binding") for item in d1_bindings if isinstance(item, dict)} != {"D1", "MAILFLARE_DB"}):
+        raise RuntimeError("Worker must declare separate Payload and Mailflare D1 bindings")
+    if (worker_config.get("mailflareD1DatabaseId") != customer["mailflareD1DatabaseId"]
+            or worker_config.get("mailflareD1DatabaseName") != customer["mailflareD1DatabaseName"]):
+        raise RuntimeError("Worker Mailflare D1 identity differs from the exact registered tenant database")
+    if worker_config.get("mailflareMigrationsDir") != ".mailflare/migrations":
+        raise RuntimeError("Worker Mailflare D1 migration directory differs from the canonical source path")
     r2_bindings = worker_config.get("r2Bindings")
-    if not isinstance(r2_bindings, list) or len(r2_bindings) != 2:
-        raise RuntimeError("Worker must declare exactly the public and private-email R2 bindings")
+    if not isinstance(r2_bindings, list) or len(r2_bindings) != 3:
+        raise RuntimeError("Worker must declare exactly the public, private-email and Mailflare R2 bindings")
     buckets = {
         str(item.get("binding") or ""): str(item.get("bucketName") or "")
         for item in r2_bindings if isinstance(item, dict)
     }
-    if buckets != {"R2": customer["r2BucketName"], "PRIVATE_EMAIL": customer["privateEmailR2BucketName"]}:
+    if buckets != {"R2": customer["r2BucketName"], "PRIVATE_EMAIL": customer["privateEmailR2BucketName"],
+                   "MAILFLARE_BUCKET": customer["mailflareR2BucketName"]}:
         raise RuntimeError("Worker R2 bindings differ from the exact registered tenant buckets")
     if worker_config.get("r2Binding") != "R2" or worker_config.get("r2BucketName") != customer["r2BucketName"]:
         raise RuntimeError("Worker must use the canonical public R2 binding")
@@ -303,25 +336,23 @@ def validate_worker_contract(worker_config: dict[str, Any], customer: dict[str, 
             or worker_config.get("d1DatabaseId") != customer["d1DatabaseId"]
             or worker_config.get("d1DatabaseName") != customer["d1DatabaseName"]):
         raise RuntimeError("Worker migration chain or tenant D1 identity does not match the registry")
-    if worker_config.get("messagesQueueName") != customer["messagesQueueName"]:
-        raise RuntimeError("Worker Messages producer differs from the exact registered Queue")
-    if worker_config.get("messagesDlqName") != customer["messagesDlqName"]:
-        raise RuntimeError("Worker dead-letter Queue differs from the exact registered resource")
-    if (worker_config.get("messagesQueueProducerBinding") != "HELLOADA_MESSAGES_QUEUE"
-            or worker_config.get("messagesQueueProducerCount") != 1
-            or worker_config.get("messagesQueueConsumerCount") != 2
-            or not worker_config.get("messagesQueueConsumer")
-            or not worker_config.get("messagesDlqConsumer")):
-        raise RuntimeError("Worker must produce to its Messages Queue and consume it plus its dead-letter Queue")
     queues = worker_config.get("queues")
     consumers = queues.get("consumers") if isinstance(queues, dict) else None
-    if not isinstance(consumers, list) or len(consumers) != 2 or any(not isinstance(item, dict) for item in consumers):
-        raise RuntimeError("Worker must declare the exact message and dead-letter Queue consumers")
+    if not isinstance(consumers, list) or len(consumers) != 3 or any(not isinstance(item, dict) for item in consumers):
+        raise RuntimeError("Worker must declare exactly the three Mailflare Queue consumers")
     by_queue = {item.get("queue"): item for item in consumers}
-    if (set(by_queue) != {customer["messagesQueueName"], customer["messagesDlqName"]}
-            or by_queue[customer["messagesQueueName"]].get("dead_letter_queue") != customer["messagesDlqName"]
-            or by_queue[customer["messagesDlqName"]].get("dead_letter_queue")):
-        raise RuntimeError("Worker Queue consumer names or dead-letter relationship differ from the tenant contract")
+    expected_queue_names = {
+        "MAILFLARE_INBOUND_QUEUE": customer["mailflareInboundQueueName"],
+        "MAILFLARE_OUTBOUND_QUEUE": customer["mailflareOutboundQueueName"],
+        "MAILFLARE_AGENT_QUEUE": customer["mailflareAgentQueueName"],
+    }
+    expected_queues = set(expected_queue_names.values())
+    if set(by_queue) != expected_queues or any(item.get("dead_letter_queue") for item in consumers):
+        raise RuntimeError("Worker Queue consumers must match the three registered Mailflare queues exactly")
+    if worker_config.get("queueProducerCount") != 3 or worker_config.get("queueConsumerCount") != 3:
+        raise RuntimeError("Worker must bind exactly three Mailflare queue producers and consumers")
+    if worker_config.get("mailflareQueueNames") != expected_queue_names:
+        raise RuntimeError("Worker Mailflare producer names differ from the registered tenant Queues")
     for config in consumers:
         worker_queue_consumer_settings(config)
     if (worker_config.get("main") != "worker.ts" or worker_config.get("sendEmailBinding") is not True
@@ -332,21 +363,28 @@ def validate_worker_contract(worker_config: dict[str, Any], customer: dict[str, 
     if worker_config.get("turnstileSecretInVars"):
         raise RuntimeError("Turnstile secrets must be supplied through the protected Worker secret file")
     limits = worker_config.get("rateLimitBindings")
-    if not isinstance(limits, list) or len(limits) != 2:
-        raise RuntimeError("Worker must define the canonical form and notification rate-limit bindings")
+    if not isinstance(limits, list) or len(limits) != 4:
+        raise RuntimeError("Worker must define all four canonical site and Mailflare rate-limit bindings")
     limits_by_name = {str(item.get("name") or ""): str(item.get("namespaceId") or "")
                       for item in limits if isinstance(item, dict)}
-    if set(limits_by_name) != {"HELLOADA_FORM_RATE_LIMIT", "HELLOADA_NOTIFICATION_RATE_LIMIT"}:
-        raise RuntimeError("Worker rate-limit binding names do not match the site-agent contract")
+    if set(limits_by_name) != {"HELLOADA_FORM_RATE_LIMIT", "MAILFLARE_BOOKING_RATE_LIMIT",
+                               "MAILFLARE_LOGIN_RATE_LIMIT", "MAILFLARE_AGENT_RATE_LIMIT"}:
+        raise RuntimeError("Worker rate-limit binding names do not match the site-agent and Mailflare contracts")
     namespace_ids = list(limits_by_name.values())
-    if any(not value.isdigit() or int(value) < 1 for value in namespace_ids) or len(set(namespace_ids)) != 2:
+    if any(not value.isdigit() or int(value) < 1 for value in namespace_ids) or len(set(namespace_ids)) != 4:
         raise RuntimeError("Worker rate-limit namespaces must be distinct positive Cloudflare account identifiers")
     required_handlers = {"fetch", "email", "queue", "scheduled"}
     if not required_handlers.issubset(set(worker_config.get("handlers") or [])):
         raise RuntimeError("Worker custom entrypoint is missing a required event handler")
     crons = worker_config.get("crons")
-    if crons != ["*/5 * * * *"]:
-        raise RuntimeError("Worker must declare the canonical five-minute durable message sweep")
+    if crons != ["*/5 * * * *", "0 2 * * *"]:
+        raise RuntimeError("Worker must declare Mailflare's canonical maintenance schedules")
+    if worker_config.get("durableObjectBindings") != [{"name": "MAILFLARE_REALTIME", "className": "RealtimeHub"}]:
+        raise RuntimeError("Worker must bind Mailflare RealtimeHub exactly once")
+    if worker_config.get("durableObjectMigrations") != [{"tag": "v1", "newSqliteClasses": ["RealtimeHub"]}]:
+        raise RuntimeError("Worker must declare Mailflare RealtimeHub's SQLite migration exactly once")
+    if worker_config.get("aiBinding") != "MAILFLARE_AI":
+        raise RuntimeError("Worker must bind Mailflare to tenant Workers AI")
 
 
 def worker_cron_schedules(customer: dict[str, Any], env: dict[str, str]) -> list[str]:
@@ -387,8 +425,8 @@ def reconcile_worker_cron_schedules(
     customer: dict[str, Any], desired: list[str], env: dict[str, str],
 ) -> dict[str, Any]:
     """Reconcile schedules to the committed Wrangler contract and verify Cloudflare's result."""
-    if desired != ["*/5 * * * *"]:
-        raise ValueError("release requires the exact canonical five-minute message sweep")
+    if desired != ["*/5 * * * *", "0 2 * * *"]:
+        raise ValueError("release requires the exact canonical Mailflare schedules")
     before = worker_cron_schedules(customer, env)
     changed = before != desired
     if changed:
@@ -577,28 +615,34 @@ def reconcile_worker_queue_consumers(
     customer: dict[str, Any], worker_config: dict[str, Any], resources: dict[str, Any],
     env: dict[str, str],
 ) -> dict[str, Any]:
-    """Apply and verify the exact message and dead-letter consumer contract from Wrangler."""
+    """Apply and verify all three Mailflare Queue consumers for one tenant."""
     queue_config = worker_config.get("queues")
     configured = queue_config.get("consumers") if isinstance(queue_config, dict) else None
-    if not isinstance(configured, list) or len(configured) != 2:
-        raise RuntimeError("committed Worker must define exactly the message and dead-letter Queue consumers")
+    expected_names = {
+        customer["mailflareInboundQueueName"], customer["mailflareOutboundQueueName"],
+        customer["mailflareAgentQueueName"],
+    }
+    if not isinstance(configured, list) or len(configured) != len(expected_names):
+        raise RuntimeError("committed Worker must define all three Mailflare Queue consumers")
     if any(not isinstance(item, dict) for item in configured):
         raise RuntimeError("committed Worker Queue consumer contract is invalid")
-    expected_names = {customer["messagesQueueName"], customer["messagesDlqName"]}
     if {item.get("queue") for item in configured} != expected_names:
         raise RuntimeError("committed Worker Queue consumers do not match the registered tenant Queues")
     by_name = {item["queue"]: item for item in configured}
-    if (by_name[customer["messagesQueueName"]].get("dead_letter_queue") != customer["messagesDlqName"]
-            or by_name[customer["messagesDlqName"]].get("dead_letter_queue")):
-        raise RuntimeError("committed Worker Queue dead-letter relationship differs from the tenant contract")
+    if any(item.get("dead_letter_queue") for item in configured):
+        raise RuntimeError("Mailflare Queue consumers must not reference a second legacy dead-letter path")
+    mailflare_queues = resources.get("mailflareQueues")
+    mailflare_queues = mailflare_queues if isinstance(mailflare_queues, dict) else {}
     provisioned = {
-        customer["messagesQueueName"]: resources.get("messagesQueue", {}),
-        customer["messagesDlqName"]: resources.get("messagesDeadLetterQueue", {}),
+        customer["mailflareInboundQueueName"]: mailflare_queues.get("inbound", {}),
+        customer["mailflareOutboundQueueName"]: mailflare_queues.get("outbound", {}),
+        customer["mailflareAgentQueueName"]: mailflare_queues.get("agent", {}),
     }
-    queue_ids = {name: item.get("queue_id") for name, item in provisioned.items()}
-    if (any(not isinstance(queue_id, str) or not queue_id for queue_id in queue_ids.values())
-            or len(set(queue_ids.values())) != 2):
-        raise RuntimeError("provisioned tenant Queue IDs are required before consumer reconciliation")
+    queue_ids = {name: item.get("queue_id") for name, item in provisioned.items() if isinstance(item, dict)}
+    if (set(queue_ids) != expected_names
+            or any(not isinstance(queue_id, str) or not queue_id for queue_id in queue_ids.values())
+            or len(set(queue_ids.values())) != len(expected_names)):
+        raise RuntimeError("all three isolated tenant Mailflare Queue IDs are required before consumer reconciliation")
     results = []
     for config in configured:
         queue_name = config["queue"]
@@ -613,6 +657,7 @@ def reconcile_worker_queue_consumers(
             queue_ids[queue_name], queue_name, desired, env,
         ))
     return {"consumers": results, "verified": all(item["verified"] for item in results)}
+
 def d1_query(
     customer: dict[str, Any], sql: str, env: dict[str, str], params: tuple[Any, ...] = (),
 ) -> list[dict[str, Any]]:
@@ -636,6 +681,107 @@ def d1_query(
     if result.get("success") is not True or not isinstance(result.get("results"), list):
         raise RuntimeError("Cloudflare tenant D1 query did not complete successfully")
     return result["results"]
+
+
+def mailflare_d1_query(customer: dict[str, Any], sql: str, env: dict[str, str],
+                       params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
+    url = ("https://api.cloudflare.com/client/v4/accounts/" + urllib.parse.quote(env["CLOUDFLARE_ACCOUNT_ID"], safe="")
+           + "/d1/database/" + urllib.parse.quote(customer["mailflareD1DatabaseId"], safe="") + "/query")
+    request = urllib.request.Request(
+        url,
+        data=json.dumps({"sql": sql, "params": list(params)}).encode(),
+        method="POST",
+        headers={"Authorization": "Bearer " + env["CLOUDFLARE_API_TOKEN"],
+                 "Content-Type": "application/json", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            body = json.load(response)
+    except (OSError, urllib.error.URLError, TimeoutError) as error:
+        raise RuntimeError(f"Mailflare D1 schema inspection failed: {type(error).__name__}") from error
+    if body.get("success") is not True or not isinstance(body.get("result"), list) or len(body["result"]) != 1:
+        raise RuntimeError("Cloudflare did not return one successful Mailflare D1 query result")
+    result = body["result"][0]
+    if result.get("success") is not True or not isinstance(result.get("results"), list):
+        raise RuntimeError("Cloudflare Mailflare D1 query did not complete successfully")
+    return result["results"]
+
+
+def applied_mailflare_migrations(customer: dict[str, Any], env: dict[str, str]) -> tuple[list[str], list[str]]:
+    rows = mailflare_d1_query(
+        customer,
+        "SELECT name FROM sqlite_master WHERE type = ? AND name NOT LIKE ? ORDER BY name",
+        env,
+        ("table", "sqlite_%"),
+    )
+    tables = [str(row.get("name") or "") for row in rows
+              if str(row.get("name") or "") not in D1_SYSTEM_TABLES]
+    if "d1_migrations" not in tables:
+        return tables, []
+    applied_rows = mailflare_d1_query(customer, "SELECT name FROM d1_migrations ORDER BY id ASC", env)
+    return tables, [str(row.get("name") or "") for row in applied_rows]
+
+
+def mailflare_migration_head(names: list[str]) -> str:
+    return hashlib.sha256(json.dumps(names, separators=(",", ":")).encode()).hexdigest()
+
+
+def reconcile_mailflare_migrations(checkout: Path, customer: dict[str, Any],
+                                   env: dict[str, str], base: dict[str, str]) -> dict[str, Any]:
+    """Apply the pinned SQL chain using Wrangler's rollback-aware D1 migration system."""
+    migration_dir = checkout / ".mailflare/migrations"
+    provenance = json.loads((checkout / ".mailflare/provenance.json").read_text())
+    expected = provenance.get("migrationNames")
+    files = sorted(path.name for path in migration_dir.glob("*.sql") if path.is_file())
+    if not isinstance(expected, list) or not expected or files != expected:
+        raise RuntimeError("Mailflare migration files do not match their pinned build receipt")
+    if len(set(expected)) != len(expected) or any(not re.fullmatch(r"\d{4}_[a-z0-9_-]+\.sql", name) for name in expected):
+        raise RuntimeError("Mailflare migration filenames are not a unique canonical sequence")
+
+    tables, applied = applied_mailflare_migrations(customer, env)
+    if "d1_migrations" not in tables and any(name not in D1_SYSTEM_TABLES for name in tables):
+        raise RuntimeError("Mailflare D1 contains application tables without its migration ledger")
+    if len(set(applied)) != len(applied) or expected[:len(applied)] != applied:
+        raise RuntimeError("Mailflare D1 migration ledger is not a prefix of the pinned schema")
+    changed = applied != expected
+    if changed:
+        command = [str(checkout / "node_modules/.bin/wrangler"), "d1", "migrations", "apply",
+                   "MAILFLARE_DB", "--remote", "--config", "wrangler.jsonc", "--yes"]
+        run(command, checkout, {**base, **env})
+        tables, applied = applied_mailflare_migrations(customer, env)
+    if "d1_migrations" not in tables or applied != expected:
+        raise RuntimeError("Mailflare D1 migration ledger differs from the pinned schema after Wrangler apply")
+    return {
+        "names": expected,
+        "head": mailflare_migration_head(expected),
+        "sourceSha256": provenance["migrationsSha256"],
+        "changed": changed,
+        "verifiedAt": utc_now(),
+    }
+
+
+def mailflare_migration_receipt(receipt: dict[str, Any]) -> tuple[list[str], str]:
+    contract = receipt.get("mailflareMigrations")
+    names = contract.get("names") if isinstance(contract, dict) else None
+    package = receipt.get("mailflare")
+    if (not isinstance(names, list) or not names
+            or any(not isinstance(name, str) or not re.fullmatch(r"\d{4}_[a-z0-9_-]+\.sql", name) for name in names)
+            or len(set(names)) != len(names)
+            or contract.get("head") != mailflare_migration_head(names)
+            or not SHA256_RE.fullmatch(str(contract.get("sourceSha256") or ""))
+            or not isinstance(package, dict)
+            or package.get("migrationNames") != names
+            or package.get("migrationsSha256") != contract.get("sourceSha256")):
+        raise RuntimeError("release receipt does not identify an exact Mailflare migration chain")
+    return names, str(contract["sourceSha256"])
+
+
+def verify_mailflare_migrations(receipt: dict[str, Any], customer: dict[str, Any],
+                                env: dict[str, str]) -> None:
+    names, _source_sha256 = mailflare_migration_receipt(receipt)
+    tables, applied = applied_mailflare_migrations(customer, env)
+    if "d1_migrations" not in tables or applied != names:
+        raise RuntimeError("live Mailflare D1 migration ledger differs from the exact deployed release")
 
 
 def applied_payload_migrations(customer: dict[str, Any], env: dict[str, str]) -> tuple[list[str], list[str]]:
@@ -976,23 +1122,32 @@ def write_tenant_environment(manifest: dict[str, Any], tenant: str, updates: dic
         os.close(lock_fd)
 
 
-def provision_message_resources(customer: dict[str, Any], env: dict[str, str]) -> dict[str, Any]:
-    """Idempotently create only the registered tenant's private inbox bucket and Queues."""
+def provision_tenant_mail_resources(customer: dict[str, Any], env: dict[str, str]) -> dict[str, Any]:
+    """Ensure exact tenant D1, R2 and Queue resources required by Mailflare and forms."""
     from site_agent.hands.cloudflare_resources import CloudflareResourceProvisioner
     from site_agent.hands.cloudflare_r2 import CloudflareR2Provisioner
 
     account_id = env["CLOUDFLARE_ACCOUNT_ID"]
     token = env["CLOUDFLARE_API_TOKEN"]
     resources = CloudflareResourceProvisioner(account_id, token)
-    private_bucket_created = CloudflareR2Provisioner(account_id, token).ensure_bucket(
-        customer["privateEmailR2BucketName"],
-    )
-    messages = resources.ensure_queue(customer["messagesQueueName"])
-    dead_letter = resources.ensure_queue(customer["messagesDlqName"])
+    buckets = CloudflareR2Provisioner(account_id, token)
+    mailflare_database = resources.ensure_d1(customer["mailflareD1DatabaseName"])
+    if mailflare_database.database_id.lower() != customer["mailflareD1DatabaseId"].lower():
+        raise RuntimeError("provisioned Mailflare D1 ID differs from the registered tenant identity")
+    private_bucket_created = buckets.ensure_bucket(customer["privateEmailR2BucketName"])
+    mailflare_bucket_created = buckets.ensure_bucket(customer["mailflareR2BucketName"])
+    inbound = resources.ensure_queue(customer["mailflareInboundQueueName"])
+    outbound = resources.ensure_queue(customer["mailflareOutboundQueueName"])
+    agent = resources.ensure_queue(customer["mailflareAgentQueueName"])
     return {
+        "mailflareD1": mailflare_database.to_dict(),
         "privateEmailR2": {"bucket": customer["privateEmailR2BucketName"], "created": bool(private_bucket_created)},
-        "messagesQueue": messages.to_dict(),
-        "messagesDeadLetterQueue": dead_letter.to_dict(),
+        "mailflareR2": {"bucket": customer["mailflareR2BucketName"], "created": bool(mailflare_bucket_created)},
+        "mailflareQueues": {
+            "inbound": inbound.to_dict(),
+            "outbound": outbound.to_dict(),
+            "agent": agent.to_dict(),
+        },
     }
 
 
@@ -1205,14 +1360,17 @@ def workers_dev_provisioner(
 def verify_worker_queue_consumers(
     receipt: dict[str, Any], customer: dict[str, Any], env: dict[str, str],
 ) -> None:
-    """Read back each live queue consumer and enforce the release's exact identity/settings."""
+    """Read back all three Mailflare queue consumers and enforce exact identity/settings."""
     contract = receipt.get("queueConsumers")
     consumers = contract.get("consumers") if isinstance(contract, dict) else None
-    expected_names = {customer["messagesQueueName"], customer["messagesDlqName"]}
+    expected_names = {
+        customer["mailflareInboundQueueName"], customer["mailflareOutboundQueueName"],
+        customer["mailflareAgentQueueName"],
+    }
     if (not isinstance(contract, dict) or contract.get("verified") is not True or not isinstance(consumers, list)
-            or len(consumers) != 2
+            or len(consumers) != len(expected_names)
             or {item.get("queue") for item in consumers if isinstance(item, dict)} != expected_names):
-        raise RuntimeError("release receipt has no exact message and dead-letter consumer contract")
+        raise RuntimeError("release receipt has no exact Mailflare consumer contract")
     for item in consumers:
         queue_id = item.get("queueId")
         desired = item.get("desired")
@@ -1222,7 +1380,6 @@ def verify_worker_queue_consumers(
         if len(active) != 1 or not worker_queue_consumer_matches(active[0], desired):
             raise RuntimeError(f"Cloudflare Queue {item['queue']} differs from the committed consumer contract")
         item["verifiedAt"] = utc_now()
-
 
 def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dict[str, Any],
                 deploy_env: dict[str, str], base: dict[str, str], stage: Any, *,
@@ -1245,8 +1402,8 @@ def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dic
             raise RuntimeError("the exact uploaded Worker version does not receive 100% of production traffic")
         receipt["deployment"] = deployment
     cron_contract = receipt.get("cronTriggers")
-    if not isinstance(cron_contract, dict) or cron_contract.get("desired") != ["*/5 * * * *"]:
-        raise RuntimeError("release receipt has no exact durable message schedule contract")
+    if not isinstance(cron_contract, dict) or cron_contract.get("desired") != ["*/5 * * * *", "0 2 * * *"]:
+        raise RuntimeError("release receipt has no exact message and Mailflare schedule contract")
     stage("verify-cron-triggers")
     active_crons = worker_cron_schedules(customer, deploy_env)
     if active_crons != cron_contract["desired"]:
@@ -1254,6 +1411,8 @@ def verify_live(receipt: dict[str, Any], customer: dict[str, Any], manifest: dic
     cron_contract["verifiedAt"] = utc_now()
     stage("verify-queue-consumers")
     verify_worker_queue_consumers(receipt, customer, deploy_env)
+    stage("verify-mailflare-migrations")
+    verify_mailflare_migrations(receipt, customer, deploy_env)
     workers_dev = workers_dev_provisioner(customer, deploy_env)
     if workers_dev is not None and not verify_only:
         stage("enable-workers-dev")
@@ -1331,25 +1490,33 @@ def verification_receipt(directory: Path, tenant: str, sha: str, release_id: str
                 "schemaRevision": customer["schemaRevision"], "schemaIdentity": customer["schemaIdentity"],
                 "migrationHead": customer["migrationHead"], "websitePresent": customer["websitePresent"],
                 "privateEmailR2BucketName": customer["privateEmailR2BucketName"],
-                "messagesQueueName": customer["messagesQueueName"],
-                "messagesDlqName": customer["messagesDlqName"]}
+                "mailflareD1DatabaseId": customer["mailflareD1DatabaseId"],
+                "mailflareD1DatabaseName": customer["mailflareD1DatabaseName"],
+                "mailflareR2BucketName": customer["mailflareR2BucketName"],
+                "mailflareInboundQueueName": customer["mailflareInboundQueueName"],
+                "mailflareOutboundQueueName": customer["mailflareOutboundQueueName"],
+                "mailflareAgentQueueName": customer["mailflareAgentQueueName"]}
     if approval_id is not None:
         expected["approvalId"] = approval_id
     if initialization_head is not None:
         expected["initialSchemaHead"] = initialization_head
     if any(receipt.get(key) != value for key, value in expected.items()):
         raise ValueError("verification target differs from the recorded release")
+    try:
+        mailflare_migration_receipt(receipt)
+    except RuntimeError as error:
+        raise ValueError("release has no exact Mailflare migration provenance") from error
     if receipt.get("status") not in ("failed", "deployed", "verified") or receipt.get("stage") not in (
-            "verify-deployment", "verify-cron-triggers", "verify-queue-consumers", "verify-connection",
+            "verify-deployment", "verify-cron-triggers", "verify-queue-consumers", "verify-mailflare-migrations", "verify-connection",
             "awaiting-browser-verification", "verified"):
         raise ValueError("only a promoted release may resume read-only verification")
-    if receipt.get("cronTriggers", {}).get("desired") != ["*/5 * * * *"]:
-        raise ValueError("release has no verified durable message schedule contract")
+    if receipt.get("cronTriggers", {}).get("desired") != ["*/5 * * * *", "0 2 * * *"]:
+        raise ValueError("release has no verified message and Mailflare schedule contract")
     queue_contract = receipt.get("queueConsumers")
     queue_consumers = queue_contract.get("consumers") if isinstance(queue_contract, dict) else None
     if (not isinstance(queue_contract, dict) or queue_contract.get("verified") is not True
-            or not isinstance(queue_consumers, list) or len(queue_consumers) != 2):
-        raise ValueError("release has no verified message and dead-letter consumer contract")
+            or not isinstance(queue_consumers, list) or len(queue_consumers) != 3):
+        raise ValueError("release has no verified Mailflare consumer contract")
     if not receipt.get("uploadedVersion") or not receipt.get("deployment"):
         raise ValueError("release has no recorded immutable production promotion")
     artifact_hashes = receipt.get("artifactHashes")
@@ -1377,6 +1544,32 @@ def inspect_artifact(checkout: Path, customer: dict[str, Any], sha: str,
         raise RuntimeError("Wrangler is not configured to upload the canonical custom Worker entrypoint")
     if not {"fetch", "email", "queue", "scheduled"}.issubset(worker_handlers(worker_source)):
         raise RuntimeError("custom Worker artifact is missing an HTTP, email, Queue or scheduled handler")
+    mailflare_source = json.loads((ROOT / "packages/helloada-mailflare/UPSTREAM.json").read_text())
+    provenance_path = checkout / ".mailflare/provenance.json"
+    if not provenance_path.is_file():
+        raise RuntimeError("Mailflare Worker output is missing its source receipt")
+    provenance = json.loads(provenance_path.read_text())
+    for key in ("repository", "commit", "packageVersion", "packageLockSha256", "integrationPatchSet", "basePath"):
+        if provenance.get(key) != mailflare_source[key]:
+            raise RuntimeError(f"Mailflare Worker source provenance mismatch: {key}")
+    if provenance.get("namespacedApiReferences", 0) < 1:
+        raise RuntimeError("Mailflare API paths were not namespaced")
+    migration_dir = checkout / ".mailflare/migrations"
+    migration_files = sorted(path for path in migration_dir.glob("*.sql") if path.is_file())
+    migration_digest = hashlib.sha256()
+    for migration_path in migration_files:
+        migration_digest.update(migration_path.name.encode())
+        migration_digest.update(b"\0")
+        migration_digest.update(migration_path.read_bytes())
+        migration_digest.update(b"\0")
+    migration_names = [path.name for path in migration_files]
+    if (not migration_names or migration_names != provenance.get("migrationNames")
+            or migration_digest.hexdigest() != provenance.get("migrationsSha256")):
+        raise RuntimeError("Mailflare SQL migrations differ from the pinned build provenance")
+    if not all((checkout / item).exists() for item in (".mailflare/server/index.js", ".mailflare/server/ssr/index.js", ".open-next/assets/mail/_next/static")):
+        raise RuntimeError("Mailflare Worker or namespaced client assets are missing")
+    if "composeTenantWorker" not in worker_source or ".mailflare/server/index.js" not in worker_source:
+        raise RuntimeError("tenant Worker does not compose the pinned Mailflare handler")
     schema_configs = [path for path in (checkout / "payload.config.ts", checkout / "src/payload.config.ts") if path.is_file()]
     if len(schema_configs) != 1:
         raise RuntimeError("site must have exactly one canonical Payload configuration")
@@ -1429,6 +1622,8 @@ def inspect_artifact(checkout: Path, customer: dict[str, Any], sha: str,
         "schemaRevision": customer["schemaRevision"],
         "schemaIdentity": customer["schemaIdentity"],
         "migrationHead": customer["migrationHead"],
+        "mailflareCommit": mailflare_source["commit"],
+        "mailflarePatchSet": mailflare_source["integrationPatchSet"],
     }
     if any(marker.get(key) != value for key, value in expected_marker.items()):
         raise RuntimeError("built release marker does not match the pinned source")
@@ -1484,8 +1679,12 @@ def main() -> int:
         "d1DatabaseId": customer["d1DatabaseId"], "d1DatabaseName": customer["d1DatabaseName"],
         "r2BucketName": customer["r2BucketName"],
         "privateEmailR2BucketName": customer["privateEmailR2BucketName"],
-        "messagesQueueName": customer["messagesQueueName"],
-        "messagesDlqName": customer["messagesDlqName"],
+        "mailflareD1DatabaseId": customer["mailflareD1DatabaseId"],
+        "mailflareD1DatabaseName": customer["mailflareD1DatabaseName"],
+        "mailflareR2BucketName": customer["mailflareR2BucketName"],
+        "mailflareInboundQueueName": customer["mailflareInboundQueueName"],
+        "mailflareOutboundQueueName": customer["mailflareOutboundQueueName"],
+        "mailflareAgentQueueName": customer["mailflareAgentQueueName"],
         "startedAt": utc_now(), "status": "running", "stage": "preflight",
         "browserVerification": "pending"}
     if args.approval_id is not None:
@@ -1580,8 +1779,14 @@ def main() -> int:
 
         stage("dependencies")
         npm = str(Path(manifest["npmBin"], "npm"))
-        from github_release_assets import prepare_release_dependencies
-        receipt["sharedPackageAssets"] = prepare_release_dependencies(checkout, github_api_token(profile, base), npm, base, run)
+        from site_agent.application.release_dependencies import prepare_release_dependencies
+        receipt["sharedPackageAssets"] = prepare_release_dependencies(
+            checkout,
+            github_api_token(profile, base),
+            npm,
+            Path(base["TMPDIR"]),
+            lambda command, directory: run(command, directory, base),
+        )
         run([npm, *NPM_INSTALL_ARGUMENTS], checkout, base)
         # TypeScript's pinned JSONC parser accepts comments and trailing commas.
         parsed = run(["node", "-e", "const fs=require('node:fs');const ts=require('typescript');"
@@ -1596,20 +1801,24 @@ def main() -> int:
                       "migrationHead:c.vars?.HELLOADA_PAYLOAD_MIGRATION_HEAD,"
                       "d1Count:Array.isArray(c.d1_databases)?c.d1_databases.length:0,"
                       "d1DatabaseId:c.d1_databases?.[0]?.database_id,"
-                      "d1DatabaseName:c.d1_databases?.[0]?.database_name,"
+                      "d1DatabaseName:c.d1_databases?.find(d=>d.binding==='D1')?.database_name,"
+                      "d1Bindings:(c.d1_databases||[]).map(d=>({binding:d.binding,databaseId:d.database_id,databaseName:d.database_name})),"
+                      "mailflareD1DatabaseId:c.d1_databases?.find(d=>d.binding==='MAILFLARE_DB')?.database_id,"
+                      "mailflareD1DatabaseName:c.d1_databases?.find(d=>d.binding==='MAILFLARE_DB')?.database_name,"
+                      "mailflareMigrationsDir:c.d1_databases?.find(d=>d.binding==='MAILFLARE_DB')?.migrations_dir,"
                       "r2Count:Array.isArray(c.r2_buckets)?c.r2_buckets.length:0,"
                       "r2Bindings:(c.r2_buckets||[]).map(b=>({binding:b.binding,bucketName:b.bucket_name})),"
                       "r2BucketName:c.r2_buckets?.find(b=>b.binding==='R2')?.bucket_name,"
                       "privateEmailR2BucketName:c.r2_buckets?.find(b=>b.binding==='PRIVATE_EMAIL')?.bucket_name,"
-                      "messagesQueueName:c.queues?.producers?.find(q=>q.binding==='HELLOADA_MESSAGES_QUEUE')?.queue,"
-                      "messagesDlqName:c.queues?.consumers?.find(q=>q.dead_letter_queue)?.dead_letter_queue,"
-                      "messagesQueueProducerBinding:c.queues?.producers?.find(q=>q.binding==='HELLOADA_MESSAGES_QUEUE')?.binding,"
-                      "messagesQueueProducerCount:Array.isArray(c.queues?.producers)?c.queues.producers.length:0,"
-                      "messagesQueueConsumerCount:Array.isArray(c.queues?.consumers)?c.queues.consumers.length:0,"
-                      "messagesQueueConsumer:(c.queues?.consumers||[]).some(q=>q.queue===c.queues?.producers?.find(p=>p.binding==='HELLOADA_MESSAGES_QUEUE')?.queue&&!!q.dead_letter_queue),"
-                      "messagesDlqConsumer:(c.queues?.consumers||[]).some(q=>q.queue===c.queues?.consumers?.find(x=>x.dead_letter_queue)?.dead_letter_queue&&!q.dead_letter_queue),"
+                      "mailflareR2BucketName:c.r2_buckets?.find(b=>b.binding==='MAILFLARE_BUCKET')?.bucket_name,"
+                      "queueProducerCount:Array.isArray(c.queues?.producers)?c.queues.producers.length:0,"
+                      "queueConsumerCount:Array.isArray(c.queues?.consumers)?c.queues.consumers.length:0,"
+                      "mailflareQueueNames:Object.fromEntries((c.queues?.producers||[]).filter(q=>String(q.binding||'').startsWith('MAILFLARE_')).map(q=>[q.binding,q.queue])),"
                       "queues:c.queues||{},"
                       "crons:c.triggers?.crons||[],"
+                      "durableObjectBindings:(c.durable_objects?.bindings||[]).map(b=>({name:b.name,className:b.class_name})),"
+                      "durableObjectMigrations:(c.migrations||[]).map(m=>({tag:m.tag,newSqliteClasses:m.new_sqlite_classes||[]})),"
+                      "aiBinding:c.ai?.binding,"
                       "sendEmailBinding:(c.send_email||[]).some(b=>b.name==='EMAIL'),"
                       "sendEmailBindingCount:Array.isArray(c.send_email)?c.send_email.length:0,"
                       "rateLimitBindings:(c.ratelimits||[]).map(r=>({name:r.name,namespaceId:String(r.namespace_id||'')})),"
@@ -1629,17 +1838,38 @@ def main() -> int:
             raise RuntimeError("dependency/type checks changed tracked source")
 
         stage("build")
+        mailflare_source = json.loads((ROOT / "packages/helloada-mailflare/UPSTREAM.json").read_text())
         marker = {"sourceSha": args.ref, "pipelineSha": receipt["pipelineSha"],
                   "tenant": args.tenant, "payloadAdmin": customer["payloadAdmin"],
                   "payloadCore": customer["payloadCore"], "contentContract": customer["contentContract"],
                   "schemaRevision": customer["schemaRevision"], "schemaIdentity": customer["schemaIdentity"],
-                  "migrationHead": customer["migrationHead"]}
+                  "migrationHead": customer["migrationHead"],
+                  "mailflareCommit": mailflare_source["commit"],
+                  "mailflarePatchSet": mailflare_source["integrationPatchSet"]}
         atomic_json(checkout / "public/helloada-release.json", marker)
-        build_env = {**base, "PAYLOAD_LOCAL_BUILD": "1", "HELLOADA_RELEASE_SHA": args.ref}
+        node = str(Path(manifest["nodeBin"], "node"))
+        npm = str(Path(manifest["npmBin"], "npm"))
+        mailflare_builder = ROOT / "packages/helloada-mailflare/scripts/build.mjs"
+        build_path = os.pathsep.join((manifest["nodeBin"], str(Path(npm).parent), base.get("PATH", "")))
+        build_env = {**base, "PATH": build_path, "PAYLOAD_LOCAL_BUILD": "1", "HELLOADA_RELEASE_SHA": args.ref}
+        run([node, str(mailflare_builder), "--tenant-root", str(checkout), "--npm-bin", npm],
+            checkout, build_env)
+        mailflare_provenance = json.loads((checkout / ".mailflare/provenance.json").read_text())
         run([str(checkout / "node_modules/.bin/opennextjs-cloudflare"), "build"], checkout, build_env)
+        run([node, str(mailflare_builder), "--tenant-root", str(checkout), "--compose-assets"],
+            checkout, build_env)
+        receipt["mailflare"] = {
+            "sourceCommit": mailflare_provenance["commit"],
+            "packageVersion": mailflare_provenance["packageVersion"],
+            "integrationPatchSet": mailflare_provenance["integrationPatchSet"],
+            "basePath": mailflare_provenance["basePath"],
+            "namespacedApiReferences": mailflare_provenance["namespacedApiReferences"],
+            "migrationNames": mailflare_provenance["migrationNames"],
+            "migrationsSha256": mailflare_provenance["migrationsSha256"],
+        }
         custom_worker_bundle = directory / "custom-worker-dry-run"
         run([str(checkout / "node_modules/.bin/wrangler"), "deploy", "--dry-run",
-             "--outdir", str(custom_worker_bundle)], checkout, base)
+             "--outdir", str(custom_worker_bundle)], checkout, build_env)
         receipt["artifactHashes"] = inspect_artifact(checkout, customer, args.ref, custom_worker_bundle)
         changed = run(["git", "diff", "--name-only"], checkout, base).strip()
         if changed:
@@ -1648,8 +1878,14 @@ def main() -> int:
         before_deploy = cloudflare_deployment(customer, deploy_env)
         if before_deploy.get("id") != receipt["previousDeployment"].get("id"):
             raise RuntimeError("production changed during the build; reconcile that deployment before retrying")
-        stage("provision-messages-resources")
-        receipt["messagesResources"] = provision_message_resources(customer, deploy_env)
+        stage("provision-mailflare-resources")
+        receipt["tenantResources"] = provision_tenant_mail_resources(customer, deploy_env)
+        atomic_json(receipt_path, receipt)
+        stage("migrate-mailflare-schema")
+        receipt["mailflareMigrations"] = reconcile_mailflare_migrations(
+            checkout, customer, deploy_env, base,
+        )
+        atomic_json(receipt_path, receipt)
         stage("provision-turnstile")
         receipt["turnstile"] = provision_turnstile_for_tenant(
             args.tenant, customer, wrangler, manifest, deploy_env,
@@ -1697,7 +1933,7 @@ def main() -> int:
 
         stage("reconcile-queue-consumers")
         receipt["queueConsumers"] = reconcile_worker_queue_consumers(
-            customer, wrangler, receipt["messagesResources"], deploy_env,
+            customer, wrangler, receipt["tenantResources"], deploy_env,
         )
         atomic_json(receipt_path, receipt)
 

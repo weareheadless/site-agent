@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
@@ -108,38 +108,29 @@ test('the default contract includes editable articles, SEO, media, navigation an
   assert.ok(contract.contentBlocks.includes('helloAdaImage'))
 })
 
-test('external message alerts use one verified, tenant-scoped outbox path in every new site', () => {
-  const coreSchema = readFileSync(path.join(ROOT, 'packages/helloada-payload-core/src/schema/index.ts'), 'utf8')
-  const api = read('src/lib/messages-api.ts')
-  const processing = read('src/lib/message-processing.ts')
+test('new sites use one Mailflare inbox path for website enquiries and have no Payload mailbox API', () => {
   const formRoute = read('src/app/api/helloada/forms/[slug]/route.ts')
+  const mailflareInbox = read('src/lib/mailflare-inbox.ts')
   const ownerRoute = read('src/app/api/helloada/[...path]/route.ts')
-  const migrationIndex = read('src/migrations/index.ts')
-  const migration = read('src/migrations/20261006_061835_helloada_owner_handoff.ts')
+  const worker = read('worker.ts')
   const workerConfig = read('wrangler.jsonc')
-  assert.match(coreSchema, /'owner_notification'/)
-  assert.match(migrationIndex, /20261006_061835_helloada_owner_handoff/)
-  assert.doesNotMatch(migrationIndex, /20261004_232326_helloada_messages_contacts|20261005_173359_helloada_owner_notifications/)
-  for (const field of ['notificationAddress', 'notificationVerifiedAt', 'notificationPendingAddress', 'notificationCodeHash', 'notificationCodeExpiresAt', 'notificationCodeSentAt', 'notificationCodeAttempts']) {
-    assert.match(coreSchema, new RegExp(`name: '${field}'`))
-    assert.match(migration, new RegExp(field.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)))
-  }
   assert.match(ownerRoute, /authenticateHelloAdaRequest/)
-  assert.match(api, /hasOwnerOrigin\(request\)/)
-  assert.match(api, /hashMessageNotificationCode/)
-  assert.match(api, /notificationCodeAttempts: nextAttempts/)
-  assert.match(api, /notificationCodeAttempts: 0/)
-  assert.match(api, /\/messages\/notifications\/start/)
-  assert.match(api, /\/messages\/notifications\/verify/)
-  assert.match(api, /\/messages\/notifications\/disable/)
-  assert.match(processing, /owner-notification:\$\{tenantIdentity\(\)\}:\$\{id\}/)
-  assert.match(processing, /mailbox\.notificationVerifiedAt/)
-  assert.match(processing, /buildOwnerMessageNotification/)
-  assert.match(processing, /providerAttempted = true/)
-  assert.match(processing, /uncertain \|\| providerAttempted/)
-  assert.match(formRoute, /ownerNotification/)
-  assert.match(workerConfig, /HELLOADA_NOTIFICATION_RATE_LIMIT/)
-  assert.match(workerConfig, /"limit": 5, "period": 60/)
+  assert.match(formRoute, /writeMailflareFormMessage/)
+  assert.match(formRoute, /mailboxAddress/)
+  assert.match(mailflareInbox, /INSERT OR IGNORE INTO messages/)
+  assert.match(mailflareInbox, /ON CONFLICT\(user_id, email\) DO UPDATE/)
+  assert.match(mailflareInbox, /WHERE lower\(m\.local_part \|\| '@' \|\| d\.hostname\) = \? LIMIT 1/)
+  assert.match(mailflareInbox, /\$\{tenantId\}:\$\{formSlug\}:\$\{requestId\}/)
+  assert.match(worker, /mailflareQueue/)
+  assert.match(workerConfig, /MAILFLARE_BOOKING_RATE_LIMIT/)
+  assert.doesNotMatch(workerConfig, /HELLOADA_NOTIFICATION_RATE_LIMIT|HELLOADA_MESSAGES_QUEUE/)
+  for (const relativePath of [
+    'src/lib/messages-api.ts',
+    'src/lib/message-processing.ts',
+    'src/app/api/helloada/messages/route.ts',
+  ]) {
+    assert.equal(existsSync(new URL(`../${relativePath}`, import.meta.url)), false, `${relativePath} is not part of the runtime`)
+  }
 })
 
 test('the canonical public runtime reads article content through Payload only', () => {

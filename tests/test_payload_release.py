@@ -1,5 +1,6 @@
 """Release safety boundaries: provenance, canonical routes and immutable requests."""
 import importlib.util
+import hashlib
 import json
 import sys
 import zipfile
@@ -37,10 +38,14 @@ CUSTOMER = {
     "migrationHead": TEMPLATE_MANIFEST["migrationHead"],
     "d1DatabaseId": "56d3f277-fbaf-43d4-91e5-b3a195653a05",
     "d1DatabaseName": "oceanicvibes-content",
+    "mailflareD1DatabaseId": "f6d3f277-fbaf-43d4-91e5-b3a195653a05",
+    "mailflareD1DatabaseName": "oceanicvibes-mail",
     "r2BucketName": "helloada-oceanicvibes-media",
     "privateEmailR2BucketName": "helloada-oceanicvibes-email",
-    "messagesQueueName": "helloada-oceanicvibes-messages",
-    "messagesDlqName": "helloada-oceanicvibes-messages-dlq",
+    "mailflareR2BucketName": "helloada-oceanicvibes-mail-files",
+    "mailflareInboundQueueName": "helloada-oceanicvibes-mail-inbound",
+    "mailflareOutboundQueueName": "helloada-oceanicvibes-mail-outbound",
+    "mailflareAgentQueueName": "helloada-oceanicvibes-mail-agent",
 }
 CANDIDATE_CUSTOMER = {
     **CUSTOMER,
@@ -61,48 +66,62 @@ WORKER_CONFIG = {
     "schemaRevision": CUSTOMER["schemaRevision"],
     "schemaIdentity": CUSTOMER["schemaIdentity"],
     "migrationHead": CUSTOMER["migrationHead"],
-    "d1Count": 1,
+    "d1Count": 2,
     "d1Binding": "D1",
     "d1DatabaseId": CUSTOMER["d1DatabaseId"],
     "d1DatabaseName": CUSTOMER["d1DatabaseName"],
-    "r2Count": 2,
+    "d1Bindings": [
+        {"binding": "D1", "databaseId": CUSTOMER["d1DatabaseId"], "databaseName": CUSTOMER["d1DatabaseName"]},
+        {"binding": "MAILFLARE_DB", "databaseId": CUSTOMER["mailflareD1DatabaseId"],
+         "databaseName": CUSTOMER["mailflareD1DatabaseName"]},
+    ],
+    "mailflareD1DatabaseId": CUSTOMER["mailflareD1DatabaseId"],
+    "mailflareD1DatabaseName": CUSTOMER["mailflareD1DatabaseName"],
+    "mailflareMigrationsDir": ".mailflare/migrations",
+    "r2Count": 3,
     "r2Binding": "R2",
     "r2BucketName": CUSTOMER["r2BucketName"],
     "privateEmailR2BucketName": CUSTOMER["privateEmailR2BucketName"],
+    "mailflareR2BucketName": CUSTOMER["mailflareR2BucketName"],
     "r2Bindings": [
         {"binding": "R2", "bucketName": CUSTOMER["r2BucketName"]},
         {"binding": "PRIVATE_EMAIL", "bucketName": CUSTOMER["privateEmailR2BucketName"]},
+        {"binding": "MAILFLARE_BUCKET", "bucketName": CUSTOMER["mailflareR2BucketName"]},
     ],
-    "messagesQueueName": CUSTOMER["messagesQueueName"],
-    "messagesDlqName": CUSTOMER["messagesDlqName"],
-    "messagesQueueProducerBinding": "HELLOADA_MESSAGES_QUEUE",
-    "messagesQueueProducerCount": 1,
-    "messagesQueueConsumerCount": 2,
-    "messagesQueueConsumer": True,
-    "messagesDlqConsumer": True,
+    "queueProducerCount": 3,
+    "queueConsumerCount": 3,
+    "mailflareQueueNames": {
+        "MAILFLARE_INBOUND_QUEUE": CUSTOMER["mailflareInboundQueueName"],
+        "MAILFLARE_OUTBOUND_QUEUE": CUSTOMER["mailflareOutboundQueueName"],
+        "MAILFLARE_AGENT_QUEUE": CUSTOMER["mailflareAgentQueueName"],
+    },
     "queues": {
         "consumers": [
-            {"queue": CUSTOMER["messagesQueueName"], "max_batch_size": 1, "max_batch_timeout": 5,
-             "max_retries": 8, "retry_delay": 30, "max_concurrency": 1,
-             "dead_letter_queue": CUSTOMER["messagesDlqName"]},
-            {"queue": CUSTOMER["messagesDlqName"], "max_batch_size": 1, "max_batch_timeout": 5,
-             "max_retries": 3, "retry_delay": 30, "max_concurrency": 1},
+            {"queue": CUSTOMER["mailflareInboundQueueName"], "max_batch_size": 5, "max_retries": 3,
+             "max_concurrency": 1},
+            {"queue": CUSTOMER["mailflareOutboundQueueName"], "max_batch_size": 5, "max_retries": 3,
+             "max_concurrency": 1},
+            {"queue": CUSTOMER["mailflareAgentQueueName"], "max_batch_size": 1, "max_retries": 3,
+             "max_concurrency": 1},
         ],
     },
     "sendEmailBinding": True,
     "sendEmailBindingCount": 1,
     "rateLimitBindings": [
         {"name": "HELLOADA_FORM_RATE_LIMIT", "namespaceId": "2701"},
-        {"name": "HELLOADA_NOTIFICATION_RATE_LIMIT", "namespaceId": "2702"},
+        {"name": "MAILFLARE_BOOKING_RATE_LIMIT", "namespaceId": "2703"},
+        {"name": "MAILFLARE_LOGIN_RATE_LIMIT", "namespaceId": "2704"},
+        {"name": "MAILFLARE_AGENT_RATE_LIMIT", "namespaceId": "2705"},
     ],
+    "durableObjectBindings": [{"name": "MAILFLARE_REALTIME", "className": "RealtimeHub"}],
+    "durableObjectMigrations": [{"tag": "v1", "newSqliteClasses": ["RealtimeHub"]}],
+    "aiBinding": "MAILFLARE_AI",
     "turnstileSiteKey": None,
     "turnstileSecretInVars": False,
     "publicDomains": ["oceanicvibes.com"],
-    "crons": ["*/5 * * * *"],
+    "crons": ["*/5 * * * *", "0 2 * * *"],
     "main": "worker.ts",
     "handlers": ["fetch", "email", "queue", "scheduled"],
-    "sendEmailBinding": True,
-    "sendEmailBindingCount": 1,
     "compatibilityDate": "2025-08-15",
     "compatibilityFlags": ["nodejs_compat", "global_fetch_strictly_public"],
 }
@@ -355,22 +374,36 @@ def test_customer_release_identity_serializes_the_canonical_owner_repository(tmp
     wrangler_path = site_dir / "wrangler.jsonc"
     wrangler = json.loads(wrangler_path.read_text())
     wrangler["name"] = "helloada-demo"
-    wrangler["d1_databases"] = [{
-        "binding": "D1",
-        "database_id": "56d3f277-fbaf-43d4-91e5-b3a195653a05",
-        "database_name": "helloada-demo",
-    }]
+    wrangler["d1_databases"] = [
+        {"binding": "D1", "database_id": "56d3f277-fbaf-43d4-91e5-b3a195653a05", "database_name": "helloada-demo"},
+        {"binding": "MAILFLARE_DB", "database_id": "66d3f277-fbaf-43d4-91e5-b3a195653a05", "database_name": "helloada-demo-mail", "migrations_dir": ".mailflare/migrations"},
+    ]
     wrangler["r2_buckets"] = [
         {"binding": "R2", "bucket_name": "helloada-demo-media"},
         {"binding": "PRIVATE_EMAIL", "bucket_name": "helloada-demo-email"},
+        {"binding": "MAILFLARE_BUCKET", "bucket_name": "helloada-demo-mail-files"},
     ]
+    wrangler["vars"].update({
+        "HELLOADA_MAILFLARE_INBOUND_QUEUE_NAME": "helloada-demo-mail-inbound",
+        "HELLOADA_MAILFLARE_OUTBOUND_QUEUE_NAME": "helloada-demo-mail-outbound",
+        "HELLOADA_MAILFLARE_AGENT_QUEUE_NAME": "helloada-demo-mail-agent",
+    })
     wrangler["queues"] = {
-        "producers": [{"binding": "HELLOADA_MESSAGES_QUEUE", "queue": "helloada-demo-messages"}],
+        "producers": [
+            {"binding": "MAILFLARE_INBOUND_QUEUE", "queue": "helloada-demo-mail-inbound"},
+            {"binding": "MAILFLARE_OUTBOUND_QUEUE", "queue": "helloada-demo-mail-outbound"},
+            {"binding": "MAILFLARE_AGENT_QUEUE", "queue": "helloada-demo-mail-agent"},
+        ],
         "consumers": [
-            {"queue": "helloada-demo-messages", "dead_letter_queue": "helloada-demo-messages-dlq"},
-            {"queue": "helloada-demo-messages-dlq"},
+            {"queue": "helloada-demo-mail-inbound"},
+            {"queue": "helloada-demo-mail-outbound"},
+            {"queue": "helloada-demo-mail-agent"},
         ],
     }
+    wrangler["durable_objects"] = {"bindings": [{"name": "MAILFLARE_REALTIME", "class_name": "RealtimeHub"}]}
+    wrangler["migrations"] = [{"tag": "v1", "new_sqlite_classes": ["RealtimeHub"]}]
+    wrangler["ai"] = {"binding": "MAILFLARE_AI"}
+    wrangler["triggers"] = {"crons": ["*/5 * * * *", "0 2 * * *"]}
     wrangler_path.write_text(json.dumps(wrangler), encoding="utf-8")
     config = {
         "instance_name": "demo",
@@ -399,8 +432,11 @@ def test_customer_release_identity_serializes_the_canonical_owner_repository(tmp
     assert customer["repository"] == "https://github.com/weareheadless/helloada-demo.git"
     assert customer["websitePresent"] is False
     assert customer["privateEmailR2BucketName"] == "helloada-demo-email"
-    assert customer["messagesQueueName"] == "helloada-demo-messages"
-    assert customer["messagesDlqName"] == "helloada-demo-messages-dlq"
+    assert customer["mailflareD1DatabaseName"] == "helloada-demo-mail"
+    assert customer["mailflareR2BucketName"] == "helloada-demo-mail-files"
+    assert customer["mailflareInboundQueueName"] == "helloada-demo-mail-inbound"
+    assert customer["mailflareOutboundQueueName"] == "helloada-demo-mail-outbound"
+    assert customer["mailflareAgentQueueName"] == "helloada-demo-mail-agent"
     config["ada_journey"] = {"website_present": True}
     assert customer_release_identity(config)[1]["websitePresent"] is True
     config.pop("ada_journey")
@@ -444,7 +480,7 @@ def test_worker_contract_requires_the_registered_tenant_and_all_shared_versions(
         "schemaRevision": customer["schemaRevision"],
         "schemaIdentity": customer["schemaIdentity"],
         "migrationHead": customer["migrationHead"],
-        "d1Count": 1,
+        "d1Count": 2,
         "d1Binding": "D1",
         "d1DatabaseId": customer["d1DatabaseId"],
         "d1DatabaseName": customer["d1DatabaseName"],
@@ -452,15 +488,15 @@ def test_worker_contract_requires_the_registered_tenant_and_all_shared_versions(
         "handlers": ["fetch", "email", "queue", "scheduled"],
         "sendEmailBinding": True,
         "sendEmailBindingCount": 1,
-        "crons": ["*/5 * * * *"],
+        "crons": ["*/5 * * * *", "0 2 * * *"],
     }
     release.validate_worker_contract(worker, customer, "oceanicvibes")
     with pytest.raises(RuntimeError, match="shared Payload contract"):
         release.validate_worker_contract({**worker, "core": "0.0.9"}, customer, "oceanicvibes")
     with pytest.raises(RuntimeError, match="R2 bindings"):
         release.validate_worker_contract({**worker, "r2Count": 1}, customer, "oceanicvibes")
-    with pytest.raises(RuntimeError, match="dead-letter Queue"):
-        release.validate_worker_contract({**worker, "messagesDlqName": "shared-dlq"}, customer, "oceanicvibes")
+    with pytest.raises(RuntimeError, match="Mailflare producer names"):
+        release.validate_worker_contract({**worker, "mailflareQueueNames": {}}, customer, "oceanicvibes")
     with pytest.raises(RuntimeError, match="Turnstile sitekeys"):
         release.validate_worker_contract({**worker, "turnstileSiteKey": "hard-coded"}, customer, "oceanicvibes")
     with pytest.raises(RuntimeError, match="rate-limit namespaces"):
@@ -468,21 +504,23 @@ def test_worker_contract_requires_the_registered_tenant_and_all_shared_versions(
             **worker,
             "rateLimitBindings": [
                 {"name": "HELLOADA_FORM_RATE_LIMIT", "namespaceId": "2701"},
-                {"name": "HELLOADA_NOTIFICATION_RATE_LIMIT", "namespaceId": "2701"},
+                {"name": "MAILFLARE_BOOKING_RATE_LIMIT", "namespaceId": "2701"},
+                {"name": "MAILFLARE_LOGIN_RATE_LIMIT", "namespaceId": "2704"},
+                {"name": "MAILFLARE_AGENT_RATE_LIMIT", "namespaceId": "2705"},
             ],
         }, customer, "oceanicvibes")
 
 
-def test_worker_contract_requires_the_durable_messages_cron():
-    worker = {**WORKER_CONFIG, "crons": ["*/5 * * * *"]}
+def test_worker_contract_requires_the_canonical_mailflare_schedule():
+    worker = {**WORKER_CONFIG}
     release.validate_worker_contract(worker, CUSTOMER, "oceanicvibes")
-    for crons in ([], ["0 * * * *"], ["*/5 * * * *", "0 * * * *"]):
-        with pytest.raises(RuntimeError, match="five-minute durable message sweep"):
+    for crons in ([], ["0 * * * *"], ["*/5 * * * *"], ["*/5 * * * *", "0 * * * *"]):
+        with pytest.raises(RuntimeError, match="canonical maintenance schedules"):
             release.validate_worker_contract({**worker, "crons": crons}, CUSTOMER, "oceanicvibes")
 
 
 def test_worker_contract_requires_an_exact_tenant_queue_consumer_contract():
-    worker = {**WORKER_CONFIG, "crons": ["*/5 * * * *"]}
+    worker = {**WORKER_CONFIG}
     release.validate_worker_contract(worker, CUSTOMER, "oceanicvibes")
     invalid = [
         {"consumers": []},
@@ -499,6 +537,68 @@ def test_worker_contract_requires_an_exact_tenant_queue_consumer_contract():
     for queues in invalid:
         with pytest.raises(RuntimeError, match="Queue"):
             release.validate_worker_contract({**worker, "queues": queues}, CUSTOMER, "oceanicvibes")
+
+
+def test_reconcile_mailflare_migrations_uses_pinned_wrangle_chain_and_is_idempotent(tmp_path, monkeypatch):
+    migration_dir = tmp_path / ".mailflare/migrations"
+    migration_dir.mkdir(parents=True)
+    names = ["0000_initial.sql", "0001_add_label.sql"]
+    contents = ["CREATE TABLE mailboxes (id TEXT PRIMARY KEY);\n", "ALTER TABLE mailboxes ADD label TEXT;\n"]
+    digest = hashlib.sha256()
+    for name, content in zip(names, contents):
+        (migration_dir / name).write_text(content)
+        digest.update(name.encode())
+        digest.update(b"\0")
+        digest.update(content.encode())
+        digest.update(b"\0")
+    source_sha = digest.hexdigest()
+    (tmp_path / ".mailflare/provenance.json").write_text(json.dumps({
+        "migrationNames": names,
+        "migrationsSha256": source_sha,
+    }))
+
+    state = {"tables": [], "applied": []}
+    monkeypatch.setattr(release, "applied_mailflare_migrations", lambda *_args: (state["tables"], state["applied"]))
+    calls = []
+
+    def run(command, cwd, env):
+        calls.append((command, cwd, env))
+        state.update(tables=["d1_migrations", "mailboxes"], applied=names.copy())
+        return "Applied Mailflare migrations"
+
+    monkeypatch.setattr(release, "run", run)
+    result = release.reconcile_mailflare_migrations(tmp_path, CUSTOMER, {"CLOUDFLARE_API_TOKEN": "secret"}, {})
+    assert result["names"] == names
+    assert result["sourceSha256"] == source_sha
+    assert result["head"] == release.mailflare_migration_head(names)
+    assert result["changed"] is True
+    assert len(calls) == 1
+    assert calls[0][0][1:6] == ["d1", "migrations", "apply", "MAILFLARE_DB", "--remote"]
+    assert calls[0][2]["CLOUDFLARE_API_TOKEN"] == "secret"
+
+    again = release.reconcile_mailflare_migrations(tmp_path, CUSTOMER, {}, {})
+    assert again["changed"] is False
+    assert len(calls) == 1
+    release.verify_mailflare_migrations({
+        "mailflareMigrations": result,
+        "mailflare": {"migrationNames": names, "migrationsSha256": source_sha},
+    }, CUSTOMER, {})
+
+
+def test_reconcile_mailflare_migrations_rejects_unknown_database_history(tmp_path, monkeypatch):
+    migration_dir = tmp_path / ".mailflare/migrations"
+    migration_dir.mkdir(parents=True)
+    (migration_dir / "0000_initial.sql").write_text("CREATE TABLE mailboxes (id TEXT PRIMARY KEY);\n")
+    (tmp_path / ".mailflare/provenance.json").write_text(json.dumps({
+        "migrationNames": ["0000_initial.sql"],
+        "migrationsSha256": "a" * 64,
+    }))
+    monkeypatch.setattr(release, "applied_mailflare_migrations", lambda *_args: (
+        ["d1_migrations"], ["0000_unregistered.sql"],
+    ))
+    monkeypatch.setattr(release, "run", lambda *_args: pytest.fail("must not mutate an unknown schema"))
+    with pytest.raises(RuntimeError, match="not a prefix"):
+        release.reconcile_mailflare_migrations(tmp_path, CUSTOMER, {}, {})
 
 
 def test_worker_cron_reconciliation_reads_applies_and_verifies(monkeypatch):
@@ -518,23 +618,23 @@ def test_worker_cron_reconciliation_reads_applies_and_verifies(monkeypatch):
         assert timeout == 30
         calls.append((request.get_method(), request.full_url, request.data))
         if request.get_method() == "PUT":
-            assert json.loads(request.data) == [{"cron": "*/5 * * * *"}]
-            schedules[0] = ["*/5 * * * *"]
+            assert json.loads(request.data) == [{"cron": "*/5 * * * *"}, {"cron": "0 2 * * *"}]
+            schedules[0] = ["*/5 * * * *", "0 2 * * *"]
         return Response({"success": True, "result": {"schedules": [{"cron": cron} for cron in schedules[0]]}})
 
     monkeypatch.setattr(release.urllib.request, "urlopen", open_url)
-    result = release.reconcile_worker_cron_schedules(CUSTOMER, ["*/5 * * * *"], {
+    result = release.reconcile_worker_cron_schedules(CUSTOMER, ["*/5 * * * *", "0 2 * * *"], {
         "CLOUDFLARE_ACCOUNT_ID": "account",
         "CLOUDFLARE_API_TOKEN": "not-printed",
     })
     assert result["before"] == []
-    assert result["after"] == ["*/5 * * * *"]
+    assert result["after"] == ["*/5 * * * *", "0 2 * * *"]
     assert result["changed"] is True
     assert [method for method, _url, _body in calls] == ["GET", "PUT", "GET"]
 
 
 def test_worker_cron_reconciliation_rejects_noncanonical_schedules():
-    with pytest.raises(ValueError, match="exact canonical five-minute"):
+    with pytest.raises(ValueError, match="exact canonical Mailflare schedules"):
         release.reconcile_worker_cron_schedules(CUSTOMER, [], {})
 
 
@@ -554,7 +654,7 @@ def test_worker_queue_consumer_is_created_and_read_back(monkeypatch):
     desired = {
         "script_name": CUSTOMER["worker"],
         "type": "worker",
-        "dead_letter_queue": CUSTOMER["messagesDlqName"],
+        "dead_letter_queue": "tenant-test-dead-letter",
         "settings": {"batch_size": 1, "max_concurrency": 1, "max_retries": 8,
                      "max_wait_time_ms": 5000, "retry_delay": 30},
     }
@@ -564,7 +664,7 @@ def test_worker_queue_consumer_is_created_and_read_back(monkeypatch):
         calls.append((request.get_method(), request.full_url))
         if request.get_method() == "POST":
             assert json.loads(request.data) == desired
-            created = {**desired, "consumer_id": "c" * 32, "queue_name": CUSTOMER["messagesQueueName"]}
+            created = {**desired, "consumer_id": "c" * 32, "queue_name": CUSTOMER["mailflareInboundQueueName"]}
             created["script"] = created.pop("script_name")
             state[:] = [created]
             return Response({"success": True, "result": state[0]})
@@ -577,7 +677,7 @@ def test_worker_queue_consumer_is_created_and_read_back(monkeypatch):
 
     monkeypatch.setattr(release.urllib.request, "urlopen", open_url)
     result = release.reconcile_worker_queue_consumer(
-        "q" * 32, CUSTOMER["messagesQueueName"], desired,
+        "q" * 32, CUSTOMER["mailflareInboundQueueName"], desired,
         {"CLOUDFLARE_ACCOUNT_ID": "account", "CLOUDFLARE_API_TOKEN": "not-printed"},
     )
     assert result["verified"] is True and result["changed"] is True
@@ -600,7 +700,7 @@ def test_worker_queue_consumer_updates_only_the_registered_workers_drifted_setti
         "script_name": CUSTOMER["worker"], "type": "worker",
         "settings": {"batch_size": 1, "max_concurrency": 1, "max_retries": 8,
                      "max_wait_time_ms": 5000, "retry_delay": 30},
-        "dead_letter_queue": CUSTOMER["messagesDlqName"],
+        "dead_letter_queue": "tenant-test-dead-letter",
     }
     state = [{**desired, "script": desired["script_name"], "consumer_id": "c" * 32,
               "settings": {**desired["settings"], "max_retries": 3}}]
@@ -624,7 +724,7 @@ def test_worker_queue_consumer_updates_only_the_registered_workers_drifted_setti
 
     monkeypatch.setattr(release.urllib.request, "urlopen", open_url)
     result = release.reconcile_worker_queue_consumer(
-        "q" * 32, CUSTOMER["messagesQueueName"], desired,
+        "q" * 32, CUSTOMER["mailflareInboundQueueName"], desired,
         {"CLOUDFLARE_ACCOUNT_ID": "account", "CLOUDFLARE_API_TOKEN": "not-printed"},
     )
     assert result["changed"] is True
@@ -652,7 +752,7 @@ def test_worker_queue_consumer_fails_closed_on_an_unregistered_consumer(monkeypa
     monkeypatch.setattr(release.urllib.request, "urlopen", open_url)
     with pytest.raises(RuntimeError, match="unexpected consumer"):
         release.reconcile_worker_queue_consumer(
-            "q" * 32, CUSTOMER["messagesQueueName"],
+            "q" * 32, CUSTOMER["mailflareInboundQueueName"],
             {"script_name": CUSTOMER["worker"], "type": "worker", "settings": {}},
             {"CLOUDFLARE_ACCOUNT_ID": "account", "CLOUDFLARE_API_TOKEN": "not-printed"},
         )
@@ -683,21 +783,22 @@ def test_worker_queue_consumer_reconciliation_uses_the_registered_queue_ids(monk
     calls = []
     monkeypatch.setattr(release, "reconcile_worker_queue_consumer", lambda queue_id, name, desired, _env:
                         calls.append((queue_id, name, desired)) or {"verified": True})
-    resources = {
-        "messagesQueue": {"queue_id": "a" * 32},
-        "messagesDeadLetterQueue": {"queue_id": "b" * 32},
-    }
+    resources = {"mailflareQueues": {
+        "inbound": {"queue_id": "c" * 32},
+        "outbound": {"queue_id": "d" * 32},
+        "agent": {"queue_id": "e" * 32},
+    }}
     result = release.reconcile_worker_queue_consumers(
         CUSTOMER, WORKER_CONFIG, resources,
         {"CLOUDFLARE_ACCOUNT_ID": "account", "CLOUDFLARE_API_TOKEN": "not-printed"},
     )
     assert result["verified"] is True
     assert [item[:2] for item in calls] == [
-        ("a" * 32, CUSTOMER["messagesQueueName"]),
-        ("b" * 32, CUSTOMER["messagesDlqName"]),
+        ("c" * 32, CUSTOMER["mailflareInboundQueueName"]),
+        ("d" * 32, CUSTOMER["mailflareOutboundQueueName"]),
+        ("e" * 32, CUSTOMER["mailflareAgentQueueName"]),
     ]
-    assert calls[0][2]["dead_letter_queue"] == CUSTOMER["messagesDlqName"]
-    assert "dead_letter_queue" not in calls[1][2]
+    assert all("dead_letter_queue" not in item[2] for item in calls)
 
 
 def test_d1_table_inspection_uses_bound_sqlite_metadata_parameters(monkeypatch):
@@ -727,44 +828,45 @@ def test_d1_table_inspection_uses_bound_sqlite_metadata_parameters(monkeypatch):
 def seed_cron_contract(receipt):
     receipt["cronTriggers"] = {
         "before": [],
-        "desired": ["*/5 * * * *"],
-        "after": ["*/5 * * * *"],
+        "desired": ["*/5 * * * *", "0 2 * * *"],
+        "after": ["*/5 * * * *", "0 2 * * *"],
         "changed": True,
         "verifiedAt": "2026-10-08T00:00:00Z",
     }
+    consumers = WORKER_CONFIG["queues"]["consumers"]
+    queue_ids = ["a" * 32, "b" * 32, "c" * 32]
+    consumer_ids = ["1" * 32, "2" * 32, "3" * 32]
     receipt["queueConsumers"] = {
         "verified": True,
         "consumers": [
-            {"queue": CUSTOMER["messagesQueueName"], "queueId": "a" * 32,
-             "consumerId": "c" * 32, "desired": {
+            {"queue": config["queue"], "queueId": queue_id, "consumerId": consumer_id,
+             "desired": {
                  "script_name": CUSTOMER["worker"], "type": "worker",
-                 "dead_letter_queue": CUSTOMER["messagesDlqName"],
-                 "settings": {"batch_size": 1, "max_concurrency": 1, "max_retries": 8,
-                              "max_wait_time_ms": 5000, "retry_delay": 30},
-             }, "verified": True},
-            {"queue": CUSTOMER["messagesDlqName"], "queueId": "b" * 32,
-             "consumerId": "d" * 32, "desired": {
-                 "script_name": CUSTOMER["worker"], "type": "worker",
-                 "settings": {"batch_size": 1, "max_concurrency": 1, "max_retries": 3,
-                              "max_wait_time_ms": 5000, "retry_delay": 30},
-             }, "verified": True},
+                 **({"dead_letter_queue": config["dead_letter_queue"]} if config.get("dead_letter_queue") else {}),
+                 "settings": release.worker_queue_consumer_settings(config),
+             }, "verified": True}
+            for config, queue_id, consumer_id in zip(consumers, queue_ids, consumer_ids)
         ],
     }
     return receipt
 
 
 def stub_canonical_cron_schedule(monkeypatch):
-    monkeypatch.setattr(release, "worker_cron_schedules", lambda *_args: ["*/5 * * * *"])
-    main, dead_letter = WORKER_CONFIG["queues"]["consumers"]
-    expected = {
-        "a" * 32: {"consumer_id": "c" * 32, "queue_name": CUSTOMER["messagesQueueName"],
-                   "script_name": CUSTOMER["worker"], "type": "worker",
-                   "dead_letter_queue": CUSTOMER["messagesDlqName"],
-                   "settings": release.worker_queue_consumer_settings(main)},
-        "b" * 32: {"consumer_id": "d" * 32, "queue_name": CUSTOMER["messagesDlqName"],
-                   "script_name": CUSTOMER["worker"], "type": "worker",
-                   "settings": release.worker_queue_consumer_settings(dead_letter)},
-    }
+    schedules = ["*/5 * * * *", "0 2 * * *"]
+    monkeypatch.setattr(release, "worker_cron_schedules", lambda *_args: schedules)
+    monkeypatch.setattr(release, "verify_mailflare_migrations", lambda *_args: None)
+    expected = {}
+    queue_ids = ["a" * 32, "b" * 32, "c" * 32]
+    consumer_ids = ["1" * 32, "2" * 32, "3" * 32]
+    for config, queue_id, consumer_id in zip(WORKER_CONFIG["queues"]["consumers"], queue_ids, consumer_ids):
+        expected[queue_id] = {
+            "consumer_id": consumer_id,
+            "queue_name": config["queue"],
+            "script_name": CUSTOMER["worker"],
+            "type": "worker",
+            **({"dead_letter_queue": config["dead_letter_queue"]} if config.get("dead_letter_queue") else {}),
+            "settings": release.worker_queue_consumer_settings(config),
+        }
     monkeypatch.setattr(release, "worker_queue_consumers", lambda queue_id, _env: [expected[queue_id]])
 def test_promotion_uses_the_uploaded_version_and_rejects_ambiguous_output():
     version = "12345678-1234-1234-1234-123456789abc"
@@ -846,10 +948,29 @@ def artifact(tmp_path):
         "node_modules/@weareheadless/helloada-payload-core/package.json": json.dumps({"version": customer["payloadCore"]}),
         "helloada-content-contract.json": json.dumps({"contract": customer["contentContract"]}),
         "template-manifest.json": json.dumps(TEMPLATE_MANIFEST),
+        ".mailflare/migrations/0000_initial.sql": "CREATE TABLE test (id TEXT PRIMARY KEY);\n",
+        ".mailflare/provenance.json": json.dumps({
+            "repository": "https://github.com/hieunc229/mailflare",
+            "commit": "ca41c56a0781bf848b9898ddcc5615b3eacfbf8e",
+            "packageVersion": "0.5.1",
+            "packageLockSha256": "dcc70b0d3ac9b2ecbc7edb5199b9cf1c02064ea491e724939cdbe131f12c71de",
+            "integrationPatchSet": "helloada-tenant-worker-booking-payload-migration-v4",
+            "basePath": "/mail",
+            "namespacedApiReferences": 1,
+            "migrationNames": ["0000_initial.sql"],
+            "migrationsSha256": hashlib.sha256(
+                b"0000_initial.sql\0CREATE TABLE test (id TEXT PRIMARY KEY);\n\0"
+            ).hexdigest(),
+        }),
+        ".mailflare/server/index.js": "export default {};\n",
+        ".mailflare/server/ssr/index.js": "export default {};\n",
+        ".open-next/assets/mail/_next/static/mailflare.js": "/* pinned Mailflare client */\n",
         ".open-next/assets/helloada-release.json": json.dumps({"sourceSha": SHA,
             "payloadAdmin": customer["payloadAdmin"], "payloadCore": customer["payloadCore"],
             "contentContract": customer["contentContract"], "schemaRevision": customer["schemaRevision"],
-            "schemaIdentity": customer["schemaIdentity"], "migrationHead": customer["migrationHead"]}),
+            "schemaIdentity": customer["schemaIdentity"], "migrationHead": customer["migrationHead"],
+            "mailflareCommit": "ca41c56a0781bf848b9898ddcc5615b3eacfbf8e",
+            "mailflarePatchSet": "helloada-tenant-worker-booking-payload-migration-v4"}),
     }
     for name, value in files.items():
         path = tmp_path / name
@@ -1297,9 +1418,27 @@ def promoted_receipt(tmp_path):
               "contentContract": customer["contentContract"], "schemaRevision": customer["schemaRevision"],
               "schemaIdentity": customer["schemaIdentity"], "migrationHead": customer["migrationHead"],
               "websitePresent": customer["websitePresent"],
+              "mailflareD1DatabaseId": customer["mailflareD1DatabaseId"],
+              "mailflareD1DatabaseName": customer["mailflareD1DatabaseName"],
               "privateEmailR2BucketName": customer["privateEmailR2BucketName"],
-              "messagesQueueName": customer["messagesQueueName"],
-              "messagesDlqName": customer["messagesDlqName"],
+              "mailflareR2BucketName": customer["mailflareR2BucketName"],
+              "mailflareInboundQueueName": customer["mailflareInboundQueueName"],
+              "mailflareOutboundQueueName": customer["mailflareOutboundQueueName"],
+              "mailflareAgentQueueName": customer["mailflareAgentQueueName"],
+              "mailflare": {
+                  "sourceCommit": "ca41c56a0781bf848b9898ddcc5615b3eacfbf8e",
+                  "packageVersion": "0.5.1",
+                  "integrationPatchSet": "helloada-tenant-worker-booking-payload-migration-v4",
+                  "basePath": "/mail",
+                  "namespacedApiReferences": 307,
+                  "migrationNames": ["0000_initial.sql"],
+                  "migrationsSha256": "a" * 64,
+              },
+              "mailflareMigrations": {
+                  "names": ["0000_initial.sql"],
+                  "head": release.mailflare_migration_head(["0000_initial.sql"]),
+                  "sourceSha256": "a" * 64,
+              },
               "status": "failed", "stage": "verify-connection", "error": "connection failed",
               "deployment": {"id": "deployment-1"}, "uploadedVersion": "version-1",
               "artifactHashes": {"worker.js": "b" * 64}})
@@ -1678,3 +1817,11 @@ def test_turnstile_pair_is_written_only_to_the_exact_registered_tenant_env(tmp_p
         "HELLOADA_TURNSTILE_SECRET_KEY": "private-site-secret",
     }
     assert env_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_read_only_continuation_requires_mailflare_migration_provenance_to_match_package(tmp_path):
+    result, customer = promoted_receipt(tmp_path)
+    result["mailflare"]["migrationsSha256"] = "c" * 64
+    (tmp_path / "receipt.json").write_text(json.dumps(result))
+    with pytest.raises(ValueError, match="Mailflare migration provenance"):
+        release.verification_receipt(tmp_path, "oceanicvibes", SHA, "release-1", customer, "website")

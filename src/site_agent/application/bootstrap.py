@@ -1008,16 +1008,22 @@ class WebsiteBootstrapService:
         d1 = _resource_name(prefix, tenant, "D1 database name", max_length=63)
         r2 = _resource_name(prefix, tenant, "R2 bucket name", max_length=63, suffix="-media")
         email_r2 = _resource_name(prefix, tenant, "private email R2 bucket name", max_length=63, suffix="-email")
-        messages_queue = _resource_name(prefix, tenant, "messages queue name", max_length=63, suffix="-messages")
-        messages_dlq = _resource_name(prefix, tenant, "messages dead-letter queue name", max_length=63, suffix="-messages-dlq")
+        mailflare_d1 = _resource_name(prefix, tenant, "Mailflare D1 database name", max_length=63, suffix="-mail")
+        mailflare_r2 = _resource_name(prefix, tenant, "Mailflare R2 bucket name", max_length=63, suffix="-mail-files")
+        mailflare_inbound = _resource_name(prefix, tenant, "Mailflare inbound queue name", max_length=63, suffix="-mail-inbound")
+        mailflare_outbound = _resource_name(prefix, tenant, "Mailflare outbound queue name", max_length=63, suffix="-mail-outbound")
+        mailflare_agent = _resource_name(prefix, tenant, "Mailflare agent queue name", max_length=63, suffix="-mail-agent")
         return {
             "worker": worker,
             "repo": repo,
             "d1": d1,
             "r2": r2,
             "email_r2": email_r2,
-            "messages_queue": messages_queue,
-            "messages_dlq": messages_dlq,
+            "mailflare_d1": mailflare_d1,
+            "mailflare_r2": mailflare_r2,
+            "mailflare_inbound": mailflare_inbound,
+            "mailflare_outbound": mailflare_outbound,
+            "mailflare_agent": mailflare_agent,
         }
 
     def _repository(self, tenant_id: str, display_name: str, config_path: Path) -> Mapping[str, Any]:
@@ -1088,16 +1094,25 @@ class WebsiteBootstrapService:
         names = self._names(tenant_id)
         cloudflare = CloudflareResourceProvisioner(account_id, cloudflare_token)
         d1 = cloudflare.ensure_d1(names["d1"], location=str(self.settings.get("d1_location") or "") or None)
-        messages_queue = cloudflare.ensure_queue(names["messages_queue"])
-        messages_dlq = cloudflare.ensure_queue(names["messages_dlq"])
+        mailflare_d1 = cloudflare.ensure_d1(names["mailflare_d1"], location=str(self.settings.get("d1_location") or "") or None)
+        mailflare_inbound = cloudflare.ensure_queue(names["mailflare_inbound"])
+        mailflare_outbound = cloudflare.ensure_queue(names["mailflare_outbound"])
+        mailflare_agent = cloudflare.ensure_queue(names["mailflare_agent"])
         r2 = CloudflareR2Provisioner(account_id, cloudflare_token)
         r2_created = r2.ensure_bucket(names["r2"], location=str(self.settings.get("r2_location") or "") or None)
         email_bucket_created = r2.ensure_bucket(names["email_r2"], location=str(self.settings.get("r2_location") or "") or None)
+        mailflare_bucket_created = r2.ensure_bucket(names["mailflare_r2"], location=str(self.settings.get("r2_location") or "") or None)
         return {
             "d1": d1.to_dict(),
+            "mailflare_d1": mailflare_d1.to_dict(),
             "r2": {"bucket": names["r2"], "created": bool(r2_created)},
             "private_email_r2": {"bucket": names["email_r2"], "created": bool(email_bucket_created)},
-            "queues": {"messages": messages_queue.to_dict(), "dead_letter": messages_dlq.to_dict()},
+            "mailflare_r2": {"bucket": names["mailflare_r2"], "created": bool(mailflare_bucket_created)},
+            "mailflare_queues": {
+                "inbound": mailflare_inbound.to_dict(),
+                "outbound": mailflare_outbound.to_dict(),
+                "agent": mailflare_agent.to_dict(),
+            },
             "account_id": account_id,
         }
 
@@ -1484,15 +1499,18 @@ class WebsiteBootstrapService:
             raise BootstrapError("Payload site wrangler.jsonc is invalid") from exc
         vars_section = document.setdefault("vars", {})
         d1 = _mapping(data.get("d1"))
-        queues = _mapping(data.get("queues"))
-        messages_queue = _mapping(queues.get("messages"))
-        messages_dlq = _mapping(queues.get("dead_letter"))
         private_email = _mapping(data.get("private_email_r2"))
+        mailflare_d1 = _mapping(data.get("mailflare_d1"))
+        mailflare_queues = _mapping(data.get("mailflare_queues"))
+        mailflare_inbound = _mapping(mailflare_queues.get("inbound"))
+        mailflare_outbound = _mapping(mailflare_queues.get("outbound"))
+        mailflare_agent = _mapping(mailflare_queues.get("agent"))
         vars_section.update({
             "SITE_AGENT_URL": site_agent_url,
             "NEXT_PUBLIC_SITE_URL": worker_url,
-            "HELLOADA_MESSAGES_QUEUE_NAME": str(messages_queue.get("name") or names["messages_queue"]),
-            "HELLOADA_MESSAGES_DLQ_NAME": str(messages_dlq.get("name") or names["messages_dlq"]),
+            "HELLOADA_MAILFLARE_INBOUND_QUEUE_NAME": str(mailflare_inbound.get("name") or names["mailflare_inbound"]),
+            "HELLOADA_MAILFLARE_OUTBOUND_QUEUE_NAME": str(mailflare_outbound.get("name") or names["mailflare_outbound"]),
+            "HELLOADA_MAILFLARE_AGENT_QUEUE_NAME": str(mailflare_agent.get("name") or names["mailflare_agent"]),
             "HELLOADA_SITE_NAME": display_name or tenant_id,
             "HELLOADA_TENANT_ID": tenant_id,
             "HELLOADA_SITE_AGENT_VERSION": __version__,
@@ -1507,34 +1525,39 @@ class WebsiteBootstrapService:
             "HELLOADA_HANDOFF_PUBLIC_KEY": handoff_public_key,
         })
         document["name"] = names["worker"]
-        document["d1_databases"] = [{
-            "binding": "D1",
-            "database_id": str(d1.get("database_id") or ""),
-            "database_name": str(d1.get("name") or ""),
-        }]
+        document["d1_databases"] = [
+            {"binding": "D1", "database_id": str(d1.get("database_id") or ""),
+             "database_name": str(d1.get("name") or "")},
+            {"binding": "MAILFLARE_DB", "database_id": str(mailflare_d1.get("database_id") or ""),
+             "database_name": str(mailflare_d1.get("name") or ""),
+             "migrations_dir": ".mailflare/migrations"},
+        ]
         document["r2_buckets"] = [
             {"binding": "R2", "bucket_name": names["r2"]},
             {"binding": "PRIVATE_EMAIL", "bucket_name": str(private_email.get("bucket") or names["email_r2"]), "preview_bucket_name": str(private_email.get("bucket") or names["email_r2"])},
+            {"binding": "MAILFLARE_BUCKET", "bucket_name": names["mailflare_r2"]},
+        ]
+        mailflare_queue_specs = [
+            {"binding": "MAILFLARE_INBOUND_QUEUE", "queue": str(mailflare_inbound.get("name") or names["mailflare_inbound"]), "max_batch_size": 5},
+            {"binding": "MAILFLARE_OUTBOUND_QUEUE", "queue": str(mailflare_outbound.get("name") or names["mailflare_outbound"]), "max_batch_size": 5},
+            {"binding": "MAILFLARE_AGENT_QUEUE", "queue": str(mailflare_agent.get("name") or names["mailflare_agent"]), "max_batch_size": 1},
         ]
         document["queues"] = {
-            "producers": [{"binding": "HELLOADA_MESSAGES_QUEUE", "queue": str(messages_queue.get("name") or names["messages_queue"])}],
-            "consumers": [{
-                "queue": str(messages_queue.get("name") or names["messages_queue"]),
-                "max_batch_size": 1,
-                "max_batch_timeout": 5,
-                "max_retries": 8,
-                "retry_delay": 30,
-                "max_concurrency": 1,
-                "dead_letter_queue": str(messages_dlq.get("name") or names["messages_dlq"]),
-            }, {
-                "queue": str(messages_dlq.get("name") or names["messages_dlq"]),
-                "max_batch_size": 1,
-                "max_batch_timeout": 5,
-                "max_retries": 3,
-                "retry_delay": 30,
-                "max_concurrency": 1,
-            }],
+            "producers": [
+                {"binding": item["binding"], "queue": item["queue"]}
+                for item in mailflare_queue_specs
+            ],
+            "consumers": [
+                {"queue": item["queue"], "max_batch_size": item["max_batch_size"], "max_retries": 3, "max_concurrency": 1}
+                for item in mailflare_queue_specs
+            ],
         }
+        document["durable_objects"] = {
+            "bindings": [{"name": "MAILFLARE_REALTIME", "class_name": "RealtimeHub"}],
+        }
+        document["migrations"] = [{"tag": "v1", "new_sqlite_classes": ["RealtimeHub"]}]
+        document["ai"] = {"binding": "MAILFLARE_AI"}
+        document["triggers"] = {"crons": ["*/5 * * * *", "0 2 * * *"]}
         path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
 
     def _queue_release(

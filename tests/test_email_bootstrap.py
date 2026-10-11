@@ -78,7 +78,7 @@ def test_worker_readiness_uses_registered_public_origin(monkeypatch, tmp_path):
                 "ok": True,
                 "tenant": "oceanicvibes",
                 "contentContract": "helloada-content-v3",
-                "emailProvisioningVersion": 1,
+                "mailflareProvisioningVersion": 1,
             }).encode()
 
     def urlopen(request, timeout):
@@ -129,7 +129,7 @@ def test_worker_readiness_uses_exact_account_qualified_origin_without_custom_dom
                 "ok": True,
                 "tenant": "oceanicvibes",
                 "contentContract": "helloada-content-v3",
-                "emailProvisioningVersion": 1,
+                "mailflareProvisioningVersion": 1,
             }).encode()
 
     def urlopen(request, timeout):
@@ -144,7 +144,7 @@ def test_worker_readiness_uses_exact_account_qualified_origin_without_custom_dom
     assert error == ""
 
 
-def test_payload_mailbox_configuration_uses_registered_public_origin(monkeypatch, tmp_path):
+def test_mailflare_mailbox_configuration_uses_registered_public_origin(monkeypatch, tmp_path):
     config = _config(tmp_path)
 
     class Response:
@@ -159,29 +159,35 @@ def test_payload_mailbox_configuration_uses_registered_public_origin(monkeypatch
                 "state": "active",
                 "domain": "oceanicvibes.com",
                 "address": "contact@oceanicvibes.com",
-                "outboundProvider": "resend",
             }).encode()
 
     def urlopen(request, timeout):
-        assert request.full_url == "https://oceanicvibes.com/api/helloada/internal/messages/configure-mailbox"
+        assert request.full_url == "https://oceanicvibes.com/api/helloada/internal/mailflare/configure-mailbox"
         assert request.get_method() == "POST"
         assert timeout == 20
+        assert bootstrap.json.loads(request.data) == {
+            "domain": "oceanicvibes.com",
+            "address": "contact@oceanicvibes.com",
+            "zoneId": "zone-id",
+            "routingStatus": "active",
+        }
         return Response()
 
     monkeypatch.setattr(bootstrap.urllib.request, "urlopen", urlopen)
-    result = bootstrap._configure_payload_mailbox(
+    result = bootstrap._configure_mailflare_mailbox(
         config,
         tenant_id="oceanicvibes",
         token="tenant-token",
         domain="oceanicvibes.com",
         address="contact@oceanicvibes.com",
+        zone_id="zone-id",
+        routing_status="active",
     )
 
     assert result == {
         "state": "active",
         "domain": "oceanicvibes.com",
         "address": "contact@oceanicvibes.com",
-        "outboundProvider": "resend",
     }
 
 
@@ -414,7 +420,7 @@ def test_auto_provision_persists_invalid_site_origin_as_a_failure(tmp_path, monk
     assert memory.state["email_provisioning_state"] == state
 
 
-def test_failed_payload_activation_preserves_cloudflare_progress_for_retry(monkeypatch, tmp_path):
+def test_failed_mailflare_activation_preserves_provider_progress_for_retry(monkeypatch, tmp_path):
     config = _config(tmp_path)
     memory = FakeMemory()
     provider_calls = []
@@ -446,6 +452,7 @@ def test_failed_payload_activation_preserves_cloudflare_progress_for_retry(monke
         return tmp_path / "tenant.env"
 
     monkeypatch.setattr(bootstrap, "_tenant_env_path", registered_secret_path)
+    monkeypatch.setattr(bootstrap, "_write_tenant_secrets", lambda *_args, **_kwargs: None)
 
     class Client:
         def __init__(self, email_token, dns_token):
@@ -460,12 +467,13 @@ def test_failed_payload_activation_preserves_cloudflare_progress_for_retry(monke
 
     monkeypatch.setattr(bootstrap, "CloudflareEmailClient", Client)
     monkeypatch.setattr(bootstrap, "EmailProvisioningService", Service)
-    monkeypatch.setattr(bootstrap, "_configure_payload_mailbox", lambda *args, **kwargs: (_ for _ in ()).throw(bootstrap.EmailProvisioningError("Payload timeout")))
+    monkeypatch.setattr(bootstrap, "_worker_secret_client", lambda *_args, **_kwargs: type("Secrets", (), {"put_secret": lambda *_args: None})())
+    monkeypatch.setattr(bootstrap, "_configure_mailflare_mailbox", lambda *args, **kwargs: (_ for _ in ()).throw(bootstrap.EmailProvisioningError("Mailflare timeout")))
 
     state, _ = bootstrap.auto_provision_email(config, tenant_id="oceanicvibes", tenant_config_path=_tenant_config_path(tmp_path, "oceanicvibes"), memory=memory, env={})
 
     assert state["state"] == "failed"
     assert provider_calls == ["tenant_secret_path", "ensure_domain"]
     assert state["cloudflareRouteId"] == "rule-id"
-    assert "Payload timeout" in state["error"]
+    assert "Mailflare timeout" in state["error"]
     assert memory.state["email_provisioning_state"]["cloudflareRouteId"] == "rule-id"

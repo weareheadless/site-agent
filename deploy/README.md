@@ -496,6 +496,7 @@ Cloudflare credential file. No GitHub PAT, runner registration, webhook secret
 or inbound deployment endpoint is needed. GitHub CI validates the release
 contract; the VPS performs the same validation before execution.
 
+The shared root config and release registry pin Node.js 22.23.3 and npm 11.13.0; the Mailflare source lock requires Node.js 22.22.2 or newer.
 The API's shared root config must declare the exact preview toolchain under
 `source_deployment` (`node_path`, `node_version`, `npm_command`, and
 `npm_version`). The release registry pins the same versions and executable
