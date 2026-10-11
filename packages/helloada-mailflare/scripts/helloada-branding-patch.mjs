@@ -49,7 +49,7 @@ export function applyHelloAdaBrandingPatch(sources, basePath) {
   layout = replaceExactlyOnce(layout, 'title: "Mailflare",', 'title: "HelloAda",', 'Apple web app title')
   layout = replaceExactlyOnce(layout, '<link rel="icon" href="/api/branding/icon"></link>', '<link rel="icon" href="' + iconPath + '" type="image/svg+xml"></link>', 'head favicon')
 
-  let manifest = replaceExactlyOnce(sources.manifest, 'name: "Mailflare",', 'name: "HelloAda",', 'manifest name')
+  let manifest = replaceExactlyOnce(sources.manifest, 'name: "Mailflare",\n\t\tshort_name: "Mailflare",', 'name: "HelloAda",\n\t\tshort_name: "Mailflare",', 'manifest name')
   manifest = replaceExactlyOnce(manifest, 'short_name: "Mailflare",', 'short_name: "HelloAda",', 'manifest short name')
   manifest = replaceExactlyOnce(manifest, 'description: "Email, anywhere.",', 'description: "HelloAda business inbox, contacts and booking calendar",', 'manifest description')
   manifest = replaceExactlyOnce(manifest, 'start_url: "/inbox",', 'start_url: "' + basePath + '/inbox",', 'manifest start URL')
