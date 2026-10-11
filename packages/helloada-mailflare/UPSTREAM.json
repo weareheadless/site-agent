@@ -3,7 +3,7 @@
   "commit": "ca41c56a0781bf848b9898ddcc5615b3eacfbf8e",
   "packageVersion": "0.5.1",
   "packageLockSha256": "dcc70b0d3ac9b2ecbc7edb5199b9cf1c02064ea491e724939cdbe131f12c71de",
-  "integrationPatchSet": "helloada-tenant-worker-booking-owner-branding-v9",
+  "integrationPatchSet": "helloada-tenant-worker-booking-owner-branding-v10",
   "integrationMigrations": ["0061_helloada_booking_idempotency.sql", "0062_helloada_payload_migration.sql"],
   "basePath": "/mail"
 }
