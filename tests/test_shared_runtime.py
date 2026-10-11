@@ -66,7 +66,7 @@ def _tenant_checkout(root: Path) -> Path:
     (checkout / "src/app/api/helloada/bookings/route.ts").write_text("legacy")
     (checkout / "src/components/site").mkdir(parents=True, exist_ok=True)
     (checkout / "src/components/site/TenantSections.tsx").write_text("tenant design")
-    (checkout / "src/migrations").mkdir(parents=True)
+    (checkout / "src/migrations").mkdir(parents=True, exist_ok=True)
     (checkout / "src/migrations/tenant-migration.ts").write_text("tenant migration")
     return checkout
 
