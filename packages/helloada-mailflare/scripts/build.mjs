@@ -8,7 +8,7 @@ import { applyBookingParityPatches } from './booking-parity-patches.mjs'
 import { applyBookingEditorPatches } from './booking-editor-patches-clean.mjs'
 import { applyBookingUiPatch } from './booking-ui-patches.mjs'
 import { applyMailboxAccessPatch } from './mailbox-access-patch.mjs'
-import { applyHelloAdaBrandingPatch, shouldSkipUpstreamBrandIcon } from './helloada-branding-patch.mjs'
+import { applyHelloAdaBrandingPatch, sanitizeHelloAdaBrandCopy, sanitizeHelloAdaLocaleValues, shouldSkipUpstreamBrandIcon } from './helloada-branding-patch.mjs'
 
 const minimumNodeVersion = [22, 22, 2]
 const actualNodeVersion = process.versions.node.split('.').map(Number)
@@ -125,6 +125,49 @@ async function sourceFiles(directory) {
   return files
 }
 
+async function jsonFiles(directory) {
+  const { readdir } = await import('node:fs/promises')
+  const entries = await readdir(directory, { withFileTypes: true })
+  const files = []
+  for (const entry of entries) {
+    const file = path.join(directory, entry.name)
+    if (entry.isDirectory()) files.push(...await jsonFiles(file))
+    else if (entry.isFile() && entry.name.endsWith('.json')) files.push(file)
+  }
+  return files
+}
+
+async function applyHelloAdaCopyBranding(destination) {
+  for (const file of await sourceFiles(path.join(destination, 'src'))) {
+    const source = await readFile(file, 'utf8')
+    const branded = sanitizeHelloAdaBrandCopy(source)
+    if (branded !== source) await writeFile(file, branded)
+  }
+
+  for (const relative of ['src/lib/i18n', 'public/locales']) {
+    const directory = path.join(destination, relative)
+    if (!(await exists(directory))) continue
+    for (const file of await jsonFiles(directory)) {
+      const source = await readFile(file, 'utf8')
+      const branded = JSON.stringify(sanitizeHelloAdaLocaleValues(JSON.parse(source)), null, 2) + '\n'
+      if (branded !== source) await writeFile(file, branded)
+    }
+  }
+}
+
+async function assertHelloAdaClientBranding(directory) {
+  const files = [
+    ...await sourceFiles(directory),
+    ...await jsonFiles(directory),
+  ]
+  for (const file of files) {
+    const source = await readFile(file, 'utf8')
+    if (/\bMailflare\b/.test(source)) {
+      throw new Error('Customer-facing Mailflare brand remains in the compiled client asset: ' + path.relative(directory, file))
+    }
+  }
+}
+
 async function prepareBuildCopy(destination) {
   await cp(upstreamRoot, destination, {
     recursive: true,
@@ -183,6 +226,7 @@ async function prepareBuildCopy(destination) {
     }
   }
   if (referencesChanged === 0) throw new Error('Mailflare API routes were not namespaced under /mail/api')
+  await applyHelloAdaCopyBranding(destination)
   return referencesChanged
 }
 
@@ -273,6 +317,7 @@ export async function buildTenantMailflare({ tenantRoot, npmBin = 'npm' }) {
         || !(await exists(path.join(clientAssets, '_next', 'static')))) {
       throw new Error('Mailflare build did not emit its Worker entrypoint, SSR chunks, and namespaced client assets')
     }
+    await assertHelloAdaClientBranding(path.join(clientAssets, '_next', 'static'))
 
     await mkdir(path.join(tenantRoot, '.mailflare'), { recursive: true })
     await cp(serverOutput, path.join(workerOutput, 'server'), { recursive: true })

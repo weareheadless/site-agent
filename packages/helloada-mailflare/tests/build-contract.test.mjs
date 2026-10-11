@@ -94,6 +94,9 @@ test('booking integration patches only the disposable pinned source and require 
   assert.match(patched.route, /BOOKING_RATE_LIMIT\.limit/)
   assert.match(patched.route, /existingBookingRequest/)
   assert.match(patched.create, /ON CONFLICT\(user_id, booking_request_id\) DO NOTHING/)
+  assert.match(patched.create, /INSERT INTO contacts \(id, user_id, email, display_name, source, last_seen_at, created_at\)/)
+  assert.match(patched.create, /WHERE EXISTS \(SELECT 1 FROM calendar_events WHERE user_id = \? AND booking_request_id = \? AND booking_request_hash = \?\)/)
+  assert.match(patched.create, /ON CONFLICT\(user_id, email\) DO UPDATE/)
   assert.match(patched.schema, /booking_request_hash/)
   assert.match(patched.bookingTypes, /turnstileToken\?: unknown/)
 
