@@ -1296,8 +1296,81 @@ def provision_turnstile_for_tenant(
 
 
 
+
+def tenant_email_auto_provisioning_enabled(environment_path: Path) -> bool:
+    """Return the registered policy that permits a first Mailflare bootstrap release."""
+    import yaml
+
+    config_path = environment_path.with_name("config.yaml")
+    try:
+        tenant_config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as error:
+        raise ValueError("registered tenant email provisioning policy is unavailable") from error
+    if not isinstance(tenant_config, dict):
+        raise ValueError("registered tenant configuration is invalid")
+    messages = tenant_config.get("messages")
+    email = messages.get("email") if isinstance(messages, dict) else None
+    provisioning = email.get("provisioning") if isinstance(email, dict) else None
+    return bool(
+        isinstance(email, dict)
+        and email.get("enabled") is True
+        and isinstance(provisioning, dict)
+        and provisioning.get("auto") is True
+    )
+
+
+def trigger_email_provisioning_after_worker_release(
+    manifest: dict[str, Any],
+    tenant: str,
+) -> dict[str, str]:
+    """Wake the canonical tenant scheduler after its exact Worker passes health gates."""
+    import yaml
+    from site_agent.core.memory import Memory
+
+    customer = (manifest.get("customers") or {}).get(tenant)
+    if not isinstance(customer, dict) or not customer.get("mailflareD1DatabaseId"):
+        return {"state": "not-configured"}
+    environment_path = tenant_environment_path(manifest, tenant)
+    if not tenant_email_auto_provisioning_enabled(environment_path):
+        return {"state": "manual"}
+    runtime_names = ("MAILFLARE_ADDRESS", "MAILFLARE_ZONE_ID", "MAILFLARE_ROUTING_STATUS")
+    runtime_values = {name: str(value or "").strip() for name, value in read_tenant_environment(environment_path).items()
+                      if name in runtime_names}
+    present = [bool(runtime_values.get(name)) for name in runtime_names]
+    if any(present) and not all(present):
+        raise RuntimeError("registered tenant Mailflare runtime settings are incomplete")
+
+    config_path = environment_path.with_name("config.yaml")
+    tenant_config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    if not isinstance(tenant_config, dict) or tenant_config.get("instance_name") != tenant:
+        raise RuntimeError("registered tenant configuration identity does not match the release")
+    data_dir_value = str(tenant_config.get("data_dir") or "").strip()
+    configured_data_dir = Path(data_dir_value).expanduser() if data_dir_value else Path("/")
+    if not configured_data_dir.is_absolute():
+        raise RuntimeError("registered tenant memory path must be absolute")
+    data_dir = configured_data_dir.resolve()
+    if data_dir == Path(data_dir.anchor) or data_dir.name != "data" or data_dir.parent.name != tenant:
+        raise RuntimeError("registered tenant memory path is not canonical")
+    memory_path = data_dir / "memory.db"
+    if not memory_path.is_file():
+        raise RuntimeError("registered tenant scheduler state is unavailable")
+
+    memory = Memory(memory_path)
+    try:
+        previous = memory.kv_get("email_provisioning_state", {})
+        previous = previous if isinstance(previous, dict) else {}
+        if all(present) and previous.get("state") == "active":
+            return {"state": "active"}
+        memory.kv_set("next_run:email_provisioning", round(time.time(), 3))
+        previous_state = str(previous.get("state") or "uninitialized")
+        return {"state": "scheduled", "previousState": previous_state}
+    finally:
+        memory.close()
+
+
 def tenant_runtime_secrets(manifest: dict[str, Any], tenant: str) -> dict[str, str]:
     """Load only this registered tenant's explicit Worker secrets from its protected VPS env."""
+
     try:
         from site_agent.application.tenant_registration import (
             WORKER_SITE_AGENT_TOKEN_ENV,
@@ -1313,7 +1386,8 @@ def tenant_runtime_secrets(manifest: dict[str, Any], tenant: str) -> dict[str, s
         customer = registered_customers.get(tenant) if isinstance(registered_customers, dict) else None
         if not isinstance(customer, dict):
             raise ValueError("registered tenant release manifest entry is unavailable")
-        values = read_tenant_environment(tenant_environment_path(manifest, tenant))
+        environment_path = tenant_environment_path(manifest, tenant)
+        values = read_tenant_environment(environment_path)
         required = {"PAYLOAD_SECRET", tenant_token_env(tenant)}
         if any(not values.get(key) for key in required):
             raise ValueError("registered tenant runtime secrets are incomplete")
@@ -1321,9 +1395,12 @@ def tenant_runtime_secrets(manifest: dict[str, Any], tenant: str) -> dict[str, s
         mailflare_values = {name: str(values.get(name) or "").strip() for name in mailflare_names}
         mailflare_present = [bool(value) for value in mailflare_values.values()]
         mailflare_enabled = bool(customer.get("mailflareD1DatabaseId"))
+        auto_email_setup = tenant_email_auto_provisioning_enabled(environment_path)
         if any(mailflare_present) and not all(mailflare_present):
             raise ValueError("registered tenant Mailflare runtime settings are incomplete")
-        if mailflare_enabled and not all(mailflare_present):
+        if auto_email_setup and not mailflare_enabled:
+            raise ValueError("automatic email provisioning requires registered Mailflare resources")
+        if mailflare_enabled and not all(mailflare_present) and not auto_email_setup:
             raise ValueError("registered Mailflare tenant runtime settings are incomplete")
         if any(mailflare_present) and not mailflare_enabled:
             raise ValueError("Mailflare runtime settings exist without registered Mailflare resources")
@@ -2247,6 +2324,10 @@ def main() -> int:
             raise RuntimeError("Cloudflare did not create a new deployment")
         receipt["deployment"] = deployment
         verify_live(receipt, customer, manifest, deploy_env, base, stage)
+        stage("trigger-email-provisioning")
+        receipt["emailProvisioning"] = trigger_email_provisioning_after_worker_release(
+            manifest, args.tenant,
+        )
         receipt.update({"status": "deployed", "stage": "awaiting-browser-verification", "finishedAt": utc_now()})
         atomic_json(receipt_path, receipt)
         print(f"[release] DEPLOYED receipt={receipt_path}", flush=True)
