@@ -20,7 +20,7 @@ entry points; adapting only the outer Worker handler does not reach Mailflare
 route handlers. The pinned upstream source stays pristine; `scripts/build.mjs`
 wires the same shared adapter into the disposable Mailflare build.
 
-This package is an implementation source, not yet a production release. Do not
+This package is the HelloAda-branded source for the tenant inbox, Contacts, Calendar and booking surfaces. Do not
 deploy its upstream `wrangler.jsonc`; the tenant's Site-Agent Worker remains the
 only deployment entrypoint. Payload authentication, per-tenant resource
 provisioning, existing mailbox-data migration, and live tenant cutover remain
