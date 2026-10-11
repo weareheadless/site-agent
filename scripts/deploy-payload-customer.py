@@ -269,10 +269,29 @@ def select_worker_rollout_mode(tenant_runs: Path,
             continue
         state = lifecycle.get("state")
         if state in {"applying", "outcome-unknown"}:
-            raise RuntimeError(
-                f"Durable Object lifecycle outcome is unresolved in release {prior.get('releaseId')}; "
-                "reconcile that exact Cloudflare deployment before queueing another release"
+            if prior.get("releaseId") != path.parent.name:
+                raise RuntimeError(f"Durable Object receipt identity is invalid: {path.parent.name}")
+            from site_agent.application.durable_object_reconciliation import (
+                LifecycleReconciliationError,
+                read_lifecycle_reconciliation,
             )
+            try:
+                evidence = read_lifecycle_reconciliation(
+                    tenant_runs.parent.parent, tenant_runs.name, prior,
+                )
+            except LifecycleReconciliationError as error:
+                raise RuntimeError(
+                    f"Durable Object lifecycle evidence is invalid in release {path.parent.name}"
+                ) from error
+            if evidence is None:
+                raise RuntimeError(
+                    f"Durable Object lifecycle outcome is unresolved in release {prior.get('releaseId')}; "
+                    "the coordinator must prove the exact live deployment before queueing another release"
+                )
+            if evidence["migrationIdentity"] != migration_identity:
+                raise RuntimeError(f"Durable Object reconciliation identity changed: {path.parent.name}")
+            proven_release = prior["releaseId"]
+            continue
         if state == "planned":
             continue
         if state == "applied":

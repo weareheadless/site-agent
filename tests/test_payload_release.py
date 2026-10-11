@@ -1941,6 +1941,49 @@ def test_durable_object_migration_identity_and_release_mode_are_receipt_driven(t
     prior["durableObjectLifecycle"].update({"state": "applied", "strategy": "atomic"})
     prior_path.write_text(json.dumps(prior))
     assert release.select_worker_rollout_mode(tenant_runs, identity) == ("versioned", "runtime-1")
+
+    from site_agent.application.durable_object_reconciliation import reconciliation_path
+
+    prior.update({
+        "tenant": "oceanicvibes",
+        "sourceSha": SHA,
+        "sharedRuntimeFingerprint": "f" * 64,
+        "worker": "oceanicvibes",
+        "status": "failed",
+        "rolloutMode": "atomic",
+    })
+    prior["durableObjectLifecycle"].update({"state": "outcome-unknown", "strategy": "atomic"})
+    receipt_bytes = (json.dumps(prior, sort_keys=True) + "\n").encode()
+    prior_path.write_bytes(receipt_bytes)
+    evidence = {
+        "schema": 1,
+        "tenant": "oceanicvibes",
+        "releaseId": "runtime-1",
+        "receiptSha256": hashlib.sha256(receipt_bytes).hexdigest(),
+        "sourceSha": SHA,
+        "sharedRuntimeFingerprint": "f" * 64,
+        "migrationIdentity": identity,
+        "pipelineSha": "b" * 40,
+        "status": "verified",
+        "verifiedAt": "2026-10-11T04:00:00+00:00",
+        "proof": {
+            "deployment": {"id": "new-deployment", "versionId": "new-version", "percentage": 100},
+            "version": {"id": "new-version", "releaseSha": SHA, "tenant": "oceanicvibes"},
+            "namespace": {
+                "id": "namespace-id", "class": "RealtimeHub",
+                "name": "oceanicvibes_RealtimeHub", "binding": "MAILFLARE_REALTIME",
+            },
+            "health": {
+                "tenant": "oceanicvibes", "releaseSha": SHA,
+                "ok": True, "payloadSchema": "ready",
+            },
+        },
+    }
+    evidence_path = reconciliation_path(tmp_path, "oceanicvibes", "runtime-1")
+    evidence_path.parent.mkdir(parents=True)
+    evidence_path.write_text(json.dumps(evidence))
+    assert release.select_worker_rollout_mode(tenant_runs, identity) == ("versioned", "runtime-1")
+
     assert release.select_worker_rollout_mode(
         tenant_runs, release.durable_object_migration_identity([{**migrations[0], "tag": "v2"}]),
     ) == ("atomic", None)

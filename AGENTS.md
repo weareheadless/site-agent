@@ -262,7 +262,12 @@ Cloudflare's deprecated Email Routing subdomain DNS query as a fallback.
   the protected mode-`0600` VPS secret file and injected only into the Worker
   upload; it must never enter Git, build processes, logs, browser bundles or
   chat. No direct Wrangler release, manual Worker upload, or separate release
-  path is permitted. See `deploy/README.md` for queue and receipt procedure.
+  path is permitted. The release token requires Workers Routes Write scoped only
+  to zones managed by Site-Agent. If an atomic Durable Object deployment has an
+  ambiguous CLI outcome, use only the canonical reconciliation evidence path:
+  preserve the failed receipt, prove the exact live version and namespace, then
+  queue a fresh unique canary release. Lifecycle proof is not a canary pass.
+  See `deploy/README.md` for queue, permission and receipt procedure.
 - The VPS release service executes only
   `/SOCIAL/payload-releases/bin/current/dispatch-payload-releases.py`. The dispatcher
   fetches official `site-agent/main`, snapshots its exact full SHA, and runs the
