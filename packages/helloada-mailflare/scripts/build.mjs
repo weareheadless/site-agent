@@ -139,12 +139,6 @@ async function prepareBuildCopy(destination) {
   })
   const sharedBindingsPath = path.resolve(packageRoot, '../../src/site_agent/templates/next-payload/mailflare-bindings.ts')
   await cp(sharedBindingsPath, path.join(destination, 'src/lib/helloada-tenant-bindings.ts'))
-  const helloAdaLogoPath = path.resolve(packageRoot, '../../src/site_agent/templates/next-payload/public/brand/helloada-logo.svg')
-  const helloAdaLogo = await readFile(helloAdaLogoPath, 'utf8')
-  if (!helloAdaLogo.includes('<svg') || !helloAdaLogo.includes('#FF6B5E') || !helloAdaLogo.includes('#FFC857')) {
-    throw new Error('Canonical HelloAda logo asset is missing or does not match the fixed brand colors')
-  }
-  await writeFile(path.join(destination, 'public/helloada-logo.svg'), helloAdaLogo)
   const brandingPaths = {
     layout: 'src/app/layout.tsx',
     manifest: 'src/app/manifest.ts',
@@ -330,6 +324,12 @@ export async function composeTenantMailflareAssets({ tenantRoot }) {
   if (migrations.sha256 !== provenance.migrationsSha256
       || JSON.stringify(migrations.names) !== JSON.stringify(provenance.migrationNames)) {
     throw new Error('Mailflare migration files differ from the pinned build receipt')
+  }
+  const helloAdaLogoPath = path.join(openNextAssets, 'brand', 'helloada-logo.svg')
+  if (!(await exists(helloAdaLogoPath))) throw new Error('Canonical HelloAda mark is missing from the tenant build artifact')
+  const helloAdaLogo = await readFile(helloAdaLogoPath, 'utf8')
+  if (!helloAdaLogo.includes('<svg') || !helloAdaLogo.includes('#FF6B5E') || !helloAdaLogo.includes('#FFC857')) {
+    throw new Error('Canonical HelloAda mark in the tenant build artifact does not match the fixed brand colors')
   }
   const destination = path.join(openNextAssets, 'mail')
   if (await exists(destination)) throw new Error('Reserved /mail asset namespace already exists; refusing to overwrite it')
