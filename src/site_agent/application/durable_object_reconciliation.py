@@ -68,7 +68,13 @@ def _health_json(url: str) -> dict[str, Any]:
     parsed = urlsplit(url)
     if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
         raise LifecycleReconciliationError("registered health URL must be an HTTPS origin")
-    request = urllib.request.Request(url, headers={"Accept": "application/json"})
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/json",
+            "User-Agent": "HelloAda-ReleaseVerifier/1.0 (+https://helloada.app)",
+        },
+    )
     try:
         with urllib.request.urlopen(request, timeout=20) as response:
             if response.status != 200 or response.geturl() != url:
