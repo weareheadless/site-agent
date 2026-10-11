@@ -1,5 +1,6 @@
 // The customer site, Payload and Mailflare share this single tenant Worker.
 import { composeTenantWorker, type WorkerHandlerSet } from "./mailflare-runtime"
+import { asMailflareEnv } from "./mailflare-bindings"
 import { createPayloadOwnerGate } from "./mailflare-owner-gate"
 import type { MailflareD1 } from "./mailflare-provisioning"
 import { helloAdaSite } from "./src/helloada.config"
@@ -59,29 +60,7 @@ const siteAgentHandlers: WorkerHandlerSet<TenantEnv, WorkerContext> = {
   },
 }
 
-const MAILFLARE_BINDING_MAP: Record<string, keyof TenantEnv> = {
-  DB: "MAILFLARE_DB",
-  BUCKET: "MAILFLARE_BUCKET",
-  INBOUND_QUEUE: "MAILFLARE_INBOUND_QUEUE",
-  EMAIL: "EMAIL",
-  OUTBOUND_QUEUE: "MAILFLARE_OUTBOUND_QUEUE",
-  AGENT_QUEUE: "MAILFLARE_AGENT_QUEUE",
-  REALTIME: "MAILFLARE_REALTIME",
-  AI: "MAILFLARE_AI",
-  LOGIN_RATE_LIMIT: "MAILFLARE_LOGIN_RATE_LIMIT",
-  AGENT_RATE_LIMIT: "MAILFLARE_AGENT_RATE_LIMIT",
-  BOOKING_RATE_LIMIT: "MAILFLARE_BOOKING_RATE_LIMIT",
-  TURNSTILE_SECRET_KEY: "HELLOADA_TURNSTILE_SECRET_KEY",
-  TURNSTILE_SITE_KEY: "HELLOADA_TURNSTILE_SITE_KEY",
-  RESEND_API_KEY: "RESEND_API_KEY",
-}
-
-const asMailflareEnv = (env: TenantEnv) => new Proxy(env as unknown as Record<string, unknown>, {
-  get(target, property, receiver) {
-    const mapped = typeof property === "string" ? MAILFLARE_BINDING_MAP[property] : undefined
-    return Reflect.get(target, mapped ?? property, receiver)
-  },
-}) as MailflareBindings
+const mailflareEnv = (env: TenantEnv) => asMailflareEnv(env) as MailflareBindings
 
 const mailflare = mailflareWorker as unknown as MailflareWorker
 
