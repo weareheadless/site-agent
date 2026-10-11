@@ -79,7 +79,7 @@ const under = (pathname: string, root: string) => pathname === root || pathname.
 const isStatic = (request: Request, pathname: string, basePath: string) =>
   ['GET', 'HEAD'].includes(request.method)
   && (pathname.startsWith(`${basePath}/_next/static/`)
-    || [`${basePath}/favicon.ico`, `${basePath}/manifest.webmanifest`, `${basePath}/helloada-logo.svg`].includes(pathname))
+    || [`${basePath}/favicon.ico`, `${basePath}/manifest.webmanifest`].includes(pathname)
 
 const isPublic = (request: Request, pathname: string, basePath: string) => {
   if (isStatic(request, pathname, basePath)) return true
@@ -203,7 +203,7 @@ export function createPayloadOwnerGate<Env extends MailflareEnv, Context>({
     if (!under(pathname, basePath)) throw new Error('Mailflare owner gate received a request outside its namespace')
 
     if (pathname === `${basePath}/favicon.ico` && ['GET', 'HEAD'].includes(request.method)) {
-      return Response.redirect(new URL(`${basePath}/helloada-logo.svg`, request.url), 302)
+      return Response.redirect(new URL('/brand/helloada-logo.svg', request.url), 302)
     }
 
     if (pathname === `${basePath}/api/auth/logout` && request.method === 'POST') {
