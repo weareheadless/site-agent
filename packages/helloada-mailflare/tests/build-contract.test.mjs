@@ -10,7 +10,7 @@ import { applyBookingIntegrationPatch } from '../scripts/booking-patches.mjs'
 import { applyBookingParityPatches } from '../scripts/booking-parity-patches.mjs'
 import { applyBookingEditorPatches } from '../scripts/booking-editor-patches-clean.mjs'
 import { applyBookingUiPatch } from '../scripts/booking-ui-patches.mjs'
-import { applyTenantPatches, namespaceApiReferences } from '../scripts/build.mjs'
+import { applyTenantPatches, composeTenantMailflareAssets, namespaceApiReferences } from '../scripts/build.mjs'
 import { applyMailboxAccessPatch } from '../scripts/mailbox-access-patch.mjs'
 import { asMailflareEnv } from '../../../src/site_agent/templates/next-payload/mailflare-bindings.ts'
 
@@ -169,6 +169,17 @@ test('Mailflare assets compose only into the reserved /mail namespace with pinne
       migrationsSha256,
     }))
 
+    await assert.rejects(
+      composeTenantMailflareAssets({ tenantRoot }),
+      /Canonical HelloAda mark is missing/,
+    )
+    const helloAdaMark = await readFile(
+      path.resolve(root, '../../src/site_agent/templates/next-payload/public/brand/helloada-logo.svg'),
+      'utf8',
+    )
+    await mkdir(path.join(assets, 'brand'), { recursive: true })
+    await writeFile(path.join(assets, 'brand', 'helloada-logo.svg'), helloAdaMark)
+
     const result = spawnSync(process.execPath, [
       path.join(root, 'scripts', 'build.mjs'), '--tenant-root', tenantRoot, '--compose-assets',
     ], { encoding: 'utf8' })
@@ -178,6 +189,7 @@ test('Mailflare assets compose only into the reserved /mail namespace with pinne
       await readFile(path.join(assets, 'mail', '_next', 'static', 'chunks', 'mail.js'), 'utf8'),
       'mailflare',
     )
+    assert.equal(await readFile(path.join(assets, 'brand', 'helloada-logo.svg'), 'utf8'), helloAdaMark)
   } finally {
     await rm(tenantRoot, { recursive: true, force: true })
   }
