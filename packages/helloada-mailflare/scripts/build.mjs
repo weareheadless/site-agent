@@ -7,6 +7,7 @@ import { applyBookingIntegrationPatch } from './booking-patches.mjs'
 import { applyBookingParityPatches } from './booking-parity-patches.mjs'
 import { applyBookingEditorPatches } from './booking-editor-patches-clean.mjs'
 import { applyBookingUiPatch } from './booking-ui-patches.mjs'
+import { applyMailboxAccessPatch } from './mailbox-access-patch.mjs'
 
 const minimumNodeVersion = [22, 22, 2]
 const actualNodeVersion = process.versions.node.split('.').map(Number)
@@ -136,6 +137,10 @@ async function prepareBuildCopy(destination) {
   const sharedBindingsPath = path.resolve(packageRoot, '../../src/site_agent/templates/next-payload/mailflare-bindings.ts')
   await cp(sharedBindingsPath, path.join(destination, 'src/lib/helloada-tenant-bindings.ts'))
   await applyBookingPatches(destination)
+
+  const mailboxAccessPath = path.join(destination, 'src/lib/mailboxes/access.ts')
+  const mailboxAccessSource = await readFile(mailboxAccessPath, 'utf8')
+  await writeFile(mailboxAccessPath, applyMailboxAccessPatch(mailboxAccessSource))
 
   const nextPath = path.join(destination, 'next.config.ts')
   const workerPath = path.join(destination, 'worker.ts')
