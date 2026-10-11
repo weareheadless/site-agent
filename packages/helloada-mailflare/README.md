@@ -22,6 +22,4 @@ wires the same shared adapter into the disposable Mailflare build.
 
 This package is the HelloAda-branded source for the tenant inbox, Contacts, Calendar and booking surfaces. Do not
 deploy its upstream `wrangler.jsonc`; the tenant's Site-Agent Worker remains the
-only deployment entrypoint. Payload authentication, per-tenant resource
-provisioning, existing mailbox-data migration, and live tenant cutover remain
-separate tracked milestones.
+only deployment entrypoint. Historical Payload mail and calendar migration remains a separate tracked milestone. Do not remove or expose legacy records until tenant reconciliation is explicitly verified.
