@@ -9,7 +9,6 @@ const dashboardNav = [
 	'import {',
 	'  MailPlus,',
 	'  Trash2,',
-	'  CalendarClock',
 	'} from "lucide-react";',
 	'const links = [',
 	'  { href: "/compose", labelKey: "navigation.compose", icon: MailPlus, primary: true },',
