@@ -97,7 +97,7 @@ export function applyHelloAdaBrandingPatch(sources, basePath) {
     'disabled tenant branding mutation',
   )
 
-  if (!sources.brandingIconRoute.includes('https://mailflare.local/icon-96.png')
+  let sidebarFooter = replaceExactlyOnce(sources.sidebarFooter, 'import packageJson from "../../package.json";\\n', '', 'vendor version import')\n  sidebarFooter = replaceExactlyOnce(sidebarFooter, 'href={`https://mailflare.co/?ref=${typeof window !== "undefined" ? location.hostname : ""}&v=${packageJson.version}`}', 'href="https://helloada.app"', 'vendor footer link')\n  sidebarFooter = replaceExactlyOnce(sidebarFooter, 'Mailflare v{packageJson.version}', 'HelloAda', 'vendor footer label')\n\n  if (!sources.brandingIconRoute.includes('https://mailflare.local/icon-96.png')
       || !sources.brandingIconRoute.includes('export async function GET(request: Request)')) {
     throw new Error('Pinned Mailflare branding patch no longer recognizes the default icon route')
   }
@@ -108,7 +108,7 @@ export function applyHelloAdaBrandingPatch(sources, basePath) {
     + '\treturn env.ASSETS.fetch("https://mailflare.local' + iconPath + '");\n'
     + '}\n'
 
-  return { layout, manifest, brandingDefaults, brandingProvider, brandingService, brandingIconRoute }
+  return { layout, manifest, brandingDefaults, brandingProvider, brandingService, brandingIconRoute, sidebarFooter }
 }
 
 const replacedUpstreamBrandIcons = new Set([
