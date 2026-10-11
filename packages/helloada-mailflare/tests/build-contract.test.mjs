@@ -11,6 +11,7 @@ import { applyBookingParityPatches } from '../scripts/booking-parity-patches.mjs
 import { applyBookingEditorPatches } from '../scripts/booking-editor-patches-clean.mjs'
 import { applyBookingUiPatch } from '../scripts/booking-ui-patches.mjs'
 import { applyTenantPatches, namespaceApiReferences } from '../scripts/build.mjs'
+import { applyMailboxAccessPatch } from '../scripts/mailbox-access-patch.mjs'
 import { asMailflareEnv } from '../../../src/site_agent/templates/next-payload/mailflare-bindings.ts'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -24,6 +25,22 @@ test('Mailflare vendor is fixed to the reviewed upstream revision and lockfile',
   assert.equal(packageJson.version, metadata.packageVersion)
   assert.equal(createHash('sha256').update(lock).digest('hex'), metadata.packageLockSha256)
   assert.equal(metadata.basePath, '/mail')
+})
+
+test('provisioned shared mailbox access is independent of Team creation entitlement', async () => {
+  const accessPath = path.join(root, 'upstream/src/lib/mailboxes/access.ts')
+  const upstreamAccess = await readFile(accessPath, 'utf8')
+  assert.match(upstreamAccess, /mailbox\.type !== "shared" \|\| !\(await isTeamMailboxSharingEnabled\(db\)\)/)
+  assert.match(upstreamAccess, /if \(!\(await isTeamMailboxSharingEnabled\(db\)\)\) return owned;/)
+
+  const patchedAccess = applyMailboxAccessPatch(upstreamAccess)
+  assert.match(patchedAccess, /if \(mailbox\.type !== "shared"\) return null;/)
+  assert.doesNotMatch(patchedAccess, /isTeamMailboxSharingEnabled/)
+  assert.match(patchedAccess, /eq\(mailboxAccess\.userId, user\.id\)/)
+  assert.match(patchedAccess, /eq\(mailboxAccess\.mailboxId, mailbox\.id\)/)
+
+  const mailboxRoute = await readFile(path.join(root, 'upstream/src/app/api/mailboxes/route.ts'), 'utf8')
+  assert.match(mailboxRoute, /if \(user\.role !== "admin" \|\| !entitlements\.canShareMailboxes\)/)
 })
 
 test('upstream remains pristine and HelloAda changes are explicit build patches', async () => {
