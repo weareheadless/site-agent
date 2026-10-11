@@ -104,7 +104,7 @@ def test_reconciled_atomic_canary_gets_a_new_id_before_any_fanout(tmp_path):
             "strategy": "atomic",
         },
     }
-    receipt_bytes = (json.dumps(receipt, indent=2) + "\\n").encode()
+    receipt_bytes = (json.dumps(receipt, indent=2) + "\n").encode()
     receipt_path = tmp_path / "runs" / "oceanicvibes" / release_id / "receipt.json"
     receipt_path.parent.mkdir(parents=True)
     receipt_path.write_bytes(receipt_bytes)
