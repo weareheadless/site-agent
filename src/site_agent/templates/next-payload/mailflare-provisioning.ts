@@ -49,11 +49,19 @@ export async function provisionTenantMailflareMailbox({
   ).bind(serviceUserId).first<{ id: string; email: string; disabled: number }>()
   if (!existingService) {
     const existingUser = await database.prepare('SELECT id FROM users LIMIT 1').first<{ id: string }>()
-    if (existingUser) throw new Error('Mailflare contains an unlinked account; explicit mailbox migration is required')
+    if (existingUser && existingUser.id !== serviceUserId) {
+      throw new Error('Mailflare contains an unlinked account; explicit mailbox migration is required')
+    }
     await database.prepare(
-      'INSERT INTO users (id, email, password_hash, name, role, is_primary_admin, can_manage_mailboxes, can_manage_domains, can_manage_users, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT OR IGNORE INTO users (id, email, password_hash, name, role, is_primary_admin, can_manage_mailboxes, can_manage_domains, can_manage_users, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     ).bind(serviceUserId, serviceEmail, '!helloada-service-account-disabled', 'HelloAda mailbox service', 'user', 0, 0, 0, 0, now).run()
   } else if (existingService.email !== serviceEmail || existingService.disabled) {
+    throw new Error('Mailflare service account does not match the tenant identity')
+  }
+  const confirmedService = await database.prepare(
+    'SELECT id, email, disabled FROM users WHERE id = ? LIMIT 1',
+  ).bind(serviceUserId).first<{ id: string; email: string; disabled: number }>()
+  if (!confirmedService || confirmedService.email !== serviceEmail || confirmedService.disabled) {
     throw new Error('Mailflare service account does not match the tenant identity')
   }
 

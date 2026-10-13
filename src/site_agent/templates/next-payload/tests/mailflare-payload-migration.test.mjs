@@ -105,7 +105,7 @@ function mailflareDatabase() {
     'CREATE TABLE messages (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, mailbox_id TEXT, direction TEXT NOT NULL, provider_message_id TEXT, from_addr TEXT NOT NULL, to_addr TEXT NOT NULL, cc_addr TEXT, bcc_addr TEXT, subject TEXT, snippet TEXT, text_body TEXT, raw_r2_key TEXT, status TEXT NOT NULL, read INTEGER NOT NULL DEFAULT 0, starred INTEGER NOT NULL DEFAULT 0, thread_id TEXT, in_reply_to TEXT, references_header TEXT, created_at INTEGER NOT NULL);',
     'CREATE TABLE message_attachments (id TEXT PRIMARY KEY, message_id TEXT NOT NULL, filename TEXT NOT NULL, content_type TEXT NOT NULL, size INTEGER NOT NULL, disposition TEXT NOT NULL, r2_key TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL);',
     'CREATE TABLE booking_events (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL, slug TEXT NOT NULL, description TEXT NOT NULL, color TEXT NOT NULL, host_ids TEXT NOT NULL, duration_minutes INTEGER NOT NULL, location TEXT NOT NULL, weekdays TEXT NOT NULL, start_time TEXT NOT NULL, end_time TEXT NOT NULL, time_ranges TEXT NOT NULL, time_zone TEXT NOT NULL, enabled INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);',
-    'CREATE TABLE calendar_events (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, mailbox_id TEXT, title TEXT NOT NULL, description TEXT NOT NULL, location TEXT NOT NULL, attendees TEXT NOT NULL, color TEXT NOT NULL, repeat TEXT NOT NULL, repeat_days TEXT NOT NULL, excluded_occurrences TEXT NOT NULL, time_zone TEXT, starts_at INTEGER NOT NULL, ends_at INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);',
+    'CREATE TABLE calendar_events (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, mailbox_id TEXT, title TEXT NOT NULL, description TEXT NOT NULL, location TEXT NOT NULL, attendees TEXT NOT NULL, color TEXT NOT NULL, repeat TEXT NOT NULL, repeat_days TEXT NOT NULL, repeat_anchor_day TEXT, repeat_until INTEGER, excluded_occurrences TEXT NOT NULL, time_zone TEXT, starts_at INTEGER NOT NULL, ends_at INTEGER NOT NULL, booking_consent_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);',
   ].join('\n'))
   sqlite.exec(migrationSql)
   sqlite.exec(bookingSettingsMigrationSql)
@@ -207,6 +207,69 @@ test('imports Payload mailbox, immutable objects, booking setup and calendar eve
   assert.equal(target.sqlite.prepare('SELECT COUNT(*) AS count FROM messages').get().count, 1)
   assert.equal(target.sqlite.prepare('SELECT COUNT(*) AS count FROM message_attachments').get().count, 1)
   assert.equal(target.sqlite.prepare('SELECT COUNT(*) AS count FROM calendar_events').get().count, 1)
+})
+
+test('coalesces concurrent requests into one complete mailbox import', async () => {
+  const source = payloadSource()
+  const target = mailflareDatabase()
+  const env = migrationEnv(source, target)
+
+  const results = await Promise.all([
+    migratePayloadMailbox(env, owner),
+    migratePayloadMailbox(env, owner),
+  ])
+
+  assert.deepEqual(results[0], results[1])
+  assert.equal(results[0].state, 'complete')
+  assert.equal(target.sqlite.prepare('SELECT state FROM helloada_import_runs').get().state, 'complete')
+  assert.equal(target.sqlite.prepare('SELECT COUNT(*) AS count FROM contacts').get().count, 1)
+  assert.equal(target.sqlite.prepare('SELECT COUNT(*) AS count FROM messages').get().count, 1)
+})
+
+test('advances the single tenant ledger from a completed v1 import to v2', async () => {
+  const source = payloadSource()
+  const target = mailflareDatabase()
+  const env = migrationEnv(source, target)
+  target.sqlite.prepare(
+    'INSERT INTO helloada_import_runs (tenant_id, version, state, source_sha256, counts_json, started_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+  ).run(env.HELLOADA_TENANT_ID, 'payload-mailbox-v1', 'complete', 'v1-source-hash', '{}', Date.now() - 1000, Date.now())
+
+  const result = await migratePayloadMailbox(env, owner)
+  const run = target.sqlite.prepare('SELECT version, state FROM helloada_import_runs WHERE tenant_id=?').get(env.HELLOADA_TENANT_ID)
+
+  assert.equal(result.state, 'complete')
+  assert.equal(run.version, 'payload-mailbox-v2')
+  assert.equal(run.state, 'complete')
+  assert.equal(target.sqlite.prepare('SELECT COUNT(*) AS count FROM messages').get().count, 1)
+  assert.equal(target.sqlite.prepare('SELECT COUNT(*) AS count FROM booking_events').get().count, 1)
+})
+
+test('does not advance a previous import while its durable lease is active', async () => {
+  const source = payloadSource()
+  const target = mailflareDatabase()
+  const env = migrationEnv(source, target)
+  target.sqlite.prepare(
+    'INSERT INTO helloada_import_runs (tenant_id, version, state, lease_token, lease_until, started_at) VALUES (?, ?, ?, ?, ?, ?)',
+  ).run(env.HELLOADA_TENANT_ID, 'payload-mailbox-v1', 'running', 'v1-active-lease', Date.now() + 60_000, Date.now())
+
+  const result = await migratePayloadMailbox(env, owner)
+
+  assert.deepEqual(result, { state: 'in_progress' })
+  assert.equal(target.sqlite.prepare('SELECT version FROM helloada_import_runs WHERE tenant_id=?').get(env.HELLOADA_TENANT_ID).version, 'payload-mailbox-v1')
+})
+
+test('reports an active cross-isolate import as in progress rather than throwing', async () => {
+  const source = payloadSource()
+  const target = mailflareDatabase()
+  const env = migrationEnv(source, target)
+  target.sqlite.prepare(
+    'INSERT INTO helloada_import_runs (tenant_id, version, state, lease_token, lease_until, started_at) VALUES (?, ?, ?, ?, ?, ?)',
+  ).run(env.HELLOADA_TENANT_ID, 'payload-mailbox-v2', 'running', 'other-isolate-lease', Date.now() + 60_000, Date.now())
+
+  const result = await migratePayloadMailbox(env, owner)
+
+  assert.deepEqual(result, { state: 'in_progress' })
+  assert.equal(target.sqlite.prepare('SELECT COUNT(*) AS count FROM contacts').get().count, 0)
 })
 
 test('rejects invalid booking schedules and resumes cleanly when the source is corrected', async () => {

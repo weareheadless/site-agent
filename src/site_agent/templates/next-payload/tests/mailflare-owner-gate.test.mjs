@@ -68,6 +68,24 @@ test('provisions one exact tenant domain and mailbox idempotently', async () => 
   assert.equal(db.sqlite.prepare('SELECT local_part FROM mailboxes').get().local_part, 'hello')
 })
 
+test('provisions the service mailbox safely when first requests arrive concurrently', async () => {
+  const db = database()
+  const options = {
+    database: db.binding, tenantId: 'test-tenant', address: 'hello@example.test',
+    zoneId: 'zone-123', routingStatus: 'active',
+  }
+
+  const [first, second] = await Promise.all([
+    provisionTenantMailflareMailbox(options),
+    provisionTenantMailflareMailbox(options),
+  ])
+
+  assert.deepEqual(first, second)
+  assert.equal(db.sqlite.prepare('SELECT COUNT(*) AS count FROM users').get().count, 1)
+  assert.equal(db.sqlite.prepare('SELECT COUNT(*) AS count FROM domains').get().count, 1)
+  assert.equal(db.sqlite.prepare('SELECT COUNT(*) AS count FROM mailboxes').get().count, 1)
+})
+
 test('refuses to adopt an existing unlinked Mailflare account', async () => {
   const db = database()
   db.sqlite.prepare('INSERT INTO users (id,email,password_hash,name,created_at) VALUES (?,?,?,?,?)')
@@ -154,6 +172,33 @@ test('links Payload owner through a scoped HttpOnly Mailflare session and checks
   assert.ok(db.sqlite.prepare('SELECT created_at FROM sessions').get().created_at > 0)
 })
 
+test('serves simultaneous first inbox requests without racing owner or import setup', async () => {
+  const db = database()
+  const gate = createPayloadOwnerGate({
+    basePath: '/mail',
+    defaultLocale: 'en',
+    resolveIdentity: async () => ({ subject: 'first-inbox-concurrency' }),
+    logout: async () => new Response(null, { status: 204 }),
+  })
+  let dispatched = 0
+  const dispatch = async () => { dispatched++; return new Response('inbox') }
+  const request = () => new Request('https://tenant.test/mail/inbox', {
+    headers: { cookie: 'payload_session=valid' },
+  })
+
+  const responses = await Promise.all([
+    gate(request(), env(db.binding), {}, dispatch),
+    gate(request(), env(db.binding), {}, dispatch),
+  ])
+
+  assert.deepEqual(responses.map((response) => response.status), [200, 200])
+  assert.equal(dispatched, 2)
+  assert.equal(db.sqlite.prepare('SELECT COUNT(*) AS count FROM users').get().count, 2)
+  assert.equal(db.sqlite.prepare('SELECT COUNT(*) AS count FROM domains').get().count, 1)
+  assert.equal(db.sqlite.prepare('SELECT COUNT(*) AS count FROM mailboxes').get().count, 1)
+  assert.equal(db.sqlite.prepare("SELECT COUNT(*) AS count FROM helloada_import_runs WHERE state = 'complete'").get().count, 1)
+})
+
 test('blocks Mailflare native login and register routes while allowing static assets', async () => {
   const db = database()
   await provisionTenantMailflareMailbox({
@@ -217,6 +262,43 @@ test('shows a HelloAda setup state instead of crashing before mailbox provisioni
   assert.equal(asset.status, 200)
   assert.equal(identities, 0)
   assert.equal(dispatched, 1)
+})
+
+test('keeps a competing cross-isolate migration in a clear setup state', async () => {
+  const db = database()
+  await provisionTenantMailflareMailbox({
+    database: db.binding, tenantId: 'test-tenant', address: 'hello@example.test',
+    zoneId: 'zone-123', routingStatus: 'active',
+  })
+  db.sqlite.prepare(
+    'INSERT INTO helloada_import_runs (tenant_id, version, state, lease_token, lease_until, started_at) VALUES (?, ?, ?, ?, ?, ?)',
+  ).run('test-tenant', 'payload-mailbox-v2', 'running', 'other-isolate-lease', Date.now() + 60_000, Date.now())
+  const gate = createPayloadOwnerGate({
+    basePath: '/mail',
+    defaultLocale: 'en',
+    resolveIdentity: async () => ({ subject: 'mailbox-migration-pending' }),
+    logout: async () => new Response(null, { status: 204 }),
+  })
+  let dispatched = 0
+  const dispatch = async () => { dispatched++; return new Response('mailbox') }
+
+  const page = await gate(
+    new Request('https://tenant.test/mail/inbox', { headers: { cookie: 'payload_session=valid' } }),
+    env(db.binding), {}, dispatch,
+  )
+  assert.equal(page.status, 503)
+  assert.equal(page.headers.get('retry-after'), '3')
+  assert.match(await page.text(), /Preparing your inbox/)
+  assert.match(page.headers.get('content-type') || '', /text\/html/)
+  assert.equal(dispatched, 0)
+
+  const api = await gate(
+    new Request('https://tenant.test/mail/api/messages', { headers: { cookie: 'payload_session=valid' } }),
+    env(db.binding), {}, dispatch,
+  )
+  assert.equal(api.status, 503)
+  assert.equal((await api.json()).error, 'mailbox_migration_in_progress')
+  assert.equal(dispatched, 0)
 })
 
 
