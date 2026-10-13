@@ -10,6 +10,13 @@ import { HELLOADA_CAPABILITIES } from '../src/schema/index.ts'
 const repositoryRoot = path.resolve(fileURLToPath(new URL('../../../', import.meta.url)))
 const templatePath = (...parts) => path.join(repositoryRoot, 'src/site_agent/templates/next-payload', ...parts)
 const manifest = JSON.parse(readFileSync(templatePath('template-manifest.json'), 'utf8'))
+const corePackage = JSON.parse(readFileSync(path.join(repositoryRoot, 'packages/helloada-payload-core/package.json'), 'utf8'))
+const adminPackage = JSON.parse(readFileSync(path.join(repositoryRoot, 'packages/helloada-payload-admin/package.json'), 'utf8'))
+
+test('template manifest package versions match the canonical packages', () => {
+  assert.equal(manifest.payloadCore, corePackage.version)
+  assert.equal(manifest.payloadAdmin, adminPackage.version)
+})
 
 test('new-site health checks the same full schema identity as the bootstrap manifest', () => {
   const expectedIdentity = createHelloAdaContractIdentity({
