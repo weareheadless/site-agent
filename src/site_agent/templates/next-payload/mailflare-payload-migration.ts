@@ -205,14 +205,33 @@ async function runPayloadMailboxMigration(
   identity: { ownerUserId: string; serviceUserId: string; mailboxId: string; defaultLocale: string },
 ): Promise<MigrationResult> {
   const existing = await env.MAILFLARE_DB.prepare(
-    'SELECT state, source_sha256, counts_json FROM helloada_import_runs WHERE tenant_id = ? AND version = ? LIMIT 1',
-  ).bind(env.HELLOADA_TENANT_ID, VERSION).first<{ state: string; source_sha256: string | null; counts_json: string | null }>()
-  if (existing?.state === 'complete') {
+    'SELECT version, state, lease_until, source_sha256, counts_json FROM helloada_import_runs WHERE tenant_id = ? LIMIT 1',
+  ).bind(env.HELLOADA_TENANT_ID).first<{
+    version: string
+    state: string
+    lease_until: number | null
+    source_sha256: string | null
+    counts_json: string | null
+  }>()
+  if (existing?.version === VERSION && existing.state === 'complete') {
     return {
       state: 'complete',
       counts: JSON.parse(existing.counts_json || '{}') as Record<string, number>,
       sourceSha256: existing.source_sha256 || '',
     }
+  }
+
+  if (existing && existing.version !== VERSION) {
+    if (existing.version !== 'payload-mailbox-v1') {
+      throw new Error('payload_migration_version_unsupported:' + existing.version)
+    }
+    if (existing.state === 'running' && existing.lease_until !== null && existing.lease_until > Date.now()) {
+      return { state: 'in_progress' }
+    }
+    const versionStartedAt = Date.now()
+    await env.MAILFLARE_DB.prepare(
+      "UPDATE helloada_import_runs SET version = ?, state = 'failed', lease_token = NULL, lease_until = NULL, source_sha256 = NULL, counts_json = NULL, error_code = NULL, started_at = ?, completed_at = NULL WHERE tenant_id = ? AND version = ? AND (state != 'running' OR lease_until IS NULL OR lease_until < ?)",
+    ).bind(VERSION, versionStartedAt, env.HELLOADA_TENANT_ID, existing.version, versionStartedAt).run()
   }
 
   const leaseToken = crypto.randomUUID()

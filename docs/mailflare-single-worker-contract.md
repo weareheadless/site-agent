@@ -77,6 +77,10 @@ and the earlier `helloada-mailbox-calendar-contract.md` wherever they conflict.
   gate does not dispatch private mailbox pages or APIs until the import is
   complete. Lease contention is lifecycle state, never an uncaught Worker
   exception, and no alternate data source is served while importing.
+- `helloada_import_runs` is keyed by tenant and stores that tenant's current
+  import version. A completed v1 row advances in place to v2 after any active
+  v1 lease ends; do not insert a second row for the same tenant or add a
+  tenant-specific schema change for a version transition.
 - Import booking settings before inserting imported booking types, because
   Mailflare's booking-type triggers advance the settings revision. Continue to
   use the imported settings revision for capacity-checked calendar event writes.

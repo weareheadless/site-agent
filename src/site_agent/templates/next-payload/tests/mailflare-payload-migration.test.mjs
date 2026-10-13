@@ -226,6 +226,38 @@ test('coalesces concurrent requests into one complete mailbox import', async () 
   assert.equal(target.sqlite.prepare('SELECT COUNT(*) AS count FROM messages').get().count, 1)
 })
 
+test('advances the single tenant ledger from a completed v1 import to v2', async () => {
+  const source = payloadSource()
+  const target = mailflareDatabase()
+  const env = migrationEnv(source, target)
+  target.sqlite.prepare(
+    'INSERT INTO helloada_import_runs (tenant_id, version, state, source_sha256, counts_json, started_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+  ).run(env.HELLOADA_TENANT_ID, 'payload-mailbox-v1', 'complete', 'v1-source-hash', '{}', Date.now() - 1000, Date.now())
+
+  const result = await migratePayloadMailbox(env, owner)
+  const run = target.sqlite.prepare('SELECT version, state FROM helloada_import_runs WHERE tenant_id=?').get(env.HELLOADA_TENANT_ID)
+
+  assert.equal(result.state, 'complete')
+  assert.equal(run.version, 'payload-mailbox-v2')
+  assert.equal(run.state, 'complete')
+  assert.equal(target.sqlite.prepare('SELECT COUNT(*) AS count FROM messages').get().count, 1)
+  assert.equal(target.sqlite.prepare('SELECT COUNT(*) AS count FROM booking_events').get().count, 1)
+})
+
+test('does not advance a previous import while its durable lease is active', async () => {
+  const source = payloadSource()
+  const target = mailflareDatabase()
+  const env = migrationEnv(source, target)
+  target.sqlite.prepare(
+    'INSERT INTO helloada_import_runs (tenant_id, version, state, lease_token, lease_until, started_at) VALUES (?, ?, ?, ?, ?, ?)',
+  ).run(env.HELLOADA_TENANT_ID, 'payload-mailbox-v1', 'running', 'v1-active-lease', Date.now() + 60_000, Date.now())
+
+  const result = await migratePayloadMailbox(env, owner)
+
+  assert.deepEqual(result, { state: 'in_progress' })
+  assert.equal(target.sqlite.prepare('SELECT version FROM helloada_import_runs WHERE tenant_id=?').get(env.HELLOADA_TENANT_ID).version, 'payload-mailbox-v1')
+})
+
 test('reports an active cross-isolate import as in progress rather than throwing', async () => {
   const source = payloadSource()
   const target = mailflareDatabase()
