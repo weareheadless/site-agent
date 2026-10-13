@@ -27,6 +27,7 @@
     "src/lib/owner-message-draft-hash.ts"
   ],
   "fingerprintTrees": [
-    "packages/helloada-mailflare"
+    "packages/helloada-mailflare",
+    "packages/helloada-payload-core/src"
   ]
 }

@@ -10,6 +10,7 @@ from site_agent.application.shared_runtime import (
     SharedRuntimeError,
     apply_shared_runtime_overlay,
     shared_package_versions,
+    shared_runtime_fingerprint,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -114,6 +115,8 @@ def test_shared_overlay_updates_runtime_and_preserves_tenant_owned_content(tmp_p
     assert result["payloadAdmin"] == "0.10.10"
     assert len(result["fingerprint"]) == 64
     assert "worker.ts" in result["changedPaths"]
+    assert "template-manifest.json" in result["changedPaths"]
+    assert "helloada-content-contract.json" in result["changedPaths"]
 
 
 def test_shared_package_versions_are_taken_from_pinned_canonical_lock():
@@ -121,6 +124,46 @@ def test_shared_package_versions_are_taken_from_pinned_canonical_lock():
 
     assert versions == {"@weareheadless/helloada-payload-admin": "0.10.10",
                         "@weareheadless/helloada-payload-core": "0.5.9"}
+
+
+def test_runtime_fingerprint_covers_contract_generator_and_payload_schema_source(tmp_path: Path):
+    control = tmp_path / "control"
+    overlay_source = ROOT / "deploy/shared-runtime-overlay.json"
+    overlay = json.loads(overlay_source.read_text())
+    (control / "deploy").mkdir(parents=True)
+    shutil.copyfile(overlay_source, control / "deploy/shared-runtime-overlay.json")
+
+    (control / "src/site_agent/application").mkdir(parents=True)
+    shutil.copyfile(ROOT / "src/site_agent/application/shared_runtime.py",
+                    control / "src/site_agent/application/shared_runtime.py")
+    (control / "scripts").mkdir()
+    shutil.copyfile(ROOT / "scripts/generate-payload-contract.mjs",
+                    control / "scripts/generate-payload-contract.mjs")
+    (control / "pyproject.toml").write_text('[project]\\nversion = "0.0.0"\\n')
+
+    template = control / "src/site_agent/templates/next-payload"
+    for name in ("package.json", "package-lock.json", "wrangler.jsonc"):
+        target = template / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(TEMPLATE / name, target)
+    for relative in overlay["copy"]:
+        target = template / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("runtime")
+    for tree in overlay["fingerprintTrees"]:
+        target = control / tree / "fingerprint-source.ts"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("schema")
+
+    original = shared_runtime_fingerprint(control)
+    generator = control / "scripts/generate-payload-contract.mjs"
+    generator.write_text(generator.read_text() + "\\n// changed")
+    assert shared_runtime_fingerprint(control) != original
+
+    generator.write_text((ROOT / "scripts/generate-payload-contract.mjs").read_text())
+    schema_source = control / "packages/helloada-payload-core/src/fingerprint-source.ts"
+    schema_source.write_text("changed schema")
+    assert shared_runtime_fingerprint(control) != original
 
 
 def test_shared_overlay_rejects_wrong_tenant_resource_identity(tmp_path: Path):
