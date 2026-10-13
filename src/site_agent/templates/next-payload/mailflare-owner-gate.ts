@@ -94,6 +94,25 @@ const mailboxSetupResponse = (pathname: string, basePath: string) => {
   )
 }
 
+const mailboxMigrationResponse = (pathname: string, basePath: string) => {
+  const message = 'A one-time inbox setup is already running. Your mailbox will open as soon as it finishes.'
+  if (pathname.startsWith(`${basePath}/api/`)) {
+    return Response.json({ error: 'mailbox_migration_in_progress', message }, {
+      status: 503,
+      headers: { 'Cache-Control': 'no-store', 'Retry-After': '3' },
+    })
+  }
+  return new Response(
+    '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="3"><title>HelloAda · Preparing your inbox</title><style>html,body{min-height:100%;margin:0;background:#15161b;color:#f7f7f8;font:16px/1.55 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}body{display:grid;place-items:center;padding:24px;box-sizing:border-box}main{width:min(440px,100%);text-align:center}img{width:56px;height:56px;margin-bottom:24px}h1{font-size:24px;letter-spacing:-.03em;margin:0 0 10px}p{color:#b8b8c1;margin:0 auto 24px;max-width:38ch}button{border:0;border-radius:999px;background:#ff7a18;color:#171717;font:600 14px/1.2 Inter,ui-sans-serif,system-ui,sans-serif;padding:12px 18px;cursor:pointer}button:hover{background:#ff9445}</style></head><body><main><img src="/brand/helloada-logo.svg" alt="HelloAda"><h1>Preparing your inbox</h1><p>A one-time inbox setup is already running. Your mailbox will open as soon as it finishes.</p><button type="button" onclick="location.reload()">Check now</button></main></body></html>',
+    { status: 503, headers: {
+      'Cache-Control': 'no-store',
+      'Content-Type': 'text/html; charset=utf-8',
+      'Retry-After': '3',
+      'X-Content-Type-Options': 'nosniff',
+    } },
+  )
+}
+
 const under = (pathname: string, root: string) => pathname === root || pathname.startsWith(`${root}/`)
 
 const isStatic = (request: Request, pathname: string, basePath: string) =>
@@ -143,7 +162,7 @@ async function provisionOwnerSession(
   env: MailflareEnv,
   identity: PayloadOwnerIdentity,
   defaultLocale: string,
-): Promise<{ token: string; created: boolean }> {
+): Promise<{ state: 'ready'; token: string; created: boolean } | { state: 'migration_in_progress' }> {
   const userId = `ha_${await digest(identity.subject)}`
   const existingToken = cookieValue(request, SESSION_COOKIE)
   if (existingToken) {
@@ -153,9 +172,10 @@ async function provisionOwnerSession(
     ).bind(tokenHash, Date.now(), userId).first<{ user_id: string }>()
     if (session?.user_id === userId) {
       const mailbox = await provisionTenantMailflareMailbox({ database: env.MAILFLARE_DB, tenantId: env.HELLOADA_TENANT_ID, address: env.MAILFLARE_ADDRESS, zoneId: env.MAILFLARE_ZONE_ID, routingStatus: env.MAILFLARE_ROUTING_STATUS })
-      await migratePayloadMailbox(env, { ownerUserId: userId, serviceUserId: mailbox.serviceUserId, mailboxId: mailbox.mailboxId, defaultLocale })
+      const migration = await migratePayloadMailbox(env, { ownerUserId: userId, serviceUserId: mailbox.serviceUserId, mailboxId: mailbox.mailboxId, defaultLocale })
+      if (migration.state === 'in_progress') return { state: 'migration_in_progress' }
       await registerTenantBookingOwner(env.MAILFLARE_DB, env.HELLOADA_TENANT_ID, userId)
-      return { token: existingToken, created: false }
+      return { state: 'ready', token: existingToken, created: false }
     }
   }
 
@@ -172,7 +192,7 @@ async function provisionOwnerSession(
   })
   if (!current) {
     await env.MAILFLARE_DB.prepare(
-      'INSERT INTO users (id, email, password_hash, name, role, is_primary_admin, can_manage_mailboxes, can_manage_domains, can_manage_users, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      'INSERT OR IGNORE INTO users (id, email, password_hash, name, role, is_primary_admin, can_manage_mailboxes, can_manage_domains, can_manage_users, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     ).bind(userId, `${userId}@identity.helloada.invalid`, SSO_PASSWORD_SENTINEL, SSO_ACCOUNT_NAME, 'user', 0, 0, 0, 0, Date.now()).run()
   } else {
     await env.MAILFLARE_DB.prepare(
@@ -193,19 +213,20 @@ async function provisionOwnerSession(
   ).bind(mailbox.mailboxId, userId, 'full_access').first<{ id: string }>()
   if (access?.id !== accessId) throw new Error('Mailflare owner mailbox access could not be provisioned')
 
-  await migratePayloadMailbox(env, {
+  const migration = await migratePayloadMailbox(env, {
     ownerUserId: userId,
     serviceUserId: mailbox.serviceUserId,
     mailboxId: mailbox.mailboxId,
     defaultLocale,
   })
+  if (migration.state === 'in_progress') return { state: 'migration_in_progress' }
   await registerTenantBookingOwner(env.MAILFLARE_DB, env.HELLOADA_TENANT_ID, userId)
 
   const token = randomHex(32)
   await env.MAILFLARE_DB.prepare(
     'INSERT INTO sessions (id, user_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?, ?)',
   ).bind(`ha_sess_${randomHex(16)}`, userId, await digest(token), Date.now() + SESSION_MS, Date.now()).run()
-  return { token, created: true }
+  return { state: 'ready', token, created: true }
 }
 
 export function createPayloadOwnerGate<Env extends MailflareEnv, Context>({
@@ -261,6 +282,7 @@ export function createPayloadOwnerGate<Env extends MailflareEnv, Context>({
     }
 
     const session = await provisionOwnerSession(request, env, identity, defaultLocale)
+    if (session.state === 'migration_in_progress') return mailboxMigrationResponse(pathname, basePath)
     const authorizedRequest = withSessionCookie(request, session.token)
     const secure = new URL(request.url).protocol === 'https:' ? '; Secure' : ''
     const cookie = session.created

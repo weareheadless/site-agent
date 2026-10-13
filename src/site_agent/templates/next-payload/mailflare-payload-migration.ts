@@ -32,6 +32,11 @@ export type PayloadMailboxMigrationEnv = {
 const VERSION = 'payload-mailbox-v2'
 const PAGE_SIZE = 100
 const MAX_ROWS_PER_TABLE = 20_000
+type MigrationResult =
+  | { state: 'complete'; counts: Record<string, number>; sourceSha256: string }
+  | { state: 'in_progress' }
+
+const activeMigrations = new Map<string, Promise<MigrationResult>>()
 const REQUIRED_TABLES = [
   'contacts', 'conversations', 'messages', 'message_operations',
   'appointment_types', 'appointment_types_locales', 'appointment_types_weekly_availability',
@@ -175,7 +180,30 @@ function recipientAddress(row: Row, name: string, fallback: string) {
 export async function migratePayloadMailbox(
   env: PayloadMailboxMigrationEnv,
   identity: { ownerUserId: string; serviceUserId: string; mailboxId: string; defaultLocale: string },
-): Promise<{ state: 'complete'; counts: Record<string, number>; sourceSha256: string }> {
+): Promise<MigrationResult> {
+  const key = JSON.stringify([
+    env.HELLOADA_TENANT_ID,
+    identity.ownerUserId,
+    identity.serviceUserId,
+    identity.mailboxId,
+    identity.defaultLocale,
+  ])
+  const active = activeMigrations.get(key)
+  if (active) return active
+
+  const migration = runPayloadMailboxMigration(env, identity)
+  activeMigrations.set(key, migration)
+  try {
+    return await migration
+  } finally {
+    if (activeMigrations.get(key) === migration) activeMigrations.delete(key)
+  }
+}
+
+async function runPayloadMailboxMigration(
+  env: PayloadMailboxMigrationEnv,
+  identity: { ownerUserId: string; serviceUserId: string; mailboxId: string; defaultLocale: string },
+): Promise<MigrationResult> {
   const existing = await env.MAILFLARE_DB.prepare(
     'SELECT state, source_sha256, counts_json FROM helloada_import_runs WHERE tenant_id = ? AND version = ? LIMIT 1',
   ).bind(env.HELLOADA_TENANT_ID, VERSION).first<{ state: string; source_sha256: string | null; counts_json: string | null }>()
@@ -188,19 +216,45 @@ export async function migratePayloadMailbox(
   }
 
   const leaseToken = crypto.randomUUID()
-  const now = Date.now()
-  const nowSeconds = Math.floor(now / 1000)
+  const insertedAt = Date.now()
   await env.MAILFLARE_DB.prepare(
     'INSERT OR IGNORE INTO helloada_import_runs (tenant_id, version, state, started_at) VALUES (?, ?, ?, ?)',
-  ).bind(env.HELLOADA_TENANT_ID, VERSION, 'failed', now).run()
-  await env.MAILFLARE_DB.prepare(
-    "UPDATE helloada_import_runs SET state = 'running', lease_token = ?, lease_until = ?, started_at = ?, error_code = NULL WHERE tenant_id = ? AND version = ? AND state != 'complete' AND (state != 'running' OR lease_until < ?)",
-  ).bind(leaseToken, now + 5 * 60_000, now, env.HELLOADA_TENANT_ID, VERSION, now).run()
-  const lease = await env.MAILFLARE_DB.prepare(
-    'SELECT state, lease_token FROM helloada_import_runs WHERE tenant_id = ? AND version = ? LIMIT 1',
-  ).bind(env.HELLOADA_TENANT_ID, VERSION).first<{ state: string; lease_token: string | null }>()
-  if (lease?.state === 'complete') return { state: 'complete', counts: {}, sourceSha256: '' }
-  if (lease?.lease_token !== leaseToken) throw new Error('payload_migration_already_running')
+  ).bind(env.HELLOADA_TENANT_ID, VERSION, 'failed', insertedAt).run()
+
+  let lease: { state: string; lease_token: string | null; lease_until: number | null } | null = null
+  let ownsLease = false
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const leaseNow = Date.now()
+    await env.MAILFLARE_DB.prepare(
+      "UPDATE helloada_import_runs SET state = 'running', lease_token = ?, lease_until = ?, started_at = ?, error_code = NULL WHERE tenant_id = ? AND version = ? AND state != 'complete' AND (state != 'running' OR lease_until IS NULL OR lease_until < ?)",
+    ).bind(leaseToken, leaseNow + 5 * 60_000, leaseNow, env.HELLOADA_TENANT_ID, VERSION, leaseNow).run()
+    lease = await env.MAILFLARE_DB.prepare(
+      'SELECT state, lease_token, lease_until, source_sha256, counts_json FROM helloada_import_runs WHERE tenant_id = ? AND version = ? LIMIT 1',
+    ).bind(env.HELLOADA_TENANT_ID, VERSION).first<{
+      state: string
+      lease_token: string | null
+      lease_until: number | null
+      source_sha256: string | null
+      counts_json: string | null
+    }>()
+    if (lease?.state === 'complete') {
+      return {
+        state: 'complete',
+        counts: JSON.parse(lease.counts_json || '{}') as Record<string, number>,
+        sourceSha256: lease.source_sha256 || '',
+      }
+    }
+    if (lease?.lease_token === leaseToken) {
+      ownsLease = true
+      break
+    }
+    if (lease?.state === 'running' && lease.lease_until !== null && lease.lease_until > Date.now()) {
+      return { state: 'in_progress' }
+    }
+  }
+  if (!ownsLease) throw new Error('payload_migration_lease_acquisition_failed')
+
+  const nowSeconds = Math.floor(Date.now() / 1000)
 
   const counts: Record<string, number> = {}
   const sourceDigests: string[] = []
@@ -352,14 +406,38 @@ export async function migratePayloadMailbox(
       localesByParent.set(parentId, [...(localesByParent.get(parentId) ?? []), row])
     }
     const settingsTimeZone = asString(column(settings, 'time_zone', 'timeZone'))
-    const importedSchedules: string[] = []
+    const preparedAppointments = new Map<string, {
+      localized: Row[]
+      primary: Row
+      schedule: ReturnType<typeof bookingSchedule>
+    }>()
     for (const row of appointmentTypes) {
       const sourceId = asString(row.id)
       const localized = localesByParent.get(sourceId) ?? []
       const primary = localized.find((item) => asString(column(item, '_locale', 'locale')) === defaultLocale)
       if (!primary || !asString(primary.name)) throw new Error('payload_migration_appointment_locale_missing')
       const schedule = bookingSchedule(availability, sourceId)
-      importedSchedules.push(schedule.weeklyAvailability)
+      preparedAppointments.set(sourceId, { localized, primary, schedule })
+    }
+
+    if (appointmentTypes.length) {
+      const importedSchedules = [...preparedAppointments.values()].map(({ schedule }) => schedule.weeklyAvailability)
+      const schedule = importedSchedules[0]
+      const sharedSchedule = importedSchedules.every((value) => value === schedule)
+      const weeklyAvailability = sharedSchedule ? schedule : '[]'
+      const sharedTimeZone = sharedSchedule ? settingsTimeZone : ''
+      const enabled = sharedSchedule && calendarEnabled === 1
+        && appointmentTypes.some((row) => Number(row.enabled) === 1 && asString(row._status) !== 'draft')
+      await env.MAILFLARE_DB.prepare(
+        "INSERT INTO helloada_booking_settings (user_id,enabled,time_zone,weekly_availability,max_concurrent_appointments,minimum_notice_hours,booking_window_days,revision,updated_at) VALUES (?,?,?,?,1,?,?,1,?) ON CONFLICT(user_id) DO UPDATE SET enabled=excluded.enabled,time_zone=excluded.time_zone,weekly_availability=excluded.weekly_availability,max_concurrent_appointments=1,minimum_notice_hours=excluded.minimum_notice_hours,booking_window_days=excluded.booking_window_days,revision=helloada_booking_settings.revision+1,updated_at=excluded.updated_at WHERE helloada_booking_settings.revision=1 AND helloada_booking_settings.enabled=0 AND helloada_booking_settings.time_zone='' AND helloada_booking_settings.weekly_availability='[]'",
+      ).bind(identity.ownerUserId, enabled ? 1 : 0, sharedTimeZone, weeklyAvailability, minimumNoticeHours, bookingWindowDays, Date.now()).run()
+    }
+
+    for (const row of appointmentTypes) {
+      const sourceId = asString(row.id)
+      const prepared = preparedAppointments.get(sourceId)
+      if (!prepared) throw new Error('payload_migration_appointment_not_prepared')
+      const { localized, primary, schedule } = prepared
       const buffer = Number(column(row, 'buffer_minutes', 'bufferMinutes') ?? 0)
       const duration = Number(column(row, 'duration_minutes', 'durationMinutes'))
       const slug = asString(row.slug)
@@ -376,18 +454,6 @@ export async function migratePayloadMailbox(
         'INSERT OR IGNORE INTO booking_events (id, user_id, name, slug, description, color, host_ids, duration_minutes, location, weekdays, start_time, end_time, time_ranges, time_zone, enabled, created_at, updated_at, helloada_buffer_minutes, helloada_weekly_availability, helloada_locales, helloada_calendar_enabled, helloada_minimum_notice_hours, helloada_booking_window_days, helloada_payload_managed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       ).bind(bookingId, identity.ownerUserId, asString(primary.name), slug, asString(primary.description), 'blue', JSON.stringify([identity.ownerUserId]), duration, '', JSON.stringify(schedule.weekdays), startTime, endTime, JSON.stringify(ranges), settingsTimeZone, Number(row.enabled) === 1 && asString(row._status) !== 'draft' ? 1 : 0, nowSeconds, nowSeconds, buffer, schedule.weeklyAvailability, JSON.stringify(localesJson), calendarEnabled, minimumNoticeHours, bookingWindowDays, 1).run()
       await insertRecord(env.MAILFLARE_DB, 'appointment_types', sourceId, await sha256(canonical(row)), 'booking_events', bookingId)
-    }
-
-    if (appointmentTypes.length) {
-      const schedule = importedSchedules[0]
-      const sharedSchedule = importedSchedules.every((value) => value === schedule)
-      const weeklyAvailability = sharedSchedule ? schedule : '[]'
-      const sharedTimeZone = sharedSchedule ? settingsTimeZone : ''
-      const enabled = sharedSchedule && calendarEnabled === 1
-        && appointmentTypes.some((row) => Number(row.enabled) === 1 && asString(row._status) !== 'draft')
-      await env.MAILFLARE_DB.prepare(
-        "INSERT INTO helloada_booking_settings (user_id,enabled,time_zone,weekly_availability,max_concurrent_appointments,minimum_notice_hours,booking_window_days,revision,updated_at) VALUES (?,?,?,?,1,?,?,1,?) ON CONFLICT(user_id) DO UPDATE SET enabled=excluded.enabled,time_zone=excluded.time_zone,weekly_availability=excluded.weekly_availability,max_concurrent_appointments=1,minimum_notice_hours=excluded.minimum_notice_hours,booking_window_days=excluded.booking_window_days,revision=helloada_booking_settings.revision+1,updated_at=excluded.updated_at WHERE helloada_booking_settings.revision=1 AND helloada_booking_settings.enabled=0 AND helloada_booking_settings.time_zone='' AND helloada_booking_settings.weekly_availability='[]'",
-      ).bind(identity.ownerUserId, enabled ? 1 : 0, sharedTimeZone, weeklyAvailability, minimumNoticeHours, bookingWindowDays, Date.now()).run()
     }
 
     const contactBySourceId = new Map(contacts.map((row) => [asString(row.id), row]))

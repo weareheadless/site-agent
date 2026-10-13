@@ -70,6 +70,16 @@ and the earlier `helloada-mailbox-calendar-contract.md` wherever they conflict.
   silently discard data. The shared default runtime has one Mailflare inbox;
   Payload mailbox collections are migration input only and must not be exposed
   as a second live inbox or calendar.
+- The first authorized mailbox request runs the versioned import only after
+  acquiring the tenant's durable D1 lease. Concurrent requests in one Worker
+  isolate share that import; requests in another isolate receive an explicit
+  `migration_in_progress` response and the browser is asked to retry. The owner
+  gate does not dispatch private mailbox pages or APIs until the import is
+  complete. Lease contention is lifecycle state, never an uncaught Worker
+  exception, and no alternate data source is served while importing.
+- Import booking settings before inserting imported booking types, because
+  Mailflare's booking-type triggers advance the settings revision. Continue to
+  use the imported settings revision for capacity-checked calendar event writes.
 - Website enquiries must arrive in Mailflare's Inbox and booking events must
   use Mailflare Calendar. Do not maintain a second Payload Inbox or calendar.
   Public form/booking writes remain server-side, validated and idempotent.
