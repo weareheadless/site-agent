@@ -2337,3 +2337,12 @@ def test_contract_generator_resolves_payload_peer_from_installed_tenant_dependen
     assert "path.join(siteRoot, 'node_modules/@weareheadless/helloada-payload-core/src')" in source
     assert "pathToFileURL(path.join(coreSourceRoot, 'schema/index.ts')).href" in source
     assert "from '../packages/helloada-payload-core/src/schema/index.ts'" not in source
+
+def test_contract_generator_refreshes_stale_manifest_versions_from_locked_packages():
+    source = (ROOT / "scripts/generate-payload-contract.mjs").read_text()
+
+    assert "contract.coreVersion !== corePackage.version" in source
+    assert "manifest.payloadCore !== corePackage.version" not in source
+    assert "manifest.payloadAdmin !== adminPackage.version" not in source
+    assert "sitePackage.dependencies['@weareheadless/helloada-payload-admin']" in source
+    assert "sitePackage.dependencies['@weareheadless/helloada-payload-core']" in source
