@@ -411,9 +411,9 @@ def synchronize_customer_payload_contract(
     schema_revision = template_manifest.get("schemaRevision")
     schema_identity = str(template_manifest.get("schemaIdentity") or "")
     if (
-        not re.fullmatch(r"\\d+\\.\\d+\\.\\d+", payload_admin)
-        or not re.fullmatch(r"\\d+\\.\\d+\\.\\d+", payload_core)
-        or not re.fullmatch(r"helloada-content-v\\d+", content_version)
+        not re.fullmatch(r"\d+\.\d+\.\d+", payload_admin)
+        or not re.fullmatch(r"\d+\.\d+\.\d+", payload_core)
+        or not re.fullmatch(r"helloada-content-v\d+", content_version)
         or content_contract.get("coreVersion") != payload_core
         or content_contract.get("contract") != content_version
         or content_contract.get("schemaRevision") != schema_revision
