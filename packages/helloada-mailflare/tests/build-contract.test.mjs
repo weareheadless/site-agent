@@ -68,6 +68,7 @@ test('calendar workspace patch removes the route pathname key with its router ho
     'src/components/settings/settings-nav-utils.ts',
     'src/components/dashboard-nav.tsx',
     'src/app/(calendar)/layout.tsx',
+    'src/app/(calendar)/booking/page.tsx',
   ]
   try {
     for (const relative of files) {
