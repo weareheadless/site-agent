@@ -67,6 +67,8 @@ if (!sitePackage.dependencies['@weareheadless/helloada-payload-core']?.includes(
   throw new Error('Site core artifact pin does not match the shared package version.')
 }
 
+manifest.payloadAdmin = adminPackage.version
+manifest.payloadCore = corePackage.version
 manifest.schemaRevision = contract.schemaRevision
 manifest.contentContract = contract.contract
 manifest.migrations = migrations
