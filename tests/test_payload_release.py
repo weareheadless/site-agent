@@ -620,7 +620,8 @@ def test_mailflare_d1_query_does_not_retry_permanent_http_errors(monkeypatch):
     calls = []
     delays = []
 
-    def open_url(request, _timeout):
+    def open_url(request, timeout):
+        assert timeout == 30
         calls.append(request)
         raise urllib.error.HTTPError(
             request.full_url, 403, "Forbidden", {"cf-ray": "ray-forbidden"}, io.BytesIO(),
