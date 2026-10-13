@@ -1,8 +1,10 @@
 """Release safety boundaries: provenance, canonical routes and immutable requests."""
 import importlib.util
 import hashlib
+import io
 import json
 import sys
+import urllib.error
 import zipfile
 import shutil
 from pathlib import Path
@@ -537,6 +539,106 @@ def test_worker_contract_requires_an_exact_tenant_queue_consumer_contract():
     for queues in invalid:
         with pytest.raises(RuntimeError, match="Queue"):
             release.validate_worker_contract({**worker, "queues": queues}, CUSTOMER, "oceanicvibes")
+
+
+def test_mailflare_d1_query_retries_transient_http_503_with_backoff(monkeypatch, capsys):
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps({
+                "success": True,
+                "result": [{"success": True, "results": [{"name": "d1_migrations"}]}],
+            }).encode()
+
+    failures = [
+        urllib.error.HTTPError("https://example.test", 503, "Unavailable", {"cf-ray": "ray-first"}, io.BytesIO()),
+        urllib.error.HTTPError("https://example.test", 503, "Unavailable", {"cf-ray": "ray-second"}, io.BytesIO()),
+    ]
+    responses = [*failures, Response()]
+    calls = []
+    delays = []
+
+    def open_url(request, timeout):
+        assert request.full_url.endswith("/query")
+        assert timeout == 30
+        calls.append(request)
+        result = responses.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setattr(release.urllib.request, "urlopen", open_url)
+    monkeypatch.setattr(release.time, "sleep", delays.append)
+    monkeypatch.setattr(release.random, "uniform", lambda _low, _high: 0.0)
+
+    rows = release.mailflare_d1_query(
+        CUSTOMER,
+        "SELECT name FROM d1_migrations ORDER BY id ASC",
+        {"CLOUDFLARE_ACCOUNT_ID": "account", "CLOUDFLARE_API_TOKEN": "not-printed"},
+    )
+
+    assert rows == [{"name": "d1_migrations"}]
+    assert len(calls) == 3
+    assert delays == [3.0, 6.0]
+    output = capsys.readouterr().out
+    assert "HTTP 503" in output
+    assert "cfRay=ray-first" in output
+    assert "cfRay=ray-second" in output
+
+
+def test_mailflare_d1_query_fails_closed_after_bounded_transient_retries(monkeypatch):
+    calls = []
+    delays = []
+
+    def open_url(request, timeout):
+        calls.append(request)
+        raise urllib.error.HTTPError(
+            request.full_url, 503, "Unavailable", {"cf-ray": "ray-final"}, io.BytesIO(),
+        )
+
+    monkeypatch.setattr(release.urllib.request, "urlopen", open_url)
+    monkeypatch.setattr(release.time, "sleep", delays.append)
+    monkeypatch.setattr(release.random, "uniform", lambda _low, _high: 0.0)
+
+    with pytest.raises(RuntimeError, match="HTTP 503.*ray-final"):
+        release.mailflare_d1_query(
+            CUSTOMER,
+            "SELECT name FROM d1_migrations ORDER BY id ASC",
+            {"CLOUDFLARE_ACCOUNT_ID": "account", "CLOUDFLARE_API_TOKEN": "not-printed"},
+        )
+
+    assert len(calls) == release.MAILFLARE_D1_QUERY_MAX_ATTEMPTS
+    assert len(delays) == release.MAILFLARE_D1_QUERY_MAX_ATTEMPTS - 1
+
+
+def test_mailflare_d1_query_does_not_retry_permanent_http_errors(monkeypatch):
+    calls = []
+    delays = []
+
+    def open_url(request, timeout):
+        assert timeout == 30
+        calls.append(request)
+        raise urllib.error.HTTPError(
+            request.full_url, 403, "Forbidden", {"cf-ray": "ray-forbidden"}, io.BytesIO(),
+        )
+
+    monkeypatch.setattr(release.urllib.request, "urlopen", open_url)
+    monkeypatch.setattr(release.time, "sleep", delays.append)
+
+    with pytest.raises(RuntimeError, match="HTTP 403.*ray-forbidden"):
+        release.mailflare_d1_query(
+            CUSTOMER,
+            "SELECT name FROM d1_migrations ORDER BY id ASC",
+            {"CLOUDFLARE_ACCOUNT_ID": "account", "CLOUDFLARE_API_TOKEN": "not-printed"},
+        )
+
+    assert len(calls) == 1
+    assert delays == []
 
 
 def test_reconcile_mailflare_migrations_uses_pinned_wrangle_chain_and_is_idempotent(tmp_path, monkeypatch):
