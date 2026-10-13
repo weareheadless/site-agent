@@ -145,6 +145,7 @@ def shared_runtime_fingerprint(root: Path, manifest_path: Path | None = None) ->
     entries: list[tuple[str, bytes]] = [
         (str(_MANIFEST_PATH), raw_manifest),
         ("src/site_agent/application/shared_runtime.py", (root / "src/site_agent/application/shared_runtime.py").read_bytes()),
+        ("scripts/generate-payload-contract.mjs", (root / "scripts/generate-payload-contract.mjs").read_bytes()),
     ]
     template = root / _TEMPLATE_PATH
     for relative in sorted(str(item) for item in manifest["copy"]):
@@ -415,6 +416,7 @@ def apply_shared_runtime_overlay(
         "removedPaths": sorted(manifest["remove"]),
         "changedPaths": sorted(set(manifest["copy"]) | set(manifest["remove"]) | {
             "wrangler.jsonc", "package.json", "package-lock.json",
+            "template-manifest.json", "helloada-content-contract.json",
         }),
         "payloadAdmin": lock["packages"][f"node_modules/{_PACKAGE_NAMES[0]}"]["version"],
         "payloadCore": lock["packages"][f"node_modules/{_PACKAGE_NAMES[1]}"]["version"],
