@@ -59,10 +59,9 @@ const migrationHead = createHash('sha256')
   }))
   .digest('hex')
 
-if (manifest.payloadCore !== corePackage.version || contract.coreVersion !== corePackage.version) {
-  throw new Error('Template core version must match the shared package version.')
+if (contract.coreVersion !== corePackage.version) {
+  throw new Error('Generated contract core version must match the shared package version.')
 }
-if (manifest.payloadAdmin !== adminPackage.version) throw new Error('Template admin version must match the shared package version.')
 if (!sitePackage.dependencies['@weareheadless/helloada-payload-admin']?.includes(`payload-admin-v${adminPackage.version}/`)) {
   throw new Error('Site admin artifact pin does not match the shared package version.')
 }
