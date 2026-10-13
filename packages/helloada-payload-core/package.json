@@ -1,10 +1,13 @@
 {
   "name": "@weareheadless/helloada-payload-core",
-  "version": "0.5.7",
+  "version": "0.5.8",
   "description": "Shared tenant-isolated Payload schema and content readers for HelloAda sites.",
   "type": "module",
   "license": "UNLICENSED",
-  "files": ["src", "README.md"],
+  "files": [
+    "src",
+    "README.md"
+  ],
   "exports": {
     "./bindings": "./src/bindings/index.ts",
     "./messages": "./src/messages/index.ts",

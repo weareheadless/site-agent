@@ -716,6 +716,60 @@ def _tools_spec(
                 "Update selected fields on a shared Payload global draft. Read it first and pass its exact expectedHash. Never publish as part of this tool.",
                 {"type": "object", "oneOf": global_update_variants},
             ))
+        booking_type_id = {"type": "string", "pattern": "^ha_booking_[a-f0-9]{32}$"}
+        booking_hours = {
+            "type": "array", "maxItems": 84,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "day": {"type": "integer", "minimum": 0, "maximum": 6},
+                    "startTime": {"type": "string", "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$"},
+                    "endTime": {"type": "string", "pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$"},
+                },
+                "required": ["day", "startTime", "endTime"],
+                "additionalProperties": False,
+            },
+        }
+        booking_tools = [
+            ("read_booking_configuration", "Read authoritative booking settings and all active/inactive booking types.", {}, []),
+            ("read_booking_availability", "Read bounded available slots for one booking type and local business date. Never exposes other calendar details.", {
+                "booking_type_id": booking_type_id, "date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+            }, ["booking_type_id", "date"]),
+            ("create_booking_type", "Create a business appointment type only with owner-provided name and duration. Returns its immutable ID for the Payload booking block.", {
+                "name": {"type": "string", "minLength": 1, "maxLength": 120},
+                "duration_minutes": {"type": "integer", "minimum": 10, "maximum": 480, "multipleOf": 5},
+                "description": {"type": "string", "maxLength": 2000},
+            }, ["name", "duration_minutes"]),
+            ("update_booking_type", "Update a booking type after reading it. Keep its immutable ID and include the current integer revision.", {
+                "id": booking_type_id, "expected_revision": {"type": "integer", "minimum": 1},
+                "name": {"type": "string", "minLength": 1, "maxLength": 120},
+                "duration_minutes": {"type": "integer", "minimum": 10, "maximum": 480, "multipleOf": 5},
+                "description": {"type": "string", "maxLength": 2000},
+            }, ["id", "expected_revision", "name", "duration_minutes", "description"]),
+            ("deactivate_booking_type", "Deactivate a booking type without deleting its identity. Read it first and include expectedUpdatedAt.", {
+                "id": booking_type_id, "expected_revision": {"type": "integer", "minimum": 1},
+            }, ["id", "expected_revision"]),
+            ("update_booking_settings", "Update business-wide timezone, weekly hours, notice, horizon, enabled state and simultaneous capacity. Read the current revision first and preserve unchanged settings.", {
+                "settings": {
+                    "type": "object",
+                    "properties": {
+                        "enabled": {"type": "boolean"},
+                        "timeZone": {"type": "string", "maxLength": 80},
+                        "weeklyAvailability": booking_hours,
+                        "maxConcurrentAppointments": {"type": "integer", "minimum": 1, "maximum": 50},
+                        "minimumNoticeHours": {"type": "integer", "minimum": 0, "maximum": 8760},
+                        "bookingWindowDays": {"type": "integer", "minimum": 1, "maximum": 365},
+                        "expectedRevision": {"type": "integer", "minimum": 1},
+                    },
+                    "required": ["enabled", "timeZone", "weeklyAvailability", "maxConcurrentAppointments", "minimumNoticeHours", "bookingWindowDays", "expectedRevision"],
+                    "additionalProperties": False,
+                },
+            }, ["settings"]),
+        ]
+        for tool_name, description, properties, required in booking_tools:
+            tools.append(raw_fn(tool_name, description, {
+                "type": "object", "properties": properties, "required": required, "additionalProperties": False,
+            }))
     if use_existing_builder:
         tools.append(fn(
             "spawn_build",
@@ -867,6 +921,43 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
         if service is None:
             return "Approved business knowledge is not available."
         return json.dumps(service.search(str(args.get("query") or ""), int(args.get("limit", 8))))
+    booking_tool_names = {
+        "read_booking_configuration", "read_booking_availability", "create_booking_type",
+        "update_booking_type", "deactivate_booking_type", "update_booking_settings",
+    }
+    if name in booking_tool_names:
+        payload = _payload_gateway(context)
+        if payload is None:
+            return "The tenant booking service is not configured."
+        try:
+            if name == "read_booking_configuration":
+                result = payload.read_booking_configuration()
+            elif name == "read_booking_availability":
+                result = payload.read_booking_availability(str(args.get("booking_type_id") or ""), str(args.get("date") or ""))
+            elif name == "create_booking_type":
+                result = payload.create_booking_type(
+                    name=str(args.get("name") or ""), duration_minutes=int(args.get("duration_minutes") or 0),
+                    description=str(args.get("description") or ""),
+                )
+                context["_last_action_succeeded"] = True
+            elif name == "update_booking_type":
+                result = payload.update_booking_type(
+                    type_id=str(args.get("id") or ""), expected_revision=int(args.get("expected_revision") or 0),
+                    name=str(args.get("name") or ""), duration_minutes=int(args.get("duration_minutes") or 0),
+                    description=str(args.get("description") or ""),
+                )
+                context["_last_action_succeeded"] = True
+            elif name == "deactivate_booking_type":
+                result = payload.deactivate_booking_type(
+                    type_id=str(args.get("id") or ""), expected_revision=int(args.get("expected_revision") or 0),
+                )
+                context["_last_action_succeeded"] = True
+            else:
+                result = payload.update_booking_settings(args.get("settings") or {})
+                context["_last_action_succeeded"] = True
+            return json.dumps(result, ensure_ascii=False)
+        except Exception as exc:  # noqa: BLE001 — explain service failures to Ada
+            return f"Booking service action failed: {str(exc)[:400]}"
     if name == "plan_website_change":
         if context.get("_website_change_plan") is not None:
             return "REFUSED: this request already has a validated plan; do not replace it after effects begin."
@@ -1045,6 +1136,10 @@ SIDE_EFFECTS = {
     "create_payload_draft",
     "update_payload_draft",
     "update_payload_global",
+    "create_booking_type",
+    "update_booking_type",
+    "deactivate_booking_type",
+    "update_booking_settings",
 }
 
 
@@ -1133,6 +1228,15 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
                 "SEO, navigation or footer content into source code. Explain that content work is blocked until the "
                 "shared Payload contract is available; do not try another endpoint or use a local/static copy."
             )
+    if payload is not None and authoring_contract is not None:
+        system += (
+            "\n\nAppointments use the authenticated tenant-scoped booking tools, not Payload collections or hand-written endpoints. "
+            "Read booking configuration before changing it. Never invent service duration, working hours, timezone, capacity, or availability. "
+            "For an explicit owner request, make only the requested configuration change using its current revision. "
+            "If a request proposes a booking form, reuse an existing type when clearly appropriate; if the type or duration is ambiguous, ask one concise question. "
+            "Create new types only from owner-provided details, then bind the Payload helloAdaBooking block's bookingTypeId to the returned immutable ID. "
+            "Keep booking schema, availability, persistence, and notifications in the shared service; do not create parallel stores or endpoints."
+        )
     system += (
         "\n\nMutation protocol: before any Payload or source change, call plan_website_change exactly once. "
         "Declare every requested Payload target and exact top-level field, plus any source presentation brief. "

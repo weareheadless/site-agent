@@ -127,16 +127,12 @@ function ContentEntryView({ entry, collection, documentId, sectionKey, preview }
     }
     case 'helloAdaBooking': {
       if (!helloAdaSite.features.bookings) throw new Error('A published booking block requires the shared bookings capability in src/helloada.config.ts.')
-      const appointmentType = entry.appointmentType && typeof entry.appointmentType === 'object' && !Array.isArray(entry.appointmentType)
-        ? entry.appointmentType as Record<string, unknown>
-        : undefined
-      if (!appointmentType || !String(appointmentType.slug || '')) throw new Error(`Published booking block “${key}” has no valid appointment type.`)
+      const bookingTypeId = String(entry.bookingTypeId || '')
+      if (!/^ha_booking_[a-f0-9]{32}$/.test(bookingTypeId)) throw new Error('Published booking block has no valid booking type ID.')
       if (preview) return <p className="helloada-form-unavailable" key={key}>Preview only — appointments will not be created.</p>
       const siteKey = runtimeValue('HELLOADA_TURNSTILE_SITE_KEY')
       if (!siteKey) throw new Error('The booking security check is not configured for this website.')
-      return <BookingForm key={key} appointmentType={{
-        slug: String(appointmentType.slug), name: String(appointmentType.name || entry.label || ''), description: String(appointmentType.description || ''),
-      }} bookingUsername={helloAdaSite.tenantId} siteKey={siteKey} locale={helloAdaSite.defaultLocale} />
+      return <BookingForm key={key} bookingTypeId={bookingTypeId} label={String(entry.label || '')} siteKey={siteKey} locale={helloAdaSite.defaultLocale} />
     }
     default:
       throw new Error(`Payload content “${key}” uses unsupported block type “${entry.blockType}”.`)

@@ -8,6 +8,8 @@ import { applyContactsPatch } from './contacts-patch.mjs'
 import { applyBookingParityPatches } from './booking-parity-patches.mjs'
 import { applyBookingEditorPatches } from './booking-editor-patches-clean.mjs'
 import { applyBookingUiPatch } from './booking-ui-patches.mjs'
+import { applyBookingWorkspacePatches } from './booking-workspace-patches.mjs'
+import { applyBookingCapacityPatches } from './booking-capacity-patches.mjs'
 import { applyMailboxAccessPatch } from './mailbox-access-patch.mjs'
 import { applyHelloAdaBrandingPatch, sanitizeHelloAdaBrandCopy, sanitizeHelloAdaLocaleValues, shouldSkipUpstreamBrandIcon } from './helloada-branding-patch.mjs'
 
@@ -170,6 +172,20 @@ async function assertHelloAdaClientBranding(directory) {
   }
 }
 
+export async function removeLegacyBookingSurfaces(destination) {
+  const retired = [
+    'src/app/book',
+    'src/app/c',
+    'src/app/api/public/booking/route.ts',
+    'src/app/api/booking/settings',
+    'src/app/api/booking/[eventId]',
+    'src/app/api/booking/business-settings',
+  ]
+  for (const relative of retired) await rm(path.join(destination, relative), { recursive: true, force: true })
+  const remaining = await Promise.all(retired.map(async relative => (await exists(path.join(destination, relative))) ? relative : null))
+  if (remaining.some(Boolean)) throw new Error('Legacy Mailflare booking routes remain in the generated tenant app: ' + remaining.filter(Boolean).join(', '))
+}
+
 async function prepareBuildCopy(destination) {
   await cp(upstreamRoot, destination, {
     recursive: true,
@@ -184,6 +200,8 @@ async function prepareBuildCopy(destination) {
   })
   const sharedBindingsPath = path.resolve(packageRoot, '../../src/site_agent/templates/next-payload/mailflare-bindings.ts')
   await cp(sharedBindingsPath, path.join(destination, 'src/lib/helloada-tenant-bindings.ts'))
+  const sharedBookingServicePath = path.resolve(packageRoot, '../../src/site_agent/templates/next-payload/mailflare-booking-service.ts')
+  await cp(sharedBookingServicePath, path.join(destination, 'src/lib/helloada-booking-service.ts'))
   const brandingPaths = {
     layout: 'src/app/layout.tsx',
     manifest: 'src/app/manifest.ts',
@@ -202,6 +220,10 @@ async function prepareBuildCopy(destination) {
   ))
   await applyBookingPatches(destination)
   await applyContactsPatch(destination)
+  await cp(path.join(packageRoot, 'integration-src', 'src'), path.join(destination, 'src'), { recursive: true })
+  await applyBookingWorkspacePatches(destination)
+  await applyBookingCapacityPatches(destination)
+  await removeLegacyBookingSurfaces(destination)
 
   const mailboxAccessPath = path.join(destination, 'src/lib/mailboxes/access.ts')
   const mailboxAccessSource = await readFile(mailboxAccessPath, 'utf8')

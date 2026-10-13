@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { cp, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
@@ -10,7 +10,8 @@ import { applyBookingIntegrationPatch } from '../scripts/booking-patches.mjs'
 import { applyBookingParityPatches } from '../scripts/booking-parity-patches.mjs'
 import { applyBookingEditorPatches } from '../scripts/booking-editor-patches-clean.mjs'
 import { applyBookingUiPatch } from '../scripts/booking-ui-patches.mjs'
-import { applyTenantPatches, composeTenantMailflareAssets, namespaceApiReferences } from '../scripts/build.mjs'
+import { applyBookingCapacityPatches } from '../scripts/booking-capacity-patches.mjs'
+import { applyTenantPatches, composeTenantMailflareAssets, namespaceApiReferences, removeLegacyBookingSurfaces } from '../scripts/build.mjs'
 import { applyMailboxAccessPatch } from '../scripts/mailbox-access-patch.mjs'
 import { asMailflareEnv } from '../../../src/site_agent/templates/next-payload/mailflare-bindings.ts'
 
@@ -60,6 +61,46 @@ test('upstream remains pristine and HelloAda changes are explicit build patches'
   assert.ok(patched.cloudflareModule.includes('return withStorage(asMailflareEnv(getNodeEnv() ?? (env as CloudflareEnv)));'))
 })
 
+test('native Calendar API, timezone edits, and Ada tools all use the shared capacity gate', async () => {
+  const destination = await mkdtemp(path.join(tmpdir(), 'helloada-calendar-capacity-'))
+  const files = [
+    'src/db/schema/index.ts',
+    'src/app/api/calendar/events/route.ts',
+    'src/app/api/calendar/events/[eventId]/route.ts',
+    'src/app/api/settings/time-zone/route.ts',
+    'src/lib/calendar/tools.ts',
+  ]
+  try {
+    for (const relative of files) {
+      const target = path.join(destination, relative)
+      await mkdir(path.dirname(target), { recursive: true })
+      await cp(path.join(root, 'upstream', relative), target)
+    }
+    await applyBookingCapacityPatches(destination)
+    const read = (relative) => readFile(path.join(destination, relative), 'utf8')
+    const schema = await read('src/db/schema/index.ts')
+    const create = await read('src/app/api/calendar/events/route.ts')
+    const update = await read('src/app/api/calendar/events/[eventId]/route.ts')
+    const timeZone = await read('src/app/api/settings/time-zone/route.ts')
+    const tools = await read('src/lib/calendar/tools.ts')
+    assert.match(schema, /helloadaCapacityRevision: integer\("helloada_capacity_revision"\)/)
+    assert.match(schema, /startsAt: integer\("starts_at", \{ mode: "timestamp_ms" \}\)/)
+    assert.match(schema, /endsAt: integer\("ends_at", \{ mode: "timestamp_ms" \}\)/)
+    assert.match(schema, /repeatUntil: integer\("repeat_until", \{ mode: "timestamp_ms" \}\)/)
+    assert.doesNotMatch(schema, /helloadaRevision: integer\("helloada_revision"\)/)
+    assert.match(create, /assertCalendarMutationCapacity\(env\.DB, user\.id/)
+    assert.match(create, /helloadaCapacityRevision: revision/)
+    assert.match(update, /assertCalendarMutationCapacity\(env\.DB, user\.id/)
+    assert.match(update, /db\.batch\(/)
+    assert.match(timeZone, /assertCalendarMutationCapacity\(env\.DB, user\.id/)
+    assert.match(timeZone, /helloadaCapacityRevision: revision \+ index/)
+    assert.match(tools, /assertCalendarMutationCapacity\(context\.env\.DB, context\.user\.id/)
+    assert.match(tools, /helloadaCapacityRevision: revision \+ index/)
+  } finally {
+    await rm(destination, { recursive: true, force: true })
+  }
+})
+
 test('tenant Mailflare adapter exposes the canonical DB binding without crossing tenant databases', () => {
   const mailDb = { name: 'tenant-mail-db' }
   const payloadDb = { name: 'tenant-payload-db' }
@@ -99,6 +140,7 @@ test('booking integration patches only the disposable pinned source and require 
   assert.match(patched.create, /WHERE EXISTS \(SELECT 1 FROM calendar_events WHERE user_id = \? AND booking_request_id = \? AND booking_request_hash = \?\)/)
   assert.match(patched.create, /ON CONFLICT\(user_id, email\) DO UPDATE/)
   assert.match(patched.schema, /booking_request_hash/)
+  assert.match(patched.schema, /helloadaRevision: integer\("helloada_revision"\)/)
   assert.match(patched.bookingTypes, /turnstileToken\?: unknown/)
 
   const uiRead = (relative) => readFile(path.join(root, 'upstream', relative), 'utf8')
@@ -131,12 +173,46 @@ test('booking integration patches only the disposable pinned source and require 
   assert.doesNotMatch(sources.route, /verifyTurnstileToken/)
 
   const metadata = JSON.parse(await readFile(path.join(root, 'UPSTREAM.json'), 'utf8'))
-  assert.deepEqual(metadata.integrationMigrations, ['0061_helloada_booking_idempotency.sql', '0062_helloada_payload_migration.sql'])
+  assert.deepEqual(metadata.integrationMigrations, ['0061_helloada_booking_idempotency.sql', '0062_helloada_payload_migration.sql', '0063_helloada_business_booking_settings.sql'])
   const bookingMigration = await readFile(path.join(root, 'integration-migrations', metadata.integrationMigrations[0]), 'utf8')
   assert.match(bookingMigration, /CREATE UNIQUE INDEX calendar_events_booking_request_idx/)
   const payloadMigration = await readFile(path.join(root, 'integration-migrations', metadata.integrationMigrations[1]), 'utf8')
   assert.match(payloadMigration, /CREATE TABLE helloada_import_runs/)
   assert.match(payloadMigration, /helloada_payload_managed/)
+  const settingsMigration = await readFile(path.join(root, 'integration-migrations', metadata.integrationMigrations[2]), 'utf8')
+  assert.match(settingsMigration, /CREATE TABLE helloada_booking_settings/)
+  assert.match(settingsMigration, /helloada_tenant_owners/)
+  assert.match(settingsMigration, /helloada_calendar_revision_insert/)
+  assert.match(settingsMigration, /helloada_booking_settings_user_insert/)
+  assert.match(settingsMigration, /helloada_revision INTEGER NOT NULL DEFAULT 1/)
+  assert.match(settingsMigration, /UPDATE contacts SET/)
+  assert.match(settingsMigration, /UPDATE messages SET created_at/)
+})
+
+test('the tenant build retains one booking service and removes username-driven booking routes', async () => {
+  const destination = await mkdtemp(path.join(tmpdir(), 'helloada-booking-routes-'))
+  const retired = [
+    'src/app/book/[userId]/page.tsx',
+    'src/app/c/[username]/page.tsx',
+    'src/app/api/public/booking/route.ts',
+    'src/app/api/booking/settings/route.ts',
+    'src/app/api/booking/[eventId]/route.ts',
+  ]
+  const canonical = 'src/app/api/public/booking/[eventId]/route.ts'
+  try {
+    for (const relative of [...retired, canonical]) {
+      const file = path.join(destination, relative)
+      await mkdir(path.dirname(file), { recursive: true })
+      await writeFile(file, relative === canonical ? 'canonical-public-booking-service' : 'legacy')
+    }
+    await removeLegacyBookingSurfaces(destination)
+    for (const relative of retired) {
+      await assert.rejects(readFile(path.join(destination, relative)))
+    }
+    assert.equal(await readFile(path.join(destination, canonical), 'utf8'), 'canonical-public-booking-service')
+  } finally {
+    await rm(destination, { recursive: true, force: true })
+  }
 })
 
 test('all root-relative Mailflare API URLs receive the one explicit /mail namespace', () => {

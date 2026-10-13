@@ -120,7 +120,7 @@ def test_shared_package_versions_are_taken_from_pinned_canonical_lock():
     versions = shared_package_versions(ROOT)
 
     assert versions == {"@weareheadless/helloada-payload-admin": "0.10.10",
-                        "@weareheadless/helloada-payload-core": "0.5.7"}
+                        "@weareheadless/helloada-payload-core": "0.5.8"}
 
 
 def test_shared_overlay_rejects_wrong_tenant_resource_identity(tmp_path: Path):
