@@ -1,14 +1,14 @@
 {
   "releases": {
     "atelier-harmonie": {
-      "id": "runtime-20261011225943-bf9055c3",
+      "id": "runtime-20261013015353-dc6501a9",
       "sha": "7f5635a2e469263ba0d514be1e8ebb41e72ab209",
-      "sharedRuntimeFingerprint": "ce9b56d0f3635f03cdc730e3fc11bce3724f58ef89a4663a9c753afb808b5a1a"
+      "sharedRuntimeFingerprint": "555faef7165f47b0c8b9138a3336ccc9b51a7708f2bd85d4343ad41206655c89"
     },
     "northstar-coffee-full-intake-validation-5a8564dae07494ec": {
-      "id": "runtime-20261011225943-b32c8f1f",
+      "id": "runtime-20261013015353-6f1c968e",
       "sha": "dfbb78286bf5df6a1154f971549e598faf58e4cf",
-      "sharedRuntimeFingerprint": "ce9b56d0f3635f03cdc730e3fc11bce3724f58ef89a4663a9c753afb808b5a1a"
+      "sharedRuntimeFingerprint": "555faef7165f47b0c8b9138a3336ccc9b51a7708f2bd85d4343ad41206655c89"
     },
     "oceanicvibes": {
       "id": "runtime-20261013014540-32e98e12",
