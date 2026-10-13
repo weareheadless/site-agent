@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import random
 import shutil
 import subprocess
 import sys
@@ -29,6 +30,9 @@ ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,79}$")
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 D1_SYSTEM_TABLES = frozenset({"_cf_KV"})
+MAILFLARE_D1_RETRYABLE_HTTP_CODES = frozenset({429, 500, 502, 503, 504})
+MAILFLARE_D1_QUERY_MAX_ATTEMPTS = 8
+MAILFLARE_D1_QUERY_MAX_RETRY_DELAY_SECONDS = 60.0
 MINIMUM_BUILD_FREE_BYTES = 8 * 1024 ** 3
 NPM_INSTALL_ARGUMENTS = ("ci", "--ignore-scripts", "--no-audit", "--no-fund", "--prefer-offline", "--maxsockets=1")
 
@@ -795,6 +799,20 @@ def d1_query(
     return result["results"]
 
 
+def mailflare_d1_retry_delay(error: urllib.error.HTTPError, retry_number: int) -> float:
+    retry_after = (error.headers or {}).get("Retry-After")
+    if retry_after is not None:
+        try:
+            return min(max(float(retry_after), 0.0), MAILFLARE_D1_QUERY_MAX_RETRY_DELAY_SECONDS)
+        except (TypeError, ValueError):
+            pass
+    delay = min(3.0 * (2 ** (retry_number - 1)), 45.0)
+    return min(
+        MAILFLARE_D1_QUERY_MAX_RETRY_DELAY_SECONDS,
+        delay + random.uniform(0.0, delay * 0.25),
+    )
+
+
 def mailflare_d1_query(customer: dict[str, Any], sql: str, env: dict[str, str],
                        params: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
     url = ("https://api.cloudflare.com/client/v4/accounts/" + urllib.parse.quote(env["CLOUDFLARE_ACCOUNT_ID"], safe="")
@@ -806,11 +824,31 @@ def mailflare_d1_query(customer: dict[str, Any], sql: str, env: dict[str, str],
         headers={"Authorization": "Bearer " + env["CLOUDFLARE_API_TOKEN"],
                  "Content-Type": "application/json", "Accept": "application/json"},
     )
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            body = json.load(response)
-    except (OSError, urllib.error.URLError, TimeoutError) as error:
-        raise RuntimeError(f"Mailflare D1 schema inspection failed: {type(error).__name__}") from error
+    for attempt in range(1, MAILFLARE_D1_QUERY_MAX_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                body = json.load(response)
+            break
+        except urllib.error.HTTPError as error:
+            if error.code not in MAILFLARE_D1_RETRYABLE_HTTP_CODES or attempt == MAILFLARE_D1_QUERY_MAX_ATTEMPTS:
+                ray_id = (error.headers or {}).get("cf-ray")
+                suffix = f"; Cloudflare Ray ID {ray_id}" if ray_id else ""
+                raise RuntimeError(
+                    f"Cloudflare Mailflare D1 query returned HTTP {error.code}{suffix}"
+                ) from error
+            delay = mailflare_d1_retry_delay(error, attempt)
+            ray_id = (error.headers or {}).get("cf-ray")
+            ray_suffix = f" cfRay={ray_id}" if ray_id else ""
+            print(
+                f"[release] retrying transient Cloudflare D1 HTTP {error.code}; "
+                f"attempt={attempt + 1}/{MAILFLARE_D1_QUERY_MAX_ATTEMPTS} "
+                f"delay={delay:.1f}s{ray_suffix}",
+                flush=True,
+            )
+            error.close()
+            time.sleep(delay)
+        except (OSError, urllib.error.URLError, TimeoutError) as error:
+            raise RuntimeError(f"Mailflare D1 schema inspection failed: {type(error).__name__}") from error
     if body.get("success") is not True or not isinstance(body.get("result"), list) or len(body["result"]) != 1:
         raise RuntimeError("Cloudflare did not return one successful Mailflare D1 query result")
     result = body["result"][0]
