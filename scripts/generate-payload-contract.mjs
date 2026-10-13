@@ -1,14 +1,17 @@
 import { createHash } from 'node:crypto'
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
-import { createHelloAdaContractIdentity } from '../packages/helloada-payload-core/src/contract.ts'
-import { createHelloAdaContentContract, HELLOADA_CAPABILITIES } from '../packages/helloada-payload-core/src/schema/index.ts'
 
 const root = fileURLToPath(new URL('../', import.meta.url))
 const siteRootArgument = process.argv.slice(2).find((value) => value.startsWith('--site-root='))
 const siteRoot = path.resolve(siteRootArgument?.slice('--site-root='.length) || path.join(root, 'src/site_agent/templates/next-payload'))
+const coreSourceRoot = path.join(siteRoot, 'node_modules/@weareheadless/helloada-payload-core/src')
+const [{ createHelloAdaContractIdentity }, { createHelloAdaContentContract, HELLOADA_CAPABILITIES }] = await Promise.all([
+  import(pathToFileURL(path.join(coreSourceRoot, 'contract.ts')).href),
+  import(pathToFileURL(path.join(coreSourceRoot, 'schema/index.ts')).href),
+])
 const contractPath = path.join(siteRoot, 'helloada-content-contract.json')
 const manifestPath = path.join(siteRoot, 'template-manifest.json')
 const wranglerPath = path.join(siteRoot, 'wrangler.jsonc')
