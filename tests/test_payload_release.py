@@ -2328,3 +2328,12 @@ def test_atomic_deployment_waits_for_the_exact_cloudflare_version(monkeypatch):
 
     assert deployment["id"] == "deployment-new"
     assert selected_version == version_id
+
+
+
+def test_contract_generator_resolves_payload_peer_from_installed_tenant_dependencies():
+    source = (ROOT / "scripts/generate-payload-contract.mjs").read_text()
+
+    assert "path.join(siteRoot, 'node_modules/@weareheadless/helloada-payload-core/src')" in source
+    assert "pathToFileURL(path.join(coreSourceRoot, 'schema/index.ts')).href" in source
+    assert "from '../packages/helloada-payload-core/src/schema/index.ts'" not in source
