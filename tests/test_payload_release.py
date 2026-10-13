@@ -469,6 +469,38 @@ def test_release_registry_requires_exact_shared_payload_versions(field):
         release.validate_target(customer, "oceanicvibes", SHA, "release-1")
 
 
+def test_generated_schema_contract_advances_shared_identity_and_preserves_migration_history():
+    migration_head = "b" * 64
+    customer = {
+        **CUSTOMER,
+        "payloadAdmin": "0.10.8",
+        "payloadCore": "0.5.7",
+        "contentContract": "helloada-content-v3",
+        "schemaRevision": 7,
+        "schemaIdentity": "a" * 64,
+        "migrationHead": migration_head,
+    }
+    manifest = {**TEMPLATE_MANIFEST, "migrationHead": migration_head}
+    contract = json.loads((TEMPLATE / "helloada-content-contract.json").read_text())
+
+    release.synchronize_customer_payload_contract(customer, manifest, contract)
+
+    assert customer["payloadAdmin"] == TEMPLATE_MANIFEST["payloadAdmin"]
+    assert customer["payloadCore"] == TEMPLATE_MANIFEST["payloadCore"]
+    assert customer["contentContract"] == TEMPLATE_MANIFEST["contentContract"]
+    assert customer["schemaRevision"] == TEMPLATE_MANIFEST["schemaRevision"]
+    assert customer["schemaIdentity"] == TEMPLATE_MANIFEST["schemaIdentity"]
+    assert customer["migrationHead"] == migration_head
+
+
+def test_generated_schema_contract_rejects_unrequested_migration_history_change():
+    customer = {**CUSTOMER, "migrationHead": "b" * 64}
+    manifest = {**TEMPLATE_MANIFEST, "migrationHead": "c" * 64}
+    contract = json.loads((TEMPLATE / "helloada-content-contract.json").read_text())
+
+    with pytest.raises(RuntimeError, match="exact schema-migration request"):
+        release.synchronize_customer_payload_contract(customer, manifest, contract)
+
 
 def test_worker_contract_requires_the_registered_tenant_and_all_shared_versions():
     customer = CUSTOMER
