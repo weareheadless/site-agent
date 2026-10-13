@@ -757,6 +757,78 @@ class PayloadGatewayClient:
         )
         return _revision(response.get("global"), response, "updated global")
 
+    def read_booking_configuration(self) -> dict[str, Any]:
+        response = self._request("GET", self._gateway_path("booking"))
+        settings, types = response.get("settings"), response.get("types")
+        if not isinstance(settings, dict) or not isinstance(types, list):
+            raise PayloadGatewayError("booking gateway returned an incomplete configuration")
+        for item in types:
+            if not isinstance(item, dict) or not re.fullmatch(r"ha_booking_[a-f0-9]{32}", str(item.get("id") or "")):
+                raise PayloadGatewayError("booking gateway returned an invalid booking type identity")
+        return {"settings": settings, "types": types}
+
+    def read_booking_availability(self, type_id: str, local_date: str) -> dict[str, Any]:
+        if not re.fullmatch(r"ha_booking_[a-f0-9]{32}", str(type_id or "")) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(local_date or "")):
+            raise PayloadGatewayError("a stable booking type ID and local date are required")
+        response = self._request("POST", self._gateway_path("booking"), payload={
+            "operation": "read_availability", "bookingTypeId": type_id, "date": local_date,
+        })
+        availability = response.get("availability")
+        if not isinstance(availability, dict) or not isinstance(availability.get("slots"), list):
+            raise PayloadGatewayError("booking gateway returned invalid availability")
+        return availability
+
+    def create_booking_type(self, *, name: str, duration_minutes: int, description: str = "") -> dict[str, Any]:
+        name, description = str(name or "").strip(), str(description or "").strip()
+        if not name or len(name) > 120 or len(description) > 2000 or not 10 <= int(duration_minutes) <= 480 or int(duration_minutes) % 5:
+            raise PayloadGatewayError("booking type name, description, or duration is invalid")
+        import unicodedata
+        slug = re.sub(r"[^a-z0-9]+", "-", unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().lower()).strip("-")[:80]
+        if not slug:
+            raise PayloadGatewayError("booking type name must produce a stable reference")
+        response = self._request("POST", self._gateway_path("booking"), payload={
+            "operation": "create_type",
+            "type": {"name": name, "slug": slug, "description": description, "durationMinutes": int(duration_minutes)},
+        })
+        item = response.get("type")
+        if not isinstance(item, dict) or not re.fullmatch(r"ha_booking_[a-f0-9]{32}", str(item.get("id") or "")):
+            raise PayloadGatewayError("booking gateway did not return the created type identity")
+        return item
+
+    def update_booking_type(self, *, type_id: str, expected_revision: int, name: str, duration_minutes: int, description: str = "") -> dict[str, Any]:
+        if not re.fullmatch(r"ha_booking_[a-f0-9]{32}", str(type_id or "")) or int(expected_revision) < 1:
+            raise PayloadGatewayError("booking type identity and expected revision are required")
+        response = self._request("POST", self._gateway_path("booking"), payload={
+            "operation": "update_type", "id": type_id, "expectedRevision": int(expected_revision),
+            "type": {"name": str(name or "").strip(), "description": str(description or "").strip(), "durationMinutes": int(duration_minutes)},
+        })
+        item = response.get("type")
+        if not isinstance(item, dict) or item.get("id") != type_id:
+            raise PayloadGatewayError("booking gateway did not confirm the updated type")
+        return item
+
+    def deactivate_booking_type(self, *, type_id: str, expected_revision: int) -> dict[str, Any]:
+        if not re.fullmatch(r"ha_booking_[a-f0-9]{32}", str(type_id or "")) or int(expected_revision) < 1:
+            raise PayloadGatewayError("booking type identity and expected revision are required")
+        response = self._request("POST", self._gateway_path("booking"), payload={
+            "operation": "deactivate_type", "id": type_id, "expectedRevision": int(expected_revision),
+        })
+        item = response.get("type")
+        if not isinstance(item, dict) or item.get("id") != type_id or item.get("enabled") is not False:
+            raise PayloadGatewayError("booking gateway did not confirm deactivation")
+        return item
+
+    def update_booking_settings(self, settings: Mapping[str, Any]) -> dict[str, Any]:
+        if not isinstance(settings, Mapping):
+            raise PayloadGatewayError("booking settings must be an object")
+        response = self._request("POST", self._gateway_path("booking"), payload={
+            "operation": "update_settings", "settings": dict(settings),
+        })
+        updated = response.get("settings")
+        if not isinstance(updated, dict) or not isinstance(updated.get("revision"), int):
+            raise PayloadGatewayError("booking gateway did not return the updated settings revision")
+        return updated
+
     @staticmethod
     def _media_data(data: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(data, Mapping):

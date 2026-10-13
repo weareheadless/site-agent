@@ -29,7 +29,7 @@ export type PayloadMailboxMigrationEnv = {
   MAILFLARE_ADDRESS: string
 }
 
-const VERSION = 'payload-mailbox-v1'
+const VERSION = 'payload-mailbox-v2'
 const PAGE_SIZE = 100
 const MAX_ROWS_PER_TABLE = 20_000
 const REQUIRED_TABLES = [
@@ -58,6 +58,7 @@ const epochSeconds = (value: unknown, label: string): number => {
   if (!Number.isFinite(parsed)) throw new Error('payload_migration_invalid_timestamp:' + label)
   return Math.floor(parsed / 1000)
 }
+const epochMilliseconds = (value: unknown, label: string) => epochSeconds(value, label) * 1000
 const canonical = (row: Row) => JSON.stringify(Object.fromEntries(Object.entries(row).sort(([a], [b]) => a.localeCompare(b))))
 const sha256 = async (value: string | ArrayBuffer) => {
   const bytes = typeof value === 'string' ? new TextEncoder().encode(value) : value
@@ -188,6 +189,7 @@ export async function migratePayloadMailbox(
 
   const leaseToken = crypto.randomUUID()
   const now = Date.now()
+  const nowSeconds = Math.floor(now / 1000)
   await env.MAILFLARE_DB.prepare(
     'INSERT OR IGNORE INTO helloada_import_runs (tenant_id, version, state, started_at) VALUES (?, ?, ?, ?)',
   ).bind(env.HELLOADA_TENANT_ID, VERSION, 'failed', now).run()
@@ -245,7 +247,7 @@ export async function migratePayloadMailbox(
       const displayName = asString(row.name) || null
       await env.MAILFLARE_DB.prepare(
         'INSERT INTO contacts (id, user_id, email, display_name, source, last_seen_at, created_at, helloada_phone, helloada_company, helloada_notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(user_id, email) DO UPDATE SET display_name = COALESCE(contacts.display_name, excluded.display_name), helloada_phone = COALESCE(contacts.helloada_phone, excluded.helloada_phone), helloada_company = COALESCE(contacts.helloada_company, excluded.helloada_company), helloada_notes = COALESCE(contacts.helloada_notes, excluded.helloada_notes)',
-      ).bind(id, identity.serviceUserId, email, displayName, nativeSource, lastSeen ? epochSeconds(lastSeen, 'contact_last_seen') : null, created ? epochSeconds(created, 'contact_created') : now, asString(row.phone) || null, asString(row.company) || null, asString(row.notes) || null).run()
+      ).bind(id, identity.serviceUserId, email, displayName, nativeSource, lastSeen ? epochSeconds(lastSeen, 'contact_last_seen') : null, created ? epochSeconds(created, 'contact_created') : nowSeconds, asString(row.phone) || null, asString(row.company) || null, asString(row.notes) || null).run()
       const stored = await env.MAILFLARE_DB.prepare('SELECT id FROM contacts WHERE user_id = ? AND email = ? LIMIT 1').bind(identity.serviceUserId, email).first<{ id: string }>()
       if (!stored) throw new Error('payload_migration_contact_not_materialized')
       mailflareContactIds.set(sourceId, stored.id)
@@ -283,7 +285,7 @@ export async function migratePayloadMailbox(
       if (!subject) throw new Error('payload_migration_message_subject_missing')
       const body = asString(row.text) || asString(column(row, 'draft_text', 'draftText'))
       const created = column(row, 'created_at', 'createdAt')
-      const timestamp = created ? epochSeconds(created, 'message_created') : now
+      const timestamp = created ? epochSeconds(created, 'message_created') : nowSeconds
       const rawSourceKey = asString(column(row, 'raw_object_key', 'rawObjectKey'))
       let rawR2Key: string | null = null
       if (rawSourceKey) {
@@ -338,7 +340,7 @@ export async function migratePayloadMailbox(
       const created = column(row, 'created_at', 'createdAt')
       await env.MAILFLARE_DB.prepare(
         'INSERT OR IGNORE INTO helloada_imported_operations (source_id, operation_id, operation_type, idempotency_key, request_hash, state, attempts, next_attempt_at, provider_reference, error_code, payload, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      ).bind(sourceId, operationId, operationType, idempotencyKey, requestHash, asString(row.state), Number(row.attempts ?? 0), column(row, 'next_attempt_at', 'nextAttemptAt') ? epochSeconds(column(row, 'next_attempt_at', 'nextAttemptAt'), 'operation_next_attempt') : null, asString(column(row, 'provider_reference', 'providerReference')) || null, asString(column(row, 'error_code', 'errorCode')) || null, payload, created ? epochSeconds(created, 'operation_created') : now).run()
+      ).bind(sourceId, operationId, operationType, idempotencyKey, requestHash, asString(row.state), Number(row.attempts ?? 0), column(row, 'next_attempt_at', 'nextAttemptAt') ? epochSeconds(column(row, 'next_attempt_at', 'nextAttemptAt'), 'operation_next_attempt') : null, asString(column(row, 'provider_reference', 'providerReference')) || null, asString(column(row, 'error_code', 'errorCode')) || null, payload, created ? epochSeconds(created, 'operation_created') : nowSeconds).run()
       await insertRecord(env.MAILFLARE_DB, 'message_operations', sourceId, await sha256(canonical(row)), 'helloada_imported_operations', sourceId)
     }
 
@@ -350,12 +352,14 @@ export async function migratePayloadMailbox(
       localesByParent.set(parentId, [...(localesByParent.get(parentId) ?? []), row])
     }
     const settingsTimeZone = asString(column(settings, 'time_zone', 'timeZone'))
+    const importedSchedules: string[] = []
     for (const row of appointmentTypes) {
       const sourceId = asString(row.id)
       const localized = localesByParent.get(sourceId) ?? []
       const primary = localized.find((item) => asString(column(item, '_locale', 'locale')) === defaultLocale)
       if (!primary || !asString(primary.name)) throw new Error('payload_migration_appointment_locale_missing')
       const schedule = bookingSchedule(availability, sourceId)
+      importedSchedules.push(schedule.weeklyAvailability)
       const buffer = Number(column(row, 'buffer_minutes', 'bufferMinutes') ?? 0)
       const duration = Number(column(row, 'duration_minutes', 'durationMinutes'))
       const slug = asString(row.slug)
@@ -370,8 +374,20 @@ export async function migratePayloadMailbox(
       const endTime = ranges[ranges.length - 1].endTime
       await env.MAILFLARE_DB.prepare(
         'INSERT OR IGNORE INTO booking_events (id, user_id, name, slug, description, color, host_ids, duration_minutes, location, weekdays, start_time, end_time, time_ranges, time_zone, enabled, created_at, updated_at, helloada_buffer_minutes, helloada_weekly_availability, helloada_locales, helloada_calendar_enabled, helloada_minimum_notice_hours, helloada_booking_window_days, helloada_payload_managed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      ).bind(bookingId, identity.ownerUserId, asString(primary.name), slug, asString(primary.description), 'blue', JSON.stringify([identity.ownerUserId]), duration, '', JSON.stringify(schedule.weekdays), startTime, endTime, JSON.stringify(ranges), settingsTimeZone, Number(row.enabled) === 1 && asString(row._status) !== 'draft' ? 1 : 0, now, now, buffer, schedule.weeklyAvailability, JSON.stringify(localesJson), calendarEnabled, minimumNoticeHours, bookingWindowDays, 1).run()
+      ).bind(bookingId, identity.ownerUserId, asString(primary.name), slug, asString(primary.description), 'blue', JSON.stringify([identity.ownerUserId]), duration, '', JSON.stringify(schedule.weekdays), startTime, endTime, JSON.stringify(ranges), settingsTimeZone, Number(row.enabled) === 1 && asString(row._status) !== 'draft' ? 1 : 0, nowSeconds, nowSeconds, buffer, schedule.weeklyAvailability, JSON.stringify(localesJson), calendarEnabled, minimumNoticeHours, bookingWindowDays, 1).run()
       await insertRecord(env.MAILFLARE_DB, 'appointment_types', sourceId, await sha256(canonical(row)), 'booking_events', bookingId)
+    }
+
+    if (appointmentTypes.length) {
+      const schedule = importedSchedules[0]
+      const sharedSchedule = importedSchedules.every((value) => value === schedule)
+      const weeklyAvailability = sharedSchedule ? schedule : '[]'
+      const sharedTimeZone = sharedSchedule ? settingsTimeZone : ''
+      const enabled = sharedSchedule && calendarEnabled === 1
+        && appointmentTypes.some((row) => Number(row.enabled) === 1 && asString(row._status) !== 'draft')
+      await env.MAILFLARE_DB.prepare(
+        "INSERT INTO helloada_booking_settings (user_id,enabled,time_zone,weekly_availability,max_concurrent_appointments,minimum_notice_hours,booking_window_days,revision,updated_at) VALUES (?,?,?,?,1,?,?,1,?) ON CONFLICT(user_id) DO UPDATE SET enabled=excluded.enabled,time_zone=excluded.time_zone,weekly_availability=excluded.weekly_availability,max_concurrent_appointments=1,minimum_notice_hours=excluded.minimum_notice_hours,booking_window_days=excluded.booking_window_days,revision=helloada_booking_settings.revision+1,updated_at=excluded.updated_at WHERE helloada_booking_settings.revision=1 AND helloada_booking_settings.enabled=0 AND helloada_booking_settings.time_zone='' AND helloada_booking_settings.weekly_availability='[]'",
+      ).bind(identity.ownerUserId, enabled ? 1 : 0, sharedTimeZone, weeklyAvailability, minimumNoticeHours, bookingWindowDays, Date.now()).run()
     }
 
     const contactBySourceId = new Map(contacts.map((row) => [asString(row.id), row]))
@@ -384,17 +400,26 @@ export async function migratePayloadMailbox(
       const mailflareContactId = mailflareContactIds.get(contactSourceId)
       if (!appointment || !contact || !mailflareContactId) throw new Error('payload_migration_calendar_relation_missing')
       const eventId = await recordId(env.HELLOADA_TENANT_ID, 'calendar_event', sourceId)
-      const startsAt = epochSeconds(column(row, 'starts_at', 'startsAt'), 'calendar_starts')
-      const endsAt = epochSeconds(column(row, 'ends_at', 'endsAt'), 'calendar_ends')
+      const startsAt = epochMilliseconds(column(row, 'starts_at', 'startsAt'), 'calendar_starts')
+      const endsAt = epochMilliseconds(column(row, 'ends_at', 'endsAt'), 'calendar_ends')
       if (endsAt <= startsAt) throw new Error('payload_migration_calendar_range_invalid')
       const buffer = Number(column(row, 'buffer_minutes', 'bufferMinutes') ?? 0)
       if (!Number.isInteger(buffer) || buffer < 0 || buffer > 120 || buffer % 5 !== 0) throw new Error('payload_migration_calendar_buffer_invalid')
       const title = asString(row.title)
       const attendee = recipientAddress(contact, 'email', '')
       const description = asString(row.answers)
+      const appointmentLocaleRows = localesByParent.get(typeId) ?? []
+      const appointmentName = asString(appointmentLocaleRows.find((item) => asString(column(item, '_locale', 'locale')) === defaultLocale)?.name)
+      const appointmentDuration = Number(column(appointment, 'duration_minutes', 'durationMinutes'))
+      if (!appointmentName || !Number.isInteger(appointmentDuration) || appointmentDuration < 5 || appointmentDuration > 480) throw new Error('payload_migration_appointment_snapshot_invalid')
+      const bookingTypeId = await recordId(env.HELLOADA_TENANT_ID, 'booking', typeId)
+      const capacitySettings = await env.MAILFLARE_DB.prepare(
+        'SELECT revision FROM helloada_booking_settings WHERE user_id = ? LIMIT 1',
+      ).bind(identity.ownerUserId).first<{ revision: number }>()
+      if (!capacitySettings) throw new Error('payload_migration_booking_settings_missing')
       await env.MAILFLARE_DB.prepare(
-        'INSERT OR IGNORE INTO calendar_events (id, user_id, mailbox_id, title, description, location, attendees, color, repeat, repeat_days, excluded_occurrences, time_zone, starts_at, ends_at, created_at, updated_at, helloada_state, helloada_receipt_id, helloada_answers, helloada_consent_accepted_at, helloada_notification_state, helloada_buffer_minutes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      ).bind(eventId, identity.ownerUserId, identity.mailboxId, title, description, '', JSON.stringify([attendee]), 'blue', 'none', '[]', '[]', asString(column(row, 'time_zone', 'timeZone')), startsAt, endsAt, now, now, asString(row.state), asString(column(row, 'receipt_id', 'receiptId')), jsonText(row.answers, 'calendar_answers'), column(row, 'consent_accepted_at', 'consentAcceptedAt') ? epochSeconds(column(row, 'consent_accepted_at', 'consentAcceptedAt'), 'calendar_consent') : null, asString(column(row, 'notification_state', 'notificationState')), buffer).run()
+        'INSERT OR IGNORE INTO calendar_events (id, user_id, mailbox_id, title, description, location, attendees, color, repeat, repeat_days, excluded_occurrences, time_zone, starts_at, ends_at, created_at, updated_at, helloada_state, helloada_receipt_id, helloada_answers, helloada_consent_accepted_at, helloada_notification_state, helloada_buffer_minutes, helloada_booking_type_id, helloada_booking_type_name, helloada_booking_duration_minutes, helloada_contact_id, helloada_capacity_revision) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      ).bind(eventId, identity.ownerUserId, identity.mailboxId, title, description, '', JSON.stringify([attendee]), 'blue', 'none', '[]', '[]', asString(column(row, 'time_zone', 'timeZone')), startsAt, endsAt, nowSeconds, nowSeconds, asString(row.state), asString(column(row, 'receipt_id', 'receiptId')), jsonText(row.answers, 'calendar_answers'), column(row, 'consent_accepted_at', 'consentAcceptedAt') ? epochSeconds(column(row, 'consent_accepted_at', 'consentAcceptedAt'), 'calendar_consent') : null, asString(column(row, 'notification_state', 'notificationState')), buffer, bookingTypeId, appointmentName, appointmentDuration, mailflareContactId, capacitySettings.revision).run()
       await insertRecord(env.MAILFLARE_DB, 'calendar_events', sourceId, await sha256(canonical(row)), 'calendar_events', eventId)
     }
 

@@ -141,6 +141,9 @@ test('Ada authoring capabilities expose website content only and derive nested f
   assert.equal(contract.collections.pages.some((field) => field.name === 'published'), false)
   assert.equal(contract.collections.pages.find((field) => field.name === 'sections').fields
     .find((field) => field.name === 'entries').blocks.some((block) => block.slug === 'helloAdaHeading'), true)
+  const bookingBlock = contract.collections.pages.find((field) => field.name === 'sections').fields
+    .find((field) => field.name === 'entries').blocks.find((block) => block.slug === 'helloAdaBooking')
+  assert.deepEqual(bookingBlock.fields.map((field) => field.name), ['key', 'label', 'bookingTypeId'])
   assert.throws(() => validateHelloAdaAuthoringData('collection', 'messages', { text: 'private' }), /Unsupported website collection/)
   assert.throws(() => validateHelloAdaAuthoringData('global', 'messageMailbox', { address: 'private@example.com' }), /Unsupported website global/)
 })
@@ -185,6 +188,25 @@ test('page block identities are stable, globally unique and use Payload blockTyp
   assert.match(validateHelloAdaPageSections([{ ...valid[0], entries: [valid[0].entries[0], { ...valid[0].entries[1], key: 'home.hero' }] }]), /used more than once/)
   assert.match(validateHelloAdaPageSections([{ ...valid[0], entries: [{ key: 'heading', label: 'Heading', type: 'helloAdaHeading', text: 'Welcome' }] }]), /unsupported content type/)
   assert.match(validateHelloAdaPageSections([{ ...valid[0], entries: [{ key: '', label: 'Heading', blockType: 'helloAdaHeading' }] }]), /stable content ID/)
+})
+
+test('booking content uses one immutable Mailflare ID and rejects Payload-owned appointment relationships', () => {
+  const bookingTypeId = 'ha_booking_0123456789abcdef0123456789abcdef'
+  const sections = [{
+    key: 'home.booking', label: 'Appointments', entries: [{
+      key: 'home.booking.form', label: 'Book an appointment', blockType: 'helloAdaBooking', bookingTypeId,
+    }],
+  }]
+  assert.equal(validateHelloAdaPageSections(sections), true)
+  assert.match(validateHelloAdaPageSections([{
+    key: 'home.booking', label: 'Appointments', entries: [{
+      key: 'home.booking.form', label: 'Book an appointment', blockType: 'helloAdaBooking',
+      bookingTypeId: 'massage', appointmentType: { id: 'legacy-payload-id' },
+    }],
+  }]), /booking type ID/)
+  assert.equal(validateHelloAdaAuthoringData('collection', 'pages', {
+    title: 'Home', slug: 'home', sections,
+  }), true)
 })
 
 test('shared navigation IDs remain stable and cannot be reused across regions', () => {

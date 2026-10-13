@@ -10,6 +10,10 @@ const migrationSql = await readFile(
   new URL('../../../../../packages/helloada-mailflare/integration-migrations/0062_helloada_payload_migration.sql', import.meta.url),
   'utf8',
 )
+const bookingSettingsMigrationSql = await readFile(
+  new URL('../../../../../packages/helloada-mailflare/integration-migrations/0063_helloada_business_booking_settings.sql', import.meta.url),
+  'utf8',
+)
 
 function binding(sqlite) {
   return {
@@ -95,6 +99,8 @@ function payloadSource({ invalidSchedule = false } = {}) {
 function mailflareDatabase() {
   const sqlite = new DatabaseSync(':memory:')
   sqlite.exec([
+    'CREATE TABLE users (id TEXT PRIMARY KEY);',
+    'INSERT INTO users (id) VALUES (\'owner-fixture\');',
     'CREATE TABLE contacts (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, email TEXT NOT NULL, display_name TEXT, source TEXT NOT NULL, last_seen_at INTEGER, created_at INTEGER NOT NULL, UNIQUE(user_id,email));',
     'CREATE TABLE messages (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, mailbox_id TEXT, direction TEXT NOT NULL, provider_message_id TEXT, from_addr TEXT NOT NULL, to_addr TEXT NOT NULL, cc_addr TEXT, bcc_addr TEXT, subject TEXT, snippet TEXT, text_body TEXT, raw_r2_key TEXT, status TEXT NOT NULL, read INTEGER NOT NULL DEFAULT 0, starred INTEGER NOT NULL DEFAULT 0, thread_id TEXT, in_reply_to TEXT, references_header TEXT, created_at INTEGER NOT NULL);',
     'CREATE TABLE message_attachments (id TEXT PRIMARY KEY, message_id TEXT NOT NULL, filename TEXT NOT NULL, content_type TEXT NOT NULL, size INTEGER NOT NULL, disposition TEXT NOT NULL, r2_key TEXT NOT NULL UNIQUE, created_at INTEGER NOT NULL);',
@@ -102,6 +108,7 @@ function mailflareDatabase() {
     'CREATE TABLE calendar_events (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, mailbox_id TEXT, title TEXT NOT NULL, description TEXT NOT NULL, location TEXT NOT NULL, attendees TEXT NOT NULL, color TEXT NOT NULL, repeat TEXT NOT NULL, repeat_days TEXT NOT NULL, excluded_occurrences TEXT NOT NULL, time_zone TEXT, starts_at INTEGER NOT NULL, ends_at INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);',
   ].join('\n'))
   sqlite.exec(migrationSql)
+  sqlite.exec(bookingSettingsMigrationSql)
   return { sqlite, binding: binding(sqlite) }
 }
 
@@ -181,6 +188,19 @@ test('imports Payload mailbox, immutable objects, booking setup and calendar eve
   assert.deepEqual(JSON.parse(calendar.helloada_answers), { goal: 'Discuss a project' })
   assert.equal(calendar.helloada_notification_state, 'sent')
   assert.equal(calendar.helloada_buffer_minutes, 5)
+  assert.equal(calendar.helloada_booking_type_name, 'Introductory call')
+  assert.equal(calendar.helloada_booking_duration_minutes, 30)
+  assert.equal(calendar.helloada_contact_id, contact.id)
+  const bookingSettings = target.sqlite.prepare('SELECT * FROM helloada_booking_settings WHERE user_id=?').get(owner.ownerUserId)
+  assert.equal(bookingSettings.enabled, 1)
+  assert.equal(bookingSettings.time_zone, 'America/Cancun')
+  assert.equal(bookingSettings.max_concurrent_appointments, 1)
+  assert.equal(bookingSettings.minimum_notice_hours, 12)
+  assert.equal(bookingSettings.booking_window_days, 45)
+  assert.deepEqual(JSON.parse(bookingSettings.weekly_availability), [
+    { day: 1, startTime: '09:00', endTime: '17:00' },
+    { day: 2, startTime: '10:00', endTime: '17:00' },
+  ])
 
   const imported = await migratePayloadMailbox(env, owner)
   assert.deepEqual(imported, result)

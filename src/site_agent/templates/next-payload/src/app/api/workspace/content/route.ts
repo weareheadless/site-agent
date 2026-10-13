@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { getCloudflareContext } from '@opennextjs/cloudflare'
 import { getPayload } from 'payload'
 
 import config from '@payload-config'
@@ -7,6 +8,8 @@ import { hashJson, withoutPayloadMetadata } from '@/lib/payload-hash'
 import { resolvePayloadLocale, type HelloAdaPayloadLocale } from '@/lib/payload-locale'
 import { serviceAuthorized } from '@/lib/service-auth'
 import { validateHelloAdaAuthoringData } from '@weareheadless/helloada-payload-core/schema'
+import type { BookingD1 } from '@/lib/helloada-booking-service'
+import { readBookingSettings, readBookingTypeById, resolveTenantBookingOwner } from '@/lib/helloada-booking-service'
 
 const collections = ['pages', 'posts', 'products'] as const
 const collectionFor = (value: unknown) => collections.find(item => item === value)
@@ -36,6 +39,52 @@ const fieldValueMatches = (document: Record<string, unknown>, input: Record<stri
 
 function errorResponse(message: string, status: number) {
   return NextResponse.json({ error: 'workspace_gateway_error', message }, { status })
+}
+
+type BookingValidationFailure = { status: number; message: string }
+
+async function validateBookingBindings(value: unknown, requireEnabledSettings: boolean): Promise<BookingValidationFailure | null> {
+  const ids = new Set<string>()
+  const visit = (item: unknown): BookingValidationFailure | null => {
+    if (Array.isArray(item)) {
+      for (const child of item) {
+        const failure = visit(child)
+        if (failure) return failure
+      }
+      return null
+    }
+    if (!item || typeof item !== 'object') return null
+    const row = item as Record<string, unknown>
+    if (row.blockType === 'helloAdaBooking') {
+      const id = String(row.bookingTypeId || '')
+      if (!/^ha_booking_[a-f0-9]{32}$/.test(id)) return { status: 400, message: 'Every booking block must reference one immutable Mailflare booking type ID.' }
+      ids.add(id)
+    }
+    for (const child of Object.values(row)) {
+      const failure = visit(child)
+      if (failure) return failure
+    }
+    return null
+  }
+  const malformed = visit(value)
+  if (malformed) return malformed
+  if (!ids.size) return null
+  try {
+    const env = (await getCloudflareContext({ async: true })).env as { MAILFLARE_DB?: BookingD1 }
+    if (!env.MAILFLARE_DB) return { status: 503, message: 'The tenant booking service is not configured.' }
+    const ownerId = await resolveTenantBookingOwner(env.MAILFLARE_DB, helloAdaSite.tenantId)
+    for (const id of ids) {
+      const type = await readBookingTypeById(env.MAILFLARE_DB, ownerId, id)
+      if (!type.enabled) return { status: 409, message: 'A booking form references an inactive appointment type. Activate it or update the form before saving.' }
+    }
+    if (requireEnabledSettings) {
+      const settings = await readBookingSettings(env.MAILFLARE_DB, ownerId)
+      if (!settings.enabled) return { status: 409, message: 'Enable business booking settings and configure working hours before publishing a booking form.' }
+    }
+    return null
+  } catch (error) {
+    return { status: 503, message: error instanceof Error ? error.message : 'The tenant booking service could not validate the form.' }
+  }
 }
 
 function payloadFailure(error: unknown, fallback: string) {
@@ -117,6 +166,8 @@ export async function POST(request: Request) {
   const payload = await getPayload({ config })
   try {
     if (operation === 'create') {
+      const bookingFailure = await validateBookingBindings(data, false)
+      if (bookingFailure) return errorResponse(bookingFailure.message, bookingFailure.status)
       const slug = String(data.slug || '').trim()
       if (!slug) return errorResponse('a stable route slug is required for an idempotent Payload draft create', 400)
       const existing = await payload.find({
@@ -192,6 +243,8 @@ export async function POST(request: Request) {
       if (!/^sha256:[0-9a-f]{64}$/.test(expectedHash)) return errorResponse('expectedHash is required for a draft update', 400)
       const current = await payload.findByID({ collection, id, draft: true, locale, depth: 1, overrideAccess: true }) as unknown as Record<string, unknown>
       if (await hashJson(withoutPayloadMetadata(current)) !== expectedHash) return errorResponse('The Payload draft changed. Read it again before updating.', 409)
+      const bookingFailure = await validateBookingBindings({ ...current, ...data }, false)
+      if (bookingFailure) return errorResponse(bookingFailure.message, bookingFailure.status)
       let document: Record<string, unknown>
       try {
         document = await payload.update({
@@ -231,6 +284,8 @@ export async function POST(request: Request) {
       const current = await payload.findByID({ collection, id, draft: true, locale, overrideAccess: true }) as unknown as Record<string, unknown>
       const currentHash = await hashJson(withoutPayloadMetadata(current))
       if (currentHash !== expectedHash) return errorResponse('The Payload draft changed after review. Review the current version before publishing.', 409)
+      const bookingFailure = await validateBookingBindings(current, true)
+      if (bookingFailure) return errorResponse(bookingFailure.message, bookingFailure.status)
       await payload.update({
         collection,
         id,

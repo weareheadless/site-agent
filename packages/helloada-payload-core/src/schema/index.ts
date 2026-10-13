@@ -1,9 +1,9 @@
 import { JWTAuthentication } from 'payload'
 import type { Block, CollectionConfig, GlobalConfig } from 'payload'
 
-export const HELLOADA_CONTENT_CONTRACT_VERSION = 'helloada-content-v3'
-export const HELLOADA_CORE_VERSION = '0.5.7'
-export const HELLOADA_SCHEMA_REVISION = 7
+export const HELLOADA_CONTENT_CONTRACT_VERSION = 'helloada-content-v4'
+export const HELLOADA_CORE_VERSION = '0.5.9'
+export const HELLOADA_SCHEMA_REVISION = 8
 
 export const validateHelloAdaLink = (value: unknown): true | string => {
   if (typeof value !== 'string' || !value.trim()) return 'Enter a destination for this link.'
@@ -198,6 +198,9 @@ export const validateHelloAdaPageSections = (value: unknown): true | string => {
       if (entry.blockType === 'helloAdaContactForm' && !entry.form) {
         return `The contact form in section ${sectionIndex + 1} needs a published form selection.`
       }
+      if (entry.blockType === 'helloAdaBooking' && !/^ha_booking_[a-f0-9]{32}$/.test(String(entry.bookingTypeId || ''))) {
+        return 'The booking form in section ' + (sectionIndex + 1) + ' needs a valid booking type ID.'
+      }
       if (entry.blockType !== 'helloAdaContentList') continue
       if (entry.items === undefined || entry.items === null) continue
       if (!Array.isArray(entry.items)) return `The list in section ${sectionIndex + 1} is invalid.`
@@ -376,7 +379,7 @@ const sectionBlocks: Block[] = [
     fields: [
       { name: 'key', type: 'text' as const, required: true, admin: { readOnly: true }, label: 'Stable content ID' },
       { name: 'label', type: 'text' as const, required: true, label: 'What this booking is for' },
-      { name: 'appointmentType', type: 'relationship' as const, relationTo: 'appointmentTypes' as const, required: true, label: 'Appointment type' },
+      { name: 'bookingTypeId', type: 'text' as const, required: true, maxLength: 43, label: 'Stable booking type ID' },
     ],
   },
 ]
@@ -409,6 +412,7 @@ const AUTHORING_RESERVED_FIELDS = new Set([
 type AuthoringField = {
   name?: string
   type?: string
+  admin?: { hidden?: boolean }
   fields?: AuthoringField[]
   blocks?: Array<{ slug?: string; fields?: AuthoringField[] }>
   options?: unknown[]
@@ -475,11 +479,11 @@ const authoringFieldShape = (field: AuthoringField): AuthoringFieldShape => {
       return { label: String(row.label || row.value || ''), value: row.value }
     }),
   } : {}),
-  ...(Array.isArray(field.fields) ? { fields: field.fields.map(authoringFieldShape) } : {}),
+  ...(Array.isArray(field.fields) ? { fields: authoringFieldListShape(field.fields as AuthoringField[]) } : {}),
   ...(Array.isArray(field.blocks) ? {
     blocks: field.blocks.map((block) => ({
       slug: String(block.slug || ''),
-      fields: (block.fields || []).map(authoringFieldShape),
+      fields: authoringFieldListShape((block.fields || []) as AuthoringField[]),
     })),
   } : {}),
   })
@@ -717,9 +721,9 @@ export const createContactFormsCollection = (): CollectionConfig => ({
 
 export const createAppointmentTypesCollection = (): CollectionConfig => ({
   slug: 'appointmentTypes',
-  admin: { useAsTitle: 'name', defaultColumns: ['name', 'durationMinutes', 'enabled', 'updatedAt'] },
+  admin: { hidden: true, useAsTitle: 'name', defaultColumns: ['name', 'durationMinutes', 'enabled', 'updatedAt'] },
   versions: { drafts: true, maxPerDoc: 20 },
-  access: privateOwnerAccess,
+  access: { ...privateOwnerAccess, create: () => false, update: () => false, delete: () => false },
   fields: [
     { name: 'name', type: 'text', required: true, localized: true, label: 'Appointment name' },
     { name: 'slug', type: 'text', required: true, unique: true, label: 'Appointment ID' },
@@ -1241,6 +1245,10 @@ export const createSiteSettingsGlobal = (guard: NativeWriteGuard): GlobalConfig 
   },
 })
 
+const authoringFieldListShape = (fields: AuthoringField[]) => fields
+  .filter((field) => asRow(field.admin).hidden !== true)
+  .map(authoringFieldShape)
+
 export const createHelloAdaSchema = (guard: NativeWriteGuard) => ({
   collections: [
     Users,
@@ -1274,7 +1282,7 @@ export const createHelloAdaAuthoringContract = () => {
   const globals = new Map(schema.globals.map((global) => [global.slug, global]))
   const fields = (config: CollectionConfig | GlobalConfig) => config.fields
     .flatMap((field) => 'name' in field && typeof field.name === 'string' ? [field as AuthoringField] : [])
-    .filter((field) => !AUTHORING_RESERVED_FIELDS.has(String(field.name || '')))
+    .filter((field) => !AUTHORING_RESERVED_FIELDS.has(String(field.name || '')) && asRow(field.admin).hidden !== true)
     .map(authoringFieldShape)
   return {
     contract: HELLOADA_CONTENT_CONTRACT_VERSION,

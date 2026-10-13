@@ -1,10 +1,10 @@
 {
-  "templateSchema": 7,
+  "templateSchema": 8,
   "workspaceApi": "v1",
   "payloadAdmin": "0.10.10",
-  "payloadCore": "0.5.7",
-  "schemaRevision": 7,
-  "contentContract": "helloada-content-v3",
+  "payloadCore": "0.5.9",
+  "schemaRevision": 8,
+  "contentContract": "helloada-content-v4",
   "defaultLocale": "en",
   "locales": [
     "en"
@@ -14,7 +14,7 @@
     "node": ">=22.0.0",
     "payload": ">=3.88.0 <4"
   },
-  "schemaIdentity": "af92eb2228b2e8fdaeccfe578f684db9388f12f58e8ee23c72bfed4dee59a927",
+  "schemaIdentity": "4b299cd55e633851f0fa9b4db83b9d28e4615e02cf1e46495dea7c7633232df4",
   "migrations": [
     {
       "name": "20261004_021536_helloada_initial",

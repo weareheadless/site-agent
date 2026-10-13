@@ -104,11 +104,8 @@ const isStatic = (request: Request, pathname: string, basePath: string) =>
 const isPublic = (request: Request, pathname: string, basePath: string) => {
   if (isStatic(request, pathname, basePath)) return true
   if (pathname.startsWith(`${basePath}/api/inbound/`)
-      || pathname === `${basePath}/api/public/booking`
       || pathname.startsWith(`${basePath}/api/public/booking/`)
-      || pathname.startsWith(`${basePath}/api/drive/public/`)
-      || pathname.startsWith(`${basePath}/book/`)
-      || pathname.startsWith(`${basePath}/c/`)) return true
+      || pathname.startsWith(`${basePath}/api/drive/public/`)) return true
   return false
 }
 
@@ -127,6 +124,20 @@ const redirectToPayloadLogin = (request: Request) => {
   return Response.redirect(target, 302)
 }
 
+async function registerTenantBookingOwner(database: D1Binding, tenantId: string, userId: string) {
+  const now = Date.now()
+  await database.prepare(
+    'INSERT OR IGNORE INTO helloada_tenant_owners (tenant_id, owner_user_id, created_at) VALUES (?, ?, ?)',
+  ).bind(tenantId, userId, now).run()
+  const owner = await database.prepare(
+    'SELECT owner_user_id FROM helloada_tenant_owners WHERE tenant_id = ? LIMIT 1',
+  ).bind(tenantId).first<{ owner_user_id: string }>()
+  if (owner?.owner_user_id !== userId) throw new Error('Mailflare tenant owner identity conflicts with its registered owner')
+  await database.prepare(
+    "INSERT OR IGNORE INTO helloada_booking_settings (user_id, enabled, time_zone, weekly_availability, max_concurrent_appointments, minimum_notice_hours, booking_window_days, revision, updated_at) VALUES (?, 0, '', '[]', 1, 24, 60, 1, ?)",
+  ).bind(userId, now).run()
+}
+
 async function provisionOwnerSession(
   request: Request,
   env: MailflareEnv,
@@ -143,6 +154,7 @@ async function provisionOwnerSession(
     if (session?.user_id === userId) {
       const mailbox = await provisionTenantMailflareMailbox({ database: env.MAILFLARE_DB, tenantId: env.HELLOADA_TENANT_ID, address: env.MAILFLARE_ADDRESS, zoneId: env.MAILFLARE_ZONE_ID, routingStatus: env.MAILFLARE_ROUTING_STATUS })
       await migratePayloadMailbox(env, { ownerUserId: userId, serviceUserId: mailbox.serviceUserId, mailboxId: mailbox.mailboxId, defaultLocale })
+      await registerTenantBookingOwner(env.MAILFLARE_DB, env.HELLOADA_TENANT_ID, userId)
       return { token: existingToken, created: false }
     }
   }
@@ -158,10 +170,6 @@ async function provisionOwnerSession(
     zoneId: env.MAILFLARE_ZONE_ID,
     routingStatus: env.MAILFLARE_ROUTING_STATUS,
   })
-  const bookingUsername = env.HELLOADA_TENANT_ID.toLowerCase()
-  if (!/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(bookingUsername)) {
-    throw new Error('Tenant identity cannot be used as a Mailflare booking username')
-  }
   if (!current) {
     await env.MAILFLARE_DB.prepare(
       'INSERT INTO users (id, email, password_hash, name, role, is_primary_admin, can_manage_mailboxes, can_manage_domains, can_manage_users, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
@@ -171,10 +179,6 @@ async function provisionOwnerSession(
       'UPDATE users SET name = ? WHERE id = ? AND disabled = 0',
     ).bind(SSO_ACCOUNT_NAME, userId).run()
   }
-  await env.MAILFLARE_DB.prepare(
-    'UPDATE users SET booking_username = ? WHERE id = ? AND disabled = 0',
-  ).bind(bookingUsername, userId).run()
-
   const enabled = await env.MAILFLARE_DB.prepare(
     'SELECT id FROM users WHERE id = ? AND disabled = 0 LIMIT 1',
   ).bind(userId).first<{ id: string }>()
@@ -195,6 +199,7 @@ async function provisionOwnerSession(
     mailboxId: mailbox.mailboxId,
     defaultLocale,
   })
+  await registerTenantBookingOwner(env.MAILFLARE_DB, env.HELLOADA_TENANT_ID, userId)
 
   const token = randomHex(32)
   await env.MAILFLARE_DB.prepare(

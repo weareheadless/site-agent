@@ -188,6 +188,13 @@ export function applyBookingParityPatches(sources, patched) {
     "booking event Payload settings schema",
   )
 
+  schema = replaceExactlyOnce(
+    schema,
+    'helloadaPayloadManaged: integer("helloada_payload_managed", { mode: "boolean" }).notNull().default(false),',
+    'helloadaPayloadManaged: integer("helloada_payload_managed", { mode: "boolean" }).notNull().default(false),\n\t\thelloadaRevision: integer("helloada_revision").notNull().default(1),',
+    "booking type edit revision schema",
+  )
+
   let create = patched.create
   create = replaceExactlyOnce(create, "AND repeat = 'none' AND starts_at < ? AND ends_at > ?", "AND repeat = 'none' AND starts_at < ? AND ends_at + helloada_buffer_minutes * 60 > ?", "booking conflict buffer")
   create = replaceExactlyOnce(create, "\t\tendSeconds,\n\t\tstartSeconds,", "\t\tendSeconds + event.helloadaBufferMinutes * 60,\n\t\tstartSeconds,", "booking candidate buffer boundary")
