@@ -502,6 +502,16 @@ def test_generated_schema_contract_rejects_unrequested_migration_history_change(
         release.synchronize_customer_payload_contract(customer, manifest, contract)
 
 
+def test_release_generates_canonical_schema_before_validating_worker_contract():
+    source = (ROOT / "scripts/deploy-payload-customer.py").read_text()
+    overlay = source.index("runtime_provenance = apply_shared_runtime_overlay(")
+    generator = source.index("scripts/generate-payload-contract.mjs", overlay)
+    synchronization = source.index("synchronize_customer_payload_contract(customer", generator)
+    worker_validation = source.index("validate_worker_contract(wrangler, customer, args.tenant)", synchronization)
+
+    assert overlay < generator < synchronization < worker_validation
+
+
 def test_worker_contract_requires_the_registered_tenant_and_all_shared_versions():
     customer = CUSTOMER
     worker = {
