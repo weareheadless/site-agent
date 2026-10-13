@@ -77,9 +77,9 @@ test('calendar workspace patch removes the route pathname key with its router ho
     }
     await applyBookingWorkspacePatches(destination)
     const layout = await readFile(path.join(destination, 'src/app/(calendar)/layout.tsx'), 'utf8')
-    assert.doesNotMatch(layout, /\\bpathname\\b/)
-    assert.doesNotMatch(layout, /\\busePathname\\b|\\buseRouter\\b/)
-    assert.match(layout, /<div className="page-transition-enter h-full min-h-0">\\{children\\}<\\/div>/)
+    assert.ok(!layout.includes('pathname'))
+    assert.ok(!layout.includes('usePathname') && !layout.includes('useRouter'))
+    assert.ok(layout.includes('<div className="page-transition-enter h-full min-h-0">{children}</div>'))
   } finally {
     await rm(destination, { recursive: true, force: true })
   }
