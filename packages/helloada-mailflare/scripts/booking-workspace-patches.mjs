@@ -58,6 +58,10 @@ export async function applyBookingWorkspacePatches(destination) {
   calendarLayout = replaceOnce(calendarLayout, 'import { usePathname, useRouter } from "next/navigation";', "", "Calendar layout navigation import");
   calendarLayout = replaceOnce(calendarLayout, '  const pathname = usePathname();\n', "", "Calendar layout pathname");
   calendarLayout = replaceOnce(calendarLayout, '  const router = useRouter();\n', "", "Calendar layout router");
+  calendarLayout = replaceOnce(calendarLayout,
+    '<div key={pathname} className="page-transition-enter h-full min-h-0">{children}</div>',
+    '<div className="page-transition-enter h-full min-h-0">{children}</div>',
+    "Calendar route transition key");
   await writeFile(calendarLayoutPath, calendarLayout);
 
   const bookingRoute = path.join(src, "app/(calendar)/booking/page.tsx");
