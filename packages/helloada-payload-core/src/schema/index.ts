@@ -2,7 +2,7 @@ import { JWTAuthentication } from 'payload'
 import type { Block, CollectionConfig, GlobalConfig } from 'payload'
 
 export const HELLOADA_CONTENT_CONTRACT_VERSION = 'helloada-content-v4'
-export const HELLOADA_CORE_VERSION = '0.5.8'
+export const HELLOADA_CORE_VERSION = '0.5.9'
 export const HELLOADA_SCHEMA_REVISION = 8
 
 export const validateHelloAdaLink = (value: unknown): true | string => {
@@ -412,6 +412,7 @@ const AUTHORING_RESERVED_FIELDS = new Set([
 type AuthoringField = {
   name?: string
   type?: string
+  admin?: { hidden?: boolean }
   fields?: AuthoringField[]
   blocks?: Array<{ slug?: string; fields?: AuthoringField[] }>
   options?: unknown[]
