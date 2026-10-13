@@ -393,6 +393,45 @@ def validate_target(customer: dict[str, Any], tenant: str, sha: str, release_id:
         raise ValueError("public media, private email, and Mailflare files must use separate tenant buckets")
 
 
+def synchronize_customer_payload_contract(
+    customer: dict[str, Any],
+    template_manifest: Mapping[str, Any],
+    content_contract: Mapping[str, Any],
+) -> None:
+    """Use the generated central schema identity while preserving tenant migration history."""
+    migration_head = str(template_manifest.get("migrationHead") or "")
+    if migration_head != customer.get("migrationHead") or not SHA256_RE.fullmatch(migration_head):
+        raise RuntimeError(
+            "generated Payload migration chain differs from the registered tenant history; "
+            "an exact schema-migration request is required"
+        )
+    payload_admin = str(template_manifest.get("payloadAdmin") or "")
+    payload_core = str(template_manifest.get("payloadCore") or "")
+    content_version = str(template_manifest.get("contentContract") or "")
+    schema_revision = template_manifest.get("schemaRevision")
+    schema_identity = str(template_manifest.get("schemaIdentity") or "")
+    if (
+        not re.fullmatch(r"\\d+\\.\\d+\\.\\d+", payload_admin)
+        or not re.fullmatch(r"\\d+\\.\\d+\\.\\d+", payload_core)
+        or not re.fullmatch(r"helloada-content-v\\d+", content_version)
+        or content_contract.get("coreVersion") != payload_core
+        or content_contract.get("contract") != content_version
+        or content_contract.get("schemaRevision") != schema_revision
+        or not isinstance(schema_revision, int)
+        or schema_revision < 1
+        or not SHA256_RE.fullmatch(schema_identity)
+    ):
+        raise RuntimeError("generated Payload package, schema and manifest identities do not agree")
+    customer.update({
+        "payloadAdmin": payload_admin,
+        "payloadCore": payload_core,
+        "contentContract": content_version,
+        "schemaRevision": schema_revision,
+        "schemaIdentity": schema_identity,
+        "migrationHead": migration_head,
+    })
+
+
 def validate_toolchain_manifest(manifest: dict[str, Any]) -> None:
     for field in ("nodeBin", "npmBin"):
         value = str(manifest.get(field) or "")
@@ -2141,6 +2180,25 @@ def main() -> int:
             lambda command, directory: run(command, directory, base),
         )
         run([npm, *NPM_INSTALL_ARGUMENTS], checkout, base)
+        contract_generator = ROOT / "scripts/generate-payload-contract.mjs"
+        tsx = checkout / "node_modules/.bin/tsx"
+        run([str(tsx), str(contract_generator), f"--site-root={checkout}"], checkout, base)
+        generated_manifest = json.loads((checkout / "template-manifest.json").read_text(encoding="utf-8"))
+        generated_contract = json.loads((checkout / "helloada-content-contract.json").read_text(encoding="utf-8"))
+        synchronize_customer_payload_contract(customer, generated_manifest, generated_contract)
+        runtime_provenance["wranglerSha256"] = hashlib.sha256(
+            (checkout / "wrangler.jsonc").read_bytes()
+        ).hexdigest()
+        receipt.update({
+            "payloadAdmin": customer["payloadAdmin"],
+            "payloadCore": customer["payloadCore"],
+            "contentContract": customer["contentContract"],
+            "schemaRevision": customer["schemaRevision"],
+            "schemaIdentity": customer["schemaIdentity"],
+            "migrationHead": customer["migrationHead"],
+        })
+        receipt["sharedRuntime"] = runtime_provenance
+        atomic_json(receipt_path, receipt)
         # TypeScript's pinned JSONC parser accepts comments and trailing commas.
         parsed = run(["node", "-e", "const fs=require('node:fs');const ts=require('typescript');"
                       "const r=ts.parseConfigFileTextToJson('wrangler.jsonc',fs.readFileSync('wrangler.jsonc','utf8'));"
