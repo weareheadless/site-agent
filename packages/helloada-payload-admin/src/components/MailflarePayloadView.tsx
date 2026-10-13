@@ -2,13 +2,13 @@
 
 import { useHelloAdaTranslations } from '../api/useHelloAdaTranslations'
 
-type MailflareSurface = 'inbox' | 'calendar'
+type MailflareSurface = 'inbox' | 'calendar' | 'booking-settings'
 
 export function MailflarePayloadView({ surface = 'inbox' }: { surface?: MailflareSurface }) {
   const { t } = useHelloAdaTranslations()
   const messagesLabel = t('owner.messages')
-  const src = surface === 'calendar' ? '/mail/calendar' : '/mail/inbox'
-  const title = surface === 'calendar' ? `${messagesLabel} calendar` : messagesLabel
+  const src = surface === 'calendar' ? '/mail/calendar' : surface === 'booking-settings' ? '/mail/settings/bookings' : '/mail/inbox'
+  const title = surface === 'calendar' ? `${messagesLabel} calendar` : surface === 'booking-settings' ? t('owner.bookingSettings') : messagesLabel
 
   return (
     <main className="helloada-mailflare-view">
