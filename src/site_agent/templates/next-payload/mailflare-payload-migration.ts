@@ -36,6 +36,14 @@ type MigrationResult =
   | { state: 'complete'; counts: Record<string, number>; sourceSha256: string }
   | { state: 'in_progress' }
 
+type PayloadMailboxImportLease = {
+  state: string
+  lease_token: string | null
+  lease_until: number | null
+  source_sha256: string | null
+  counts_json: string | null
+}
+
 const activeMigrations = new Map<string, Promise<MigrationResult>>()
 const REQUIRED_TABLES = [
   'contacts', 'conversations', 'messages', 'message_operations',
@@ -240,7 +248,7 @@ async function runPayloadMailboxMigration(
     'INSERT OR IGNORE INTO helloada_import_runs (tenant_id, version, state, started_at) VALUES (?, ?, ?, ?)',
   ).bind(env.HELLOADA_TENANT_ID, VERSION, 'failed', insertedAt).run()
 
-  let lease: { state: string; lease_token: string | null; lease_until: number | null } | null = null
+  let lease: PayloadMailboxImportLease | null = null
   let ownsLease = false
   for (let attempt = 0; attempt < 2; attempt++) {
     const leaseNow = Date.now()
@@ -249,13 +257,7 @@ async function runPayloadMailboxMigration(
     ).bind(leaseToken, leaseNow + 5 * 60_000, leaseNow, env.HELLOADA_TENANT_ID, VERSION, leaseNow).run()
     lease = await env.MAILFLARE_DB.prepare(
       'SELECT state, lease_token, lease_until, source_sha256, counts_json FROM helloada_import_runs WHERE tenant_id = ? AND version = ? LIMIT 1',
-    ).bind(env.HELLOADA_TENANT_ID, VERSION).first<{
-      state: string
-      lease_token: string | null
-      lease_until: number | null
-      source_sha256: string | null
-      counts_json: string | null
-    }>()
+    ).bind(env.HELLOADA_TENANT_ID, VERSION).first<PayloadMailboxImportLease>()
     if (lease?.state === 'complete') {
       return {
         state: 'complete',
