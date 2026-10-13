@@ -11,6 +11,7 @@ import { applyBookingParityPatches } from '../scripts/booking-parity-patches.mjs
 import { applyBookingEditorPatches } from '../scripts/booking-editor-patches-clean.mjs'
 import { applyBookingUiPatch } from '../scripts/booking-ui-patches.mjs'
 import { applyBookingCapacityPatches } from '../scripts/booking-capacity-patches.mjs'
+import { applyBookingWorkspacePatches } from '../scripts/booking-workspace-patches.mjs'
 import { applyTenantPatches, composeTenantMailflareAssets, namespaceApiReferences, removeLegacyBookingSurfaces } from '../scripts/build.mjs'
 import { applyMailboxAccessPatch } from '../scripts/mailbox-access-patch.mjs'
 import { asMailflareEnv } from '../../../src/site_agent/templates/next-payload/mailflare-bindings.ts'
@@ -59,6 +60,29 @@ test('upstream remains pristine and HelloAda changes are explicit build patches'
   assert.match(patched.workerEntry, /url\.pathname === "\/mail\/api\/realtime"/)
   assert.ok(patched.cloudflareModule.includes('import { asMailflareEnv } from "@/lib/helloada-tenant-bindings";'))
   assert.ok(patched.cloudflareModule.includes('return withStorage(asMailflareEnv(getNodeEnv() ?? (env as CloudflareEnv)));'))
+})
+
+test('calendar workspace patch removes the route pathname key with its router hook', async () => {
+  const destination = await mkdtemp(path.join(tmpdir(), 'helloada-calendar-layout-'))
+  const files = [
+    'src/components/settings/settings-nav-utils.ts',
+    'src/components/dashboard-nav.tsx',
+    'src/app/(calendar)/layout.tsx',
+  ]
+  try {
+    for (const relative of files) {
+      const target = path.join(destination, relative)
+      await mkdir(path.dirname(target), { recursive: true })
+      await cp(path.join(root, 'upstream', relative), target)
+    }
+    await applyBookingWorkspacePatches(destination)
+    const layout = await readFile(path.join(destination, 'src/app/(calendar)/layout.tsx'), 'utf8')
+    assert.doesNotMatch(layout, /\\bpathname\\b/)
+    assert.doesNotMatch(layout, /\\busePathname\\b|\\buseRouter\\b/)
+    assert.match(layout, /<div className="page-transition-enter h-full min-h-0">\\{children\\}<\\/div>/)
+  } finally {
+    await rm(destination, { recursive: true, force: true })
+  }
 })
 
 test('native Calendar API, timezone edits, and Ada tools all use the shared capacity gate', async () => {
