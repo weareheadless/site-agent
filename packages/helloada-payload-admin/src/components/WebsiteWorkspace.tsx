@@ -696,6 +696,7 @@ export function WebsiteWorkspace() {
   if (searchParams.get('view') === 'gallery') return <HelloAdaGallery />
   if (searchParams.get('view') === 'messages') return <MailflarePayloadView />
   if (searchParams.get('view') === 'calendar' && site.features.bookings) return <MailflarePayloadView surface="calendar" />
+  if (searchParams.get('view') === 'booking-settings') return <MailflarePayloadView surface="booking-settings" />
   return <ReviewWorkspace />
 }
 

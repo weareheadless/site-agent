@@ -13,6 +13,7 @@ import { useAdaConnection } from '../api/useAdaConnection'
 import { HelloAdaMark } from './HelloAdaLogo'
 import { WorkspaceIcon } from './WorkspaceIcon'
 import { useHelloAdaSite } from '../config/provider'
+import { selectOwnerCollections, selectOwnerGlobals } from '../lib/owner-navigation'
 
 const collectionLabels: Record<string, string> = {
   pages: 'collection.pages', posts: 'collection.posts', products: 'collection.products',
@@ -24,8 +25,6 @@ const titleize = (slug: string) => slug.replace(/([a-z])([A-Z])/g, '$1 $2').repl
 const languageLabel = (code: string, locale: string) => {
   try { return new Intl.DisplayNames([locale, 'en'], { type: 'language' }).of(code) || code } catch { return code }
 }
-const isHidden = (item: { admin?: unknown }) =>
-  (item.admin as { hidden?: boolean } | undefined)?.hidden === true
 
 export function HelloAdaNav({ user }: { user?: TypedUser | null }) {
   const pathname = usePathname()
@@ -40,8 +39,8 @@ export function HelloAdaNav({ user }: { user?: TypedUser | null }) {
   const drawerRef = useRef<HTMLDialogElement>(null)
   const connection = useAdaConnection()
   const languages = useMemo(() => [...HELLOADA_LANGUAGES].sort((a, b) => languageLabel(a, language).localeCompare(languageLabel(b, language))), [language])
-  const collections = config.collections.filter((item) => !isHidden(item)).map((item) => ({ slug: item.slug, label: t(collectionLabels[item.slug] || titleize(item.slug)), href: `/admin/collections/${item.slug}` }))
-  const globals = config.globals.filter((item) => !isHidden(item)).map((item) => ({ slug: item.slug, label: t(globalLabels[item.slug] || titleize(item.slug)), href: `/admin/globals/${item.slug}` }))
+  const collections = selectOwnerCollections(config.collections).map((item) => ({ slug: item.slug, label: t(collectionLabels[item.slug] || titleize(item.slug)), href: `/admin/collections/${item.slug}` }))
+  const globals = selectOwnerGlobals(config.globals, site.content.settingsGlobals).map((item) => ({ slug: item.slug, label: t(globalLabels[item.slug] || titleize(item.slug)), href: `/admin/globals/${item.slug}` }))
   const primary = collections.filter((item) => site.content.primaryCollections.includes(item.slug))
   const advanced = collections.filter((item) => !site.content.primaryCollections.includes(item.slug))
   const isHistory = pathname === '/admin' && searchParams.get('view') === 'history'
@@ -49,9 +48,10 @@ export function HelloAdaNav({ user }: { user?: TypedUser | null }) {
   const isGallery = pathname === '/admin' && searchParams.get('view') === 'gallery'
   const isMessages = pathname === '/admin' && searchParams.get('view') === 'messages'
   const isCalendar = pathname === '/admin' && searchParams.get('view') === 'calendar'
-  const isWorkspace = pathname === '/admin' && !isHistory && !isGrowth && !isGallery && !isMessages && !isCalendar
+  const isBookingSettings = pathname === '/admin' && searchParams.get('view') === 'booking-settings'
+  const isWorkspace = pathname === '/admin' && !isHistory && !isGrowth && !isGallery && !isMessages && !isCalendar && !isBookingSettings
   const isActive = (href: string) => pathname.startsWith(href)
-  const managing = pathname.startsWith('/admin/collections') || pathname.startsWith('/admin/globals') || pathname.startsWith('/admin/account')
+  const managing = pathname.startsWith('/admin/collections') || pathname.startsWith('/admin/globals') || pathname.startsWith('/admin/account') || isBookingSettings
 
   useEffect(() => { drawerRef.current?.close() }, [pathname, searchParams])
   useEffect(() => {
@@ -85,6 +85,7 @@ export function HelloAdaNav({ user }: { user?: TypedUser | null }) {
         <Link className={isWorkspace ? 'is-active' : undefined} href="/admin" aria-current={isWorkspace ? 'page' : undefined}>{t('owner.workspace')}</Link>
         <Link className={isGrowth ? 'is-active' : undefined} href="/admin?view=growth" aria-current={isGrowth ? 'page' : undefined}>{t('growth.title')}</Link>
         <Link className={isMessages ? 'is-active' : undefined} href="/admin?view=messages" aria-current={isMessages ? 'page' : undefined}>{t('owner.messages')}</Link>
+        {site.features.bookings ? <Link className={isCalendar ? 'is-active' : undefined} href="/admin?view=calendar" aria-current={isCalendar ? 'page' : undefined}>{t('owner.calendar')}</Link> : null}
         <Link className={isGallery ? 'is-active' : undefined} href="/admin?view=gallery" aria-current={isGallery ? 'page' : undefined}>{t('owner.gallery')}</Link>
         <Link className={isHistory ? 'is-active' : undefined} href="/admin?view=history" aria-current={isHistory ? 'page' : undefined}>{t('owner.activity')}</Link>
       </div>
@@ -105,10 +106,11 @@ export function HelloAdaNav({ user }: { user?: TypedUser | null }) {
           <h3 id="helloada-content-title">{t('owner.content')}</h3>
           {primary.map((item) => <Link key={item.slug} href={item.href} aria-current={isActive(item.href) ? 'page' : undefined}><span>{item.slug === 'media' ? t('owner.library') : item.label}</span><WorkspaceIcon name="arrow" size={16} /></Link>)}
         </section>
-        {globals.length ? <section className="helloada-manage-section" aria-labelledby="helloada-settings-title">
+        <section className="helloada-manage-section" aria-labelledby="helloada-settings-title">
           <h3 id="helloada-settings-title">{t('nav.settings')}</h3>
           {globals.map((item) => <Link key={item.slug} href={item.href} aria-current={isActive(item.href) ? 'page' : undefined}><span>{item.label}</span><WorkspaceIcon name="arrow" size={16} /></Link>)}
-        </section> : null}
+          <Link href="/admin?view=booking-settings" aria-current={isBookingSettings ? 'page' : undefined}><span>{t('owner.bookingSettings')}</span><WorkspaceIcon name="arrow" size={16} /></Link>
+        </section>
         {advanced.length ? <details className="helloada-manage-advanced"><summary>{t('owner.advanced')}<WorkspaceIcon name="chevron" size={16} /></summary><div className="helloada-manage-section">{advanced.map((item) => <Link href={item.href} key={item.slug} aria-current={isActive(item.href) ? 'page' : undefined}><span>{item.label}</span><WorkspaceIcon name="arrow" size={16} /></Link>)}</div></details> : null}
         <label className="helloada-manage-language"><span>{t('nav.language')}</span><select value={language} disabled={languageSaving} onChange={(event) => void changeLanguage(event.target.value)}>{languages.map((code) => <option value={code} key={code}>{languageLabel(code, language)}</option>)}</select></label>
         {languageError ? <p role="alert">{t('nav.languageUnavailable')}</p> : null}
