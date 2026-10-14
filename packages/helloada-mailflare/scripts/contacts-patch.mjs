@@ -25,9 +25,8 @@ export function patchDashboardNavigation(source) {
 		[
 			'  { href: "/compose", labelKey: "navigation.compose", icon: MailPlus, primary: true },',
 			'  { href: "/contacts", labelKey: "navigation.contacts", icon: UsersRound },',
-			'  { href: "/calendar", labelKey: "navigation.calendar", icon: CalendarClock },',
 		].join("\n"),
-		"dashboard-nav.tsx Contacts and Calendar links",
+		"dashboard-nav.tsx Contacts link",
 	);
 	return patched;
 }
@@ -35,7 +34,6 @@ export function patchDashboardNavigation(source) {
 const translations = {
 	en: {
 		"navigation.contacts": "Contacts",
-		"navigation.calendar": "Calendar",
 		"contacts.title": "Contacts",
 		"contacts.description": "Website enquiries and bookings are organized here automatically.",
 		"contacts.search": "Search by name or email",
@@ -60,7 +58,6 @@ const translations = {
 	},
 	fr: {
 		"navigation.contacts": "Contacts",
-		"navigation.calendar": "Calendrier",
 		"contacts.title": "Contacts",
 		"contacts.description": "Les demandes du site et les réservations sont regroupées ici automatiquement.",
 		"contacts.search": "Rechercher par nom ou e-mail",
@@ -85,7 +82,6 @@ const translations = {
 	},
 	es: {
 		"navigation.contacts": "Contactos",
-		"navigation.calendar": "Calendario",
 		"contacts.title": "Contactos",
 		"contacts.description": "Las consultas del sitio y las reservas se organizan aquí automáticamente.",
 		"contacts.search": "Buscar por nombre o correo",
