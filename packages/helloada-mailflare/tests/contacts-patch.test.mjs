@@ -17,12 +17,11 @@ const dashboardNav = [
 	'];',
 ].join("\n");
 
-test("adds first-class Contacts and Calendar links to the shared mailbox navigation", () => {
+test("adds the Contacts link without duplicating booking navigation", () => {
 	const result = patchDashboardNavigation(dashboardNav);
 	assert.match(result, /UsersRound/);
-	assert.match(result, /CalendarClock/);
 	assert.match(result, /href: "\/contacts".*navigation\.contacts/);
-	assert.match(result, /href: "\/calendar".*navigation\.calendar/);
+	assert.doesNotMatch(result, /href: "\/calendar"/);
 });
 
 test("fails closed when the pinned navigation shape changes", () => {
@@ -33,7 +32,6 @@ test("adds localizable labels without changing existing translations", () => {
 	const source = JSON.stringify({ "navigation.compose": "Compose" });
 	const patched = JSON.parse(patchLocale(source, "fr"));
 	assert.equal(patched["navigation.contacts"], "Contacts");
-	assert.equal(patched["navigation.calendar"], "Calendrier");
 	assert.equal(patched["navigation.compose"], "Compose");
 });
 
@@ -58,7 +56,7 @@ test("copies an authenticated, tenant-scoped Contacts list and API into the disp
 		assert.match(route, /requireUser/);
 		assert.match(route, /getMailboxAccessLevel/);
 		assert.match(route, /access\?\.canRead/);
-		assert.match(nav, /href: "\/calendar"/);
+		assert.match(nav, /href: "\/contacts"/);
 	} finally {
 		await rm(root, { recursive: true, force: true });
 	}
