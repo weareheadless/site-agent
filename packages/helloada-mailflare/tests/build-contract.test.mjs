@@ -12,6 +12,7 @@ import { applyBookingEditorPatches } from '../scripts/booking-editor-patches-cle
 import { applyBookingUiPatch } from '../scripts/booking-ui-patches.mjs'
 import { applyBookingCapacityPatches } from '../scripts/booking-capacity-patches.mjs'
 import { applyBookingWorkspacePatches } from '../scripts/booking-workspace-patches.mjs'
+import { patchDashboardNavigation } from '../scripts/contacts-patch.mjs'
 import { applyTenantPatches, composeTenantMailflareAssets, namespaceApiReferences, removeLegacyBookingSurfaces } from '../scripts/build.mjs'
 import { applyMailboxAccessPatch } from '../scripts/mailbox-access-patch.mjs'
 import { asMailflareEnv } from '../../../src/site_agent/templates/next-payload/mailflare-bindings.ts'
@@ -62,7 +63,7 @@ test('upstream remains pristine and HelloAda changes are explicit build patches'
   assert.ok(patched.cloudflareModule.includes('return withStorage(asMailflareEnv(getNodeEnv() ?? (env as CloudflareEnv)));'))
 })
 
-test('calendar workspace patch removes the route pathname key with its router hook', async () => {
+test('composed mailbox navigation has one Calendar link and keeps its workspace sidebar', async () => {
   const destination = await mkdtemp(path.join(tmpdir(), 'helloada-calendar-layout-'))
   const files = [
     'src/components/settings/settings-nav-utils.ts',
@@ -76,8 +77,14 @@ test('calendar workspace patch removes the route pathname key with its router ho
       await mkdir(path.dirname(target), { recursive: true })
       await cp(path.join(root, 'upstream', relative), target)
     }
+    const navPath = path.join(destination, 'src/components/dashboard-nav.tsx')
+    await writeFile(navPath, patchDashboardNavigation(await readFile(navPath, 'utf8')))
     await applyBookingWorkspacePatches(destination)
+    const navigation = await readFile(navPath, 'utf8')
+    assert.equal((navigation.match(/href: "\/calendar"/g) ?? []).length, 1)
+    assert.equal((navigation.match(/href: "\/contacts"/g) ?? []).length, 1)
     const layout = await readFile(path.join(destination, 'src/app/(calendar)/layout.tsx'), 'utf8')
+    assert.ok(layout.includes('<SidebarAside><DashboardNav /></SidebarAside>'))
     assert.ok(!layout.includes('pathname'))
     assert.ok(!layout.includes('usePathname') && !layout.includes('useRouter'))
     assert.ok(layout.includes('<div className="page-transition-enter h-full min-h-0">{children}</div>'))
