@@ -554,7 +554,7 @@ def register_workspace_routes(
         tenant = require_service(request)
         return service.growth(tenant=tenant)
 
-    @app.get(f"{prefix}/growth/articles/{draft_id}")
+    @app.get(f"{prefix}/growth/articles/{{draft_id}}")
     def workspace_growth_article_review(draft_id: int, request: Request):
         tenant = require_service(request)
         try:
