@@ -10,10 +10,26 @@ from ..core.memory import Memory
 from .growth_workflow import _source_state
 from .growth_tasks import growth_tasks
 
-OWNER_QUEUE_CONTRACT_VERSION = "owner-decisions-v1"
+GROWTH_CONTRACT_VERSION = "owner-decisions-v1"
+OWNER_QUEUE_CONTRACT_VERSION = "owner-queue-progression-v1"
 
 
-def owner_queue(tasks: list[dict[str, Any]]) -> dict[str, Any]:
+def _has_live_lease(run: dict[str, Any] | None) -> bool:
+    if not isinstance(run, dict):
+        return False
+    value = run.get("lease_until")
+    if not isinstance(value, str) or not value.strip():
+        return False
+    try:
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+        return parsed.astimezone(datetime.timezone.utc) > datetime.datetime.now(datetime.timezone.utc)
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
+def owner_queue(tasks: list[dict[str, Any]], runs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     """Project canonical Growth tasks into a small owner-facing agenda."""
     priority_order = {"urgent": 0, "high": 1, "normal": 2, "optional": 3}
     decisions = [row for row in tasks if row.get("focus") == "needs_you"]
@@ -36,6 +52,56 @@ def owner_queue(tasks: list[dict[str, Any]]) -> dict[str, Any]:
         and (row.get("kind") != "article" or row.get("state") == "published")
     ]
     recent.sort(key=lambda row: str(row.get("updatedAt") or ""), reverse=True)
+    analysis_runs = [
+        row for row in (runs or [])
+        if row.get("trigger") in {"initial", "weekly", "owner_review"}
+    ]
+    analysis_runs.sort(key=lambda row: str(row.get("updated_ts") or ""), reverse=True)
+    latest_assessment = analysis_runs[0] if analysis_runs else None
+    assessment_detail = latest_assessment.get("detail") if isinstance(latest_assessment, dict) and isinstance(latest_assessment.get("detail"), dict) else {}
+    assessment = assessment_detail.get("assessment") if isinstance(assessment_detail.get("assessment"), dict) else {}
+    deferred = assessment.get("unpreparedOpportunities")
+    # Historical assessments may contain the former pseudo-routes (`article`
+    # and `code`). They were never prepared or owner-actionable. A titled
+    # untyped finding is still real deferred work and remains visible.
+    deferred_count = sum(
+        1 for row in deferred
+        if isinstance(row, dict)
+        and row.get("kind") not in {"article", "code"}
+        and (
+            row.get("kind") in {"payload_content", "owner_information"}
+            or row.get("kind") is None and bool(str(row.get("title") or "").strip())
+        )
+    ) if isinstance(deferred, list) else 0
+    assessment_status = str(latest_assessment.get("status") or "") if latest_assessment else ""
+    active_non_schedule = next((row for row in active if row.get("kind") != "schedule"), None)
+    if decisions:
+        progression_state = "ready_for_review"
+    elif attention:
+        progression_state = "service_issue"
+    elif active_non_schedule:
+        progression_state = "preparing"
+    elif assessment_status == "pending" or assessment_status == "running" and _has_live_lease(latest_assessment):
+        progression_state = "assessing"
+    elif assessment_status in {"running", "failed", "blocked", "uncertain"}:
+        progression_state = "service_issue"
+    elif assessment_status == "complete" and deferred_count:
+        progression_state = "deferred_findings"
+    elif scheduled:
+        progression_state = "scheduled"
+    elif assessment_status == "complete":
+        progression_state = "assessed"
+    else:
+        progression_state = "not_started"
+    primary_task = None
+    if decisions:
+        primary_task = decisions[0]
+    elif attention:
+        primary_task = attention[0]
+    elif active_non_schedule:
+        primary_task = active_non_schedule
+    elif scheduled and progression_state not in {"deferred_findings", "assessed"}:
+        primary_task = scheduled[0]
     return {
         "featuredDecisionId": decisions[0].get("id") if decisions else None,
         "additionalDecisionIds": [row.get("id") for row in decisions[1:4]],
@@ -45,6 +111,15 @@ def owner_queue(tasks: list[dict[str, Any]]) -> dict[str, Any]:
         "recentResultId": recent[0].get("id") if recent else None,
         "recentResultIds": [row.get("id") for row in recent[:5]],
         "attentionTaskId": attention[0].get("id") if attention else None,
+        "progression": {
+            "state": progression_state,
+            "primaryTaskId": primary_task.get("id") if primary_task else None,
+            "serviceIssueTaskId": attention[0].get("id") if attention else None,
+            "latestAssessmentAt": (latest_assessment or {}).get("updated_ts"),
+            "latestAssessmentStatus": assessment_status or None,
+            "latestAssessmentSummary": str(assessment.get("summary") or "")[:240] or None,
+            "deferredFindingCount": deferred_count,
+        },
     }
 
 
@@ -100,14 +175,15 @@ def growth_snapshot(memory: Memory, config: dict[str, Any], context: dict[str, A
     }
     tasks = growth_tasks(memory, initiatives, drafts, activities, memory.list_strategy_outcomes(limit=100), runs, ideas, include_article_content=include_article_content)
     return {
-        "growthContractVersion": OWNER_QUEUE_CONTRACT_VERSION,
+        "growthContractVersion": GROWTH_CONTRACT_VERSION,
+        "ownerQueueContractVersion": OWNER_QUEUE_CONTRACT_VERSION,
         "sources": sources,
         "ownerTimezone": GrowthPolicy.from_config(config).timezone,
         "evidence": evidence_projection,
         "latestEvidence": evidence_projection,
         "activities": activities,
         "tasks": tasks,
-        "ownerQueue": owner_queue(tasks),
+        "ownerQueue": owner_queue(tasks, runs),
         "goal": goal,
         "latestInsight": memory.latest_seo_insight(),
         "keywords": [{"keyword": row.get("seed"), **pick(row, ("id", "language", "market", "research_count", "last_researched_ts"))} for row in memory.list_seo_seeds(limit=40)],

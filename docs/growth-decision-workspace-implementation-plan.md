@@ -1,6 +1,10 @@
-# Growth: from technical task list to owner decision workspace
+# Archived plan: Growth decision workspace
 
-Status: active implementation contract. PR #194 contains the shared product changes; production acceptance remains pending the canonical API/Worker release and authenticated tenant verification.
+Status: superseded on 2026-10-15 by `docs/growth-owner-experience-implementation-plan.md`.
+Keep this document for historical audit context only; do not use it to override
+the current connected-workflow contract.
+
+Status: archived historical plan. Superseded on 2026-10-15 by `docs/growth-owner-experience-implementation-plan.md`; do not use as the active implementation contract.
 Revised: 2026-10-15, following a read-only audit of Oceanic's real records and the deployed API/UI.
 Repository: `weareheadless/site-agent`.
 Audited release control snapshot: `24fdb5344f196167ec0a582dc60ca3ff1110faea`.

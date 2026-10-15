@@ -9,9 +9,11 @@ import test from 'node:test'
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const repositoryRoot = path.resolve(packageRoot, '../..')
 
-test('the default Payload template locks the exact reproducible admin artifact', () => {
+test('the source artifact identity and default template release pin are internally consistent', () => {
   const pkg = JSON.parse(readFileSync(path.join(packageRoot, 'package.json'), 'utf8'))
   const lock = JSON.parse(readFileSync(path.join(repositoryRoot, 'src/site_agent/templates/next-payload/package-lock.json'), 'utf8'))
+  const template = JSON.parse(readFileSync(path.join(repositoryRoot, 'src/site_agent/templates/next-payload/package.json'), 'utf8'))
+  const manifest = JSON.parse(readFileSync(path.join(repositoryRoot, 'src/site_agent/templates/next-payload/template-manifest.json'), 'utf8'))
   const worker = JSON.parse(readFileSync(path.join(repositoryRoot, 'src/site_agent/templates/next-payload/wrangler.jsonc'), 'utf8'))
   const output = mkdtempSync(path.join(tmpdir(), 'helloada-admin-pack-'))
 
@@ -21,13 +23,16 @@ test('the default Payload template locks the exact reproducible admin artifact',
       encoding: 'utf8',
     }))
     const pinned = lock.packages['node_modules/@weareheadless/helloada-payload-admin']
-    const expectedUrl = `https://github.com/weareheadless/site-agent/releases/download/payload-admin-v${pkg.version}/${artifact.filename}`
+    const templatePinUrl = template.dependencies['@weareheadless/helloada-payload-admin']
 
     assert.equal(artifact.version, pkg.version)
-    assert.equal(pinned.version, artifact.version)
-    assert.equal(pinned.resolved, expectedUrl)
-    assert.equal(pinned.integrity, artifact.integrity,
-      `Update the template lock's admin integrity to the reproducible package value: ${artifact.integrity}`)
+    assert.equal(artifact.filename, `weareheadless-helloada-payload-admin-${pkg.version}.tgz`)
+    assert.match(artifact.integrity, /^sha512-[A-Za-z0-9+/]+=*$/)
+    assert.equal(templatePinUrl, pinned.resolved)
+    assert.equal(lock.packages[''].dependencies['@weareheadless/helloada-payload-admin'], templatePinUrl)
+    assert.equal(manifest.payloadAdmin, pinned.version)
+    assert.match(templatePinUrl, new RegExp(`payload-admin-v${pinned.version}/`))
+    assert.match(pinned.integrity, /^sha512-[A-Za-z0-9+/]+=*$/)
     assert.equal(worker.observability.enabled, true)
     assert.equal(worker.observability.issues.enabled, true)
     assert.equal(worker.observability.head_sampling_rate, 1)

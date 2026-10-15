@@ -76,7 +76,7 @@ class Ada:
         material = json.loads(messages[-1]["content"])
         if material.get("stage") == "prepare":
             return json.dumps({"changes": {"metaDescription": "Local service from Business. Explore the services and contact the team."}})
-        return json.dumps({"summary": "The homepage needs a useful search description.", "opportunities": [{"kind": "payload_content", "title": "Make the homepage clearer in search", "why": "The homepage has no description.", "hypothesis": "A clear description explains the service to search visitors.", "collection": "pages", "documentId": "1", "evidence": ["payload:pages:1"], "requiredSources": ["inventory"], "scope": "Improve the homepage meta description without changing its visible design.", "metric": "gsc.clicks"}]})
+        return json.dumps({"summary": "The homepage needs a useful search description.", "opportunities": [{"kind": "payload_content", "title": "Make the homepage clearer in search", "why": "The homepage has no description.", "hypothesis": "A clear description explains the service to search visitors.", "collection": "pages", "documentId": "1", "evidence": ["inventory", "ga4"], "requiredSources": ["inventory"], "scope": "Improve the homepage meta description without changing its visible design.", "metric": "gsc.clicks"}]})
 
 
 def test_live_payload_registers_one_growth_service_not_independent_producers(tmp_path):

@@ -14,6 +14,7 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+from ..application.crawlseo import CrawlSEORequestNotDispatched
 from ..config import primary_research_locale
 from ..application.growth_budget import GrowthBudgetBlocked, mark_paid_research_uncertain, release_paid_research, reserve_paid_research, settle_paid_research
 from ..core.llm import extract_json
@@ -25,9 +26,9 @@ _DECISIONS = {"keep", "reframe", "editorial_despite_low_demand"}
 
 
 def _request_not_dispatched(exc: Exception) -> bool:
-    """Recognise only the provider's explicit pre-dispatch/unavailable contract."""
+    """Only retry when local validation proves no request reached the provider."""
 
-    return "request is unavailable" in str(exc or "").lower()
+    return isinstance(exc, CrawlSEORequestNotDispatched)
 
 
 def _settings(config: Mapping[str, Any]) -> dict[str, Any]:

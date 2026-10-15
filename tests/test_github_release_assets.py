@@ -109,22 +109,21 @@ def test_default_worker_and_manifest_use_the_released_shared_versions():
     template = root / 'src/site_agent/templates/next-payload'
     manifest = json.loads((template / 'template-manifest.json').read_text())
     worker = (template / 'wrangler.jsonc').read_text()
-    for package, field, variable in (
-        ('helloada-payload-admin', 'payloadAdmin', 'HELLOADA_PAYLOAD_ADMIN_VERSION'),
-        ('helloada-payload-core', 'payloadCore', 'HELLOADA_PAYLOAD_CORE_VERSION'),
-    ):
-        version = json.loads((root / 'packages' / package / 'package.json').read_text())['version']
-        assert manifest[field] == version
-        assert re.search('"' + variable + '":\\s*"' + re.escape(version) + '"', worker)
+    core_version = json.loads((root / 'packages/helloada-payload-core/package.json').read_text())['version']
+    assert manifest['payloadCore'] == core_version
+    assert re.search('"HELLOADA_PAYLOAD_CORE_VERSION":\\s*"' + re.escape(core_version) + '"', worker)
 
     admin_package = root / 'packages/helloada-payload-admin'
-    admin_version = json.loads((admin_package / 'package.json').read_text())['version']
+    admin_source_version = json.loads((admin_package / 'package.json').read_text())['version']
     runtime = (admin_package / 'src/version.ts').read_text()
-    runtime_version = r"HELLOADA_PAYLOAD_ADMIN_VERSION\s*=\s*['\"]" + re.escape(admin_version) + r"['\"]"
+    runtime_version = r"HELLOADA_PAYLOAD_ADMIN_VERSION\s*=\s*['\"]" + re.escape(admin_source_version) + r"['\"]"
     assert re.search(runtime_version, runtime)
 
     template_package = json.loads((template / 'package.json').read_text())
     template_lock = json.loads((template / 'package-lock.json').read_text())
+    admin_version = template_lock['packages']['node_modules/@weareheadless/helloada-payload-admin']['version']
+    assert manifest['payloadAdmin'] == admin_version
+    assert re.search('"HELLOADA_PAYLOAD_ADMIN_VERSION":\\s*"' + re.escape(admin_version) + '"', worker)
     release_asset = (
         f"https://github.com/weareheadless/site-agent/releases/download/payload-admin-v{admin_version}/"
         f"weareheadless-helloada-payload-admin-{admin_version}.tgz"

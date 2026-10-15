@@ -22,6 +22,10 @@ class CrawlSEOApplicationError(RuntimeError):
     """A provider result could not be safely used by the application."""
 
 
+class CrawlSEORequestNotDispatched(CrawlSEOApplicationError):
+    """A locally rejected request that is proven not to have reached a provider."""
+
+
 def _bounded_int(value: int, field_name: str, maximum: int) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= maximum:
         raise CrawlSEOApplicationError(f"CrawlSEO {field_name} must be between 1 and {maximum}")
@@ -141,19 +145,22 @@ class CrawlSEOApplicationService:
         country: str,
         idempotency_key: str,
     ) -> dict[str, Any]:
-        if not isinstance(queries, list) or not 5 <= len(queries) <= 10:
-            raise CrawlSEOApplicationError("CrawlSEO queries must contain 5 to 10 candidates")
-        bounded_queries = [self._bounded_text(query, "query", 120) for query in queries]
-        if len({query.lower() for query in bounded_queries}) != len(bounded_queries):
-            raise CrawlSEOApplicationError("CrawlSEO queries must be unique")
-        arguments = {
-            "idea_key": self._bounded_text(idea_key, "idea_key", 240),
-            "idea_summary": self._bounded_text(idea_summary, "idea_summary", 2000),
-            "queries": bounded_queries,
-            "language": self._bounded_text(language, "language", 16),
-            "country": self._bounded_text(country, "country", 2),
-            "idempotency_key": self._bounded_text(idempotency_key, "idempotency_key", 240),
-        }
+        try:
+            if not isinstance(queries, list) or not 5 <= len(queries) <= 10:
+                raise CrawlSEOApplicationError("CrawlSEO queries must contain 5 to 10 candidates")
+            bounded_queries = [self._bounded_text(query, "query", 120) for query in queries]
+            if len({query.lower() for query in bounded_queries}) != len(bounded_queries):
+                raise CrawlSEOApplicationError("CrawlSEO queries must be unique")
+            arguments = {
+                "idea_key": self._bounded_text(idea_key, "idea_key", 240),
+                "idea_summary": self._bounded_text(idea_summary, "idea_summary", 2000),
+                "queries": bounded_queries,
+                "language": self._bounded_text(language, "language", 16),
+                "country": self._bounded_text(country, "country", 2),
+                "idempotency_key": self._bounded_text(idempotency_key, "idempotency_key", 240),
+            }
+        except CrawlSEOApplicationError as exc:
+            raise CrawlSEORequestNotDispatched(str(exc)) from exc
         result = self._read(
             "article keyword research request",
             lambda: self.provider.request_article_keyword_research(**arguments),
@@ -177,11 +184,14 @@ class CrawlSEOApplicationService:
         keyword: str,
         idempotency_key: str,
     ) -> dict[str, Any]:
-        arguments = {
-            "parent_run_id": self._bounded_text(parent_run_id, "parent_run_id", 120),
-            "keyword": self._bounded_text(keyword, "keyword", 120),
-            "idempotency_key": self._bounded_text(idempotency_key, "idempotency_key", 240),
-        }
+        try:
+            arguments = {
+                "parent_run_id": self._bounded_text(parent_run_id, "parent_run_id", 120),
+                "keyword": self._bounded_text(keyword, "keyword", 120),
+                "idempotency_key": self._bounded_text(idempotency_key, "idempotency_key", 240),
+            }
+        except CrawlSEOApplicationError as exc:
+            raise CrawlSEORequestNotDispatched(str(exc)) from exc
         result = self._read(
             "article SERP research request",
             lambda: self.provider.request_article_serp_research(**arguments),
@@ -256,6 +266,7 @@ CrawlSEOService = CrawlSEOApplicationService
 
 __all__ = [
     "CrawlSEOApplicationError",
+    "CrawlSEORequestNotDispatched",
     "CrawlSEOApplicationService",
     "CrawlSEOReadService",
     "CrawlSEOService",

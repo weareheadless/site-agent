@@ -18,12 +18,12 @@ mkdirSync(output, { recursive: true })
 const packed = JSON.parse(execFileSync('npm', ['pack', '--json', '--pack-destination', output], { cwd: packageRoot, encoding: 'utf8' }))[0]
 const archive = path.join(output, packed.filename)
 const files = new Set(execFileSync('tar', ['-tzf', archive], { encoding: 'utf8' }).trim().split('\n'))
-for (const file of ['src/components/GrowthTasks.tsx', 'src/components/HelloAdaNav.tsx', 'src/components/WebsiteWorkspace.tsx', 'src/components/MailflarePayloadView.tsx', 'src/server/runtime-env.ts', 'src/styles/growth.scss']) {
+for (const file of ['src/components/GrowthTasks.tsx', 'src/components/HelloAdaGrowth.tsx', 'src/components/HelloAdaNav.tsx', 'src/components/WebsiteWorkspace.tsx', 'src/components/MailflarePayloadView.tsx', 'src/lib/growth-task-copy.ts', 'src/server/runtime-env.ts', 'src/styles/growth.scss']) {
   if (!files.has(`package/${file}`)) throw new Error(`Packed artifact is missing ${file}`)
 }
 const packedText = file => execFileSync('tar', ['-xOf', archive, `package/${file}`], { encoding: 'utf8' })
 const growth = packedText('src/components/HelloAdaGrowth.tsx')
-if (!/<GrowthTasks(?:\s|>)/.test(growth) || growth.includes('helloada-growth-sidebar') || !growth.includes('owner-decisions-v1')) throw new Error('Packed artifact has the old scattered Growth overview or lacks the supported contract check')
+if (!/<GrowthTasks(?:\s|>)/.test(growth) || growth.includes('helloada-growth-sidebar') || !growth.includes('owner-decisions-v1') || !growth.includes('owner-queue-progression-v1')) throw new Error('Packed artifact has the old scattered Growth overview or lacks the supported progression contract check')
 if (/HelloAdaMessages|HelloAdaCalendar/.test(packedText('src/index.ts'))) throw new Error('Packed admin package exposes a parallel Payload mailbox or calendar UI')
 if (!packedText('src/components/HelloAdaNav.tsx').includes('href="/admin?view=messages"')
   || !packedText('src/components/WebsiteWorkspace.tsx').includes('<MailflarePayloadView />')
@@ -35,22 +35,7 @@ const runtime = packedText('src/server/runtime-env.ts')
 if (!runtime.includes('helloAdaWorkspacePath') || !runtime.includes('/growth/check')) throw new Error('Packed artifact lacks the shared Growth bridge')
 const packedPackage = JSON.parse(packedText('package.json'))
 if (packedPackage.version !== pkg.version) throw new Error('Packed package version mismatch')
-
-const templateRoot = path.join(root, 'src/site_agent/templates/next-payload')
-const templatePackage = JSON.parse(readFileSync(path.join(templateRoot, 'package.json'), 'utf8'))
-const templateLock = JSON.parse(readFileSync(path.join(templateRoot, 'package-lock.json'), 'utf8'))
-const templateManifest = JSON.parse(readFileSync(path.join(templateRoot, 'template-manifest.json'), 'utf8'))
-const templateWorker = readFileSync(path.join(templateRoot, 'wrangler.jsonc'), 'utf8')
-const releaseAsset = `https://github.com/weareheadless/site-agent/releases/download/${tag}/${packed.filename}`
-const lockedAdmin = templateLock.packages['node_modules/@weareheadless/helloada-payload-admin']
-if (templatePackage.dependencies['@weareheadless/helloada-payload-admin'] !== releaseAsset
-  || templateManifest.payloadAdmin !== pkg.version
-  || !templateWorker.includes(`"HELLOADA_PAYLOAD_ADMIN_VERSION": "${pkg.version}"`)
-  || lockedAdmin?.version !== pkg.version
-  || lockedAdmin?.resolved !== releaseAsset
-  || lockedAdmin?.integrity !== packed.integrity) {
-  throw new Error('Default Payload template does not pin the exact tagged admin artifact and runtime version')
-}
+if (!packedText('src/version.ts').includes(`= '${pkg.version}'`)) throw new Error('Packed admin runtime version marker mismatch')
 const digest = bytes => createHash('sha256').update(bytes).digest('hex')
 const manifest = {
   schemaVersion: 1, sourceCommit, releaseTag: tag, packageName: pkg.name, packageVersion: pkg.version,

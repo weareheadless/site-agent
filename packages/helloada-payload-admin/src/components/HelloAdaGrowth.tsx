@@ -24,6 +24,15 @@ type OwnerQueue = {
   recentResultId: string | null;
   recentResultIds: string[];
   attentionTaskId: string | null;
+  progression: {
+    state: "ready_for_review" | "preparing" | "service_issue" | "assessing" | "scheduled" | "deferred_findings" | "assessed" | "not_started";
+    primaryTaskId: string | null;
+    serviceIssueTaskId: string | null;
+    latestAssessmentAt: string | null;
+    latestAssessmentStatus: string | null;
+    latestAssessmentSummary: string | null;
+    deferredFindingCount: number;
+  };
 };
 
 type Insight = {
@@ -42,6 +51,7 @@ type Growth = {
   ownerQueue: OwnerQueue;
   ownerTimezone?: string | null;
   growthContractVersion: string;
+  ownerQueueContractVersion: string;
   sources?: Array<{
     id: string;
     status: string;
@@ -93,9 +103,9 @@ export function HelloAdaGrowth() {
     window.addEventListener("popstate", restorePanel);
     return () => window.removeEventListener("popstate", restorePanel);
   }, []);
-  const navigatePanel = (next: GrowthPanel) => {
+  const navigatePanel = (next: GrowthPanel, resultsTab: "analytics" | "search" = "analytics") => {
     setPanel(next);
-    if (next === "results") setTab("analytics");
+    if (next === "results") setTab(resultsTab);
     const url = new URL(window.location.href);
     if (next === "home") url.searchParams.delete("growth_panel");
     else url.searchParams.set("growth_panel", next);
@@ -115,7 +125,20 @@ export function HelloAdaGrowth() {
       .then(async (response) => {
         if (!response.ok) throw new Error("unavailable");
         const body = await response.json();
-        if (!body || body.growthContractVersion !== "owner-decisions-v1" || !Array.isArray(body.tasks) || !body.ownerQueue || !Array.isArray(body.ownerQueue.additionalDecisionIds) || !Array.isArray(body.ownerQueue.recentResultIds))
+        const progression = body?.ownerQueue?.progression;
+        const progressionStates = ["ready_for_review", "preparing", "service_issue", "assessing", "scheduled", "deferred_findings", "assessed", "not_started"];
+        if (!body || body.growthContractVersion !== "owner-decisions-v1"
+          || body.ownerQueueContractVersion !== "owner-queue-progression-v1"
+          || !Array.isArray(body.tasks) || !body.ownerQueue
+          || !Array.isArray(body.ownerQueue.additionalDecisionIds) || !Array.isArray(body.ownerQueue.recentResultIds)
+          || !Number.isInteger(body.ownerQueue.decisionCount) || body.ownerQueue.decisionCount < 0
+          || !progression || !progressionStates.includes(progression.state)
+          || !Number.isInteger(progression.deferredFindingCount) || progression.deferredFindingCount < 0
+          || !(progression.primaryTaskId === null || typeof progression.primaryTaskId === "string")
+          || !(progression.serviceIssueTaskId === null || typeof progression.serviceIssueTaskId === "string")
+          || !(progression.latestAssessmentAt === null || typeof progression.latestAssessmentAt === "string")
+          || !(progression.latestAssessmentStatus === null || typeof progression.latestAssessmentStatus === "string")
+          || !(progression.latestAssessmentSummary === null || typeof progression.latestAssessmentSummary === "string"))
           throw new Error("incompatible Growth response");
         if (!controller.signal.aborted) setGrowth(body);
       })

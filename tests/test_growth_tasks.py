@@ -124,6 +124,40 @@ def test_running_and_retry_work_are_part_of_the_scheduled_task(tmp_path):
     memory.close()
 
 
+def test_uncertain_scheduled_research_is_visible_and_never_presented_as_a_future_retry(tmp_path):
+    memory = Memory(tmp_path / 'memory.db')
+    task, = growth_tasks(memory, [], [], [{'id': 'growth_monthly', 'enabled': True, 'nextRun': '2026-10-20T09:00:00Z'}], [],
+        [{'run_id': 'month-1', 'trigger': 'monthly', 'status': 'uncertain', 'updated_ts': '2026-10-15T09:00:00Z',
+          'detail': {'error': 'provider did not confirm'}}])
+    assert task['focus'] == 'paused'
+    assert task['state'] == 'uncertain'
+    assert task['summaryKey'] == 'scheduleExecutionUncertain'
+    assert task['nextRun'] is None
+    assert task['lastError'] is None
+    assert task['executionIssue'] is True
+    memory.close()
+
+
+def test_failed_owner_review_run_is_visible_as_service_work_not_an_owner_decision(tmp_path):
+    memory = Memory(tmp_path / 'memory.db')
+    tasks = growth_tasks(memory, [], [], [], [], [{
+        'run_id': 'owner-review-1', 'trigger': 'owner_review', 'status': 'failed',
+        'phase': 'preparing', 'updated_ts': '2026-10-15T09:00:00Z',
+        'next_due_ts': '2099-10-15T09:00:00Z', 'detail': {'error': 'private validator detail'},
+    }])
+
+    task, = [row for row in tasks if row['kind'] == 'assessment']
+    assert task['id'] == 'assessment:owner-review-1'
+    assert task['focus'] == 'paused'
+    assert task['summaryKey'] == 'assessmentExecutionFailed'
+    assert task['executionIssue'] is True
+    assert task['canApprove'] is False
+    assert task['nextRun'] == '2099-10-15T09:00:00Z'
+    assert task['lastError'] is None
+    assert 'private validator detail' not in str(task)
+    memory.close()
+
+
 def test_completed_cycle_does_not_show_an_old_failure_as_current_work(tmp_path):
     memory = Memory(tmp_path / 'memory.db')
     task, = growth_tasks(memory, [], [], [{'id': 'growth_weekly', 'enabled': True, 'nextRun': '2026-10-07T13:30:00Z'}], [],
@@ -231,7 +265,7 @@ def test_frontend_rollback_enters_review_only_after_exact_preview_is_ready(tmp_p
     assert task['canApprove'] is False
     memory.close()
 
-def test_open_suggestions_are_opportunities_not_fake_active_work(tmp_path):
+def test_open_suggestions_remain_internal_and_do_not_become_owner_tasks(tmp_path):
     memory = Memory(tmp_path / 'memory.db')
     memory.create_owner_action(OwnerAction(
         capability_id='growth.suggestion', provider_id='site-agent',
@@ -240,10 +274,7 @@ def test_open_suggestions_are_opportunities_not_fake_active_work(tmp_path):
         source_ref='growth:suggestion', requirement=ActionRequirement.SUGGESTION,
         dedupe_key='growth:suggestion',
     ))
-    task, = growth_tasks(memory, [], [], [], [])
-    assert task['focus'] == 'opportunity'
-    assert task['kind'] == 'owner_action'
-    assert not task['canApprove']
+    assert growth_tasks(memory, [], [], [], []) == []
     memory.close()
 
 
@@ -351,6 +382,31 @@ def test_stale_article_research_is_not_shown_as_active_or_as_a_full_brief(tmp_pa
     memory.close()
 
 
+def test_deterministic_article_research_errors_are_service_work_not_opportunities(tmp_path):
+    memory = Memory(tmp_path / 'memory.db')
+    tasks = {row['id']: row for row in growth_tasks(memory, [], [], [], [], article_ideas=[
+        {'id': 41, 'status': 'failed', 'error': 'DATAFORSEO_TASK_40501_INVALID_FIELD_LANGUAGE_CODE_',
+         'idea_json': {'working_title': 'Locale-bound topic'}},
+        {'id': 42, 'status': 'selected', 'error': 'CrawlSEO idea_summary is invalid',
+         'idea_json': {'working_title': 'Invalid research brief'}},
+    ])}
+
+    locale = tasks['article-idea:41']
+    assert locale['focus'] == 'paused'
+    assert locale['summaryKey'] == 'articleResearchLocaleNeedsRepair'
+    assert locale['executionIssue'] is True
+    assert locale['canApprove'] is False
+    assert 'DATAFORSEO' not in str(locale)
+
+    brief = tasks['article-idea:42']
+    assert brief['focus'] == 'paused'
+    assert brief['summaryKey'] == 'articleResearchRequestNeedsRepair'
+    assert brief['executionIssue'] is True
+    assert brief['canApprove'] is False
+    assert 'CrawlSEO idea_summary is invalid' not in str(brief)
+    memory.close()
+
+
 def test_saved_changes_and_incomplete_reflection_are_stopped_not_approvable(tmp_path):
     memory = Memory(tmp_path / 'memory.db')
     reflection_id = memory.save_draft(
@@ -378,3 +434,21 @@ def test_saved_changes_and_incomplete_reflection_are_stopped_not_approvable(tmp_
     reflection = tasks[f'settings:{reflection_id}']
     assert reflection['focus'] == 'paused'
     assert reflection['state'] == 'not_running'
+    assert reflection['executionIssue'] is False
+    assert reflection['needsPreparation'] is True
+    assert reflection['canApprove'] is False
+
+    edit = tasks[f'draft:{edit_id}']
+    assert edit['focus'] == 'paused'
+    assert edit['summaryKey'] == 'websiteChangeNotReady'
+    assert edit['executionIssue'] is False
+    assert edit['needsPreparation'] is True
+    assert edit['canApprove'] is False
+
+    merge = tasks[f'draft:{merge_id}']
+    assert merge['focus'] == 'paused'
+    assert merge['summaryKey'] == 'codeChangeNotReady'
+    assert merge['executionIssue'] is False
+    assert merge['needsPreparation'] is True
+    assert merge['canApprove'] is False
+    memory.close()

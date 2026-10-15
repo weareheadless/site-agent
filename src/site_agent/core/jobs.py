@@ -340,7 +340,11 @@ def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -
     research_note = meta.get("research_note") if isinstance(meta.get("research_note"), Mapping) else {}
     primary_keyword = str(meta.get("primary_keyword") or research_note.get("selected_query") or "").strip()[:200]
     description = str(meta.get("meta_description") or plain).strip()[:320]
-    contract_fields = payload.contract.collection_fields.get("posts", frozenset())
+    authoring_contract = payload.require_authoring_contract()
+    enabled_collections = (authoring_contract.get("enabled") or {}).get("collections")
+    if not isinstance(enabled_collections, list) or "posts" not in enabled_collections:
+        raise RuntimeError("The canonical Payload authoring contract does not enable the posts collection")
+    contract_fields = set(payload.authoring_fields("collection", "posts", authoring_contract=authoring_contract))
     required_fields = {"sourceId", "slug", "title", "summary", "body", "seo"}
     missing_contract = sorted(required_fields - set(contract_fields))
     if missing_contract:

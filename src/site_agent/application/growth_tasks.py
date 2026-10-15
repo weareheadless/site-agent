@@ -233,7 +233,7 @@ def growth_tasks(
             'requirement': action.get('requirement'),
             'conversationId': action.get('conversation_id'), 'approvalId': approval_id,
             'reviewPackageHash': review_hash, 'lastError': None,
-            'executionIssue': bool(initiative.get('last_error')) or stale_work,
+            'executionIssue': state in {'blocked', 'uncertain'} or bool(initiative.get('last_error')) or stale_work,
             'canApprove': review_ready,
             'review': {'before': package.get('before'), 'after': package.get('after'), 'changes': package.get('changes'), 'route': package.get('route'), **({'article': article_data} if article_data else {})},
             'outcomes': [row for row in outcomes if row.get('initiative_id') == initiative['id']],
@@ -265,6 +265,10 @@ def growth_tasks(
                 break
     for action in actions.values():
         if action['id'] in linked_actions or action.get('draft_id') in linked_drafts or action.get('approval_id') in linked_approvals or action['state'] in {'completed', 'dismissed', 'stale'}:
+            continue
+        # Suggestions are internal ideas, not owner tasks. Only exact review
+        # candidates and genuine owner-information requests belong in Growth.
+        if action.get('requirement') == 'suggestion':
             continue
         if action.get('draft_id'):
             linked_drafts.add(action['draft_id'])
@@ -319,6 +323,7 @@ def growth_tasks(
                 'focus': focus, 'state': 'ready_for_review' if complete else 'not_running', 'draftId': draft['id'],
                 'reviewPackageHash': review_hash or None, 'canApprove': complete,
                 'needsPreparation': not complete,
+                'executionIssue': False,
                 'review': {'before': current, 'after': proposal, 'changes': proposal, 'setting': 'Ada writing guidance'},
                 'updatedAt': draft.get('updated_ts')})
             continue
@@ -404,7 +409,7 @@ def growth_tasks(
             'canApprove': article_ready,
             'needsPreparation': needs_preparation,
             'lastError': None,
-            'executionIssue': article_draft and (bool((sync.get('validation') or {}).get('reason')) or stale_sync),
+            'executionIssue': bool(article_draft and (blocked or stale_sync)),
             'updatedAt': draft.get('updated_ts')})
     for idea in article_ideas:
         if idea.get('draft_id'):
@@ -413,7 +418,10 @@ def growth_tasks(
         state = str(idea.get('status') or 'preparing')
         if state == 'held':
             continue
-        technical_failure = state in {'blocked', 'failed', 'uncertain'}
+        saved_error = str(idea.get('error') or '')
+        deterministic_locale_error = 'DATAFORSEO_TASK_40501_INVALID_FIELD_LANGUAGE_CODE_' in saved_error
+        invalid_request_error = 'crawlseo idea_summary is invalid' in saved_error.lower()
+        technical_failure = state in {'blocked', 'failed', 'uncertain'} or bool(saved_error) and state in {'selected', 'research_requested', 'serp_requested'}
         research_active = state == 'research_requested' and bool(idea.get('research_run_id'))
         serp_active = state == 'serp_requested' and bool(idea.get('serp_run_id'))
         research_complete = state == 'researched' and bool(idea.get('researched_ts'))
@@ -422,7 +430,15 @@ def growth_tasks(
         genuinely_active = research_active or serp_active
         focus = 'paused' if technical_failure or stale_idea else 'opportunity' if state in {'selected', 'proposed'} or research_complete else 'preparing' if genuinely_active else 'paused'
         audience_need = str(idea_data.get('audience_need') or '').strip()
-        summary_key = 'articleResearchNeedsRepair' if technical_failure or missing_run else 'articleResearchNotRunning' if stale_idea else 'articleResearchComplete' if research_complete else 'articleResearchActive' if genuinely_active else 'articleOpportunity'
+        summary_key = (
+            'articleResearchLocaleNeedsRepair' if deterministic_locale_error
+            else 'articleResearchRequestNeedsRepair' if invalid_request_error
+            else 'articleResearchNeedsRepair' if technical_failure or missing_run
+            else 'articleResearchNotRunning' if stale_idea
+            else 'articleResearchComplete' if research_complete
+            else 'articleResearchActive' if genuinely_active
+            else 'articleOpportunity'
+        )
         tasks.append({
             'id': f"article-idea:{idea.get('id')}",
             'kind': 'article_research',
@@ -430,7 +446,7 @@ def growth_tasks(
             'summary': ('Ada could not complete this research and needs to repair it.' if technical_failure or missing_run else 'This research has stopped before an article draft was prepared.' if stale_idea else 'Ada’s research is complete; an article draft is not ready for review yet.' if research_complete else 'Ada is processing the requested research; no article draft is ready yet.' if genuinely_active else 'Ada found a reader question worth exploring.'),
             'summaryKey': summary_key,
             'scope': audience_need,
-            'focus': 'opportunity' if research_complete else focus,
+            'focus': focus,
             'state': 'not_running' if stale_idea else state,
             'canApprove': False,
             'executionIssue': technical_failure or stale_idea,
@@ -443,45 +459,53 @@ def growth_tasks(
     for activity in activities:
         trigger = activity['id'].removeprefix('growth_')
         run = latest_by_trigger.get(trigger)
-        if run and run.get('status') not in {'pending', 'running', 'failed', 'blocked'}:
+        if run and run.get('status') not in {'pending', 'running', 'failed', 'blocked', 'uncertain'}:
             run = None
-        detail = (run or {}).get('detail') or {}
-        error = detail.get('error') or '; '.join(str(row.get('reason') or '') for row in detail.get('blocks', []))
         next_run = activity.get('nextRun')
         state = 'scheduled' if activity.get('enabled') else 'paused'
         if run and activity['enabled']:
-            state = {'pending': 'queued', 'running': 'running', 'failed': 'blocked', 'blocked': 'blocked'}[run['status']]
+            state = {'pending': 'queued', 'running': 'running', 'failed': 'blocked', 'blocked': 'blocked', 'uncertain': 'uncertain'}[run['status']]
         if run and activity.get('enabled') and run.get('next_due_ts'):
             next_run = run.get('next_due_ts')
+        if run and state in {'blocked', 'uncertain'}:
+            # A provider outcome that did not settle is not a schedule. Never
+            # present the activity's normal cadence as though retry were safe.
+            next_run = None
         if not _future_timestamp(next_run):
             next_run = None
-        focus = 'paused' if state == 'blocked' else 'preparing' if state in {'queued', 'running'} else 'planned' if activity.get('enabled') and _future_timestamp(next_run) else 'paused'
+        focus = 'paused' if state in {'blocked', 'uncertain'} else 'preparing' if state in {'queued', 'running'} else 'planned' if activity.get('enabled') and _future_timestamp(next_run) else 'paused'
         if activity.get('enabled') and state == 'scheduled' and focus == 'paused':
             state = 'unscheduled'
+        schedule_summary_key = "scheduleExecutionUncertain" if state == "uncertain" else "scheduleExecutionFailed" if state == "blocked" else "scheduleNotRegistered" if state == "unscheduled" else None
         tasks.append({'id': f"schedule:{activity['id']}", 'kind': 'schedule', 'titleKey': activity['id'],
-            'focus': focus, 'state': state, 'canApprove': False,
+            'focus': focus, 'state': state, 'summaryKey': schedule_summary_key, 'canApprove': False,
             'nextRun': next_run,
             'lastError': None,
-            'executionIssue': bool(run and state == 'blocked'),
+            'executionIssue': bool(run and state in {'blocked', 'uncertain'}) or state == 'unscheduled',
             'runId': run.get('run_id') if run else None, 'schedule': activity.get('schedule')})
-    latest_analysis = next((row for row in sorted(runs, key=lambda item: item.get('updated_ts') or '', reverse=True)
-                            if row.get('status') in {'complete', 'blocked'} and isinstance((row.get('detail') or {}).get('assessment'), Mapping)), None)
-    if latest_analysis:
-        assessment = (latest_analysis.get('detail') or {}).get('assessment') or {}
-        for index, opportunity in enumerate(assessment.get('unpreparedOpportunities') or []):
-            if not isinstance(opportunity, Mapping):
-                continue
-            tasks.append({
-                'id': f"analysis-insight:{latest_analysis.get('run_id')}:{index}",
-                'kind': 'analysis_insight',
-                'title': str(opportunity.get('title') or 'Growth opportunity'),
-                'summary': str(opportunity.get('why') or ''),
-                'scope': str(opportunity.get('preparationNote') or ''),
-                'focus': 'opportunity',
-                'state': 'opportunity',
-                'area': str(opportunity.get('area') or ''),
-                'canApprove': False,
-                'updatedAt': latest_analysis.get('updated_ts'),
-            })
+    # An owner-triggered review has a durable run record but no recurring
+    # schedule row. Keep its real failure/lease visible without turning the
+    # technical issue into a business-owner approval or losing its retry date.
+    for run in runs:
+        if run.get('trigger') != 'owner_review' or run.get('status') not in {'pending', 'running', 'failed', 'blocked', 'uncertain'}:
+            continue
+        status = str(run['status'])
+        has_live_lease = status == 'running' and str(run.get('run_id') or '') in active_runs
+        next_run = run.get('next_due_ts') if _future_timestamp(run.get('next_due_ts')) else None
+        if status in {'failed', 'blocked', 'uncertain'}:
+            focus = 'paused'
+            summary_key = 'assessmentExecutionUncertain' if status == 'uncertain' else 'assessmentExecutionBlocked' if status == 'blocked' else 'assessmentExecutionFailed'
+        elif status == 'running' and not has_live_lease:
+            focus = 'paused'
+            summary_key = 'assessmentExecutionStale'
+        else:
+            focus = 'preparing' if has_live_lease or not next_run else 'planned'
+            summary_key = None
+        tasks.append({
+            'id': f"assessment:{run['run_id']}", 'kind': 'assessment', 'titleKey': 'growthOwnerReviewTask',
+            'focus': focus, 'state': status, 'summaryKey': summary_key,
+            'nextRun': next_run, 'runId': run['run_id'], 'updatedAt': run.get('updated_ts'),
+            'lastError': None, 'executionIssue': status in {'failed', 'blocked', 'uncertain'} or status == 'running' and not has_live_lease, 'canApprove': False,
+        })
     order = {'needs_you': 0, 'preparing': 1, 'planned': 2, 'paused': 3, 'opportunity': 4, 'completed': 5}
     return sorted(tasks, key=lambda row: (order[row['focus']], row.get('nextRun') or '9999', row['id']))
