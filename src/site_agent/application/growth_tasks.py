@@ -107,6 +107,25 @@ def _article_is_reviewable(draft: Mapping[str, Any], sync: Mapping[str, Any]) ->
     )
 
 
+def _visible_edit_operations(meta: Mapping[str, Any]) -> list[dict[str, str]]:
+    raw = meta.get("ops")
+    if not isinstance(raw, list):
+        return []
+    operations = []
+    for item in raw[:12]:
+        if not isinstance(item, Mapping):
+            continue
+        path = str(item.get("path") or "").strip()
+        if not path:
+            continue
+        operations.append({
+            "path": path[:500],
+            "find": str(item.get("find") or "")[:1200],
+            "replace": str(item.get("replace") or "")[:1200],
+        })
+    return operations
+
+
 def growth_tasks(
     memory,
     initiatives,
@@ -289,11 +308,14 @@ def growth_tasks(
             base_hash = str(meta.get('base_hash') or '')
             current = memory.kv_get('persona_notes', {'voice_notes': [], 'avoid': []}) or {'voice_notes': [], 'avoid': []}
             complete = bool(proposal and review_hash.startswith('sha256:') and base_hash.startswith('sha256:'))
-            focus = 'needs_you' if complete else 'preparing'
+            focus = 'needs_you' if complete else 'paused'
+            summary_key = None if complete else 'settingsProposalNotReady'
             tasks.append({'id': f"settings:{draft['id']}", 'kind': 'settings_proposal',
                 'title': draft['title'], 'summary': 'Ada proposes a change to future writing guidance. Existing website content will not change.',
-                'focus': focus, 'state': 'ready_for_review' if complete else 'preparing', 'draftId': draft['id'],
+                'summaryKey': summary_key,
+                'focus': focus, 'state': 'ready_for_review' if complete else 'not_running', 'draftId': draft['id'],
                 'reviewPackageHash': review_hash or None, 'canApprove': complete,
+                'needsPreparation': not complete,
                 'review': {'before': current, 'after': proposal, 'changes': proposal, 'setting': 'Ada writing guidance'},
                 'updatedAt': draft.get('updated_ts')})
             continue
@@ -328,7 +350,7 @@ def growth_tasks(
                 'updatedAt': draft.get('updated_ts'),
             })
             continue
-        if draft['id'] in linked_drafts or draft.get('kind') not in {'article', 'payload_content', 'design', 'merge', 'rollback'} or draft.get('status') != 'pending':
+        if draft['id'] in linked_drafts or draft.get('kind') not in {'article', 'edit', 'payload_content', 'design', 'merge', 'rollback'} or draft.get('status') != 'pending':
             continue
         meta = draft.get('meta') if isinstance(draft.get('meta'), Mapping) else {}
         sync = meta.get('payload_sync') if isinstance(meta.get('payload_sync'), Mapping) else {}
@@ -339,6 +361,8 @@ def growth_tasks(
         article_draft = draft.get('kind') == 'article'
         article_data = _article_review(draft, sync, article_idea, include_body=include_article_content) if article_draft else None
         state = str(sync.get('state') or 'not_synced')
+        if not article_draft:
+            state = 'not_running'
         if article_ready:
             focus = 'needs_you'
         else:
@@ -348,26 +372,36 @@ def growth_tasks(
         validation = sync.get('validation') if isinstance(sync.get('validation'), Mapping) else {}
         blocked = sync.get('state') == 'blocked' or validation.get('status') == 'blocked'
         summary_key = None
-        if article_ready:
-            summary = _compact_summary(rationale or 'Ada prepared this article for your review.')
-        elif blocked:
-            summary = 'This article needs a successful shared Payload check before it can be reviewed.'
-            summary_key = 'articleNeedsRepair'
-        elif stale_sync:
-            summary = 'This saved article is not currently being prepared for review.'
-            summary_key = 'articleNotRunning'
+        needs_preparation = False
+        change_operations = []
+        if article_draft:
+            if article_ready:
+                summary = _compact_summary(rationale or 'Ada prepared this article for your review.')
+            elif blocked:
+                summary = 'This article needs a successful shared Payload check before it can be reviewed.'
+                summary_key = 'articleNeedsRepair'
+            elif stale_sync:
+                summary = 'This saved article is not currently being prepared for review.'
+                summary_key = 'articleNotRunning'
+            else:
+                summary = 'This saved article has not entered a validated review package.'
+                summary_key = 'articleNotReady'
+            scope = rationale
         else:
-            summary = 'Ada is preparing this article for review against the shared blog structure.'
-            summary_key = 'articlePreparing'
-        scope = rationale
+            needs_preparation = True
+            summary_key = 'codeChangeNotReady' if draft.get('kind') == 'merge' else 'websiteChangeNotReady'
+            summary = ''
+            scope = _compact_summary(meta.get('summary') or '', limit=700)
+            change_operations = _visible_edit_operations(meta) if draft.get('kind') == 'edit' else []
         tasks.append({'id': f"draft:{draft['id']}", 'kind': draft['kind'], 'title': draft['title'],
             'summary': summary, 'summaryKey': summary_key, 'scope': scope,
             'focus': focus, 'state': 'ready_for_review' if article_ready else 'not_running' if stale_sync else state, 'draftId': draft['id'],
             'reviewPackageHash': meta.get('review_package_hash') if article_ready else None,
-            'review': {'article': article_data} if article_data else None,
+            'review': {'article': article_data} if article_data else {'changeOperations': change_operations} if change_operations else None,
             'canApprove': article_ready,
+            'needsPreparation': needs_preparation,
             'lastError': None,
-            'executionIssue': bool((sync.get('validation') or {}).get('reason')) or stale_sync,
+            'executionIssue': article_draft and (bool((sync.get('validation') or {}).get('reason')) or stale_sync),
             'updatedAt': draft.get('updated_ts')})
     for idea in article_ideas:
         if idea.get('draft_id'):

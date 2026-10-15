@@ -58,12 +58,18 @@ def verify_integrity(data: bytes, integrity: str, package_name: str) -> None:
             f"(expected {integrity}, received {actual})"
         )
 
-def _verified_release_dependencies(checkout: Path, token: str) -> Iterator[dict[str, Any]]:
+def _verified_release_dependencies(
+    checkout: Path,
+    token: str,
+    package_names: tuple[str, ...] = PRIVATE_PACKAGES,
+) -> Iterator[dict[str, Any]]:
     if not token:
         raise RuntimeError("Central GitHub release credential is required")
+    if not package_names or any(name not in PRIVATE_PACKAGES for name in package_names):
+        raise ValueError("Only declared private release packages can be verified")
     package = json.loads((checkout / "package.json").read_text(encoding="utf-8"))
     lock = json.loads((checkout / "package-lock.json").read_text(encoding="utf-8"))
-    for name in PRIVATE_PACKAGES:
+    for name in package_names:
         url = package.get("dependencies", {}).get(name)
         match = ASSET.fullmatch(str(url or ""))
         entry = lock.get("packages", {}).get("node_modules/" + name)
@@ -100,12 +106,16 @@ def _verified_release_dependencies(checkout: Path, token: str) -> Iterator[dict[
             "data": data,
         }
 
-def verify_release_dependencies(checkout: Path, token: str) -> list[dict[str, Any]]:
+def verify_release_dependencies(
+    checkout: Path,
+    token: str,
+    package_names: tuple[str, ...] = PRIVATE_PACKAGES,
+) -> list[dict[str, Any]]:
     """Verify canonical lockfile entries against exact published GitHub bytes."""
     keys = ("package", "release", "assetId", "integrity", "digest")
     return [
         {key: artifact[key] for key in keys}
-        for artifact in _verified_release_dependencies(checkout, token)
+        for artifact in _verified_release_dependencies(checkout, token, package_names)
     ]
 
 def prepare_release_dependencies(
@@ -138,10 +148,15 @@ def prepare_release_dependencies(
 
 
 def main() -> int:
+    import argparse
     import os
 
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--package", action="append", choices=PRIVATE_PACKAGES)
+    args = parser.parse_args()
     checkout = Path.cwd() / "src/site_agent/templates/next-payload"
-    for item in verify_release_dependencies(checkout, os.environ.get("GITHUB_TOKEN", "")):
+    package_names = tuple(args.package) if args.package else PRIVATE_PACKAGES
+    for item in verify_release_dependencies(checkout, os.environ.get("GITHUB_TOKEN", ""), package_names):
         print(f"Verified {item['package']} {item['release']} ({item['digest']})")
     return 0
 

@@ -322,7 +322,16 @@ Implemented on `codex/growth-task-repair-20261015`; not yet released:
 - Article summaries are concise and localized; long audience briefs stay in detail context, articles are excluded from the recent-success rail, and only the selected article detail loads its full body. Failed provider work is not reported as successful, and expired dates are omitted.
 - The shared admin package provides one default decision list, focused filters, a spacious in-place review view, exact Payload revision gating, persistent review URLs, browser-back/focus restoration, and a compact schedule/success rail. EN, FR and es-MX labels are present.
 - Package version is `0.10.15`. The default Payload template pins the reproducible artifact integrity generated under the release's Node 22.23.3/npm 11.13.0 toolchain.
+- Incomplete voice reflections and saved link/code edits are represented as stopped preparation work; link edits show bounded before/after operations, and none can be approved or published without the exact validated review package.
 
-Verified so far: the full backend suite passed (1,416 tests); 64 focused Growth/shared-runtime tests passed after the latest execution-state changes; all 39 shared-admin tests and TypeScript typechecking pass under Node 22.23.3/npm 11.13.0; `git diff --check` passes.
+Read-only Oceanic backlog audit (tenant database opened in SQLite read-only mode; no records changed):
 
-Not yet verified or completed: PR checks/merge; immutable package release publication; API-before-Worker rollout; canary and automatic-tenant receipts; per-item reconciliation audit of Oceanic’s saved drafts/actions; a fresh authenticated production browser check; and controlled article review/revision/decline acceptance. No tenant draft has been changed and no customer article has been published. The acceptance matrix above remains open until its live evidence is recorded.
+- Five pending article drafts (IDs 45, 49, 50, 58 and 60) are blocked at Payload sync because the previous writer required removed `posts.content`. The shared writer/schema repair is in the release candidate; these remain private and unapproved until canonical reconciliation passes.
+- Seven pending weekly reports (IDs 47, 51, 52, 53, 55, 57 and 59) are reports, not website publications or approval decisions.
+- Reflection 54 has no complete proposal or review hashes; it is not active work and cannot be approved.
+- Website edit 48 has four saved link operations but no exact preview/approval package. Code merge 56 is blocked and also has no pending approval request. The projection now exposes both as stopped, inspectable preparation work with no approval action.
+- Twenty open `content.suggestion` actions have no draft, approval or linked job. They are opportunities, not in-progress work. No active run lease or pending approval request was found.
+
+Verified: the full backend suite passes (1,417 tests); the focused Growth and release-asset regressions pass (21 tests); both edited Python modules compile; `git diff --check` passes. GitHub CI still needs to verify the pinned Node/npm package tests, typecheck and exact locked admin artifact reproduction.
+
+Not yet verified or completed: GitHub PR checks/merge; immutable package release publication; API-before-Worker rollout; canonical private-draft reconciliation and canary receipts; a fresh authenticated production browser check; and controlled article review/revision/decline acceptance. No tenant draft has been changed and no customer article has been published. The acceptance matrix above remains open until its live evidence is recorded.

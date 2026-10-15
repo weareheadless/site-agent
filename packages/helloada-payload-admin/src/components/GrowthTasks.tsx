@@ -20,12 +20,12 @@ export type GrowthTask = {
   id: string; kind?: string; title?: string; titleKey?: string; summary?: string; summaryKey?: string; scope?: string;
   focus: Focus; state: string; nextRun?: string | null; draftId?: number | null;
   ownerActionId?: number | null; canApprove?: boolean; reviewPackageHash?: string | null;
-  lastError?: string; executionIssue?: boolean; updatedAt?: string; conversationId?: number | null;
+  lastError?: string; executionIssue?: boolean; needsPreparation?: boolean; updatedAt?: string; conversationId?: number | null;
   evidence?: string[]; measurementHorizon?: number; measurementMetric?: string;
   outcomes?: { id: number; horizon_days: number; assessment: string; confidence: string; notes?: string; measured_ts?: string }[];
   history?: { initiativeId: number; title?: string; state?: string }[]; previewUrl?: string; area?: string;
   review?: { before?: Record<string, unknown>; after?: Record<string, unknown>; changes?: Record<string, unknown>;
-    route?: string; setting?: string; article?: ArticleReviewData };
+    route?: string; setting?: string; article?: ArticleReviewData; changeOperations?: { path: string; find: string; replace: string }[] };
 };
 
 type ArticleResponse = { article: ArticleReviewData; reviewable: boolean; blockedReason?: string | null; reviewPackageHash?: string | null };
@@ -174,6 +174,8 @@ export function GrowthTasks({ tasks = [], pending, refresh, ask, date, goal, bri
   const discuss = (task: GrowthTask) => {
     const prompt = task.focus === "opportunity"
       ? title(task) + ". " + (task.scope || fullTaskSummary(task)) + ". " + t("growth.opportunityPrompt")
+      : task.needsPreparation
+        ? title(task) + ". " + t(task.kind === "settings_proposal" ? "growth.settingsPreparePrompt" : "growth.changePreparePrompt")
       : task.kind === "article"
         ? title(task) + ". " + (task.canApprove ? t("growth.articleRevisionPrompt") : t("growth.articleResolvePrompt"))
         : task.executionIssue
@@ -328,6 +330,9 @@ export function GrowthTasks({ tasks = [], pending, refresh, ask, date, goal, bri
             {selectedTask.kind === "article" && !selectedTask.canApprove && selectedTask.scope ? <section className="helloada-growth-task-analysis-note">
               <strong>{t("growth.articleWorkContext")}</strong><p>{selectedTask.scope}</p>
             </section> : null}
+            {selectedTask.needsPreparation && selectedTask.scope ? <section className="helloada-growth-task-analysis-note">
+              <strong>{t("growth.proposedChange")}</strong><p>{selectedTask.scope}</p>
+            </section> : null}
             {selectedTask.kind === "analysis_insight" && selectedTask.scope ? <p className="helloada-growth-task-analysis-note">{selectedTask.scope}</p> : null}
             {selectedTask.kind === "schedule" ? <p>{t("growth." + selectedTask.state)}{selectedTask.nextRun ? " · " + date(selectedTask.nextRun) : ""}</p> : null}
             {selectedTask.kind === "measurement" ? <p>{t("growth.measurementDescription")
@@ -340,6 +345,11 @@ export function GrowthTasks({ tasks = [], pending, refresh, ask, date, goal, bri
             {selectedTask.review?.changes ? <dl className="helloada-growth-task-diff">{Object.entries(selectedTask.review.changes).map(([field, value]) =>
               <div key={field}><dt>{t("growth.field_" + field) === "growth.field_" + field ? field.replace(/([A-Z])/g, " $1").replace(/^./, letter => letter.toUpperCase()) : t("growth.field_" + field)}
                 </dt><dd><small>{t("growth.taskAfter")}</small><pre>{readable(value)}</pre></dd></div>)}</dl> : null}
+            {selectedTask.review?.changeOperations?.length ? <dl className="helloada-growth-task-diff">{selectedTask.review.changeOperations.map((operation, index) =>
+              <div key={operation.path + index}><dt><code>{operation.path}</code></dt><dd>
+                <small>{t("growth.taskBefore")}</small><pre>{operation.find || "—"}</pre>
+                <small>{t("growth.taskAfter")}</small><pre>{operation.replace || "—"}</pre>
+              </dd></div>)}</dl> : null}
             {selectedTask.outcomes?.length ? <section className="helloada-growth-task-outcomes"><h4>{t("growth.taskResults")}</h4>
               {selectedTask.outcomes.map(result => <article key={result.id}>
                 <strong>{result.horizon_days} {t("growth.taskDays")} · {t("growth.result_" + result.assessment)}</strong>
@@ -365,8 +375,8 @@ export function GrowthTasks({ tasks = [], pending, refresh, ask, date, goal, bri
                   : selectedTask.kind === "rollback" ? t("growth.keepCurrentWebsite") : t("growth.taskDecline")}
               </button>
             </> : null}
-            {selectedTask.focus === "opportunity" || selectedTask.kind === "analysis_insight" || selectedTask.kind === "article" || selectedTask.kind === "owner_action" || selectedTask.executionIssue
-              ? <Link href={discuss(selectedTask)}>{selectedTask.focus === "opportunity" ? t("growth.prepareWithAda") : selectedTask.kind === "article" ? t(selectedTask.canApprove ? "growth.articleAskChanges" : "growth.articleResolve") : selectedTask.executionIssue ? t("growth.resolveWithAda") : t("growth.ask")} ↗</Link>
+            {selectedTask.focus === "opportunity" || selectedTask.kind === "analysis_insight" || selectedTask.kind === "article" || selectedTask.kind === "owner_action" || selectedTask.executionIssue || selectedTask.needsPreparation
+              ? <Link href={discuss(selectedTask)}>{selectedTask.needsPreparation ? t(selectedTask.kind === "settings_proposal" ? "growth.prepareSettingsWithAda" : "growth.prepareChangeWithAda") : selectedTask.focus === "opportunity" ? t("growth.prepareWithAda") : selectedTask.kind === "article" ? t(selectedTask.canApprove ? "growth.articleAskChanges" : "growth.articleResolve") : selectedTask.executionIssue ? t("growth.resolveWithAda") : t("growth.ask")} ↗</Link>
               : null}
           </footer>
         </div> : <>

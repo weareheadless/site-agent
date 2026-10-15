@@ -348,3 +348,32 @@ def test_stale_article_research_is_not_shown_as_active_or_as_a_full_brief(tmp_pa
     assert complete['summaryKey'] == 'articleResearchComplete'
     assert complete['executionIssue'] is False
     memory.close()
+
+
+def test_saved_changes_and_incomplete_reflection_are_stopped_not_approvable(tmp_path):
+    memory = Memory(tmp_path / 'memory.db')
+    reflection_id = memory.save_draft(
+        'Self-reflection: proposed voice adjustments', '', kind='reflection',
+        meta={'voice_notes': ['Use clearer explanations'], 'avoid': ['generic claims']},
+    )
+    edit_id = memory.save_draft(
+        'Review the journal links', '', kind='edit',
+        meta={
+            'summary': 'Connect the journal articles into a useful reading path.',
+            'ops': [{
+                'op': 'edit',
+                'path': 'content/articles/example.md',
+                'find': 'Read the next article.',
+                'replace': 'Read the related guide.',
+            }],
+        },
+    )
+    merge_id = memory.save_draft(
+        'Fix the Journal link', '', kind='merge',
+        meta={'summary': 'Repair the broken Journal navigation link.', 'payload_sync': {'state': 'blocked'}},
+    )
+    tasks = {row['id']: row for row in growth_tasks(memory, [], memory.list_drafts(), [], [])}
+
+    reflection = tasks[f'settings:{reflection_id}']
+    assert reflection['focus'] == 'paused'
+    assert reflection['state'] == 'not_running'
