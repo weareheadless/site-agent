@@ -62,11 +62,16 @@ def owner_queue(tasks: list[dict[str, Any]], runs: list[dict[str, Any]] | None =
     assessment = assessment_detail.get("assessment") if isinstance(assessment_detail.get("assessment"), dict) else {}
     deferred = assessment.get("unpreparedOpportunities")
     # Historical assessments may contain the former pseudo-routes (`article`
-    # and `code`). They were never prepared or owner-actionable, so they must
-    # not keep the new service projection in a permanent "deferred" state.
+    # and `code`). They were never prepared or owner-actionable. A titled
+    # untyped finding is still real deferred work and remains visible.
     deferred_count = sum(
         1 for row in deferred
-        if isinstance(row, dict) and row.get("kind") in {"payload_content", "owner_information"}
+        if isinstance(row, dict)
+        and row.get("kind") not in {"article", "code"}
+        and (
+            row.get("kind") in {"payload_content", "owner_information"}
+            or row.get("kind") is None and bool(str(row.get("title") or "").strip())
+        )
     ) if isinstance(deferred, list) else 0
     assessment_status = str(latest_assessment.get("status") or "") if latest_assessment else ""
     active_non_schedule = next((row for row in active if row.get("kind") != "schedule"), None)

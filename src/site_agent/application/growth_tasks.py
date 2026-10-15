@@ -323,6 +323,7 @@ def growth_tasks(
                 'focus': focus, 'state': 'ready_for_review' if complete else 'not_running', 'draftId': draft['id'],
                 'reviewPackageHash': review_hash or None, 'canApprove': complete,
                 'needsPreparation': not complete,
+                'executionIssue': False,
                 'review': {'before': current, 'after': proposal, 'changes': proposal, 'setting': 'Ada writing guidance'},
                 'updatedAt': draft.get('updated_ts')})
             continue
@@ -466,6 +467,10 @@ def growth_tasks(
             state = {'pending': 'queued', 'running': 'running', 'failed': 'blocked', 'blocked': 'blocked', 'uncertain': 'uncertain'}[run['status']]
         if run and activity.get('enabled') and run.get('next_due_ts'):
             next_run = run.get('next_due_ts')
+        if run and state in {'blocked', 'uncertain'}:
+            # A provider outcome that did not settle is not a schedule. Never
+            # present the activity's normal cadence as though retry were safe.
+            next_run = None
         if not _future_timestamp(next_run):
             next_run = None
         focus = 'paused' if state in {'blocked', 'uncertain'} else 'preparing' if state in {'queued', 'running'} else 'planned' if activity.get('enabled') and _future_timestamp(next_run) else 'paused'
