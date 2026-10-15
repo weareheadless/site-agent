@@ -98,8 +98,13 @@ realization, autonomous repair, or end-to-end acceptance requirements.
   superseded for UI topology; it must not be used to reintroduce a second
   owner-facing intake/design surface.
 
-For growth orchestration, SEO/AEO, goals and owner review, follow
-`docs/ada-growth-seo-aeo-pipeline-implementation-plan.md`. Reuse the canonical
+For the current Growth owner experience, article-schema repair, backlog
+reconciliation and coordinated API/Worker release acceptance, follow
+`docs/growth-decision-workspace-implementation-plan.md`. Its October 15 live
+audit supersedes overlapping overview, task-state and rollout assumptions in
+older plans. Rendering a screen is not end-to-end Growth validation. Retain
+`docs/ada-growth-seo-aeo-pipeline-implementation-plan.md` for the underlying
+research, evidence, goals, budget and orchestration requirements. Reuse the canonical
 evidence, candidate, approval and outcome path; do not introduce silent
 degradation or independent customer-specific workflows. Ada's investigation
 and recommendation topics are open-ended and evidence-led: the typed

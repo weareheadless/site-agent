@@ -95,6 +95,11 @@ scheduler:
   enabled: false
   poll_seconds: 300
   schedule:
+    growth_initial: {every: daily, at: "07:00"}
+    growth_daily: {every: daily, at: "07:30"}
+    growth_weekly: {every: weekly, weekday: monday, at: "08:30"}
+    growth_monthly: {every: monthly, day: 1, at: "09:00"}
+    seo_outcomes: {every: daily, at: "13:00"}
     digest: {every: weekly, weekday: monday, at: "08:00"}
     learn: {every: weekly, weekday: monday, at: "08:20"}
     article: {every: weekly, weekday: tuesday, at: "09:00"}
@@ -133,6 +138,7 @@ maintenance:
   compact_min_batch: 20
 
 growth:
+  enabled: true
   policy_version: 1
   timezone: UTC
   review_cadence: weekly

@@ -2,6 +2,14 @@
 
 ## 1. Status, authority and outcome
 
+For the current owner-facing Growth workflow, the article-to-Payload schema
+repair, existing-backlog reconciliation and coordinated API/Worker release
+acceptance, follow [the revised Growth decision workspace plan](growth-decision-workspace-implementation-plan.md).
+Its October 15, 2026 live audit supersedes overlapping interface, task-state and
+rollout assumptions here. This document remains the underlying research,
+evidence, goal, budget and orchestration contract. A rendered inbox or passing
+Worker health check does not prove that an article can reach owner review.
+
 Implementation plan for a coding AI. Written 2026-10-02 against verified
 `weareheadless/site-agent` commit `0272832f8e0bb18a4a426bdaba413f1e40816b2e`.
 This document specifies work; it does not claim that the pipeline is implemented.

@@ -93,7 +93,7 @@ def growth_tasks(
     idea_by_draft = {str(row.get("draft_id")): row for row in article_ideas if row.get("draft_id") is not None}
     idea_by_id = {str(row.get("id")): row for row in article_ideas if row.get("id") is not None}
     linked_actions, linked_drafts, linked_approvals, tasks = set(), set(), set(), []
-    terminal = {'reviewed', 'rejected', 'superseded', 'failed', 'cancelled', 'completed'}
+    terminal = {'reviewed', 'rejected', 'superseded', 'cancelled', 'completed'}
     for initiative in sorted(initiatives, key=lambda row: row['id'], reverse=True):
         action_id, draft_id = initiative.get('owner_action_id'), initiative.get('draft_id')
         related = [row for row in actions.values() if row['id'] == action_id or (draft_id and row.get('draft_id') == draft_id) or (
@@ -110,7 +110,21 @@ def growth_tasks(
         if draft_id:
             linked_drafts.add(draft_id)
         state = initiative.get('state')
-        focus = 'preparing' if state == 'blocked' else 'completed' if state in terminal or state == 'measuring' else 'preparing'
+        next_run = initiative.get('review_30_ts') if state == 'measuring' else action.get('snoozed_until')
+        if state in terminal:
+            focus = 'completed'
+        elif state in {'blocked', 'uncertain'}:
+            focus = 'paused'
+        elif state == 'snoozed':
+            focus = 'planned' if _future_timestamp(next_run) else 'paused'
+        elif state == 'measuring':
+            focus = 'planned' if _future_timestamp(next_run) else 'paused'
+        elif state == 'waiting_for_owner':
+            focus = 'needs_you'
+        elif state in {'preparing', 'validating', 'publishing', 'verifying_live'}:
+            focus = 'preparing'
+        else:
+            focus = 'paused'
         if action.get('requirement') == 'owner_information' and action.get('state') in {'open', 'started', 'waiting'}:
             focus = 'needs_you'
         meta = draft.get('meta') or {}
@@ -134,21 +148,21 @@ def growth_tasks(
         article_idea = idea_by_draft.get(str(draft_id))
         if article_idea is None and isinstance(meta.get("article_research"), Mapping):
             article_idea = idea_by_id.get(str(meta["article_research"].get("article_idea_id")))
-        article_data = _article_review(draft, meta.get("payload_sync", {}), article_idea, include_body=include_article_content) if article_ready else None
+        article_draft = draft.get("kind") == "article"
+        article_data = _article_review(draft, meta.get("payload_sync", {}), article_idea, include_body=include_article_content) if article_draft else None
         if review_ready:
             focus = 'needs_you'
-        elif state == 'snoozed' and _future_timestamp(action.get('snoozed_until')):
-            focus = 'planned'
-        tasks.append({'id': f"initiative:{initiative['id']}", 'kind': initiative.get('kind'), 'title': (draft.get('title') or initiative.get('title')) if article_ready else initiative.get('title'),
+        task_state = 'ready_for_review' if review_ready else 'blocked' if state == 'ready_for_review' else state
+        tasks.append({'id': f"initiative:{initiative['id']}", 'kind': initiative.get('kind'), 'title': (draft.get('title') or initiative.get('title')) if article_draft else initiative.get('title'),
             'summary': initiative.get('rationale') or initiative.get('summary'), 'scope': initiative.get('summary'),
-            'focus': 'needs_you' if review_ready else focus, 'state': 'ready_for_review' if article_ready else state, 'draftId': draft_id, 'ownerActionId': action.get('id'),
+            'focus': 'needs_you' if review_ready else focus, 'state': task_state, 'draftId': draft_id, 'ownerActionId': action.get('id'),
             'conversationId': action.get('conversation_id'), 'approvalId': approval_id,
             'reviewPackageHash': review_hash, 'lastError': None,
             'executionIssue': bool(initiative.get('last_error')),
             'canApprove': review_ready,
             'review': {'before': package.get('before'), 'after': package.get('after'), 'changes': package.get('changes'), 'route': package.get('route'), **({'article': article_data} if article_data else {})},
             'outcomes': [row for row in outcomes if row.get('initiative_id') == initiative['id']],
-            'updatedAt': initiative.get('updated_ts'), 'nextRun': initiative.get('review_30_ts') if state == 'measuring' else action.get('snoozed_until')})
+            'updatedAt': initiative.get('updated_ts'), 'nextRun': next_run})
         expected = initiative.get('expected') if isinstance(initiative.get('expected'), dict) else {}
         baseline = expected.get('implementation_baseline') if isinstance(expected.get('implementation_baseline'), dict) else None
         if baseline:
@@ -166,7 +180,7 @@ def growth_tasks(
                     'kind': 'measurement',
                     'titleKey': 'measurementTask',
                     'summary': str(initiative.get('title') or ''),
-                    'focus': 'planned' if is_upcoming else 'preparing',
+                    'focus': 'planned' if is_upcoming else 'paused',
                     'state': 'scheduled' if is_upcoming else 'due',
                     'nextRun': due,
                     'measurementHorizon': horizon,
@@ -183,6 +197,8 @@ def growth_tasks(
         state = action['state']
         next_run = action.get('snoozed_until')
         focus = 'planned' if state == 'snoozed' and _future_timestamp(next_run) else 'preparing'
+        if action.get('requirement') == 'suggestion' and state == 'open':
+            focus = 'opportunity'
         if action.get('requirement') == 'owner_information' and state in {'open', 'started', 'waiting'}:
             focus = 'needs_you'
         if approval and approval.status.value == 'approved':
@@ -256,11 +272,21 @@ def growth_tasks(
         article_idea = idea_by_draft.get(str(draft.get("id")))
         if article_idea is None and isinstance(meta.get("article_research"), Mapping):
             article_idea = idea_by_id.get(str(meta["article_research"].get("article_idea_id")))
-        article_data = _article_review(draft, sync, article_idea, include_body=include_article_content) if article_ready else None
-        state = str(sync.get('state') or 'preparing')
-        focus = 'needs_you' if article_ready else 'paused' if state in {'blocked', 'failed'} else 'preparing'
+        article_draft = draft.get('kind') == 'article'
+        article_data = _article_review(draft, sync, article_idea, include_body=include_article_content) if article_draft else None
+        state = str(sync.get('state') or 'not_synced')
+        if article_ready:
+            focus = 'needs_you'
+        elif state in {'syncing', 'validating', 'preparing'}:
+            focus = 'preparing'
+        else:
+            focus = 'paused'
+        summary = (
+            (article_data or {}).get('rationale')
+            or ('Ready for your review.' if article_ready else 'Ada needs to finish preparing this article in Payload before you can review it.')
+        )
         tasks.append({'id': f"draft:{draft['id']}", 'kind': draft['kind'], 'title': draft['title'],
-            'summary': (article_data or {}).get('rationale') or str(draft.get('body') or '')[:2000],
+            'summary': summary,
             'focus': focus, 'state': 'ready_for_review' if article_ready else state, 'draftId': draft['id'],
             'reviewPackageHash': meta.get('review_package_hash') if article_ready else None,
             'review': {'article': article_data} if article_data else None,
@@ -273,16 +299,19 @@ def growth_tasks(
             continue
         idea_data = idea.get('idea_json') if isinstance(idea.get('idea_json'), dict) else {}
         state = str(idea.get('status') or 'preparing')
-        blocked = state in {'held', 'blocked', 'failed', 'uncertain'}
+        if state == 'held':
+            continue
         technical_failure = state in {'blocked', 'failed', 'uncertain'}
+        focus = 'paused' if technical_failure else 'opportunity' if state in {'selected', 'proposed'} else 'preparing'
         tasks.append({
             'id': f"article-idea:{idea.get('id')}",
             'kind': 'article_research',
             'title': idea_data.get('working_title') or 'Ada article research',
-            'summary': ('Ada is reviewing this research result.' if state == 'held' else 'This research run needs repair; the owner does not need to resolve a provider error.') if technical_failure or blocked else idea_data.get('audience_need') or 'Ada is researching a useful reader-led article opportunity.',
-            'focus': 'completed' if technical_failure else 'preparing',
+            'summary': ('Ada could not complete this research and needs to repair it.' if technical_failure else idea_data.get('audience_need') or 'Ada found a reader-led article opportunity. Ask Ada to prepare it for review.'),
+            'focus': focus,
             'state': state,
             'canApprove': False,
+            'executionIssue': technical_failure,
             'lastError': None,
             'updatedAt': idea.get('updated_ts') or idea.get('created_ts'),
         })
@@ -302,8 +331,10 @@ def growth_tasks(
             state = {'pending': 'queued', 'running': 'running', 'failed': 'blocked', 'blocked': 'blocked'}[run['status']]
         if run and activity.get('enabled') and run.get('next_due_ts'):
             next_run = run.get('next_due_ts')
-        focus = 'preparing' if state in {'queued', 'running', 'blocked'} else 'planned' if activity.get('enabled') and _future_timestamp(next_run) else 'paused'
-        if activity.get('enabled') and focus == 'paused':
+        if not _future_timestamp(next_run):
+            next_run = None
+        focus = 'paused' if state == 'blocked' else 'preparing' if state in {'queued', 'running'} else 'planned' if activity.get('enabled') and _future_timestamp(next_run) else 'paused'
+        if activity.get('enabled') and state == 'scheduled' and focus == 'paused':
             state = 'unscheduled'
         tasks.append({'id': f"schedule:{activity['id']}", 'kind': 'schedule', 'titleKey': activity['id'],
             'focus': focus, 'state': state, 'canApprove': False,
@@ -324,11 +355,11 @@ def growth_tasks(
                 'title': str(opportunity.get('title') or 'Growth opportunity'),
                 'summary': str(opportunity.get('why') or ''),
                 'scope': str(opportunity.get('preparationNote') or ''),
-                'focus': 'completed',
-                'state': 'analysis_completed',
+                'focus': 'opportunity',
+                'state': 'opportunity',
                 'area': str(opportunity.get('area') or ''),
                 'canApprove': False,
                 'updatedAt': latest_analysis.get('updated_ts'),
             })
-    order = {'needs_you': 0, 'preparing': 1, 'planned': 2, 'paused': 3, 'completed': 4}
+    order = {'needs_you': 0, 'preparing': 1, 'planned': 2, 'paused': 3, 'opportunity': 4, 'completed': 5}
     return sorted(tasks, key=lambda row: (order[row['focus']], row.get('nextRun') or '9999', row['id']))

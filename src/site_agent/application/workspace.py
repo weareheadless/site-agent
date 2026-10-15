@@ -852,7 +852,10 @@ class TenantRegistry:
         settings = tenant.config.get("scheduler") or {}
         settings = settings if isinstance(settings, Mapping) else {}
         scheduler = tenant.runtime.scheduler
-        if bool(settings.get("enabled", False)):
+        site = tenant.config.get("site") if isinstance(tenant.config.get("site"), Mapping) else {}
+        payload = site.get("payload") if isinstance(site.get("payload"), Mapping) else {}
+        payload_site = bool(site.get("website_present") and payload.get("enabled"))
+        if payload_site or bool(settings.get("enabled", False)):
             from ..core.jobs import register_jobs
 
             register_jobs(scheduler, tenant.config, tenant.context)
@@ -2335,18 +2338,68 @@ class ChatService:
         snapshot = growth_snapshot(memory, settings, runtime_context, include_article_content=True)
         task = next((
             row for row in snapshot["tasks"]
-            if row.get("kind") == "article" and row.get("canApprove") and int(row.get("draftId") or 0) == normalized_id
+            if row.get("kind") == "article" and int(row.get("draftId") or 0) == normalized_id
         ), None)
         if task is None:
-            raise BridgeError("this article is no longer ready for review")
+            raise BridgeError("this article is no longer available for review")
         review = task.get("review") if isinstance(task.get("review"), Mapping) else {}
         article = review.get("article") if isinstance(review.get("article"), Mapping) else None
-        if not article or not str(article.get("body") or "").strip():
-            raise BridgeError("the validated Payload article body is unavailable")
+        if not article:
+            raise BridgeError("the saved article draft is unavailable")
+        meta = next((row.get("meta") for row in memory.list_drafts(limit=500)
+                     if int(row.get("id") or 0) == normalized_id), {})
+        sync = meta.get("payload_sync") if isinstance(meta, Mapping) and isinstance(meta.get("payload_sync"), Mapping) else {}
+        reviewable = bool(task.get("canApprove"))
+        blocked_reason = None
+        if sync.get("document_id"):
+            payload = runtime_context.get("payload_gateway")
+            article = dict(article)
+            article["body"] = None
+            article["bodyFormat"] = "lexical"
+            if payload is None:
+                reviewable = False
+                blocked_reason = "The Payload draft cannot be checked right now. Ada must verify it before it can be approved."
+            else:
+                try:
+                    document = payload.read(
+                        "posts", identifier=str(sync["document_id"]), identifier_kind="id",
+                        draft=True, locale=str(sync.get("locale") or "").strip() or None,
+                    )
+                except Exception as exc:  # noqa: BLE001 - inspection can never imply approval
+                    reviewable = False
+                    blocked_reason = f"The Payload draft could not be verified: {str(exc)[:240]}"
+                else:
+                    current_revision = str(document.get("_helloadaRevision") or "")
+                    expected_revision = str(sync.get("draft_hash") or "")
+                    exact = bool(current_revision and expected_revision and hmac.compare_digest(current_revision, expected_revision))
+                    if not exact:
+                        reviewable = False
+                        blocked_reason = "This Payload draft changed after Ada last checked it. Ada must reconcile the latest version before you can approve it."
+                    from ..core.payload_rich_text import lexical_text
+                    article.update({
+                        "title": str(document.get("title") or article.get("title") or ""),
+                        "body": document.get("body"),
+                        "slug": str(document.get("slug") or article.get("slug") or ""),
+                        "path": f"/post/{document.get('slug')}" if document.get("slug") else "",
+                        "excerpt": str(document.get("summary") or article.get("excerpt") or ""),
+                    })
+                    seo = document.get("seo") if isinstance(document.get("seo"), Mapping) else {}
+                    article["metaDescription"] = str(seo.get("description") or article.get("metaDescription") or "")
+                    if not lexical_text(document.get("body")):
+                        reviewable = False
+                        blocked_reason = "The Payload article has no readable body. Ada must repair it before approval."
+        else:
+            article = dict(article)
+            article["bodyFormat"] = "markdown"
+            validation = sync.get("validation") if isinstance(sync.get("validation"), Mapping) else {}
+            blocked_reason = str(validation.get("reason") or "Ada is still preparing this article in the shared Payload schema.")
+            reviewable = False
         return {
             "tenant": scope["tenant"],
             "draftId": normalized_id,
-            "reviewPackageHash": task.get("reviewPackageHash"),
+            "reviewable": reviewable,
+            "blockedReason": blocked_reason,
+            "reviewPackageHash": task.get("reviewPackageHash") if reviewable else None,
             "article": article,
         }
 

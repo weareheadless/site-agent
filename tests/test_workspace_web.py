@@ -1396,3 +1396,31 @@ def test_shared_api_publishes_and_rolls_back_preview_changes_through_the_workspa
     assert versions[newer]["reverted_ts"]
     assert rollback_published.json()["published"]["commit_sha"] == "c" * 40
     memory.close()
+
+
+def test_payload_tenant_starts_shared_growth_jobs_without_legacy_scheduler_opt_in(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    scheduler = Scheduler(memory, lock_path=tmp_path / "scheduler.lock", clock=lambda: 1234.5)
+    scheduler.run_forever = lambda *, poll_seconds, stop_event: None
+    config = {
+        "scheduler": {"enabled": False},
+        "growth": {"enabled": True},
+        "site": {"website_present": True, "payload": {"enabled": True}},
+    }
+    tenant = SimpleNamespace(
+        tenant_id="growth-demo",
+        config=config,
+        memory=memory,
+        runtime=SimpleNamespace(scheduler=scheduler),
+        context={"tenant_id": "growth-demo", "config": config, "memory": memory},
+        scheduler_thread=None,
+        scheduler_stop=None,
+    )
+
+    TenantRegistry._start_scheduler(tenant)
+    tenant.scheduler_thread.join(timeout=1)
+
+    names = {name for name, _spec, _fn in scheduler.jobs}
+    assert {"growth_initial", "growth_daily", "growth_weekly", "growth_monthly", "growth_pending"} <= names
+    assert all(memory.kv_get(f"next_run:{name}") is not None for name in names if name.startswith("growth_"))
+    memory.close()

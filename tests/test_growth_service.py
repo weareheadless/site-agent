@@ -1,7 +1,7 @@
 import json
 from types import SimpleNamespace
 
-from site_agent.application.growth_workflow import run_growth_cycle
+from site_agent.application.growth_workflow import run_growth_cycle, run_pending_growth
 from site_agent.core.jobs import register_jobs
 from site_agent.core.memory import Memory
 from site_agent.core.scheduler import Scheduler
@@ -188,4 +188,33 @@ def test_monthly_growth_run_reuses_one_durable_research_request_and_polls_it(tmp
     assert run["detail"]["monthlyResearch"]["requestId"] == request["id"]
     assert run["detail"]["monthlyResearch"]["status"] in {"preparing", "pending"}
     assert "not connected" not in str(run["detail"].get("error") or "").lower()
+    memory.close()
+
+
+def test_payload_growth_jobs_default_on_independently_of_legacy_scheduler_flag(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    scheduler = Scheduler(memory, lock_path=tmp_path / "scheduler.lock", timezone_name="America/Cancun", clock=lambda: 1234.5)
+    settings = config()
+    settings["scheduler"]["enabled"] = False
+    settings["growth"].pop("enabled", None)
+    context = {"config": settings, "memory": memory, "payload_gateway": Payload(), "llm": Ada()}
+
+    register_jobs(scheduler, settings, context)
+
+    names = {name for name, _, _ in scheduler.jobs}
+    assert {"growth_initial", "growth_daily", "growth_weekly", "growth_monthly", "growth_pending"} <= names
+    assert "seo_outcomes" in names
+    assert memory.kv_get("next_run:growth_pending") == 1234.5
+    memory.close()
+
+
+def test_pending_payload_growth_reconciles_saved_article_drafts(monkeypatch, tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    calls = []
+    monkeypatch.setattr("site_agent.core.jobs._mirror_article_drafts", lambda context: calls.append(context["tenant_id"]))
+    monkeypatch.setattr("site_agent.application.growth_workflow._reconcile_article_research", lambda _context: None)
+    context = {"config": config(), "memory": memory, "payload_gateway": object(), "tenant_id": "growth-demo"}
+
+    run_pending_growth(context)
+    assert calls == ["growth-demo"]
     memory.close()

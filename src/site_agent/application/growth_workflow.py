@@ -704,6 +704,12 @@ def run_growth_cycle(context: dict[str, Any], *, trigger: str = "weekly", run_id
 def run_pending_growth(context: dict[str, Any]) -> None:
     for run in context["memory"].due_growth_runs(limit=20):
         run_growth_cycle(context, trigger=run["trigger"], run_id=run["run_id"])
+    site = context["config"].get("site") if isinstance(context["config"].get("site"), Mapping) else {}
+    payload = site.get("payload") if isinstance(site.get("payload"), Mapping) else {}
+    if site.get("website_present") and payload.get("enabled"):
+        from ..core.jobs import _mirror_article_drafts
+
+        _mirror_article_drafts(context)
     _reconcile_article_research(context)
 
 
