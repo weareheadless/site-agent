@@ -19,7 +19,9 @@ test('Growth translations load and contain the unified plan for every supported 
   const { growthCopy } = load(new URL('../src/lib/growth-copy.ts', import.meta.url))
   assert.deepEqual(Object.keys(growthCopy).sort(), ['en', 'es', 'fr'])
   for (const language of ['en', 'es', 'fr']) {
-    for (const key of ['growth.overview', 'growth.taskTitle', 'growth.task_needs_you', 'growth.growth_weekly']) {
+    for (const key of ['growth.overview', 'growth.taskTitle', 'growth.task_needs_you', 'growth.growth_weekly',
+      'growth.articleNotRunning', 'growth.articleResearchActive', 'growth.articleResearchComplete',
+      'growth.articleResolvePrompt', 'growth.taskResolvePrompt', 'growth.taskState_not_running']) {
       assert.equal(typeof growthCopy[language][key], 'string', `${language}: ${key}`)
       assert.ok(growthCopy[language][key].length > 0)
     }

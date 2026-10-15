@@ -86,7 +86,7 @@ def test_live_payload_registers_one_growth_service_not_independent_producers(tmp
     context = {"config": settings, "memory": memory, "payload_gateway": Payload(), "llm": Ada()}
     register_jobs(scheduler, settings, context)
     names = [name for name, _, _ in scheduler.jobs]
-    assert {"growth_initial", "growth_daily", "growth_weekly", "growth_monthly", "growth_pending"} <= set(names)
+    assert {"growth_initial", "growth_daily", "growth_weekly", "growth_monthly", "growth_pending", "growth_article_sync"} <= set(names)
     assert "seo_outcomes" in names
     assert not set(names) & {"article", "seo_insight", "seo_research_cycle", "seo_site_report_cycle", "article_research_cycle", "growth_reconciler"}
     assert all(item["next_run"] is not None for item in scheduler.upcoming())
@@ -202,9 +202,10 @@ def test_payload_growth_jobs_default_on_independently_of_legacy_scheduler_flag(t
     register_jobs(scheduler, settings, context)
 
     names = {name for name, _, _ in scheduler.jobs}
-    assert {"growth_initial", "growth_daily", "growth_weekly", "growth_monthly", "growth_pending"} <= names
+    assert {"growth_initial", "growth_daily", "growth_weekly", "growth_monthly", "growth_pending", "growth_article_sync"} <= names
     assert "seo_outcomes" in names
     assert memory.kv_get("next_run:growth_pending") == 1234.5
+    assert memory.kv_get("next_run:growth_article_sync") == 1234.5
     memory.close()
 
 
@@ -216,5 +217,11 @@ def test_pending_payload_growth_reconciles_saved_article_drafts(monkeypatch, tmp
     context = {"config": config(), "memory": memory, "payload_gateway": object(), "tenant_id": "growth-demo"}
 
     run_pending_growth(context)
+    assert calls == []
+
+    scheduler = Scheduler(memory, lock_path=tmp_path / "scheduler.lock", timezone_name="America/Cancun", clock=lambda: 1234.5)
+    register_jobs(scheduler, config(), context)
+    sync = next(operation for name, _spec, operation in scheduler.jobs if name == "growth_article_sync")
+    sync()
     assert calls == ["growth-demo"]
     memory.close()

@@ -20,6 +20,36 @@ def _future_timestamp(value: Any) -> bool:
         return False
 
 
+def _active_run_ids(runs: Any) -> set[str]:
+    """Only a live lease makes initiative preparation active work."""
+    return {
+        str(row.get("run_id"))
+        for row in runs
+        if isinstance(row, Mapping)
+        and str(row.get("status") or "") == "running"
+        and row.get("run_id")
+        and _future_timestamp(row.get("lease_until"))
+    }
+
+
+def _action_chat_job(memory: Any, action: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """Return a linked job only while the durable chat queue says it is active."""
+    job_id = action.get("job_id")
+    if not job_id:
+        return None
+    try:
+        job = memory.get_chat_job(int(job_id))
+    except (TypeError, ValueError):
+        return None
+    return job if isinstance(job, Mapping) and job.get("status") in {"queued", "running"} else None
+
+
+def _compact_summary(value: Any, limit: int = 220) -> str:
+    """Keep list rows purpose-written and bounded, even for old persisted data."""
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
+
+
 def _article_review(
     draft: Mapping[str, Any],
     sync: Mapping[str, Any],
@@ -89,6 +119,7 @@ def growth_tasks(
     include_article_content: bool = False,
 ) -> list[dict[str, Any]]:
     actions = {row.id: row.to_record() for row in memory.list_owner_actions(limit=None)}
+    active_runs = _active_run_ids(runs)
     draft_by_id = {row['id']: row for row in drafts}
     idea_by_draft = {str(row.get("draft_id")): row for row in article_ideas if row.get("draft_id") is not None}
     idea_by_id = {str(row.get("id")): row for row in article_ideas if row.get("id") is not None}
@@ -105,6 +136,7 @@ def growth_tasks(
             continue
         action = actions.get(action_id) or next((row for row in actions.values() if draft_id and row.get('draft_id') == draft_id), {})
         draft = draft_by_id.get(draft_id, {})
+        action_job = _action_chat_job(memory, action)
         if action:
             linked_actions.add(action['id'])
         if draft_id:
@@ -121,8 +153,10 @@ def growth_tasks(
             focus = 'planned' if _future_timestamp(next_run) else 'paused'
         elif state == 'waiting_for_owner':
             focus = 'needs_you'
-        elif state in {'preparing', 'validating', 'publishing', 'verifying_live'}:
-            focus = 'preparing'
+        elif state in {'preparing', 'validating'}:
+            focus = 'preparing' if str(initiative.get('growth_run_id') or '') in active_runs else 'paused'
+        elif state in {'publishing', 'verifying_live'}:
+            focus = 'preparing' if action_job else 'paused'
         else:
             focus = 'paused'
         if action.get('requirement') == 'owner_information' and action.get('state') in {'open', 'started', 'waiting'}:
@@ -149,16 +183,36 @@ def growth_tasks(
         if article_idea is None and isinstance(meta.get("article_research"), Mapping):
             article_idea = idea_by_id.get(str(meta["article_research"].get("article_idea_id")))
         article_draft = draft.get("kind") == "article"
+        article_related = article_draft or "article" in str(initiative.get("kind") or "").lower()
         article_data = _article_review(draft, meta.get("payload_sync", {}), article_idea, include_body=include_article_content) if article_draft else None
+        initiative_summary = str(initiative.get('rationale') or initiative.get('summary') or '').strip()
+        stale_work = (
+            state in {'preparing', 'validating'}
+            and str(initiative.get('growth_run_id') or '') not in active_runs
+        ) or (state in {'publishing', 'verifying_live'} and action_job is None)
+        summary_key = None
+        if article_related and not review_ready:
+            sync = meta.get("payload_sync") if isinstance(meta.get("payload_sync"), Mapping) else {}
+            sync_validation = sync.get("validation") if isinstance(sync.get("validation"), Mapping) else {}
+            is_blocked = state in {"blocked", "uncertain"} or sync.get("state") == "blocked" or sync_validation.get("status") == "blocked"
+            summary_key = "articleNeedsRepair" if is_blocked else "articleNotRunning" if stale_work else "articlePreparing"
+            initiative_summary = "This article needs a successful shared Payload check before it can be reviewed." if is_blocked else "This saved article is not currently being prepared for review." if stale_work else "Ada is preparing this article for review against the shared blog structure."
+        elif article_related:
+            initiative_summary = initiative_summary or "Ada prepared this article for your review."
+        initiative_scope = str(initiative.get('summary') or '').strip()
         if review_ready:
             focus = 'needs_you'
-        task_state = 'ready_for_review' if review_ready else 'blocked' if state == 'ready_for_review' else state
+        elif stale_work:
+            focus = 'paused'
+        task_state = 'ready_for_review' if review_ready else 'blocked' if state in {'ready_for_review', 'blocked', 'uncertain'} else state
+        if stale_work:
+            task_state = 'not_running'
         tasks.append({'id': f"initiative:{initiative['id']}", 'kind': initiative.get('kind'), 'title': (draft.get('title') or initiative.get('title')) if article_draft else initiative.get('title'),
-            'summary': initiative.get('rationale') or initiative.get('summary'), 'scope': initiative.get('summary'),
+            'summary': _compact_summary(initiative_summary), 'summaryKey': summary_key, 'scope': initiative_scope,
             'focus': 'needs_you' if review_ready else focus, 'state': task_state, 'draftId': draft_id, 'ownerActionId': action.get('id'),
             'conversationId': action.get('conversation_id'), 'approvalId': approval_id,
             'reviewPackageHash': review_hash, 'lastError': None,
-            'executionIssue': bool(initiative.get('last_error')),
+            'executionIssue': bool(initiative.get('last_error')) or stale_work,
             'canApprove': review_ready,
             'review': {'before': package.get('before'), 'after': package.get('after'), 'changes': package.get('changes'), 'route': package.get('route'), **({'article': article_data} if article_data else {})},
             'outcomes': [row for row in outcomes if row.get('initiative_id') == initiative['id']],
@@ -196,19 +250,28 @@ def growth_tasks(
         approval = memory.get_approval_request(action['approval_id']) if action.get('approval_id') else None
         state = action['state']
         next_run = action.get('snoozed_until')
-        focus = 'planned' if state == 'snoozed' and _future_timestamp(next_run) else 'preparing'
-        if action.get('requirement') == 'suggestion' and state == 'open':
-            focus = 'opportunity'
-        if action.get('requirement') == 'owner_information' and state in {'open', 'started', 'waiting'}:
+        job = _action_chat_job(memory, action)
+        execution_issue = False
+        focus = 'planned' if state == 'snoozed' and _future_timestamp(next_run) else 'opportunity'
+        if action.get('requirement') == 'owner_information' and state == 'open':
             focus = 'needs_you'
         if approval and approval.status.value == 'approved':
-            state, focus = 'publishing', 'preparing'
+            if job:
+                state, focus = 'publishing', 'preparing'
+            else:
+                state, focus, execution_issue = 'not_running', 'paused', True
         elif approval and approval.status.value == 'failed':
             state, focus = 'failed', 'paused'
+            execution_issue = True
         elif approval and approval.status.value in {'declined', 'expired'}:
             state, focus = ('rejected' if approval.status.value == 'declined' else 'superseded'), 'completed'
-        elif state in {'started', 'waiting'} and action.get('requirement') != 'owner_information':
-            focus = 'preparing'
+        elif state in {'started', 'waiting'}:
+            if job:
+                focus = 'preparing'
+            else:
+                state, focus, execution_issue = 'not_running', 'paused', True
+        elif state == 'snoozed' and not _future_timestamp(next_run):
+            state, focus, execution_issue = 'not_running', 'paused', True
         # A generic owner action is not itself a website decision. Only exact,
         # validated initiatives or genuine owner-information requests enter the
         # review-first inbox.
@@ -216,6 +279,7 @@ def growth_tasks(
             'focus': focus, 'state': state,
             'ownerActionId': action['id'], 'conversationId': action.get('conversation_id'), 'draftId': action.get('draft_id'),
             'approvalId': action.get('approval_id'), 'requirement': action.get('requirement'), 'canApprove': False,
+            'executionIssue': execution_issue,
             'nextRun': action.get('snoozed_until'), 'updatedAt': action.get('updated_ts')})
     for draft in drafts:
         if draft.get('kind') == 'reflection' and draft.get('status') == 'pending' and draft['id'] not in linked_drafts:
@@ -277,22 +341,33 @@ def growth_tasks(
         state = str(sync.get('state') or 'not_synced')
         if article_ready:
             focus = 'needs_you'
-        elif state in {'syncing', 'validating', 'preparing'}:
-            focus = 'preparing'
         else:
             focus = 'paused'
-        summary = (
-            (article_data or {}).get('rationale')
-            or ('Ready for your review.' if article_ready else 'Ada needs to finish preparing this article in Payload before you can review it.')
-        )
+        stale_sync = state in {'syncing', 'validating', 'preparing'}
+        rationale = str((article_data or {}).get('rationale') or '').strip()
+        validation = sync.get('validation') if isinstance(sync.get('validation'), Mapping) else {}
+        blocked = sync.get('state') == 'blocked' or validation.get('status') == 'blocked'
+        summary_key = None
+        if article_ready:
+            summary = _compact_summary(rationale or 'Ada prepared this article for your review.')
+        elif blocked:
+            summary = 'This article needs a successful shared Payload check before it can be reviewed.'
+            summary_key = 'articleNeedsRepair'
+        elif stale_sync:
+            summary = 'This saved article is not currently being prepared for review.'
+            summary_key = 'articleNotRunning'
+        else:
+            summary = 'Ada is preparing this article for review against the shared blog structure.'
+            summary_key = 'articlePreparing'
+        scope = rationale
         tasks.append({'id': f"draft:{draft['id']}", 'kind': draft['kind'], 'title': draft['title'],
-            'summary': summary,
-            'focus': focus, 'state': 'ready_for_review' if article_ready else state, 'draftId': draft['id'],
+            'summary': summary, 'summaryKey': summary_key, 'scope': scope,
+            'focus': focus, 'state': 'ready_for_review' if article_ready else 'not_running' if stale_sync else state, 'draftId': draft['id'],
             'reviewPackageHash': meta.get('review_package_hash') if article_ready else None,
             'review': {'article': article_data} if article_data else None,
             'canApprove': article_ready,
             'lastError': None,
-            'executionIssue': bool((sync.get('validation') or {}).get('reason')),
+            'executionIssue': bool((sync.get('validation') or {}).get('reason')) or stale_sync,
             'updatedAt': draft.get('updated_ts')})
     for idea in article_ideas:
         if idea.get('draft_id'):
@@ -302,16 +377,26 @@ def growth_tasks(
         if state == 'held':
             continue
         technical_failure = state in {'blocked', 'failed', 'uncertain'}
-        focus = 'paused' if technical_failure else 'opportunity' if state in {'selected', 'proposed'} else 'preparing'
+        research_active = state == 'research_requested' and bool(idea.get('research_run_id'))
+        serp_active = state == 'serp_requested' and bool(idea.get('serp_run_id'))
+        research_complete = state == 'researched' and bool(idea.get('researched_ts'))
+        missing_run = state == 'research_requested' and not research_active or state == 'serp_requested' and not serp_active
+        stale_idea = state == 'preparing' or missing_run or state == 'researched' and not research_complete
+        genuinely_active = research_active or serp_active
+        focus = 'paused' if technical_failure or stale_idea else 'opportunity' if state in {'selected', 'proposed'} or research_complete else 'preparing' if genuinely_active else 'paused'
+        audience_need = str(idea_data.get('audience_need') or '').strip()
+        summary_key = 'articleResearchNeedsRepair' if technical_failure or missing_run else 'articleResearchNotRunning' if stale_idea else 'articleResearchComplete' if research_complete else 'articleResearchActive' if genuinely_active else 'articleOpportunity'
         tasks.append({
             'id': f"article-idea:{idea.get('id')}",
             'kind': 'article_research',
             'title': idea_data.get('working_title') or 'Ada article research',
-            'summary': ('Ada could not complete this research and needs to repair it.' if technical_failure else idea_data.get('audience_need') or 'Ada found a reader-led article opportunity. Ask Ada to prepare it for review.'),
-            'focus': focus,
-            'state': state,
+            'summary': ('Ada could not complete this research and needs to repair it.' if technical_failure or missing_run else 'This research has stopped before an article draft was prepared.' if stale_idea else 'Ada’s research is complete; an article draft is not ready for review yet.' if research_complete else 'Ada is processing the requested research; no article draft is ready yet.' if genuinely_active else 'Ada found a reader question worth exploring.'),
+            'summaryKey': summary_key,
+            'scope': audience_need,
+            'focus': 'opportunity' if research_complete else focus,
+            'state': 'not_running' if stale_idea else state,
             'canApprove': False,
-            'executionIssue': technical_failure,
+            'executionIssue': technical_failure or stale_idea,
             'lastError': None,
             'updatedAt': idea.get('updated_ts') or idea.get('created_ts'),
         })
