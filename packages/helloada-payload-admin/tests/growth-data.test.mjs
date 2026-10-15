@@ -34,7 +34,7 @@ test('Growth has one task list, not separate advice, schedule and approval windo
   assert.match(tasks, /helloada-growth-task-list/);
   assert.doesNotMatch(tasks, /helloada-growth-sidebar/);
   assert.match(tasks, /helloada-growth-support-rail/);
-  assert.match(tasks, /const recentWork = tasks/);
+  assert.match(tasks, /const recentWork = ownerQueue\?\.recentResultIds\.map\(agendaTask\)/);
   assert.match(tasks, /growth_task/);
   assert.match(tasks, /lastOpenedTask/);
   assert.match(tasks, /writeGrowthLocation\(task\.focus, task\.id, "pushState"\)/);
