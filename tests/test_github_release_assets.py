@@ -41,9 +41,12 @@ def test_verify_release_dependencies_checks_published_artifact_bytes(tmp_path, m
     (tmp_path / 'package.json').write_text(json.dumps({'dependencies': packages}))
     (tmp_path / 'package-lock.json').write_text(json.dumps({'packages': locked}))
 
+    fetched_releases = []
+
     def fake_fetch(path, token, binary=False):
         if '/releases/tags/' in path:
             tag = path.rsplit('/', 1)[-1]
+            fetched_releases.append(tag)
             return release_assets[tag]
         asset_id = path.rsplit('/', 1)[-1]
         return artifact_bytes[asset_id]
@@ -54,6 +57,12 @@ def test_verify_release_dependencies_checks_published_artifact_bytes(tmp_path, m
     assert [item['package'] for item in evidence] == list(names)
     assert all(item['integrity'].startswith('sha512-') for item in evidence)
     assert len(evidence) == 2
+    fetched_releases.clear()
+    core_only = module.verify_release_dependencies(tmp_path, 'test-token', package_names=(names[1],))
+    assert [item['package'] for item in core_only] == [names[1]]
+    assert fetched_releases == ['test-release-2']
+    with pytest.raises(ValueError, match='Only declared private release packages'):
+        module.verify_release_dependencies(tmp_path, 'test-token', package_names=('@other/package',))
 
 
     original_package = (tmp_path / 'package.json').read_bytes()

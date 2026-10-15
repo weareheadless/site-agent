@@ -645,10 +645,13 @@ def register_growth_jobs(scheduler: Scheduler, config: dict[str, Any], context: 
         "growth_weekly": {"every": "weekly", "weekday": "monday", "at": "08:30"},
         "growth_monthly": {"every": "monthly", "day": 1, "at": "09:00"},
         "growth_pending": {"every": "1h"},
+        "growth_article_sync": {"every": "1h"},
     }
     for name, spec in schedules.items():
         if name == "growth_pending":
             operation = lambda: run_pending_growth(context)
+        elif name == "growth_article_sync":
+            operation = lambda: _mirror_article_drafts(context)
         else:
             trigger = name.removeprefix("growth_")
             operation = lambda trigger=trigger: run_growth_cycle(context, trigger=trigger)
@@ -656,7 +659,7 @@ def register_growth_jobs(scheduler: Scheduler, config: dict[str, Any], context: 
         # Run initial review and reconciliation once on activation; subsequent
         # strategy work follows its real calendar slot without catch-up runs.
         if scheduler.memory.kv_get(f"next_run:{name}") is None:
-            next_run = scheduler.clock() if name in {"growth_initial", "growth_pending"} else compute_next(scheduler.jobs[-1][1], scheduler.clock(), timezone_name=scheduler.timezone_name)
+            next_run = scheduler.clock() if name in {"growth_initial", "growth_pending", "growth_article_sync"} else compute_next(scheduler.jobs[-1][1], scheduler.clock(), timezone_name=scheduler.timezone_name)
             scheduler.memory.kv_set(f"next_run:{name}", next_run)
     # These are independent maintenance/measurement operations, not competing
     # recommendation producers. Inventory failure must not stop either one.

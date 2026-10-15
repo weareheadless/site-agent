@@ -80,9 +80,31 @@ def test_approved_work_is_with_ada_not_a_second_owner_decision(tmp_path):
         owner_action_label='Publish', effect_class=EffectClass.SITE_MUTATION, action_id=action.id)
     approvals.decide(approval.approval_id, True)
     task, = growth_tasks(memory, [], [], [], [])
+    assert task['focus'] == 'paused'
+    assert task['state'] == 'not_running'
+    assert task['executionIssue'] is True
+    assert not task['canApprove']
+    memory.close()
+
+
+def test_approved_work_is_active_only_while_its_linked_chat_job_is_queued_or_running(tmp_path):
+    memory = Memory(tmp_path / 'memory.db')
+    action = memory.create_owner_action(OwnerAction(capability_id='growth.publish', provider_id='payload',
+        title='Reviewed improvement', summary='Publish the approved version', action_label='Approve',
+        priority=ActionPriority.NORMAL, source_ref='growth:1', requirement=ActionRequirement.OWNER_DECISION, dedupe_key='growth:1'))
+    approvals = ApprovalService(memory, actions=OwnerActionService(memory))
+    approval = approvals.create(Artifact(kind=ArtifactKind.SITE_CHANGE, title='Reviewed improvement', summary='Exact change',
+        renderer='site_change', capability_id='growth.publish', provider_id='payload', content_hash='sha256:exact'),
+        owner_action_label='Publish', effect_class=EffectClass.SITE_MUTATION, action_id=action.id)
+    approvals.decide(approval.approval_id, True)
+    conversation_id = memory.create_conversation('Publish approved change')
+    job_id = memory.enqueue_chat_job(conversation_id, 'Publish approved change')
+    memory.link_owner_action(action.id, conversation_id=conversation_id, job_id=job_id)
+
+    task, = growth_tasks(memory, [], [], [], [])
     assert task['focus'] == 'preparing'
     assert task['state'] == 'publishing'
-    assert not task['canApprove']
+    assert task['executionIssue'] is False
     memory.close()
 
 
@@ -224,6 +246,36 @@ def test_open_suggestions_are_opportunities_not_fake_active_work(tmp_path):
     memory.close()
 
 
+def test_started_owner_action_requires_a_live_linked_chat_job(tmp_path):
+    memory = Memory(tmp_path / 'memory.db')
+    stale = memory.create_owner_action(OwnerAction(
+        capability_id='growth.review', provider_id='site-agent', title='Review the service page',
+        summary='Ask Ada to explain this recommendation.', action_label='Ask Ada', priority=ActionPriority.NORMAL,
+        source_ref='growth:stale', requirement=ActionRequirement.OWNER_DECISION, dedupe_key='growth:stale',
+        state='started',
+    ))
+    active = memory.create_owner_action(OwnerAction(
+        capability_id='growth.review', provider_id='site-agent', title='Review the article outline',
+        summary='Ada is answering the owner.', action_label='Ask Ada', priority=ActionPriority.NORMAL,
+        source_ref='growth:active', requirement=ActionRequirement.OWNER_DECISION, dedupe_key='growth:active',
+        state='started',
+    ))
+    conversation_id = memory.create_conversation('Review the article outline')
+    job_id = memory.enqueue_chat_job(conversation_id, 'Explain this recommendation')
+    memory.link_owner_action(active.id, conversation_id=conversation_id, job_id=job_id)
+
+    tasks = {row['id']: row for row in growth_tasks(memory, [], [], [], [])}
+    stale_task = tasks[f'action:{stale.id}']
+    assert stale_task['focus'] == 'paused'
+    assert stale_task['state'] == 'not_running'
+    assert stale_task['executionIssue'] is True
+    active_task = tasks[f'action:{active.id}']
+    assert active_task['focus'] == 'preparing'
+    assert active_task['state'] == 'started'
+    assert active_task['executionIssue'] is False
+    memory.close()
+
+
 def test_blocked_article_body_is_available_only_in_explicit_detail_request(tmp_path):
     memory = Memory(tmp_path / 'memory.db')
     body = 'Private full article text must not appear in the task list.'
@@ -232,9 +284,96 @@ def test_blocked_article_body_is_available_only_in_explicit_detail_request(tmp_p
     })
     task, = growth_tasks(memory, [], memory.list_drafts(), [], [])
     assert task['focus'] == 'paused'
+    assert task['state'] == 'blocked'
     assert body not in task['summary']
     assert 'body' not in task['review']['article']
     detailed, = growth_tasks(memory, [], memory.list_drafts(), [], [], include_article_content=True)
     assert detailed['review']['article']['body'] == body
     assert detailed['canApprove'] is False
     memory.close()
+
+
+def test_initiative_is_only_called_active_when_its_growth_run_has_a_live_lease(tmp_path):
+    memory = Memory(tmp_path / 'memory.db')
+    initiative = {'id': 12, 'kind': 'payload_content', 'title': 'Improve the services page',
+        'state': 'preparing', 'growth_run_id': 'run-12', 'summary': 'Exact context for Ada.'}
+
+    stale, = growth_tasks(memory, [initiative], [], [], [], [
+        {'run_id': 'run-12', 'status': 'complete', 'lease_until': None},
+    ])
+    assert stale['focus'] == 'paused'
+    assert stale['state'] == 'not_running'
+    assert stale['executionIssue'] is True
+
+    active, = growth_tasks(memory, [initiative], [], [], [], [
+        {'run_id': 'run-12', 'status': 'running', 'lease_until': '2026-10-05T12:05:00+00:00'},
+    ])
+    assert active['focus'] == 'preparing'
+    assert active['state'] == 'preparing'
+    assert active['executionIssue'] is False
+    memory.close()
+
+
+def test_stale_article_research_is_not_shown_as_active_or_as_a_full_brief(tmp_path):
+    memory = Memory(tmp_path / 'memory.db')
+    audience_need = 'A very long audience need that should be available in task detail but never shown as a list-row summary.'
+    ideas = [
+        {'id': 31, 'status': 'preparing', 'idea_json': {'working_title': 'A saved topic', 'audience_need': audience_need}},
+        {'id': 32, 'status': 'research_requested', 'research_run_id': 'keyword-run-32', 'idea_json': {'working_title': 'A current topic', 'audience_need': audience_need}},
+        {'id': 33, 'status': 'serp_requested', 'serp_run_id': 'serp-run-33', 'idea_json': {'working_title': 'A current SERP check', 'audience_need': audience_need}},
+        {'id': 34, 'status': 'research_requested', 'idea_json': {'working_title': 'An unlinked research request', 'audience_need': audience_need}},
+        {'id': 35, 'status': 'researched', 'researched_ts': '2026-10-05T11:00:00+00:00', 'idea_json': {'working_title': 'Research complete, draft pending', 'audience_need': audience_need}},
+    ]
+    tasks = {row['id']: row for row in growth_tasks(memory, [], [], [], [], article_ideas=ideas)}
+
+    stale = tasks['article-idea:31']
+    assert stale['focus'] == 'paused'
+    assert stale['state'] == 'not_running'
+    assert stale['summaryKey'] == 'articleResearchNotRunning'
+    assert stale['summary'] != audience_need
+    assert stale['scope'] == audience_need
+    active = tasks['article-idea:32']
+    assert active['focus'] == 'preparing'
+    assert active['summary'] != audience_need
+    assert active['scope'] == audience_need
+    serp = tasks['article-idea:33']
+    assert serp['focus'] == 'preparing'
+    assert serp['summaryKey'] == 'articleResearchActive'
+    unlinked = tasks['article-idea:34']
+    assert unlinked['focus'] == 'paused'
+    assert unlinked['state'] == 'not_running'
+    assert unlinked['executionIssue'] is True
+    complete = tasks['article-idea:35']
+    assert complete['focus'] == 'opportunity'
+    assert complete['summaryKey'] == 'articleResearchComplete'
+    assert complete['executionIssue'] is False
+    memory.close()
+
+
+def test_saved_changes_and_incomplete_reflection_are_stopped_not_approvable(tmp_path):
+    memory = Memory(tmp_path / 'memory.db')
+    reflection_id = memory.save_draft(
+        'Self-reflection: proposed voice adjustments', '', kind='reflection',
+        meta={'voice_notes': ['Use clearer explanations'], 'avoid': ['generic claims']},
+    )
+    edit_id = memory.save_draft(
+        'Review the journal links', '', kind='edit',
+        meta={
+            'summary': 'Connect the journal articles into a useful reading path.',
+            'ops': [{
+                'op': 'edit',
+                'path': 'content/articles/example.md',
+                'find': 'Read the next article.',
+                'replace': 'Read the related guide.',
+            }],
+        },
+    )
+    merge_id = memory.save_draft(
+        'Fix the Journal link', '', kind='merge',
+        meta={'summary': 'Repair the broken Journal navigation link.', 'payload_sync': {'state': 'blocked'}},
+    )
+    tasks = {row['id']: row for row in growth_tasks(memory, [], memory.list_drafts(), [], [])}
+
+    reflection = tasks[f'settings:{reflection_id}']
+    assert reflection['focus'] == 'paused'
+    assert reflection['state'] == 'not_running'

@@ -44,7 +44,7 @@ jobs:
       - name: Verify locked shared package release assets
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python -m site_agent.application.release_dependencies
+        run: python -m site_agent.application.release_dependencies --package @weareheadless/helloada-payload-core
 
   next-payload-template:
     runs-on: ubuntu-latest
@@ -112,3 +112,6 @@ jobs:
         run: |
           npm test
           npm run typecheck
+      - name: Rebuild and inspect the locked Payload admin candidate
+        if: matrix.package == 'helloada-payload-admin'
+        run: node scripts/package-payload-admin-release.mjs --candidate

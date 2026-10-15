@@ -8,10 +8,11 @@ const root = fileURLToPath(new URL('../', import.meta.url))
 const packageRoot = path.join(root, 'packages/helloada-payload-admin')
 const pkg = JSON.parse(readFileSync(path.join(packageRoot, 'package.json'), 'utf8'))
 const sourceCommit = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim()
-if (execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }).trim()) throw new Error('Release requires a clean checkout')
-const tag = process.env.RELEASE_TAG
-if (tag !== `payload-admin-v${pkg.version}`) throw new Error('Release tag/version mismatch')
-if (execFileSync('git', ['rev-parse', `${tag}^{commit}`], { cwd: root, encoding: 'utf8' }).trim() !== sourceCommit) throw new Error('Release tag does not identify this checkout')
+const candidate = process.argv.includes('--candidate')
+if (!candidate && execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }).trim()) throw new Error('Release requires a clean checkout')
+const tag = candidate ? 'payload-admin-v' + pkg.version : process.env.RELEASE_TAG
+if (tag !== 'payload-admin-v' + pkg.version) throw new Error('Release tag/version mismatch')
+if (!candidate && execFileSync('git', ['rev-parse', tag + '^{commit}'], { cwd: root, encoding: 'utf8' }).trim() !== sourceCommit) throw new Error('Release tag does not identify this checkout')
 const output = path.join(packageRoot, '.release')
 mkdirSync(output, { recursive: true })
 const packed = JSON.parse(execFileSync('npm', ['pack', '--json', '--pack-destination', output], { cwd: packageRoot, encoding: 'utf8' }))[0]

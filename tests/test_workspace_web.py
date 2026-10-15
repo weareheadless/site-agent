@@ -1421,6 +1421,6 @@ def test_payload_tenant_starts_shared_growth_jobs_without_legacy_scheduler_opt_i
     tenant.scheduler_thread.join(timeout=1)
 
     names = {name for name, _spec, _fn in scheduler.jobs}
-    assert {"growth_initial", "growth_daily", "growth_weekly", "growth_monthly", "growth_pending"} <= names
+    assert {"growth_initial", "growth_daily", "growth_weekly", "growth_monthly", "growth_pending", "growth_article_sync"} <= names
     assert all(memory.kv_get(f"next_run:{name}") is not None for name in names if name.startswith("growth_"))
     memory.close()
