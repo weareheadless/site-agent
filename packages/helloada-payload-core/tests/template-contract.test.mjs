@@ -11,11 +11,22 @@ const repositoryRoot = path.resolve(fileURLToPath(new URL('../../../', import.me
 const templatePath = (...parts) => path.join(repositoryRoot, 'src/site_agent/templates/next-payload', ...parts)
 const manifest = JSON.parse(readFileSync(templatePath('template-manifest.json'), 'utf8'))
 const corePackage = JSON.parse(readFileSync(path.join(repositoryRoot, 'packages/helloada-payload-core/package.json'), 'utf8'))
-const adminPackage = JSON.parse(readFileSync(path.join(repositoryRoot, 'packages/helloada-payload-admin/package.json'), 'utf8'))
+const templatePackage = JSON.parse(readFileSync(templatePath('package.json'), 'utf8'))
+const templateLock = JSON.parse(readFileSync(templatePath('package-lock.json'), 'utf8'))
 
-test('template manifest package versions match the canonical packages', () => {
+test('template manifest versions match the canonical core and explicitly pinned admin artifact', () => {
   assert.equal(manifest.payloadCore, corePackage.version)
-  assert.equal(manifest.payloadAdmin, adminPackage.version)
+
+  const adminPin = templateLock.packages['node_modules/@weareheadless/helloada-payload-admin']
+  const adminDependency = templatePackage.dependencies['@weareheadless/helloada-payload-admin']
+  const coreDependency = templatePackage.dependencies['@weareheadless/helloada-payload-core']
+
+  assert.equal(manifest.payloadAdmin, adminPin.version)
+  assert.equal(templateLock.packages['node_modules/@weareheadless/helloada-payload-core'].version, manifest.payloadCore)
+  assert.equal(templateLock.packages[''].dependencies['@weareheadless/helloada-payload-core'], coreDependency)
+  assert.equal(templateLock.packages[''].dependencies['@weareheadless/helloada-payload-admin'], adminDependency)
+  assert.equal(adminPin.resolved, adminDependency)
+  assert.match(adminDependency, new RegExp(`payload-admin-v${manifest.payloadAdmin}/`))
 })
 
 test('new-site health checks the same full schema identity as the bootstrap manifest', () => {
