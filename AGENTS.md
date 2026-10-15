@@ -98,11 +98,13 @@ realization, autonomous repair, or end-to-end acceptance requirements.
   superseded for UI topology; it must not be used to reintroduce a second
   owner-facing intake/design surface.
 
-For the current Growth owner experience, article-schema repair, backlog
-reconciliation and coordinated API/Worker release acceptance, follow
-`docs/growth-decision-workspace-implementation-plan.md`. Its October 15 live
-audit supersedes overlapping overview, task-state and rollout assumptions in
-older plans. Rendering a screen is not end-to-end Growth validation. Retain
+For the current Growth owner experience, article-schema repair, connected
+backlog, recommendation progression and coordinated API/Worker release
+acceptance, follow `docs/growth-owner-experience-implementation-plan.md`. It
+is the current owner-approved implementation contract and supersedes the
+earlier screen/state plan in
+`docs/growth-decision-workspace-implementation-plan.md`. Rendering a screen
+is not end-to-end Growth validation. Retain
 `docs/ada-growth-seo-aeo-pipeline-implementation-plan.md` for the underlying
 research, evidence, goals, budget and orchestration requirements. Reuse the canonical
 evidence, candidate, approval and outcome path; do not introduce silent

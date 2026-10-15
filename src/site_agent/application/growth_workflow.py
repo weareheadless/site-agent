@@ -628,7 +628,11 @@ def run_growth_cycle(context: dict[str, Any], *, trigger: str = "weekly", run_id
         cycle = memory.growth_strategy_cycle(run["run_id"], detail["evidenceArtifactId"])
         existing = memory.list_strategy_initiatives(cycle["id"])
         by_title = {row["title"]: row for row in existing}
-        valid_refs = {row["sourceRef"] for row in material["inventory"]} | {row.get("sourceRef") for row in material["sources"] if row.get("sourceRef")}
+        valid_refs = (
+            {row["sourceRef"] for row in material["inventory"]}
+            | {str(row["id"]) for row in material["sources"] if row.get("id")}
+            | {row.get("sourceRef") for row in material["sources"] if row.get("sourceRef")}
+        )
         ready_sources = {row["id"] for row in material["sources"] if row["state"] == "ready"}
         candidate_ids, blocks, unprepared_opportunities = [], [], []
         active = [row for row in memory.list_strategy_initiatives(limit=500) if row["state"] in {"preparing", "validating", "ready_for_review", "publishing", "verifying_live"} and row.get("growth_run_id") != run["run_id"]]
@@ -640,7 +644,7 @@ def run_growth_cycle(context: dict[str, Any], *, trigger: str = "weekly", run_id
                 unprepared_opportunities.append({
                     **opportunity,
                     "preparationNote": (
-                        "Ada identified this opportunity, but the shared Growth workflow has no exact reviewable execution route for it yet."
+                        "This finding is retained for Ada's internal reassessment because this scheduled workflow cannot prepare its requested effect. It is not an owner task or an approval. Reassess it when the relevant shared execution route becomes available."
                         + (f" Required evidence is also not ready: {', '.join(sorted(missing))}." if missing else "")
                     ),
                 })

@@ -1,6 +1,4 @@
 from copy import deepcopy
-from types import SimpleNamespace
-
 import pytest
 
 from site_agent.core.jobs import _mark_article_payload_blocked, _mirror_article_draft_to_workspace
@@ -15,11 +13,27 @@ POST_FIELDS = frozenset({
 
 class Payload:
     def __init__(self):
-        self.contract = SimpleNamespace(collection_fields={"posts": POST_FIELDS})
+        self.authoring_contract = {
+            "enabled": {"collections": ["pages", "posts"], "globals": []},
+            "authoring": {
+                "collections": {
+                    "posts": [{"name": field} for field in sorted(POST_FIELDS)],
+                },
+                "globals": {},
+            },
+        }
         self.documents = []
         self.creates = 0
         self.updates = 0
         self.publishes = 0
+
+    def require_authoring_contract(self):
+        return self.authoring_contract
+
+    def authoring_fields(self, kind, slug, *, authoring_contract=None):
+        assert kind == "collection" and slug == "posts"
+        contract = authoring_contract or self.authoring_contract
+        return tuple(field["name"] for field in contract["authoring"]["collections"][slug])
 
     def list(self, collection, *, draft=True, limit=100):
         assert collection == "posts" and draft is True

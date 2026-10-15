@@ -19,8 +19,10 @@ const migrationsPath = path.join(siteRoot, 'src/migrations')
 const contract = createHelloAdaContentContract()
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
 const corePackage = JSON.parse(readFileSync(path.join(root, 'packages/helloada-payload-core/package.json'), 'utf8'))
-const adminPackage = JSON.parse(readFileSync(path.join(root, 'packages/helloada-payload-admin/package.json'), 'utf8'))
 const sitePackage = JSON.parse(readFileSync(path.join(siteRoot, 'package.json'), 'utf8'))
+const siteLock = JSON.parse(readFileSync(path.join(siteRoot, 'package-lock.json'), 'utf8'))
+const adminPin = siteLock.packages?.['node_modules/@weareheadless/helloada-payload-admin']
+const adminVersion = adminPin?.version
 const migrationIndex = readFileSync(path.join(migrationsPath, 'index.ts'), 'utf8')
 const migrationNames = [...migrationIndex.matchAll(/import\s+\*\s+as\s+migration_(\w+)\s+from\s+'\.\/([^']+)'\s*;?/g)]
 if (!migrationNames.length) throw new Error('The canonical template must declare its Payload migrations.')
@@ -62,14 +64,18 @@ const migrationHead = createHash('sha256')
 if (contract.coreVersion !== corePackage.version) {
   throw new Error('Generated contract core version must match the shared package version.')
 }
-if (!sitePackage.dependencies['@weareheadless/helloada-payload-admin']?.includes(`payload-admin-v${adminPackage.version}/`)) {
-  throw new Error('Site admin artifact pin does not match the shared package version.')
+const adminReleaseAsset = `https://github.com/weareheadless/site-agent/releases/download/payload-admin-v${adminVersion}/weareheadless-helloada-payload-admin-${adminVersion}.tgz`
+if (!/^\d+\.\d+\.\d+$/.test(String(adminVersion || ''))
+  || sitePackage.dependencies['@weareheadless/helloada-payload-admin'] !== adminReleaseAsset
+  || adminPin?.resolved !== adminReleaseAsset
+  || !/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(String(adminPin?.integrity || ''))) {
+  throw new Error('Site admin dependency is not pinned to an exact immutable release artifact.')
 }
 if (!sitePackage.dependencies['@weareheadless/helloada-payload-core']?.includes(`helloada-payload-core-v${corePackage.version}/`)) {
   throw new Error('Site core artifact pin does not match the shared package version.')
 }
 
-manifest.payloadAdmin = adminPackage.version
+manifest.payloadAdmin = adminVersion
 manifest.payloadCore = corePackage.version
 manifest.schemaRevision = contract.schemaRevision
 manifest.contentContract = contract.contract
@@ -99,7 +105,7 @@ writeFileSync(contractPath, `${JSON.stringify(contract, null, 2)}\n`)
 writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`)
 for (const [name, version] of Object.entries({
   HELLOADA_TEMPLATE_SCHEMA: String(manifest.templateSchema),
-  HELLOADA_PAYLOAD_ADMIN_VERSION: adminPackage.version,
+  HELLOADA_PAYLOAD_ADMIN_VERSION: adminVersion,
   HELLOADA_PAYLOAD_CORE_VERSION: corePackage.version,
   HELLOADA_PAYLOAD_SCHEMA_REVISION: String(contract.schemaRevision),
   HELLOADA_CONTENT_CONTRACT_VERSION: contract.contract,

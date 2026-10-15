@@ -27,9 +27,19 @@ test('Growth translations load and contain the unified plan for every supported 
       'growth.decisionCtaArticle', 'growth.decisionCtaChanges', 'growth.articleWhyThis',
       'growth.serviceNoticeTitle', 'growth.serviceNoticeBody', 'growth.openAdaWork',
       'growth.seeAllDecisions', 'growth.noDecisions', 'growth.noDecisionAskPrompt',
-      'growth.resultsTitle', 'growth.resultsIntro', 'growth.attentionLabel', 'growth.nextScheduledLabel']) {
+      'growth.resultsTitle', 'growth.resultsIntro', 'growth.attentionLabel', 'growth.nextScheduledLabel',
+      'growth.growthProgressReadyForReview', 'growth.growthProgressServiceIssue',
+      'growth.workSameIssueGroup', 'growth.workShowAffectedItems',
+      'growth.growthOwnerReviewTask', 'growth.assessmentExecutionFailed', 'growth.assessmentExecutionBlocked',
+      'growth.assessmentExecutionUncertain', 'growth.assessmentExecutionStale',
+      'growth.articleResearchLocaleNeedsRepair', 'growth.articleResearchRequestNeedsRepair',
+      'growth.assessmentNextRetry', 'growth.lastGrowthReview']) {
       assert.equal(typeof growthCopy[language][key], 'string', `${language}: ${key}`)
       assert.ok(growthCopy[language][key].length > 0)
     }
+  }
+  for (const language of ['en', 'fr', 'es']) {
+    assert.match(growthCopy[language]['growth.workIntro'], /Ada/);
+    assert.doesNotMatch(growthCopy[language]['growth.workIntro'], /decision|décision/iu);
   }
 })

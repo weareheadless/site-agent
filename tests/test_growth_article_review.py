@@ -32,17 +32,17 @@ def service_for(tmp_path, meta, payload=None):
 
 
 def test_blocked_article_detail_shows_saved_draft_without_approval_authority(tmp_path):
-    reason = "The Payload Posts contract still needs reconciliation."
     memory, draft_id, service, tenant = service_for(
         tmp_path,
-        {"payload_sync": {"state": "blocked", "validation": {"status": "blocked", "reason": reason}}},
+        {"payload_sync": {"state": "blocked", "validation": {"status": "blocked", "reason": "private implementation detail"}}},
     )
 
     result = service.growth_article_review(draft_id, tenant=tenant)
 
     assert result["reviewable"] is False
     assert result["reviewPackageHash"] is None
-    assert result["blockedReason"] == reason
+    assert result["blockedReasonCode"] == "articlePayloadSyncBlocked"
+    assert "private implementation detail" not in str(result)
     assert result["article"]["body"] == "# Original draft\n\nThis copy must remain inspectable."
     assert result["article"]["bodyFormat"] == "markdown"
     memory.close()
@@ -94,7 +94,7 @@ def test_changed_payload_revision_is_visible_but_not_reviewable(tmp_path):
 
     assert result["reviewable"] is False
     assert result["reviewPackageHash"] is None
-    assert "changed after Ada last checked it" in result["blockedReason"]
+    assert result["blockedReasonCode"] == "articlePayloadChanged"
     assert result["article"]["body"] == body
     assert result["article"]["bodyFormat"] == "lexical"
     assert result["article"]["title"] == "The current title"

@@ -263,25 +263,42 @@ def test_crawlseo_hand_adapter_maps_article_candidates_and_serp_to_fixed_tools()
 
 
 def test_crawlseo_application_validates_candidate_query_bounds():
-    from site_agent.application.crawlseo import CrawlSEOApplicationError
+    from site_agent.application.crawlseo import CrawlSEOApplicationError, CrawlSEORequestNotDispatched
 
     class FakeProvider:
         def request_article_keyword_research(self, **kwargs):
             raise AssertionError("invalid queries must not reach the provider")
 
     service = CrawlSEOApplicationService(FakeProvider())
-    with pytest.raises(CrawlSEOApplicationError, match="5 to 10"):
+    with pytest.raises(CrawlSEORequestNotDispatched, match="5 to 10"):
         service.request_article_keyword_research(
             idea_key="idea", idea_summary="summary",
             queries=["a", "b", "c", "d"],
             language="en", country="US", idempotency_key="k",
         )
-    with pytest.raises(CrawlSEOApplicationError, match="unique"):
+    with pytest.raises(CrawlSEORequestNotDispatched, match="unique"):
         service.request_article_keyword_research(
             idea_key="idea", idea_summary="summary",
             queries=["a", "A", "c", "d", "e"],
             language="en", country="US", idempotency_key="k",
         )
+
+
+def test_crawlseo_provider_failure_is_not_mislabeled_as_proven_pre_dispatch():
+    from site_agent.application.crawlseo import CrawlSEOApplicationError, CrawlSEORequestNotDispatched
+
+    class ProviderFailure:
+        def request_article_keyword_research(self, **_kwargs):
+            raise RuntimeError("request is unavailable")
+
+    service = CrawlSEOApplicationService(ProviderFailure())
+    with pytest.raises(CrawlSEOApplicationError) as caught:
+        service.request_article_keyword_research(
+            idea_key="idea", idea_summary="summary",
+            queries=["a", "b", "c", "d", "e"],
+            language="en", country="US", idempotency_key="k",
+        )
+    assert not isinstance(caught.value, CrawlSEORequestNotDispatched)
 
 
 def test_crawlseo_transport_rejects_declared_and_streamed_oversize_responses():

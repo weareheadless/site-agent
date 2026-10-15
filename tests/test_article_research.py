@@ -1,6 +1,7 @@
 import pytest
 
 from site_agent.brain import article_research
+from site_agent.application.crawlseo import CrawlSEOApplicationError, CrawlSEORequestNotDispatched
 from site_agent.core.memory import Memory
 
 
@@ -68,7 +69,7 @@ class TwoStageService:
         self.requests.append(("serp", kwargs))
         if self.serp_request_failures > 0:
             self.serp_request_failures -= 1
-            raise RuntimeError("CrawlSEO article SERP research request is unavailable")
+            raise CrawlSEORequestNotDispatched("CrawlSEO keyword is invalid")
         return {"run_id": "run-serp", "status": "requested"}
 
     def article_serp_research_status(self, _run_id):
@@ -316,7 +317,7 @@ def test_pre_dispatch_request_failure_is_retried_without_reselecting_or_duplicat
         def request_article_keyword_research(self, **kwargs):
             self.requests += 1
             if self.requests == 1:
-                raise RuntimeError("CrawlSEO article keyword research request is unavailable")
+                raise CrawlSEORequestNotDispatched("CrawlSEO idea_summary is invalid")
             return {"run_id": "run-1", "status": "requested"}
 
     service = FlakyRequestService()
@@ -339,6 +340,43 @@ def test_pre_dispatch_request_failure_is_retried_without_reselecting_or_duplicat
         assert second["research_run_id"] == "run-1"
         assert service.requests == 2
         assert llm.calls == 1
+    finally:
+        memory.close()
+
+
+def test_local_crawlseo_request_validation_failure_is_not_marked_as_paid_outcome_uncertain():
+    error = CrawlSEORequestNotDispatched("CrawlSEO idea_summary is invalid")
+
+    assert article_research._request_not_dispatched(error)
+    assert not article_research._request_not_dispatched(CrawlSEOApplicationError("CrawlSEO request is unavailable"))
+
+
+def test_ambiguous_provider_failure_is_not_retried_as_a_pre_dispatch_rejection(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+
+    class AmbiguousRequestService:
+        requests = 0
+
+        def request_article_keyword_research(self, **_kwargs):
+            self.requests += 1
+            raise RuntimeError("CrawlSEO article keyword research request is unavailable")
+
+    service = AmbiguousRequestService()
+    context = {
+        "config": {"seo": {"article_research": {"enabled": True}}},
+        "memory": memory,
+        "crawlseo_service": service,
+        "llm": IdeaLLM(),
+    }
+    try:
+        article_research.select_and_request(context)
+        idea = memory.list_article_ideas(limit=1)[0]
+        reservation = memory.get_growth_budget_reservation(idea["keyword_budget_reservation_id"])
+        assert idea["status"] == "uncertain"
+        assert reservation["status"] == "uncertain"
+        article_research.select_and_request(context)
+        assert service.requests == 1
+        assert memory.get_article_idea(idea["id"])["status"] == "uncertain"
     finally:
         memory.close()
 

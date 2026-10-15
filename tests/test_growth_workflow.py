@@ -17,7 +17,8 @@ def test_owner_queue_indexes_decisions_and_excludes_opportunities_and_history():
         {"id": "failure:1", "focus": "paused", "executionIssue": True, "updatedAt": "2026-10-15T08:00:00Z"},
     ]
 
-    assert owner_queue(tasks) == {
+    agenda = owner_queue(tasks)
+    assert {key: value for key, value in agenda.items() if key != "progression"} == {
         "featuredDecisionId": "decision:urgent",
         "additionalDecisionIds": ["decision:normal"],
         "decisionCount": 2,
@@ -27,6 +28,9 @@ def test_owner_queue_indexes_decisions_and_excludes_opportunities_and_history():
         "recentResultIds": ["article:published", "result:1"],
         "attentionTaskId": "failure:1",
     }
+    assert agenda["progression"]["state"] == "ready_for_review"
+    assert agenda["progression"]["primaryTaskId"] == "decision:urgent"
+    assert agenda["progression"]["serviceIssueTaskId"] == "failure:1"
 
 
 def test_owner_queue_caps_secondary_decisions_without_losing_the_real_count():
@@ -63,13 +67,81 @@ def test_new_site_goal_and_reconciliation_are_durable_and_idempotent(tmp_path):
     assert snapshot["goal"]["revision"] == 1
     assert snapshot["ownerTimezone"] == "America/Cancun"
     assert snapshot["growthContractVersion"] == "owner-decisions-v1"
+    assert snapshot["ownerQueueContractVersion"] == "owner-queue-progression-v1"
     assert snapshot["ownerQueue"]["decisionCount"] == 0
+    assert snapshot["ownerQueue"]["progression"]["state"] == "not_started"
     assert "work" not in snapshot
     assert all("nextRun" in row for row in snapshot["activities"])
     assert all(row.get("lastError") is None for row in snapshot["tasks"])
     assert snapshot["evidence"]["artifactId"] is not None
     assert snapshot["evidence"]["sources"]
     memory.close()
+
+
+def test_owner_queue_uses_the_latest_assessment_not_a_newer_daily_evidence_refresh():
+    tasks = [
+        {"id": "work:article", "focus": "preparing", "kind": "article"},
+        {"id": "schedule:weekly", "focus": "planned", "kind": "schedule", "nextRun": "2099-10-20T09:00:00Z"},
+        {"id": "schedule:daily", "focus": "paused", "kind": "schedule", "executionIssue": True},
+    ]
+    runs = [{
+        "trigger": "weekly",
+        "status": "complete",
+        "updated_ts": "2026-10-13T10:00:00Z",
+        "detail": {"assessment": {"summary": "Reviewed the latest site evidence.", "unpreparedOpportunities": [{"title": "Finding"}]}},
+    }, {
+        "trigger": "daily",
+        "status": "complete",
+        "updated_ts": "2026-10-15T10:00:00Z",
+        "detail": {"material": {"sources": []}},
+    }]
+
+    progression = owner_queue(tasks, runs)["progression"]
+
+    assert progression["state"] == "service_issue"
+    assert progression["primaryTaskId"] == "schedule:daily"
+    assert progression["serviceIssueTaskId"] == "schedule:daily"
+    assert progression["latestAssessmentAt"] == "2026-10-13T10:00:00Z"
+    assert progression["latestAssessmentStatus"] == "complete"
+    assert progression["latestAssessmentSummary"] == "Reviewed the latest site evidence."
+    assert progression["deferredFindingCount"] == 1
+
+
+def test_historical_unsupported_assessment_ideas_do_not_block_the_owner_progression():
+    progression = owner_queue([], [{
+        "trigger": "weekly",
+        "status": "complete",
+        "updated_ts": "2026-10-15T10:00:00Z",
+        "detail": {"assessment": {
+            "summary": "Ada reviewed the latest evidence.",
+            "unpreparedOpportunities": [
+                {"kind": "article", "title": "Old pseudo-task"},
+                {"kind": "code", "title": "Unsupported frontend task"},
+            ],
+        }},
+    }])["progression"]
+
+    assert progression["state"] == "assessed"
+    assert progression["deferredFindingCount"] == 0
+
+
+def test_expired_running_assessment_is_not_presented_as_active_ada_work():
+    task = {
+        "id": "assessment:stale",
+        "kind": "assessment",
+        "focus": "paused",
+        "executionIssue": True,
+    }
+    progression = owner_queue([task], [{
+        "run_id": "stale",
+        "trigger": "owner_review",
+        "status": "running",
+        "updated_ts": "2026-10-15T10:00:00Z",
+        "lease_until": "2000-01-01T00:00:00Z",
+    }])["progression"]
+
+    assert progression["state"] == "service_issue"
+    assert progression["primaryTaskId"] == "assessment:stale"
 
 
 def test_growth_evidence_distinguishes_zero_stale_and_missing_sources(tmp_path):

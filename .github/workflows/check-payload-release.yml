@@ -44,7 +44,7 @@ jobs:
       - name: Verify locked shared package release assets
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: python -m site_agent.application.release_dependencies --package @weareheadless/helloada-payload-core
+        run: python -m site_agent.application.release_dependencies --package @weareheadless/helloada-payload-core --package @weareheadless/helloada-payload-admin
 
   next-payload-template:
     runs-on: ubuntu-latest

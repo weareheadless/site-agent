@@ -2350,7 +2350,7 @@ class ChatService:
                      if int(row.get("id") or 0) == normalized_id), {})
         sync = meta.get("payload_sync") if isinstance(meta, Mapping) and isinstance(meta.get("payload_sync"), Mapping) else {}
         reviewable = bool(task.get("canApprove"))
-        blocked_reason = None
+        blocked_reason_code = None
         if sync.get("document_id"):
             payload = runtime_context.get("payload_gateway")
             article = dict(article)
@@ -2358,7 +2358,7 @@ class ChatService:
             article["bodyFormat"] = "lexical"
             if payload is None:
                 reviewable = False
-                blocked_reason = "The Payload draft cannot be checked right now. Ada must verify it before it can be approved."
+                blocked_reason_code = "articlePayloadUnavailable"
             else:
                 try:
                     document = payload.read(
@@ -2367,14 +2367,14 @@ class ChatService:
                     )
                 except Exception as exc:  # noqa: BLE001 - inspection can never imply approval
                     reviewable = False
-                    blocked_reason = f"The Payload draft could not be verified: {str(exc)[:240]}"
+                    blocked_reason_code = "articlePayloadUnavailable"
                 else:
                     current_revision = str(document.get("_helloadaRevision") or "")
                     expected_revision = str(sync.get("draft_hash") or "")
                     exact = bool(current_revision and expected_revision and hmac.compare_digest(current_revision, expected_revision))
                     if not exact:
                         reviewable = False
-                        blocked_reason = "This Payload draft changed after Ada last checked it. Ada must reconcile the latest version before you can approve it."
+                        blocked_reason_code = "articlePayloadChanged"
                     from ..core.payload_rich_text import lexical_text
                     article.update({
                         "title": str(document.get("title") or article.get("title") or ""),
@@ -2387,18 +2387,17 @@ class ChatService:
                     article["metaDescription"] = str(seo.get("description") or article.get("metaDescription") or "")
                     if not lexical_text(document.get("body")):
                         reviewable = False
-                        blocked_reason = "The Payload article has no readable body. Ada must repair it before approval."
+                        blocked_reason_code = "articlePayloadEmpty"
         else:
             article = dict(article)
             article["bodyFormat"] = "markdown"
-            validation = sync.get("validation") if isinstance(sync.get("validation"), Mapping) else {}
-            blocked_reason = str(validation.get("reason") or "Ada is still preparing this article in the shared Payload schema.")
+            blocked_reason_code = "articlePayloadSyncBlocked" if sync.get("state") == "blocked" else "articlePayloadSyncPending"
             reviewable = False
         return {
             "tenant": scope["tenant"],
             "draftId": normalized_id,
             "reviewable": reviewable,
-            "blockedReason": blocked_reason,
+            "blockedReasonCode": blocked_reason_code,
             "reviewPackageHash": task.get("reviewPackageHash") if reviewable else None,
             "article": article,
         }
