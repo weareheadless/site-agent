@@ -27,8 +27,22 @@ test('Growth has one task list, not separate advice, schedule and approval windo
   assert.match(component, /<GrowthTasks tasks=\{growth\?\.tasks\}/);
   assert.doesNotMatch(component, /reviewQueue\?\.map|reviewCandidates|helloada-growth-side|helloada-growth-advice/);
   const tasks = readFileSync(new URL('../src/components/GrowthTasks.tsx', import.meta.url), 'utf8');
-  assert.match(tasks, /"needs_you", "preparing", "planned", "paused", "completed"/);
+  assert.match(tasks, /const FILTERS: Focus\[\] = \["needs_you", "preparing", "planned", "paused", "opportunity", "completed"\]/);
+  assert.match(tasks, /useState<Focus>\("needs_you"\)/);
+  assert.match(tasks, /helloada-growth-task-list/);
+  assert.doesNotMatch(tasks, /helloada-growth-sidebar/);
+  assert.match(tasks, /helloada-growth-support-rail/);
+  assert.match(tasks, /const recentWork = tasks/);
+  assert.match(tasks, /growth_task/);
+  assert.match(tasks, /lastOpenedTask/);
+  assert.match(tasks, /writeGrowthLocation\(task\.focus, task\.id, "pushState"\)/);
+  assert.equal([...tasks.matchAll(/className="helloada-growth-task-list"/g)].length, 1);
   assert.match(tasks, /review_package_hash: task\?\.reviewPackageHash/);
+  assert.match(tasks, /fetchHelloAda\("\/api\/helloada\/growth\/articles\/"/);
+  assert.match(tasks, /if \(!articleKey \|\| !selectedTask\?\.draftId\)/);
+  assert.match(tasks, /loaded\.reviewPackageHash === selectedTask\.reviewPackageHash/);
+  assert.match(tasks, /renderLexicalNode\(loaded\.article\.body, "article"\)/);
+  assert.doesNotMatch(tasks, /dangerouslySetInnerHTML/);
   assert.doesNotMatch(tasks, /\?draft=/);
 });
 

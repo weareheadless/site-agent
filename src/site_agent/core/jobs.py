@@ -42,6 +42,7 @@ from ..application.growth_workflow import run_growth_reconciler, run_growth_cycl
 from ..senses import collect
 from . import maintenance
 from .contracts import ActionState, ApprovalStatus, ArtifactKind
+from .payload_rich_text import lexical_text, markdown_to_lexical
 from .design_contracts import canonical_hash
 from .memory import Memory
 from .reflect import effective_persona
@@ -221,7 +222,13 @@ def _sync_strategy_initiative_for_draft(memory: Memory, draft_id: int) -> None:
     meta = draft.get("meta") if isinstance(draft.get("meta"), Mapping) else {}
     sync = meta.get("payload_sync") if isinstance(meta.get("payload_sync"), Mapping) else {}
     validation = sync.get("validation") if isinstance(sync.get("validation"), Mapping) else {}
-    state = "ready_for_review" if sync.get("state") == "ready_for_review" and validation.get("status") == "passed" else "validating"
+    state = (
+        "ready_for_review"
+        if sync.get("state") == "ready_for_review" and validation.get("status") == "passed"
+        else "blocked"
+        if validation.get("status") == "blocked"
+        else "validating"
+    )
     candidate = {
         "draft_id": draft_id,
         "title": draft.get("title"),
@@ -264,14 +271,7 @@ def _article_slug(title: str, draft_id: int) -> str:
     return slug or f"ada-article-{draft_id}"
 
 
-def _article_html(markdown_body: str) -> str:
-    import markdown
 
-    return markdown.markdown(
-        str(markdown_body or ""),
-        extensions=["extra", "sane_lists"],
-        output_format="html5",
-    )
 
 
 def _mark_article_payload_blocked(memory: Memory, draft_id: int, reason: str) -> None:
@@ -279,7 +279,9 @@ def _mark_article_payload_blocked(memory: Memory, draft_id: int, reason: str) ->
     if not draft:
         return
     meta = dict(draft.get("meta") or {}) if isinstance(draft.get("meta"), Mapping) else {}
+    previous_sync = meta.get("payload_sync") if isinstance(meta.get("payload_sync"), Mapping) else {}
     meta["payload_sync"] = {
+        **previous_sync,
         "state": "blocked",
         "validation": {"status": "blocked", "reason": str(reason or "Payload article preparation failed")[:500]},
     }
@@ -329,44 +331,40 @@ def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -
     ).strip().lower().split("-", 1)[0]
     source_id = f"ada-article-{draft_id}"
     body = str(draft.get("body") or "")
-    plain = re.sub(r"[#*_>`]", "", body)
-    plain = " ".join(plain.split())[:240]
+    if not body.strip():
+        raise RuntimeError("The article draft has no body to sync into Payload")
+    lexical_body = markdown_to_lexical(body)
+    plain = lexical_text(lexical_body)
+    summary = plain[:500]
+    meta = draft.get("meta") if isinstance(draft.get("meta"), Mapping) else {}
+    research_note = meta.get("research_note") if isinstance(meta.get("research_note"), Mapping) else {}
+    primary_keyword = str(meta.get("primary_keyword") or research_note.get("selected_query") or "").strip()[:200]
+    description = str(meta.get("meta_description") or plain).strip()[:320]
+    contract_fields = payload.contract.collection_fields.get("posts", frozenset())
+    required_fields = {"sourceId", "slug", "title", "summary", "body", "seo"}
+    missing_contract = sorted(required_fields - set(contract_fields))
+    if missing_contract:
+        raise RuntimeError("Payload posts contract is missing required fields: " + ", ".join(missing_contract))
+    seo = {"title": title[:300], "description": description}
+    if primary_keyword:
+        seo["focusKeyword"] = primary_keyword
     candidate = {
         "sourceId": source_id,
         "slug": slug,
         "title": title,
-        "sourceUrl": f"{site_url}/post/{slug}" if site_url else f"/post/{slug}",
-        "excerpt": plain,
-        "content": [{"html": _article_html(body)}],
+        "summary": summary,
+        "body": lexical_body,
+        "seo": seo,
+        "canonicalUrl": f"{site_url}/post/{slug}" if site_url else f"/post/{slug}",
         "modifiedAt": str(draft.get("updated_ts") or datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")),
         "author": str((context.get("config", {}).get("persona") or {}).get("name") or "Ada"),
+        "published": False,
     }
-    seo_meta = meta if isinstance((meta := draft.get("meta")), Mapping) else {}
-    research_note = seo_meta.get("research_note") if isinstance(seo_meta.get("research_note"), Mapping) else {}
-    primary_keyword = str(
-        seo_meta.get("primary_keyword")
-        or research_note.get("selected_query")
-        or ""
-    ).strip()[:200]
-    contract_fields = payload.contract.collection_fields.get("posts", frozenset())
-    required_fields = {"sourceId", "slug", "title", "content"}
-    missing_contract = sorted(required_fields - set(contract_fields))
-    if missing_contract:
-        raise RuntimeError("Payload posts contract is missing required fields: " + ", ".join(missing_contract))
-    meta = draft.get("meta") if isinstance(draft.get("meta"), Mapping) else {}
     image_id = meta.get("featuredImage") or meta.get("featured_image_id") or meta.get("featured_image")
     if image_id is not None and "featuredImage" in contract_fields:
         candidate["featuredImage"] = image_id
     if meta.get("media_asset_ids") and "gallery" in contract_fields:
         candidate["gallery"] = list(meta["media_asset_ids"])
-    if "metaDescription" in contract_fields:
-        candidate["metaDescription"] = str(meta.get("meta_description") or plain).strip()[:320]
-    elif "seo" in contract_fields and primary_keyword:
-        candidate["seo"] = {
-            "focusKeyword": primary_keyword,
-            "title": title[:300],
-            "description": plain[:320],
-        }
     post = {key: value for key, value in candidate.items() if key in contract_fields}
     previous_sync = meta.get("payload_sync") if isinstance(meta.get("payload_sync"), Mapping) else {}
     source_content_hash = canonical_hash({"locale": language, "post": {key: value for key, value in post.items() if key != "modifiedAt"}})
@@ -383,17 +381,22 @@ def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -
         None,
     )
     if existing and existing.get("id") is not None:
-        current = payload.read("posts", identifier=str(existing["id"]), identifier_kind="id", draft=True, locale=language)
+        document_id = str(existing["id"])
+        if str(previous_sync.get("document_id") or "") != document_id:
+            raise RuntimeError("An existing Payload post is not linked to Ada's exact sync record; it must be reviewed before any update.")
+        current = payload.read("posts", identifier=document_id, identifier_kind="id", draft=True, locale=language)
         current_revision = str(current.get("_helloadaRevision") or "")
-        if str(previous_sync.get("document_id") or "") == str(existing["id"]) and str(previous_sync.get("source_hash") or "") == source_hash:
-            if not current_revision or str(previous_sync.get("draft_hash") or "") != current_revision:
-                raise RuntimeError("The Payload article draft changed after Ada's last sync; it must be reconciled before approval.")
+        if not current_revision or str(previous_sync.get("draft_hash") or "") != current_revision:
+            raise RuntimeError("The Payload article draft changed after Ada's last sync; it must be reconciled before approval.")
+        if str(previous_sync.get("source_hash") or "") == source_hash:
             document = current
         else:
             document = payload.update(
-                "posts", str(existing["id"]), post, locale=language,
+                "posts", document_id, post, locale=language,
                 expected_hash=current_revision,
             )
+    elif previous_sync.get("document_id"):
+        raise RuntimeError("The previously linked Payload article is missing; Ada must reconcile it before creating another post.")
     else:
         document = payload.create("posts", post, locale=language)
     document_id = str(document.get("id") or "").strip()
@@ -401,15 +404,16 @@ def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -
         raise RuntimeError("Payload did not return the article draft identifier")
     verified = payload.read("posts", identifier=document_id, identifier_kind="id", draft=True, locale=language)
     verified_seo = verified.get("seo") if isinstance(verified.get("seo"), Mapping) else {}
-    metadata_value = verified.get("metaDescription") or verified_seo.get("description")
+    metadata_value = verified_seo.get("description")
     checks = {
         "document": bool(verified.get("id")),
         "identity": str(verified.get("sourceId") or "") == source_id,
         "slug": str(verified.get("slug") or "") == slug,
-        "title": bool(str(verified.get("title") or "").strip()),
-        "content": bool(verified.get("content")),
-        "metadata": bool(str(metadata_value or "").strip()) if ("metaDescription" in contract_fields or "seo" in contract_fields) else True,
-        "mainImage": bool(verified.get("featuredImage")) if "featuredImage" in contract_fields else True,
+        "title": str(verified.get("title") or "").strip() == title,
+        "summary": str(verified.get("summary") or "").strip() == summary,
+        "body": lexical_text(verified.get("body")) == plain,
+        "metadata": str(metadata_value or "").strip() == description,
+        "mainImage": bool(verified.get("featuredImage")) if image_id is not None else True,
     }
     state = "ready_for_review" if all(checks.values()) else "blocked"
     reason = "" if state == "ready_for_review" else "Payload article validation is incomplete: " + ", ".join(key for key, passed in checks.items() if not passed)
@@ -426,7 +430,7 @@ def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -
             "source_id": source_id,
             "slug": slug,
             "locale": language,
-            "excerpt": str(verified.get("excerpt") or plain).strip()[:500],
+            "excerpt": str(verified.get("summary") or "").strip()[:500],
             "meta_description": str(metadata_value or "").strip()[:320],
             "primary_keyword": primary_keyword,
             "featured_image": _article_image_preview(verified.get("featuredImage")),
@@ -632,8 +636,9 @@ def register_growth_jobs(scheduler: Scheduler, config: dict[str, Any], context: 
         context,
         overrides.get("email_provisioning", _JOB_DEFAULTS["email_provisioning"]),
     )
-    if not settings.get("enabled"):
-        return True  # Explicit pause for growth work; email bootstrap remains operational.
+    growth_policy = config.get("growth") or {}
+    if growth_policy.get("enabled", True) is False:
+        return True  # Email bootstrap remains operational when Growth is explicitly paused.
     schedules = {
         "growth_initial": {"every": "daily", "at": "07:00"},
         "growth_daily": {"every": "daily", "at": "07:30"},
@@ -648,10 +653,10 @@ def register_growth_jobs(scheduler: Scheduler, config: dict[str, Any], context: 
             trigger = name.removeprefix("growth_")
             operation = lambda trigger=trigger: run_growth_cycle(context, trigger=trigger)
         scheduler.job(name, overrides.get(name, spec), operation)
-        # An initial review is due now; recurring service work starts at its
-        # real calendar slot, not seven paid catch-up jobs on first activation.
+        # Run initial review and reconciliation once on activation; subsequent
+        # strategy work follows its real calendar slot without catch-up runs.
         if scheduler.memory.kv_get(f"next_run:{name}") is None:
-            next_run = scheduler.clock() if name == "growth_initial" else compute_next(scheduler.jobs[-1][1], scheduler.clock(), timezone_name=scheduler.timezone_name)
+            next_run = scheduler.clock() if name in {"growth_initial", "growth_pending"} else compute_next(scheduler.jobs[-1][1], scheduler.clock(), timezone_name=scheduler.timezone_name)
             scheduler.memory.kv_set(f"next_run:{name}", next_run)
     # These are independent maintenance/measurement operations, not competing
     # recommendation producers. Inventory failure must not stop either one.

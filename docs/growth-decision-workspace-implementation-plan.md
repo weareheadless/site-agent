@@ -1,6 +1,6 @@
 # Growth: from technical task list to owner decision workspace
 
-Status: revised implementation specification. PR #193 does not satisfy this plan; the released experience is incomplete.
+Status: active implementation contract. PR #194 contains the shared product changes; production acceptance remains pending the canonical API/Worker release and authenticated tenant verification.
 Revised: 2026-10-15, following a read-only audit of Oceanic's real records and the deployed API/UI.
 Repository: `weareheadless/site-agent`.
 Audited release control snapshot: `24fdb5344f196167ec0a582dc60ca3ff1110faea`.
@@ -310,4 +310,18 @@ The implementation is complete only when the owner can understand the reason for
 
 The coding AI must provide: source commits and PRs; before/after contract map; first broken boundary/root fix; the read-only backlog audit and idempotent reconciliation result; schema/renderer/approval integration tests; separate API and Worker release receipts; compatibility proof; authenticated overview and full-article review evidence; approve/revise/decline outcome evidence; next runnable schedule; and precise remaining limitations. Do not declare the whole original SEO/AEO strategy implemented just because this inbox is shipped.
 
-This document authorizes planning only in the current request. Product implementation, tenant publishing and deployment are not performed by creating this plan.
+This plan is the implementation and acceptance contract. The current user request authorizes the shared product implementation and its release through the documented pipeline. It does not authorize publishing customer articles, running paid research outside existing policy, or bypassing owner approval.
+
+## Implementation status — 2026-10-15
+
+Implemented on the Growth recovery branch; not yet released:
+
+- Article preparation now serializes Markdown into Payload Lexical `body`, validates against the shared `posts` contract, reads back the exact draft, and persists a revision-bound review package. There is no `posts.content` fallback or HTML writer.
+- Active Payload tenants register the shared Growth jobs independently of the retired legacy scheduler flag. Defaults enable the initial/daily/weekly/monthly/outcome pipeline; pending reconciliation rechecks article drafts through the same canonical writer.
+- The task projection distinguishes actionable owner decisions, active work, dated schedules, stopped work, opportunities and history. Failed provider work is not reported as successful; expired dates are omitted; article bodies are excluded from list summaries and loaded only in the selected detail request.
+- The shared admin package provides one default decision list, focused filters, a spacious in-place review view, exact Payload revision gating, persistent review URLs, browser-back/focus restoration, and a compact schedule/success rail. EN, FR and es-MX labels are present.
+- Package version is `0.10.14`, with the exact npm tarball integrity pinned in the default Payload template.
+
+Verified so far: 1,412 backend tests passed before the final stale-date correction; all 12 focused Growth task tests passed after it; all 39 shared-admin package tests and TypeScript typechecking pass; `git diff --check` passes.
+
+Not yet verified or completed: PR checks/merge; immutable package release publication; API-before-Worker rollout; canary and automatic-tenant receipts; live reconciliation of Oceanic’s five saved drafts; a fresh authenticated production browser check; and live article review/revision/decline/publication acceptance. No tenant draft has been changed and no customer article has been published in this implementation turn. The acceptance matrix above remains open until its live evidence is recorded.

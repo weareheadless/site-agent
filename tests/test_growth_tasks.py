@@ -28,7 +28,8 @@ def test_linked_improvement_is_one_task_not_three_cards(tmp_path):
         'draft_id': draft, 'owner_action_id': action.id, 'review_package_hash': 'sha256:exact'}]
     tasks = growth_tasks(memory, initiatives, memory.list_drafts(), [], [])
     assert len(tasks) == 1
-    assert tasks[0]['focus'] == 'preparing'
+    assert tasks[0]['focus'] == 'paused'
+    assert tasks[0]['state'] == 'blocked'
     assert tasks[0]['draftId'] == draft
     assert tasks[0]['ownerActionId'] == action.id
     assert tasks[0]['reviewPackageHash'] == 'sha256:exact'
@@ -41,11 +42,13 @@ def test_schedule_and_internal_block_are_not_fake_owner_decisions(tmp_path):
     tasks = growth_tasks(memory, [{'id': 1, 'title': 'Prepare an article', 'state': 'blocked', 'last_error': 'Search evidence unavailable'}], [],
         [{'id': 'growth_weekly', 'enabled': True, 'nextRun': '2026-10-07T13:30:00Z'},
          {'id': 'growth_monthly', 'enabled': False, 'nextRun': None}], [])
-    assert [row['focus'] for row in tasks] == ['preparing', 'planned', 'paused']
-    assert tasks[0]['lastError'] is None
-    assert tasks[0]['executionIssue'] is True
-    assert tasks[1]['nextRun']
-    assert tasks[2]['state'] == 'paused'
+    by_id = {row['id']: row for row in tasks}
+    assert by_id['initiative:1']['focus'] == 'paused'
+    assert by_id['initiative:1']['lastError'] is None
+    assert by_id['initiative:1']['executionIssue'] is True
+    assert by_id['schedule:growth_weekly']['focus'] == 'planned'
+    assert by_id['schedule:growth_weekly']['nextRun']
+    assert by_id['schedule:growth_monthly']['state'] == 'paused'
     assert not any(row.get('canApprove') for row in tasks)
     memory.close()
 
@@ -89,8 +92,9 @@ def test_running_and_retry_work_are_part_of_the_scheduled_task(tmp_path):
         [{'run_id': 'week-1', 'trigger': 'weekly', 'status': 'blocked', 'detail': {'error': 'Search source needs reconnection'},
           'next_due_ts': '2026-10-04T13:30:00Z', 'updated_ts': '2026-10-03T13:30:00Z'}])
     assert task['id'] == 'schedule:growth_weekly'
-    assert task['focus'] == 'preparing'
-    assert task['nextRun'] == '2026-10-04T13:30:00Z'
+    assert task['focus'] == 'paused'
+    assert task['state'] == 'blocked'
+    assert task['nextRun'] is None  # A stale retry time must never be presented as a plan.
     assert task['lastError'] is None
     assert task['executionIssue'] is True
     assert task['runId'] == 'week-1'
@@ -165,7 +169,7 @@ def test_unscheduled_enabled_job_and_completed_provider_failure_are_not_review_d
     assert by_id['schedule:growth_weekly']['focus'] == 'paused'
     assert by_id['schedule:growth_weekly']['state'] == 'unscheduled'
     failure = by_id['article-idea:4']
-    assert failure['focus'] == 'completed'
+    assert failure['focus'] == 'paused'
     assert 'DATAFORSEO' not in failure['summary']
     assert failure['lastError'] is None
     assert not any(row['focus'] == 'needs_you' for row in tasks)
@@ -202,4 +206,35 @@ def test_frontend_rollback_enters_review_only_after_exact_preview_is_ready(tmp_p
     task, = growth_tasks(memory, [], memory.list_drafts(), [], [])
     assert task['focus'] == 'preparing'
     assert task['canApprove'] is False
+    memory.close()
+
+def test_open_suggestions_are_opportunities_not_fake_active_work(tmp_path):
+    memory = Memory(tmp_path / 'memory.db')
+    memory.create_owner_action(OwnerAction(
+        capability_id='growth.suggestion', provider_id='site-agent',
+        title='Improve the service guide', summary='Ada found a useful opportunity.',
+        action_label='Ask Ada', priority=ActionPriority.NORMAL,
+        source_ref='growth:suggestion', requirement=ActionRequirement.SUGGESTION,
+        dedupe_key='growth:suggestion',
+    ))
+    task, = growth_tasks(memory, [], [], [], [])
+    assert task['focus'] == 'opportunity'
+    assert task['kind'] == 'owner_action'
+    assert not task['canApprove']
+    memory.close()
+
+
+def test_blocked_article_body_is_available_only_in_explicit_detail_request(tmp_path):
+    memory = Memory(tmp_path / 'memory.db')
+    body = 'Private full article text must not appear in the task list.'
+    memory.save_draft(title='A saved article', body=body, kind='article', meta={
+        'payload_sync': {'state': 'blocked', 'validation': {'status': 'blocked', 'reason': 'schema mismatch'}},
+    })
+    task, = growth_tasks(memory, [], memory.list_drafts(), [], [])
+    assert task['focus'] == 'paused'
+    assert body not in task['summary']
+    assert 'body' not in task['review']['article']
+    detailed, = growth_tasks(memory, [], memory.list_drafts(), [], [], include_article_content=True)
+    assert detailed['review']['article']['body'] == body
+    assert detailed['canApprove'] is False
     memory.close()
