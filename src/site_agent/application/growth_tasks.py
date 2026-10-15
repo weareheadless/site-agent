@@ -481,7 +481,7 @@ def growth_tasks(
             'focus': focus, 'state': state, 'summaryKey': schedule_summary_key, 'canApprove': False,
             'nextRun': next_run,
             'lastError': None,
-            'executionIssue': bool(run and state == 'blocked') or state == 'unscheduled',
+            'executionIssue': bool(run and state in {'blocked', 'uncertain'}) or state == 'unscheduled',
             'runId': run.get('run_id') if run else None, 'schedule': activity.get('schedule')})
     # An owner-triggered review has a durable run record but no recurring
     # schedule row. Keep its real failure/lease visible without turning the
