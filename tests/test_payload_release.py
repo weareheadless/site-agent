@@ -512,6 +512,14 @@ def test_release_generates_canonical_schema_before_validating_worker_contract():
     assert overlay < generator < synchronization < worker_validation
 
 
+
+
+def test_release_runs_contract_generator_without_the_tsx_cli_ipc_server():
+    source = (ROOT / "scripts/deploy-payload-customer.py").read_text()
+
+    assert 'run(["node", "--import", "tsx", str(contract_generator)' in source
+    assert 'checkout / "node_modules/.bin/tsx"' not in source
+
 def test_worker_contract_requires_the_registered_tenant_and_all_shared_versions():
     customer = CUSTOMER
     worker = {
