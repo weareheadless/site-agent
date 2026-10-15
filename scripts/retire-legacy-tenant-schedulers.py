@@ -96,7 +96,7 @@ def retire_legacy_tenant_schedulers(
         runner(["systemctl", "list-units", "--all", "--plain", "--no-legend", "site-agent@*.service"], capture=True)
     )
     file_states = _unit_file_states(
-        runner(["systemctl", "list-unit-files", "--plain", "--no-legend", "site-agent@*.service"], capture=True)
+        runner(["systemctl", "list-unit-files", "--type=service", "--plain", "--no-legend"], capture=True)
     )
     if unit_path.exists():
         _verified_template(unit_path)
@@ -128,7 +128,7 @@ def retire_legacy_tenant_schedulers(
         runner(["systemctl", "list-units", "--all", "--plain", "--no-legend", "site-agent@*.service"], capture=True)
     )
     remaining_files = _unit_file_states(
-        runner(["systemctl", "list-unit-files", "--plain", "--no-legend", "site-agent@*.service"], capture=True)
+        runner(["systemctl", "list-unit-files", "--type=service", "--plain", "--no-legend"], capture=True)
     )
     if any(state in ACTIVE_STATES for state in remaining_active.values()):
         raise RuntimeError("a tenant scheduler instance remains active")
