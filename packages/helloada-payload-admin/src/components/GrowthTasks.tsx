@@ -20,6 +20,7 @@ export type GrowthTask = {
   id: string; kind?: string; title?: string; titleKey?: string; summary?: string; summaryKey?: string; scope?: string;
   focus: Focus; state: string; nextRun?: string | null; draftId?: number | null;
   ownerActionId?: number | null; canApprove?: boolean; reviewPackageHash?: string | null;
+  priority?: string; requirement?: string;
   lastError?: string; executionIssue?: boolean; needsPreparation?: boolean; updatedAt?: string; conversationId?: number | null;
   evidence?: string[]; measurementHorizon?: number; measurementMetric?: string;
   outcomes?: { id: number; horizon_days: number; assessment: string; confidence: string; notes?: string; measured_ts?: string }[];
@@ -29,8 +30,14 @@ export type GrowthTask = {
 };
 
 type ArticleResponse = { article: ArticleReviewData; reviewable: boolean; blockedReason?: string | null; reviewPackageHash?: string | null };
+type OwnerQueue = {
+  featuredDecisionId: string | null; additionalDecisionIds: string[]; decisionCount: number;
+  activeTaskId: string | null; nextScheduledId: string | null; recentResultId: string | null;
+  recentResultIds: string[];
+  attentionTaskId: string | null;
+};
+type GrowthPanel = "home" | "decisions" | "work" | "results";
 const FILTERS: Focus[] = ["needs_you", "preparing", "planned", "paused", "opportunity", "completed"];
-const SUCCESS_STATES = new Set(["completed", "measuring", "reviewed", "published", "analysis_completed", "approved", "live"]);
 
 function writeGrowthLocation(nextFocus: Focus, nextSelected?: string, mode: "pushState" | "replaceState" = "replaceState") {
   const url = new URL(window.location.href);
@@ -75,7 +82,10 @@ function renderLexicalNode(node: unknown, key: string): ReactNode {
   return <span key={key}>{children}</span>;
 }
 
-export function GrowthTasks({ tasks = [], pending, refresh, ask, date, goal, brief }: {
+export function GrowthTasks({ mode, ownerQueue, onNavigate, tasks = [], pending, refresh, ask, date, goal, brief }: {
+  mode: "home" | "decisions" | "work";
+  ownerQueue?: OwnerQueue;
+  onNavigate: (panel: GrowthPanel) => void;
   tasks?: GrowthTask[]; pending: boolean; refresh: () => void; ask: (prompt?: string) => string;
   date: (value: unknown) => string; goal?: { objective?: string; goal_key?: string };
   brief?: { headline?: string; summary_md?: string };
@@ -121,16 +131,17 @@ export function GrowthTasks({ tasks = [], pending, refresh, ask, date, goal, bri
   const articleKey = selectedTask?.kind === "article" && selectedTask.draftId
     ? String(selectedTask.draftId) + ":" + String(selectedTask.reviewPackageHash || "inspection")
     : "";
-  const visible = tasks.filter(row => row.focus === focus);
+  const taskById = new Map(tasks.map(task => [task.id, task] as const));
+  const agendaTask = (id: string | null | undefined) => id ? taskById.get(id) : undefined;
+  const featuredDecision = agendaTask(ownerQueue?.featuredDecisionId);
+  const additionalDecisions = ownerQueue?.additionalDecisionIds.map(agendaTask).filter((row): row is GrowthTask => Boolean(row)) || [];
+  const activeTask = agendaTask(ownerQueue?.activeTaskId);
+  const scheduledTask = agendaTask(ownerQueue?.nextScheduledId);
+  const recentResult = agendaTask(ownerQueue?.recentResultId);
+  const attentionTask = agendaTask(ownerQueue?.attentionTaskId);
+  const visible = tasks.filter(row => row.focus === (mode === "decisions" ? "needs_you" : focus));
   const loaded = articleResult?.key === articleKey ? articleResult.result : undefined;
-  const nextScheduled = tasks
-    .filter(row => row.focus === "planned" && row.nextRun)
-    .sort((a, b) => String(a.nextRun).localeCompare(String(b.nextRun)))[0];
-  const recentWork = tasks
-    .filter(row => row.focus === "completed" && SUCCESS_STATES.has(row.state) && !row.executionIssue
-      && row.kind !== "article" && row.kind !== "article_research")
-    .sort((a, b) => Date.parse(b.updatedAt || "") - Date.parse(a.updatedAt || ""))
-    .slice(0, 3);
+  const recentWork = ownerQueue?.recentResultIds.map(agendaTask).filter((row): row is GrowthTask => Boolean(row)) || [];
 
   useEffect(() => {
     if (!articleKey || !selectedTask?.draftId) {
@@ -251,36 +262,77 @@ export function GrowthTasks({ tasks = [], pending, refresh, ask, date, goal, bri
     && loaded.reviewPackageHash === selectedTask.reviewPackageHash
   );
 
-  return <section className="helloada-growth-task-shell" aria-label={t("growth.taskTitle")}>
+  const panelTitleKey = mode === "home" ? "growth.homeTitle" : mode === "decisions" ? "growth.decisionListTitle" : "growth.workTitle";
+  const panelNoteKey = mode === "home" ? "growth.homeIntro" : mode === "decisions" ? "growth.decisionListIntro" : "growth.workIntro";
+  return <section className="helloada-growth-task-shell" aria-label={t(panelTitleKey)}>
     <div className="helloada-growth-task-core">
       <header className="helloada-growth-task-header">
         <div className="helloada-growth-identity">
           <HelloAdaMark size={28} />
-          <div><h2>{t("growth.taskTitle")}</h2><small>{t("growth.taskNote")}</small></div>
+          <div><h2>{t(panelTitleKey)}</h2><small>{t(panelNoteKey)}</small></div>
         </div>
-        <button type="button" className="helloada-growth-primary" disabled={Boolean(busy) || pending} onClick={() => void effect(undefined, "check")}>
-          {busy === "check" ? t("growth.working") : t("growth.runAnalysis")}
-        </button>
+        {mode === "work" ? <button type="button" className="helloada-growth-primary" disabled={Boolean(busy) || pending} onClick={() => void effect(undefined, "check")}>{busy === "check" ? t("growth.working") : t("growth.runAnalysis")}</button> : null}
       </header>
 
-      <div className="helloada-growth-task-goal">
-        <span>{t("growth.goalLabel")} · <strong>{goal?.goal_key === "relevant_visitors" ? t("growth.visitorGoal") : goal?.objective || t("growth.goalNotSet")}</strong></span>
-        <Link href={ask(t("growth.goalPrompt"))}>{t("growth.changeGoal")} ↗</Link>
-      </div>
+      {mode === "home" ? <div className="helloada-growth-task-goal"><span>{t("growth.goalLabel")} · <strong>{goal?.goal_key === "relevant_visitors" ? t("growth.visitorGoal") : goal?.objective || t("growth.goalNotSet")}</strong></span><Link href={ask(t("growth.goalPrompt"))}>{t("growth.changeGoal")} ↗</Link></div> : null}
 
-      {brief?.headline ? <details className="helloada-growth-task-brief">
+      {mode === "home" && brief?.headline ? <details className="helloada-growth-task-brief">
         <summary>{brief.headline}</summary><HelloAdaChatMessage text={brief.summary_md || ""} />
       </details> : null}
+      {mode === "home" ? <section className="helloada-growth-owner-agenda" aria-label={t("growth.homeTitle")}>
+        {attentionTask ? <div className="helloada-growth-attention" role="status">
+          <span><strong>{t("growth.serviceNoticeTitle")}</strong><small>{t("growth.serviceNoticeBody")}</small></span>
+          <button type="button" onClick={() => onNavigate("work")}>{t("growth.openAdaWork")} →</button>
+        </div> : null}
+        <div className="helloada-growth-agenda-grid">
+          {pending ? <div className="helloada-growth-agenda-empty" role="status">{t("growth.loading")}</div> : featuredDecision ? <article className="helloada-growth-featured-decision">
+            <span className="helloada-growth-decision-eyebrow">{t("growth.decisionEyebrow")}</span>
+            <h3>{title(featuredDecision)}</h3>
+            {taskSummary(featuredDecision) ? <p>{taskSummary(featuredDecision)}</p> : null}
+            <button type="button" className="helloada-growth-primary" data-growth-task-id={featuredDecision.id} onClick={() => openTask(featuredDecision)}>
+              {t(featuredDecision.requirement === "owner_information" ? "growth.decisionCtaAnswer"
+                : featuredDecision.kind === "article" ? "growth.decisionCtaArticle"
+                : featuredDecision.canApprove ? "growth.decisionCtaChanges" : "growth.decisionCtaReview")} <span aria-hidden="true">→</span>
+            </button>
+          </article> : <div className="helloada-growth-agenda-empty" role="status">
+            <strong>{t("growth.noDecisions")}</strong>
+            <p>{t("growth.noDecisionBody")}</p>
+            <Link href={ask(t("growth.noDecisionAskPrompt"))}>{t("growth.askAdaToReview")} →</Link>
+          </div>}
+          {additionalDecisions.length ? <ul className="helloada-growth-additional-decisions">
+            {additionalDecisions.map(task => <li key={task.id}>
+              <button type="button" data-growth-task-id={task.id} onClick={() => openTask(task)}>
+                <span><strong>{title(task)}</strong><small>{taskSummary(task) || stateLabel(task)}</small></span><span aria-hidden="true">→</span>
+              </button>
+            </li>)}
+          </ul> : null}
+        </div>
+        {ownerQueue?.decisionCount ? <div className="helloada-growth-agenda-actions">
+          <span>{ownerQueue.decisionCount} {t("growth.decisionsCount")}</span>
+          <button type="button" onClick={() => onNavigate("decisions")}>{t("growth.seeAllDecisions")} →</button>
+        </div> : null}
+        <div className="helloada-growth-agenda-status">
+          {activeTask ? <button type="button" className="is-active" data-growth-task-id={activeTask.id} onClick={() => openTask(activeTask)}>
+            <small>{t("growth.activeLabel")}</small><strong>{title(activeTask)}</strong>
+          </button> : null}
+          {scheduledTask ? <button type="button" data-growth-task-id={scheduledTask.id} onClick={() => openTask(scheduledTask)}>
+            <small>{t("growth.nextScheduledLabel")}</small><strong>{title(scheduledTask)}</strong><span>{date(scheduledTask.nextRun)}</span>
+          </button> : null}
+          {recentResult ? <button type="button" data-growth-task-id={recentResult.id} onClick={() => openTask(recentResult)}>
+            <small>{t("growth.recentResultLabel")}</small><strong>{title(recentResult)}</strong><span>{recentResult.updatedAt ? date(recentResult.updatedAt) : stateLabel(recentResult)}</span>
+          </button> : null}
+        </div>
+      </section> : null}
 
-      <div className="helloada-growth-task-filters" role="tablist" aria-label={t("growth.taskFocus")}>
+      {mode === "work" ? <div className="helloada-growth-task-filters" role="tablist" aria-label={t("growth.taskFocus")}>
         {FILTERS.map(item => <button key={item} type="button" role="tab" aria-selected={focus === item}
           aria-controls="helloada-growth-task-content" data-growth-focus={item} onClick={() => changeFocus(item)}>
           {t("growth.task_" + item)}<span>{tasks.filter(row => row.focus === item).length}</span>
         </button>)}
-      </div>
+      </div> : null}
 
       {error ? <p className="helloada-growth-error" role="alert">{error}</p> : null}
-      <div className={"helloada-growth-task-columns" + (selectedTask ? " is-review" : "")}>
+      {mode !== "home" || selectedTask ? <div className={"helloada-growth-task-columns" + (selectedTask ? " is-review" : "")}>
         <div id="helloada-growth-task-content" className="helloada-growth-workspace" role="tabpanel">
         {selectedTask ? <div className="helloada-growth-detail-view">
           <button type="button" className="helloada-growth-back" onClick={closeTask}>← {t("growth.backToTasks")}</button>
@@ -300,6 +352,9 @@ export function GrowthTasks({ tasks = [], pending, refresh, ask, date, goal, bri
             </p> : null}
             {loaded ? <>
               {loaded.blockedReason ? <p className="helloada-growth-task-block" role="status">{loaded.blockedReason}</p> : null}
+              {(loaded.article.rationale || fullTaskSummary(selectedTask)) ? <section className="helloada-growth-task-analysis-note">
+                <strong>{t("growth.articleWhyThis")}</strong><p>{loaded.article.rationale || fullTaskSummary(selectedTask)}</p>
+              </section> : null}
               {loaded.article.featuredImage?.url ? <figure className="helloada-growth-article-image">
                 <img src={loaded.article.featuredImage.url} alt={loaded.article.featuredImage.alt || ""} loading="lazy" />
                 {loaded.article.featuredImage.alt ? <figcaption>{loaded.article.featuredImage.alt}</figcaption> : null}
@@ -342,9 +397,13 @@ export function GrowthTasks({ tasks = [], pending, refresh, ask, date, goal, bri
             {selectedTask.kind === "rollback" && selectedTask.previewUrl ? <a className="helloada-growth-task-preview" href={selectedTask.previewUrl} target="_blank" rel="noreferrer">{t("growth.rollbackPreview")} ↗</a> : null}
             {selectedTask.executionIssue ? <p className="helloada-growth-task-block">{t("growth.taskInternalIssue")}</p> : null}
             {selectedTask.review?.route ? <p className="helloada-growth-task-route">{t("growth.taskAffectedPage")}: <code>{selectedTask.review.route}</code></p> : null}
-            {selectedTask.review?.changes ? <dl className="helloada-growth-task-diff">{Object.entries(selectedTask.review.changes).map(([field, value]) =>
-              <div key={field}><dt>{t("growth.field_" + field) === "growth.field_" + field ? field.replace(/([A-Z])/g, " $1").replace(/^./, letter => letter.toUpperCase()) : t("growth.field_" + field)}
-                </dt><dd><small>{t("growth.taskAfter")}</small><pre>{readable(value)}</pre></dd></div>)}</dl> : null}
+            {selectedTask.review?.changes ? <dl className="helloada-growth-task-diff">{Object.entries(selectedTask.review.changes).map(([field, value]) => {
+              const label = t("growth.field_" + field) === "growth.field_" + field ? field.replace(/([A-Z])/g, " $1").replace(/^./, letter => letter.toUpperCase()) : t("growth.field_" + field);
+              return <div key={field}><dt>{label}</dt><dd>
+                <small>{t("growth.taskBefore")}</small><pre>{readable(selectedTask.review?.before?.[field])}</pre>
+                <small>{t("growth.taskAfter")}</small><pre>{readable(selectedTask.review?.after?.[field] ?? value)}</pre>
+              </dd></div>;
+            })}</dl> : null}
             {selectedTask.review?.changeOperations?.length ? <dl className="helloada-growth-task-diff">{selectedTask.review.changeOperations.map((operation, index) =>
               <div key={operation.path + index}><dt><code>{operation.path}</code></dt><dd>
                 <small>{t("growth.taskBefore")}</small><pre>{operation.find || "—"}</pre>
@@ -392,16 +451,16 @@ export function GrowthTasks({ tasks = [], pending, refresh, ask, date, goal, bri
               </button>
             </li>)}
           </ul> : <div className="helloada-growth-empty" role="status">
-            <strong>{pending ? t("growth.loading") : t("growth.empty_" + focus + "_title")}</strong>
-            <p>{t("growth.empty_" + focus)}</p>
+            <strong>{pending ? t("growth.loading") : t("growth.empty_" + (mode === "decisions" ? "needs_you" : focus) + "_title")}</strong>
+            <p>{t("growth.empty_" + (mode === "decisions" ? "needs_you" : focus))}</p>
           </div>}
         </>}
         </div>
-        {!selectedTask ? <aside className="helloada-growth-support-rail" aria-label={t("growth.nextReview")}>
+        {mode === "work" && !selectedTask ? <aside className="helloada-growth-support-rail" aria-label={t("growth.nextReview")}>
           <section>
             <h3>{t("growth.nextReview")}</h3>
-            {nextScheduled ? <button type="button" data-growth-task-id={nextScheduled.id} onClick={() => openTask(nextScheduled)}>
-              <strong>{title(nextScheduled)}</strong><small>{date(nextScheduled.nextRun)}</small>
+            {scheduledTask ? <button type="button" data-growth-task-id={scheduledTask.id} onClick={() => openTask(scheduledTask)}>
+              <strong>{title(scheduledTask)}</strong><small>{date(scheduledTask.nextRun)}</small>
             </button> : <p>{t("growth.noNextReview")}</p>}
           </section>
           <section>
@@ -414,8 +473,8 @@ export function GrowthTasks({ tasks = [], pending, refresh, ask, date, goal, bri
             <Link href="/admin?view=history">{t("growth.openActivity")} ↗</Link>
           </section>
         </aside> : null}
-      </div>
-      <p className="helloada-growth-footnote">{t("growth.approval")}</p>
+      </div> : null}
+      {mode !== "home" ? <p className="helloada-growth-footnote">{t("growth.approval")}</p> : null}
     </div>
   </section>;
 }

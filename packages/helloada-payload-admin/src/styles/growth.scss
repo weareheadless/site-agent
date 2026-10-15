@@ -999,3 +999,51 @@
   .helloada-growth-support-rail > section > a { display: inline-block; margin-top: 12px; font-size: 12px; }
   @media (max-width: 1050px) { .helloada-growth-task-columns { grid-template-columns: minmax(0, 1fr); } .helloada-growth-support-rail { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   @media (max-width: 700px) { .helloada-growth-support-rail { grid-template-columns: minmax(0, 1fr); } }
+  .helloada-growth-tabs button { min-height: 38px; padding-inline: 14px; font-weight: 560; }
+  .helloada-growth-tabs button[aria-pressed="true"] { background: #fff0e9; border-color: #f2cbbc; color: #a63c26; font-weight: 700; }
+  .helloada-growth-results-heading { display: flex; align-items: center; justify-content: space-between; gap: 22px; margin: 0 0 18px; }
+  .helloada-growth-results-heading p { margin: 5px 0 0; color: #596879; font-size: 13px; }
+  .helloada-growth-results-nav { display: flex; gap: 5px; max-width: 100%; overflow-x: auto; padding: 4px; border: 1px solid #e0e5ea; border-radius: 12px; background: #f5f7f9; }
+  .helloada-growth-results-nav button { flex: 0 0 auto; min-height: 34px; border: 0; background: transparent; color: #566474; font-size: 12px; font-weight: 620; }
+  .helloada-growth-results-nav button[aria-selected="true"] { background: #fff; color: #a63c26; box-shadow: 0 1px 4px rgba(25,38,52,.12); }
+  .helloada-growth-owner-agenda { display: grid; gap: 15px; margin: 10px 0 22px; }
+  .helloada-growth-agenda-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(260px, .85fr); align-items: stretch; gap: 12px; }
+  .helloada-growth-featured-decision, .helloada-growth-agenda-empty { display: flex; min-height: 190px; flex-direction: column; align-items: flex-start; justify-content: center; padding: 24px 26px; border: 1px solid #f0d7cd; border-left: 4px solid #e66a4b; border-radius: 15px; background: linear-gradient(130deg, #fffaf7 0%, #fff 72%); }
+  .helloada-growth-decision-eyebrow { color: #b5412a; font-size: 11px; font-weight: 750; letter-spacing: .07em; text-transform: uppercase; }
+  .helloada-growth-featured-decision h3 { margin: 9px 0 5px; color: #1d2c3c; font-size: clamp(19px, 2.2vw, 25px); font-weight: 680; letter-spacing: -.035em; line-height: 1.25; }
+  .helloada-growth-featured-decision p, .helloada-growth-agenda-empty p { max-width: 660px; margin: 4px 0 16px; color: #526173; font-size: 13px; line-height: 1.6; }
+  .helloada-growth-featured-decision .helloada-growth-primary { display: inline-flex; align-items: center; gap: 12px; min-height: 40px; margin-top: 4px; padding: 0 15px; border-radius: 9px; }
+  .helloada-growth-additional-decisions { display: grid; align-content: start; margin: 0; padding: 0 16px; list-style: none; border: 1px solid #e5e9ed; border-radius: 15px; background: #fff; }
+  .helloada-growth-additional-decisions li + li { border-top: 1px solid #edf0f2; }
+  .helloada-growth-additional-decisions button { display: flex; width: 100%; min-height: 64px; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 2px; border: 0; background: transparent; text-align: left; }
+  .helloada-growth-additional-decisions button:hover { color: #a63c26; }
+  .helloada-growth-additional-decisions button span:first-child { min-width: 0; }
+  .helloada-growth-additional-decisions strong, .helloada-growth-additional-decisions small { display: block; }
+  .helloada-growth-additional-decisions strong { overflow: hidden; color: #29394b; font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+  .helloada-growth-additional-decisions small { overflow: hidden; margin-top: 3px; color: #667384; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+  .helloada-growth-agenda-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #687686; font-size: 12px; }
+  .helloada-growth-agenda-actions button, .helloada-growth-agenda-empty a { border: 0; background: transparent; color: #b5412a; font-weight: 680; text-decoration: none; }
+  .helloada-growth-agenda-empty { grid-column: 1 / -1; min-height: 150px; border-color: #e4e9ee; border-left-color: #a7b2be; background: #f9fafb; }
+  .helloada-growth-agenda-empty strong { color: #263649; font-size: 17px; }
+  .helloada-growth-agenda-status { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+  .helloada-growth-agenda-status button { display: grid; min-width: 0; gap: 5px; padding: 13px 15px; border: 1px solid #e4e8ed; border-radius: 12px; background: #fff; text-align: left; }
+  .helloada-growth-agenda-status button:hover { border-color: #edb7a5; box-shadow: 0 5px 16px rgba(36,50,66,.07); }
+  .helloada-growth-agenda-status button.is-active { border-color: #c8e0dc; background: #f6fbfa; }
+  .helloada-growth-agenda-status small { color: #697687; font-size: 10px; font-weight: 730; letter-spacing: .055em; text-transform: uppercase; }
+  .helloada-growth-agenda-status strong { overflow: hidden; color: #27384a; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+  .helloada-growth-agenda-status span { color: #637183; font-size: 11px; }
+  .helloada-growth-attention { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 15px; border: 1px solid #f2d4bf; border-radius: 11px; background: #fff8f0; color: #75451f; text-align: left; }
+  .helloada-growth-attention strong, .helloada-growth-attention small { display: block; }
+  .helloada-growth-attention small { margin-top: 2px; color: #7e6245; font-size: 12px; }
+  @media (max-width: 900px) {
+    .helloada-growth-results-heading { align-items: flex-start; flex-direction: column; }
+    .helloada-growth-results-nav { width: 100%; }
+    .helloada-growth-agenda-grid { grid-template-columns: minmax(0, 1fr); }
+  }
+  @media (max-width: 620px) {
+    .helloada-growth-agenda-status { grid-template-columns: minmax(0, 1fr); }
+    .helloada-growth-featured-decision, .helloada-growth-agenda-empty { min-height: 0; padding: 20px; }
+    .helloada-growth-agenda-actions { align-items: flex-start; flex-direction: column; }
+  }
+
+}

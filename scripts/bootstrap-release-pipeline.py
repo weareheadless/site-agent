@@ -112,6 +112,7 @@ def bootstrap(root: Path = ROOT, source_dir: Path | None = None) -> dict[str, st
         "scripts/helloada-api-restart-helper.py",
         "deploy/helloada-api-restart.socket",
         "deploy/helloada-api-restart@.service",
+        "scripts/retire-legacy-tenant-schedulers.py",
     ):
         committed = subprocess.check_output(
             ["git", "-C", str(mirror), "show", f"{source_sha}:{relative}"]
@@ -148,7 +149,10 @@ def bootstrap(root: Path = ROOT, source_dir: Path | None = None) -> dict[str, st
     # Remove only the obsolete file installed by the previous reviewed bootstrap.
     run(["sudo", "-n", "rm", "-f",
          "/etc/polkit-1/rules.d/60-helloada-api-restart.rules"], env=environment)
+    run(["sudo", "-n", "python3", str(snapshot / "scripts/retire-legacy-tenant-schedulers.py")],
+        env=environment)
     run(["sudo", "-n", "systemctl", "daemon-reload"], env=environment)
+    run(["sudo", "-n", "systemctl", "restart", "site-agent-api.service"], env=environment)
     run(["sudo", "-n", "systemctl", "enable", "helloada-api-restart.socket"], env=environment)
     run(["sudo", "-n", "systemctl", "restart", "helloada-api-restart.socket"], env=environment)
     run(["sudo", "-n", "systemctl", "enable", "helloada-release.timer"], env=environment)

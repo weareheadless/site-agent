@@ -215,7 +215,7 @@ registered email domain remains `domain_required`; automatic shared-domain
 assignment for every new workspace is phase two, tracked in issue #106. For
 the current validation, existing platform-hosted tenants can receive an
 explicit HelloAda email domain and tenant-unique local part through the
-read-only/`--apply` CLI flow below. A tenant scheduler retries automatically
+read-only/`--apply` CLI flow below. The shared site-agent-api scheduler retries automatically
 every hour after a new Worker release becomes ready; it does not need a
 dashboard visit or a manual API restart. For an explicitly auto-provisioned
 tenant with registered Mailflare D1 resources, the first Worker release may
@@ -496,6 +496,15 @@ bootstrap versions. On a new host, run the same script from a clean
 /SOCIAL/site-agent/.venv/bin/python /SOCIAL/site-agent/scripts/bootstrap-release-pipeline.py
 ```
 
+The bootstrap also retires the obsolete per-tenant systemd scheduler only when
+the installed template exactly matches the known legacy unit contract. It stops
+and disables concrete tenant instances, renames the template to the recoverable
+/etc/systemd/system/site-agent@.service.retired path, reloads systemd, and
+restarts site-agent-api.service so the shared tenant scheduler can acquire its
+locks. An unknown unit, conflicting recovery copy, or remaining enabled/running
+instance aborts bootstrap; do not stop or replace that unit manually. All future
+tenant scheduling belongs to the shared API process and its registered-tenant
+runtime. The retired template is intentionally not reinstalled by releases.
 Future dispatcher changes self-synchronize from official main into versioned
 slots, with the active dispatcher switched atomically. Host service-unit changes
 are installed only by the bootstrap and are checked against official main on

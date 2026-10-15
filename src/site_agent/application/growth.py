@@ -10,6 +10,45 @@ from ..core.memory import Memory
 from .growth_workflow import _source_state
 from .growth_tasks import growth_tasks
 
+OWNER_QUEUE_CONTRACT_VERSION = "owner-decisions-v1"
+
+
+def owner_queue(tasks: list[dict[str, Any]]) -> dict[str, Any]:
+    """Project canonical Growth tasks into a small owner-facing agenda."""
+    priority_order = {"urgent": 0, "high": 1, "normal": 2, "optional": 3}
+    decisions = [row for row in tasks if row.get("focus") == "needs_you"]
+    decisions.sort(key=lambda row: str(row.get("updatedAt") or ""), reverse=True)
+    decisions.sort(key=lambda row: priority_order.get(str(row.get("priority") or "normal"), 2))
+    active = [row for row in tasks if row.get("focus") == "preparing"]
+    active.sort(key=lambda row: str(row.get("updatedAt") or ""), reverse=True)
+    active.sort(key=lambda row: row.get("kind") == "schedule")
+    scheduled = [row for row in tasks if row.get("focus") == "planned" and row.get("nextRun")]
+    scheduled.sort(key=lambda row: str(row.get("nextRun") or ""))
+    attention = [row for row in tasks if row.get("focus") == "paused" and row.get("executionIssue")]
+    attention.sort(key=lambda row: str(row.get("updatedAt") or ""), reverse=True)
+    successful_states = {"completed", "measuring", "reviewed", "published", "analysis_completed", "live"}
+    recent = [
+        row for row in tasks
+        if row.get("focus") == "completed"
+        and row.get("state") in successful_states
+        and not row.get("executionIssue")
+        and row.get("kind") not in {"article_research", "schedule", "measurement"}
+        and (row.get("kind") != "article" or row.get("state") == "published")
+    ]
+    recent.sort(key=lambda row: str(row.get("updatedAt") or ""), reverse=True)
+    return {
+        "featuredDecisionId": decisions[0].get("id") if decisions else None,
+        "additionalDecisionIds": [row.get("id") for row in decisions[1:4]],
+        "decisionCount": len(decisions),
+        "activeTaskId": active[0].get("id") if active else None,
+        "nextScheduledId": scheduled[0].get("id") if scheduled else None,
+        "recentResultId": recent[0].get("id") if recent else None,
+        "recentResultIds": [row.get("id") for row in recent[:5]],
+        "attentionTaskId": attention[0].get("id") if attention else None,
+    }
+
+
+
 
 def growth_snapshot(memory: Memory, config: dict[str, Any], context: dict[str, Any], *, include_article_content: bool = False) -> dict[str, Any]:
     state = context.get("seo_provisioning_state") or memory.kv_get("seo_provisioning_state", {}) or {}
@@ -59,12 +98,16 @@ def growth_snapshot(memory: Memory, config: dict[str, Any], context: dict[str, A
             "No persisted evidence manifest exists yet.",
         ],
     }
+    tasks = growth_tasks(memory, initiatives, drafts, activities, memory.list_strategy_outcomes(limit=100), runs, ideas, include_article_content=include_article_content)
     return {
+        "growthContractVersion": OWNER_QUEUE_CONTRACT_VERSION,
         "sources": sources,
+        "ownerTimezone": GrowthPolicy.from_config(config).timezone,
         "evidence": evidence_projection,
         "latestEvidence": evidence_projection,
         "activities": activities,
-        "tasks": growth_tasks(memory, initiatives, drafts, activities, memory.list_strategy_outcomes(limit=100), runs, memory.list_article_ideas(limit=40), include_article_content=include_article_content),
+        "tasks": tasks,
+        "ownerQueue": owner_queue(tasks),
         "goal": goal,
         "latestInsight": memory.latest_seo_insight(),
         "keywords": [{"keyword": row.get("seed"), **pick(row, ("id", "language", "market", "research_count", "last_researched_ts"))} for row in memory.list_seo_seeds(limit=40)],

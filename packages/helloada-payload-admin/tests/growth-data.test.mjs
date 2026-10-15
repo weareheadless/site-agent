@@ -24,7 +24,9 @@ test('the owner plan exposes upcoming work, not stale dates on disabled tasks', 
 test('Growth has one task list, not separate advice, schedule and approval windows', () => {
   const component = readFileSync(new URL('../src/components/HelloAdaGrowth.tsx', import.meta.url), 'utf8');
   assert.doesNotMatch(component, /helloada-growth-work-strip|backgroundIdle/);
-  assert.match(component, /<GrowthTasks tasks=\{growth\?\.tasks\}/);
+  assert.ok(component.includes('<GrowthTasks'));
+  assert.ok(component.includes('tasks={growth?.tasks}'));
+  assert.ok(component.includes('ownerQueue={growth?.ownerQueue}'));
   assert.doesNotMatch(component, /reviewQueue\?\.map|reviewCandidates|helloada-growth-side|helloada-growth-advice/);
   const tasks = readFileSync(new URL('../src/components/GrowthTasks.tsx', import.meta.url), 'utf8');
   assert.match(tasks, /const FILTERS: Focus\[\] = \["needs_you", "preparing", "planned", "paused", "opportunity", "completed"\]/);
@@ -32,7 +34,7 @@ test('Growth has one task list, not separate advice, schedule and approval windo
   assert.match(tasks, /helloada-growth-task-list/);
   assert.doesNotMatch(tasks, /helloada-growth-sidebar/);
   assert.match(tasks, /helloada-growth-support-rail/);
-  assert.match(tasks, /const recentWork = tasks/);
+  assert.match(tasks, /const recentWork = ownerQueue\?\.recentResultIds\.map\(agendaTask\)/);
   assert.match(tasks, /growth_task/);
   assert.match(tasks, /lastOpenedTask/);
   assert.match(tasks, /writeGrowthLocation\(task\.focus, task\.id, "pushState"\)/);

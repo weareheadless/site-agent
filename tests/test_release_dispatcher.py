@@ -259,5 +259,7 @@ def test_api_release_client_uses_newline_framed_broker_protocol(tmp_path):
  
 def test_host_bootstrap_restarts_updated_socket_and_timer_units():
     bootstrap = (ROOT / "scripts/bootstrap-release-pipeline.py").read_text()
+    assert "scripts/retire-legacy-tenant-schedulers.py" in bootstrap
+    assert '"systemctl", "restart", "site-agent-api.service"' in bootstrap
     assert '"systemctl", "restart", "helloada-api-restart.socket"' in bootstrap
     assert '"systemctl", "restart", "helloada-release.timer"' in bootstrap

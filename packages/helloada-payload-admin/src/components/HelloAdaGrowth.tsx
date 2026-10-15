@@ -9,11 +9,22 @@ import { GrowthTasks, type GrowthTask } from "./GrowthTasks";
 import { WorkspaceIcon } from "./WorkspaceIcon";
 import {
   GrowthAnalytics,
-  GrowthMetrics,
   type GrowthAnalyticsData,
 } from "./GrowthAnalytics";
 import { GrowthEvidence } from "./GrowthEvidence";
 import { GrowthCompetition } from "./GrowthCompetition";
+type GrowthPanel = "home" | "decisions" | "work" | "results";
+type GrowthResultsTab = "analytics" | "search" | "competitionTab" | "health" | "content" | "connections";
+type OwnerQueue = {
+  featuredDecisionId: string | null;
+  additionalDecisionIds: string[];
+  decisionCount: number;
+  activeTaskId: string | null;
+  nextScheduledId: string | null;
+  recentResultId: string | null;
+  recentResultIds: string[];
+  attentionTaskId: string | null;
+};
 
 type Insight = {
   headline?: string;
@@ -28,6 +39,9 @@ type Insight = {
 };
 type Growth = {
   tasks?: GrowthTask[];
+  ownerQueue: OwnerQueue;
+  ownerTimezone?: string | null;
+  growthContractVersion: string;
   sources?: Array<{
     id: string;
     status: string;
@@ -47,7 +61,8 @@ type Growth = {
 
 export function HelloAdaGrowth() {
   const { t, language } = useHelloAdaTranslations();
-  const [tab, setTab] = useState("overview");
+  const [panel, setPanel] = useState<GrowthPanel>("home");
+  const [tab, setTab] = useState<GrowthResultsTab>("analytics");
   const [days, setDays] = useState(28);
   const [revision, setRevision] = useState(0);
   const [growth, setGrowth] = useState<Growth>();
@@ -55,7 +70,7 @@ export function HelloAdaGrowth() {
   const [errors, setErrors] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState<Record<string, boolean>>({
     growth: true,
-    analytics: true,
+    analytics: false,
   });
   const date = (value: unknown) => {
     const parsed = new Date(String(value ?? ""));
@@ -64,10 +79,30 @@ export function HelloAdaGrowth() {
       : new Intl.DateTimeFormat(language, {
           dateStyle: "medium",
           timeStyle: "short",
+          ...(growth?.ownerTimezone ? { timeZone: growth.ownerTimezone } : {}),
         }).format(parsed);
   };
   const ask = (prompt = t("growth.askPrompt")) =>
     `/admin?ask=${encodeURIComponent(prompt)}`;
+  useEffect(() => {
+    const restorePanel = () => {
+      const value = new URLSearchParams(window.location.search).get("growth_panel");
+      setPanel(value === "decisions" || value === "work" || value === "results" ? value : "home");
+    };
+    restorePanel();
+    window.addEventListener("popstate", restorePanel);
+    return () => window.removeEventListener("popstate", restorePanel);
+  }, []);
+  const navigatePanel = (next: GrowthPanel) => {
+    setPanel(next);
+    if (next === "results") setTab("analytics");
+    const url = new URL(window.location.href);
+    if (next === "home") url.searchParams.delete("growth_panel");
+    else url.searchParams.set("growth_panel", next);
+    url.searchParams.delete("growth_task");
+    url.searchParams.delete("growth_focus");
+    window.history.pushState({ ...window.history.state, helloAdaGrowthPanel: next }, "", url.toString());
+  };
   // Changing the reporting period must not clear or refetch Ada's brief.
   useEffect(() => {
     const controller = new AbortController();
@@ -80,6 +115,8 @@ export function HelloAdaGrowth() {
       .then(async (response) => {
         if (!response.ok) throw new Error("unavailable");
         const body = await response.json();
+        if (!body || body.growthContractVersion !== "owner-decisions-v1" || !Array.isArray(body.tasks) || !body.ownerQueue || !Array.isArray(body.ownerQueue.additionalDecisionIds) || !Array.isArray(body.ownerQueue.recentResultIds))
+          throw new Error("incompatible Growth response");
         if (!controller.signal.aborted) setGrowth(body);
       })
       .catch(() => {
@@ -93,6 +130,10 @@ export function HelloAdaGrowth() {
     return () => controller.abort();
   }, [revision]);
   useEffect(() => {
+    if (panel !== "results" || tab !== "analytics") {
+      setLoading((current) => ({ ...current, analytics: false }));
+      return;
+    }
     const controller = new AbortController();
     setLoading((current) => ({ ...current, analytics: true }));
     setAnalytics(undefined);
@@ -115,7 +156,7 @@ export function HelloAdaGrowth() {
           setLoading((current) => ({ ...current, analytics: false }));
       });
     return () => controller.abort();
-  }, [days, revision]);
+  }, [days, revision, panel, tab]);
   const refresh = () => setRevision((value) => value + 1);
   const ErrorNotice = () => (
     <div className="helloada-growth-error" role="status">
@@ -219,27 +260,12 @@ export function HelloAdaGrowth() {
           role="group"
           aria-label={t("growth.title")}
         >
-          {[
-            "overview",
-            "analytics",
-            "search",
-            "competitionTab",
-            "health",
-            "content",
-            "connections",
-          ].map((view) => (
-            <button
-              key={view}
-              type="button"
-              aria-pressed={tab === view}
-              onClick={() => setTab(view)}
-            >
-              {t(`growth.${view}`)}
-            </button>
-          ))}
+          <button type="button" aria-pressed={panel === "home" || panel === "decisions"} onClick={() => navigatePanel("home")}>{t("growth.panel_next")}</button>
+          <button type="button" aria-pressed={panel === "work"} onClick={() => navigatePanel("work")}>{t("growth.panel_work")}</button>
+          <button type="button" aria-pressed={panel === "results"} onClick={() => navigatePanel("results")}>{t("growth.panel_results")}</button>
         </div>
         <div className="helloada-growth-controls">
-          {tab === "overview" || tab === "analytics" ? (
+          {panel === "results" && tab === "analytics" ? (
             <select
               aria-label={t("growth.days")}
               value={days}
@@ -262,41 +288,46 @@ export function HelloAdaGrowth() {
           </button>
         </div>
       </div>
-      {errors.growth ? <ErrorNotice /> : null}
-      {tab === "overview" ? (
-        <>
-          <GrowthTasks tasks={growth?.tasks} pending={loading.growth} refresh={refresh} ask={ask} date={date} goal={growth?.goal} brief={insight} />
-          <div className="helloada-growth-section-head">
-            <h2>{t("growth.performance")}</h2>
-            <button type="button" onClick={() => setTab("analytics")}>
-              {t("growth.exploreData")} ↗
-            </button>
+      {errors.growth && panel === "results" ? <ErrorNotice /> : null}
+      {panel === "results" ? (
+        <section className="helloada-growth-results-heading">
+          <div>
+            <h2>{t("growth.resultsTitle")}</h2>
+            <p>{t("growth.resultsIntro")}</p>
           </div>
-          {errors.analytics ? <ErrorNotice /> : null}
-          <div className="helloada-growth-overview-metrics">
-            <GrowthMetrics
-              pending={loading.analytics}
-              provider={analytics?.ga4}
-              metrics={[
-                ["activeUsers", t("growth.visitors")],
-                ["sessions", t("growth.sessions")],
-              ]}
-            />
-            <GrowthMetrics
-              pending={loading.analytics}
-              provider={analytics?.gsc}
-              metrics={[
-                ["clicks", t("growth.clicks")],
-                ["impressions", t("growth.impressions")],
-              ]}
-            />
+          <div className="helloada-growth-results-nav" role="tablist" aria-label={t("growth.resultsTitle")}>
+            {(["analytics", "search", "competitionTab", "health", "content", "connections"] as const).map((view) => (
+              <button
+                key={view}
+                type="button"
+                role="tab"
+                aria-selected={tab === view}
+                onClick={() => setTab(view)}
+              >
+                {t(`growth.${view}`)}
+              </button>
+            ))}
           </div>
-          <p className="helloada-growth-footnote">
-            {days} {t("growth.days")} · {t("growth.briefPeriodNote")}
-          </p>
-        </>
+        </section>
       ) : null}
-      {tab === "analytics" ? (
+      {panel !== "results" && errors.growth ? <div className="helloada-growth-error" role="alert">
+        {t("growth.unavailable")} <button type="button" onClick={refresh}>{t("growth.retry")}</button>
+      </div> : null}
+      {panel !== "results" && !errors.growth ? (
+        <GrowthTasks
+          mode={panel === "home" ? "home" : panel === "decisions" ? "decisions" : "work"}
+          tasks={growth?.tasks}
+          ownerQueue={growth?.ownerQueue}
+          pending={loading.growth}
+          refresh={refresh}
+          ask={ask}
+          date={date}
+          goal={growth?.goal}
+          brief={insight}
+          onNavigate={navigatePanel}
+        />
+      ) : null}
+      {panel === "results" && tab === "analytics" ? (
         <>
           {errors.analytics ? <ErrorNotice /> : null}
           <GrowthAnalytics
@@ -308,7 +339,7 @@ export function HelloAdaGrowth() {
           />
         </>
       ) : null}
-      {tab === "search" || tab === "health" ? (
+      {panel === "results" && (tab === "search" || tab === "health") ? (
         <GrowthEvidence
           key={tab}
           section={tab === "search" ? "research" : "health"}
@@ -317,8 +348,8 @@ export function HelloAdaGrowth() {
           seeds={growth?.keywords}
         />
       ) : null}
-      {tab === "competitionTab" ? <GrowthCompetition revision={revision} ask={ask} /> : null}
-      {tab === "content" ? (
+      {panel === "results" && tab === "competitionTab" ? <GrowthCompetition revision={revision} ask={ask} /> : null}
+      {panel === "results" && tab === "content" ? (
         <>
           <div className="helloada-growth-content-bar">
             <span>{t("growth.approval")}</span>
@@ -346,7 +377,7 @@ export function HelloAdaGrowth() {
           </Link>
         </>
       ) : null}
-      {tab === "connections" ? (
+      {panel === "results" && tab === "connections" ? (
         <>
           <div className="helloada-growth-section-head">
             <h2>{t("growth.connections")}</h2>
@@ -358,7 +389,7 @@ export function HelloAdaGrowth() {
           <Sources />
         </>
       ) : null}
-      {analytics?.capturedAt && (tab === "overview" || tab === "analytics") ? (
+      {analytics?.capturedAt && panel === "results" && tab === "analytics" ? (
         <p className="helloada-growth-captured">
           {t("growth.updated")} {date(analytics.capturedAt)}
         </p>

@@ -229,6 +229,8 @@ def growth_tasks(
         tasks.append({'id': f"initiative:{initiative['id']}", 'kind': initiative.get('kind'), 'title': (draft.get('title') or initiative.get('title')) if article_draft else initiative.get('title'),
             'summary': _compact_summary(initiative_summary), 'summaryKey': summary_key, 'scope': initiative_scope,
             'focus': 'needs_you' if review_ready else focus, 'state': task_state, 'draftId': draft_id, 'ownerActionId': action.get('id'),
+            'priority': action.get('priority') or initiative.get('priority') or 'normal',
+            'requirement': action.get('requirement'),
             'conversationId': action.get('conversation_id'), 'approvalId': approval_id,
             'reviewPackageHash': review_hash, 'lastError': None,
             'executionIssue': bool(initiative.get('last_error')) or stale_work,
@@ -298,6 +300,7 @@ def growth_tasks(
             'focus': focus, 'state': state,
             'ownerActionId': action['id'], 'conversationId': action.get('conversation_id'), 'draftId': action.get('draft_id'),
             'approvalId': action.get('approval_id'), 'requirement': action.get('requirement'), 'canApprove': False,
+            'priority': action.get('priority') or 'normal',
             'executionIssue': execution_issue,
             'nextRun': action.get('snoozed_until'), 'updatedAt': action.get('updated_ts')})
     for draft in drafts:

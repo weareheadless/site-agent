@@ -23,7 +23,7 @@ for (const file of ['src/components/GrowthTasks.tsx', 'src/components/HelloAdaNa
 }
 const packedText = file => execFileSync('tar', ['-xOf', archive, `package/${file}`], { encoding: 'utf8' })
 const growth = packedText('src/components/HelloAdaGrowth.tsx')
-if (!growth.includes('<GrowthTasks ') || growth.includes('className="helloada-growth-sidebar"')) throw new Error('Packed artifact has the old scattered Growth overview')
+if (!/<GrowthTasks(?:\s|>)/.test(growth) || growth.includes('helloada-growth-sidebar') || !growth.includes('owner-decisions-v1')) throw new Error('Packed artifact has the old scattered Growth overview or lacks the supported contract check')
 if (/HelloAdaMessages|HelloAdaCalendar/.test(packedText('src/index.ts'))) throw new Error('Packed admin package exposes a parallel Payload mailbox or calendar UI')
 if (!packedText('src/components/HelloAdaNav.tsx').includes('href="/admin?view=messages"')
   || !packedText('src/components/WebsiteWorkspace.tsx').includes('<MailflarePayloadView />')
