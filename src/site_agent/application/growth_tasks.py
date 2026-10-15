@@ -110,7 +110,7 @@ def growth_tasks(
         if draft_id:
             linked_drafts.add(draft_id)
         state = initiative.get('state')
-        focus = 'paused' if state in {'failed', 'blocked'} else 'completed' if state in terminal or state == 'measuring' else 'preparing'
+        focus = 'preparing' if state == 'blocked' else 'completed' if state in terminal or state == 'measuring' else 'preparing'
         if action.get('requirement') == 'owner_information' and action.get('state') in {'open', 'started', 'waiting'}:
             focus = 'needs_you'
         meta = draft.get('meta') or {}
@@ -280,7 +280,7 @@ def growth_tasks(
             'kind': 'article_research',
             'title': idea_data.get('working_title') or 'Ada article research',
             'summary': ('Ada is reviewing this research result.' if state == 'held' else 'This research run needs repair; the owner does not need to resolve a provider error.') if technical_failure or blocked else idea_data.get('audience_need') or 'Ada is researching a useful reader-led article opportunity.',
-            'focus': 'paused' if technical_failure else 'preparing',
+            'focus': 'completed' if technical_failure else 'preparing',
             'state': state,
             'canApprove': False,
             'lastError': None,

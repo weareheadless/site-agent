@@ -49,7 +49,7 @@ export function GrowthTasks({ tasks = [], pending, refresh, ask, date, goal, bri
     : "";
   const filters = ["needs_you", "preparing", "planned", "paused", "completed"];
   const visible = tasks.filter(row => row.focus === focus);
-  const recent = tasks.filter(row => ["reviewed", "published", "complete", "completed", "analysis_completed"].includes(row.state))
+  const recent = tasks.filter(row => ["reviewed", "rejected", "published", "complete", "completed", "analysis_completed", "blocked", "failed"].includes(row.state))
     .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""))).slice(0, 6);
   useEffect(() => {
     if (!articleReviewKey || !selectedTask?.draftId) {
