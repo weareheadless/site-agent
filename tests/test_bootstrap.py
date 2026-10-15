@@ -1325,7 +1325,10 @@ WantedBy=multi-user.target
                     for name, state in self.active.items()
                 )
             if command[1] == "list-unit-files":
-                return "\n".join(f"{name} {state}" for name, state in self.enabled.items())
+                assert command[2:] == ["--type=service", "--plain", "--no-legend"]
+                rows = [f"{name} {state}" for name, state in self.enabled.items()]
+                rows.append("ssh.service enabled")
+                return "\n".join(rows)
             self.mutations.append(command[1:])
             if command[1] == "stop":
                 self.active[command[2]] = "inactive"
@@ -1344,6 +1347,8 @@ WantedBy=multi-user.target
     assert ["stop", "site-agent@oceanicvibes.service"] in systemctl.mutations
     assert ["disable", "site-agent@oceanicvibes.service"] in systemctl.mutations
     mutation_count = len(systemctl.mutations)
+    systemctl.active.clear()
+    systemctl.enabled.clear()
     assert retire(unit_dir, runner=systemctl)["retired"] is True
     assert len(systemctl.mutations) == mutation_count
 
