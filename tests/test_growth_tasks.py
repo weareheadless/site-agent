@@ -32,6 +32,7 @@ def test_linked_improvement_is_one_task_not_three_cards(tmp_path):
     assert tasks[0]['state'] == 'blocked'
     assert tasks[0]['draftId'] == draft
     assert tasks[0]['ownerActionId'] == action.id
+    assert tasks[0]['priority'] == 'normal'
     assert tasks[0]['reviewPackageHash'] == 'sha256:exact'
     assert not tasks[0]['canApprove']
     memory.close()

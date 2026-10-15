@@ -149,8 +149,14 @@ bootstrap enables automatic reconciliation with the `hello` local part;
 custom-origin tenants derive their email domain from the registered custom
 origin. A `workers.dev` tenant without an explicitly registered email domain
 remains `domain_required`; fully automatic shared-domain assignment for every
-new workspace is still the separately tracked phase-two work. The shared
-tenant scheduler retries readiness and transient failures hourly after
+new workspace is still the separately tracked phase-two work.
+site-agent-api.service is the sole runtime owner of tenant schedulers. Tenant
+jobs are registered from the canonical tenant registry and run through the
+shared API; do not enable a separate site-agent@<tenant>.service process.
+The official-main host bootstrap retires the exact known legacy systemd
+template, preserves it as site-agent@.service.retired, and restarts the shared
+API so it reacquires tenant scheduler locks. Unknown unit contents fail closed.
+The shared tenant scheduler retries readiness and transient failures hourly after
 bootstrap/deployment. The first Worker release may omit all mailbox runtime
 settings only when the registered tenant explicitly enables automatic email
 provisioning and has registered Mailflare D1 resources; partial settings and

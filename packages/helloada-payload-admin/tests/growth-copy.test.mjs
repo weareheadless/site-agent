@@ -21,7 +21,13 @@ test('Growth translations load and contain the unified plan for every supported 
   for (const language of ['en', 'es', 'fr']) {
     for (const key of ['growth.overview', 'growth.taskTitle', 'growth.task_needs_you', 'growth.growth_weekly',
       'growth.articleNotRunning', 'growth.articleResearchActive', 'growth.articleResearchComplete',
-      'growth.articleResolvePrompt', 'growth.taskResolvePrompt', 'growth.taskState_not_running']) {
+      'growth.articleResolvePrompt', 'growth.taskResolvePrompt', 'growth.taskState_not_running',
+      'growth.panel_next', 'growth.panel_work', 'growth.panel_results', 'growth.homeTitle',
+      'growth.decisionListTitle', 'growth.decisionCtaReview', 'growth.decisionCtaAnswer',
+      'growth.decisionCtaArticle', 'growth.decisionCtaChanges', 'growth.articleWhyThis',
+      'growth.serviceNoticeTitle', 'growth.serviceNoticeBody', 'growth.openAdaWork',
+      'growth.seeAllDecisions', 'growth.noDecisions', 'growth.noDecisionAskPrompt',
+      'growth.resultsTitle', 'growth.resultsIntro', 'growth.attentionLabel', 'growth.nextScheduledLabel']) {
       assert.equal(typeof growthCopy[language][key], 'string', `${language}: ${key}`)
       assert.ok(growthCopy[language][key].length > 0)
     }

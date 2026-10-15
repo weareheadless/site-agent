@@ -1,8 +1,41 @@
-from site_agent.application.growth import growth_snapshot
+from site_agent.application.growth import growth_snapshot, owner_queue
 from site_agent.application.growth_workflow import run_growth_reconciler
 from site_agent.core.jobs import register_builtin
 from site_agent.core.memory import Memory
 from site_agent.core.scheduler import Scheduler
+
+def test_owner_queue_indexes_decisions_and_excludes_opportunities_and_history():
+    tasks = [
+        {"id": "decision:normal", "focus": "needs_you", "priority": "normal", "updatedAt": "2026-10-15T09:00:00Z"},
+        {"id": "decision:urgent", "focus": "needs_you", "priority": "urgent", "updatedAt": "2026-10-01T09:00:00Z"},
+        {"id": "idea:1", "focus": "opportunity", "priority": "urgent"},
+        {"id": "working:1", "focus": "preparing", "kind": "article", "updatedAt": "2026-10-15T10:00:00Z"},
+        {"id": "schedule:weekly", "focus": "planned", "nextRun": "2026-10-20T09:00:00Z"},
+        {"id": "result:1", "focus": "completed", "state": "published", "kind": "payload_content", "updatedAt": "2026-10-14T09:00:00Z"},
+        {"id": "article:published", "focus": "completed", "state": "published", "kind": "article", "updatedAt": "2026-10-15T11:00:00Z"},
+        {"id": "article:approved", "focus": "completed", "state": "approved", "kind": "article", "updatedAt": "2026-10-15T12:00:00Z"},
+        {"id": "failure:1", "focus": "paused", "executionIssue": True, "updatedAt": "2026-10-15T08:00:00Z"},
+    ]
+
+    assert owner_queue(tasks) == {
+        "featuredDecisionId": "decision:urgent",
+        "additionalDecisionIds": ["decision:normal"],
+        "decisionCount": 2,
+        "activeTaskId": "working:1",
+        "nextScheduledId": "schedule:weekly",
+        "recentResultId": "article:published",
+        "recentResultIds": ["article:published", "result:1"],
+        "attentionTaskId": "failure:1",
+    }
+
+
+def test_owner_queue_caps_secondary_decisions_without_losing_the_real_count():
+    tasks = [{"id": f"decision:{n}", "focus": "needs_you"} for n in range(5)]
+    agenda = owner_queue(tasks)
+    assert agenda["featuredDecisionId"] == "decision:0"
+    assert agenda["additionalDecisionIds"] == ["decision:1", "decision:2", "decision:3"]
+    assert agenda["decisionCount"] == 5
+
 
 
 def test_new_site_goal_and_reconciliation_are_durable_and_idempotent(tmp_path):
@@ -28,6 +61,9 @@ def test_new_site_goal_and_reconciliation_are_durable_and_idempotent(tmp_path):
         {"scheduler": type("SchedulerView", (), {"jobs": []})()},
     )
     assert snapshot["goal"]["revision"] == 1
+    assert snapshot["ownerTimezone"] == "America/Cancun"
+    assert snapshot["growthContractVersion"] == "owner-decisions-v1"
+    assert snapshot["ownerQueue"]["decisionCount"] == 0
     assert "work" not in snapshot
     assert all("nextRun" in row for row in snapshot["activities"])
     assert all(row.get("lastError") is None for row in snapshot["tasks"])

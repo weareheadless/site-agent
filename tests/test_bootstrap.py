@@ -1276,3 +1276,103 @@ def test_bootstrap_never_replaces_an_existing_site_directory(tmp_path):
     with pytest.raises(BootstrapError, match="refusing to replace"):
         service._materialize_template(site_dir)
     assert owner_file.read_text() == "preserve this"
+def test_host_bootstrap_retires_only_the_verified_legacy_tenant_scheduler(tmp_path):
+    import runpy
+
+    retire = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/retire-legacy-tenant-schedulers.py"))[
+        "retire_legacy_tenant_schedulers"
+    ]
+    unit_dir = tmp_path / "systemd"
+    unit_dir.mkdir()
+    unit_path = unit_dir / "site-agent@.service"
+    unit_path.write_text("""[Unit]
+Description=site-agent (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Environment=PYTHONUNBUFFERED=1
+Type=simple
+User=admin
+WorkingDirectory=/SOCIAL/configs/%i
+EnvironmentFile=/SOCIAL/configs/%i/.env
+ExecStart=/SOCIAL/site-agent/.venv/bin/python -m site_agent run --config /SOCIAL/configs/%i/config.yaml
+Restart=on-failure
+RestartSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+""", encoding="utf-8")
+
+    class Systemctl:
+        def __init__(self):
+            self.active = {
+                "site-agent@oceanicvibes.service": "active",
+                "site-agent@atelier-harmonie.service": "inactive",
+            }
+            self.enabled = {
+                "site-agent@oceanicvibes.service": "enabled",
+                "site-agent@atelier-harmonie.service": "disabled",
+            }
+            self.mutations = []
+
+        def __call__(self, command, *, capture=False):
+            if command[1] == "list-units":
+                return "\n".join(
+                    f"{name} loaded {state} {'running' if state == 'active' else 'dead'} service"
+                    for name, state in self.active.items()
+                )
+            if command[1] == "list-unit-files":
+                return "\n".join(f"{name} {state}" for name, state in self.enabled.items())
+            self.mutations.append(command[1:])
+            if command[1] == "stop":
+                self.active[command[2]] = "inactive"
+            elif command[1] == "disable" and command[2] != "site-agent@.service":
+                self.enabled[command[2]] = "disabled"
+            return ""
+
+    systemctl = Systemctl()
+    receipt = retire(unit_dir, runner=systemctl)
+    assert receipt == {
+        "retired": True,
+        "stoppedInstances": ["site-agent@oceanicvibes.service"],
+    }
+    assert not unit_path.exists()
+    assert (unit_dir / "site-agent@.service.retired").is_file()
+    assert ["stop", "site-agent@oceanicvibes.service"] in systemctl.mutations
+    assert ["disable", "site-agent@oceanicvibes.service"] in systemctl.mutations
+    mutation_count = len(systemctl.mutations)
+    assert retire(unit_dir, runner=systemctl)["retired"] is True
+    assert len(systemctl.mutations) == mutation_count
+
+
+def test_host_bootstrap_fails_closed_on_an_unrecognized_tenant_unit(tmp_path):
+    import runpy
+    import pytest
+
+    retire = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/retire-legacy-tenant-schedulers.py"))[
+        "retire_legacy_tenant_schedulers"
+    ]
+    unit_dir = tmp_path / "systemd"
+    unit_dir.mkdir()
+    unit_path = unit_dir / "site-agent@.service"
+    unit_path.write_text("ExecStart=/usr/bin/python arbitrary-command\n", encoding="utf-8")
+
+    class Systemctl:
+        mutations = []
+
+        def __call__(self, command, *, capture=False):
+            if command[1] == "list-units":
+                return "site-agent@oceanicvibes.service loaded active running service"
+            if command[1] == "list-unit-files":
+                return "site-agent@oceanicvibes.service enabled"
+            self.mutations.append(command[1:])
+            return ""
+
+    systemctl = Systemctl()
+    with pytest.raises(RuntimeError, match="unit"):
+        retire(unit_dir, runner=systemctl)
+    assert systemctl.mutations == []
+    assert unit_path.exists()
