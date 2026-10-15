@@ -111,8 +111,8 @@ def test_shared_overlay_updates_runtime_and_preserves_tenant_owned_content(tmp_p
     assert (checkout / "src/components/site/TenantSections.tsx").read_bytes() == design_before
     assert (checkout / "src/migrations/tenant-migration.ts").read_bytes() == migration_before
     package = json.loads((checkout / "package.json").read_text())
-    assert "payload-admin-v0.10.11" in package["dependencies"]["@weareheadless/helloada-payload-admin"]
-    assert result["payloadAdmin"] == "0.10.11"
+    assert "payload-admin-v0.10.13" in package["dependencies"]["@weareheadless/helloada-payload-admin"]
+    assert result["payloadAdmin"] == "0.10.13"
     assert len(result["fingerprint"]) == 64
     assert "worker.ts" in result["changedPaths"]
     assert "template-manifest.json" in result["changedPaths"]
@@ -122,7 +122,7 @@ def test_shared_overlay_updates_runtime_and_preserves_tenant_owned_content(tmp_p
 def test_shared_package_versions_are_taken_from_pinned_canonical_lock():
     versions = shared_package_versions(ROOT)
 
-    assert versions == {"@weareheadless/helloada-payload-admin": "0.10.11",
+    assert versions == {"@weareheadless/helloada-payload-admin": "0.10.13",
                         "@weareheadless/helloada-payload-core": "0.5.9"}
 
 

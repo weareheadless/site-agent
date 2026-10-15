@@ -1,6 +1,7 @@
 """One read-only queue joins existing work; it is not another task store."""
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime, timezone
 import re
 from typing import Any
@@ -19,9 +20,78 @@ def _future_timestamp(value: Any) -> bool:
         return False
 
 
-def growth_tasks(memory, initiatives, drafts, activities, outcomes, runs=(), article_ideas=()) -> list[dict[str, Any]]:
+def _article_review(
+    draft: Mapping[str, Any],
+    sync: Mapping[str, Any],
+    idea: Mapping[str, Any] | None,
+    *,
+    include_body: bool,
+) -> dict[str, Any]:
+    meta = draft.get("meta") if isinstance(draft.get("meta"), Mapping) else {}
+    editorial = meta.get("editorial_brief") if isinstance(meta.get("editorial_brief"), Mapping) else {}
+    research = meta.get("article_research") if isinstance(meta.get("article_research"), Mapping) else {}
+    idea_data = idea.get("idea_json") if isinstance(idea, Mapping) and isinstance(idea.get("idea_json"), Mapping) else {}
+    research_note = idea.get("research_note_json") if isinstance(idea, Mapping) and isinstance(idea.get("research_note_json"), Mapping) else {}
+    image = sync.get("featured_image") if isinstance(sync.get("featured_image"), Mapping) else None
+    raw_sources = idea_data.get("source_urls") or research.get("source_urls") or []
+    sources = []
+    if isinstance(raw_sources, list):
+        for url in raw_sources[:5]:
+            value = str(url or "").strip()
+            if value.startswith(("https://", "http://")):
+                sources.append({"url": value[:1000], "label": value[:180]})
+    slug = str(sync.get("slug") or "").strip()
+    review = {
+        "slug": slug,
+        "path": f"/post/{slug}" if slug else "",
+        "excerpt": str(sync.get("excerpt") or "").strip(),
+        "metaDescription": str(sync.get("meta_description") or "").strip(),
+        "primaryKeyword": str(research_note.get("selected_query") or sync.get("primary_keyword") or "").strip(),
+        "rationale": str(meta.get("why") or idea_data.get("business_relevance") or meta.get("angle") or "").strip(),
+        "readerQuestion": str(editorial.get("reader_question") or idea_data.get("reader_question") or "").strip(),
+        "demandInterpretation": str(research_note.get("demand_interpretation") or "").strip(),
+        "researchDecision": str(research_note.get("decision") or "").strip(),
+        "featuredImage": dict(image) if image else None,
+        "sources": sources,
+    }
+    if include_body:
+        review["body"] = str(draft.get("body") or "")
+    return review
+
+
+def _article_is_reviewable(draft: Mapping[str, Any], sync: Mapping[str, Any]) -> bool:
+    meta = draft.get("meta") if isinstance(draft.get("meta"), Mapping) else {}
+    validation = sync.get("validation") if isinstance(sync.get("validation"), Mapping) else {}
+    checks = validation.get("checks") if isinstance(validation.get("checks"), Mapping) else {}
+    return bool(
+        draft.get("kind") == "article"
+        and draft.get("status") == "pending"
+        and sync.get("state") == "ready_for_review"
+        and validation.get("status") == "passed"
+        and checks
+        and all(value is True for value in checks.values())
+        and sync.get("collection") == "posts"
+        and str(sync.get("document_id") or "").strip()
+        and str(sync.get("draft_hash") or "").strip()
+        and str(meta.get("review_package_hash") or "").strip()
+    )
+
+
+def growth_tasks(
+    memory,
+    initiatives,
+    drafts,
+    activities,
+    outcomes,
+    runs=(),
+    article_ideas=(),
+    *,
+    include_article_content: bool = False,
+) -> list[dict[str, Any]]:
     actions = {row.id: row.to_record() for row in memory.list_owner_actions(limit=None)}
     draft_by_id = {row['id']: row for row in drafts}
+    idea_by_draft = {str(row.get("draft_id")): row for row in article_ideas if row.get("draft_id") is not None}
+    idea_by_id = {str(row.get("id")): row for row in article_ideas if row.get("id") is not None}
     linked_actions, linked_drafts, linked_approvals, tasks = set(), set(), set(), []
     terminal = {'reviewed', 'rejected', 'superseded', 'failed', 'cancelled', 'completed'}
     for initiative in sorted(initiatives, key=lambda row: row['id'], reverse=True):
@@ -40,7 +110,7 @@ def growth_tasks(memory, initiatives, drafts, activities, outcomes, runs=(), art
         if draft_id:
             linked_drafts.add(draft_id)
         state = initiative.get('state')
-        focus = 'completed' if state in terminal or state == 'measuring' else 'preparing'
+        focus = 'preparing' if state == 'blocked' else 'completed' if state in terminal or state == 'measuring' else 'preparing'
         if action.get('requirement') == 'owner_information' and action.get('state') in {'open', 'started', 'waiting'}:
             focus = 'needs_you'
         meta = draft.get('meta') or {}
@@ -52,25 +122,31 @@ def growth_tasks(memory, initiatives, drafts, activities, outcomes, runs=(), art
             linked_approvals.add(approval_id)
         verified_review = validation.get('status') == 'passed' and validation.get('packageHash') == initiative.get('review_package_hash') and all(
             (validation.get('checks') or {}).get(key) is True for key in ('exactDraft', 'publicRenderer', 'approvalBoundary'))
-        review_ready = (
+        article_ready = _article_is_reviewable(draft, meta.get("payload_sync") if isinstance(meta.get("payload_sync"), Mapping) else {})
+        review_ready = article_ready or (
             state == 'ready_for_review'
             and draft.get('status') == 'pending'
             and meta.get('review_package_hash') == initiative.get('review_package_hash')
             and verified_review
             and bool(draft_id and approval and approval.status.value == 'pending')
         )
+        review_hash = meta.get("review_package_hash") if article_ready else initiative.get("review_package_hash")
+        article_idea = idea_by_draft.get(str(draft_id))
+        if article_idea is None and isinstance(meta.get("article_research"), Mapping):
+            article_idea = idea_by_id.get(str(meta["article_research"].get("article_idea_id")))
+        article_data = _article_review(draft, meta.get("payload_sync", {}), article_idea, include_body=include_article_content) if article_ready else None
         if review_ready:
             focus = 'needs_you'
         elif state == 'snoozed' and _future_timestamp(action.get('snoozed_until')):
             focus = 'planned'
-        tasks.append({'id': f"initiative:{initiative['id']}", 'kind': initiative.get('kind'), 'title': initiative.get('title'),
+        tasks.append({'id': f"initiative:{initiative['id']}", 'kind': initiative.get('kind'), 'title': (draft.get('title') or initiative.get('title')) if article_ready else initiative.get('title'),
             'summary': initiative.get('rationale') or initiative.get('summary'), 'scope': initiative.get('summary'),
-            'focus': focus, 'state': state, 'draftId': draft_id, 'ownerActionId': action.get('id'),
+            'focus': 'needs_you' if review_ready else focus, 'state': 'ready_for_review' if article_ready else state, 'draftId': draft_id, 'ownerActionId': action.get('id'),
             'conversationId': action.get('conversation_id'), 'approvalId': approval_id,
-            'reviewPackageHash': initiative.get('review_package_hash'), 'lastError': None,
+            'reviewPackageHash': review_hash, 'lastError': None,
             'executionIssue': bool(initiative.get('last_error')),
             'canApprove': review_ready,
-            'review': {'before': package.get('before'), 'after': package.get('after'), 'changes': package.get('changes'), 'route': package.get('route')},
+            'review': {'before': package.get('before'), 'after': package.get('after'), 'changes': package.get('changes'), 'route': package.get('route'), **({'article': article_data} if article_data else {})},
             'outcomes': [row for row in outcomes if row.get('initiative_id') == initiative['id']],
             'updatedAt': initiative.get('updated_ts'), 'nextRun': initiative.get('review_30_ts') if state == 'measuring' else action.get('snoozed_until')})
         expected = initiative.get('expected') if isinstance(initiative.get('expected'), dict) else {}
@@ -112,7 +188,7 @@ def growth_tasks(memory, initiatives, drafts, activities, outcomes, runs=(), art
         if approval and approval.status.value == 'approved':
             state, focus = 'publishing', 'preparing'
         elif approval and approval.status.value == 'failed':
-            state, focus = 'failed', 'completed'
+            state, focus = 'failed', 'paused'
         elif approval and approval.status.value in {'declined', 'expired'}:
             state, focus = ('rejected' if approval.status.value == 'declined' else 'superseded'), 'completed'
         elif state in {'started', 'waiting'} and action.get('requirement') != 'owner_information':
@@ -174,9 +250,21 @@ def growth_tasks(memory, initiatives, drafts, activities, outcomes, runs=(), art
             continue
         if draft['id'] in linked_drafts or draft.get('kind') not in {'article', 'payload_content', 'design', 'merge', 'rollback'} or draft.get('status') != 'pending':
             continue
-        sync = (draft.get('meta') or {}).get('payload_sync') or {}
-        tasks.append({'id': f"draft:{draft['id']}", 'kind': draft['kind'], 'title': draft['title'], 'summary': str(draft.get('body') or '')[:2000],
-            'focus': 'preparing', 'state': sync.get('state') or 'preparing', 'draftId': draft['id'], 'canApprove': False,
+        meta = draft.get('meta') if isinstance(draft.get('meta'), Mapping) else {}
+        sync = meta.get('payload_sync') if isinstance(meta.get('payload_sync'), Mapping) else {}
+        article_ready = _article_is_reviewable(draft, sync)
+        article_idea = idea_by_draft.get(str(draft.get("id")))
+        if article_idea is None and isinstance(meta.get("article_research"), Mapping):
+            article_idea = idea_by_id.get(str(meta["article_research"].get("article_idea_id")))
+        article_data = _article_review(draft, sync, article_idea, include_body=include_article_content) if article_ready else None
+        state = str(sync.get('state') or 'preparing')
+        focus = 'needs_you' if article_ready else 'paused' if state in {'blocked', 'failed'} else 'preparing'
+        tasks.append({'id': f"draft:{draft['id']}", 'kind': draft['kind'], 'title': draft['title'],
+            'summary': (article_data or {}).get('rationale') or str(draft.get('body') or '')[:2000],
+            'focus': focus, 'state': 'ready_for_review' if article_ready else state, 'draftId': draft['id'],
+            'reviewPackageHash': meta.get('review_package_hash') if article_ready else None,
+            'review': {'article': article_data} if article_data else None,
+            'canApprove': article_ready,
             'lastError': None,
             'executionIssue': bool((sync.get('validation') or {}).get('reason')),
             'updatedAt': draft.get('updated_ts')})
@@ -223,5 +311,24 @@ def growth_tasks(memory, initiatives, drafts, activities, outcomes, runs=(), art
             'lastError': None,
             'executionIssue': bool(run and state == 'blocked'),
             'runId': run.get('run_id') if run else None, 'schedule': activity.get('schedule')})
+    latest_analysis = next((row for row in sorted(runs, key=lambda item: item.get('updated_ts') or '', reverse=True)
+                            if row.get('status') in {'complete', 'blocked'} and isinstance((row.get('detail') or {}).get('assessment'), Mapping)), None)
+    if latest_analysis:
+        assessment = (latest_analysis.get('detail') or {}).get('assessment') or {}
+        for index, opportunity in enumerate(assessment.get('unpreparedOpportunities') or []):
+            if not isinstance(opportunity, Mapping):
+                continue
+            tasks.append({
+                'id': f"analysis-insight:{latest_analysis.get('run_id')}:{index}",
+                'kind': 'analysis_insight',
+                'title': str(opportunity.get('title') or 'Growth opportunity'),
+                'summary': str(opportunity.get('why') or ''),
+                'scope': str(opportunity.get('preparationNote') or ''),
+                'focus': 'completed',
+                'state': 'analysis_completed',
+                'area': str(opportunity.get('area') or ''),
+                'canApprove': False,
+                'updatedAt': latest_analysis.get('updated_ts'),
+            })
     order = {'needs_you': 0, 'preparing': 1, 'planned': 2, 'paused': 3, 'completed': 4}
     return sorted(tasks, key=lambda row: (order[row['focus']], row.get('nextRun') or '9999', row['id']))

@@ -4,6 +4,8 @@ import { getCloudflareContext } from "@opennextjs/cloudflare";
 export function helloAdaWorkspacePath(path: string, method: string, search = ""): string | undefined {
   const suffix = path.replace(/^\/api\/helloada(?=\/|$)/, "") || "/";
   if (method === "GET" && ["/connection", "/growth", "/seo/analytics", "/seo/insights", "/seo/evidence"].includes(suffix)) return `/workspace${suffix}${search}`;
+  const growthArticle = suffix.match(/^\/growth\/articles\/([0-9]+)$/);
+  if (method === "GET" && growthArticle) return `/workspace/growth/articles/${growthArticle[1]}${search}`;
   if (method === "POST" && suffix === "/growth/check") return `/workspace/growth/check${search}`;
   if (method === "POST" && /^\/messages\/[0-9]+\/draft-with-ada$/.test(suffix)) return `/workspace/messages/reply-draft${search}`;
   if (suffix === "/ada" && method === "POST") return `/workspace/chat${search}`;

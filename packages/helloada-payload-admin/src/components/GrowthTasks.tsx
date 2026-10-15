@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { fetchHelloAda } from "../api/fetchHelloAda";
 import { useHelloAdaTranslations } from "../api/useHelloAdaTranslations";
 import { HelloAdaMark } from "./HelloAdaLogo";
@@ -19,8 +19,15 @@ export type GrowthTask = {
   outcomes?: { id: number; horizon_days: number; assessment: string; confidence: string; notes?: string; measured_ts?: string }[];
   history?: { initiativeId: number; title?: string; state?: string }[];
   previewUrl?: string;
-  review?: { before?: Record<string, unknown>; after?: Record<string, unknown>; changes?: Record<string, unknown>; route?: string; setting?: string };
+  area?: string;
+  review?: { before?: Record<string, unknown>; after?: Record<string, unknown>; changes?: Record<string, unknown>; route?: string; setting?: string;
+    article?: { body?: string; slug?: string; path?: string; excerpt?: string; metaDescription?: string; primaryKeyword?: string; rationale?: string;
+      readerQuestion?: string; demandInterpretation?: string; researchDecision?: string;
+      featuredImage?: { url?: string; alt?: string; filename?: string; width?: number; height?: number; id?: string } | null;
+      sources?: { url: string; label?: string }[] }; };
 };
+
+type ArticleReviewData = NonNullable<NonNullable<GrowthTask["review"]>["article"]>;
 
 export function GrowthTasks({ tasks = [], pending, refresh, ask, date, goal, brief }: {
   tasks?: GrowthTask[]; pending: boolean; refresh: () => void; ask: (prompt?: string) => string;
@@ -32,10 +39,45 @@ export function GrowthTasks({ tasks = [], pending, refresh, ask, date, goal, bri
   const [selected, setSelected] = useState<string>();
   const [busy, setBusy] = useState<string>();
   const [error, setError] = useState<string>();
+  const [articleReview, setArticleReview] = useState<{ key: string; article: ArticleReviewData }>();
+  const [articleReviewLoading, setArticleReviewLoading] = useState<string>();
+  const [articleReviewError, setArticleReviewError] = useState<string>();
+  const [articleReviewRefresh, setArticleReviewRefresh] = useState(0);
+  const selectedTask = tasks.find(row => row.id === selected);
+  const articleReviewKey = selectedTask?.kind === "article" && selectedTask.canApprove && selectedTask.draftId && selectedTask.reviewPackageHash
+    ? `${selectedTask.draftId}:${selectedTask.reviewPackageHash}`
+    : "";
   const filters = ["needs_you", "preparing", "planned", "paused", "completed"];
   const visible = tasks.filter(row => row.focus === focus);
-  const recent = tasks.filter(row => ["reviewed", "published", "complete", "completed"].includes(row.state))
+  const recent = tasks.filter(row => ["reviewed", "rejected", "published", "complete", "completed", "analysis_completed", "blocked", "failed"].includes(row.state))
     .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""))).slice(0, 6);
+  useEffect(() => {
+    if (!articleReviewKey || !selectedTask?.draftId) {
+      setArticleReview(undefined);
+      setArticleReviewLoading(undefined);
+      setArticleReviewError(undefined);
+      return;
+    }
+    const requestKey = articleReviewKey;
+    const controller = new AbortController();
+    setArticleReview(undefined);
+    setArticleReviewError(undefined);
+    setArticleReviewLoading(requestKey);
+    void fetchHelloAda(`/api/helloada/growth/articles/${selectedTask.draftId}`, {
+      signal: controller.signal,
+      cache: "no-store",
+    }).then(async response => {
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || !body.article) throw new Error(typeof body.detail === "string" ? body.detail : "");
+      if (!controller.signal.aborted) setArticleReview({ key: requestKey, article: body.article as ArticleReviewData });
+    }).catch(reason => {
+      if (!controller.signal.aborted) setArticleReviewError(reason instanceof Error ? reason.message : "");
+    }).finally(() => {
+      if (!controller.signal.aborted) setArticleReviewLoading(undefined);
+    });
+    return () => controller.abort();
+  }, [articleReviewKey, selectedTask?.draftId, articleReviewRefresh]);
+  const loadedArticle = articleReview?.key === articleReviewKey ? articleReview.article : undefined;
   const title = (task: GrowthTask) => task.titleKey ? t(`growth.${task.titleKey}`) : task.title || "—";
   const readable = (value: unknown): string => {
     if (value == null || value === "") return "—";
@@ -49,7 +91,12 @@ export function GrowthTasks({ tasks = [], pending, refresh, ask, date, goal, bri
     return label ? readable(label) : Object.values(record).map(readable).filter(item => item !== "—").join(" · ") || "—";
   };
   const discuss = (task: GrowthTask) => {
-    const url = new URL(ask(`${title(task)}. ${t("growth.decisionPrompt")}`), "https://workspace.invalid");
+    const prompt = task.kind === "analysis_insight"
+      ? `${title(task)}. ${task.summary || ""}. ${t("growth.analysisOpportunityPrompt")}`
+      : task.kind === "article"
+        ? `${title(task)}. ${t("growth.articleRevisionPrompt")}`
+        : `${title(task)}. ${t("growth.decisionPrompt")}`;
+    const url = new URL(ask(prompt), "https://workspace.invalid");
     url.searchParams.set("growth_task", task.id);
     if (task.conversationId) url.searchParams.set("conversation_id", String(task.conversationId));
     return `${url.pathname}${url.search}`;
@@ -57,7 +104,7 @@ export function GrowthTasks({ tasks = [], pending, refresh, ask, date, goal, bri
   const stateLabel = (task: GrowthTask) => {
     if (task.kind === "measurement") return t(task.state === "due" ? "growth.measurementDue" : "growth.measurementScheduled");
     const key = task.kind === "schedule" ? task.state :
-      ["reviewed", "rejected", "superseded", "measuring", "blocked", "failed", "publishing", "verifying_live", "snoozed", "ready_for_review", "unscheduled"].includes(task.state) ? `taskState_${task.state}` : `task_${task.focus}`;
+      ["reviewed", "rejected", "superseded", "measuring", "blocked", "failed", "publishing", "verifying_live", "snoozed", "ready_for_review", "unscheduled", "analysis_completed"].includes(task.state) ? `taskState_${task.state}` : `task_${task.focus}`;
     return t(`growth.${key}`);
   };
   const effect = async (task: GrowthTask | undefined, operation: string) => {
@@ -94,11 +141,42 @@ export function GrowthTasks({ tasks = [], pending, refresh, ask, date, goal, bri
         {visible.map(task => <li key={task.id} className={`helloada-growth-task is-${task.focus}`}>
           <button type="button" className="helloada-growth-task-row" aria-expanded={selected === task.id} onClick={() => setSelected(selected === task.id ? undefined : task.id)}>
             <i aria-hidden="true" /><span className="helloada-growth-task-label"><strong>{title(task)}</strong>
-              <small>{task.nextRun ? date(task.nextRun) : task.scope || task.summary || t(`growth.task_${task.focus}`)}</small></span>
-            <span className={`helloada-growth-task-badge is-${task.focus}`}>{stateLabel(task)}</span><span aria-hidden="true">{selected === task.id ? "−" : "+"}</span>
+              <small>{task.nextRun ? date(task.nextRun) : task.area || task.scope || task.summary || t(`growth.task_${task.focus}`)}</small></span>
+            <span className={`helloada-growth-task-badge is-${task.focus}`}>{stateLabel(task)}</span>
+            {task.kind === "article" && task.canApprove ? <span className="helloada-growth-task-review-cta">{t("growth.articleReview")} ↗</span> : null}
+            <span aria-hidden="true">{selected === task.id ? "−" : "+"}</span>
           </button>
           {selected === task.id ? <div className="helloada-growth-task-detail">
-            {task.summary ? <HelloAdaChatMessage text={task.summary} /> : null}
+            {task.kind !== "article" && task.summary ? <HelloAdaChatMessage text={task.summary} /> : null}
+            {task.kind === "analysis_insight" ? <>
+              <p className="helloada-growth-task-analysis-note">{t("growth.analysisInsightNote")}</p>
+              {task.scope ? <p className="helloada-growth-task-analysis-note">{task.scope}</p> : null}
+            </> : null}
+            {task.kind === "article" && task.canApprove ? (articleReviewLoading === articleReviewKey
+              ? <p role="status">{t("growth.articleLoading")}</p>
+              : articleReviewError !== undefined
+                ? <p className="helloada-growth-error" role="alert">{articleReviewError || t("growth.articleLoadFailed")} <button type="button" onClick={() => setArticleReviewRefresh(value => value + 1)}>{t("growth.retry")}</button></p>
+                : loadedArticle ? <article className="helloada-growth-article-review">
+                    <header><div><h3>{t("growth.articleDraft")}</h3><p>{loadedArticle.rationale || task.summary}</p></div>
+                      <span>{t("growth.articleUnpublished")}</span></header>
+                    {loadedArticle.featuredImage?.url ? <figure>
+                      <img src={loadedArticle.featuredImage.url} alt={loadedArticle.featuredImage.alt || ""} loading="lazy" />
+                      {loadedArticle.featuredImage.alt ? <figcaption>{loadedArticle.featuredImage.alt}</figcaption> : null}
+                    </figure> : null}
+                    {loadedArticle.excerpt ? <p className="helloada-growth-article-excerpt">{loadedArticle.excerpt}</p> : null}
+                    <dl className="helloada-growth-article-meta">
+                      {loadedArticle.path ? <div><dt>{t("growth.articleRoute")}</dt><dd><code>{loadedArticle.path}</code></dd></div> : null}
+                      {loadedArticle.primaryKeyword ? <div><dt>{t("growth.articleQuery")}</dt><dd>{loadedArticle.primaryKeyword}</dd></div> : null}
+                      {loadedArticle.metaDescription ? <div><dt>{t("growth.articleMetaDescription")}</dt><dd>{loadedArticle.metaDescription}</dd></div> : null}
+                      {loadedArticle.readerQuestion ? <div><dt>{t("growth.articleReaderQuestion")}</dt><dd>{loadedArticle.readerQuestion}</dd></div> : null}
+                      {loadedArticle.demandInterpretation ? <div><dt>{t("growth.articleResearchContext")}</dt><dd>{loadedArticle.demandInterpretation}</dd></div> : null}
+                    </dl>
+                    {loadedArticle.body ? <div className="helloada-growth-article-body"><HelloAdaChatMessage text={loadedArticle.body} /></div> : null}
+                    {loadedArticle.sources?.length ? <details className="helloada-growth-task-evidence"><summary>{t("growth.articleSources")}</summary>
+                      <ul>{loadedArticle.sources.map((source, index) => <li key={`${source.url}-${index}`}><a href={source.url} target="_blank" rel="noreferrer noopener">{source.label || source.url}</a></li>)}</ul>
+                    </details> : null}
+                  </article>
+                : null) : null}
             {task.kind === "schedule" ? <p>{t(`growth.${task.state}`)}{task.nextRun ? ` · ${date(task.nextRun)}` : ""}</p> : null}
             {task.kind === "measurement" ? <p>{t("growth.measurementDescription").replace("{days}", String(task.measurementHorizon || "")).replace("{metric}", t(`growth.measurement_${(task.measurementMetric || "").replaceAll(".", "_")}`))}</p> : null}
             {task.kind === "rollback" ? <p>{t("growth.rollbackScope")}</p> : null}
@@ -127,11 +205,11 @@ export function GrowthTasks({ tasks = [], pending, refresh, ask, date, goal, bri
             {task.history?.length ? <details><summary>{t("growth.taskHistory")}</summary><ul>{task.history.map(item => <li key={item.initiativeId}>
               {item.title || title(task)} · {t(`growth.taskState_${item.state}`)}</li>)}</ul></details> : null}
             <div className="helloada-growth-task-actions">
-              {task.canApprove && task.draftId && task.reviewPackageHash ? <>
-                <button type="button" className="helloada-growth-primary" disabled={Boolean(busy)} onClick={() => void effect(task, "approve")}>{task.kind === "settings_proposal" ? t("growth.taskApplySettings") : task.kind === "rollback" ? t("growth.restoreFrontend") : t("growth.taskApprove")}</button>
+              {task.canApprove && task.draftId && task.reviewPackageHash && (task.kind !== "article" || Boolean(loadedArticle)) ? <>
+                <button type="button" className="helloada-growth-primary" disabled={Boolean(busy)} onClick={() => void effect(task, "approve")}>{task.kind === "settings_proposal" ? t("growth.taskApplySettings") : task.kind === "rollback" ? t("growth.restoreFrontend") : task.kind === "article" ? t("growth.articlePublish") : t("growth.taskApprove")}</button>
                 <button type="button" disabled={Boolean(busy)} onClick={() => void effect(task, "discard")}>{task.kind === "settings_proposal" ? t("growth.taskKeepSettings") : task.kind === "rollback" ? t("growth.keepCurrentWebsite") : t("growth.taskDecline")}</button>
               </> : null}
-              <Link href={discuss(task)}>{t("growth.ask")} ↗</Link>
+              <Link href={discuss(task)}>{task.kind === "article" ? t("growth.articleAskChanges") : task.kind === "analysis_insight" ? t("growth.discussOpportunity") : t("growth.ask")} ↗</Link>
             </div>
           </div> : null}
         </li>)}
