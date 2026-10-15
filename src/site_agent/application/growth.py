@@ -11,7 +11,7 @@ from .growth_workflow import _source_state
 from .growth_tasks import growth_tasks
 
 
-def growth_snapshot(memory: Memory, config: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+def growth_snapshot(memory: Memory, config: dict[str, Any], context: dict[str, Any], *, include_article_content: bool = False) -> dict[str, Any]:
     state = context.get("seo_provisioning_state") or memory.kv_get("seo_provisioning_state", {}) or {}
     scheduler = context.get("scheduler")
     jobs = {name: spec for name, spec, _fn in getattr(scheduler, "jobs", [])}
@@ -64,7 +64,7 @@ def growth_snapshot(memory: Memory, config: dict[str, Any], context: dict[str, A
         "evidence": evidence_projection,
         "latestEvidence": evidence_projection,
         "activities": activities,
-        "tasks": growth_tasks(memory, initiatives, drafts, activities, memory.list_strategy_outcomes(limit=100), runs, memory.list_article_ideas(limit=40)),
+        "tasks": growth_tasks(memory, initiatives, drafts, activities, memory.list_strategy_outcomes(limit=100), runs, memory.list_article_ideas(limit=40), include_article_content=include_article_content),
         "goal": goal,
         "latestInsight": memory.latest_seo_insight(),
         "keywords": [{"keyword": row.get("seed"), **pick(row, ("id", "language", "market", "research_count", "last_researched_ts"))} for row in memory.list_seo_seeds(limit=40)],

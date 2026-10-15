@@ -61,6 +61,25 @@
   .helloada-growth-task-badge.is-completed { background: #eaf6f1; color: #20735f; }
   .helloada-growth-task-badge.is-paused { background: #f2f3f5; color: #515c68; }
   .helloada-growth-task-detail { padding: 0 28px 22px; max-width: 960px; }
+  .helloada-growth-task-review-cta { color: #b43e26; background: #fff0e9; border: 1px solid #f5d2c8; border-radius: 999px; padding: 5px 10px; font-size: 11px; font-weight: 700; white-space: nowrap; }
+  .helloada-growth-article-review { margin: 18px 0 12px; padding: 22px; border: 1px solid #e4e8ec; border-left: 3px solid #c4492f; border-radius: 14px; background: #fbfcfd; color: #283647; }
+  .helloada-growth-article-review > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+  .helloada-growth-article-review > header h3 { margin: 0; color: #202c38; font-size: 18px; }
+  .helloada-growth-article-review > header p { margin: 7px 0 0; max-width: 720px; color: #465565; }
+  .helloada-growth-article-review > header > span { flex: 0 0 auto; border-radius: 999px; padding: 5px 10px; background: #fff0e9; color: #a93d27; font-size: 11px; font-weight: 700; }
+  .helloada-growth-article-review figure { margin: 18px 0; }
+  .helloada-growth-article-review figure img { display: block; width: 100%; max-height: 420px; object-fit: cover; border-radius: 11px; background: #edf0f3; }
+  .helloada-growth-article-review figcaption { margin-top: 6px; color: #65717d; font-size: 11px; }
+  .helloada-growth-article-excerpt { color: #435160; font-size: 15px; font-weight: 550; }
+  .helloada-growth-article-meta { display: grid; gap: 9px; margin: 18px 0; padding: 14px 16px; border: 1px solid #e6e9ec; border-radius: 10px; background: #fff; }
+  .helloada-growth-article-meta > div { display: grid; grid-template-columns: minmax(130px, .24fr) 1fr; gap: 12px; }
+  .helloada-growth-article-meta dt { color: #5c6976; font-size: 12px; font-weight: 650; }
+  .helloada-growth-article-meta dd { margin: 0; color: #283647; overflow-wrap: anywhere; }
+  .helloada-growth-article-meta code { padding: 2px 6px; border-radius: 5px; background: #f1f3f5; color: #283647; }
+  .helloada-growth-article-body { max-width: 760px; margin: 26px auto 8px; color: #2f3d4b; font-size: 15px; line-height: 1.8; }
+  .helloada-growth-article-body h1, .helloada-growth-article-body h2, .helloada-growth-article-body h3 { margin: 1.6em 0 .55em; color: #202c38; }
+  .helloada-growth-article-body p { margin: 0 0 1em; }
+  .helloada-growth-task-analysis-note { padding: 11px 14px; border-radius: 9px; background: #f5f6f8; color: #505d6a; font-size: 13px; }
   .helloada-growth-task-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding-top: 12px; }
   .helloada-growth-task-preview { display: inline-flex; width: fit-content; align-items: center; gap: 6px; margin: 4px 0 8px; color: #a83f35; font-weight: 650; text-decoration: underline; text-underline-offset: 3px; }
   .helloada-growth-task-actions button:not(.helloada-growth-primary) { background: #f1f4f6; color: #384858; border: 0; }
@@ -98,6 +117,10 @@
     .helloada-growth-task-badge { max-width: 100px; white-space: normal; text-align: center; }
     .helloada-growth-task-detail { padding: 0 4px 18px; }
     .helloada-growth-settings-columns { grid-template-columns: minmax(0, 1fr); }
+    .helloada-growth-article-review { padding: 16px; }
+    .helloada-growth-article-review > header { display: block; }
+    .helloada-growth-article-review > header > span { display: inline-block; margin-top: 10px; }
+    .helloada-growth-article-meta > div { grid-template-columns: minmax(0, 1fr); gap: 3px; }
   }
   .helloada-growth h3 {
     margin: 0 0 14px;

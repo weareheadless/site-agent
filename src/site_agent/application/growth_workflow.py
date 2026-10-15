@@ -630,11 +630,21 @@ def run_growth_cycle(context: dict[str, Any], *, trigger: str = "weekly", run_id
         by_title = {row["title"]: row for row in existing}
         valid_refs = {row["sourceRef"] for row in material["inventory"]} | {row.get("sourceRef") for row in material["sources"] if row.get("sourceRef")}
         ready_sources = {row["id"] for row in material["sources"] if row["state"] == "ready"}
-        candidate_ids, blocks = [], []
+        candidate_ids, blocks, unprepared_opportunities = [], [], []
         active = [row for row in memory.list_strategy_initiatives(limit=500) if row["state"] in {"preparing", "validating", "ready_for_review", "publishing", "verifying_live"} and row.get("growth_run_id") != run["run_id"]]
         for opportunity in detail["assessment"]["opportunities"]:
             if set(opportunity["evidence"]) - valid_refs:
                 raise ValueError("Ada referenced evidence that is not in this run")
+            if opportunity["kind"] not in {"payload_content", "owner_information"}:
+                missing = set(opportunity["requiredSources"]) - ready_sources
+                unprepared_opportunities.append({
+                    **opportunity,
+                    "preparationNote": (
+                        "Ada identified this opportunity, but the shared Growth workflow has no exact reviewable execution route for it yet."
+                        + (f" Required evidence is also not ready: {', '.join(sorted(missing))}." if missing else "")
+                    ),
+                })
+                continue
             initiative = by_title.get(opportunity["title"])
             if initiative is None:
                 initiative_id = memory.create_strategy_initiative(cycle["id"], kind=opportunity["kind"], title=opportunity["title"],
@@ -671,11 +681,11 @@ def run_growth_cycle(context: dict[str, Any], *, trigger: str = "weekly", run_id
                     continue
                 except Exception as exc:
                     reason = str(exc)[:500]
-            else:
-                reason = f"The {opportunity['kind']} preparation boundary is not connected; no candidate was invented."
             memory.transition_strategy_initiative(initiative["id"], "blocked", last_error=reason)
             blocks.append({"initiativeId": initiative["id"], "reason": reason})
         detail.update(candidateIds=candidate_ids, blocks=blocks)
+        if unprepared_opportunities:
+            detail["assessment"]["unpreparedOpportunities"] = unprepared_opportunities
         memory.update_strategy_cycle(cycle["id"], summary=detail["assessment"]["summary"], status="blocked" if blocks else "completed")
         retry_at = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=24)).isoformat(timespec="seconds") if blocks else None
         return advance(phase="preparing" if blocks else "complete", status="blocked" if blocks else "complete", detail=detail, completed=not blocks,

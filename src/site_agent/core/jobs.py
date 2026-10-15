@@ -189,6 +189,7 @@ def _article(context: dict[str, Any]) -> None:
     if isinstance(draft_id, int):
         try:
             _mirror_article_draft_to_workspace(context, draft_id)
+            _sync_strategy_initiative_for_draft(context["memory"], draft_id)
         except Exception as exc:  # noqa: BLE001 - expose the canonical content boundary
             _mark_article_payload_blocked(context["memory"], draft_id, str(exc))
 
@@ -202,7 +203,7 @@ def _mirror_article_drafts(context: dict[str, Any]) -> None:
     """
     memory = context["memory"]
     for draft in memory.list_drafts(limit=100):
-        if draft.get("kind") != "article":
+        if draft.get("kind") != "article" or draft.get("status") != "pending":
             continue
         try:
             _mirror_article_draft_to_workspace(context, int(draft["id"]))
@@ -225,13 +226,17 @@ def _sync_strategy_initiative_for_draft(memory: Memory, draft_id: int) -> None:
         "draft_id": draft_id,
         "title": draft.get("title"),
         "body": draft.get("body"),
-        "meta": meta,
+        "meta": {key: value for key, value in meta.items() if key != "review_package_hash"},
         "payload_document": sync.get("document_id"),
         "payload_slug": sync.get("slug"),
         "validation": dict(validation),
     }
     candidate_hash = canonical_hash(candidate)
     review_package_hash = canonical_hash({"candidate": candidate_hash, "payload": sync, "validation": validation})
+    if meta.get("review_package_hash") != review_package_hash:
+        updated_meta = dict(meta)
+        updated_meta["review_package_hash"] = review_package_hash
+        memory.update_draft_meta(draft_id, updated_meta)
     validation_manifest = {
         "status": validation.get("status") or "blocked",
         "checks": validation.get("checks") or {},
@@ -285,6 +290,25 @@ def _mark_article_payload_blocked(memory: Memory, draft_id: int, reason: str) ->
     memory.record_action("article", f"draft #{draft_id} blocked: {str(reason or 'Payload article preparation failed')[:240]}")
 
 
+def _article_image_preview(value: Any) -> dict[str, Any] | None:
+    """Keep only safe, owner-visible fields from Payload's main image relation."""
+    if isinstance(value, Mapping):
+        image = value.get("value") if isinstance(value.get("value"), Mapping) else value
+        raw_url = str(image.get("url") or "").strip()
+        safe_url = raw_url if (raw_url.startswith("/") and not raw_url.startswith("//")) or raw_url.startswith("https://") else ""
+        preview = {
+            key: image[key]
+            for key in ("id", "alt", "filename", "width", "height")
+            if image.get(key) is not None and isinstance(image.get(key), (str, int, float))
+        }
+        if safe_url:
+            preview["url"] = safe_url
+        return preview
+    if isinstance(value, (str, int)) and str(value).strip():
+        return {"id": str(value)}
+    return None
+
+
 def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -> None:
     """Put one Ada article into Payload and validate the returned draft."""
     payload = context.get("payload_gateway")
@@ -314,7 +338,7 @@ def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -
         "sourceUrl": f"{site_url}/post/{slug}" if site_url else f"/post/{slug}",
         "excerpt": plain,
         "content": [{"html": _article_html(body)}],
-        "modifiedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+        "modifiedAt": str(draft.get("updated_ts") or datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")),
         "author": str((context.get("config", {}).get("persona") or {}).get("name") or "Ada"),
     }
     seo_meta = meta if isinstance((meta := draft.get("meta")), Mapping) else {}
@@ -344,16 +368,32 @@ def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -
             "description": plain[:320],
         }
     post = {key: value for key, value in candidate.items() if key in contract_fields}
+    previous_sync = meta.get("payload_sync") if isinstance(meta.get("payload_sync"), Mapping) else {}
+    source_content_hash = canonical_hash({"locale": language, "post": {key: value for key, value in post.items() if key != "modifiedAt"}})
+    modified_at = (
+        str(previous_sync.get("modified_at") or "")
+        if previous_sync.get("source_content_hash") == source_content_hash
+        else str(draft.get("updated_ts") or datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"))
+    )
+    if "modifiedAt" in post:
+        post["modifiedAt"] = modified_at
+    source_hash = canonical_hash({"locale": language, "post": post})
     existing = next(
         (item for item in payload.list("posts", draft=True, limit=100) if str(item.get("sourceId") or "") == source_id),
         None,
     )
     if existing and existing.get("id") is not None:
         current = payload.read("posts", identifier=str(existing["id"]), identifier_kind="id", draft=True, locale=language)
-        document = payload.update(
-            "posts", str(existing["id"]), post, locale=language,
-            expected_hash=str(current.get("_helloadaRevision") or ""),
-        )
+        current_revision = str(current.get("_helloadaRevision") or "")
+        if str(previous_sync.get("document_id") or "") == str(existing["id"]) and str(previous_sync.get("source_hash") or "") == source_hash:
+            if not current_revision or str(previous_sync.get("draft_hash") or "") != current_revision:
+                raise RuntimeError("The Payload article draft changed after Ada's last sync; it must be reconciled before approval.")
+            document = current
+        else:
+            document = payload.update(
+                "posts", str(existing["id"]), post, locale=language,
+                expected_hash=current_revision,
+            )
     else:
         document = payload.create("posts", post, locale=language)
     document_id = str(document.get("id") or "").strip()
@@ -380,8 +420,16 @@ def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -
             "collection": "posts",
             "document_id": document_id,
             "draft_hash": str(verified.get("_helloadaRevision") or ""),
+            "source_hash": source_hash,
+            "source_content_hash": source_content_hash,
+            "modified_at": modified_at,
             "source_id": source_id,
             "slug": slug,
+            "locale": language,
+            "excerpt": str(verified.get("excerpt") or plain).strip()[:500],
+            "meta_description": str(metadata_value or "").strip()[:320],
+            "primary_keyword": primary_keyword,
+            "featured_image": _article_image_preview(verified.get("featuredImage")),
             "validation": {"status": "passed" if state == "ready_for_review" else "blocked", "checks": checks, "reason": reason},
         },
         "payload_post_id": document_id,

@@ -1379,8 +1379,17 @@ class ChatService:
             selected_task = next((row for row in growth_snapshot(memory, settings, runtime_context)["tasks"] if row["id"] == task_id), None)
             if selected_task is None:
                 raise BridgeError("this growth task is no longer available")
+            if selected_task.get("kind") == "article":
+                selected_task = next((
+                    row for row in growth_snapshot(memory, settings, runtime_context, include_article_content=True)["tasks"]
+                    if row["id"] == task_id
+                ), selected_task)
             owner_context["growth_task"] = {key: selected_task.get(key) for key in (
-                "id", "title", "summary", "scope", "state", "draftId", "ownerActionId", "approvalId", "reviewPackageHash")}
+                "id", "kind", "title", "summary", "scope", "state", "draftId", "ownerActionId", "approvalId", "reviewPackageHash")}
+            article_review = ((selected_task.get("review") or {}).get("article")
+                              if isinstance(selected_task.get("review"), Mapping) else None)
+            if selected_task.get("kind") == "article" and isinstance(article_review, Mapping):
+                owner_context["growth_task"]["article"] = dict(article_review)
         if not message and not attachments:
             raise BridgeError("empty message")
         if len(message) > 8000:
@@ -2310,6 +2319,36 @@ class ChatService:
         scope = self.connection(tenant=tenant)
         memory, tenant_id = (tenant.memory if tenant else self.memory), scope["tenant"]
         return {"tenant": tenant_id, **growth_snapshot(memory, tenant.config if tenant else {}, tenant.context if tenant else {})}
+
+    def growth_article_review(self, draft_id: Any, *, tenant: Tenant | None = None) -> dict[str, Any]:
+        """Return one exact, validated article review only when its owner opens it."""
+        try:
+            normalized_id = int(draft_id)
+        except (TypeError, ValueError) as exc:
+            raise BridgeError("draft_id must be an integer") from exc
+        from .growth import growth_snapshot
+
+        scope = self.connection(tenant=tenant)
+        memory = tenant.memory if tenant else self.memory
+        settings = tenant.config if tenant else self.config
+        runtime_context = tenant.context if tenant else {}
+        snapshot = growth_snapshot(memory, settings, runtime_context, include_article_content=True)
+        task = next((
+            row for row in snapshot["tasks"]
+            if row.get("kind") == "article" and row.get("canApprove") and int(row.get("draftId") or 0) == normalized_id
+        ), None)
+        if task is None:
+            raise BridgeError("this article is no longer ready for review")
+        review = task.get("review") if isinstance(task.get("review"), Mapping) else {}
+        article = review.get("article") if isinstance(review.get("article"), Mapping) else None
+        if not article or not str(article.get("body") or "").strip():
+            raise BridgeError("the validated Payload article body is unavailable")
+        return {
+            "tenant": scope["tenant"],
+            "draftId": normalized_id,
+            "reviewPackageHash": task.get("reviewPackageHash"),
+            "article": article,
+        }
 
     def request_growth_check(self, *, tenant: Tenant | None = None) -> dict[str, Any]:
         """Request the idempotent tenant-local reconciliation stage.

@@ -101,7 +101,13 @@ realization, autonomous repair, or end-to-end acceptance requirements.
 For growth orchestration, SEO/AEO, goals and owner review, follow
 `docs/ada-growth-seo-aeo-pipeline-implementation-plan.md`. Reuse the canonical
 evidence, candidate, approval and outcome path; do not introduce silent
-degradation or independent customer-specific workflows.
+degradation or independent customer-specific workflows. Ada's investigation
+and recommendation topics are open-ended and evidence-led: the typed
+opportunity `kind` is only an execution route, not a closed list of problems
+she may notice. Do not force unsupported ideas into fake approval candidates;
+retain them as clearly labelled analysis until a shared, exact review route can
+prepare them. Only exact validated candidates become owner publication
+approvals, and failed work is never reported as completed.
 
 For customer schema migrations, also follow
 `docs/workspace-preview-repair.md` for the configured preview mount and its
