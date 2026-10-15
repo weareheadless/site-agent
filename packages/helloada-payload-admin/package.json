@@ -1,6 +1,6 @@
 {
   "name": "@weareheadless/helloada-payload-admin",
-  "version": "0.10.16",
+  "version": "0.10.17",
   "description": "The shared HelloAda owner workspace for Payload-powered customer websites.",
   "type": "module",
   "license": "UNLICENSED",
@@ -25,7 +25,8 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
-    "typescript": "5.7.3"
+    "typescript": "5.7.3",
+    "sass": "1.77.4"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
