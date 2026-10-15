@@ -2181,8 +2181,7 @@ def main() -> int:
         )
         run([npm, *NPM_INSTALL_ARGUMENTS], checkout, base)
         contract_generator = ROOT / "scripts/generate-payload-contract.mjs"
-        tsx = checkout / "node_modules/.bin/tsx"
-        run([str(tsx), str(contract_generator), f"--site-root={checkout}"], checkout, base)
+        run(["node", "--import", "tsx", str(contract_generator), f"--site-root={checkout}"], checkout, base)
         generated_manifest = json.loads((checkout / "template-manifest.json").read_text(encoding="utf-8"))
         generated_contract = json.loads((checkout / "helloada-content-contract.json").read_text(encoding="utf-8"))
         synchronize_customer_payload_contract(customer, generated_manifest, generated_contract)
