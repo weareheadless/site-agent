@@ -148,7 +148,10 @@ export function GrowthTasks({ tasks = [], pending, refresh, ask, date, goal, bri
           </button>
           {selected === task.id ? <div className="helloada-growth-task-detail">
             {task.kind !== "article" && task.summary ? <HelloAdaChatMessage text={task.summary} /> : null}
-            {task.kind === "analysis_insight" ? <p className="helloada-growth-task-analysis-note">{t("growth.analysisInsightNote")}</p> : null}
+            {task.kind === "analysis_insight" ? <>
+              <p className="helloada-growth-task-analysis-note">{t("growth.analysisInsightNote")}</p>
+              {task.scope ? <p className="helloada-growth-task-analysis-note">{task.scope}</p> : null}
+            </> : null}
             {task.kind === "article" && task.canApprove ? (articleReviewLoading === articleReviewKey
               ? <p role="status">{t("growth.articleLoading")}</p>
               : articleReviewError !== undefined

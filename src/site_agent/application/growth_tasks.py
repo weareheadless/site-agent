@@ -1,8 +1,8 @@
 """One read-only queue joins existing work; it is not another task store."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from collections.abc import Mapping
+from datetime import datetime, timezone
 import re
 from typing import Any
 
@@ -20,8 +20,13 @@ def _future_timestamp(value: Any) -> bool:
         return False
 
 
-
-def _article_review(draft: Mapping[str, Any], sync: Mapping[str, Any], idea: Mapping[str, Any] | None, *, include_body: bool) -> dict[str, Any]:
+def _article_review(
+    draft: Mapping[str, Any],
+    sync: Mapping[str, Any],
+    idea: Mapping[str, Any] | None,
+    *,
+    include_body: bool,
+) -> dict[str, Any]:
     meta = draft.get("meta") if isinstance(draft.get("meta"), Mapping) else {}
     editorial = meta.get("editorial_brief") if isinstance(meta.get("editorial_brief"), Mapping) else {}
     research = meta.get("article_research") if isinstance(meta.get("article_research"), Mapping) else {}
@@ -72,7 +77,17 @@ def _article_is_reviewable(draft: Mapping[str, Any], sync: Mapping[str, Any]) ->
     )
 
 
-def growth_tasks(memory, initiatives, drafts, activities, outcomes, runs=(), article_ideas=(), *, include_article_content: bool = False) -> list[dict[str, Any]]:
+def growth_tasks(
+    memory,
+    initiatives,
+    drafts,
+    activities,
+    outcomes,
+    runs=(),
+    article_ideas=(),
+    *,
+    include_article_content: bool = False,
+) -> list[dict[str, Any]]:
     actions = {row.id: row.to_record() for row in memory.list_owner_actions(limit=None)}
     draft_by_id = {row['id']: row for row in drafts}
     idea_by_draft = {str(row.get("draft_id")): row for row in article_ideas if row.get("draft_id") is not None}
@@ -124,7 +139,7 @@ def growth_tasks(memory, initiatives, drafts, activities, outcomes, runs=(), art
             focus = 'needs_you'
         elif state == 'snoozed' and _future_timestamp(action.get('snoozed_until')):
             focus = 'planned'
-        tasks.append({'id': f"initiative:{initiative['id']}", 'kind': initiative.get('kind'), 'title': initiative.get('title'),
+        tasks.append({'id': f"initiative:{initiative['id']}", 'kind': initiative.get('kind'), 'title': (draft.get('title') or initiative.get('title')) if article_ready else initiative.get('title'),
             'summary': initiative.get('rationale') or initiative.get('summary'), 'scope': initiative.get('summary'),
             'focus': 'needs_you' if review_ready else focus, 'state': 'ready_for_review' if article_ready else state, 'draftId': draft_id, 'ownerActionId': action.get('id'),
             'conversationId': action.get('conversation_id'), 'approvalId': approval_id,
