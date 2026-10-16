@@ -169,6 +169,24 @@ paid research, changes scheduling, or publishes content. Existing approvals
 continue to govern production changes. A provider being configured is not proof
 that it has collected data; show those states separately.
 
+The tenant Worker is the only Payload write boundary for Growth proposals.
+Owner actions use the authenticated `/api/helloada/growth/*` bridge; the
+Site-Agent service uses `/api/workspace/growth/*` with the tenant service token.
+Both paths call the same Growth operation handler, exact-draft verifier and
+preview renderer. The service route is part of the shared runtime overlay and
+release artifact; it must not be replaced by direct database writes or a
+second approval implementation. Proposal preparation saves a private Payload
+draft and creates an owner decision. Publishing remains a separate explicit
+owner approval, and scheduled analysis cannot publish.
+
+When a known saved assessment failed only because of a fixed contract boundary,
+the worker may replay that exact persisted assessment after the fix is released.
+It does not recollect evidence, repeat assessment, dispatch paid research, or
+publish. A replay is limited to initiatives with no owner decision or approval;
+existing drafts and decisions are not rewritten. Article drafts are mirrored
+only in the canonical Payload `defaultLocale`, which must be present in the
+enabled locale list.
+
 Tests prevent these known regressions; they cannot guarantee that external
 providers, credentials or deployments will never fail. When readiness fails,
 fix the first failing boundary and preserve the owner's published website.

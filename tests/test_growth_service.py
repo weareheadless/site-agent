@@ -1,8 +1,8 @@
 import json
 from types import SimpleNamespace
 
-from site_agent.application.growth_workflow import _persist_evidence_artifact, ensure_default_goal, run_growth_cycle, run_pending_growth
-from site_agent.core.jobs import register_jobs
+from site_agent.application.growth_workflow import _persist_evidence_artifact, ensure_default_goal, has_recoverable_growth_replay, run_growth_cycle, run_pending_growth
+from site_agent.core.jobs import _has_recoverable_article_sync, register_jobs
 from site_agent.core.growth_contracts import GrowthPolicy
 from site_agent.core.memory import Memory
 from site_agent.core.scheduler import Scheduler
@@ -34,6 +34,8 @@ class Payload:
     def require_authoring_contract(self):
         return {
             "version": 1,
+            "locales": ["en"],
+            "defaultLocale": "en",
             "enabled": {"collections": ["pages"], "globals": []},
             "authoring": {
                 "collections": {"pages": [{"name": field} for field in self.contract.collection_fields["pages"]]},
@@ -119,7 +121,7 @@ def test_weekly_service_prepares_real_draft_without_publication_or_duplicate_wor
     memory.close()
 
 
-def _failed_saved_assessment(memory, settings):
+def _failed_saved_assessment(memory, settings, *, error="Ada referenced evidence that is not in this run"):
     goal = ensure_default_goal(memory)
     policy = GrowthPolicy.from_config(settings)
     run = memory.create_growth_run(
@@ -170,12 +172,78 @@ def _failed_saved_assessment(memory, settings):
         "evidenceHash": evidence_hash,
         "policy": policy.to_dict(),
         "assessment": {"summary": "The homepage has a clear, evidence-backed improvement.", "opportunities": [opportunity]},
-        "error": "Ada referenced evidence that is not in this run",
+        "error": error,
     }
     memory.update_growth_run(
         run["run_id"], detail=detail, next_due_ts="2099-10-16T04:08:16+00:00",
     )
     return run["run_id"]
+
+
+def test_activation_resumes_partial_saved_run_after_bounded_owner_summary_failure(tmp_path, monkeypatch):
+    memory = Memory(tmp_path / "memory.db")
+    settings = config()
+    run_id = _failed_saved_assessment(memory, settings, error="summary exceeds 500 characters")
+    run = memory.get_growth_run(run_id)
+    cycle = memory.growth_strategy_cycle(run_id, run["detail"]["evidenceArtifactId"])
+    opportunity = run["detail"]["assessment"]["opportunities"][0]
+    memory.create_strategy_initiative(
+        cycle["id"], kind=opportunity["kind"], title=opportunity["title"], summary=opportunity["scope"],
+        expected={"opportunity": opportunity}, state="blocked", growth_run_id=run_id,
+        goal_revision=run["goal_revision"], origin_revision=run["origin_revision"],
+    )
+    assert has_recoverable_growth_replay(memory)
+
+    planner = Ada()
+    context = {"config": settings, "memory": memory, "payload_gateway": Payload(), "llm": planner}
+    reconciled = []
+    monkeypatch.setattr("site_agent.application.growth_workflow._reconcile_article_research", lambda _context: reconciled.append(True))
+    run_pending_growth(context)
+
+    resumed = memory.get_growth_run(run_id)
+    assert resumed["status"] == "complete"
+    assert resumed["detail"]["recoveryEvents"][-1]["code"] == "owner_action_summary_contract_fixed"
+    assert "error" not in resumed["detail"]
+    assert planner.stages == ["prepare"]
+    assert reconciled == []
+    memory.close()
+
+
+def test_long_owner_question_scope_becomes_bounded_action_summary_without_losing_initiative_detail(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    settings = config()
+    run_id = _failed_saved_assessment(memory, settings, error="summary exceeds 500 characters")
+    run = memory.get_growth_run(run_id)
+    detail = run["detail"]
+    opportunity = {
+        "kind": "owner_information",
+        "title": "Confirm your booking details",
+        "why": "The website does not define appointment duration.",
+        "hypothesis": "Accurate availability will make the booking experience reliable.",
+        "evidence": ["inventory"],
+        "requiredSources": ["inventory"],
+        "scope": "Confirm the appointment duration, availability, staff capacity, cancellation rules, customer preparation notes, location details, and any service-specific requirements that Ada must include before preparing a booking experience. " + "Owner detail. " * 50,
+    }
+    detail["assessment"]["opportunities"] = [opportunity]
+    memory.update_growth_run(run_id, detail=detail)
+    cycle = memory.growth_strategy_cycle(run_id, detail["evidenceArtifactId"])
+    initiative_id = memory.create_strategy_initiative(
+        cycle["id"], kind=opportunity["kind"], title=opportunity["title"], summary=opportunity["scope"],
+        expected={"opportunity": opportunity}, state="preparing", growth_run_id=run_id,
+        goal_revision=run["goal_revision"], origin_revision=run["origin_revision"],
+    )
+    context = {"config": settings, "memory": memory, "payload_gateway": Payload(), "llm": Ada()}
+
+    run_pending_growth(context)
+
+    initiative = memory.update_strategy_initiative(initiative_id)
+    action = memory.get_owner_action(initiative["owner_action_id"])
+    assert initiative["summary"] == opportunity["scope"]
+    assert initiative["state"] == "waiting_for_owner"
+    assert action.summary
+    assert len(action.summary) <= 500
+    assert action.summary.endswith("…")
+    memory.close()
 
 
 def test_pending_growth_resumes_exact_historical_failure_from_saved_assessment(tmp_path, monkeypatch):
@@ -215,6 +283,11 @@ def test_activation_wakes_only_exact_recoverable_growth_and_article_jobs(tmp_pat
         meta={"payload_sync": {"state": "blocked", "validation": {"status": "blocked", "reason": source_id_block}}},
     )
     memory.save_draft(
+        "Locale-blocked article",
+        "Article body",
+        meta={"payload_sync": {"state": "blocked", "locale": "fr", "validation": {"status": "blocked", "reason": "The requested locale 'fr' is not enabled for this website."}}},
+    )
+    memory.save_draft(
         "Unrelated blocked article",
         "Article body",
         meta={"payload_sync": {"state": "blocked", "validation": {"status": "blocked", "reason": "Payload posts contract is missing required fields: content"}}},
@@ -234,6 +307,7 @@ def test_activation_wakes_only_exact_recoverable_growth_and_article_jobs(tmp_pat
 
     assert memory.kv_get("next_run:growth_pending") == 1234.5
     assert memory.kv_get("next_run:growth_article_sync") == 1234.5
+    assert _has_recoverable_article_sync(memory)
     assert scheduler.due("growth_pending")
     assert scheduler.due("growth_article_sync")
     memory.close()
@@ -256,6 +330,7 @@ def test_activation_does_not_wake_unrelated_or_completed_growth_work(tmp_path):
 
     assert memory.kv_get("next_run:growth_pending") == 9999999.0
     assert memory.kv_get("next_run:growth_article_sync") == 9999999.0
+    assert not _has_recoverable_article_sync(memory)
     memory.close()
 
 

@@ -106,6 +106,8 @@ def test_shared_overlay_updates_runtime_and_preserves_tenant_owned_content(tmp_p
     assert not (checkout / "src/app/api/helloada/bookings/route.ts").exists()
     assert (checkout / "worker.ts").read_bytes() == (TEMPLATE / "worker.ts").read_bytes()
     assert (checkout / "src/lib/cloudflare-context.ts").read_bytes() == (TEMPLATE / "src/lib/cloudflare-context.ts").read_bytes()
+    assert (checkout / "src/app/api/workspace/growth/[...path]/route.ts").read_bytes() == (TEMPLATE / "src/app/api/workspace/growth/[...path]/route.ts").read_bytes()
+    assert (checkout / "src/lib/growth-operations.ts").read_bytes() == (TEMPLATE / "src/lib/growth-operations.ts").read_bytes()
     assert "src/lib/cloudflare-context.ts" in result["changedPaths"]
     assert (checkout / "template-manifest.json").read_bytes() == manifest_before
     assert (checkout / "src/components/site/TenantSections.tsx").read_bytes() == design_before

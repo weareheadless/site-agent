@@ -1095,6 +1095,7 @@ def artifact(tmp_path):
             "/api/helloada/[...path]/route": "helloada.js",
             "/api/workspace/content/route": "content.js",
             "/api/workspace/global/route": "global.js",
+            "/api/workspace/growth/[...path]/route": "growth.js",
             "/api/workspace/media/route": "media.js",
             "/api/health/route": "health.js",
         }),

@@ -1,11 +1,11 @@
 import { NextResponse } from 'next/server'
 import { getPayload } from 'payload'
-import type { CollectionSlug, GlobalSlug, PayloadRequest, TypedLocale } from 'payload'
+import type { CollectionSlug, PayloadRequest, TypedLocale } from 'payload'
 
 import { authenticateHelloAdaRequest } from '@/lib/helloada-auth'
 import { internalMailflareRoute } from '@/lib/mailflare-provisioning-api'
-import { createHelloAdaPreviewToken } from '@/lib/helloada-preview'
 import { fetchHelloAdaUpstream } from '@/lib/helloada-upstream'
+import { growthGet, growthPost } from '@/lib/growth-operations'
 import {
   applyHelloAdaBindingEdits,
   helloAdaContentBindings,
@@ -13,22 +13,18 @@ import {
 import type { HelloAdaBindingEdit } from '@weareheadless/helloada-payload-core/bindings'
 import { helloAdaConnection, helloAdaRuntimeStatus } from '@weareheadless/helloada-payload-admin/server'
 import { helloAdaSite } from '@/helloada.config'
-import { articleIndexPath, pathForDocument } from '@/lib/content-routes'
+import { pathForDocument } from '@/lib/content-routes'
 import { hashJson, stableJson, withoutPayloadMetadata } from '@/lib/payload-hash'
 import {
   asObject as growthObject,
-  candidateRow,
   claimOperation,
   completeOperation,
-  contractCapabilities,
   failOperation,
   operationByKey,
   operationContext,
   operationResult,
   prepareOperation,
-  projectDocument,
   reconcileOperation,
-  saveCandidate,
   tenantId,
 } from '@/lib/growth-contract'
 
@@ -64,153 +60,9 @@ const contentRoute = (value: string) => {
   return route === '/' ? '/' : `/${route.replace(/^\/+/, '').replace(/\/+$/, '')}`
 }
 
-const routeForDocument = (collection: EditableCollection, document: Record<string, unknown>) => {
-  const route = text(document.route)
-  if (route) return contentRoute(route)
-  const slug = text(document.slug)
-  if (!slug) throw new Error(`Payload ${collection} document has no route slug.`)
-  return pathForDocument(collection, slug)
-}
-
-const htmlAttribute = (value: string) => value.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
-
 const contentSlug = (route: string) => {
   const normalized = contentRoute(route)
   return normalized === '/' ? ['home', 'index', ''] : [normalized.slice(1)]
-}
-
-const collectionFieldNames = (payload: Awaited<ReturnType<typeof getPayload>>, collection: EditableCollection) => {
-  const configured = (payload.config.collections as unknown as Array<{ slug?: string; fields?: Array<{ name?: string }> }>)
-    .find((item) => item.slug === collection)
-  return new Set((configured?.fields || []).map((field) => text(field.name)).filter(Boolean))
-}
-
-const equalJson = async (left: unknown, right: unknown) => (await hashJson(left)) === (await hashJson(right))
-
-const verifyExactPreview = async (
-  request: Request,
-  auth: Awaited<ReturnType<typeof authenticateHelloAdaRequest>>,
-  ownerId: string,
-  collection: EditableCollection,
-  document: Record<string, unknown>,
-  route: string,
-  state: 'draft' | 'published' = 'draft',
-) => {
-  if (!auth || text(auth.user.id) !== ownerId) throw new Error('The authenticated owner session is required for exact preview verification.')
-  const locale = helloAdaSite.defaultLocale
-  const documentHash = await hashJson(withoutPayloadMetadata(document))
-  const globals = await Promise.all((['siteSettings', 'navigation'] as const).map(async (slug) => {
-    const global = await auth.payload.findGlobal({
-      slug: slug as GlobalSlug,
-      depth: 2,
-      draft: state === 'draft',
-      locale: locale as TypedLocale,
-      overrideAccess: false,
-      req: auth.req,
-      user: auth.user,
-    }) as unknown as Record<string, unknown>
-    return { slug, hash: await hashJson(withoutPayloadMetadata(global)) }
-  }))
-  const token = await createHelloAdaPreviewToken({
-    tenantId: tenantId(),
-    ownerId,
-    collection,
-    documentId: text(document.id),
-    documentHash,
-    locale,
-    globals,
-    route,
-    state,
-  })
-  const previewUrl = new URL(`/helloada-preview/${token}`, request.url).toString()
-  const cookie = request.headers.get('cookie')
-  if (!cookie) throw new Error('The authenticated Payload session is missing for exact preview verification.')
-  const response = await fetch(previewUrl, {
-    cache: 'no-store',
-    redirect: 'manual',
-    headers: { accept: 'text/html', cookie, 'cache-control': 'no-cache' },
-  })
-  if (!response.ok) throw new Error(`The exact public page renderer returned HTTP ${response.status}.`)
-  const contentType = response.headers.get('content-type') || ''
-  if (!contentType.toLowerCase().includes('text/html')) throw new Error('The exact public page renderer did not return HTML.')
-  const html = await response.text()
-  const expectedMarkers = [
-    `data-helloada-preview-hash="${documentHash}"`,
-    `data-helloada-preview-route="${htmlAttribute(route)}"`,
-    'class="content-page',
-    `data-helloada-document-id="${htmlAttribute(text(document.id))}"`,
-  ]
-  if (expectedMarkers.some((marker) => !html.includes(marker))) throw new Error('The exact public page renderer did not return the approved document and route markers.')
-  return {
-    status: 'passed',
-    route,
-    kind: collection === 'posts' ? 'post' : collection === 'products' ? 'product' : 'page',
-    collection,
-    documentId: text(document.id),
-    documentHash,
-    verifiedAt: new Date().toISOString(),
-    previewUrl,
-    expiresAt: Math.floor(Date.now() / 1000) + 180,
-  }
-}
-
-const verifyLiveRoute = async (request: Request, route: string, document: Record<string, unknown>) => {
-  const url = new URL(route, request.url)
-  const response = await fetch(url, {
-    cache: 'no-store',
-    redirect: 'manual',
-    headers: { accept: 'text/html', 'cache-control': 'no-cache' },
-  })
-  if (!response.ok) throw new Error(`The published route ${route} returned HTTP ${response.status}.`)
-  if (!(response.headers.get('content-type') || '').toLowerCase().includes('text/html')) throw new Error(`The published route ${route} did not return HTML.`)
-  const html = await response.text()
-  const documentId = htmlAttribute(text(document.id))
-  const updatedAt = htmlAttribute(text(document.updatedAt))
-  if (!updatedAt || !html.includes(`data-helloada-document-id="${documentId}"`) || !html.includes(`data-helloada-updated-at="${updatedAt}"`)) {
-    throw new Error(`The published route ${route} does not render the exact Payload document revision.`)
-  }
-  return { route, status: response.status, documentId: text(document.id), updatedAt: text(document.updatedAt), verifiedAt: new Date().toISOString() }
-}
-
-const verifyLiveRoutes = async (request: Request, collection: EditableCollection, document: Record<string, unknown>, route: string) => {
-  const routes = [route]
-  if (collection === 'posts') routes.push(articleIndexPath())
-  const checks = []
-  for (const candidateRoute of routes) checks.push(await verifyLiveRoute(request, candidateRoute, document))
-  return { status: 'passed', checks }
-}
-
-const verifyGrowthPackage = async (
-  payload: Awaited<ReturnType<typeof getPayload>>,
-  packageData: Record<string, unknown>,
-  packageHash: string,
-  options: { requireDraftCandidate: boolean } = { requireDraftCandidate: true },
-) => {
-  if (await hashJson(packageData) !== packageHash) throw new Error('Growth package hash does not match its contents')
-  if (text(packageData.tenant) !== tenantId() || !text(packageData.initiativeId)) throw new Error('Growth package belongs to a different tenant or initiative')
-  const collection = text(packageData.collection)
-  if (!isEditableCollection(collection)) throw new Error('Growth package collection is not editable')
-  const documentId = text(packageData.documentId)
-  const fields = Array.isArray(packageData.fields) ? packageData.fields.map(text).filter(Boolean) : []
-  if (!documentId || !fields.length || new Set(fields).size !== fields.length) throw new Error('Growth package fields are invalid')
-  const configured = collectionFieldNames(payload, collection)
-  if (fields.some((field) => !configured.has(field))) throw new Error('Growth package references fields outside the destination schema')
-  const before = growthObject(packageData.before)
-  const after = growthObject(packageData.after)
-  const changes = growthObject(packageData.changes)
-  if (!Object.keys(after).length || Object.keys(changes).some((field) => !fields.includes(field))) throw new Error('Growth package candidate fields are invalid')
-  const live = await payload.findByID({ collection: collection as CollectionSlug, depth: 2, draft: false, id: documentId, overrideAccess: true }) as unknown as Record<string, unknown>
-  const draft = await payload.findByID({ collection: collection as CollectionSlug, depth: 2, draft: true, id: documentId, overrideAccess: true }) as unknown as Record<string, unknown>
-  const liveProjection = projectDocument(live, fields)
-  const draftProjection = projectDocument(draft, fields)
-  if (await hashJson(liveProjection) !== text(packageData.baseHash)) throw new Error('The published document changed; this Growth package is stale')
-  if (await hashJson(before) !== text(packageData.baseHash)) throw new Error('Growth package does not describe the published base')
-  if (await hashJson(after) !== text(packageData.candidateHash)) throw new Error('Growth package candidate hash is invalid')
-  const expected = { ...liveProjection, ...changes }
-  if (!await equalJson(after, expected)) throw new Error('Growth package after-state is not the exact base plus requested changes')
-  if (options.requireDraftCandidate && await hashJson(draftProjection) !== text(packageData.candidateHash)) throw new Error('The exact Growth candidate is not the current Payload draft')
-  const route = contentRoute(text(packageData.route) || routeForDocument(collection, live))
-  return { collection, documentId, fields, live, draft, liveProjection, draftProjection, before, after, changes, route }
 }
 
 type EditableQueryOptions = {
@@ -385,6 +237,11 @@ const siteSnapshot = async (request: Request, payload: Awaited<ReturnType<typeof
 export async function GET(request: Request, { params }: RouteProps) {
   const path = `/${(await params).path?.join('/') || ''}`.replace(/\/$/, '') || '/'
   if (path.startsWith('/internal/mailflare/')) return internalMailflareRoute(request, path)
+  if (path.startsWith('/growth/')) {
+    const growthAuth = await authenticateHelloAdaRequest(request)
+    if (!growthAuth) return errorResponse('authentication_required', 401)
+    return growthGet(request, path, { kind: 'owner', auth: growthAuth })
+  }
   const auth = await authenticateHelloAdaRequest(request)
   if (!auth) return errorResponse('authentication_required', 401)
   if (path === '/connection') {
@@ -403,17 +260,6 @@ export async function GET(request: Request, { params }: RouteProps) {
         collection,
       }, { status: 503, headers: { 'Cache-Control': 'private, no-store' } })
     }
-  }
-  if (path === '/growth/contract') {
-    const collections = editableCollections.filter((collection) => collectionFieldNames(auth.payload, collection).size)
-    return NextResponse.json({ version: 1, tenant: tenantId(), capabilities: contractCapabilities, collections }, { headers: { 'Cache-Control': 'private, no-store' } })
-  }
-  if (path === '/growth/candidate') {
-    const packageHash = text(new URL(request.url).searchParams.get('packageHash'))
-    if (!packageHash) return errorResponse('packageHash is required')
-    const candidate = await candidateRow(packageHash)
-    if (!candidate) return errorResponse('Growth candidate not found', 404)
-    return NextResponse.json({ packageHash, state: candidate.state, result: operationResult(candidate) }, { headers: { 'Cache-Control': 'private, no-store' } })
   }
   if (path === '/page-fields') {
     const query = new URL(request.url).searchParams
@@ -472,6 +318,11 @@ export async function GET(request: Request, { params }: RouteProps) {
 export async function POST(request: Request, { params }: RouteProps) {
   const path = `/${(await params).path?.join('/') || ''}`.replace(/\/$/, '') || '/'
   if (path.startsWith('/internal/mailflare/')) return internalMailflareRoute(request, path)
+  if (path.startsWith('/growth/')) {
+    const growthAuth = await authenticateHelloAdaRequest(request)
+    if (!growthAuth) return errorResponse('authentication_required', 401)
+    return growthPost(request, path, { kind: 'owner', auth: growthAuth })
+  }
   const auth = await authenticateHelloAdaRequest(request)
   if (!auth) return errorResponse('authentication_required', 401)
   if (path === '/language') {
@@ -480,92 +331,6 @@ export async function POST(request: Request, { params }: RouteProps) {
     const response = NextResponse.json({ language, defaultLanguage: 'en', supportedLanguages: ['en', 'es', 'fr'] })
     response.cookies.set('payload-lng', language, { httpOnly: false, maxAge: 31_536_000, path: '/', sameSite: 'lax' })
     return response
-  }
-  if (path === '/growth/validate') {
-    const body = growthObject(await request.json().catch(() => ({})))
-    const packageData = growthObject(body.package)
-    const packageHash = text(body.packageHash)
-    if (!packageHash) return errorResponse('packageHash is required')
-    try {
-      const verified = await verifyGrowthPackage(auth.payload, packageData, packageHash)
-      const preview = await verifyExactPreview(request, auth, text(auth.user.id), verified.collection, verified.draft, verified.route)
-      const result = {
-        status: 'passed', packageHash, tenant: tenantId(),
-        checks: { canonicalSchema: true, exactDraft: true, private: true, publicRenderer: true, approvalBoundary: true },
-        preview,
-      }
-      await saveCandidate(packageData, packageHash, result)
-      return NextResponse.json({ validation: result }, { headers: { 'Cache-Control': 'private, no-store' } })
-    } catch (cause) {
-      return errorResponse(errorMessage(cause), 409)
-    }
-  }
-  if (path === '/growth/apply') {
-    const body = growthObject(await request.json().catch(() => ({})))
-    const packageData = growthObject(body.package)
-    const packageHash = text(body.packageHash)
-    if (!packageHash) return errorResponse('packageHash is required')
-    const collection = text(packageData.collection)
-    const documentId = text(packageData.documentId)
-    if (!isEditableCollection(collection) || !documentId) return errorResponse('Growth package target is invalid')
-    const documentKey = `${collection}:${documentId}`
-    const operationKey = `draft:${tenantId()}:${documentKey}:${packageHash}`
-    const claimed = await claimOperation(operationKey, documentKey, packageHash)
-    if (!claimed.row) return errorResponse('A different Growth operation is already writing this document', 409)
-    const saved = operationResult(claimed.row)
-    if (saved) return NextResponse.json(saved, { headers: { 'Cache-Control': 'private, no-store' } })
-    try {
-      const verified = await verifyGrowthPackage(auth.payload, packageData, packageHash, { requireDraftCandidate: false })
-      const currentDraftHash = await hashJson(verified.draftProjection)
-      if (currentDraftHash !== text(packageData.baseHash) && currentDraftHash !== text(packageData.candidateHash)) throw new Error('The Payload draft changed before Ada could prepare it')
-      if (currentDraftHash !== text(packageData.candidateHash)) {
-        operationContext(auth.req as { context?: Record<string, unknown> }, operationKey)
-        await auth.payload.update({ collection: collection as CollectionSlug, data: verified.changes as never, draft: true, id: documentId, overrideAccess: false, req: auth.req, user: auth.user })
-      }
-      const afterWrite = await auth.payload.findByID({ collection: collection as CollectionSlug, depth: 2, draft: true, id: documentId, overrideAccess: false, req: auth.req, user: auth.user }) as unknown as Record<string, unknown>
-      const afterProjection = projectDocument(afterWrite, verified.fields)
-      if (await hashJson(afterProjection) !== text(packageData.candidateHash)) throw new Error('Payload did not retain the exact Growth candidate')
-      const preview = await verifyExactPreview(request, auth, text(auth.user.id), verified.collection, afterWrite, verified.route)
-      const proof = { ok: true, packageHash, candidateHash: packageData.candidateHash, validation: { status: 'passed', packageHash, checks: { canonicalSchema: true, exactDraft: true, private: true, publicRenderer: true, approvalBoundary: true }, preview } }
-      await saveCandidate(packageData, packageHash, proof.validation)
-      await completeOperation(operationKey, proof)
-      return NextResponse.json(proof, { headers: { 'Cache-Control': 'private, no-store' } })
-    } catch (cause) {
-      await failOperation(operationKey, { ok: false, packageHash, error: errorMessage(cause) })
-      return errorResponse(errorMessage(cause), 409)
-    }
-  }
-  if (path === '/growth/publish') {
-    const body = growthObject(await request.json().catch(() => ({})))
-    const packageHash = text(body.packageHash)
-    const candidate = await candidateRow(packageHash)
-    if (!candidate?.package_json) return errorResponse('The exact Growth candidate is not registered', 409)
-    let packageData: Record<string, unknown>
-    try { packageData = growthObject(JSON.parse(String(candidate.package_json))) } catch { return errorResponse('The stored Growth candidate is invalid', 409) }
-    const collection = text(packageData.collection)
-    const documentId = text(packageData.documentId)
-    if (!isEditableCollection(collection) || !documentId) return errorResponse('Stored Growth package target is invalid', 409)
-    const documentKey = `${collection}:${documentId}`
-    const operationKey = `publish:${tenantId()}:${documentKey}:${packageHash}`
-    const claimed = await claimOperation(operationKey, documentKey, packageHash)
-    if (!claimed.row) return errorResponse('A different publication is already writing this document', 409)
-    const saved = operationResult(claimed.row)
-    if (saved) return NextResponse.json(saved, { headers: { 'Cache-Control': 'private, no-store' } })
-    try {
-      const verified = await verifyGrowthPackage(auth.payload, packageData, packageHash)
-      operationContext(auth.req as { context?: Record<string, unknown> }, operationKey)
-      await auth.payload.update({ collection: collection as CollectionSlug, data: withoutPayloadMetadata(verified.after) as never, draft: false, id: documentId, overrideAccess: false, req: auth.req, user: auth.user })
-      const published = await auth.payload.findByID({ collection: collection as CollectionSlug, depth: 2, draft: false, id: documentId, overrideAccess: false, req: auth.req, user: auth.user }) as unknown as Record<string, unknown>
-      const publicProjection = projectDocument(published, verified.fields)
-      if (await hashJson(publicProjection) !== text(packageData.candidateHash)) throw new Error('The public Payload document does not match the approved candidate')
-      const liveVerification = await verifyLiveRoutes(request, collection, published, verified.route)
-      const result = { ok: true, packageHash, candidateHash: packageData.candidateHash, status: 'published', published: { collection, documentId, updatedAt: text(published.updatedAt) }, liveVerification }
-      await completeOperation(operationKey, result)
-      return NextResponse.json(result, { headers: { 'Cache-Control': 'private, no-store' } })
-    } catch (cause) {
-      await failOperation(operationKey, { ok: false, packageHash, error: errorMessage(cause) })
-      return errorResponse(errorMessage(cause), 409)
-    }
   }
   if (path === '/page-fields') {
     const body = asObject(await request.json().catch(() => ({})))

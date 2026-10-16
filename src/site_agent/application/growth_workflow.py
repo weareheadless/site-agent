@@ -75,12 +75,22 @@ def _parsed_timestamp(value: Any) -> datetime.datetime | None:
     return parsed.replace(tzinfo=datetime.timezone.utc) if parsed.tzinfo is None else parsed.astimezone(datetime.timezone.utc)
 
 
-def _recoverable_evidence_binding_failure(memory: Memory, run: Mapping[str, Any]) -> bool:
-    """Resume only the known pre-candidate failure after its shared fix ships.
+def _owner_action_summary(value: Any) -> str:
+    """Project long evidence scope into the bounded owner-action summary field."""
+    summary = " ".join(str(value or "").split())
+    if len(summary) <= 500:
+        return summary
+    prefix = summary[:497].rsplit(" ", 1)[0].rstrip(" .,;:") or summary[:497]
+    return prefix + "…"
 
-    This exact failure happened after assessment was persisted but before any
-    initiative or candidate was created. Reusing the saved assessment avoids
-    recollection, paid research, and another model assessment.
+
+def _recoverable_saved_assessment_failure(memory: Memory, run: Mapping[str, Any]) -> bool:
+    """Resume only exact saved-assessment failures whose shared boundary is fixed.
+
+    Replaying these preparing-phase runs uses their persisted evidence and
+    assessment. It must not recollect sources, dispatch paid research, or
+    repeat the model assessment. Partially written initiatives are eligible
+    only when they have no owner decision, draft, artifact, or approval yet.
     """
     if (
         run.get("status") != "failed"
@@ -91,8 +101,9 @@ def _recoverable_evidence_binding_failure(memory: Memory, run: Mapping[str, Any]
     detail = run.get("detail") if isinstance(run.get("detail"), Mapping) else {}
     assessment = detail.get("assessment")
     material = detail.get("material")
+    failure = str(detail.get("error") or "")
     if (
-        detail.get("error") != "Ada referenced evidence that is not in this run"
+        failure not in {"Ada referenced evidence that is not in this run", "summary exceeds 500 characters"}
         or not isinstance(assessment, Mapping)
         or not isinstance(assessment.get("opportunities"), list)
         or not isinstance(material, Mapping)
@@ -100,16 +111,23 @@ def _recoverable_evidence_binding_failure(memory: Memory, run: Mapping[str, Any]
         or detail.get("candidateIds")
     ):
         return False
-    return not any(
-        str(row.get("growth_run_id") or "") == str(run.get("run_id") or "")
-        for row in memory.list_strategy_initiatives(limit=None)
+    initiatives = [
+        row for row in memory.list_strategy_initiatives(limit=None)
+        if str(row.get("growth_run_id") or "") == str(run.get("run_id") or "")
+    ]
+    if failure == "Ada referenced evidence that is not in this run":
+        return not initiatives
+    return bool(initiatives) and all(
+        row.get("state") in {"preparing", "blocked"}
+        and not any(row.get(key) is not None for key in ("owner_action_id", "artifact_id", "approval_id", "draft_id"))
+        for row in initiatives
     )
 
 
 def has_recoverable_growth_replay(memory: Memory) -> bool:
     """Whether activation should immediately resume a known safe saved run."""
     return any(
-        _recoverable_evidence_binding_failure(memory, run)
+        _recoverable_saved_assessment_failure(memory, run)
         for run in memory.list_growth_runs(limit=None)
     )
 
@@ -611,7 +629,7 @@ def run_growth_cycle(context: dict[str, Any], *, trigger: str = "weekly", run_id
         raise ValueError("The queued growth run does not exist")
     if run["status"] in {"complete", "cancelled"}:
         return run
-    recover_saved_assessment = _recoverable_evidence_binding_failure(memory, run)
+    recover_saved_assessment = _recoverable_saved_assessment_failure(memory, run)
     due = _parsed_timestamp(run.get("next_due_ts"))
     if due is not None and due > now and not recover_saved_assessment:
         return run
@@ -626,10 +644,11 @@ def run_growth_cycle(context: dict[str, Any], *, trigger: str = "weekly", run_id
     if recover_saved_assessment:
         recovery_events = detail.get("recoveryEvents")
         recovery_events = list(recovery_events) if isinstance(recovery_events, list) else []
+        previous_error = detail.get("error")
         recovery_events.append({
-            "code": "evidence_binding_fixed",
+            "code": "evidence_binding_fixed" if previous_error == "Ada referenced evidence that is not in this run" else "owner_action_summary_contract_fixed",
             "resumedAt": now.isoformat(timespec="seconds"),
-            "previousError": detail.pop("error", "Ada referenced evidence that is not in this run"),
+            "previousError": detail.pop("error", ""),
         })
         detail["recoveryEvents"] = recovery_events[-5:]
         run = advance(detail=detail, next_due_ts=None)
@@ -642,7 +661,7 @@ def run_growth_cycle(context: dict[str, Any], *, trigger: str = "weekly", run_id
         material = detail["material"]
         if trigger == "daily":
             return advance(phase="complete", status="complete", detail=detail, completed=True)
-        if trigger == "weekly" and "articleResearch" not in detail:
+        if trigger == "weekly" and "articleResearch" not in detail and not recover_saved_assessment:
             detail["articleResearch"] = _queue_article_research(context)
             run = advance(phase="assessing", detail=detail)
         if trigger == "monthly":
@@ -759,7 +778,7 @@ def run_growth_cycle(context: dict[str, Any], *, trigger: str = "weekly", run_id
                 from ..core.contracts import ActionPriority, ActionRequirement, OwnerAction
                 action = OwnerActionService(memory).create(OwnerAction(
                     capability_id="growth.owner_information", provider_id="site-agent", title=opportunity["title"],
-                    summary=opportunity["scope"], action_label="Answer Ada", priority=ActionPriority.NORMAL,
+                    summary=_owner_action_summary(opportunity["scope"]), action_label="Answer Ada", priority=ActionPriority.NORMAL,
                     requirement=ActionRequirement.OWNER_INFORMATION, source_ref=f"growth-initiative:{initiative['id']}",
                     dedupe_key=f"growth-initiative:{initiative['id']}"))
                 memory.update_strategy_initiative(initiative["id"], owner_action_id=action.id)
@@ -806,7 +825,7 @@ def run_pending_growth(context: dict[str, Any]) -> None:
     due_ids = {str(row.get("run_id")) for row in due}
     recoverable = [
         run for run in memory.list_growth_runs(limit=None)
-        if str(run.get("run_id")) not in due_ids and _recoverable_evidence_binding_failure(memory, run)
+        if str(run.get("run_id")) not in due_ids and _recoverable_saved_assessment_failure(memory, run)
     ]
     for run in [*due, *recoverable]:
         run_growth_cycle(context, trigger=run["trigger"], run_id=run["run_id"])

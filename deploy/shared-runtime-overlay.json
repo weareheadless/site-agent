@@ -12,10 +12,19 @@
     "src/app/api/helloada/[...path]/route.ts",
     "src/app/api/helloada/forms/[slug]/route.ts",
     "src/app/api/helloada/mailflare-identity/route.ts",
+    "src/app/api/workspace/growth/[...path]/route.ts",
+    "src/app/(frontend)/helloada-preview/[token]/page.tsx",
     "src/lib/cloudflare-context.ts",
+    "src/lib/content-routes.ts",
+    "src/lib/growth-contract.ts",
+    "src/lib/growth-operations.ts",
+    "src/lib/helloada-auth.ts",
     "src/lib/helloada-form-runtime.ts",
+    "src/lib/helloada-preview.ts",
     "src/lib/mailflare-inbox.ts",
-    "src/lib/mailflare-provisioning-api.ts"
+    "src/lib/mailflare-provisioning-api.ts",
+    "src/lib/payload-hash.ts",
+    "src/lib/service-auth.ts"
   ],
   "remove": [
     "src/app/api/helloada/bookings/route.ts",

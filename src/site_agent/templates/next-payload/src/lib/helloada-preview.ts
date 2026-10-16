@@ -3,7 +3,7 @@ import { runtimeValue } from '@/lib/runtime-env'
 export type HelloAdaPreviewClaims = {
   version: 1
   tenantId: string
-  ownerId: string
+  principal: { type: 'owner'; ownerId: string } | { type: 'service' }
   collection: 'pages' | 'posts' | 'products'
   documentId: string
   documentHash: string
@@ -41,7 +41,9 @@ const validClaims = (value: unknown, tenantId: string): value is HelloAdaPreview
   const claims = value as Partial<HelloAdaPreviewClaims>
   return claims.version === 1
     && claims.tenantId === tenantId
-    && typeof claims.ownerId === 'string' && claims.ownerId.length > 0
+    && claims.principal !== null && typeof claims.principal === 'object'
+    && ((claims.principal.type === 'owner' && typeof claims.principal.ownerId === 'string' && claims.principal.ownerId.length > 0)
+      || (claims.principal.type === 'service' && !('ownerId' in claims.principal)))
     && typeof claims.collection === 'string' && collections.has(claims.collection as HelloAdaPreviewClaims['collection'])
     && typeof claims.documentId === 'string' && claims.documentId.length > 0
     && typeof claims.documentHash === 'string' && /^sha256:[0-9a-f]{64}$/.test(claims.documentHash)

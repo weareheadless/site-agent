@@ -2,11 +2,14 @@ import { cache } from 'react'
 import type { Metadata } from 'next'
 import { headers } from 'next/headers'
 import { notFound } from 'next/navigation'
+import { getPayload } from 'payload'
 import type { CollectionSlug, GlobalSlug, TypedLocale } from 'payload'
 
+import config from '@payload-config'
 import PublicDocument from '@/components/PublicDocument'
 import SiteChrome from '@/components/SiteChrome'
 import { authenticateHelloAdaRequest } from '@/lib/helloada-auth'
+import { serviceAuthorized } from '@/lib/service-auth'
 import { seoFor } from '@/lib/content'
 import { hashJson, withoutPayloadMetadata } from '@/lib/payload-hash'
 import { verifyHelloAdaPreviewToken } from '@/lib/helloada-preview'
@@ -37,20 +40,24 @@ const loadPreview = cache(async (token: string): Promise<PreviewData> => {
 
   const incomingHeaders = new Headers(await headers())
   const request = new Request('https://helloada-preview.invalid/', { headers: incomingHeaders })
-  const auth = await authenticateHelloAdaRequest(request)
-  if (!auth || String(auth.user.id) !== claims.ownerId) notFound()
+  const owner = claims.principal.type === 'owner'
+  const auth = owner ? await authenticateHelloAdaRequest(request) : undefined
+  if (owner && (!auth || String(auth.user.id) !== claims.principal.ownerId)) notFound()
+  if (!owner && !serviceAuthorized(request)) notFound()
+  const payload = auth?.payload || await getPayload({ config })
+  const access = auth
+    ? { overrideAccess: false as const, req: auth.req, user: auth.user }
+    : { overrideAccess: true as const }
 
   let document: Record<string, unknown>
   try {
-    document = await auth.payload.findByID({
+    document = await payload.findByID({
       collection: claims.collection as CollectionSlug,
       depth: 2,
       draft: claims.state === 'draft',
       id: claims.documentId,
       locale: claims.locale as TypedLocale,
-      overrideAccess: false,
-      req: auth.req,
-      user: auth.user,
+      ...access,
     }) as unknown as Record<string, unknown>
   } catch {
     notFound()
@@ -59,14 +66,12 @@ const loadPreview = cache(async (token: string): Promise<PreviewData> => {
   if (expectedPublicRoute(claims.collection, document) !== claims.route) notFound()
 
   const globals = await Promise.all(claims.globals.map(async (claim) => {
-    const global = await auth.payload.findGlobal({
+    const global = await payload.findGlobal({
       slug: claim.slug as GlobalSlug,
       depth: 2,
       draft: claims.state === 'draft',
       locale: claims.locale as TypedLocale,
-      overrideAccess: false,
-      req: auth.req,
-      user: auth.user,
+      ...access,
     }) as unknown as Record<string, unknown>
     if (await hashJson(withoutPayloadMetadata(global)) !== claim.hash) notFound()
     return [claim.slug, global] as const
