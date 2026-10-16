@@ -19,9 +19,11 @@ class FakeMemory:
 class FakeWorker:
     def __init__(self):
         self.secrets = {}
+        self.writes = []
 
     def put_secret(self, name, value):
         self.secrets[name] = value
+        self.writes.append((name, value))
         return {"name": name, "status": "written"}
 
 
@@ -222,3 +224,86 @@ def test_enabled_seo_defaults_to_automatic_provisioning(monkeypatch, tmp_path):
 
     assert calls
     assert state["state"] == "ready"
+
+
+def test_ready_workspace_recovery_does_not_redeploy_unchanged_ga_secret(monkeypatch, tmp_path):
+    memory = FakeMemory({
+        "seo_provisioning_state": {
+            "state": "ready",
+            "site_url": "https://workspace-harmonie.workers.dev/",
+            "ga4_measurement_id": "G-UNCHANGED",
+        }
+    })
+    worker = FakeWorker()
+
+    class FakeProvisioning:
+        def __init__(self, config, env):
+            pass
+
+        def provision(self, **kwargs):
+            return {
+                "site_url": kwargs["site_url"],
+                "gsc_property": kwargs["gsc_property"],
+                "gsc_verified": True,
+                "ga4_property_id": "411596330",
+                "ga4_measurement_id": "G-UNCHANGED",
+                "provisioning_state": "ready",
+            }
+
+    monkeypatch.setattr(bootstrap, "SeoProvisioningService", FakeProvisioning)
+    monkeypatch.setattr(bootstrap, "_worker_client", lambda config, env: worker)
+    monkeypatch.setattr(bootstrap, "load_tenant_environment", lambda config, env=None: {})
+
+    state, _ = bootstrap.auto_provision_seo(
+        _config(tmp_path),
+        tenant_id="workspace-harmonie",
+        memory=memory,
+    )
+
+    assert state["state"] == "ready"
+    assert worker.writes == []
+
+
+def test_changed_ga_measurement_id_is_written_once_and_persisted(monkeypatch, tmp_path):
+    memory = FakeMemory({
+        "seo_provisioning_state": {
+            "state": "ready",
+            "site_url": "https://workspace-harmonie.workers.dev/",
+            "ga4_measurement_id": "G-OLD",
+        }
+    })
+    worker = FakeWorker()
+
+    class FakeProvisioning:
+        def __init__(self, config, env):
+            pass
+
+        def provision(self, **kwargs):
+            return {
+                "site_url": kwargs["site_url"],
+                "gsc_property": kwargs["gsc_property"],
+                "gsc_verified": True,
+                "ga4_property_id": "411596330",
+                "ga4_measurement_id": "G-NEW",
+                "provisioning_state": "ready",
+            }
+
+    monkeypatch.setattr(bootstrap, "SeoProvisioningService", FakeProvisioning)
+    monkeypatch.setattr(bootstrap, "_worker_client", lambda config, env: worker)
+    monkeypatch.setattr(bootstrap, "load_tenant_environment", lambda config, env=None: {})
+
+    state, _ = bootstrap.auto_provision_seo(
+        _config(tmp_path),
+        tenant_id="workspace-harmonie",
+        memory=memory,
+    )
+    assert state["ga4_secret_measurement_id"] == "G-NEW"
+    assert worker.writes == [("GA_MEASUREMENT_ID", "G-NEW")]
+
+    state, _ = bootstrap.auto_provision_seo(
+        _config(tmp_path),
+        tenant_id="workspace-harmonie",
+        memory=memory,
+    )
+    assert state["ga4_secret_measurement_id"] == "G-NEW"
+    assert worker.writes == [("GA_MEASUREMENT_ID", "G-NEW")]

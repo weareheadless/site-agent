@@ -253,8 +253,21 @@ def auto_provision_seo(
                 memory.kv_set("seo_provisioning_state", attempt)
 
         measurement_id = str(receipt.get("ga4_measurement_id") or "").strip()
-        if measurement_id:
+        previously_synced_measurement_id = str(state.get("ga4_secret_measurement_id") or "").strip()
+        if not previously_synced_measurement_id and state.get("state") == "ready":
+            # A ready receipt was only recorded after the Worker secret write
+            # succeeded. Adopt this marker for tenants provisioned before the
+            # explicit sync marker existed.
+            previously_synced_measurement_id = str(state.get("ga4_measurement_id") or "").strip()
+        if measurement_id and measurement_id != previously_synced_measurement_id:
             _worker_client(config, resolved_env).put_secret("GA_MEASUREMENT_ID", measurement_id)
+            attempt["ga4_secret_measurement_id"] = measurement_id
+            if memory is not None:
+                # Record immediately after the external write: a later
+                # CrawlSEO/file error must not repeat a Worker deployment.
+                memory.kv_set("seo_provisioning_state", attempt)
+        elif measurement_id:
+            attempt["ga4_secret_measurement_id"] = measurement_id
 
         token = str(receipt.get("credential_token") or "").strip()
         if token:
@@ -265,6 +278,8 @@ def auto_provision_seo(
             resolved_env[token_env] = token
 
         sanitized = _safe_receipt(receipt)
+        if measurement_id:
+            sanitized["ga4_secret_measurement_id"] = measurement_id
         sanitized.update({
             "site_url": site_url,
             "origin_changed": origin_changed,
