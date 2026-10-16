@@ -202,6 +202,61 @@ def test_pending_growth_resumes_exact_historical_failure_from_saved_assessment(t
     memory.close()
 
 
+def test_activation_wakes_only_exact_recoverable_growth_and_article_jobs(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    settings = config()
+    _failed_saved_assessment(memory, settings)
+    source_id_block = "Payload posts contract is missing required fields: sourceId"
+    memory.save_draft(
+        "Recoverable article",
+        "Article body",
+        meta={"payload_sync": {"state": "blocked", "validation": {"status": "blocked", "reason": source_id_block}}},
+    )
+    memory.save_draft(
+        "Unrelated blocked article",
+        "Article body",
+        meta={"payload_sync": {"state": "blocked", "validation": {"status": "blocked", "reason": "Payload posts contract is missing required fields: content"}}},
+    )
+    memory.save_draft(
+        "Declined article",
+        "Article body",
+        meta={"payload_sync": {"state": "blocked", "validation": {"status": "blocked", "reason": source_id_block}}},
+    )
+    memory.update_draft_status(3, "declined")
+    memory.kv_set("next_run:growth_pending", 9999999.0)
+    memory.kv_set("next_run:growth_article_sync", 9999999.0)
+
+    scheduler = Scheduler(memory, lock_path=tmp_path / "scheduler.lock", timezone_name="America/Cancun", clock=lambda: 1234.5)
+    context = {"config": settings, "memory": memory, "payload_gateway": Payload(), "llm": Ada()}
+    register_jobs(scheduler, settings, context)
+
+    assert memory.kv_get("next_run:growth_pending") == 1234.5
+    assert memory.kv_get("next_run:growth_article_sync") == 1234.5
+    assert scheduler.due("growth_pending")
+    assert scheduler.due("growth_article_sync")
+    memory.close()
+
+
+def test_activation_does_not_wake_unrelated_or_completed_growth_work(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    memory.save_draft(
+        "Unrelated blocked article",
+        "Article body",
+        meta={"payload_sync": {"state": "blocked", "validation": {"status": "blocked", "reason": "Payload posts contract is missing required fields: content"}}},
+    )
+    memory.kv_set("next_run:growth_pending", 9999999.0)
+    memory.kv_set("next_run:growth_article_sync", 9999999.0)
+
+    scheduler = Scheduler(memory, lock_path=tmp_path / "scheduler.lock", timezone_name="America/Cancun", clock=lambda: 1234.5)
+    settings = config()
+    context = {"config": settings, "memory": memory, "payload_gateway": Payload(), "llm": Ada()}
+    register_jobs(scheduler, settings, context)
+
+    assert memory.kv_get("next_run:growth_pending") == 9999999.0
+    assert memory.kv_get("next_run:growth_article_sync") == 9999999.0
+    memory.close()
+
+
 def test_invalid_opportunity_evidence_does_not_abort_valid_preparation(tmp_path):
     class PartlyInvalidAda(Ada):
         def chat(self, messages, **kwargs):
