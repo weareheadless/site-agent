@@ -246,13 +246,16 @@ def test_growth_run_restart_reclaim_requires_the_exact_previous_lease(tmp_path):
     assert memory.claim_growth_run(
         "growth-interrupted", lease_owner="new-worker", reclaim_lease_owner="wrong-worker"
     ) is None
+    unchanged = memory.get_growth_run("growth-interrupted")
+    assert unchanged is not None
+    assert unchanged["lease_owner"] == "old-worker"
 
     reclaimed = memory.claim_growth_run(
         "growth-interrupted", lease_owner="new-worker", reclaim_lease_owner="old-worker"
     )
     assert reclaimed is not None
     assert reclaimed["lease_owner"] == "new-worker"
-    assert reclaimed["attempt"] == 2
+    assert reclaimed["attempt"] == unchanged["attempt"] + 1
     with pytest.raises(ContractError, match="superseded or expired"):
         memory.update_growth_run("growth-interrupted", phase="complete", expected_lease="old-worker")
     memory.close()
