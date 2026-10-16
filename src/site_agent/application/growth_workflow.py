@@ -183,11 +183,79 @@ def _recoverable_payload_contract_failure(memory: Memory, run: Mapping[str, Any]
     return False
 
 
+_EMPTY_GROWTH_JSON_COMPLETION = "model returned an empty completion (finish_reason=length, message_fields=content,reasoning,reasoning_details,refusal,role)"
+
+
+def _recoverable_growth_json_failure(memory: Memory, run: Mapping[str, Any]) -> bool:
+    """Allow one exact, side-effect-free retry after structured output was truncated."""
+    if (
+        run.get("status") != "blocked"
+        or run.get("phase") != "preparing"
+        or run.get("trigger") not in {"initial", "weekly", "owner_review"}
+    ):
+        return False
+    detail = run.get("detail") if isinstance(run.get("detail"), Mapping) else {}
+    events = detail.get("recoveryEvents")
+    if not isinstance(events, list):
+        return False
+    codes = {
+        str(event.get("code"))
+        for event in events
+        if isinstance(event, Mapping)
+    }
+    if (
+        "payload_growth_contract_route_restored" not in codes
+        or "growth_json_no_reasoning_retry" in codes
+        or not isinstance(detail.get("assessment"), Mapping)
+        or not isinstance(detail.get("assessment", {}).get("opportunities"), list)
+        or not isinstance(detail.get("material"), Mapping)
+        or not isinstance(detail.get("material", {}).get("inventory"), list)
+        or detail.get("candidateIds")
+    ):
+        return False
+    blocks = detail.get("blocks")
+    if not isinstance(blocks, list):
+        return False
+    blocked_ids = {
+        str(block.get("initiativeId"))
+        for block in blocks
+        if isinstance(block, Mapping)
+        and str(block.get("reason") or "") == _EMPTY_GROWTH_JSON_COMPLETION
+        and block.get("initiativeId") is not None
+    }
+    if not blocked_ids:
+        return False
+    opportunities = detail["assessment"]["opportunities"]
+    for row in memory.list_strategy_initiatives(limit=None):
+        if (
+            str(row.get("id")) not in blocked_ids
+            or str(row.get("growth_run_id") or "") != str(run.get("run_id") or "")
+            or row.get("kind") != "payload_content"
+            or row.get("state") != "blocked"
+            or any(row.get(key) is not None for key in (
+                "owner_action_id", "artifact_id", "approval_id", "draft_id",
+                "receipt_id", "review_package_hash",
+            ))
+        ):
+            continue
+        expected = row.get("expected") if isinstance(row.get("expected"), Mapping) else {}
+        opportunity = expected.get("opportunity") if isinstance(expected.get("opportunity"), Mapping) else {}
+        if any(
+            isinstance(item, Mapping)
+            and item.get("kind") == "payload_content"
+            and item.get("title") == row.get("title") == opportunity.get("title")
+            for item in opportunities
+        ):
+            return True
+    return False
+
+
 def has_recoverable_growth_replay(memory: Memory) -> bool:
     """Whether activation should immediately resume a known safe saved run."""
     return any(
         _recoverable_saved_assessment_failure(memory, run)
         or _recoverable_payload_contract_failure(memory, run)
+        or _recoverable_growth_json_failure(memory, run)
         for run in memory.list_growth_runs(limit=None)
     )
 
@@ -678,6 +746,7 @@ def run_growth_cycle(
     trigger: str = "weekly",
     run_id: str | None = None,
     resume_payload_contract: bool = False,
+    resume_growth_json: bool = False,
 ) -> dict[str, Any]:
     """Execute persisted phases, never count labels as proof of completed work."""
     from ..brain import growth as brain_growth
@@ -699,7 +768,10 @@ def run_growth_cycle(
     recover_payload_contract = (
         resume_payload_contract and _recoverable_payload_contract_failure(memory, run)
     )
-    recover_saved_run = recover_saved_assessment or recover_payload_contract
+    recover_growth_json = (
+        resume_growth_json and _recoverable_growth_json_failure(memory, run)
+    )
+    recover_saved_run = recover_saved_assessment or recover_payload_contract or recover_growth_json
     due = _parsed_timestamp(run.get("next_due_ts"))
     if due is not None and due > now and not recover_saved_run:
         return run
@@ -715,7 +787,10 @@ def run_growth_cycle(
         recovery_events = detail.get("recoveryEvents")
         recovery_events = list(recovery_events) if isinstance(recovery_events, list) else []
         previous_error = detail.pop("error", "")
-        if recover_payload_contract:
+        if recover_growth_json:
+            previous_error = _EMPTY_GROWTH_JSON_COMPLETION
+            recovery_code = "growth_json_no_reasoning_retry"
+        elif recover_payload_contract:
             previous_error = _PAYLOAD_GROWTH_CONTRACT_ROUTE_404
             recovery_code = "payload_growth_contract_route_restored"
         else:
@@ -911,6 +986,10 @@ def run_pending_growth(context: dict[str, Any]) -> None:
         run for run in runs
         if str(run.get("run_id")) not in due_ids and _recoverable_payload_contract_failure(memory, run)
     ]
+    recoverable_growth_json = [
+        run for run in runs
+        if str(run.get("run_id")) not in due_ids and _recoverable_growth_json_failure(memory, run)
+    ]
     for run in [*due, *recoverable_assessments]:
         run_growth_cycle(context, trigger=run["trigger"], run_id=run["run_id"])
     if recoverable_contracts:
@@ -925,9 +1004,20 @@ def run_pending_growth(context: dict[str, Any]) -> None:
                 run_id=run["run_id"],
                 resume_payload_contract=True,
             )
+    if recoverable_growth_json:
+        # The previous exact candidate passed this canonical contract gate
+        # before truncation; re-check it before spending one bounded retry.
+        context["payload_gateway"].require_growth_contract()
+        for run in recoverable_growth_json:
+            run_growth_cycle(
+                context,
+                trigger=run["trigger"],
+                run_id=run["run_id"],
+                resume_growth_json=True,
+            )
     # Recovery must not pull forward unrelated article research (which may
     # dispatch paid provider calls) when there is saved work to resume.
-    if due or not (recoverable_assessments or recoverable_contracts):
+    if due or not (recoverable_assessments or recoverable_contracts or recoverable_growth_json):
         _reconcile_article_research(context)
 
 
