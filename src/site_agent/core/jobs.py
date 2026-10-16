@@ -38,7 +38,12 @@ from ..brain import seo as brain_seo
 from ..brain import seo_insights as brain_seo_insights
 from ..brain import seo_outcomes as brain_seo_outcomes
 from ..brain import monthly_seo_report as brain_monthly_seo_report
-from ..application.growth_workflow import run_growth_reconciler, run_growth_cycle, run_pending_growth
+from ..application.growth_workflow import (
+    has_recoverable_growth_replay,
+    run_growth_reconciler,
+    run_growth_cycle,
+    run_pending_growth,
+)
 from ..senses import collect
 from . import maintenance
 from .contracts import ActionState, ApprovalStatus, ArtifactKind
@@ -629,6 +634,32 @@ def _article_research_cycle(context: dict[str, Any]) -> None:
     _mirror_article_drafts(context)
 
 
+def _has_recoverable_article_sync(memory: Memory) -> bool:
+    """Wake only pending articles blocked by the fixed sourceId contract bug."""
+    for draft in memory.list_drafts(limit=None):
+        if draft.get("kind") != "article" or draft.get("status") != "pending":
+            continue
+        meta = draft.get("meta") if isinstance(draft.get("meta"), Mapping) else {}
+        sync = meta.get("payload_sync") if isinstance(meta.get("payload_sync"), Mapping) else {}
+        validation = sync.get("validation") if isinstance(sync.get("validation"), Mapping) else {}
+        if (
+            sync.get("state") == "blocked"
+            and validation.get("status") == "blocked"
+            and validation.get("reason") == "Payload posts contract is missing required fields: sourceId"
+        ):
+            return True
+    return False
+
+
+def _wake_persisted_job(scheduler: Scheduler, name: str) -> None:
+    """Make an exact, safely recoverable persisted job due on activation."""
+    key = f"next_run:{name}"
+    next_run = scheduler.memory.kv_get(key)
+    now = round(scheduler.clock(), 3)
+    if isinstance(next_run, (int, float)) and next_run > now:
+        scheduler.memory.kv_set(key, now)
+
+
 def register_growth_jobs(scheduler: Scheduler, config: dict[str, Any], context: dict[str, Any]) -> bool:
     """Both runtime entry points consume this one production growth contract."""
     site = config.get("site") or {}
@@ -667,6 +698,10 @@ def register_growth_jobs(scheduler: Scheduler, config: dict[str, Any], context: 
         if scheduler.memory.kv_get(f"next_run:{name}") is None:
             next_run = scheduler.clock() if name in {"growth_initial", "growth_pending", "growth_article_sync"} else compute_next(scheduler.jobs[-1][1], scheduler.clock(), timezone_name=scheduler.timezone_name)
             scheduler.memory.kv_set(f"next_run:{name}", next_run)
+        if name == "growth_pending" and has_recoverable_growth_replay(scheduler.memory):
+            _wake_persisted_job(scheduler, name)
+        elif name == "growth_article_sync" and _has_recoverable_article_sync(scheduler.memory):
+            _wake_persisted_job(scheduler, name)
     # These are independent maintenance/measurement operations, not competing
     # recommendation producers. Inventory failure must not stop either one.
     maintenance = []

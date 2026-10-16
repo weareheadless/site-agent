@@ -106,6 +106,14 @@ def _recoverable_evidence_binding_failure(memory: Memory, run: Mapping[str, Any]
     )
 
 
+def has_recoverable_growth_replay(memory: Memory) -> bool:
+    """Whether activation should immediately resume a known safe saved run."""
+    return any(
+        _recoverable_evidence_binding_failure(memory, run)
+        for run in memory.list_growth_runs(limit=None)
+    )
+
+
 def _snapshot_source(
     *,
     source_id: str,
@@ -802,7 +810,10 @@ def run_pending_growth(context: dict[str, Any]) -> None:
     ]
     for run in [*due, *recoverable]:
         run_growth_cycle(context, trigger=run["trigger"], run_id=run["run_id"])
-    _reconcile_article_research(context)
+    # An activation-only replay of saved failures must not pull forward an
+    # unrelated article-research cycle (which may use paid provider calls).
+    if due or not recoverable:
+        _reconcile_article_research(context)
 
 
 __all__ = ["ensure_default_goal", "queue_growth_check", "run_growth_cycle", "run_growth_reconciler", "run_pending_growth"]
