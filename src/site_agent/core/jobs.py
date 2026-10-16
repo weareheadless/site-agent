@@ -329,7 +329,10 @@ def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -
         or (context.get("config", {}).get("site") or {}).get("language")
         or "fr"
     ).strip().lower().split("-", 1)[0]
-    source_id = f"ada-article-{draft_id}"
+    # Payload owns the immutable source identity. The shared schema derives it
+    # as `posts:<slug>` in its collection hook; sourceId is deliberately not an
+    # Ada-editable authoring field and must never be required from that contract.
+    source_id = f"posts:{slug}"
     body = str(draft.get("body") or "")
     if not body.strip():
         raise RuntimeError("The article draft has no body to sync into Payload")
@@ -345,7 +348,7 @@ def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -
     if not isinstance(enabled_collections, list) or "posts" not in enabled_collections:
         raise RuntimeError("The canonical Payload authoring contract does not enable the posts collection")
     contract_fields = set(payload.authoring_fields("collection", "posts", authoring_contract=authoring_contract))
-    required_fields = {"sourceId", "slug", "title", "summary", "body", "seo"}
+    required_fields = {"slug", "title", "summary", "body", "seo"}
     missing_contract = sorted(required_fields - set(contract_fields))
     if missing_contract:
         raise RuntimeError("Payload posts contract is missing required fields: " + ", ".join(missing_contract))
@@ -353,7 +356,6 @@ def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -
     if primary_keyword:
         seo["focusKeyword"] = primary_keyword
     candidate = {
-        "sourceId": source_id,
         "slug": slug,
         "title": title,
         "summary": summary,

@@ -163,12 +163,13 @@ export function GrowthTasks({ mode, ownerQueue, onNavigate, tasks = [], pending,
   const progression = ownerQueue?.progression;
   const visible = tasks.filter(row => row.focus === "needs_you");
   const recentWork = ownerQueue?.recentResultIds.map(agendaTask).filter((row): row is GrowthTask => Boolean(row)) || [];
-  const workSections = [
-    { key: "preparing", title: "growth.work_preparing", rows: tasks.filter(row => row.focus === "preparing" && row.kind !== "schedule") },
-    { key: "planned", title: "growth.work_planned", rows: tasks.filter(row => row.focus === "planned") },
-    { key: "paused", title: "growth.work_paused", rows: tasks.filter(row => row.focus === "paused") },
-    { key: "completed", title: "growth.work_completed", rows: recentWork },
-  ].filter(section => section.rows.length > 0);
+  const recentWorkIds = new Set(recentWork.map(row => row.id));
+  const workRows = tasks.filter(row => row.focus !== "needs_you" && row.focus !== "opportunity"
+    && (row.focus !== "completed" || recentWorkIds.has(row.id)));
+  const workPriority: Record<Focus, number> = { preparing: 0, paused: 1, planned: 2, completed: 3, needs_you: 4, opportunity: 5 };
+  workRows.sort((left, right) => workPriority[left.focus] - workPriority[right.focus]
+    || (left.focus === "planned" ? String(left.nextRun || "").localeCompare(String(right.nextRun || ""))
+      : String(right.updatedAt || "").localeCompare(String(left.updatedAt || ""))));
   const loaded = articleResult?.key === articleKey ? articleResult.result : undefined;
 
   useEffect(() => {
@@ -245,15 +246,6 @@ export function GrowthTasks({ mode, ownerQueue, onNavigate, tasks = [], pending,
     const summary = fullTaskSummary(task).replace(/\s+/g, " ").trim();
     return summary.length > 132 ? summary.slice(0, 131).trimEnd() + "…" : summary;
   };
-  const workGroups = (rows: GrowthTask[]) => {
-    const groups = new Map<string, GrowthTask[]>();
-    for (const task of rows) {
-      const canGroup = task.focus === "paused" && task.executionIssue && task.summaryKey;
-      const key = canGroup ? `issue:${task.kind}:${task.summaryKey}` : task.id;
-      groups.set(key, [...(groups.get(key) || []), task]);
-    }
-    return [...groups].map(([key, group]) => ({ key, tasks: group }));
-  };
   const workTaskButton = (task: GrowthTask) => <button type="button" className="helloada-growth-task-row"
     data-growth-task-id={task.id} onClick={() => openTask(task)}>
     <i aria-hidden="true" />
@@ -318,7 +310,7 @@ export function GrowthTasks({ mode, ownerQueue, onNavigate, tasks = [], pending,
           <HelloAdaMark size={28} />
           <div><h2>{t(panelTitleKey)}</h2><small>{t(panelNoteKey)}</small></div>
         </div>
-        {mode === "work" ? <button type="button" className="helloada-growth-secondary" disabled={Boolean(busy) || pending} onClick={() => void effect(undefined, "check")}>{busy === "check" ? t("growth.working") : t("growth.runAnalysis")}</button> : null}
+        {mode === "work" ? <button type="button" className="helloada-growth-secondary" onClick={() => onNavigate("results", "search")}>{t("growth.workResearchLink")}</button> : null}
       </header>
 
       {mode === "home" ? <div className="helloada-growth-task-goal"><span>{t("growth.goalLabel")} · <strong>{goal?.goal_key === "relevant_visitors" ? t("growth.visitorGoal") : goal?.objective || t("growth.goalNotSet")}</strong></span><Link href={ask(t("growth.goalPrompt"))}>{t("growth.changeGoal")} ↗</Link></div> : null}
@@ -499,28 +491,9 @@ export function GrowthTasks({ mode, ownerQueue, onNavigate, tasks = [], pending,
               : null}
           </footer>
         </div> : <>
-          {mode === "work" ? workSections.length ? <div className="helloada-growth-work-sections">
-            {workSections.map(section => <details className="helloada-growth-work-section" key={section.key}
-              open={section.key === "preparing"}>
-              <summary><strong>{t(section.title)}</strong><span>{section.rows.length}</span></summary>
-              <ul className="helloada-growth-task-list">
-                {workGroups(section.rows).map(group => group.tasks.length > 1 ? <li key={group.key} className="helloada-growth-task is-paused">
-                  <div className="helloada-growth-task-group-heading">
-                    <span className="helloada-growth-task-label"><strong>{t("growth.workSameIssueGroup").replace("{count}", String(group.tasks.length))}</strong>
-                      <small>{taskSummary(group.tasks[0])}</small></span>
-                    <span className="helloada-growth-task-badge is-paused">{stateLabel(group.tasks[0])}</span>
-                  </div>
-                  <details className="helloada-growth-work-affected">
-                    <summary>{t("growth.workShowAffectedItems")}</summary>
-                    <ul>{group.tasks.map(task => <li key={task.id} className="helloada-growth-task is-paused">{workTaskButton(task)}</li>)}</ul>
-                  </details>
-                </li> : <li key={group.key} className={"helloada-growth-task is-" + group.tasks[0].focus}>{workTaskButton(group.tasks[0])}</li>)}
-              </ul>
-            </details>)}
-            <button type="button" className="helloada-growth-work-research" onClick={() => onNavigate("results", "search")}>
-              {t("growth.workResearchLink")} →
-            </button>
-          </div> : <div className="helloada-growth-empty" role="status">
+          {mode === "work" ? workRows.length ? <ul className="helloada-growth-task-list helloada-growth-work-list">
+            {workRows.map(task => <li key={task.id} className={"helloada-growth-task is-" + task.focus}>{workTaskButton(task)}</li>)}
+          </ul> : <div className="helloada-growth-empty" role="status">
             <strong>{pending ? t("growth.loading") : t("growth.workEmptyTitle")}</strong>
             <p>{t("growth.workEmptyBody")}</p>
             <button type="button" className="helloada-growth-secondary" onClick={() => onNavigate("results", "search")}>{t("growth.workResearchLink")} →</button>

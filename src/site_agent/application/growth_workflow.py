@@ -75,6 +75,37 @@ def _parsed_timestamp(value: Any) -> datetime.datetime | None:
     return parsed.replace(tzinfo=datetime.timezone.utc) if parsed.tzinfo is None else parsed.astimezone(datetime.timezone.utc)
 
 
+def _recoverable_evidence_binding_failure(memory: Memory, run: Mapping[str, Any]) -> bool:
+    """Resume only the known pre-candidate failure after its shared fix ships.
+
+    This exact failure happened after assessment was persisted but before any
+    initiative or candidate was created. Reusing the saved assessment avoids
+    recollection, paid research, and another model assessment.
+    """
+    if (
+        run.get("status") != "failed"
+        or run.get("phase") != "preparing"
+        or run.get("trigger") not in {"initial", "weekly", "owner_review"}
+    ):
+        return False
+    detail = run.get("detail") if isinstance(run.get("detail"), Mapping) else {}
+    assessment = detail.get("assessment")
+    material = detail.get("material")
+    if (
+        detail.get("error") != "Ada referenced evidence that is not in this run"
+        or not isinstance(assessment, Mapping)
+        or not isinstance(assessment.get("opportunities"), list)
+        or not isinstance(material, Mapping)
+        or not isinstance(material.get("inventory"), list)
+        or detail.get("candidateIds")
+    ):
+        return False
+    return not any(
+        str(row.get("growth_run_id") or "") == str(run.get("run_id") or "")
+        for row in memory.list_strategy_initiatives(limit=None)
+    )
+
+
 def _snapshot_source(
     *,
     source_id: str,
@@ -572,8 +603,9 @@ def run_growth_cycle(context: dict[str, Any], *, trigger: str = "weekly", run_id
         raise ValueError("The queued growth run does not exist")
     if run["status"] in {"complete", "cancelled"}:
         return run
+    recover_saved_assessment = _recoverable_evidence_binding_failure(memory, run)
     due = _parsed_timestamp(run.get("next_due_ts"))
-    if due is not None and due > now:
+    if due is not None and due > now and not recover_saved_assessment:
         return run
     claimed = memory.claim_growth_run(run["run_id"], lease_owner=f"growth:{uuid.uuid4().hex}", lease_seconds=3600)
     if claimed is None:
@@ -583,6 +615,16 @@ def run_growth_cycle(context: dict[str, Any], *, trigger: str = "weekly", run_id
     def advance(**fields):
         return memory.update_growth_run(run["run_id"], expected_lease=lease_owner, **fields)
     detail = dict(run.get("detail") or {})
+    if recover_saved_assessment:
+        recovery_events = detail.get("recoveryEvents")
+        recovery_events = list(recovery_events) if isinstance(recovery_events, list) else []
+        recovery_events.append({
+            "code": "evidence_binding_fixed",
+            "resumedAt": now.isoformat(timespec="seconds"),
+            "previousError": detail.pop("error", "Ada referenced evidence that is not in this run"),
+        })
+        detail["recoveryEvents"] = recovery_events[-5:]
+        run = advance(detail=detail, next_due_ts=None)
     try:
         if "material" not in detail:
             detail["material"] = _collect_cycle_evidence(context, trigger)
@@ -635,10 +677,34 @@ def run_growth_cycle(context: dict[str, Any], *, trigger: str = "weekly", run_id
         )
         ready_sources = {row["id"] for row in material["sources"] if row["state"] == "ready"}
         candidate_ids, blocks, unprepared_opportunities = [], [], []
-        active = [row for row in memory.list_strategy_initiatives(limit=500) if row["state"] in {"preparing", "validating", "ready_for_review", "publishing", "verifying_live"} and row.get("growth_run_id") != run["run_id"]]
+        all_initiatives = memory.list_strategy_initiatives(limit=500)
+        active = [row for row in all_initiatives if row["state"] in {"preparing", "validating", "ready_for_review", "publishing", "verifying_live"} and row.get("growth_run_id") != run["run_id"]]
+        active_targets = {
+            (str(opportunity.get("collection") or ""), str(opportunity.get("documentId") or "")): row
+            for row in active
+            if row.get("kind") == "payload_content"
+            for opportunity in [((row.get("expected") or {}).get("opportunity") or {})]
+            if opportunity.get("collection") and opportunity.get("documentId")
+        }
+        pending_owner_question = any(
+            row.get("kind") == "owner_information"
+            and row.get("state") == "waiting_for_owner"
+            and (action := memory.get_owner_action(int(row["owner_action_id"]))) is not None
+            and action.state.value not in {"completed", "dismissed", "stale"}
+            for row in all_initiatives
+            if row.get("owner_action_id") is not None
+        )
         for opportunity in detail["assessment"]["opportunities"]:
-            if set(opportunity["evidence"]) - valid_refs:
-                raise ValueError("Ada referenced evidence that is not in this run")
+            evidence_refs = opportunity.get("evidence")
+            missing_refs = sorted({str(ref) for ref in evidence_refs if not isinstance(ref, str) or ref not in valid_refs}) if isinstance(evidence_refs, list) else ["invalid evidence list"]
+            if missing_refs:
+                unprepared_opportunities.append({
+                    **opportunity,
+                    "disposition": "deferred",
+                    "errorCode": "evidence_not_bound_to_run",
+                    "preparationNote": "Ada's evidence references could not be matched to this assessment, so this finding was retained but not prepared. Valid recommendations from the same assessment continue independently.",
+                })
+                continue
             if opportunity["kind"] not in {"payload_content", "owner_information"}:
                 missing = set(opportunity["requiredSources"]) - ready_sources
                 unprepared_opportunities.append({
@@ -647,6 +713,23 @@ def run_growth_cycle(context: dict[str, Any], *, trigger: str = "weekly", run_id
                         "This finding is retained for Ada's internal reassessment because this scheduled workflow cannot prepare its requested effect. It is not an owner task or an approval. Reassess it when the relevant shared execution route becomes available."
                         + (f" Required evidence is also not ready: {', '.join(sorted(missing))}." if missing else "")
                     ),
+                })
+                continue
+            target = (str(opportunity.get("collection") or ""), str(opportunity.get("documentId") or ""))
+            if opportunity["kind"] == "payload_content" and target in active_targets:
+                related = active_targets[target]
+                unprepared_opportunities.append({
+                    **opportunity,
+                    "disposition": "deferred",
+                    "relatedInitiativeId": related["id"],
+                    "preparationNote": "Ada already has a proposal for this page in progress or awaiting your decision. This finding is retained and will be reconsidered after that decision, so the two changes cannot overwrite each other.",
+                })
+                continue
+            if opportunity["kind"] == "owner_information" and pending_owner_question:
+                unprepared_opportunities.append({
+                    **opportunity,
+                    "disposition": "deferred",
+                    "preparationNote": "Ada already has an unanswered business question. This finding is retained and will be reconsidered after your reply, rather than asking you the same kind of question twice.",
                 })
                 continue
             initiative = by_title.get(opportunity["title"])
@@ -675,8 +758,10 @@ def run_growth_cycle(context: dict[str, Any], *, trigger: str = "weekly", run_id
                 if initiative["state"] == "blocked":
                     memory.transition_strategy_initiative(initiative["id"], "preparing")
                 memory.transition_strategy_initiative(initiative["id"], "waiting_for_owner")
+                pending_owner_question = True
                 continue
             elif opportunity["kind"] == "payload_content":
+                active_targets[target] = initiative
                 try:
                     if initiative["state"] == "blocked":
                         initiative = memory.transition_strategy_initiative(initiative["id"], "preparing")
@@ -690,6 +775,8 @@ def run_growth_cycle(context: dict[str, Any], *, trigger: str = "weekly", run_id
         detail.update(candidateIds=candidate_ids, blocks=blocks)
         if unprepared_opportunities:
             detail["assessment"]["unpreparedOpportunities"] = unprepared_opportunities
+        else:
+            detail["assessment"].pop("unpreparedOpportunities", None)
         memory.update_strategy_cycle(cycle["id"], summary=detail["assessment"]["summary"], status="blocked" if blocks else "completed")
         retry_at = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=24)).isoformat(timespec="seconds") if blocks else None
         return advance(phase="preparing" if blocks else "complete", status="blocked" if blocks else "complete", detail=detail, completed=not blocks,
@@ -706,7 +793,14 @@ def run_growth_cycle(context: dict[str, Any], *, trigger: str = "weekly", run_id
 
 
 def run_pending_growth(context: dict[str, Any]) -> None:
-    for run in context["memory"].due_growth_runs(limit=20):
+    memory = context["memory"]
+    due = memory.due_growth_runs(limit=20)
+    due_ids = {str(row.get("run_id")) for row in due}
+    recoverable = [
+        run for run in memory.list_growth_runs(limit=None)
+        if str(run.get("run_id")) not in due_ids and _recoverable_evidence_binding_failure(memory, run)
+    ]
+    for run in [*due, *recoverable]:
         run_growth_cycle(context, trigger=run["trigger"], run_id=run["run_id"])
     _reconcile_article_research(context)
 

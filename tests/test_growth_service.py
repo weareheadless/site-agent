@@ -1,8 +1,9 @@
 import json
 from types import SimpleNamespace
 
-from site_agent.application.growth_workflow import run_growth_cycle, run_pending_growth
+from site_agent.application.growth_workflow import _persist_evidence_artifact, ensure_default_goal, run_growth_cycle, run_pending_growth
 from site_agent.core.jobs import register_jobs
+from site_agent.core.growth_contracts import GrowthPolicy
 from site_agent.core.memory import Memory
 from site_agent.core.scheduler import Scheduler
 
@@ -72,8 +73,12 @@ class Payload:
 
 
 class Ada:
+    def __init__(self):
+        self.stages = []
+
     def chat(self, messages, **kwargs):
         material = json.loads(messages[-1]["content"])
+        self.stages.append(material.get("stage"))
         if material.get("stage") == "prepare":
             return json.dumps({"changes": {"metaDescription": "Local service from Business. Explore the services and contact the team."}})
         return json.dumps({"summary": "The homepage needs a useful search description.", "opportunities": [{"kind": "payload_content", "title": "Make the homepage clearer in search", "why": "The homepage has no description.", "hypothesis": "A clear description explains the service to search visitors.", "collection": "pages", "documentId": "1", "evidence": ["inventory", "ga4"], "requiredSources": ["inventory"], "scope": "Improve the homepage meta description without changing its visible design.", "metric": "gsc.clicks"}]})
@@ -111,6 +116,112 @@ def test_weekly_service_prepares_real_draft_without_publication_or_duplicate_wor
     second = run_growth_cycle(context, trigger="weekly")
     assert second["run_id"] == first["run_id"]
     assert payload.writes == 1
+    memory.close()
+
+
+def _failed_saved_assessment(memory, settings):
+    goal = ensure_default_goal(memory)
+    policy = GrowthPolicy.from_config(settings)
+    run = memory.create_growth_run(
+        run_id="growth-historical-evidence-binding-failure",
+        run_key="growth-historical-evidence-binding-failure-key",
+        trigger="owner_review",
+        goal_revision=goal["revision"],
+        timezone=policy.timezone,
+        phase="preparing",
+        status="failed",
+        policy=policy.to_dict(),
+        origin_revision=policy.origin_revision,
+        phase_version=2,
+    )
+    material = {
+        "sources": [
+            {"id": "inventory", "state": "ready", "sourceRef": "canonical_payload_inventory"},
+            {"id": "ga4", "state": "ready", "sourceRef": "metrics_snapshot:1"},
+        ],
+        "inventory": [{
+            "collection": "pages",
+            "document": {"id": "1", "sourceId": "page:home", "slug": "home", "title": "Business", "summary": "Local service", "metaDescription": ""},
+            "sourceRef": "payload:pages:1",
+            "route": "/",
+        }],
+        "metrics": {},
+        "datasets": {},
+        "collectionErrors": {},
+    }
+    artifact_id, evidence_hash, _ = _persist_evidence_artifact(
+        memory, run=run, goal=goal, policy=policy, sources=material["sources"], material=material,
+    )
+    opportunity = {
+        "kind": "payload_content",
+        "title": "Make the homepage clearer in search",
+        "why": "The homepage has no search description.",
+        "hypothesis": "A clear description helps search visitors understand the offer.",
+        "collection": "pages",
+        "documentId": "1",
+        "evidence": ["inventory", "ga4"],
+        "requiredSources": ["inventory"],
+        "scope": "Improve the homepage meta description.",
+        "metric": "gsc.clicks",
+    }
+    detail = {
+        "material": material,
+        "evidenceArtifactId": artifact_id,
+        "evidenceHash": evidence_hash,
+        "policy": policy.to_dict(),
+        "assessment": {"summary": "The homepage has a clear, evidence-backed improvement.", "opportunities": [opportunity]},
+        "error": "Ada referenced evidence that is not in this run",
+    }
+    memory.update_growth_run(
+        run["run_id"], detail=detail, next_due_ts="2099-10-16T04:08:16+00:00",
+    )
+    return run["run_id"]
+
+
+def test_pending_growth_resumes_exact_historical_failure_from_saved_assessment(tmp_path, monkeypatch):
+    memory = Memory(tmp_path / "memory.db")
+    settings = config()
+    payload = Payload()
+    planner = Ada()
+    run_id = _failed_saved_assessment(memory, settings)
+    context = {"config": settings, "memory": memory, "payload_gateway": payload, "llm": planner}
+    monkeypatch.setattr("site_agent.application.growth_workflow._reconcile_article_research", lambda _context: None)
+
+    run_pending_growth(context)
+
+    run = memory.get_growth_run(run_id)
+    assert run["status"] == "complete"
+    assert run["detail"]["recoveryEvents"][-1]["code"] == "evidence_binding_fixed"
+    assert "error" not in run["detail"]
+    initiatives = memory.list_strategy_initiatives(limit=None)
+    assert len(initiatives) == 1
+    assert initiatives[0]["state"] == "ready_for_review"
+    assert payload.writes == 1
+    assert payload.publishes == 0
+    assert planner.stages == ["prepare"]
+    memory.close()
+
+
+def test_invalid_opportunity_evidence_does_not_abort_valid_preparation(tmp_path):
+    class PartlyInvalidAda(Ada):
+        def chat(self, messages, **kwargs):
+            material = json.loads(messages[-1]["content"])
+            if material.get("stage") != "assess":
+                return super().chat(messages, **kwargs)
+            good = json.loads(super().chat(messages, **kwargs))["opportunities"][0]
+            bad = {**good, "title": "Unbound finding", "evidence": ["outside-this-run"]}
+            return json.dumps({"summary": "One finding needs evidence repair; another can proceed.", "opportunities": [bad, good]})
+
+    memory = Memory(tmp_path / "memory.db")
+    payload = Payload()
+    run = run_growth_cycle({"config": config(), "memory": memory, "payload_gateway": payload, "llm": PartlyInvalidAda()}, trigger="weekly")
+
+    assert run["status"] == "complete"
+    assert len(run["detail"]["candidateIds"]) == 1
+    assert run["detail"]["assessment"]["unpreparedOpportunities"][0]["errorCode"] == "evidence_not_bound_to_run"
+    assert len(memory.list_strategy_initiatives(limit=None)) == 1
+    assert payload.writes == 1
+    assert payload.publishes == 0
     memory.close()
 
 

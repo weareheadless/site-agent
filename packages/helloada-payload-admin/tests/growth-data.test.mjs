@@ -32,8 +32,9 @@ test('Growth has one task list, not separate advice, schedule and approval windo
   assert.doesNotMatch(tasks, /role="tablist" aria-label=\{t\("growth\.taskFocus"\)\}/);
   assert.match(tasks, /const visible = tasks\.filter\(row => row\.focus === "needs_you"\)/);
   assert.doesNotMatch(tasks, /rows: tasks\.filter\(row => row\.focus === "needs_you"\)/);
-  assert.match(tasks, /workSections\.map\(section => <details/);
-  assert.ok(tasks.includes('const canGroup = task.focus === "paused" && task.executionIssue && task.summaryKey;'));
+  assert.match(tasks, /const workRows = tasks\.filter/);
+  assert.match(tasks, /workRows\.map\(task =>/);
+  assert.doesNotMatch(tasks, /workSections|workGroups|const canGroup|Run analysis/);
   assert.match(tasks, /helloada-growth-task-list/);
   assert.doesNotMatch(tasks, /helloada-growth-sidebar/);
   assert.doesNotMatch(tasks, /helloada-growth-support-rail/);
@@ -44,7 +45,7 @@ test('Growth has one task list, not separate advice, schedule and approval windo
   assert.match(tasks, /growth_task/);
   assert.match(tasks, /lastOpenedTask/);
   assert.match(tasks, /writeGrowthLocation\(task\.focus, task\.id, "pushState"\)/);
-  assert.equal([...tasks.matchAll(/className="helloada-growth-task-list"/g)].length, 2);
+  assert.equal([...tasks.matchAll(/className="helloada-growth-task-list/g)].length, 2);
   assert.match(tasks, /review_package_hash: task\?\.reviewPackageHash/);
   assert.match(tasks, /fetchHelloAda\("\/api\/helloada\/growth\/articles\/"/);
   assert.match(tasks, /if \(!articleKey \|\| !selectedTask\?\.draftId\)/);
