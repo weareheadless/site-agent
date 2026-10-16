@@ -641,6 +641,8 @@ def run_growth_reconciler(context: dict[str, Any]) -> dict[str, Any]:
     policy = GrowthPolicy.from_config(config)
     goal = ensure_default_goal(memory)
     now = datetime.datetime.now(datetime.timezone.utc)
+    from .growth_owner_response import queue_saved_owner_responses
+    queue_saved_owner_responses(context)
     _invalidate_incompatible_candidates(memory, goal, policy)
     key = _run_key(policy, int(goal["revision"]), now)
     existing = memory.get_growth_run_by_key(key)
@@ -784,7 +786,7 @@ def _inventory(context: Mapping[str, Any]) -> list[dict[str, Any]]:
     return inventory
 
 
-def _collect_cycle_evidence(context: Mapping[str, Any], trigger: str) -> dict[str, Any]:
+def _collect_cycle_evidence(context: Mapping[str, Any], trigger: str, run_id: str) -> dict[str, Any]:
     from .growth import growth_metrics
     from .growth_evidence import growth_evidence
 
@@ -799,6 +801,9 @@ def _collect_cycle_evidence(context: Mapping[str, Any], trigger: str) -> dict[st
                 errors[source] = str(exc)[:500]
     inventory = _inventory(context)
     sources = _source_state(memory, config, context)
+    from .growth_owner_response import owner_response_evidence
+    owner_responses, owner_response_sources = owner_response_evidence(memory, run_id)
+    sources.extend(owner_response_sources)
     for source in sources:
         if source["id"] in errors:
             source.update(state="failed", reason=errors[source["id"]])
@@ -814,7 +819,8 @@ def _collect_cycle_evidence(context: Mapping[str, Any], trigger: str) -> dict[st
                     errors[section] = "; ".join(str(item) for item in value["errors"].values())[:500]
             except Exception as exc:
                 errors[section] = str(exc)[:500]
-    return {"sources": sources, "inventory": inventory, "metrics": growth_metrics(memory), "datasets": datasets, "collectionErrors": errors}
+    return {"sources": sources, "inventory": inventory, "metrics": growth_metrics(memory), "datasets": datasets,
+            "ownerResponses": owner_responses, "collectionErrors": errors}
 
 
 def _run_monthly_research(context: dict[str, Any], detail: dict[str, Any]) -> dict[str, Any]:
@@ -989,11 +995,14 @@ def run_growth_cycle(
         run = advance(detail=detail, next_due_ts=None)
     try:
         if "material" not in detail:
-            detail["material"] = _collect_cycle_evidence(context, trigger)
+            detail["material"] = _collect_cycle_evidence(context, trigger, str(run["run_id"]))
             artifact_id, evidence_hash, _ = _persist_evidence_artifact(memory, run=run, goal=goal, policy=policy, sources=detail["material"]["sources"], material=detail["material"])
             detail.update(evidenceArtifactId=artifact_id, evidenceHash=evidence_hash, policy=policy.to_dict())
             run = advance(phase="assessing", detail=detail, next_due_ts=None)
         material = detail["material"]
+        if material.get("ownerResponses"):
+            from .growth_owner_response import consume_owner_responses
+            consume_owner_responses(memory, str(run["run_id"]), material["ownerResponses"])
         if trigger == "daily":
             return advance(phase="complete", status="complete", detail=detail, completed=True)
         if trigger == "weekly" and "articleResearch" not in detail and not recover_saved_run:
@@ -1147,7 +1156,7 @@ def run_growth_cycle(
                     unprepared_opportunities.append({
                         **opportunity,
                         "disposition": "deferred",
-                        "errorCode": "unsupported_existing_document_route",
+                        "errorCode": exc.code,
                         "preparationNote": reason,
                         "reassessWhen": exc.reassess_when,
                     })

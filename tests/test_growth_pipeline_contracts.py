@@ -1,6 +1,44 @@
+import pytest
+
 from site_agent.application.growth_budget import reserve_paid_research
 from site_agent.application.growth_workflow import run_growth_reconciler
 from site_agent.core.memory import Memory
+
+
+def test_noop_growth_preparation_is_not_a_technical_failure(monkeypatch):
+    from site_agent.application.growth_candidates import prepare_payload_candidate
+    from site_agent.brain.growth import UnsupportedGrowthPreparation
+
+    class Payload:
+        def require_growth_contract(self):
+            return None
+
+        def require_authoring_contract(self):
+            return {}
+
+        def authoring_fields(self, *_args, **_kwargs):
+            return ["title"]
+
+        def read(self, *_args, **_kwargs):
+            return {"id": "page-1", "title": "Already correct"}
+
+        def apply_growth_candidate(self, *_args, **_kwargs):
+            raise AssertionError("a no-op must never be written")
+
+    monkeypatch.setattr(
+        "site_agent.application.growth_candidates.brain_growth.prepare",
+        lambda *_args, **_kwargs: {"title": "Already correct"},
+    )
+    context = {"memory": object(), "payload_gateway": Payload()}
+    opportunity = {"collection": "pages", "documentId": "page-1", "title": "Improve title"}
+    initiative = {"id": 1, "validation": {}}
+    inventory = [{"collection": "pages", "document": {"id": "page-1"}, "route": "/"}]
+
+    with pytest.raises(UnsupportedGrowthPreparation, match="already present") as error:
+        prepare_payload_candidate(context, initiative, opportunity, inventory, {})
+
+    assert error.value.code == "no_actionable_change"
+
 
 
 def test_growth_candidate_lineage_and_lifecycle_are_persisted(tmp_path):

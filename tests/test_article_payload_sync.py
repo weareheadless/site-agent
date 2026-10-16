@@ -94,7 +94,7 @@ def test_article_is_written_to_canonical_payload_posts_schema_as_unpublished_lex
     assert payload.publishes == 0
     assert document["published"] is False
     assert document["sourceId"] == "posts:a-useful-guide"
-    assert document["canonicalUrl"] == "https://business.example/post/a-useful-guide"
+    assert document["canonicalUrl"] == "https://business.example/blog/a-useful-guide"
     assert document["summary"]
     assert document["body"]["root"]["type"] == "root"
     assert [node["type"] for node in document["body"]["root"]["children"]] == ["heading", "paragraph"]

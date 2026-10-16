@@ -409,6 +409,72 @@ def test_empty_provider_summary_is_rejected_before_reserving_or_spending_budget(
         memory.close()
 
 
+
+def test_reconcile_retries_only_a_persisted_pre_dispatch_summary_rejection(tmp_path, monkeypatch):
+    memory = Memory(tmp_path / "memory.db")
+    row = memory.create_article_idea("article:2026-W40", "retry-safe-hash", dict(DEFAULT_IDEA))
+
+    class Service:
+        requests = 0
+
+        def request_article_keyword_research(self, **_kwargs):
+            self.requests += 1
+            return {"run_id": "retry-run", "status": "requested"}
+
+    service = Service()
+    memory.update_article_idea(
+        row["id"], status="selected", error="CrawlSEO idea_summary is invalid"
+    )
+    monkeypatch.setattr(
+        article_research, "reserve_paid_research",
+        lambda *_args, **_kwargs: {"reservation_id": "reservation-1"},
+    )
+    monkeypatch.setattr(article_research, "settle_paid_research", lambda *_args, **_kwargs: None)
+    context = {
+        "config": {"seo": {"article_research": {"enabled": True}}},
+        "memory": memory,
+        "crawlseo_service": service,
+        "llm": None,
+    }
+
+    try:
+        article_research.reconcile(context)
+        saved = memory.get_article_idea(row["id"])
+        assert saved["status"] == "research_requested"
+        assert saved["research_run_id"] == "retry-run"
+        assert service.requests == 1
+    finally:
+        memory.close()
+
+
+def test_reconcile_does_not_retry_a_deterministic_provider_locale_rejection(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    row = memory.create_article_idea("article:2026-W40", "locale-no-retry-hash", dict(DEFAULT_IDEA))
+    memory.update_article_idea(
+        row["id"],
+        status="selected",
+        error="DATAFORSEO_TASK_40501_INVALID_FIELD_LANGUAGE_CODE_",
+    )
+
+    class Service:
+        def request_article_keyword_research(self, **_kwargs):
+            raise AssertionError("the locale requires a real market decision, not a blind retry")
+
+    context = {
+        "config": {"seo": {"article_research": {"enabled": True}}},
+        "memory": memory,
+        "crawlseo_service": Service(),
+        "llm": None,
+    }
+    try:
+        article_research.reconcile(context)
+        saved = memory.get_article_idea(row["id"])
+        assert saved["status"] == "selected"
+        assert saved["error"] == "DATAFORSEO_TASK_40501_INVALID_FIELD_LANGUAGE_CODE_"
+    finally:
+        memory.close()
+
+
 def test_reconcile_requests_one_serp_after_metrics_then_drafts(tmp_path, monkeypatch):
     memory = Memory(tmp_path / "memory.db")
     idea = _idea(memory)
