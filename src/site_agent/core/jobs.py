@@ -33,12 +33,12 @@ from ..brain import dream as brain_dream
 from ..brain import inner_voice as brain_inner_voice
 from ..brain import report as brain_report
 from ..brain import self_model as brain_self_model
-from .article_routes import public_article_path
 from ..brain import social as brain_social
 from ..brain import seo as brain_seo
 from ..brain import seo_insights as brain_seo_insights
 from ..brain import seo_outcomes as brain_seo_outcomes
 from ..brain import monthly_seo_report as brain_monthly_seo_report
+from .article_routes import public_article_path
 from ..application.growth_workflow import (
     has_recoverable_growth_replay,
     run_growth_reconciler,

@@ -1,8 +1,9 @@
-from site_agent.application.growth_budget import reserve_paid_research
-from site_agent.application.growth_workflow import run_growth_reconciler
 import pytest
 
+from site_agent.application.growth_budget import reserve_paid_research
+from site_agent.application.growth_workflow import run_growth_reconciler
 from site_agent.core.memory import Memory
+
 
 def test_noop_growth_preparation_is_not_a_technical_failure(monkeypatch):
     from site_agent.application.growth_candidates import prepare_payload_candidate

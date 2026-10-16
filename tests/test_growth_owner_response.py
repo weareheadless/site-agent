@@ -66,3 +66,4 @@ def test_owner_answer_completes_only_its_task_and_becomes_growth_evidence(tmp_pa
         assert sources[0]["sourceRef"] == f"owner-answer:{initiative_id}"
     finally:
         memory.close()
+
