@@ -845,7 +845,25 @@ def reconcile(context: dict[str, Any]) -> None:
     service = context.get("crawlseo_service")
     if not _settings(config).get("enabled", False) or service is None:
         return
+    # Only this persisted, explicit pre-dispatch rejection is safe to retry.
+    # Locale/provider failures and uncertain outcomes are never retried here.
+    retryable_selected = [
+        row for row in memory.list_article_ideas(status="selected", limit=50)
+        if not row.get("research_run_id")
+        and not row.get("serp_run_id")
+        and "crawlseo idea_summary is invalid" in str(row.get("error") or "").lower()
+    ]
+    for selected in retryable_selected:
+        idea_data = selected.get("idea_json")
+        if isinstance(idea_data, Mapping):
+            try:
+                _request_selected_idea(context, selected, idea_data)
+            except Exception as exc:  # noqa: BLE001 — leave the durable record available for inspection
+                memory.update_article_idea(selected["id"], error=str(exc)[:500])
+                memory.record_action("article_research", f"idea #{selected['id']}: safe pre-dispatch retry: {str(exc)[:300]}")
     llm = context.get("llm")
+    if llm is None:
+        return
     ideas: list[Mapping[str, Any]] = []
     # A provider run is never repeated, but local note/draft work may need a
     # retry after a process interruption. Keep serp_requested and researched

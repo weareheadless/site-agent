@@ -25,6 +25,7 @@ import yaml
 
 from ..config import ConfigError, deep_merge, intake_settings, load
 from .intake_coordinator import IntakeCoordinator
+from ..core.article_routes import public_article_path
 from ..core.memory import Memory
 from ..core.reflect import effective_persona
 from ..core.scheduler import Scheduler
@@ -1470,8 +1471,13 @@ class ChatService:
             attachments,
             display_message=message,
         )
-        if selected_task and selected_task.get("ownerActionId"):
-            memory.link_owner_action(selected_task["ownerActionId"], conversation_id=conversation_id)
+        if selected_task and selected_task.get("kind") == "owner_information" and selected_task.get("ownerActionId"):
+            action_id = int(selected_task["ownerActionId"])
+            action = memory.get_owner_action(action_id)
+            if action is not None and action.state.value not in {"completed", "dismissed", "stale"}:
+                memory.link_owner_action(action_id, conversation_id=conversation_id, job_id=job_id)
+                if action.state.value == "open":
+                    memory.transition_owner_action(action_id, "started")
         response = {
             "job_id": int(job_id),
             "conversation_id": int(conversation_id),
@@ -2380,7 +2386,7 @@ class ChatService:
                         "title": str(document.get("title") or article.get("title") or ""),
                         "body": document.get("body"),
                         "slug": str(document.get("slug") or article.get("slug") or ""),
-                        "path": f"/post/{document.get('slug')}" if document.get("slug") else "",
+                        "path": public_article_path(document.get("slug")),
                         "excerpt": str(document.get("summary") or article.get("excerpt") or ""),
                     })
                     seo = document.get("seo") if isinstance(document.get("seo"), Mapping) else {}
@@ -2711,7 +2717,7 @@ class ChatService:
             ga4_current = ga4_data.get("current") if isinstance(ga4_data.get("current"), Mapping) else {}
             baseline = {
                 "metric": "gsc.clicks" if "clicks" in gsc_current else "ga4.sessions" if "sessions" in ga4_current else "",
-                "scope": {"document_id": document_id, "collection": "posts", "path": f"/post/{sync.get('slug')}" if sync.get("slug") else ""},
+                "scope": {"document_id": document_id, "collection": "posts", "path": public_article_path(sync.get("slug"))},
                 "gsc": gsc_snapshot,
                 "ga4": ga4_snapshot,
             }

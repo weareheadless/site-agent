@@ -33,6 +33,7 @@ from ..brain import dream as brain_dream
 from ..brain import inner_voice as brain_inner_voice
 from ..brain import report as brain_report
 from ..brain import self_model as brain_self_model
+from .article_routes import public_article_path
 from ..brain import social as brain_social
 from ..brain import seo as brain_seo
 from ..brain import seo_insights as brain_seo_insights
@@ -359,13 +360,15 @@ def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -
     seo = {"title": title[:300], "description": description}
     if primary_keyword:
         seo["focusKeyword"] = primary_keyword
+    article_path = public_article_path(slug)
+    public_base = str(site_url or "").rstrip("/")
     candidate = {
         "slug": slug,
         "title": title,
         "summary": summary,
         "body": lexical_body,
         "seo": seo,
-        "canonicalUrl": f"{site_url}/post/{slug}" if site_url else f"/post/{slug}",
+        "canonicalUrl": f"{public_base}{article_path}" if public_base else article_path,
         "modifiedAt": str(draft.get("updated_ts") or datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")),
         "author": str((context.get("config", {}).get("persona") or {}).get("name") or "Ada"),
         "published": False,

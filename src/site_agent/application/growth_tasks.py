@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 import re
 from typing import Any
 
+from ..core.article_routes import public_article_path
+
 
 def _future_timestamp(value: Any) -> bool:
     """Only call work planned when its persisted next-run time is still ahead."""
@@ -73,7 +75,7 @@ def _article_review(
     slug = str(sync.get("slug") or "").strip()
     review = {
         "slug": slug,
-        "path": f"/post/{slug}" if slug else "",
+        "path": public_article_path(slug),
         "excerpt": str(sync.get("excerpt") or "").strip(),
         "metaDescription": str(sync.get("meta_description") or "").strip(),
         "primaryKeyword": str(research_note.get("selected_query") or sync.get("primary_keyword") or "").strip(),

@@ -247,6 +247,14 @@ def run_job(context: dict[str, Any], job: dict[str, Any], worker: str,
 
         if not memory.complete_chat_job(job_id, worker, result):
             raise RuntimeError("chat job ownership was lost before completion")
+        try:
+            from ..application.growth_owner_response import complete_growth_owner_response
+            complete_growth_owner_response(context, job)
+        except Exception as response_exc:  # noqa: BLE001 — preserve the successful chat, retry the durable follow-up from reconciliation
+            try:
+                memory.record_action("growth_owner_response", f"job #{job_id}: {str(response_exc)[:300]}")
+            except Exception:  # noqa: BLE001 — observability must not change chat completion
+                pass
         record_job_timing(succeeded=True)
         return result
     except Exception as exc:  # noqa: BLE001 — a failing job must not kill the loop

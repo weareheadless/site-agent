@@ -46,7 +46,11 @@ def prepare_payload_candidate(context: Mapping[str, Any], initiative: Mapping[st
     if changes is None:
         changes = brain_growth.prepare(context, opportunity=opportunity, document=current, fields=editable, evidence=evidence)
         if all(current.get(key) == value for key, value in changes.items()):
-            raise ValueError("Ada proposed no actual change")
+            raise brain_growth.UnsupportedGrowthPreparation(
+                "The suggested improvement is already present on this page; there is no substantive change to review.",
+                "Reassess after the page content or supporting evidence changes.",
+                code="no_actionable_change",
+            )
         preparation = {"changes": changes, "baseHash": content_hash(base), "collection": collection, "documentId": document_id}
         memory.update_strategy_initiative(int(initiative["id"]), validation={"preparation": preparation})
     elif stored.get("baseHash") != content_hash(base):
