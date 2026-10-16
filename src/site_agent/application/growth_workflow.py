@@ -106,6 +106,14 @@ def _recoverable_evidence_binding_failure(memory: Memory, run: Mapping[str, Any]
     )
 
 
+def has_recoverable_growth_replay(memory: Memory) -> bool:
+    """Whether activation should immediately resume a known safe saved run."""
+    return any(
+        _recoverable_evidence_binding_failure(memory, run)
+        for run in memory.list_growth_runs(limit=None)
+    )
+
+
 def _snapshot_source(
     *,
     source_id: str,
