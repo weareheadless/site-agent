@@ -226,7 +226,6 @@ def test_enabled_seo_defaults_to_automatic_provisioning(monkeypatch, tmp_path):
     assert state["state"] == "ready"
 
 
-
 def test_ready_workspace_recovery_does_not_redeploy_unchanged_ga_secret(monkeypatch, tmp_path):
     memory = FakeMemory({
         "seo_provisioning_state": {
