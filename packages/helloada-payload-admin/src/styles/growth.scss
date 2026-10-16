@@ -910,20 +910,7 @@
   .helloada-growth button.helloada-growth-secondary { min-height: 36px; padding: 0 12px; border: 1px solid #d8dfe6; border-radius: 9px; background: #fff; color: #334457; font-size: 12px; font-weight: 650; }
   .helloada-growth button.helloada-growth-secondary:hover:not(:disabled) { border-color: #e6a391; background: #fff8f5; color: #a63c26; }
   .helloada-growth-workspace { min-height: 180px; }
-  .helloada-growth-work-sections { display: grid; gap: 0; padding-top: 12px; }
-  .helloada-growth-work-section { min-width: 0; border-top: 1px solid #e8ecf0; }
-  .helloada-growth-work-section > summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 2px; color: #263548; cursor: pointer; font-size: 14px; font-weight: 700; letter-spacing: -.01em; list-style: none; }
-  .helloada-growth-work-section > summary::-webkit-details-marker { display: none; }
-  .helloada-growth-work-section > summary::after { content: "＋"; color: #a43a25; font-size: 13px; }
-  .helloada-growth-work-section[open] > summary::after { content: "−"; }
-  .helloada-growth-work-section > summary > span { margin-left: auto; color: #758293; font-size: 12px; font-variant-numeric: tabular-nums; font-weight: 600; }
-  .helloada-growth-work-section > .helloada-growth-task-list { padding-bottom: 14px; }
-  .helloada-growth-task-group-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 8px 7px; }
-  .helloada-growth-work-affected { padding: 0 8px 10px; }
-  .helloada-growth-work-affected > summary { width: fit-content; color: #a43a25; cursor: pointer; font-size: 12px; font-weight: 650; }
-  .helloada-growth-work-affected ul { margin: 4px 0 0; padding: 0; list-style: none; }
-  .helloada-growth-work-affected li { border-top: 1px solid #edf0f3; }
-  .helloada-growth-work-research { justify-self: start; min-height: 34px; padding: 0 8px; border: 0; background: transparent; color: #a43a25; font-size: 12px; font-weight: 650; }
+  .helloada-growth-work-list { padding-top: 12px; }
   .helloada-growth-task-list { margin: 0; padding: 0; }
   .helloada-growth-task { border-top: 1px solid #edf0f3; }
   .helloada-growth-task:first-child { border-top: 0; }

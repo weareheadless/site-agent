@@ -133,17 +133,27 @@ test('bootstrap capability manifest is generated from the exact Payload collecti
   assert.deepEqual(committed, generated)
 })
 
-test('Ada authoring capabilities expose website content only and derive nested fields from Payload', () => {
+test('Ada authoring capabilities expose website content only and derive nested fields from Payload', async () => {
   const contract = createHelloAdaAuthoringContract()
   assert.deepEqual(Object.keys(contract.collections), ['pages', 'posts', 'products'])
   assert.deepEqual(Object.keys(contract.globals), ['siteSettings', 'navigation'])
   assert.deepEqual(HELLOADA_AUTHORING_CAPABILITIES.collections, ['pages', 'posts', 'products'])
   assert.equal(contract.collections.pages.some((field) => field.name === 'published'), false)
+  assert.equal(contract.collections.posts.some((field) => field.name === 'sourceId'), false)
   assert.equal(contract.collections.pages.find((field) => field.name === 'sections').fields
     .find((field) => field.name === 'entries').blocks.some((block) => block.slug === 'helloAdaHeading'), true)
   const bookingBlock = contract.collections.pages.find((field) => field.name === 'sections').fields
     .find((field) => field.name === 'entries').blocks.find((block) => block.slug === 'helloAdaBooking')
   assert.deepEqual(bookingBlock.fields.map((field) => field.name), ['key', 'label', 'bookingTypeId'])
+  const schema = createHelloAdaSchema(async () => undefined)
+  const posts = schema.collections.find((collection) => collection.slug === 'posts')
+  assert.equal(typeof posts.hooks.beforeValidate[0], 'function')
+  const createdPost = await posts.hooks.beforeValidate[0]({ data: { slug: 'a-useful-guide' } })
+  const updatedPost = await posts.hooks.beforeValidate[0]({
+    data: { slug: 'a-renamed-guide' }, originalDoc: { slug: 'a-useful-guide', sourceId: 'posts:a-useful-guide' },
+  })
+  assert.equal(createdPost.sourceId, 'posts:a-useful-guide')
+  assert.equal(updatedPost.sourceId, 'posts:a-useful-guide')
   assert.throws(() => validateHelloAdaAuthoringData('collection', 'messages', { text: 'private' }), /Unsupported website collection/)
   assert.throws(() => validateHelloAdaAuthoringData('global', 'messageMailbox', { address: 'private@example.com' }), /Unsupported website global/)
 })
