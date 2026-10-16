@@ -591,3 +591,78 @@ def test_pending_payload_growth_reconciles_saved_article_drafts(monkeypatch, tmp
     sync()
     assert calls == ["growth-demo"]
     memory.close()
+
+
+def _growth_json_truncation_run(memory, settings):
+    from site_agent.application.growth_workflow import _EMPTY_GROWTH_JSON_COMPLETION
+
+    run_id, initiative_id, _ = _blocked_payload_contract_run(memory, settings)
+    run = memory.get_growth_run(run_id)
+    detail = dict(run["detail"])
+    detail["recoveryEvents"] = [{
+        "code": "payload_growth_contract_route_restored",
+        "resumedAt": "2026-10-16T04:19:14+00:00",
+        "previousError": 'Payload gateway returned 404: Route not found "/api/workspace/growth/contract"',
+    }]
+    detail["blocks"] = [{"initiativeId": initiative_id, "reason": _EMPTY_GROWTH_JSON_COMPLETION}]
+    memory.update_growth_run(
+        run_id, status="blocked", phase="preparing", detail=detail,
+        next_due_ts="2099-10-16T04:08:16+00:00",
+    )
+    return run_id, initiative_id
+
+
+def test_pending_growth_retries_exact_truncated_proposal_once_without_hidden_reasoning(tmp_path, monkeypatch):
+    memory = Memory(tmp_path / "memory.db")
+    settings = config()
+    run_id, initiative_id = _growth_json_truncation_run(memory, settings)
+    assert has_recoverable_growth_replay(memory)
+
+    payload = Payload()
+    planner = Ada()
+    context = {"config": settings, "memory": memory, "payload_gateway": payload, "llm": planner}
+    monkeypatch.setattr("site_agent.application.growth_workflow._reconcile_article_research", lambda _context: None)
+
+    run_pending_growth(context)
+
+    resumed = memory.get_growth_run(run_id)
+    candidate = next(row for row in memory.list_strategy_initiatives(limit=None) if int(row["id"]) == initiative_id)
+    assert resumed["status"] == "complete"
+    assert resumed["detail"]["recoveryEvents"][-1]["code"] == "growth_json_no_reasoning_retry"
+    assert resumed["detail"]["recoveryEvents"][-1]["previousError"].startswith("model returned an empty completion")
+    assert candidate["state"] == "ready_for_review"
+    assert candidate["review_package_hash"]
+    assert payload.writes == 1
+    assert payload.publishes == 0
+    assert planner.stages == ["prepare"]
+    assert not has_recoverable_growth_replay(memory)
+    memory.close()
+
+
+def test_failed_non_reasoning_growth_replay_is_not_repeated(tmp_path, monkeypatch):
+    from site_agent.application.growth_workflow import _EMPTY_GROWTH_JSON_COMPLETION
+
+    class TruncatedAda:
+        def __init__(self):
+            self.calls = 0
+
+        def chat(self, *_args, **_kwargs):
+            self.calls += 1
+            raise RuntimeError(_EMPTY_GROWTH_JSON_COMPLETION)
+
+    memory = Memory(tmp_path / "memory.db")
+    settings = config()
+    run_id, _ = _growth_json_truncation_run(memory, settings)
+    planner = TruncatedAda()
+    context = {"config": settings, "memory": memory, "payload_gateway": Payload(), "llm": planner}
+    monkeypatch.setattr("site_agent.application.growth_workflow._reconcile_article_research", lambda _context: None)
+
+    run_pending_growth(context)
+    failed = memory.get_growth_run(run_id)
+    assert failed["status"] == "blocked"
+    assert failed["detail"]["recoveryEvents"][-1]["code"] == "growth_json_no_reasoning_retry"
+    assert not has_recoverable_growth_replay(memory)
+
+    run_pending_growth(context)
+    assert planner.calls == 1
+    memory.close()
