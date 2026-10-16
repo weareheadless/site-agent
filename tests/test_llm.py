@@ -324,6 +324,28 @@ def test_extract_json_returns_none_for_garbage():
     assert extract_json('{"a": trunc') is None
 
 
+def test_extract_json_scans_unclosed_wrappers_in_linear_work():
+    from site_agent.core.llm import _extract_top_level_blocks, extract_json
+
+    class CountingText(str):
+        indexed_characters = 0
+
+        def __getitem__(self, index):
+            if isinstance(index, int):
+                self.indexed_characters += 1
+            return super().__getitem__(index)
+
+    raw = CountingText('{"broken":' + '{"answer":"ok"},' * 2_000)
+    blocks = _extract_top_level_blocks(raw)
+
+    assert raw.indexed_characters <= len(raw)
+    assert any(json.loads(block) == {"answer": "ok"} for block in blocks)
+    assert extract_json('{"broken": {"answer":"ok"},') == {"answer": "ok"}
+
+    repeated = '{"broken":' + ''.join(f'{{"v":{i % 10}}},' for i in range(100))
+    assert extract_json(repeated) == {"v": 9}
+
+
 def test_chat_body_includes_enable_thinking_when_requested():
     import site_agent.core.llm as llm_module
     from site_agent.core.llm import Client

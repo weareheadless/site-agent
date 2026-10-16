@@ -1301,11 +1301,18 @@ class Memory:
         *,
         lease_owner: str,
         lease_seconds: int = 300,
+        reclaim_lease_owner: str | None = None,
     ) -> dict[str, Any] | None:
-        """Acquire a restart-safe lease without allowing concurrent execution."""
+        """Acquire a lease, optionally replacing one exact interrupted owner.
+
+        ``reclaim_lease_owner`` is reserved for the exclusive tenant scheduler
+        after it reacquires its process-wide lock. The compare-and-swap prevents
+        the scheduler from replacing a newer executor's lease.
+        """
 
         run_id = str(run_id or "").strip()
         lease_owner = str(lease_owner or "").strip()
+        reclaim_lease_owner = str(reclaim_lease_owner or "").strip() or None
         if not run_id or not lease_owner or not 1 <= int(lease_seconds) <= 3600:
             raise ContractError("growth run lease parameters are invalid")
         now_dt = datetime.datetime.now(datetime.timezone.utc)
@@ -1316,8 +1323,9 @@ class Memory:
                 "UPDATE growth_runs SET status = 'running', lease_owner = ?, lease_until = ?, "
                 "attempt = attempt + 1, completed_ts = NULL, updated_ts = ? WHERE run_id = ? "
                 "AND status NOT IN ('complete', 'cancelled') "
-                "AND (lease_until IS NULL OR lease_until <= ? OR lease_owner = ?)",
-                (lease_owner, lease_until, now, run_id, now, lease_owner),
+                "AND (lease_until IS NULL OR lease_until <= ? OR lease_owner = ? "
+                "OR (status = 'running' AND lease_owner = ?))",
+                (lease_owner, lease_until, now, run_id, now, lease_owner, reclaim_lease_owner),
             )
             if cur.rowcount != 1:
                 return None
