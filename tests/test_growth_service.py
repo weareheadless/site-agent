@@ -331,11 +331,10 @@ def test_pending_growth_resumes_only_the_saved_payload_candidate_after_contract_
     candidate = next(row for row in initiatives if int(row["id"]) == initiative_id)
     owner_question = next(row for row in initiatives if int(row["id"]) == owner_id)
     assert resumed["status"] == "complete"
-    assert resumed["detail"]["recoveryEvents"][-1] == {
-        "code": "payload_growth_contract_route_restored",
-        "resumedAt": resumed["detail"]["recoveryEvents"][-1]["resumedAt"],
-        "previousError": "Payload gateway returned 404: Route not found \"/api/workspace/growth/contract\"",
-    }
+    recovery = resumed["detail"]["recoveryEvents"][-1]
+    assert recovery["code"] == "payload_growth_contract_route_restored"
+    assert recovery["resumedAt"]
+    assert recovery["previousError"] == 'Payload gateway returned 404: Route not found "/api/workspace/growth/contract"'
     assert candidate["state"] == "ready_for_review"
     assert candidate["review_package_hash"]
     assert owner_question["state"] == "waiting_for_owner"
