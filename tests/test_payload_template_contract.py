@@ -51,7 +51,9 @@ def test_all_server_side_payload_gateway_resources_have_exact_route_handlers():
     assert "path === '/growth/apply'" in operations
     assert "path === '/growth/publish'" in operations
     assert "verifyExactPreview(request" in operations
-    assert "if (!owner && !serviceAuthorized(request)) notFound()" in (TEMPLATE / 'src/app/(frontend)/helloada-preview/[token]/page.tsx').read_text(encoding='utf-8')
+    preview = (TEMPLATE / 'src/app/(frontend)/helloada-preview/[token]/page.tsx').read_text(encoding='utf-8')
+    assert "claims.principal.type === 'owner' ? claims.principal.ownerId : undefined" in preview
+    assert "ownerId === undefined && !serviceAuthorized(request)" in preview
     assert 'expectedHash is required for a draft update' in content
     assert 'expectedHash is required for a draft update' in global_route
     assert 'exact expectedHash are required' in media

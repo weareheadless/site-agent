@@ -13,7 +13,7 @@ import {
 import type { HelloAdaBindingEdit } from '@weareheadless/helloada-payload-core/bindings'
 import { helloAdaConnection, helloAdaRuntimeStatus } from '@weareheadless/helloada-payload-admin/server'
 import { helloAdaSite } from '@/helloada.config'
-import { pathForDocument } from '@/lib/content-routes'
+import { articleIndexPath, pathForDocument } from '@/lib/content-routes'
 import { hashJson, stableJson, withoutPayloadMetadata } from '@/lib/payload-hash'
 import {
   asObject as growthObject,

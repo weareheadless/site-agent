@@ -40,10 +40,10 @@ const loadPreview = cache(async (token: string): Promise<PreviewData> => {
 
   const incomingHeaders = new Headers(await headers())
   const request = new Request('https://helloada-preview.invalid/', { headers: incomingHeaders })
-  const owner = claims.principal.type === 'owner'
-  const auth = owner ? await authenticateHelloAdaRequest(request) : undefined
-  if (owner && (!auth || String(auth.user.id) !== claims.principal.ownerId)) notFound()
-  if (!owner && !serviceAuthorized(request)) notFound()
+  const ownerId = claims.principal.type === 'owner' ? claims.principal.ownerId : undefined
+  const auth = ownerId ? await authenticateHelloAdaRequest(request) : undefined
+  if (ownerId !== undefined && (!auth || String(auth.user.id) !== ownerId)) notFound()
+  if (ownerId === undefined && !serviceAuthorized(request)) notFound()
   const payload = auth?.payload || await getPayload({ config })
   const access = auth
     ? { overrideAccess: false as const, req: auth.req, user: auth.user }
