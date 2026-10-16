@@ -2,6 +2,7 @@ import json
 from types import SimpleNamespace
 
 from site_agent.application.growth_workflow import _persist_evidence_artifact, ensure_default_goal, has_recoverable_growth_replay, run_growth_cycle, run_pending_growth
+from site_agent.application.growth_tasks import growth_tasks
 from site_agent.core.jobs import _has_recoverable_article_sync, register_jobs
 from site_agent.core.growth_contracts import GrowthPolicy
 from site_agent.core.memory import Memory
@@ -84,7 +85,7 @@ class Ada:
         material = json.loads(messages[-1]["content"])
         self.stages.append(material.get("stage"))
         if material.get("stage") == "prepare":
-            return json.dumps({"changes": {"metaDescription": "Local service from Business. Explore the services and contact the team."}})
+            return json.dumps({"status": "supported", "changes": {"metaDescription": "Local service from Business. Explore the services and contact the team."}})
         return json.dumps({"summary": "The homepage needs a useful search description.", "opportunities": [{"kind": "payload_content", "title": "Make the homepage clearer in search", "why": "The homepage has no description.", "hypothesis": "A clear description explains the service to search visitors.", "collection": "pages", "documentId": "1", "evidence": ["inventory", "ga4"], "requiredSources": ["inventory"], "scope": "Improve the homepage meta description without changing its visible design.", "metric": "gsc.clicks"}]})
 
 
@@ -120,6 +121,102 @@ def test_weekly_service_prepares_real_draft_without_publication_or_duplicate_wor
     second = run_growth_cycle(context, trigger="weekly")
     assert second["run_id"] == first["run_id"]
     assert payload.writes == 1
+    memory.close()
+
+
+def test_growth_candidate_gets_one_exact_schema_correction_before_payload_write(tmp_path):
+    class CorrectingAda(Ada):
+        def chat(self, messages, **kwargs):
+            material = json.loads(messages[-1]["content"])
+            if material.get("stage") != "prepare":
+                return super().chat(messages, **kwargs)
+            self.stages.append("prepare")
+            if "correction" not in material:
+                return json.dumps({"status": "supported", "changes": {"madeUpField": "not allowed"}})
+            return json.dumps({"status": "supported", "changes": {"metaDescription": "Local service from Business. Explore the services and contact the team."}})
+
+    memory = Memory(tmp_path / "memory.db")
+    payload, planner = Payload(), CorrectingAda()
+    run = run_growth_cycle({"config": config(), "memory": memory, "payload_gateway": payload, "llm": planner}, trigger="weekly")
+
+    assert run["status"] == "complete"
+    assert len(run["detail"]["candidateIds"]) == 1
+    assert planner.stages == ["assess", "prepare", "prepare"]
+    assert payload.writes == 1
+    assert payload.draft["metaDescription"].startswith("Local service")
+    assert memory.list_strategy_initiatives()[0]["state"] == "ready_for_review"
+    memory.close()
+
+
+def test_growth_candidate_stops_after_one_failed_schema_correction(tmp_path):
+    class InvalidAda(Ada):
+        def chat(self, messages, **kwargs):
+            material = json.loads(messages[-1]["content"])
+            if material.get("stage") != "prepare":
+                return super().chat(messages, **kwargs)
+            self.stages.append("prepare")
+            return json.dumps({"status": "supported", "changes": {"inventedField": "not allowed"}})
+
+    memory = Memory(tmp_path / "memory.db")
+    payload, planner = Payload(), InvalidAda()
+    run = run_growth_cycle({"config": config(), "memory": memory, "payload_gateway": payload, "llm": planner}, trigger="weekly")
+
+    assert run["status"] == "blocked"
+    assert len(run["detail"]["blocks"]) == 1
+    assert "after one correction" in run["detail"]["blocks"][0]["reason"]
+    assert "inventedField" in run["detail"]["blocks"][0]["reason"]
+    assert planner.stages == ["assess", "prepare", "prepare"]
+    assert payload.writes == payload.publishes == 0
+    assert memory.list_drafts() == []
+    memory.close()
+
+
+def test_unsupported_new_page_scope_is_deferred_without_creating_a_fake_task(tmp_path):
+    class DeferredAda(Ada):
+        def chat(self, messages, **kwargs):
+            material = json.loads(messages[-1]["content"])
+            if material.get("stage") != "prepare":
+                return super().chat(messages, **kwargs)
+            self.stages.append("prepare")
+            return json.dumps({"status": "deferred", "reason": "This recommendation needs a new page and route; the current Growth review can only edit an existing Payload document.", "reassessWhen": "When the shared new-page route becomes available."})
+
+    memory = Memory(tmp_path / "memory.db")
+    payload, planner = Payload(), DeferredAda()
+    run = run_growth_cycle({"config": config(), "memory": memory, "payload_gateway": payload, "llm": planner}, trigger="weekly")
+
+    initiative = memory.list_strategy_initiatives()[0]
+    assert run["status"] == "complete"
+    assert run["detail"]["candidateIds"] == []
+    assert run["detail"]["blocks"] == []
+    assert run["detail"]["assessment"]["unpreparedOpportunities"][0]["errorCode"] == "unsupported_existing_document_route"
+    assert initiative["state"] == "deferred"
+    assert payload.writes == payload.publishes == 0
+    assert memory.list_drafts() == []
+    assert growth_tasks(memory, memory.list_strategy_initiatives(limit=None), memory.list_drafts(), [], [], runs=[run]) == []
+    memory.close()
+
+
+def test_payload_assessment_without_an_exact_inventory_target_is_deferred(tmp_path):
+    class UnboundTargetAda(Ada):
+        def chat(self, messages, **kwargs):
+            material = json.loads(messages[-1]["content"])
+            if material.get("stage") != "assess":
+                return super().chat(messages, **kwargs)
+            result = json.loads(super().chat(messages, **kwargs))
+            result["opportunities"][0]["documentId"] = "missing-document"
+            return json.dumps(result)
+
+    memory = Memory(tmp_path / "memory.db")
+    payload, planner = Payload(), UnboundTargetAda()
+    run = run_growth_cycle({"config": config(), "memory": memory, "payload_gateway": payload, "llm": planner}, trigger="weekly")
+
+    deferred = run["detail"]["assessment"]["unpreparedOpportunities"][0]
+    assert run["status"] == "complete"
+    assert deferred["errorCode"] == "target_not_in_canonical_inventory"
+    assert deferred["disposition"] == "deferred"
+    assert memory.list_strategy_initiatives(limit=None) == []
+    assert payload.writes == 0
+    assert planner.stages == ["assess"]
     memory.close()
 
 
@@ -295,6 +392,30 @@ def _blocked_payload_contract_run(memory, settings):
     return run_id, initiative_id, cycle["id"]
 
 
+def _blocked_payload_schema_run(memory, settings):
+    from site_agent.application.growth_workflow import _GROWTH_SCHEMA_MISMATCH
+
+    run_id = _failed_saved_assessment(memory, settings)
+    run = memory.get_growth_run(run_id)
+    cycle = memory.growth_strategy_cycle(run_id, run["detail"]["evidenceArtifactId"])
+    opportunity = run["detail"]["assessment"]["opportunities"][0]
+    initiative_id = memory.create_strategy_initiative(
+        cycle["id"], kind=opportunity["kind"], title=opportunity["title"], summary=opportunity["scope"],
+        expected={"opportunity": opportunity}, state="blocked", growth_run_id=run_id,
+        goal_revision=run["goal_revision"], origin_revision=run["origin_revision"],
+        last_error=_GROWTH_SCHEMA_MISMATCH,
+    )
+    detail = dict(run["detail"])
+    detail.pop("error", None)
+    detail["candidateIds"] = []
+    detail["blocks"] = [{"initiativeId": initiative_id, "reason": _GROWTH_SCHEMA_MISMATCH}]
+    memory.update_growth_run(
+        run_id, status="blocked", phase="preparing", detail=detail,
+        next_due_ts="2099-10-16T04:08:16+00:00",
+    )
+    return run_id, initiative_id
+
+
 def test_pending_growth_resumes_only_the_saved_payload_candidate_after_contract_route_returns(tmp_path, monkeypatch):
     from site_agent.application.actions import OwnerActionService
     from site_agent.core.contracts import ActionPriority, ActionRequirement, OwnerAction
@@ -382,6 +503,43 @@ def test_pending_growth_leaves_contract_blocked_candidate_untouched_when_route_i
     assert payload.publishes == 0
     assert planner.stages == []
     assert reconciled == []
+    memory.close()
+
+
+def test_pending_growth_replays_only_saved_schema_failure_once_and_defers_unsupported_scope(tmp_path, monkeypatch):
+    from site_agent.application.growth_workflow import _recoverable_growth_schema_failure
+
+    class DeferredAda(Ada):
+        def chat(self, messages, **kwargs):
+            material = json.loads(messages[-1]["content"])
+            if material.get("stage") != "prepare":
+                return super().chat(messages, **kwargs)
+            self.stages.append("prepare")
+            return json.dumps({"status": "deferred", "reason": "A new page route is outside the existing-document editor.", "reassessWhen": "When the shared new-page route becomes available."})
+
+    memory = Memory(tmp_path / "memory.db")
+    settings = config()
+    run_id, initiative_id = _blocked_payload_schema_run(memory, settings)
+    before = memory.get_growth_run(run_id)
+    assert _recoverable_growth_schema_failure(memory, before)
+    assert has_recoverable_growth_replay(memory)
+
+    payload, planner = Payload(), DeferredAda()
+    context = {"config": settings, "memory": memory, "payload_gateway": payload, "llm": planner}
+    reconciled = []
+    monkeypatch.setattr("site_agent.application.growth_workflow._reconcile_article_research", lambda _context: reconciled.append(True))
+    run_pending_growth(context)
+
+    resumed = memory.get_growth_run(run_id)
+    initiative = next(row for row in memory.list_strategy_initiatives(limit=None) if int(row["id"]) == initiative_id)
+    assert resumed["status"] == "complete"
+    assert resumed["detail"]["recoveryEvents"][-1]["code"] == "growth_schema_candidate_retry"
+    assert resumed["detail"]["assessment"]["unpreparedOpportunities"][0]["errorCode"] == "unsupported_existing_document_route"
+    assert initiative["state"] == "deferred"
+    assert payload.writes == payload.publishes == 0
+    assert planner.stages == ["prepare"]
+    assert reconciled == []
+    assert not _recoverable_growth_schema_failure(memory, resumed)
     memory.close()
 
 

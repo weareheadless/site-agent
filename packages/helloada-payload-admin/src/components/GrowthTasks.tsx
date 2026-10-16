@@ -38,6 +38,10 @@ type GrowthProgression = {
   latestAssessmentStatus: string | null;
   latestAssessmentSummary: string | null;
   deferredFindingCount: number;
+  deferredFindingTitle?: string | null;
+  deferredFindingSummary?: string | null;
+  deferredReassessWhen?: string | null;
+  nextAssessmentAt?: string | null;
 };
 const PROGRESSION_COPY: Record<GrowthProgression["state"], string> = {
   ready_for_review: "growth.growthProgressReadyForReview",
@@ -331,12 +335,19 @@ export function GrowthTasks({ mode, ownerQueue, onNavigate, tasks = [], pending,
             </button>
           </article> : progression ? <article className={"helloada-growth-featured-decision" + (progression.state === "service_issue" ? " is-service-blocked" : "")} role="status">
             <span className="helloada-growth-decision-eyebrow">{t("growth.progressTitle")}</span>
-            <h3>{progressionTask ? title(progressionTask) : t("growth.progressState_" + progression.state)}</h3>
+            <h3>{progressionTask ? title(progressionTask) : progression.state === "deferred_findings" && progression.deferredFindingTitle
+              ? progression.deferredFindingTitle : t("growth.progressState_" + progression.state)}</h3>
             <p>{progressionTask ? taskSummary(progressionTask) || t(PROGRESSION_COPY[progression.state])
+              : progression.state === "deferred_findings" && progression.deferredFindingSummary
+                ? progression.deferredFindingSummary
               : progression.state === "assessed" && progression.latestAssessmentSummary
                 ? progression.latestAssessmentSummary
                 : t(PROGRESSION_COPY[progression.state])}</p>
-            {progressionTask?.nextRun ? <small>{t(progressionTask.kind === "assessment" ? "growth.assessmentNextRetry" : "growth.nextReview")}: {date(progressionTask.nextRun)}</small>
+            {progression.state === "deferred_findings" && progression.deferredReassessWhen
+              ? <small>{t("growth.deferredReassessWhen")}: {progression.deferredReassessWhen}</small> : null}
+            {progression.state === "deferred_findings" && progression.nextAssessmentAt
+              ? <small>{t("growth.nextAssessment")}: {date(progression.nextAssessmentAt)}</small>
+              : progressionTask?.nextRun ? <small>{t(progressionTask.kind === "assessment" ? "growth.assessmentNextRetry" : "growth.nextReview")}: {date(progressionTask.nextRun)}</small>
               : progression?.latestAssessmentAt ? <small>{t("growth.lastGrowthReview")}: {date(progression.latestAssessmentAt)}</small> : null}
             <button type="button" className="helloada-growth-secondary" onClick={() => progressionTask
               ? openTask(progressionTask)

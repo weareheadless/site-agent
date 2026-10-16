@@ -73,6 +73,16 @@ def owner_queue(tasks: list[dict[str, Any]], runs: list[dict[str, Any]] | None =
             or row.get("kind") is None and bool(str(row.get("title") or "").strip())
         )
     ) if isinstance(deferred, list) else 0
+    deferred_finding = next((
+        row for row in deferred or []
+        if isinstance(row, dict)
+        and row.get("kind") not in {"article", "code"}
+        and str(row.get("title") or "").strip()
+    ), None)
+    next_assessment = next((
+        row for row in scheduled
+        if row.get("id") == "schedule:growth_weekly"
+    ), None)
     assessment_status = str(latest_assessment.get("status") or "") if latest_assessment else ""
     active_non_schedule = next((row for row in active if row.get("kind") != "schedule"), None)
     if decisions:
@@ -119,6 +129,10 @@ def owner_queue(tasks: list[dict[str, Any]], runs: list[dict[str, Any]] | None =
             "latestAssessmentStatus": assessment_status or None,
             "latestAssessmentSummary": str(assessment.get("summary") or "")[:240] or None,
             "deferredFindingCount": deferred_count,
+            "deferredFindingTitle": str((deferred_finding or {}).get("title") or "")[:180] or None,
+            "deferredFindingSummary": str((deferred_finding or {}).get("preparationNote") or "")[:400] or None,
+            "deferredReassessWhen": str((deferred_finding or {}).get("reassessWhen") or "")[:300] or None,
+            "nextAssessmentAt": (next_assessment or {}).get("nextRun"),
         },
     }
 

@@ -32,6 +32,10 @@ type OwnerQueue = {
     latestAssessmentStatus: string | null;
     latestAssessmentSummary: string | null;
     deferredFindingCount: number;
+    deferredFindingTitle?: string | null;
+    deferredFindingSummary?: string | null;
+    deferredReassessWhen?: string | null;
+    nextAssessmentAt?: string | null;
   };
 };
 
@@ -138,7 +142,11 @@ export function HelloAdaGrowth() {
           || !(progression.serviceIssueTaskId === null || typeof progression.serviceIssueTaskId === "string")
           || !(progression.latestAssessmentAt === null || typeof progression.latestAssessmentAt === "string")
           || !(progression.latestAssessmentStatus === null || typeof progression.latestAssessmentStatus === "string")
-          || !(progression.latestAssessmentSummary === null || typeof progression.latestAssessmentSummary === "string"))
+          || !(progression.latestAssessmentSummary === null || typeof progression.latestAssessmentSummary === "string")
+          || !(progression.deferredFindingTitle === undefined || progression.deferredFindingTitle === null || typeof progression.deferredFindingTitle === "string")
+          || !(progression.deferredFindingSummary === undefined || progression.deferredFindingSummary === null || typeof progression.deferredFindingSummary === "string")
+          || !(progression.deferredReassessWhen === undefined || progression.deferredReassessWhen === null || typeof progression.deferredReassessWhen === "string")
+          || !(progression.nextAssessmentAt === undefined || progression.nextAssessmentAt === null || typeof progression.nextAssessmentAt === "string"))
           throw new Error("incompatible Growth response");
         if (!controller.signal.aborted) setGrowth(body);
       })

@@ -145,6 +145,8 @@ def growth_tasks(
     linked_actions, linked_drafts, linked_approvals, tasks = set(), set(), set(), []
     terminal = {'reviewed', 'rejected', 'superseded', 'cancelled', 'completed'}
     for initiative in sorted(initiatives, key=lambda row: row['id'], reverse=True):
+        if initiative.get('state') == 'deferred':
+            continue
         action_id, draft_id = initiative.get('owner_action_id'), initiative.get('draft_id')
         related = [row for row in actions.values() if row['id'] == action_id or (draft_id and row.get('draft_id') == draft_id) or (
             initiative.get('approval_id') and row.get('approval_id') == initiative['approval_id'])]
