@@ -740,7 +740,7 @@ def run_growth_cycle(
         material = detail["material"]
         if trigger == "daily":
             return advance(phase="complete", status="complete", detail=detail, completed=True)
-        if trigger == "weekly" and "articleResearch" not in detail and not recover_saved_assessment:
+        if trigger == "weekly" and "articleResearch" not in detail and not recover_saved_run:
             detail["articleResearch"] = _queue_article_research(context)
             run = advance(phase="assessing", detail=detail)
         if trigger == "monthly":
