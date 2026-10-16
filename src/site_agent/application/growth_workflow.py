@@ -250,6 +250,103 @@ def _recoverable_growth_json_failure(memory: Memory, run: Mapping[str, Any]) -> 
     return False
 
 
+_GROWTH_RESTART_RECOVERY = "growth_worker_restart_recovery"
+
+
+def _safe_interrupted_growth_preparation(memory: Memory, run: Mapping[str, Any]) -> bool:
+    """Check whether an interrupted preparation can resume without duplicating effects."""
+    if (
+        run.get("status") != "running"
+        or run.get("phase") != "preparing"
+        or run.get("trigger") not in {"initial", "weekly", "owner_review"}
+    ):
+        return False
+    detail = run.get("detail") if isinstance(run.get("detail"), Mapping) else {}
+    if (
+        not isinstance(detail.get("material"), Mapping)
+        or not isinstance(detail.get("material", {}).get("inventory"), list)
+        or not isinstance(detail.get("assessment"), Mapping)
+        or not isinstance(detail.get("assessment", {}).get("opportunities"), list)
+        or detail.get("candidateIds") != []
+    ):
+        return False
+
+    initiatives = [
+        row for row in memory.list_strategy_initiatives(limit=None)
+        if str(row.get("growth_run_id") or "") == str(run.get("run_id") or "")
+    ]
+    if not initiatives:
+        return False
+    for row in initiatives:
+        # A pending owner question is durable and deduplicated by initiative;
+        # replaying this preparation will preserve it without creating another.
+        if (
+            row.get("kind") == "owner_information"
+            and row.get("state") == "waiting_for_owner"
+            and row.get("owner_action_id") is not None
+            and not any(row.get(key) is not None for key in (
+                "artifact_id", "approval_id", "draft_id", "receipt_id", "review_package_hash",
+            ))
+        ):
+            continue
+        if (
+            row.get("state") not in {"preparing", "blocked"}
+            or row.get("validation")
+            or any(row.get(key) is not None for key in (
+                "owner_action_id", "artifact_id", "approval_id", "draft_id",
+                "receipt_id", "review_package_hash", "candidate_hash",
+            ))
+        ):
+            return False
+    return True
+
+
+def _growth_restart_recovery_used(run: Mapping[str, Any]) -> bool:
+    detail = run.get("detail") if isinstance(run.get("detail"), Mapping) else {}
+    events = detail.get("recoveryEvents")
+    return isinstance(events, list) and any(
+        isinstance(event, Mapping) and event.get("code") == _GROWTH_RESTART_RECOVERY
+        for event in events
+    )
+
+
+def _block_interrupted_growth_run(memory: Memory, run: Mapping[str, Any], *, reason: str) -> None:
+    """Persist a visible stop for a run that cannot be replayed safely."""
+    run_id = str(run.get("run_id") or "")
+    previous_owner = str(run.get("lease_owner") or "")
+    if not run_id:
+        return
+    owner = f"growth-recovery:{uuid.uuid4().hex}"
+    claimed = memory.claim_growth_run(
+        run_id,
+        lease_owner=owner,
+        lease_seconds=300,
+        reclaim_lease_owner=previous_owner or None,
+    )
+    if claimed is None:
+        return
+    detail = dict(claimed.get("detail") or {})
+    detail["error"] = reason
+    events = detail.get("recoveryEvents")
+    events = list(events) if isinstance(events, list) else []
+    events.append({
+        "code": "growth_interrupted_run_stopped",
+        "resumedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+        "reason": reason,
+    })
+    detail["recoveryEvents"] = events[-5:]
+    memory.update_growth_run(
+        run_id,
+        phase=str(claimed.get("phase") or "preparing"),
+        status="blocked",
+        detail=detail,
+        lease_owner=None,
+        lease_until=None,
+        next_due_ts=None,
+        expected_lease=owner,
+    )
+
+
 def has_recoverable_growth_replay(memory: Memory) -> bool:
     """Whether activation should immediately resume a known safe saved run."""
     return any(
@@ -747,6 +844,8 @@ def run_growth_cycle(
     run_id: str | None = None,
     resume_payload_contract: bool = False,
     resume_growth_json: bool = False,
+    resume_interrupted: bool = False,
+    reclaim_lease_owner: str | None = None,
 ) -> dict[str, Any]:
     """Execute persisted phases, never count labels as proof of completed work."""
     from ..brain import growth as brain_growth
@@ -771,11 +870,20 @@ def run_growth_cycle(
     recover_growth_json = (
         resume_growth_json and _recoverable_growth_json_failure(memory, run)
     )
-    recover_saved_run = recover_saved_assessment or recover_payload_contract or recover_growth_json
+    recover_interrupted = resume_interrupted and run.get("status") == "running"
+    recover_saved_run = (
+        recover_saved_assessment or recover_payload_contract or recover_growth_json or recover_interrupted
+    )
     due = _parsed_timestamp(run.get("next_due_ts"))
     if due is not None and due > now and not recover_saved_run:
         return run
-    claimed = memory.claim_growth_run(run["run_id"], lease_owner=f"growth:{uuid.uuid4().hex}", lease_seconds=3600)
+    lease_owner = f"growth:{uuid.uuid4().hex}"
+    claimed = memory.claim_growth_run(
+        run["run_id"],
+        lease_owner=lease_owner,
+        lease_seconds=3600,
+        reclaim_lease_owner=reclaim_lease_owner,
+    )
     if claimed is None:
         return memory.get_growth_run(run["run_id"]) or run
     run = claimed
@@ -793,6 +901,9 @@ def run_growth_cycle(
         elif recover_payload_contract:
             previous_error = _PAYLOAD_GROWTH_CONTRACT_ROUTE_404
             recovery_code = "payload_growth_contract_route_restored"
+        elif recover_interrupted:
+            previous_error = "The shared API restarted while Ada was preparing an assessed recommendation."
+            recovery_code = _GROWTH_RESTART_RECOVERY
         else:
             recovery_code = (
                 "evidence_binding_fixed"
@@ -973,11 +1084,43 @@ def run_growth_cycle(
             return memory.get_growth_run(run["run_id"])
 
 
-def run_pending_growth(context: dict[str, Any]) -> None:
+def run_pending_growth(context: dict[str, Any], *, recover_interrupted_runs: bool = False) -> None:
     memory = context["memory"]
-    due = memory.due_growth_runs(limit=20)
-    due_ids = {str(row.get("run_id")) for row in due}
+    due_by_id = {
+        str(run.get("run_id")): run
+        for run in memory.due_growth_runs(limit=20)
+        if run.get("run_id")
+    }
     runs = memory.list_growth_runs(limit=None)
+    interrupted_run_ids: set[str] = set()
+    reclaim_lease_owners: dict[str, str] = {}
+    if recover_interrupted_runs:
+        # This path is called only by the tenant scheduler while it holds the
+        # exclusive scheduler.lock. A running lease therefore belongs to a
+        # process that exited before its durable phase checkpoint.
+        for run in runs:
+            if run.get("status") != "running":
+                continue
+            run_id = str(run.get("run_id") or "")
+            if not run_id:
+                continue
+            if _safe_interrupted_growth_preparation(memory, run) and not _growth_restart_recovery_used(run):
+                due_by_id[run_id] = run
+                interrupted_run_ids.add(run_id)
+                if run.get("lease_owner"):
+                    reclaim_lease_owners[run_id] = str(run["lease_owner"])
+                continue
+            reason = (
+                "Ada's one bounded restart recovery was already interrupted before a durable candidate checkpoint. "
+                "The run was stopped to avoid repeating paid work."
+                if _growth_restart_recovery_used(run)
+                else "This run was interrupted in a phase that cannot be replayed without risking duplicate side effects. "
+                "It was stopped for investigation."
+            )
+            _block_interrupted_growth_run(memory, run, reason=reason)
+            due_by_id.pop(run_id, None)
+    due = list(due_by_id.values())
+    due_ids = {str(row.get("run_id")) for row in due}
     recoverable_assessments = [
         run for run in runs
         if str(run.get("run_id")) not in due_ids and _recoverable_saved_assessment_failure(memory, run)
@@ -991,7 +1134,14 @@ def run_pending_growth(context: dict[str, Any]) -> None:
         if str(run.get("run_id")) not in due_ids and _recoverable_growth_json_failure(memory, run)
     ]
     for run in [*due, *recoverable_assessments]:
-        run_growth_cycle(context, trigger=run["trigger"], run_id=run["run_id"])
+        run_id = str(run["run_id"])
+        run_growth_cycle(
+            context,
+            trigger=run["trigger"],
+            run_id=run_id,
+            resume_interrupted=run_id in interrupted_run_ids,
+            reclaim_lease_owner=reclaim_lease_owners.get(run_id),
+        )
     if recoverable_contracts:
         # Prove the canonical preparation contract is available once before
         # replaying any saved candidates. A failing gateway leaves the durable
@@ -1017,7 +1167,9 @@ def run_pending_growth(context: dict[str, Any]) -> None:
             )
     # Recovery must not pull forward unrelated article research (which may
     # dispatch paid provider calls) when there is saved work to resume.
-    if due or not (recoverable_assessments or recoverable_contracts or recoverable_growth_json):
+    if not interrupted_run_ids and (
+        due or not (recoverable_assessments or recoverable_contracts or recoverable_growth_json)
+    ):
         _reconcile_article_research(context)
 
 

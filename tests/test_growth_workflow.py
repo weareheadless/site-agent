@@ -1,5 +1,8 @@
+import pytest
+
 from site_agent.application.growth import growth_snapshot, owner_queue
-from site_agent.application.growth_workflow import run_growth_reconciler
+from site_agent.application.growth_workflow import run_growth_reconciler, run_pending_growth
+from site_agent.core.contracts import ContractError
 from site_agent.core.jobs import register_builtin
 from site_agent.core.memory import Memory
 from site_agent.core.scheduler import Scheduler
@@ -214,6 +217,173 @@ def test_growth_run_lease_and_budget_reservation_are_idempotent(tmp_path):
     )
     assert reservation["reservation_id"] == repeat["reservation_id"] == "growth-budget-1"
     memory.settle_growth_budget("growth-budget-1", status="uncertain", provider_task_id="task-1")
+    memory.close()
+
+
+def test_growth_run_restart_reclaim_requires_the_exact_previous_lease(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    goal = memory.create_growth_goal(
+        {
+            "goal_key": "relevant_visitors",
+            "objective": "Bring relevant visitors to my website",
+            "metrics": ["gsc_clicks"],
+            "confirmed_by": "test",
+            "confirmed_ts": "2026-10-02T00:00:00+00:00",
+            "source": "test",
+        }
+    )
+    memory.create_growth_run(
+        run_id="growth-interrupted",
+        run_key="growth-interrupted-key",
+        trigger="weekly",
+        goal_revision=goal["revision"],
+        timezone="UTC",
+        phase="preparing",
+        status="pending",
+    )
+    claimed = memory.claim_growth_run("growth-interrupted", lease_owner="old-worker")
+    assert claimed is not None
+    assert memory.claim_growth_run(
+        "growth-interrupted", lease_owner="new-worker", reclaim_lease_owner="wrong-worker"
+    ) is None
+
+    reclaimed = memory.claim_growth_run(
+        "growth-interrupted", lease_owner="new-worker", reclaim_lease_owner="old-worker"
+    )
+    assert reclaimed is not None
+    assert reclaimed["lease_owner"] == "new-worker"
+    assert reclaimed["attempt"] == 2
+    with pytest.raises(ContractError, match="superseded or expired"):
+        memory.update_growth_run("growth-interrupted", phase="complete", expected_lease="old-worker")
+    memory.close()
+
+
+def test_pending_growth_reclaims_only_a_side_effect_free_interrupted_preparation(tmp_path, monkeypatch):
+    import site_agent.application.growth_workflow as workflow
+
+    memory = Memory(tmp_path / "memory.db")
+    goal = memory.create_growth_goal(
+        {
+            "goal_key": "relevant_visitors",
+            "objective": "Bring relevant visitors to my website",
+            "metrics": ["gsc_clicks"],
+            "confirmed_by": "test",
+            "confirmed_ts": "2026-10-02T00:00:00+00:00",
+            "source": "test",
+        }
+    )
+    memory.create_growth_run(
+        run_id="growth-orphan",
+        run_key="growth-orphan-key",
+        trigger="weekly",
+        goal_revision=goal["revision"],
+        timezone="UTC",
+        phase="preparing",
+        status="pending",
+        detail={
+            "material": {"inventory": []},
+            "assessment": {"opportunities": []},
+            "candidateIds": [],
+        },
+    )
+    memory.claim_growth_run("growth-orphan", lease_owner="dead-worker")
+    initiatives = [
+        {
+            "growth_run_id": "growth-orphan",
+            "kind": "payload_content",
+            "state": "preparing",
+            "validation": {},
+            "owner_action_id": None,
+            "artifact_id": None,
+            "approval_id": None,
+            "draft_id": None,
+            "receipt_id": None,
+            "review_package_hash": None,
+            "candidate_hash": None,
+        },
+        {
+            "growth_run_id": "growth-orphan",
+            "kind": "owner_information",
+            "state": "waiting_for_owner",
+            "validation": {},
+            "owner_action_id": 22,
+            "artifact_id": None,
+            "approval_id": None,
+            "draft_id": None,
+            "receipt_id": None,
+            "review_package_hash": None,
+        },
+    ]
+    monkeypatch.setattr(memory, "list_strategy_initiatives", lambda **_kwargs: initiatives)
+    calls = []
+    monkeypatch.setattr(workflow, "run_growth_cycle", lambda *args, **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(workflow, "_reconcile_article_research", lambda _context: None)
+
+    run_pending_growth({"memory": memory}, recover_interrupted_runs=True)
+
+    assert calls == [{
+        "trigger": "weekly",
+        "run_id": "growth-orphan",
+        "resume_interrupted": True,
+        "reclaim_lease_owner": "dead-worker",
+    }]
+    memory.close()
+
+
+def test_pending_growth_stops_after_one_interrupted_recovery(tmp_path, monkeypatch):
+    import site_agent.application.growth_workflow as workflow
+
+    memory = Memory(tmp_path / "memory.db")
+    goal = memory.create_growth_goal(
+        {
+            "goal_key": "relevant_visitors",
+            "objective": "Bring relevant visitors to my website",
+            "metrics": ["gsc_clicks"],
+            "confirmed_by": "test",
+            "confirmed_ts": "2026-10-02T00:00:00+00:00",
+            "source": "test",
+        }
+    )
+    memory.create_growth_run(
+        run_id="growth-twice-interrupted",
+        run_key="growth-twice-interrupted-key",
+        trigger="weekly",
+        goal_revision=goal["revision"],
+        timezone="UTC",
+        phase="preparing",
+        status="pending",
+        detail={
+            "material": {"inventory": []},
+            "assessment": {"opportunities": []},
+            "candidateIds": [],
+            "recoveryEvents": [{"code": "growth_worker_restart_recovery"}],
+        },
+    )
+    memory.claim_growth_run("growth-twice-interrupted", lease_owner="dead-worker")
+    initiatives = [{
+        "growth_run_id": "growth-twice-interrupted",
+        "kind": "payload_content",
+        "state": "preparing",
+        "validation": {},
+        "owner_action_id": None,
+        "artifact_id": None,
+        "approval_id": None,
+        "draft_id": None,
+        "receipt_id": None,
+        "review_package_hash": None,
+        "candidate_hash": None,
+    }]
+    monkeypatch.setattr(memory, "list_strategy_initiatives", lambda **_kwargs: initiatives)
+    monkeypatch.setattr(workflow, "run_growth_cycle", lambda *_args, **_kwargs: pytest.fail("paid recovery must not repeat"))
+    monkeypatch.setattr(workflow, "_reconcile_article_research", lambda _context: None)
+
+    run_pending_growth({"memory": memory}, recover_interrupted_runs=True)
+
+    run = memory.get_growth_run("growth-twice-interrupted")
+    assert run["status"] == "blocked"
+    assert run["lease_owner"] is None
+    assert "avoid repeating paid work" in run["detail"]["error"]
+    assert any(event["code"] == "growth_interrupted_run_stopped" for event in run["detail"]["recoveryEvents"])
     memory.close()
 
 

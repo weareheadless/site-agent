@@ -7,6 +7,7 @@ into the instance memory DB so margins are always visible.
 
 from __future__ import annotations
 
+import heapq
 import json
 import math
 import time
@@ -458,48 +459,61 @@ def _unwrap_fenced(text: str) -> str:
 
 
 def _extract_top_level_blocks(text: str) -> list[str]:
-    """Scan for every complete top-level JSON object/array in the text.
+    """Extract balanced JSON-shaped blocks with one bounded pass.
 
-    String- and escape-aware, honors nested braces/brackets with a stack, and
-    yields only blocks that close cleanly. Prose around them is ignored."""
+    Model output can contain an opening brace that never closes. Restarting a
+    scan at every later brace then rescans the same suffix quadratically. Keep
+    top-level blocks as usual, while retaining only the 64 largest completed
+    nested blocks for malformed-wrapper recovery. Every input character is
+    inspected once; nested reparsing is capped at a fixed number of candidates.
+    """
     blocks: list[str] = []
-    i, n = 0, len(text)
-    while i < n:
-        ch = text[i]
-        if ch not in "{[":
-            i += 1
+    nested_spans: list[tuple[int, int, int]] = []
+    max_nested_candidates = 64
+    stack: list[tuple[str, int]] = []
+    in_string = False
+    escaped = False
+
+    for index in range(len(text)):
+        char = text[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
             continue
-        start = i
-        stack: list[str] = []
-        in_string = False
-        j = i
-        while j < n:
-            c = text[j]
-            if in_string:
-                if c == "\\":
-                    j += 2
-                    continue
-                if c == '"':
-                    in_string = False
-                j += 1
-                continue
-            if c == '"':
-                in_string = True
-                j += 1
-                continue
-            if c in "{[":
-                stack.append("}" if c == "{" else "]")
-            elif c in "}]":
-                if not stack or stack[-1] != c:
-                    break
-                stack.pop()
-                if not stack:
-                    blocks.append(text[start:j + 1])
-                    i = j + 1
-                    break
-            j += 1
-        else:
-            i = start + 1
+
+        if stack and char == '"':
+            in_string = True
+            continue
+        if char in "{[":
+            stack.append(("}" if char == "{" else "]", index))
+            continue
+        if char not in "}]" or not stack:
+            continue
+        if stack[-1][0] != char:
+            # The current candidate is malformed. Drop its stack but keep
+            # scanning forward, so a later independent JSON block is found.
+            stack.clear()
+            continue
+
+        _expected, start = stack.pop()
+        end = index + 1
+        if not stack:
+            blocks.append(text[start:end])
+            continue
+
+        span = (end - start, start, end)
+        if len(nested_spans) < max_nested_candidates:
+            heapq.heappush(nested_spans, span)
+        elif span > nested_spans[0]:
+            heapq.heapreplace(nested_spans, span)
+
+    # These are only used when a malformed/unclosed wrapper prevented an inner
+    # balanced object from becoming top-level. The fixed cap bounds reparsing.
+    blocks.extend(text[start:end] for _size, start, end in sorted(nested_spans, reverse=True))
     return blocks
 
 

@@ -688,7 +688,9 @@ def register_growth_jobs(scheduler: Scheduler, config: dict[str, Any], context: 
     }
     for name, spec in schedules.items():
         if name == "growth_pending":
-            operation = lambda: run_pending_growth(context)
+            # Scheduled tenant execution owns scheduler.lock; only this
+            # exclusive path may reclaim a lease left by a dead API process.
+            operation = lambda: run_pending_growth(context, recover_interrupted_runs=True)
         elif name == "growth_article_sync":
             operation = lambda: _mirror_article_drafts(context)
         else:
