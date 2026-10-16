@@ -6,15 +6,13 @@ import { getPayload } from 'payload'
 import type { CollectionSlug, GlobalSlug, TypedLocale } from 'payload'
 
 import config from '@payload-config'
-import PublicDocument from '@/components/PublicDocument'
-import SiteChrome from '@/components/SiteChrome'
 import { authenticateHelloAdaRequest } from '@/lib/helloada-auth'
 import { serviceAuthorized } from '@/lib/service-auth'
-import { seoFor } from '@/lib/content'
 import { hashJson, withoutPayloadMetadata } from '@/lib/payload-hash'
 import { verifyHelloAdaPreviewToken } from '@/lib/helloada-preview'
 import { helloAdaSite } from '@/helloada.config'
 import { pathForDocument } from '@/lib/content-routes'
+import HelloAdaPreviewRenderer, { helloAdaPreviewMetadata } from '@/lib/helloada-preview-renderer'
 
 export const dynamic = 'force-dynamic'
 export const revalidate = 0
@@ -86,21 +84,13 @@ const loadPreview = cache(async (token: string): Promise<PreviewData> => {
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const { token } = await params
   const { document, settings } = await loadPreview(token)
-  const seo = seoFor(document, settings)
-  return {
-    title: seo.title,
-    description: seo.description || undefined,
-    alternates: seo.canonical ? { canonical: seo.canonical } : undefined,
-    openGraph: { title: seo.title, description: seo.description || undefined, images: seo.image ? [seo.image] : undefined },
-    robots: { index: false, follow: false, nocache: true },
-  }
+  return helloAdaPreviewMetadata({ document, settings })
 }
 
 export default async function HelloAdaExactPreview({ params }: Props) {
   const { token } = await params
-  const { collection, document, settings, navigation, route } = await loadPreview(token)
-  const kind = collection === 'posts' ? 'post' : collection === 'products' ? 'product' : 'page'
-  return <div data-helloada-preview-hash={await hashJson(withoutPayloadMetadata(document))} data-helloada-preview-route={route}>
-    <SiteChrome navigation={navigation} settings={settings}><PublicDocument document={document} settings={settings} kind={kind} collection={collection} /></SiteChrome>
+  const preview = await loadPreview(token)
+  return <div data-helloada-preview-hash={await hashJson(withoutPayloadMetadata(preview.document))} data-helloada-preview-route={preview.route}>
+    <HelloAdaPreviewRenderer {...preview} />
   </div>
 }
