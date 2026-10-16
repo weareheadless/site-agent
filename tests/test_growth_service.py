@@ -23,12 +23,14 @@ class Payload:
         self.draft = dict(self.live)
         self.writes = 0
         self.publishes = 0
+        self.growth_contract_checks = 0
         self.contract = SimpleNamespace(collections=("pages",), collection_fields={"pages": frozenset(("title", "summary", "metaDescription"))}, globals=())
 
     def list(self, collection, *, draft=True, **kwargs):
         return [dict(self.draft if draft else self.live)]
 
     def require_growth_contract(self):
+        self.growth_contract_checks += 1
         return {"version": 1}
 
     def require_authoring_contract(self):
@@ -269,6 +271,127 @@ def test_pending_growth_resumes_exact_historical_failure_from_saved_assessment(t
     assert payload.publishes == 0
     assert planner.stages == ["prepare"]
     assert reconciled == []
+    memory.close()
+
+
+def _blocked_payload_contract_run(memory, settings):
+    run_id = _failed_saved_assessment(memory, settings)
+    run = memory.get_growth_run(run_id)
+    cycle = memory.growth_strategy_cycle(run_id, run["detail"]["evidenceArtifactId"])
+    opportunity = run["detail"]["assessment"]["opportunities"][0]
+    initiative_id = memory.create_strategy_initiative(
+        cycle["id"], kind=opportunity["kind"], title=opportunity["title"], summary=opportunity["scope"],
+        expected={"opportunity": opportunity}, state="blocked", growth_run_id=run_id,
+        goal_revision=run["goal_revision"], origin_revision=run["origin_revision"],
+    )
+    detail = dict(run["detail"])
+    detail.pop("error", None)
+    detail["candidateIds"] = []
+    detail["blocks"] = [{"initiativeId": initiative_id, "reason": "Payload gateway returned 404: Route not found \"/api/workspace/growth/contract\""}]
+    memory.update_growth_run(
+        run_id, status="blocked", phase="preparing", detail=detail,
+        next_due_ts="2099-10-16T04:08:16+00:00",
+    )
+    return run_id, initiative_id, cycle["id"]
+
+
+def test_pending_growth_resumes_only_the_saved_payload_candidate_after_contract_route_returns(tmp_path, monkeypatch):
+    from site_agent.application.actions import OwnerActionService
+    from site_agent.core.contracts import ActionPriority, ActionRequirement, OwnerAction
+
+    memory = Memory(tmp_path / "memory.db")
+    settings = config()
+    run_id, initiative_id, cycle_id = _blocked_payload_contract_run(memory, settings)
+    owner_id = memory.create_strategy_initiative(
+        cycle_id, kind="owner_information", title="Confirm booking details", summary="Tell Ada the duration.",
+        expected={"opportunity": {"kind": "owner_information", "title": "Confirm booking details"}},
+        state="waiting_for_owner", growth_run_id=run_id,
+        goal_revision=memory.get_growth_run(run_id)["goal_revision"],
+        origin_revision=memory.get_growth_run(run_id)["origin_revision"],
+    )
+    action = OwnerActionService(memory).create(OwnerAction(
+        capability_id="growth.owner_information", provider_id="site-agent",
+        title="Confirm booking details", summary="Tell Ada the duration.", action_label="Answer Ada",
+        priority=ActionPriority.NORMAL, requirement=ActionRequirement.OWNER_INFORMATION,
+        source_ref=f"growth-initiative:{owner_id}", dedupe_key=f"growth-initiative:{owner_id}",
+    ))
+    memory.update_strategy_initiative(owner_id, owner_action_id=action.id)
+    assert has_recoverable_growth_replay(memory)
+
+    payload = Payload()
+    planner = Ada()
+    context = {"config": settings, "memory": memory, "payload_gateway": payload, "llm": planner}
+    reconciled = []
+    monkeypatch.setattr("site_agent.application.growth_workflow._reconcile_article_research", lambda _context: reconciled.append(True))
+
+    run_pending_growth(context)
+
+    resumed = memory.get_growth_run(run_id)
+    initiatives = memory.list_strategy_initiatives(limit=None)
+    candidate = next(row for row in initiatives if int(row["id"]) == initiative_id)
+    owner_question = next(row for row in initiatives if int(row["id"]) == owner_id)
+    assert resumed["status"] == "complete"
+    recovery = resumed["detail"]["recoveryEvents"][-1]
+    assert recovery["code"] == "payload_growth_contract_route_restored"
+    assert recovery["resumedAt"]
+    assert recovery["previousError"] == 'Payload gateway returned 404: Route not found "/api/workspace/growth/contract"'
+    assert candidate["state"] == "ready_for_review"
+    assert candidate["review_package_hash"]
+    assert owner_question["state"] == "waiting_for_owner"
+    assert owner_question["owner_action_id"] == action.id
+    assert memory.get_owner_action(action.id) is not None
+    assert payload.growth_contract_checks == 2  # one recovery gate, then canonical candidate preparation
+    assert payload.writes == 1
+    assert payload.publishes == 0
+    assert planner.stages == ["prepare"]
+    assert reconciled == []
+    memory.close()
+
+
+def test_pending_growth_leaves_contract_blocked_candidate_untouched_when_route_is_still_unavailable(tmp_path, monkeypatch):
+    memory = Memory(tmp_path / "memory.db")
+    settings = config()
+    run_id, initiative_id, _ = _blocked_payload_contract_run(memory, settings)
+
+    class UnavailablePayload(Payload):
+        def require_growth_contract(self):
+            self.growth_contract_checks += 1
+            raise RuntimeError("Payload gateway returned 404: Route not found \"/api/workspace/growth/contract\"")
+
+    payload = UnavailablePayload()
+    planner = Ada()
+    context = {"config": settings, "memory": memory, "payload_gateway": payload, "llm": planner}
+    reconciled = []
+    monkeypatch.setattr("site_agent.application.growth_workflow._reconcile_article_research", lambda _context: reconciled.append(True))
+    before = memory.get_growth_run(run_id)
+
+    try:
+        run_pending_growth(context)
+    except RuntimeError as exc:
+        assert str(exc) == "Payload gateway returned 404: Route not found \"/api/workspace/growth/contract\""
+    else:
+        raise AssertionError("a blocked Payload contract route must remain a scheduler-visible failure")
+
+    after = memory.get_growth_run(run_id)
+    initiative = next(row for row in memory.list_strategy_initiatives(limit=None) if int(row["id"]) == initiative_id)
+    assert after["status"] == "blocked"
+    assert after["next_due_ts"] == before["next_due_ts"]
+    assert initiative["state"] == "blocked"
+    assert payload.growth_contract_checks == 1
+    assert payload.writes == 0
+    assert payload.publishes == 0
+    assert planner.stages == []
+    assert reconciled == []
+    memory.close()
+
+
+def test_payload_contract_recovery_rejects_candidates_with_side_effects(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    run_id, initiative_id, _ = _blocked_payload_contract_run(memory, config())
+    detail = memory.get_growth_run(run_id)["detail"]
+    detail["candidateIds"] = ["already-created"]
+    memory.update_growth_run(run_id, detail=detail)
+    assert not has_recoverable_growth_replay(memory)
     memory.close()
 
 

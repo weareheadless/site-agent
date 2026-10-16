@@ -124,10 +124,70 @@ def _recoverable_saved_assessment_failure(memory: Memory, run: Mapping[str, Any]
     )
 
 
+_PAYLOAD_GROWTH_CONTRACT_ROUTE_404 = 'Payload gateway returned 404: Route not found "/api/workspace/growth/contract"'
+
+
+def _recoverable_payload_contract_failure(memory: Memory, run: Mapping[str, Any]) -> bool:
+    """Match only a saved content candidate blocked by the now-required contract route."""
+    if (
+        run.get("status") != "blocked"
+        or run.get("phase") != "preparing"
+        or run.get("trigger") not in {"initial", "weekly", "owner_review"}
+    ):
+        return False
+    detail = run.get("detail") if isinstance(run.get("detail"), Mapping) else {}
+    assessment = detail.get("assessment")
+    material = detail.get("material")
+    blocks = detail.get("blocks")
+    if (
+        not isinstance(assessment, Mapping)
+        or not isinstance(assessment.get("opportunities"), list)
+        or not isinstance(material, Mapping)
+        or not isinstance(material.get("inventory"), list)
+        or detail.get("candidateIds")
+        or not isinstance(blocks, list)
+    ):
+        return False
+    blocked_ids = {
+        str(block.get("initiativeId"))
+        for block in blocks
+        if isinstance(block, Mapping)
+        and str(block.get("reason") or "") == _PAYLOAD_GROWTH_CONTRACT_ROUTE_404
+        and block.get("initiativeId") is not None
+    }
+    if not blocked_ids:
+        return False
+    opportunities = assessment["opportunities"]
+    for row in memory.list_strategy_initiatives(limit=None):
+        if (
+            str(row.get("id")) not in blocked_ids
+            or str(row.get("growth_run_id") or "") != str(run.get("run_id") or "")
+            or row.get("kind") != "payload_content"
+            or row.get("state") != "blocked"
+            or any(row.get(key) for key in (
+                "owner_action_id", "artifact_id", "approval_id", "draft_id",
+                "receipt_id", "review_package_hash",
+            ))
+        ):
+            continue
+        expected = row.get("expected") if isinstance(row.get("expected"), Mapping) else {}
+        opportunity = expected.get("opportunity") if isinstance(expected.get("opportunity"), Mapping) else {}
+        if any(
+            item.get("kind") == "payload_content"
+            and item.get("title") == row.get("title")
+            and item.get("title") == opportunity.get("title")
+            for item in opportunities
+            if isinstance(item, Mapping)
+        ):
+            return True
+    return False
+
+
 def has_recoverable_growth_replay(memory: Memory) -> bool:
     """Whether activation should immediately resume a known safe saved run."""
     return any(
         _recoverable_saved_assessment_failure(memory, run)
+        or _recoverable_payload_contract_failure(memory, run)
         for run in memory.list_growth_runs(limit=None)
     )
 
@@ -612,7 +672,13 @@ def _reconcile_article_research(context: dict[str, Any]) -> None:
     _article_research_cycle(context)
 
 
-def run_growth_cycle(context: dict[str, Any], *, trigger: str = "weekly", run_id: str | None = None) -> dict[str, Any]:
+def run_growth_cycle(
+    context: dict[str, Any],
+    *,
+    trigger: str = "weekly",
+    run_id: str | None = None,
+    resume_payload_contract: bool = False,
+) -> dict[str, Any]:
     """Execute persisted phases, never count labels as proof of completed work."""
     from ..brain import growth as brain_growth
     from .growth_candidates import prepare_payload_candidate
@@ -630,8 +696,12 @@ def run_growth_cycle(context: dict[str, Any], *, trigger: str = "weekly", run_id
     if run["status"] in {"complete", "cancelled"}:
         return run
     recover_saved_assessment = _recoverable_saved_assessment_failure(memory, run)
+    recover_payload_contract = (
+        resume_payload_contract and _recoverable_payload_contract_failure(memory, run)
+    )
+    recover_saved_run = recover_saved_assessment or recover_payload_contract
     due = _parsed_timestamp(run.get("next_due_ts"))
-    if due is not None and due > now and not recover_saved_assessment:
+    if due is not None and due > now and not recover_saved_run:
         return run
     claimed = memory.claim_growth_run(run["run_id"], lease_owner=f"growth:{uuid.uuid4().hex}", lease_seconds=3600)
     if claimed is None:
@@ -641,14 +711,23 @@ def run_growth_cycle(context: dict[str, Any], *, trigger: str = "weekly", run_id
     def advance(**fields):
         return memory.update_growth_run(run["run_id"], expected_lease=lease_owner, **fields)
     detail = dict(run.get("detail") or {})
-    if recover_saved_assessment:
+    if recover_saved_run:
         recovery_events = detail.get("recoveryEvents")
         recovery_events = list(recovery_events) if isinstance(recovery_events, list) else []
-        previous_error = detail.get("error")
+        previous_error = detail.pop("error", "")
+        if recover_payload_contract:
+            previous_error = _PAYLOAD_GROWTH_CONTRACT_ROUTE_404
+            recovery_code = "payload_growth_contract_route_restored"
+        else:
+            recovery_code = (
+                "evidence_binding_fixed"
+                if previous_error == "Ada referenced evidence that is not in this run"
+                else "owner_action_summary_contract_fixed"
+            )
         recovery_events.append({
-            "code": "evidence_binding_fixed" if previous_error == "Ada referenced evidence that is not in this run" else "owner_action_summary_contract_fixed",
+            "code": recovery_code,
             "resumedAt": now.isoformat(timespec="seconds"),
-            "previousError": detail.pop("error", ""),
+            "previousError": previous_error,
         })
         detail["recoveryEvents"] = recovery_events[-5:]
         run = advance(detail=detail, next_due_ts=None)
@@ -661,7 +740,7 @@ def run_growth_cycle(context: dict[str, Any], *, trigger: str = "weekly", run_id
         material = detail["material"]
         if trigger == "daily":
             return advance(phase="complete", status="complete", detail=detail, completed=True)
-        if trigger == "weekly" and "articleResearch" not in detail and not recover_saved_assessment:
+        if trigger == "weekly" and "articleResearch" not in detail and not recover_saved_run:
             detail["articleResearch"] = _queue_article_research(context)
             run = advance(phase="assessing", detail=detail)
         if trigger == "monthly":
@@ -823,15 +902,32 @@ def run_pending_growth(context: dict[str, Any]) -> None:
     memory = context["memory"]
     due = memory.due_growth_runs(limit=20)
     due_ids = {str(row.get("run_id")) for row in due}
-    recoverable = [
-        run for run in memory.list_growth_runs(limit=None)
+    runs = memory.list_growth_runs(limit=None)
+    recoverable_assessments = [
+        run for run in runs
         if str(run.get("run_id")) not in due_ids and _recoverable_saved_assessment_failure(memory, run)
     ]
-    for run in [*due, *recoverable]:
+    recoverable_contracts = [
+        run for run in runs
+        if str(run.get("run_id")) not in due_ids and _recoverable_payload_contract_failure(memory, run)
+    ]
+    for run in [*due, *recoverable_assessments]:
         run_growth_cycle(context, trigger=run["trigger"], run_id=run["run_id"])
-    # An activation-only replay of saved failures must not pull forward an
-    # unrelated article-research cycle (which may use paid provider calls).
-    if due or not recoverable:
+    if recoverable_contracts:
+        # Prove the canonical preparation contract is available once before
+        # replaying any saved candidates. A failing gateway leaves the durable
+        # blocked run untouched and lets the scheduler record the failure.
+        context["payload_gateway"].require_growth_contract()
+        for run in recoverable_contracts:
+            run_growth_cycle(
+                context,
+                trigger=run["trigger"],
+                run_id=run["run_id"],
+                resume_payload_contract=True,
+            )
+    # Recovery must not pull forward unrelated article research (which may
+    # dispatch paid provider calls) when there is saved work to resume.
+    if due or not (recoverable_assessments or recoverable_contracts):
         _reconcile_article_research(context)
 
 
