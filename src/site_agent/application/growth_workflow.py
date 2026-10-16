@@ -810,7 +810,10 @@ def run_pending_growth(context: dict[str, Any]) -> None:
     ]
     for run in [*due, *recoverable]:
         run_growth_cycle(context, trigger=run["trigger"], run_id=run["run_id"])
-    _reconcile_article_research(context)
+    # An activation-only replay of saved failures must not pull forward an
+    # unrelated article-research cycle (which may use paid provider calls).
+    if due or not recoverable:
+        _reconcile_article_research(context)
 
 
 __all__ = ["ensure_default_goal", "queue_growth_check", "run_growth_cycle", "run_growth_reconciler", "run_pending_growth"]
