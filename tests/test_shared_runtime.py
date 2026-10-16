@@ -74,6 +74,10 @@ def _tenant_checkout(root: Path) -> Path:
 
 def test_shared_overlay_updates_runtime_and_preserves_tenant_owned_content(tmp_path: Path):
     checkout = _tenant_checkout(tmp_path)
+    preview_path = checkout / "src/app/(frontend)/helloada-preview/[token]/page.tsx"
+    preview_path.parent.mkdir(parents=True, exist_ok=True)
+    preview_path.write_text("tenant-specific preview renderer")
+    preview_before = preview_path.read_bytes()
     manifest_before = (checkout / "template-manifest.json").read_bytes()
     design_before = (checkout / "src/components/site/TenantSections.tsx").read_bytes()
     migration_before = (checkout / "src/migrations/tenant-migration.ts").read_bytes()
@@ -111,6 +115,8 @@ def test_shared_overlay_updates_runtime_and_preserves_tenant_owned_content(tmp_p
     assert "src/lib/cloudflare-context.ts" in result["changedPaths"]
     assert (checkout / "template-manifest.json").read_bytes() == manifest_before
     assert (checkout / "src/components/site/TenantSections.tsx").read_bytes() == design_before
+    assert preview_path.read_bytes() == preview_before
+    assert "src/app/(frontend)/helloada-preview/[token]/page.tsx" not in result["copiedPaths"]
     assert (checkout / "src/migrations/tenant-migration.ts").read_bytes() == migration_before
     package = json.loads((checkout / "package.json").read_text())
     manifest = json.loads((TEMPLATE / "template-manifest.json").read_text())
