@@ -278,6 +278,8 @@ def auto_provision_seo(
             resolved_env[token_env] = token
 
         sanitized = _safe_receipt(receipt)
+        if measurement_id:
+            sanitized["ga4_secret_measurement_id"] = measurement_id
         sanitized.update({
             "site_url": site_url,
             "origin_changed": origin_changed,
