@@ -128,6 +128,34 @@ def test_historical_unsupported_assessment_ideas_do_not_block_the_owner_progress
     assert progression["deferredFindingCount"] == 0
 
 
+def test_deferred_finding_explains_why_and_uses_the_real_next_weekly_schedule():
+    progression = owner_queue([{
+        "id": "schedule:growth_weekly",
+        "kind": "schedule",
+        "focus": "planned",
+        "nextRun": "2026-10-19T14:30:00Z",
+    }], [{
+        "trigger": "weekly",
+        "status": "complete",
+        "updated_ts": "2026-10-12T14:30:00Z",
+        "detail": {"assessment": {
+            "summary": "Ada reviewed the latest evidence.",
+            "unpreparedOpportunities": [{
+                "kind": "payload_content",
+                "title": "Add a new course page",
+                "preparationNote": "This change needs a new route, which the current existing-document review cannot create.",
+                "reassessWhen": "When the shared new-page route is available.",
+            }],
+        }},
+    }])["progression"]
+
+    assert progression["state"] == "deferred_findings"
+    assert progression["deferredFindingTitle"] == "Add a new course page"
+    assert "needs a new route" in progression["deferredFindingSummary"]
+    assert progression["deferredReassessWhen"] == "When the shared new-page route is available."
+    assert progression["nextAssessmentAt"] == "2026-10-19T14:30:00Z"
+
+
 def test_expired_running_assessment_is_not_presented_as_active_ada_work():
     task = {
         "id": "assessment:stale",

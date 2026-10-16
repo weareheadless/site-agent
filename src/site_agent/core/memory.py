@@ -5484,7 +5484,7 @@ class Memory:
         allowed = {
             "identified": {"preparing", "blocked", "snoozed", "rejected", "superseded"},
             "proposed": {"preparing", "blocked", "snoozed", "rejected", "superseded"},
-            "preparing": {"validating", "waiting_for_owner", "blocked", "snoozed", "superseded"},
+            "preparing": {"validating", "waiting_for_owner", "blocked", "snoozed", "superseded", "deferred"},
             "waiting_for_owner": {"preparing", "snoozed", "rejected", "superseded"},
             "validating": {"ready_for_review", "preparing", "blocked", "superseded"},
             "ready_for_review": {"publishing", "rejected", "snoozed", "validating", "superseded"},
@@ -5493,7 +5493,8 @@ class Memory:
             "measuring": {"reviewed", "blocked", "superseded"},
             "approved": {"publishing", "measuring", "rejected", "superseded"},
             "reviewed": {"preparing", "superseded"},
-            "blocked": {"preparing", "validating", "superseded"},
+            "blocked": {"preparing", "validating", "superseded", "deferred"},
+            "deferred": set(),
             "uncertain": {"publishing", "verifying_live", "blocked", "superseded"},
             "snoozed": {"preparing", "superseded"},
             "rejected": {"preparing", "superseded"},

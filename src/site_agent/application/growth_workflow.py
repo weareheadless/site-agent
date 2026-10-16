@@ -35,7 +35,7 @@ def _invalidate_incompatible_candidates(memory: Memory, goal: Mapping[str, Any],
 
     for initiative in memory.list_strategy_initiatives(limit=500):
         state = str(initiative.get("state") or "")
-        if state in {"reviewed", "rejected", "snoozed", "superseded"}:
+        if state in {"reviewed", "rejected", "snoozed", "superseded", "deferred"}:
             continue
         bound_goal = initiative.get("goal_revision")
         bound_origin = str(initiative.get("origin_revision") or "").strip()
@@ -125,6 +125,7 @@ def _recoverable_saved_assessment_failure(memory: Memory, run: Mapping[str, Any]
 
 
 _PAYLOAD_GROWTH_CONTRACT_ROUTE_404 = 'Payload gateway returned 404: Route not found "/api/workspace/growth/contract"'
+_GROWTH_SCHEMA_MISMATCH = "Ada's changes do not match the canonical editable schema"
 
 
 def _recoverable_payload_contract_failure(memory: Memory, run: Mapping[str, Any]) -> bool:
@@ -250,6 +251,66 @@ def _recoverable_growth_json_failure(memory: Memory, run: Mapping[str, Any]) -> 
     return False
 
 
+def _recoverable_growth_schema_failure(memory: Memory, run: Mapping[str, Any]) -> bool:
+    """Replay one historical schema-only failure when saved inputs have no effects."""
+    if (
+        run.get("status") != "blocked"
+        or run.get("phase") != "preparing"
+        or run.get("trigger") not in {"initial", "weekly", "owner_review"}
+    ):
+        return False
+    detail = run.get("detail") if isinstance(run.get("detail"), Mapping) else {}
+    events = detail.get("recoveryEvents")
+    used = {
+        str(event.get("code"))
+        for event in events or []
+        if isinstance(event, Mapping)
+    }
+    assessment, material, blocks = detail.get("assessment"), detail.get("material"), detail.get("blocks")
+    if (
+        "growth_schema_candidate_retry" in used
+        or not isinstance(assessment, Mapping)
+        or not isinstance(assessment.get("opportunities"), list)
+        or not isinstance(material, Mapping)
+        or not isinstance(material.get("inventory"), list)
+        or detail.get("candidateIds")
+        or not isinstance(blocks, list)
+    ):
+        return False
+    blocked_ids = {
+        str(block.get("initiativeId"))
+        for block in blocks
+        if isinstance(block, Mapping)
+        and str(block.get("reason") or "") == _GROWTH_SCHEMA_MISMATCH
+        and block.get("initiativeId") is not None
+    }
+    if not blocked_ids:
+        return False
+    for row in memory.list_strategy_initiatives(limit=None):
+        if (
+            str(row.get("id")) not in blocked_ids
+            or str(row.get("growth_run_id") or "") != str(run.get("run_id") or "")
+            or row.get("kind") != "payload_content"
+            or row.get("state") != "blocked"
+            or any(row.get(key) for key in (
+                "owner_action_id", "artifact_id", "approval_id", "draft_id", "receipt_id",
+                "review_package_hash", "candidate_hash",
+            ))
+            or (row.get("validation") or {}).get("preparation")
+        ):
+            continue
+        expected = row.get("expected") if isinstance(row.get("expected"), Mapping) else {}
+        opportunity = expected.get("opportunity") if isinstance(expected.get("opportunity"), Mapping) else {}
+        if any(
+            isinstance(item, Mapping)
+            and item.get("kind") == "payload_content"
+            and item.get("title") == row.get("title") == opportunity.get("title")
+            for item in assessment["opportunities"]
+        ):
+            return True
+    return False
+
+
 _GROWTH_RESTART_RECOVERY = "growth_worker_restart_recovery"
 
 
@@ -353,6 +414,7 @@ def has_recoverable_growth_replay(memory: Memory) -> bool:
         _recoverable_saved_assessment_failure(memory, run)
         or _recoverable_payload_contract_failure(memory, run)
         or _recoverable_growth_json_failure(memory, run)
+        or _recoverable_growth_schema_failure(memory, run)
         for run in memory.list_growth_runs(limit=None)
     )
 
@@ -844,6 +906,7 @@ def run_growth_cycle(
     run_id: str | None = None,
     resume_payload_contract: bool = False,
     resume_growth_json: bool = False,
+    resume_growth_schema: bool = False,
     resume_interrupted: bool = False,
     reclaim_lease_owner: str | None = None,
 ) -> dict[str, Any]:
@@ -870,9 +933,13 @@ def run_growth_cycle(
     recover_growth_json = (
         resume_growth_json and _recoverable_growth_json_failure(memory, run)
     )
+    recover_growth_schema = (
+        resume_growth_schema and _recoverable_growth_schema_failure(memory, run)
+    )
     recover_interrupted = resume_interrupted and run.get("status") == "running"
     recover_saved_run = (
-        recover_saved_assessment or recover_payload_contract or recover_growth_json or recover_interrupted
+        recover_saved_assessment or recover_payload_contract or recover_growth_json
+        or recover_growth_schema or recover_interrupted
     )
     due = _parsed_timestamp(run.get("next_due_ts"))
     if due is not None and due > now and not recover_saved_run:
@@ -898,6 +965,9 @@ def run_growth_cycle(
         if recover_growth_json:
             previous_error = _EMPTY_GROWTH_JSON_COMPLETION
             recovery_code = "growth_json_no_reasoning_retry"
+        elif recover_growth_schema:
+            previous_error = _GROWTH_SCHEMA_MISMATCH
+            recovery_code = "growth_schema_candidate_retry"
         elif recover_payload_contract:
             previous_error = _PAYLOAD_GROWTH_CONTRACT_ROUTE_404
             recovery_code = "payload_growth_contract_route_restored"
@@ -987,6 +1057,9 @@ def run_growth_cycle(
             if row.get("owner_action_id") is not None
         )
         for opportunity in detail["assessment"]["opportunities"]:
+            if opportunity.get("disposition") == "deferred":
+                unprepared_opportunities.append(dict(opportunity))
+                continue
             evidence_refs = opportunity.get("evidence")
             missing_refs = sorted({str(ref) for ref in evidence_refs if not isinstance(ref, str) or ref not in valid_refs}) if isinstance(evidence_refs, list) else ["invalid evidence list"]
             if missing_refs:
@@ -995,16 +1068,19 @@ def run_growth_cycle(
                     "disposition": "deferred",
                     "errorCode": "evidence_not_bound_to_run",
                     "preparationNote": "Ada's evidence references could not be matched to this assessment, so this finding was retained but not prepared. Valid recommendations from the same assessment continue independently.",
+                    "reassessWhen": "After the next successful scheduled assessment, once the required evidence is available.",
                 })
                 continue
             if opportunity["kind"] not in {"payload_content", "owner_information"}:
                 missing = set(opportunity["requiredSources"]) - ready_sources
                 unprepared_opportunities.append({
                     **opportunity,
+                    "disposition": "deferred",
                     "preparationNote": (
                         "This finding is retained for Ada's internal reassessment because this scheduled workflow cannot prepare its requested effect. It is not an owner task or an approval. Reassess it when the relevant shared execution route becomes available."
                         + (f" Required evidence is also not ready: {', '.join(sorted(missing))}." if missing else "")
                     ),
+                    "reassessWhen": "When the shared execution route for this effect becomes available.",
                 })
                 continue
             target = (str(opportunity.get("collection") or ""), str(opportunity.get("documentId") or ""))
@@ -1015,6 +1091,7 @@ def run_growth_cycle(
                     "disposition": "deferred",
                     "relatedInitiativeId": related["id"],
                     "preparationNote": "Ada already has a proposal for this page in progress or awaiting your decision. This finding is retained and will be reconsidered after that decision, so the two changes cannot overwrite each other.",
+                    "reassessWhen": "After the current proposal for this page is decided.",
                 })
                 continue
             if opportunity["kind"] == "owner_information" and pending_owner_question:
@@ -1022,6 +1099,7 @@ def run_growth_cycle(
                     **opportunity,
                     "disposition": "deferred",
                     "preparationNote": "Ada already has an unanswered business question. This finding is retained and will be reconsidered after your reply, rather than asking you the same kind of question twice.",
+                    "reassessWhen": "After you answer Ada's current business question.",
                 })
                 continue
             initiative = by_title.get(opportunity["title"])
@@ -1059,6 +1137,20 @@ def run_growth_cycle(
                         initiative = memory.transition_strategy_initiative(initiative["id"], "preparing")
                     candidate = prepare_payload_candidate(context, initiative, opportunity, material["inventory"], detail)
                     candidate_ids.append(candidate["id"])
+                    continue
+                except brain_growth.UnsupportedGrowthPreparation as exc:
+                    reason = exc.reason
+                    memory.transition_strategy_initiative(
+                        initiative["id"], "deferred",
+                        validation={"status": "deferred", "reason": reason, "reassessWhen": exc.reassess_when},
+                    )
+                    unprepared_opportunities.append({
+                        **opportunity,
+                        "disposition": "deferred",
+                        "errorCode": "unsupported_existing_document_route",
+                        "preparationNote": reason,
+                        "reassessWhen": exc.reassess_when,
+                    })
                     continue
                 except Exception as exc:
                     reason = str(exc)[:500]
@@ -1133,6 +1225,10 @@ def run_pending_growth(context: dict[str, Any], *, recover_interrupted_runs: boo
         run for run in runs
         if str(run.get("run_id")) not in due_ids and _recoverable_growth_json_failure(memory, run)
     ]
+    recoverable_growth_schema = [
+        run for run in runs
+        if str(run.get("run_id")) not in due_ids and _recoverable_growth_schema_failure(memory, run)
+    ]
     for run in [*due, *recoverable_assessments]:
         run_id = str(run["run_id"])
         run_growth_cycle(
@@ -1165,10 +1261,19 @@ def run_pending_growth(context: dict[str, Any], *, recover_interrupted_runs: boo
                 run_id=run["run_id"],
                 resume_growth_json=True,
             )
+    if recoverable_growth_schema:
+        context["payload_gateway"].require_growth_contract()
+        for run in recoverable_growth_schema:
+            run_growth_cycle(
+                context,
+                trigger=run["trigger"],
+                run_id=run["run_id"],
+                resume_growth_schema=True,
+            )
     # Recovery must not pull forward unrelated article research (which may
     # dispatch paid provider calls) when there is saved work to resume.
     if not interrupted_run_ids and (
-        due or not (recoverable_assessments or recoverable_contracts or recoverable_growth_json)
+        due or not (recoverable_assessments or recoverable_contracts or recoverable_growth_json or recoverable_growth_schema)
     ):
         _reconcile_article_research(context)
 
