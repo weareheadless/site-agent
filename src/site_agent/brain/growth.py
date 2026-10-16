@@ -24,7 +24,7 @@ def _response(context: Mapping[str, Any], contract: str, material: Mapping[str, 
             "Use the business's own language. Return JSON conforming to this contract: " + contract
         )},
         {"role": "user", "content": json.dumps(material, ensure_ascii=False, default=str)},
-    ], json_mode=True, temperature=0.2)
+    ], json_mode=True, temperature=0.2, enable_thinking=False)
     result = extract_json(raw)
     if not isinstance(result, dict):
         raise ValueError("Ada's growth response must be an object")
