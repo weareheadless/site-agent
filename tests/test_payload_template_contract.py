@@ -38,10 +38,20 @@ def test_all_server_side_payload_gateway_resources_have_exact_route_handlers():
     content = (TEMPLATE / 'src/app/api/workspace/content/route.ts').read_text(encoding='utf-8')
     global_route = (TEMPLATE / 'src/app/api/workspace/global/route.ts').read_text(encoding='utf-8')
     media = (TEMPLATE / 'src/app/api/workspace/media/route.ts').read_text(encoding='utf-8')
+    growth = (TEMPLATE / 'src/app/api/workspace/growth/[...path]/route.ts').read_text(encoding='utf-8')
+    operations = (TEMPLATE / 'src/lib/growth-operations.ts').read_text(encoding='utf-8')
     for source in (content, global_route, media):
         assert "serviceAuthorized(request)" in source
         assert "Cache-Control" in source
         assert "hashJson" in source
+    assert "serviceAuthorized(request)" in growth
+    assert "growthGet(request" in growth and "growthPost(request" in growth
+    assert "path === '/growth/contract'" in operations
+    assert "path === '/growth/validate'" in operations
+    assert "path === '/growth/apply'" in operations
+    assert "path === '/growth/publish'" in operations
+    assert "verifyExactPreview(request" in operations
+    assert "if (!owner && !serviceAuthorized(request)) notFound()" in (TEMPLATE / 'src/app/(frontend)/helloada-preview/[token]/page.tsx').read_text(encoding='utf-8')
     assert 'expectedHash is required for a draft update' in content
     assert 'expectedHash is required for a draft update' in global_route
     assert 'exact expectedHash are required' in media
@@ -86,14 +96,17 @@ def test_preview_inventory_cannot_execute_a_customer_repository_script():
 
 def test_payload_template_has_one_managed_growth_write_and_renderer_boundary():
     source = BRIDGE.read_text(encoding='utf-8')
+    operations = (TEMPLATE / 'src' / 'lib' / 'growth-operations.ts').read_text(encoding='utf-8')
     contract = (TEMPLATE / 'src' / 'lib' / 'growth-contract.ts').read_text(encoding='utf-8')
     renderer = (TEMPLATE / 'src' / 'components' / 'PublicDocument.tsx').read_text(encoding='utf-8')
     config = (TEMPLATE / 'payload.config.ts').read_text(encoding='utf-8')
     shared_schema = (ROOT / 'packages' / 'helloada-payload-core' / 'src' / 'schema' / 'index.ts').read_text(encoding='utf-8')
-    assert "path === '/growth/apply'" in source
-    assert "path === '/growth/publish'" in source
-    assert "claimOperation(operationKey, documentKey, packageHash)" in source
-    assert 'verifyExactPreview(request' in source
+    assert "return growthGet(request, path" in source
+    assert "return growthPost(request, path" in source
+    assert "path === '/growth/apply'" in operations
+    assert "path === '/growth/publish'" in operations
+    assert "claimOperation(operationKey, documentKey, packageHash)" in operations
+    assert 'verifyExactPreview(request' in operations
     assert 'renderToStaticMarkup' not in source
     assert 'helloada_growth_candidates' in contract
     assert 'helloada_growth_operations' in contract

@@ -14,6 +14,8 @@ POST_FIELDS = frozenset({
 class Payload:
     def __init__(self):
         self.authoring_contract = {
+            "locales": ["en"],
+            "defaultLocale": "en",
             "enabled": {"collections": ["pages", "posts"], "globals": []},
             "authoring": {
                 "collections": {
@@ -27,6 +29,7 @@ class Payload:
         self.creates = 0
         self.updates = 0
         self.publishes = 0
+        self.locales = []
 
     def require_authoring_contract(self):
         return self.authoring_contract
@@ -42,6 +45,7 @@ class Payload:
 
     def create(self, collection, data, *, locale=None):
         assert collection == "posts"
+        self.locales.append(locale)
         self.creates += 1
         self.created_data.append(deepcopy(data))
         document = {**deepcopy(data), "sourceId": f"posts:{data['slug']}", "id": "post-1", "_helloadaRevision": "sha256:" + "a" * 64}
@@ -50,9 +54,11 @@ class Payload:
 
     def read(self, collection, *, identifier, identifier_kind, draft, locale=None):
         assert collection == "posts" and identifier_kind == "id" and draft is True
+        self.locales.append(locale)
         return deepcopy(next(item for item in self.documents if str(item["id"]) == str(identifier)))
 
     def update(self, collection, document_id, data, *, locale=None, expected_hash=None):
+        self.locales.append(locale)
         document = next(item for item in self.documents if str(item["id"]) == str(document_id))
         assert expected_hash == document["_helloadaRevision"]
         self.updates += 1
@@ -114,6 +120,21 @@ def test_article_sync_uses_payload_owned_stable_source_identity_not_authoring_fi
     sync = memory.list_drafts()[0]["meta"]["payload_sync"]
     assert sync["source_id"] == "posts:a-canonical-post"
     assert sync["state"] == "ready_for_review"
+    memory.close()
+
+
+def test_article_sync_uses_payload_default_locale_not_owner_language(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    payload = Payload()
+    draft_id = memory.save_draft(title="A guide for local visitors", body="Draft body.", kind="article")
+    context = _context(memory, payload)
+    context["config"]["site"]["language"] = "fr"
+    context["config"]["customer_profile"] = {"brand": {"observed_language": "fr"}}
+
+    _mirror_article_draft_to_workspace(context, draft_id)
+
+    assert payload.locales == ["en", "en"]
+    assert memory.list_drafts()[0]["meta"]["payload_sync"]["locale"] == "en"
     memory.close()
 
 

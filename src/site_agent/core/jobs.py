@@ -329,11 +329,11 @@ def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -
     slug = _article_slug(title, draft_id)
     site = context.get("config", {}).get("site") or {}
     site_url = str(site.get("url") or site.get("preview_url") or "").rstrip("/")
-    language = str(
-        ((context.get("config", {}).get("customer_profile") or {}).get("brand") or {}).get("observed_language")
-        or (context.get("config", {}).get("site") or {}).get("language")
-        or "fr"
-    ).strip().lower().split("-", 1)[0]
+    authoring_contract = payload.require_authoring_contract()
+    enabled_locales = authoring_contract.get("locales")
+    language = str(authoring_contract.get("defaultLocale") or "").strip()
+    if not language or not isinstance(enabled_locales, list) or language not in enabled_locales:
+        raise RuntimeError("The canonical Payload authoring contract has no enabled default locale")
     # Payload owns the immutable source identity. The shared schema derives it
     # as `posts:<slug>` in its collection hook; sourceId is deliberately not an
     # Ada-editable authoring field and must never be required from that contract.
@@ -348,7 +348,6 @@ def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -
     research_note = meta.get("research_note") if isinstance(meta.get("research_note"), Mapping) else {}
     primary_keyword = str(meta.get("primary_keyword") or research_note.get("selected_query") or "").strip()[:200]
     description = str(meta.get("meta_description") or plain).strip()[:320]
-    authoring_contract = payload.require_authoring_contract()
     enabled_collections = (authoring_contract.get("enabled") or {}).get("collections")
     if not isinstance(enabled_collections, list) or "posts" not in enabled_collections:
         raise RuntimeError("The canonical Payload authoring contract does not enable the posts collection")
@@ -635,17 +634,20 @@ def _article_research_cycle(context: dict[str, Any]) -> None:
 
 
 def _has_recoverable_article_sync(memory: Memory) -> bool:
-    """Wake only pending articles blocked by the fixed sourceId contract bug."""
+    """Wake only pending articles blocked by a now-corrected shared contract."""
     for draft in memory.list_drafts(limit=None):
         if draft.get("kind") != "article" or draft.get("status") != "pending":
             continue
         meta = draft.get("meta") if isinstance(draft.get("meta"), Mapping) else {}
         sync = meta.get("payload_sync") if isinstance(meta.get("payload_sync"), Mapping) else {}
         validation = sync.get("validation") if isinstance(sync.get("validation"), Mapping) else {}
+        reason = str(validation.get("reason") or "").lower()
+        source_identity_contract = reason == "payload posts contract is missing required fields: sourceid"
+        disabled_site_locale = "requested locale" in reason and "not enabled for this website" in reason
         if (
             sync.get("state") == "blocked"
             and validation.get("status") == "blocked"
-            and validation.get("reason") == "Payload posts contract is missing required fields: sourceId"
+            and (source_identity_contract or disabled_site_locale)
         ):
             return True
     return False

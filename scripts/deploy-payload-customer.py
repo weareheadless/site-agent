@@ -1909,6 +1909,7 @@ def inspect_artifact(checkout: Path, customer: dict[str, Any], sha: str,
         "/api/helloada/[...path]/route",
         "/api/workspace/content/route",
         "/api/workspace/global/route",
+        "/api/workspace/growth/[...path]/route",
         "/api/workspace/media/route",
         "/api/health/route",
     }
