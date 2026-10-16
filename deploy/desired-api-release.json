@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261016-api-growth-contract-route-1",
-    "sha": "83269e03ab394e629689ea5e1940808505cc6d2d"
+    "id": "20261016-api-ga-secret-idempotency-1",
+    "sha": "7765a15ec6ec6fec66caae39e3ff71b39edca1af"
   }
 }
