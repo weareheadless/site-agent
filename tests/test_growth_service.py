@@ -185,7 +185,8 @@ def test_pending_growth_resumes_exact_historical_failure_from_saved_assessment(t
     planner = Ada()
     run_id = _failed_saved_assessment(memory, settings)
     context = {"config": settings, "memory": memory, "payload_gateway": payload, "llm": planner}
-    monkeypatch.setattr("site_agent.application.growth_workflow._reconcile_article_research", lambda _context: None)
+    reconciled = []
+    monkeypatch.setattr("site_agent.application.growth_workflow._reconcile_article_research", lambda _context: reconciled.append(True))
 
     run_pending_growth(context)
 
@@ -199,6 +200,7 @@ def test_pending_growth_resumes_exact_historical_failure_from_saved_assessment(t
     assert payload.writes == 1
     assert payload.publishes == 0
     assert planner.stages == ["prepare"]
+    assert reconciled == []
     memory.close()
 
 
