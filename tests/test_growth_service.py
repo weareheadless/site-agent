@@ -644,6 +644,17 @@ def test_activation_wakes_only_exact_unlinked_payload_draft_reconciliation(tmp_p
             },
         }},
     )
+    memory.save_draft(
+        "Payload shell blocked by old sync guard",
+        "Article body",
+        meta={"payload_sync": {
+            "state": "blocked",
+            "validation": {
+                "status": "blocked",
+                "reason": "An existing Payload post is not linked to Ada's exact sync record; its content differs, so it remains blocked for owner review.",
+            },
+        }},
+    )
     memory.kv_set("next_run:growth_article_sync", 9999999.0)
 
     scheduler = Scheduler(memory, lock_path=tmp_path / "scheduler.lock", timezone_name="America/Cancun", clock=lambda: 1234.5)

@@ -520,7 +520,7 @@ def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -
             empty_shell = _is_empty_unlinked_article_draft(existing, post, source_id)
             if not (exact_candidate or empty_shell):
                 raise RuntimeError(
-                    "An existing Payload post at this route is neither Ada's exact draft nor an empty schema draft; its content remains unchanged for owner review."
+                    "An existing Payload post at this route is not linked to Ada's exact sync record; its content differs and it is neither Ada's exact draft nor an empty schema draft, so it remains unchanged for owner review."
                 )
             adopted_unlinked = True
 
@@ -807,6 +807,8 @@ def _has_recoverable_article_sync(memory: Memory) -> bool:
         unlinked_draft_recovery = (
             reason in {
                 "an existing payload post is not linked to ada's exact sync record; it must be reviewed before any update.",
+                "an existing payload post is not linked to ada's exact sync record; its content differs, so it remains blocked for owner review.",
+                "the payload route conflict could not be proven to be ada's exact unpublished draft; it remains blocked for owner review.",
                 "payload gateway returned 409: a payload document already uses this route; read and update that exact draft instead.",
             }
             and not str(sync.get("document_id") or "").strip()
