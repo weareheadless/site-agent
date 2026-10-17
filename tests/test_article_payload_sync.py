@@ -168,7 +168,7 @@ def test_article_sync_does_not_adopt_an_unlinked_payload_post(tmp_path):
     payload = Payload()
     draft_id = memory.save_draft(title="A guide", body="Draft copy.", kind="article")
     payload.documents.append({
-        "id": "foreign-post", "sourceId": "posts:a-guide",
+        "id": "foreign-post", "sourceId": "posts:a-guide", "slug": "a-guide",
         "_helloadaRevision": "sha256:" + "d" * 64,
     })
 
@@ -199,6 +199,27 @@ def test_article_sync_adopts_exact_unpublished_payload_draft_after_local_checkpo
     assert sync["source_id"] == "posts:an-interrupted-guide"
     memory.close()
 
+
+
+def test_article_sync_updates_only_system_fields_on_exact_adoption_with_revision_guard(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    payload = Payload()
+    draft_id = memory.save_draft(title="An exact guide", body="Exact body.", kind="article")
+    _mirror_article_draft_to_workspace(_context(memory, payload), draft_id)
+    memory.update_draft_meta(draft_id, {})
+    payload.documents[0]["canonicalUrl"] = "https://old.example/wrong-route"
+
+    _mirror_article_draft_to_workspace(_context(memory, payload), draft_id)
+
+    sync = memory.list_drafts()[0]["meta"]["payload_sync"]
+    assert payload.creates == 1
+    assert payload.updates == 1
+    assert payload.documents[0]["canonicalUrl"] == "https://business.example/blog/an-exact-guide"
+    assert payload.documents[0]["title"] == "An exact guide"
+    assert payload.documents[0]["body"] == payload.created_data[0]["body"]
+    assert payload.publishes == 0
+    assert sync["state"] == "ready_for_review"
+    memory.close()
 
 def test_article_sync_recovers_exact_route_conflict_race_without_duplicate_or_publish(tmp_path):
     memory = Memory(tmp_path / "memory.db")
