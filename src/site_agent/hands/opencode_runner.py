@@ -2891,9 +2891,44 @@ def _payload_revision_manifest(context: Mapping[str, Any]) -> tuple[list[dict[st
 def stage_merge_draft(context: dict[str, Any], message: str, outcome: dict[str, Any]) -> int:
     """Turn a finished build into an approval-gated, revision-bound draft."""
     memory = context["memory"]
-    for older in memory.list_drafts(status="pending"):
-        if older.get("kind") == "merge":
-            memory.update_draft_status(older["id"], "discarded")
+    pending_website_reviews = [
+        draft for draft in memory.list_drafts(status="pending")
+        if draft.get("kind") in {"design", "merge", "rollback"}
+    ]
+    revision = context.get("_growth_task_revision")
+    if isinstance(revision, Mapping):
+        initiative_id = int(revision.get("initiativeId") or 0)
+        previous_draft_id = int(revision.get("previousDraftId") or 0)
+        previous_hash = str(revision.get("previousReviewPackageHash") or "")
+        initiative = next((
+            row for row in memory.list_strategy_initiatives(limit=500)
+            if int(row.get("id") or 0) == initiative_id
+        ), None)
+        validation = initiative.get("validation") if isinstance(initiative, Mapping) and isinstance(initiative.get("validation"), Mapping) else {}
+        revision_state = validation.get("revision") if isinstance(validation.get("revision"), Mapping) else {}
+        previous = next((
+            row for row in memory.list_drafts(status="pending", limit=500)
+            if int(row.get("id") or 0) == previous_draft_id
+        ), None)
+        previous_meta = (previous or {}).get("meta") if isinstance((previous or {}).get("meta"), Mapping) else {}
+        previous_package = previous_meta.get("growth_package") if isinstance(previous_meta.get("growth_package"), Mapping) else {}
+        if (
+            initiative is None
+            or initiative.get("state") != "validating"
+            or initiative.get("kind") != "code"
+            or previous is None
+            or previous_package.get("candidateType") != "source_code"
+            or previous_meta.get("review_package_hash") != previous_hash
+            or not previous_meta.get("growth_revision_pending")
+            or int(revision_state.get("previousDraftId") or 0) != previous_draft_id
+            or str(revision_state.get("previousReviewPackageHash") or "") != previous_hash
+            or any(int(draft.get("id") or 0) != previous_draft_id for draft in pending_website_reviews)
+        ):
+            raise RunnerError("The selected Growth proposal changed; reload it before asking Ada to revise it.")
+    elif pending_website_reviews:
+        raise RunnerError(
+            "A website change is already awaiting its owner decision; resolve it before preparing another preview."
+        )
     changed_paths = outcome.get("changed_paths") if isinstance(outcome.get("changed_paths"), list) else []
     preview = dict(
         outcome.get("preview")
@@ -2932,6 +2967,15 @@ def stage_merge_draft(context: dict[str, Any], message: str, outcome: dict[str, 
         "changed_paths": [str(path) for path in changed_paths],
         "preview": preview,
     }
+    if isinstance(revision, Mapping):
+        meta.update({
+            "growth_initiative_id": int(revision["initiativeId"]),
+            "growth_candidate_pending": True,
+            "growth_revision_of": {
+                "draftId": int(revision["previousDraftId"]),
+                "reviewPackageHash": str(revision["previousReviewPackageHash"]),
+            },
+        })
     if payload_effects:
         meta["payload_effects"] = payload_effects
         meta["payload_revision_set_hash"] = payload_revision_set_hash
@@ -2939,12 +2983,27 @@ def stage_merge_draft(context: dict[str, Any], message: str, outcome: dict[str, 
         meta["media_asset_ids"] = list(context["_media_asset_ids"])
         meta["materialized_media_paths"] = list(context.get("_materialized_media_paths") or [])
     title_state = "ready" if preview.get("status") == "ready" and not preview.get("requires_build") else "preparing"
-    return memory.save_draft(
+    draft_id = memory.save_draft(
         title=f"Preview {title_state}: {message[:60]}",
         body=outcome.get("diff_stat", ""),
         kind="merge",
         meta=meta,
     )
+    if isinstance(revision, Mapping):
+        initiative_id = int(revision["initiativeId"])
+        initiative = next((
+            row for row in memory.list_strategy_initiatives(limit=500)
+            if int(row.get("id") or 0) == initiative_id
+        ), None)
+        validation = dict((initiative or {}).get("validation") or {})
+        revision_state = dict(validation.get("revision") or {})
+        preparation = dict(validation.get("preparation") or {})
+        preparation["draftId"] = draft_id
+        validation["preparation"] = preparation
+        revision_state["newDraftId"] = draft_id
+        validation["revision"] = revision_state
+        memory.update_strategy_initiative(initiative_id, draft_id=draft_id, validation=validation)
+    return draft_id
 
 
 def stage_build(context: dict[str, Any], message: str, progress=None, media_asset_ids=None) -> dict[str, Any]:

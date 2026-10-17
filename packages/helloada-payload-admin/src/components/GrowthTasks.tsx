@@ -26,7 +26,8 @@ export type GrowthTask = {
   outcomes?: { id: number; horizon_days: number; assessment: string; confidence: string; notes?: string; measured_ts?: string }[];
   history?: { initiativeId: number; title?: string; state?: string }[]; previewUrl?: string; area?: string;
   review?: { before?: Record<string, unknown>; after?: Record<string, unknown>; changes?: Record<string, unknown>;
-    route?: string; setting?: string; article?: ArticleReviewData; changeOperations?: { path: string; find: string; replace: string }[] };
+    route?: string; setting?: string; article?: ArticleReviewData; source?: { candidateSha?: string; baseSha?: string; changedPaths?: string[]; previewUrl?: string };
+    changeOperations?: { path: string; find: string; replace: string }[] };
 };
 
 type ArticleResponse = { article: ArticleReviewData; reviewable: boolean; blockedReasonCode: string | null; reviewPackageHash?: string | null };
@@ -225,6 +226,8 @@ export function GrowthTasks({ mode, ownerQueue, onNavigate, tasks = [], pending,
       ? title(task) + ". " + (task.scope || fullTaskSummary(task)) + ". " + t("growth.opportunityPrompt")
       : task.needsPreparation
         ? title(task) + ". " + t(task.kind === "settings_proposal" ? "growth.settingsPreparePrompt" : "growth.changePreparePrompt")
+      : task.kind === "code" && task.canApprove
+        ? title(task) + ". " + (task.scope || fullTaskSummary(task)) + ". " + t("growth.codeRevisionPrompt")
       : task.kind === "article"
         ? title(task) + ". " + (task.canApprove ? t("growth.articleRevisionPrompt") : t("growth.articleResolvePrompt"))
         : task.executionIssue
@@ -232,6 +235,7 @@ export function GrowthTasks({ mode, ownerQueue, onNavigate, tasks = [], pending,
         : title(task) + ". " + t("growth.decisionPrompt");
     const url = new URL(ask(prompt), "https://workspace.invalid");
     url.searchParams.set("growth_task", task.id);
+    if (task.kind === "code" && task.canApprove) url.searchParams.set("growth_task_action", "revise");
     if (task.conversationId) url.searchParams.set("conversation_id", String(task.conversationId));
     return url.pathname + url.search;
   };
@@ -447,6 +451,9 @@ export function GrowthTasks({ mode, ownerQueue, onNavigate, tasks = [], pending,
             {selectedTask.needsPreparation && selectedTask.scope ? <section className="helloada-growth-task-analysis-note">
               <strong>{t("growth.proposedChange")}</strong><p>{selectedTask.scope}</p>
             </section> : null}
+            {selectedTask.kind === "code" && selectedTask.scope ? <section className="helloada-growth-task-analysis-note">
+              <strong>{t("growth.codeScope")}</strong><p>{selectedTask.scope}</p>
+            </section> : null}
             {selectedTask.kind === "analysis_insight" && selectedTask.scope ? <p className="helloada-growth-task-analysis-note">{selectedTask.scope}</p> : null}
             {selectedTask.kind === "schedule" ? <p>{t("growth." + selectedTask.state)}{selectedTask.nextRun ? " · " + date(selectedTask.nextRun) : ""}</p> : null}
             {selectedTask.kind === "measurement" ? <p>{t("growth.measurementDescription")
@@ -455,10 +462,19 @@ export function GrowthTasks({ mode, ownerQueue, onNavigate, tasks = [], pending,
             {selectedTask.kind === "rollback" ? <p>{t("growth.rollbackScope")}</p> : null}
             {selectedTask.kind === "rollback" && selectedTask.previewUrl ? <a className="helloada-growth-task-preview" href={selectedTask.previewUrl} target="_blank" rel="noreferrer">{t("growth.rollbackPreview")} ↗</a> : null}
             {selectedTask.executionIssue && selectedTask.kind !== "assessment" ? <p className="helloada-growth-task-block">{t("growth.taskInternalIssue")}</p> : null}
+            {selectedTask.kind === "code" && selectedTask.lastError ? <details className="helloada-growth-task-evidence">
+              <summary>{t("growth.taskStoppedReason")}</summary><p>{selectedTask.lastError}</p>
+            </details> : null}
             {selectedTask.kind === "assessment" && selectedTask.nextRun ? <p className="helloada-growth-task-block">
               {t("growth.assessmentNextRetry")}: {date(selectedTask.nextRun)}
             </p> : null}
             {selectedTask.review?.route ? <p className="helloada-growth-task-route">{t("growth.taskAffectedPage")}: <code>{selectedTask.review.route}</code></p> : null}
+            {selectedTask.kind === "code" && selectedTask.review?.source ? <section className="helloada-growth-task-analysis-note">
+              <strong>{t("growth.codePreview")}</strong>
+              {selectedTask.review.source.candidateSha ? <p>{t("growth.codeRevision")}: <code>{selectedTask.review.source.candidateSha.slice(0, 12)}</code></p> : null}
+              {selectedTask.review.source.previewUrl ? <a className="helloada-growth-task-preview" href={selectedTask.review.source.previewUrl} target="_blank" rel="noreferrer noopener">{t("growth.codeOpenPreview")} ↗</a> : null}
+              {selectedTask.review.source.changedPaths?.length ? <ul>{selectedTask.review.source.changedPaths.map(path => <li key={path}><code>{path}</code></li>)}</ul> : null}
+            </section> : null}
             {selectedTask.review?.changes ? <dl className="helloada-growth-task-diff">{Object.entries(selectedTask.review.changes).map(([field, value]) => {
               const label = t("growth.field_" + field) === "growth.field_" + field ? field.replace(/([A-Z])/g, " $1").replace(/^./, letter => letter.toUpperCase()) : t("growth.field_" + field);
               return <div key={field}><dt>{label}</dt><dd>
@@ -497,8 +513,8 @@ export function GrowthTasks({ mode, ownerQueue, onNavigate, tasks = [], pending,
               </button>
             </> : null}
             {selectedTask.focus === "opportunity" || selectedTask.kind === "analysis_insight"
-              || selectedTask.kind === "article" && selectedTask.canApprove || selectedTask.kind === "owner_action" || selectedTask.needsPreparation
-              ? <Link href={discuss(selectedTask)}>{selectedTask.needsPreparation ? t(selectedTask.kind === "settings_proposal" ? "growth.prepareSettingsWithAda" : "growth.prepareChangeWithAda") : selectedTask.focus === "opportunity" ? t("growth.prepareWithAda") : selectedTask.kind === "article" ? t("growth.articleAskChanges") : t("growth.ask")} ↗</Link>
+              || (selectedTask.kind === "article" || selectedTask.kind === "code") && selectedTask.canApprove || selectedTask.kind === "owner_action" || selectedTask.needsPreparation
+              ? <Link href={discuss(selectedTask)}>{selectedTask.needsPreparation ? t(selectedTask.kind === "settings_proposal" ? "growth.prepareSettingsWithAda" : "growth.prepareChangeWithAda") : selectedTask.focus === "opportunity" ? t("growth.prepareWithAda") : selectedTask.kind === "article" ? t("growth.articleAskChanges") : selectedTask.kind === "code" ? t("growth.codeAskChanges") : t("growth.ask")} ↗</Link>
               : null}
             {selectedTask.kind === "article" && !selectedTask.canApprove
               ? <Link href={discuss(selectedTask)}>{t("growth.articleResolve")} ↗</Link>

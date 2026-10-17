@@ -233,7 +233,23 @@ class SourceDeploymentService:
 
     def _sync_publish_failure(self, job: Mapping[str, Any]) -> None:
         if self.memory is not None and job.get("mode") == _PRODUCTION and job.get("draft_id") is not None:
-            self.memory.update_draft_status(int(job["draft_id"]), "publish_failed")
+            draft_id = int(job["draft_id"])
+            self.memory.update_draft_status(draft_id, "publish_failed")
+            draft = next((row for row in self.memory.list_drafts(limit=500) if int(row.get("id") or 0) == draft_id), None)
+            package = (draft.get("meta") or {}).get("growth_package") if draft else None
+            if isinstance(package, Mapping) and package.get("candidateType") == "source_code":
+                reason = str(job.get("error") or "The approved website release failed its production checks")[:700]
+                for initiative in self.memory.list_strategy_initiatives(limit=500):
+                    if int(initiative.get("draft_id") or 0) != draft_id or initiative.get("state") not in {"publishing", "verifying_live"}:
+                        continue
+                    validation = dict(initiative.get("validation") or {})
+                    validation.update({"status": "blocked", "error": reason})
+                    self.memory.transition_strategy_initiative(
+                        int(initiative["id"]), "blocked", last_error=reason, validation=validation,
+                    )
+                from .growth_candidates import wake_growth_pending
+
+                wake_growth_pending(self.memory)
 
     def _fail_job(self, job_id: str, error: str) -> None:
         with self._lock:
@@ -845,6 +861,31 @@ class SourceDeploymentService:
         )
         self.memory.update_draft_status(draft_id, "live")
         self.memory.record_action("publish_live", f"#{draft_id} live at {str(result.get('commit') or '')[:8]}")
+        draft = next((row for row in self.memory.list_drafts(limit=500) if int(row.get("id") or 0) == draft_id), None)
+        package = (draft.get("meta") or {}).get("growth_package") if draft else None
+        if isinstance(package, Mapping) and package.get("candidateType") == "source_code":
+            source = package.get("source") if isinstance(package.get("source"), Mapping) else {}
+            self.memory.record_strategy_publication_for_draft(
+                draft_id,
+                baseline={
+                    "metric": str(package.get("metric") or "gsc.clicks"),
+                    "scope": {"kind": "website_source", "paths": list(source.get("changedPaths") or [])},
+                    "gsc": self.memory.latest_snapshot("gsc") or {},
+                    "ga4": self.memory.latest_snapshot("ga4") or {},
+                },
+                published_revision=f"git:{str(result.get('verified_commit') or result.get('commit') or '')}",
+                validation={
+                    "status": "passed",
+                    "liveVerification": {
+                        "verified": True,
+                        "commit": str(result.get("verified_commit") or result.get("commit") or ""),
+                        "releaseId": str(result.get("release_id") or ""),
+                    },
+                },
+            )
+        from .growth_candidates import wake_growth_pending
+
+        wake_growth_pending(self.memory)
 
     def _sync_compiled_preview_draft(
         self,
@@ -918,6 +959,10 @@ class SourceDeploymentService:
             meta=current_meta,
             draft_id=draft_id,
         )
+        if current_meta.get("growth_initiative_id"):
+            from .growth_candidates import wake_growth_pending
+
+            wake_growth_pending(self.memory)
 
     def _run_job(self, job_id: str, branch: str, requested_commit: str | None, mode: str) -> None:
         with self._lock:

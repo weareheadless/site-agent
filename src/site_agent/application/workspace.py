@@ -1374,8 +1374,10 @@ class ChatService:
         owner_context = body.get("context")
         owner_context = dict(owner_context) if isinstance(owner_context, Mapping) else {}
         task_id = str(owner_context.pop("growth_task_id", "") or "").strip()
+        growth_task_action = str(owner_context.pop("growth_task_action", "") or "").strip()
         owner_context.pop("growth_task", None)
         selected_task = None
+        revision_request = None
         if task_id:
             from .growth import growth_snapshot
             settings = tenant.config if tenant is not None else self.config
@@ -1394,6 +1396,43 @@ class ChatService:
                               if isinstance(selected_task.get("review"), Mapping) else None)
             if selected_task.get("kind") == "article" and isinstance(article_review, Mapping):
                 owner_context["growth_task"]["article"] = dict(article_review)
+            if growth_task_action:
+                if growth_task_action != "revise" or selected_task.get("kind") != "code" or not selected_task.get("canApprove"):
+                    raise BridgeError("only a ready Ada website recommendation can be revised")
+                try:
+                    initiative_id = int(str(task_id).removeprefix("initiative:"))
+                    previous_draft_id = int(selected_task.get("draftId") or 0)
+                except (TypeError, ValueError) as exc:
+                    raise BridgeError("the selected website recommendation has an invalid identity") from exc
+                revision_hash = str(selected_task.get("reviewPackageHash") or "")
+                from .growth_candidates import content_hash
+
+                initiative = next((
+                    row for row in memory.list_strategy_initiatives(limit=500)
+                    if int(row.get("id") or 0) == initiative_id
+                ), None)
+                previous_draft = memory.get_draft(previous_draft_id)
+                previous_meta = (previous_draft or {}).get("meta") if isinstance((previous_draft or {}).get("meta"), Mapping) else {}
+                previous_package = previous_meta.get("growth_package") if isinstance(previous_meta.get("growth_package"), Mapping) else {}
+                approval = memory.get_approval_request(int((initiative or {}).get("approval_id") or 0)) if initiative else None
+                if (
+                    initiative is None
+                    or initiative.get("kind") != "code"
+                    or initiative.get("state") != "ready_for_review"
+                    or int(initiative.get("draft_id") or 0) != previous_draft_id
+                    or previous_draft is None
+                    or previous_draft.get("status") != "pending"
+                    or previous_meta.get("review_package_hash") != revision_hash
+                    or content_hash(previous_package) != revision_hash
+                    or approval is None
+                    or approval.status.value != "pending"
+                ):
+                    raise BridgeError("this exact Growth proposal is no longer available for revision")
+                revision_request = {
+                    "initiativeId": initiative_id,
+                    "previousDraftId": previous_draft_id,
+                    "previousReviewPackageHash": revision_hash,
+                }
         if not message and not attachments:
             raise BridgeError("empty message")
         if len(message) > 8000:
@@ -1465,12 +1504,56 @@ class ChatService:
                 media_service.resolve_attachments([item["asset_id"] for item in attachments])
             except Exception as exc:  # noqa: BLE001 — normalize provider-specific errors
                 raise BridgeError(str(exc)[:500]) from exc
-        job_id = memory.enqueue_chat_job(
-            conversation_id,
-            self._contextual_message(message, context),
-            attachments,
-            display_message=message,
-        )
+        job_payload = {}
+        if revision_request:
+            initiative_id = int(revision_request["initiativeId"])
+            initiative = next((
+                row for row in memory.list_strategy_initiatives(limit=500)
+                if int(row.get("id") or 0) == initiative_id
+            ), None)
+            if initiative is None or initiative.get("state") != "ready_for_review":
+                raise BridgeError("the selected website proposal changed before the revision was queued")
+            previous_validation = dict(initiative.get("validation") or {})
+            revision_state = {
+                **revision_request,
+                "previousValidation": previous_validation,
+                "requestedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+            }
+            validation = {**previous_validation, "revision": revision_state, "status": "validating"}
+            memory.transition_strategy_initiative(
+                initiative_id, "validating", expected_state="ready_for_review", validation=validation,
+            )
+            previous = memory.get_draft(int(revision_request["previousDraftId"]))
+            previous_meta = dict((previous or {}).get("meta") or {})
+            previous_meta.update({"growth_revision_pending": True, "growth_revision_initiative_id": initiative_id})
+            if not memory.update_draft_meta(int(revision_request["previousDraftId"]), previous_meta):
+                restore_growth_source_revision(memory, initiative_id, "Ada could not start the requested revision.")
+                raise BridgeError("the existing website proposal could not be safely held for revision")
+            job_payload["growth_task_revision"] = dict(revision_request)
+        try:
+            job_id = memory.enqueue_chat_job(
+                conversation_id,
+                self._contextual_message(message, context),
+                attachments,
+                display_message=message,
+                payload=job_payload,
+            )
+        except Exception as exc:
+            if revision_request:
+                restore_growth_source_revision(memory, int(revision_request["initiativeId"]), str(exc))
+            raise
+        if revision_request:
+            initiative_id = int(revision_request["initiativeId"])
+            current = next((
+                row for row in memory.list_strategy_initiatives(limit=500)
+                if int(row.get("id") or 0) == initiative_id
+            ), None)
+            if current is not None:
+                validation = dict(current.get("validation") or {})
+                revision_state = dict(validation.get("revision") or {})
+                revision_state["chatJobId"] = job_id
+                validation["revision"] = revision_state
+                memory.update_strategy_initiative(initiative_id, validation=validation)
         if selected_task and selected_task.get("kind") == "owner_information" and selected_task.get("ownerActionId"):
             action_id = int(selected_task["ownerActionId"])
             action = memory.get_owner_action(action_id)
@@ -2567,6 +2650,79 @@ class ChatService:
         elif kind in {"merge", "rollback"}:
             adapter = self._merge_adapter(tenant)
             config = tenant.config if tenant is not None else self.config
+            growth_package = meta.get("growth_package") if isinstance(meta.get("growth_package"), Mapping) else None
+            growth_source = bool(growth_package and growth_package.get("candidateType") == "source_code")
+            growth_initiative = None
+            def block_growth_source(reason: str) -> None:
+                if not growth_source or growth_initiative is None:
+                    return
+                current = next((
+                    row for row in memory.list_strategy_initiatives(limit=500)
+                    if int(row.get("id") or 0) == int(growth_initiative["id"])
+                ), None)
+                if current is None or current.get("state") not in {"publishing", "verifying_live"}:
+                    return
+                error = str(reason or "The approved website change could not be published")[:700]
+                validation = dict(current.get("validation") or {})
+                validation.update({"status": "blocked", "error": error})
+                memory.transition_strategy_initiative(
+                    int(current["id"]), "blocked", last_error=error, validation=validation,
+                )
+            if growth_source:
+                from .approvals import ApprovalService
+                from .growth_candidates import content_hash
+                from .actions import OwnerActionService
+
+                source = growth_package.get("source") if isinstance(growth_package.get("source"), Mapping) else {}
+                preview = meta.get("preview") if isinstance(meta.get("preview"), Mapping) else {}
+                package_hash = str(meta.get("review_package_hash") or "")
+                if (
+                    kind != "merge"
+                    or tenant is None
+                    or meta.get("growth_candidate_pending") is True
+                    or not package_hash
+                    or content_hash(growth_package) != package_hash
+                    or str(growth_package.get("tenant") or "") != str(_tenant_id or "")
+                    or str(meta.get("head_sha") or "").lower() != str(source.get("candidateSha") or "").lower()
+                    or str(meta.get("base_sha") or "").lower() != str(source.get("baseSha") or "").lower()
+                    or preview.get("status") != "ready"
+                    or preview.get("requires_build") is True
+                    or str(preview.get("head_sha") or "").lower() != str(source.get("candidateSha") or "").lower()
+                ):
+                    raise BridgeError("Ada's exact website preview is not complete or no longer matches the approved source candidate")
+                growth_initiative = next((
+                    row for row in memory.list_strategy_initiatives(limit=500)
+                    if int(row.get("id") or 0) == int(growth_package.get("initiativeId") or 0)
+                ), None)
+                validation = growth_initiative.get("validation") if isinstance(growth_initiative, Mapping) and isinstance(growth_initiative.get("validation"), Mapping) else {}
+                checks = validation.get("checks") if isinstance(validation.get("checks"), Mapping) else {}
+                if (
+                    growth_initiative is None
+                    or growth_initiative.get("kind") != "code"
+                    or int(growth_initiative.get("draft_id") or 0) != normalized_id
+                    or growth_initiative.get("state") not in {"ready_for_review", "publishing"}
+                    or str(growth_initiative.get("review_package_hash") or "") != package_hash
+                    or validation.get("status") != "passed"
+                    or validation.get("packageHash") != package_hash
+                    or any(checks.get(name) is not True for name in ("exactDraft", "publicRenderer", "approvalBoundary"))
+                ):
+                    raise BridgeError("Ada's website improvement is not linked to a complete, exact Growth review package")
+                approval_id = int(growth_initiative.get("approval_id") or 0)
+                approval_service = ApprovalService(memory, actions=OwnerActionService(memory))
+                approval = memory.get_approval_request(approval_id) if approval_id else None
+                if approval is None or approval.status.value not in {"pending", "approved"}:
+                    raise BridgeError("Ada's website improvement has no pending owner approval")
+                if approval.status.value == "pending":
+                    approval = approval_service.decide(approval_id, True)
+                if approval.status.value != "approved":
+                    raise BridgeError("Ada's website improvement was not approved")
+                if growth_initiative.get("state") == "ready_for_review":
+                    memory.record_strategy_decision_for_draft(
+                        normalized_id, "approved", source_revision=str(source.get("candidateSha") or ""),
+                        review_package_hash=package_hash,
+                    )
+                elif growth_initiative.get("state") != "publishing":
+                    raise BridgeError("Ada's website improvement is not in an approvable state")
             if kind == "rollback":
                 preview_state = meta.get("preview") if isinstance(meta.get("preview"), Mapping) else {}
                 if (
@@ -2585,9 +2741,9 @@ class ChatService:
                 merge = getattr(adapter, "merge_preview", None)
             if not callable(merge):
                 raise BridgeError("the configured site cannot publish the exact website candidate")
-            if kind == "merge" and tenant is not None and tenant.context.get("source_deployment") is not None:
-                self._assert_reviewable_merge_candidate(draft, adapter, tenant)
             try:
+                if kind == "merge" and tenant is not None and tenant.context.get("source_deployment") is not None:
+                    self._assert_reviewable_merge_candidate(draft, adapter, tenant)
                 if kind == "rollback":
                     candidate = merge(
                         config, candidate_sha, base_sha,
@@ -2599,9 +2755,11 @@ class ChatService:
                         f"Publish website update: {str(draft.get('title') or normalized_id)[:160]}",
                     )
             except Exception as exc:  # noqa: BLE001 — approval must return a bounded error
+                block_growth_source(str(exc))
                 raise BridgeError(str(exc)[:500]) from exc
             if not isinstance(candidate, Mapping) or not candidate.get("merged"):
                 reason = candidate.get("reason") if isinstance(candidate, Mapping) else "merge was rejected"
+                block_growth_source(str(reason or "merge was rejected"))
                 raise BridgeError(str(reason)[:500])
             published = candidate
             version_type = "rollback" if kind == "rollback" else "merge"
@@ -2609,10 +2767,14 @@ class ChatService:
             commit_message = str(candidate.get("commit_message") or "")
             deployer = tenant.context.get("source_deployment") if tenant is not None else self.source_deployment
             start = getattr(deployer, "start", None)
+            if growth_source and not callable(start):
+                block_growth_source("the canonical production release service is unavailable")
+                raise BridgeError("the canonical production release service is unavailable; the website candidate was not deployed")
             if callable(start):
                 commit_sha = str(candidate.get("commit_sha") or "").strip().lower()
                 if not re.fullmatch(r"[0-9a-f]{40}", commit_sha):
                     memory.update_draft_status(normalized_id, "publish_failed")
+                    block_growth_source("the approved preview merge returned no full production Git SHA")
                     raise BridgeError("preview merged but the production commit could not be identified")
                 try:
                     memory.update_draft_status(normalized_id, "publishing")
@@ -2632,9 +2794,12 @@ class ChatService:
                 except Exception as exc:  # noqa: BLE001 — the merge already happened; retain an explicit failed state
                     memory.update_draft_status(normalized_id, "publish_failed")
                     memory.record_action("publish_failed", f"#{normalized_id}: {str(exc)[:400]}")
+                    block_growth_source(str(exc))
                     raise BridgeError(f"preview merged but live deployment could not be queued: {str(exc)[:400]}") from exc
                 result["status"] = {"deployed": "live", "failed": "publish_failed"}.get(production_deployment.get("status"), "publishing")
                 result["deployment"] = dict(production_deployment)
+                if production_deployment.get("status") == "failed":
+                    block_growth_source(str(production_deployment.get("error") or "The approved website release failed"))
             else:
                 memory.update_draft_status(normalized_id, "approved")
             if kind == "rollback":
@@ -2793,6 +2958,10 @@ class ChatService:
                 version_type=version_type,
                 commit_message=commit_message,
             )
+        if kind in {"design", "merge", "rollback"}:
+            from .growth_candidates import wake_growth_pending
+
+            wake_growth_pending(memory)
         if kind != "reflection":
             memory.record_action(
                 "publish_queued" if production_deployment else "approve",
@@ -2820,6 +2989,33 @@ class ChatService:
             current = self._current_pending_owner_update(memory)
             if current is not None and int(current.get("id") or 0) != normalized_id:
                 raise BridgeError("only the current website update can be reviewed")
+        meta = draft.get("meta") if isinstance(draft.get("meta"), Mapping) else {}
+        growth_package = meta.get("growth_package") if isinstance(meta.get("growth_package"), Mapping) else None
+        if growth_package and growth_package.get("candidateType") == "source_code":
+            from .approvals import ApprovalService
+            from .actions import OwnerActionService
+
+            initiative_id = int(growth_package.get("initiativeId") or 0)
+            initiative = next((
+                row for row in memory.list_strategy_initiatives(limit=500)
+                if int(row.get("id") or 0) == initiative_id and int(row.get("draft_id") or 0) == normalized_id
+            ), None)
+            approval_id = int((initiative or {}).get("approval_id") or 0)
+            approval = memory.get_approval_request(approval_id) if approval_id else None
+            if initiative is None or approval is None or approval.status.value not in {"pending", "declined"}:
+                raise BridgeError("Ada's website recommendation has no matching owner decision to decline")
+            if approval.status.value == "pending":
+                approval = ApprovalService(memory, actions=OwnerActionService(memory)).decide(approval_id, False)
+            if approval.status.value != "declined":
+                raise BridgeError("Ada's website recommendation could not be declined")
+            if initiative.get("state") == "ready_for_review":
+                source = growth_package.get("source") if isinstance(growth_package.get("source"), Mapping) else {}
+                memory.record_strategy_decision_for_draft(
+                    normalized_id, "rejected", source_revision=str(source.get("candidateSha") or ""),
+                    review_package_hash=str(meta.get("review_package_hash") or ""),
+                )
+            elif initiative.get("state") != "rejected":
+                raise BridgeError("Ada's website recommendation is not in a declinable state")
         if kind in {"merge", "rollback"}:
             other_pending = [
                 item for item in memory.list_drafts(status="pending", limit=500)
@@ -2856,6 +3052,10 @@ class ChatService:
         if not memory.update_draft_status(normalized_id, "discarded"):
             raise BridgeError("no such draft")
         memory.record_action("discard", f"#{normalized_id}")
+        if kind in {"design", "merge", "rollback"}:
+            from .growth_candidates import wake_growth_pending
+
+            wake_growth_pending(memory)
         return {"ok": True, "draft_id": normalized_id, "status": "discarded"}
 
     def restore_version(self, version_id: Any, *, tenant: Tenant | None = None) -> dict[str, Any]:

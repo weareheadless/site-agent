@@ -20,7 +20,7 @@ def test_successful_first_party_ingestion_has_one_authoritative_history(tmp_path
     memory.close()
 
 
-def test_v50_preserves_historical_report_and_initiative_links(tmp_path, monkeypatch):
+def test_v52_preserves_historical_report_and_initiative_links(tmp_path, monkeypatch):
     path = tmp_path / "tenant.db"
     with monkeypatch.context() as older:
         older.setattr(memory_module, "SCHEMA_VERSION", 49)
@@ -29,7 +29,7 @@ def test_v50_preserves_historical_report_and_initiative_links(tmp_path, monkeypa
         initiative = memory.create_strategy_initiative(cycle["id"], kind="article", title="Existing work", summary="Keep this work", state="identified")
         memory.close()
     migrated = Memory(path)
-    assert migrated.get_schema_version() == 50
+    assert migrated.get_schema_version() == 52
     assert migrated.list_strategy_initiatives()[0]["id"] == initiative
     assert migrated.list_strategy_initiatives()[0]["cycle_id"] == cycle["id"]
     assert migrated.get_strategy_cycle("real-report")["id"] == cycle["id"]

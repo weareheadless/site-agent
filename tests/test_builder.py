@@ -704,21 +704,18 @@ def test_prepare_preview_always_isolated_and_never_touches_local_work(tmp_path, 
     assert "Local work" in (clone / "index.html").read_text()
 
 
-def test_stage_merge_draft_supersedes_older_pending_merges(tmp_path):
+def test_stage_merge_draft_preserves_older_pending_owner_proposals(tmp_path):
     memory = Memory(tmp_path / "m.db")
     old = memory.save_draft("first build", "diff", kind="merge",
                             meta={"head": "preview", "base": "main"})
     keep = memory.save_draft("pending edit", "{}", kind="edit", meta={"ops": []})
     context = {"config": {}, "memory": memory}
-    new = runner.stage_merge_draft(context, "improve the page", {"diff_stat": "coaching.html | 3 ++"})
+    with pytest.raises(runner.RunnerError, match="already awaiting its owner decision"):
+        runner.stage_merge_draft(context, "improve the page", {"diff_stat": "coaching.html | 3 ++"})
     statuses = {d["id"]: d["status"] for d in memory.list_drafts(limit=10)}
-    assert statuses[old] == "discarded"
-    assert statuses[keep] == "pending"          # unrelated edits survive
-    assert statuses[new] == "pending"
-    draft = [d for d in memory.list_drafts(limit=10) if d["id"] == new][0]
-    assert draft["kind"] == "merge"
-    assert draft["meta"]["summary"] == "improve the page"
-    assert draft["meta"]["preview"]["mode"] == "compile"
+    assert statuses[old] == "pending"
+    assert statuses[keep] == "pending"
+    assert len(statuses) == 2
     memory.close()
 
 
