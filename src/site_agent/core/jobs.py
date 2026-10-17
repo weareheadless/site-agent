@@ -772,16 +772,6 @@ def _has_recoverable_article_sync(memory: Memory) -> bool:
             return True
     return False
 
-
-def _has_recoverable_article_research(memory: Memory) -> bool:
-    """Wake only the known pre-dispatch validation rejection, never paid/uncertain work."""
-    return any(
-        not idea.get("research_run_id")
-        and not idea.get("serp_run_id")
-        and "crawlseo idea_summary is invalid" in str(idea.get("error") or "").lower()
-        for idea in memory.list_article_ideas(status="selected", limit=50)
-    )
-
 def _wake_persisted_job(scheduler: Scheduler, name: str) -> None:
     """Make an exact, safely recoverable persisted job due on activation."""
     key = f"next_run:{name}"
@@ -834,7 +824,6 @@ def register_growth_jobs(scheduler: Scheduler, config: dict[str, Any], context: 
         if name == "growth_pending" and (
             has_recoverable_growth_replay(scheduler.memory)
             or has_recoverable_historical_noop(scheduler.memory)
-            or _has_recoverable_article_research(scheduler.memory)
         ):
             _wake_persisted_job(scheduler, name)
         elif name == "growth_article_sync" and _has_recoverable_article_sync(scheduler.memory):
