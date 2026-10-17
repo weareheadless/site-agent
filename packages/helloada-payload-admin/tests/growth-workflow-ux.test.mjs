@@ -16,3 +16,13 @@ test('Ada’s work links to evidence instead of asking the owner to launch the a
   assert.match(component, /onNavigate\("results", "search"\)/);
   assert.doesNotMatch(component, /effect\(undefined, "check"\)/);
 });
+
+test('owner-information decisions show readable evidence and continue into the linked Ada conversation', () => {
+  assert.match(component, /requirement === "owner_information"/);
+  assert.match(component, /helloada-growth-owner-evidence/);
+  assert.match(component, /helloada-growth-owner-answer/);
+  assert.match(component, /growth\.ownerAnswerLabel/);
+  assert.match(component, /url\.searchParams\.set\("growth_task", task\.id\)/);
+  assert.match(styles, /helloada-growth-owner-evidence[^\n]*background: #fff7f3/);
+  assert.match(styles, /helloada-growth-owner-answer[^\n]*background: var\(--helloada-accent\)/);
+});
