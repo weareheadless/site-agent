@@ -192,8 +192,12 @@ def test_article_sync_adopts_exact_unpublished_payload_draft_after_local_checkpo
 
     sync = memory.list_drafts()[0]["meta"]["payload_sync"]
     assert payload.creates == 1
-    assert payload.updates == 0
+    # Clearing the local checkpoint advances updated_ts, so only the
+    # system-owned modifiedAt field is reconciled with Payload's CAS revision.
+    assert payload.updates == 1
     assert payload.publishes == 0
+    assert payload.documents[0]["title"] == "An interrupted guide"
+    assert payload.documents[0]["body"] == payload.created_data[0]["body"]
     assert sync["state"] == "ready_for_review"
     assert sync["document_id"] == "post-1"
     assert sync["source_id"] == "posts:an-interrupted-guide"
