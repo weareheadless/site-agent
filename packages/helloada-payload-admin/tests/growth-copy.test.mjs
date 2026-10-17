@@ -24,6 +24,8 @@ test('Growth translations load and contain the unified plan for every supported 
       'growth.articleResolvePrompt', 'growth.taskResolvePrompt', 'growth.taskState_not_running',
       'growth.panel_next', 'growth.panel_work', 'growth.panel_results', 'growth.homeTitle',
       'growth.decisionListTitle', 'growth.decisionCtaReview', 'growth.decisionCtaAnswer',
+      'growth.ownerQuestionTitle', 'growth.ownerQuestionObserved', 'growth.ownerQuestionDetails',
+      'growth.ownerQuestionHint', 'growth.ownerAnswerLabel',
       'growth.decisionCtaArticle', 'growth.decisionCtaChanges', 'growth.articleWhyThis',
       'growth.serviceNoticeTitle', 'growth.serviceNoticeBody', 'growth.openAdaWork',
       'growth.seeAllDecisions', 'growth.noDecisions', 'growth.noDecisionAskPrompt',
