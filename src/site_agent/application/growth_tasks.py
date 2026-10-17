@@ -143,6 +143,26 @@ def growth_tasks(
     actions = {row.id: row.to_record() for row in memory.list_owner_actions(limit=None)}
     active_runs = _active_run_ids(runs)
     draft_by_id = {row['id']: row for row in drafts}
+    pending_website_changes = [
+        row for row in drafts
+        if row.get('kind') in {'design', 'merge', 'rollback'}
+        and row.get('status') in {'pending', 'publishing', 'publish_failed'}
+    ]
+    actionable_website_changes = [
+        row for row in pending_website_changes
+        if not (row.get('status') in {'pending', 'blocked'} and
+            isinstance(row.get('meta'), Mapping)
+            and isinstance(row['meta'].get('preview'), Mapping)
+            and row['meta']['preview'].get('status') in {'blocked', 'failed', 'error'}
+        )
+    ]
+    failed_website_change = next((
+        row for row in pending_website_changes
+        if row.get('status') in {'pending', 'blocked'}
+        if isinstance(row.get('meta'), Mapping)
+        and isinstance(row['meta'].get('preview'), Mapping)
+        and row['meta']['preview'].get('status') in {'blocked', 'failed', 'error'}
+    ), None)
     idea_by_draft = {str(row.get("draft_id")): row for row in article_ideas if row.get("draft_id") is not None}
     idea_by_id = {str(row.get("id")): row for row in article_ideas if row.get("id") is not None}
     linked_actions, linked_drafts, linked_approvals, tasks = set(), set(), set(), []
@@ -184,7 +204,17 @@ def growth_tasks(
             or source_preview.get('requires_build') is True
             and source_preview.get('status') not in {'blocked', 'failed', 'error'}
         )
-        source_waiting_for_owner = bool(validation.get('waitingForWebsiteDecision'))
+        source_waiting_for_owner = bool(validation.get('waitingForWebsiteDecision') and actionable_website_changes)
+        source_blocked_by_preview = bool(
+            validation.get('waitingForWebsiteDecision')
+            and not actionable_website_changes
+            and failed_website_change
+        )
+        source_failure_reason = None
+        if source_blocked_by_preview and isinstance(failed_website_change.get('meta'), Mapping):
+            failed_preview = failed_website_change['meta'].get('preview')
+            if isinstance(failed_preview, Mapping):
+                source_failure_reason = str(failed_preview.get('error') or '') or None
         if action:
             linked_actions.add(action['id'])
         if draft_id:
@@ -202,7 +232,7 @@ def growth_tasks(
         elif state == 'waiting_for_owner':
             focus = 'needs_you'
         elif state in {'preparing', 'validating'}:
-            focus = 'preparing' if str(initiative.get('growth_run_id') or '') in active_runs or source_work_active or source_waiting_for_owner else 'paused'
+            focus = 'preparing' if str(initiative.get('growth_run_id') or '') in active_runs or source_work_active else 'paused'
         elif state in {'publishing', 'verifying_live'}:
             focus = 'preparing' if action_job else 'paused'
         else:
@@ -258,6 +288,9 @@ def growth_tasks(
         if initiative.get('kind') == 'code' and validation.get('revisionFailure'):
             summary_key = 'sourceRevisionFailed'
             initiative_summary = str(validation['revisionFailure'])
+        elif initiative.get('kind') == 'code' and source_blocked_by_preview and not review_ready:
+            summary_key = 'sourceWebsitePreviewBlocked'
+            initiative_summary = 'Ada’s earlier website preview failed a required check. It was not published; Ada must prepare a valid preview before continuing this source change.'
         elif initiative.get('kind') == 'code' and source_waiting_for_owner and not review_ready:
             summary_key = 'sourceWaitingForWebsiteDecision'
             initiative_summary = 'Ada is ready to continue this recommendation after the current website change is decided.'
@@ -278,7 +311,7 @@ def growth_tasks(
         elif stale_work:
             focus = 'paused'
         task_state = 'ready_for_review' if review_ready else 'blocked' if state in {'ready_for_review', 'blocked', 'uncertain'} else state
-        if stale_work:
+        if stale_work or source_waiting_for_owner:
             task_state = 'not_running'
         tasks.append({'id': f"initiative:{initiative['id']}", 'kind': initiative.get('kind'), 'title': (draft.get('title') or initiative.get('title')) if article_draft else initiative.get('title'),
             'summary': _compact_summary(initiative_summary), 'summaryKey': summary_key, 'scope': initiative_scope,
@@ -286,8 +319,9 @@ def growth_tasks(
             'priority': action.get('priority') or initiative.get('priority') or 'normal',
             'requirement': action.get('requirement'),
             'conversationId': action.get('conversation_id'), 'approvalId': approval_id,
-            'reviewPackageHash': review_hash, 'lastError': validation.get('revisionFailure'),
-            'executionIssue': state in {'blocked', 'uncertain'} or bool(validation.get('revisionFailure')) or stale_work,
+            'reviewPackageHash': review_hash,
+            'lastError': validation.get('revisionFailure') or source_failure_reason,
+            'executionIssue': state in {'blocked', 'uncertain'} or bool(validation.get('revisionFailure')) or stale_work or source_blocked_by_preview,
             'canApprove': review_ready,
             'previewUrl': ((package.get('source') or {}).get('previewUrl') if isinstance(package.get('source'), Mapping) else None),
             'review': {'before': package.get('before'), 'after': package.get('after'), 'changes': package.get('changes'), 'route': package.get('route'),
@@ -415,9 +449,15 @@ def growth_tasks(
                 'updatedAt': draft.get('updated_ts'),
             })
             continue
-        if draft['id'] in linked_drafts or draft.get('kind') not in {'article', 'edit', 'payload_content', 'design', 'merge', 'rollback'} or draft.get('status') != 'pending':
-            continue
         meta = draft.get('meta') if isinstance(draft.get('meta'), Mapping) else {}
+        preview = meta.get('preview') if isinstance(meta.get('preview'), Mapping) else {}
+        failed_preview = (
+            draft.get('kind') in {'design', 'merge', 'rollback'}
+            and draft.get('status') in {'pending', 'blocked'}
+            and preview.get('status') in {'blocked', 'failed', 'error'}
+        )
+        if draft['id'] in linked_drafts or draft.get('kind') not in {'article', 'edit', 'payload_content', 'design', 'merge', 'rollback'} or (draft.get('status') != 'pending' and not failed_preview):
+            continue
         sync = meta.get('payload_sync') if isinstance(meta.get('payload_sync'), Mapping) else {}
         article_ready = _article_is_reviewable(draft, sync)
         article_idea = idea_by_draft.get(str(draft.get("id")))
@@ -452,21 +492,27 @@ def growth_tasks(
                 summary = 'This saved article has not entered a validated review package.'
                 summary_key = 'articleNotReady'
             scope = rationale
+        elif failed_preview:
+            summary = 'The private website preview failed a required check. Nothing was published; Ada needs to prepare a valid preview before you can review this change.'
+            summary_key = 'websitePreviewBlocked'
+            scope = _compact_summary(meta.get('summary') or '', limit=700)
+            change_operations = []
         else:
             needs_preparation = True
             summary_key = 'codeChangeNotReady' if draft.get('kind') == 'merge' else 'websiteChangeNotReady'
             summary = ''
             scope = _compact_summary(meta.get('summary') or '', limit=700)
             change_operations = _visible_edit_operations(meta) if draft.get('kind') == 'edit' else []
-        tasks.append({'id': f"draft:{draft['id']}", 'kind': draft['kind'], 'title': draft['title'],
+        task_title = str(meta.get('summary') or draft.get('title') or '') if failed_preview else draft['title']
+        tasks.append({'id': f"draft:{draft['id']}", 'kind': draft['kind'], 'title': task_title,
             'summary': summary, 'summaryKey': summary_key, 'scope': scope,
-            'focus': focus, 'state': 'ready_for_review' if article_ready else 'not_running' if stale_sync else state, 'draftId': draft['id'],
+            'focus': focus, 'state': 'blocked' if failed_preview else 'ready_for_review' if article_ready else 'not_running' if stale_sync else state, 'draftId': draft['id'],
             'reviewPackageHash': meta.get('review_package_hash') if article_ready else None,
             'review': {'article': article_data} if article_data else {'changeOperations': change_operations} if change_operations else None,
             'canApprove': article_ready,
             'needsPreparation': needs_preparation,
-            'lastError': None,
-            'executionIssue': bool(article_draft and (blocked or stale_sync)),
+            'lastError': str(preview.get('error') or '') if failed_preview else None,
+            'executionIssue': failed_preview or bool(article_draft and (blocked or stale_sync)),
             'updatedAt': draft.get('updated_ts')})
     for idea in article_ideas:
         if idea.get('draft_id'):

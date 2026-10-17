@@ -111,13 +111,25 @@ def _pending_website_drafts(memory: Any, *, exclude_id: int | None = None) -> li
         revision = validation.get("revision") if isinstance(validation.get("revision"), Mapping) else {}
         if initiative.get("state") == "validating" and revision.get("previousDraftId"):
             revision_drafts.add(int(revision["previousDraftId"]))
-    return [
-        row for row in memory.list_drafts(limit=500)
-        if int(row.get("id") or 0) != int(exclude_id or 0)
-        and int(row.get("id") or 0) not in revision_drafts
-        and row.get("kind") in {"design", "merge", "rollback"}
-        and row.get("status") in {"pending", "publishing", "publish_failed"}
-    ]
+    pending = []
+    for row in memory.list_drafts(limit=500):
+        if (
+            int(row.get("id") or 0) == int(exclude_id or 0)
+            or int(row.get("id") or 0) in revision_drafts
+            or row.get("kind") not in {"design", "merge", "rollback"}
+            or row.get("status") not in {"pending", "publishing", "publish_failed"}
+        ):
+            continue
+        meta = row.get("meta") if isinstance(row.get("meta"), Mapping) else {}
+        preview = meta.get("preview") if isinstance(meta.get("preview"), Mapping) else {}
+        # A failed/blocked preview is a service failure, not an owner decision.
+        # It cannot be published (the publish boundary independently verifies
+        # the exact ready receipt) and must not hold every later candidate
+        # hostage behind a decision the owner cannot make.
+        if row.get("status") == "pending" and preview.get("status") in {"blocked", "failed", "error"}:
+            continue
+        pending.append(row)
+    return pending
 
 
 def _source_brief(initiative: Mapping[str, Any], opportunity: Mapping[str, Any]) -> str:

@@ -940,7 +940,8 @@ def builder_available(config: dict[str, Any]) -> bool:
 def _build_base_ref(memory: Any, config: Mapping[str, Any] | None = None) -> str:
     """Start from origin/preview when an earlier build is still waiting for
     approval, so a follow-up request improves that preview instead of
-    discarding the unapproved page and starting from main again."""
+    discarding the unapproved page and starting from main again. A failed
+    preview is not reviewable and cannot be a base for a later candidate."""
     site = config.get("site") if isinstance(config, Mapping) and isinstance(config.get("site"), Mapping) else {}
     preview_branch = str(site.get("preview_branch") or PREVIEW_BRANCH)
     if memory is not None:
@@ -948,7 +949,15 @@ def _build_base_ref(memory: Any, config: Mapping[str, Any] | None = None) -> str
             pending = memory.list_drafts(status="pending")
         except Exception:  # noqa: BLE001
             pending = []
-        if any(d.get("kind") == "merge" for d in pending):
+        if any(
+            d.get("kind") == "merge"
+            and not (
+                isinstance(d.get("meta"), Mapping)
+                and isinstance(d["meta"].get("preview"), Mapping)
+                and d["meta"]["preview"].get("status") in {"blocked", "failed", "error"}
+            )
+            for d in pending
+        ):
             return f"origin/{preview_branch}"
     return "origin/main"
 
@@ -2894,6 +2903,11 @@ def stage_merge_draft(context: dict[str, Any], message: str, outcome: dict[str, 
     pending_website_reviews = [
         draft for draft in memory.list_drafts(status="pending")
         if draft.get("kind") in {"design", "merge", "rollback"}
+        and not (
+            isinstance(draft.get("meta"), Mapping)
+            and isinstance(draft["meta"].get("preview"), Mapping)
+            and draft["meta"]["preview"].get("status") in {"blocked", "failed", "error"}
+        )
     ]
     revision = context.get("_growth_task_revision")
     if isinstance(revision, Mapping):

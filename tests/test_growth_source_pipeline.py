@@ -78,6 +78,84 @@ def test_source_candidate_waits_for_owner_and_resumes_from_its_saved_brief(tmp_p
         memory.close()
 
 
+def test_blocked_private_preview_does_not_hold_a_new_growth_candidate_or_reuse_bad_base(tmp_path, monkeypatch):
+    memory = Memory(tmp_path / "memory.db")
+    try:
+        monkeypatch.setattr(opencode_runner, "builder_available", lambda _config: True)
+        initiative = _initiative(memory)
+        failed_id = memory.save_draft(
+            "Preview blocked: Journal link", "", kind="merge",
+            meta={"summary": "Repair the Journal link", "preview": {"status": "blocked", "error": "source policy rejected the candidate"}},
+        )
+        job_id = queue_source_candidate(
+            {"memory": memory, "config": {}, "tenant_id": "oceanicvibes"},
+            initiative,
+            {"title": initiative["title"], "why": initiative["rationale"],
+             "scope": initiative["summary"], "evidence": ["source:crawl"]},
+            {"evidenceHash": "sha256:evidence"},
+        )
+
+        assert job_id is not None
+        assert memory.get_draft(failed_id)["status"] == "pending"
+        assert memory.get_chat_job(job_id)["status"] == "queued"
+        assert opencode_runner._build_base_ref(memory, {"site": {}}) == "origin/main"
+    finally:
+        memory.close()
+
+
+def test_failed_preview_stops_blocking_only_before_publication_begins(tmp_path):
+    from site_agent.application.growth_candidates import _pending_website_drafts
+
+    memory = Memory(tmp_path / "memory.db")
+    try:
+        blocked_pending = memory.save_draft(
+            "Blocked owner candidate", "", kind="merge",
+            meta={"preview": {"status": "blocked", "error": "validation failed"}},
+        )
+        publishing = memory.save_draft(
+            "Approved deployment", "", kind="merge",
+            meta={"preview": {"status": "blocked", "error": "validation failed"}},
+        )
+        memory.update_draft_status(publishing, "publishing")
+
+        assert [row["id"] for row in _pending_website_drafts(memory)] == [publishing]
+        assert memory.get_draft(blocked_pending)["status"] == "pending"
+    finally:
+        memory.close()
+
+
+def test_growth_source_waiting_on_failed_preview_is_paused_with_real_failure(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    try:
+        initiative = _initiative(memory, validation={
+            "waitingForWebsiteDecision": True,
+            "preparation": {"kind": "source_code", "brief": "Saved exact work", "briefHash": "sha256:brief"},
+        })
+        failed_id = memory.save_draft(
+            "Preview blocked: Journal link", "", kind="merge",
+            meta={"summary": "Repair the Journal link", "preview": {"status": "blocked", "error": "source policy rejected the candidate"}},
+        )
+        current = memory.update_strategy_initiative(initiative["id"])
+        tasks = growth_tasks(memory, [current], memory.list_drafts(limit=None), [], [], runs=[])
+        source = next(row for row in tasks if row["id"] == f"initiative:{initiative['id']}")
+        draft = next(row for row in tasks if row["id"] == f"draft:{failed_id}")
+
+        assert source["focus"] == "paused"
+        assert source["state"] == "not_running"
+        assert source["summaryKey"] == "sourceWebsitePreviewBlocked"
+        assert source["lastError"] == "source policy rejected the candidate"
+        assert source["executionIssue"] is True
+        assert source["canApprove"] is False
+        assert draft["title"] == "Repair the Journal link"
+        assert draft["summaryKey"] == "websitePreviewBlocked"
+        assert draft["lastError"] == "source policy rejected the candidate"
+        assert draft["executionIssue"] is True
+        assert draft["needsPreparation"] is False
+        assert draft["canApprove"] is False
+    finally:
+        memory.close()
+
+
 def test_growth_tasks_keep_internal_source_build_visible_after_assessment_ends(tmp_path):
     memory = Memory(tmp_path / "memory.db")
     try:
@@ -140,6 +218,24 @@ def test_source_builder_does_not_discard_an_existing_owner_merge(tmp_path):
                 "new source change", {"changed_paths": []},
             )
         assert memory.get_draft(draft_id)["status"] == "pending"
+    finally:
+        memory.close()
+
+
+def test_source_builder_can_replace_only_a_merge_whose_private_preview_failed(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    try:
+        failed_id = memory.save_draft(
+            "Preview blocked: Old change", "", kind="merge",
+            meta={"preview": {"status": "blocked", "error": "required source check failed"}},
+        )
+        new_id = opencode_runner.stage_merge_draft(
+            {"memory": memory, "config": {"site": {}}},
+            "New bounded website change", {"changed_paths": ["src/components/site/TenantChrome.tsx"]},
+        )
+        assert new_id != failed_id
+        assert memory.get_draft(failed_id)["status"] == "pending"
+        assert memory.get_draft(new_id)["status"] == "pending"
     finally:
         memory.close()
 
