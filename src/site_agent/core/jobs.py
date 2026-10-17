@@ -746,11 +746,7 @@ def _article_research_cycle(context: dict[str, Any]) -> None:
 
 def _has_recoverable_article_sync(memory: Memory) -> bool:
     """Wake only pending drafts with an exact structural recovery path."""
-    recoverable_reasons = {
-        "payload posts contract is missing required fields: sourceid",
-        "an existing payload post is not linked to ada's exact sync record; it must be reviewed before any update.",
-        "payload gateway returned 409: a payload document already uses this route; read and update that exact draft instead.",
-    }
+    recoverable_reasons = {"payload posts contract is missing required fields: sourceid"}
     for draft in memory.list_drafts(limit=None):
         if draft.get("kind") != "article" or draft.get("status") != "pending":
             continue
