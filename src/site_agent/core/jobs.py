@@ -320,8 +320,7 @@ def _article_image_preview(value: Any) -> dict[str, Any] | None:
 
 def _payload_relation_id(value: Any) -> str:
     if isinstance(value, Mapping):
-        nested = value.get("value")
-        value = nested if isinstance(nested, Mapping) else value
+        value = value.get("value", value)
         if isinstance(value, Mapping):
             value = value.get("id")
     return str(value).strip() if value is not None else ""
