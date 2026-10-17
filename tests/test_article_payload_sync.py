@@ -409,7 +409,7 @@ def test_article_without_analyzed_payload_cover_is_blocked_before_post_creation(
     assert payload.creates == 0
     assert sync["state"] == "blocked"
     assert sync["validation"]["status"] == "blocked"
-    assert "analyzed Payload Library image" in sync["validation"]["reason"]
+    assert "Payload Library has no analyzed image with alt text" in sync["validation"]["reason"]
     memory.close()
 
 
