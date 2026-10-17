@@ -1112,6 +1112,29 @@ def run_growth_cycle(
                 })
                 continue
             initiative = by_title.get(opportunity["title"])
+            if initiative is not None and initiative["state"] in {
+                "deferred", "rejected", "reviewed", "superseded", "completed", "cancelled",
+            }:
+                if initiative["state"] == "deferred" and not any(
+                    item.get("kind") == opportunity.get("kind")
+                    and item.get("title") == opportunity.get("title")
+                    for item in unprepared_opportunities
+                ):
+                    validation = initiative.get("validation") if isinstance(initiative.get("validation"), Mapping) else {}
+                    unprepared = {
+                        **opportunity,
+                        "disposition": "deferred",
+                        "relatedInitiativeId": initiative["id"],
+                        "preparationNote": str(
+                            validation.get("reason")
+                            or initiative.get("last_error")
+                            or "This finding was deferred earlier in the same assessment and was not retried."
+                        ),
+                    }
+                    if validation.get("reassessWhen"):
+                        unprepared["reassessWhen"] = str(validation["reassessWhen"])
+                    unprepared_opportunities.append(unprepared)
+                continue
             if initiative is None:
                 initiative_id = memory.create_strategy_initiative(cycle["id"], kind=opportunity["kind"], title=opportunity["title"],
                     summary=opportunity["scope"], hypothesis=str(opportunity.get("hypothesis") or ""), rationale=opportunity["why"], evidence=opportunity["evidence"],
