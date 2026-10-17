@@ -41,6 +41,37 @@ def test_noop_growth_preparation_is_not_a_technical_failure(monkeypatch):
 
 
 
+
+def test_historical_noop_block_is_reclassified_without_touching_candidate_content(tmp_path):
+    from site_agent.application.growth_workflow import (
+        has_recoverable_historical_noop,
+        reconcile_historical_noop_initiatives,
+    )
+
+    memory = Memory(tmp_path / "memory.db")
+    cycle = memory.create_strategy_cycle("report-noop", "2026-10", "hash-noop", {})
+    safe_id = memory.create_strategy_initiative(
+        cycle["id"], kind="payload_content", title="Already correct", summary="No edit is needed.",
+        state="blocked", last_error="Ada proposed no actual change", validation={"status": "blocked"},
+    )
+    unsafe_id = memory.create_strategy_initiative(
+        cycle["id"], kind="payload_content", title="Candidate exists", summary="Must not be hidden.",
+        state="blocked", last_error="Ada proposed no actual change", candidate_hash="candidate-hash",
+        validation={"status": "blocked"},
+    )
+
+    assert has_recoverable_historical_noop(memory)
+    assert reconcile_historical_noop_initiatives(memory) == 1
+    rows = {row["id"]: row for row in memory.list_strategy_initiatives(limit=None)}
+    assert rows[safe_id]["state"] == "deferred"
+    assert rows[safe_id]["validation"]["errorCode"] == "no_actionable_change"
+    assert "nothing to approve" in rows[safe_id]["validation"]["reason"]
+    assert rows[safe_id]["last_error"] == rows[safe_id]["validation"]["reason"]
+    assert rows[unsafe_id]["state"] == "blocked"
+    assert not has_recoverable_historical_noop(memory)
+    assert reconcile_historical_noop_initiatives(memory) == 0
+    memory.close()
+
 def test_growth_candidate_lineage_and_lifecycle_are_persisted(tmp_path):
     memory = Memory(tmp_path / "memory.db")
     try:
