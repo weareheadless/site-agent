@@ -20,6 +20,7 @@ Registered today:
 from __future__ import annotations
 
 import datetime
+import json
 import re
 import time
 import unicodedata
@@ -49,6 +50,7 @@ from ..application.growth_workflow import (
 from ..senses import collect
 from . import maintenance
 from .contracts import ActionState, ApprovalStatus, ArtifactKind
+from .llm import extract_json
 from .payload_rich_text import lexical_text, markdown_to_lexical
 from .design_contracts import canonical_hash
 from .memory import Memory
@@ -402,7 +404,8 @@ def _is_exact_unlinked_article_draft(document: Mapping[str, Any], post: Mapping[
         return False
     system_fields = {"canonicalUrl", "modifiedAt"}
     return all(
-        _payload_field_matches(field, document.get(field), expected)
+        field == "featuredImage" and _payload_value_is_empty(document.get(field))
+        or _payload_field_matches(field, document.get(field), expected)
         for field, expected in post.items()
         if field not in system_fields
     )
@@ -417,6 +420,146 @@ def _read_article_draft_by_slug(payload: Any, slug: str, language: str) -> dict[
         if getattr(exc, "status_code", None) == 404:
             return None
         raise
+
+
+def _article_cover_image(
+    context: dict[str, Any],
+    payload: Any,
+    draft: Mapping[str, Any],
+    meta: Mapping[str, Any],
+) -> tuple[str, dict[str, Any], dict[str, Any]]:
+    """Select one analyzed tenant-library image and pin its exact revision."""
+    saved = meta.get("article_image_selection")
+    saved = saved if isinstance(saved, Mapping) else {}
+    explicit_id = (
+        saved.get("media_id")
+        or meta.get("featuredImage")
+        or meta.get("featured_image_id")
+        or meta.get("featured_image")
+    )
+    if explicit_id is not None:
+        media = payload.read_media(str(explicit_id), identifier_kind="id", draft=True)
+        if saved and str(media.get("_helloadaRevision") or "") != str(saved.get("media_revision") or ""):
+            raise RuntimeError("The selected Payload cover image changed after Ada chose it; the article needs a fresh image review.")
+        reason = str(saved.get("reason") or "Selected from the tenant's Payload Library for this article.")
+        if not saved:
+            revision = str(media.get("_helloadaRevision") or "")
+            if not re.fullmatch(r"sha256:[0-9a-f]{64}", revision):
+                raise RuntimeError("The selected Payload cover image has no exact revision and cannot be attached safely.")
+            saved = {
+                "media_id": str(explicit_id),
+                "media_revision": revision,
+                "reason": reason,
+            }
+            next_meta = dict(meta)
+            next_meta["article_image_selection"] = saved
+            context["memory"].update_draft_meta(int(draft["id"]), next_meta)
+    else:
+        assets = payload.list_media(draft=True, limit=100)
+        eligible = []
+        for asset in assets:
+            if not isinstance(asset, Mapping) or str(asset.get("analysisStatus") or "").lower() != "ready":
+                continue
+            if not str(asset.get("id") or "").strip() or not str(asset.get("sourceId") or "").strip():
+                continue
+            if not str(asset.get("alt") or "").strip():
+                continue
+            image_url = str(asset.get("url") or asset.get("originalUrl") or "").strip()
+            if not (image_url.startswith("https://") or image_url.startswith("/") and not image_url.startswith("//")):
+                continue
+
+            def values(field: str) -> list[str]:
+                raw = asset.get(field)
+                rows = raw if isinstance(raw, list) else []
+                return [
+                    str(item.get("value") or "").strip()[:180]
+                    for item in rows
+                    if isinstance(item, Mapping) and str(item.get("value") or "").strip()
+                ][:8]
+
+            eligible.append({
+                "id": str(asset["id"]),
+                "alt": str(asset.get("alt") or "")[:300],
+                "filename": str(asset.get("filename") or "")[:180],
+                "description": str(asset.get("description") or "")[:400],
+                "tags": values("tags"),
+                "suggested_uses": values("suggestedUses"),
+                "source_kind": str(asset.get("sourceKind") or "")[:80],
+                "source_url": str(asset.get("sourceUrl") or asset.get("originalUrl") or "")[:500],
+            })
+        if not eligible:
+            raise RuntimeError(
+                "Ada cannot prepare this article for review because the Payload Library has no analyzed image with alt text and a public URL. Add and analyze a suitable image in Gallery."
+            )
+        llm = context.get("llm")
+        if llm is None:
+            raise RuntimeError("Ada cannot select the article cover because the configured AI service is unavailable.")
+        brief = {
+            "title": str(draft.get("title") or "")[:300],
+            "article": str(draft.get("body") or "")[:1800],
+            "keyword": str(meta.get("primary_keyword") or "")[:200],
+        }
+        raw = llm.chat(
+            [
+                {
+                    "role": "system",
+                    "content": (
+                        "Choose one existing tenant-owned Payload Library image only when its supplied metadata makes it "
+                        "a genuinely suitable cover for the article. Do not invent an image, infer unsupported facts, "
+                        "or choose a generic logo/decorative asset. If none is suitable, return media_id as null and "
+                        "state the exact missing need. Return JSON with media_id and reason."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {"article": brief, "available_images": eligible},
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            json_mode=True,
+            temperature=0.0,
+            max_tokens=500,
+        )
+        decision = extract_json(raw)
+        if not isinstance(decision, Mapping):
+            raise RuntimeError("Ada's cover-image selection did not return valid structured data.")
+        selected_id = str(decision.get("media_id") or "").strip()
+        candidate = next((item for item in eligible if item["id"] == selected_id), None)
+        reason = " ".join(str(decision.get("reason") or "").split())[:500]
+        if candidate is None or not reason:
+            raise RuntimeError(
+                "Ada found no suitable analyzed Payload Library image for this article. Add and analyze a relevant image in Gallery."
+            )
+        media = payload.read_media(selected_id, identifier_kind="id", draft=True)
+        saved = {
+            "media_id": selected_id,
+            "media_revision": str(media.get("_helloadaRevision") or ""),
+            "reason": reason,
+        }
+        if not re.fullmatch(r"sha256:[0-9a-f]{64}", saved["media_revision"]):
+            raise RuntimeError("The selected Payload cover image has no exact revision and cannot be attached safely.")
+        next_meta = dict(meta)
+        next_meta["article_image_selection"] = saved
+        context["memory"].update_draft_meta(int(draft["id"]), next_meta)
+    alt = str(media.get("alt") or "").strip()
+    source_id = str(media.get("sourceId") or "").strip()
+    image_url = str(media.get("url") or media.get("originalUrl") or "").strip()
+    if (
+        not str(media.get("id") or "").strip()
+        or str(media.get("analysisStatus") or "").lower() != "ready"
+        or not alt
+        or not source_id
+        or not (image_url.startswith("https://") or image_url.startswith("/") and not image_url.startswith("//"))
+    ):
+        raise RuntimeError("The selected Payload cover image must have a stable identity, completed analysis, alt text and a public URL.")
+    return str(media["id"]), media, {
+        **dict(saved),
+        "reason": reason,
+        "source_id": source_id,
+        "alt": alt,
+    }
 
 
 def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -> None:
@@ -455,7 +598,7 @@ def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -
     if not isinstance(enabled_collections, list) or "posts" not in enabled_collections:
         raise RuntimeError("The canonical Payload authoring contract does not enable the posts collection")
     contract_fields = set(payload.authoring_fields("collection", "posts", authoring_contract=authoring_contract))
-    required_fields = {"slug", "title", "summary", "body", "seo"}
+    required_fields = {"slug", "title", "summary", "body", "seo", "featuredImage"}
     missing_contract = sorted(required_fields - set(contract_fields))
     if missing_contract:
         raise RuntimeError("Payload posts contract is missing required fields: " + ", ".join(missing_contract))
@@ -475,13 +618,31 @@ def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -
         "author": str((context.get("config", {}).get("persona") or {}).get("name") or "Ada"),
         "published": False,
     }
-    image_id = meta.get("featuredImage") or meta.get("featured_image_id") or meta.get("featured_image")
-    if image_id is not None and "featuredImage" in contract_fields:
-        candidate["featuredImage"] = image_id
     if meta.get("media_asset_ids") and "gallery" in contract_fields:
         candidate["gallery"] = list(meta["media_asset_ids"])
     post = {key: value for key, value in candidate.items() if key in contract_fields}
     previous_sync = meta.get("payload_sync") if isinstance(meta.get("payload_sync"), Mapping) else {}
+    previous_document_id = str(previous_sync.get("document_id") or "").strip()
+    route_document: dict[str, Any] | None = None
+    if not previous_document_id:
+        route_document = _read_article_draft_by_slug(payload, slug, language)
+        if route_document is not None and not (
+            _is_exact_unlinked_article_draft(route_document, post)
+            or _is_empty_unlinked_article_draft(route_document, {"slug": slug}, source_id)
+        ):
+            raise RuntimeError(
+                "An existing Payload post at this route is not linked to Ada's exact sync record; its content differs and it is neither Ada's exact draft nor an empty schema draft, so it remains unchanged for owner review."
+            )
+    image_id, _selected_media, image_selection = _article_cover_image(context, payload, draft, meta)
+    meta = {
+        **dict(meta),
+        "article_image_selection": {
+            "media_id": image_id,
+            "media_revision": str(image_selection.get("media_revision") or ""),
+            "reason": str(image_selection.get("reason") or ""),
+        },
+    }
+    post["featuredImage"] = image_id
     source_content_hash = canonical_hash({"locale": language, "post": {key: value for key, value in post.items() if key != "modifiedAt"}})
     modified_at = (
         str(previous_sync.get("modified_at") or "")
@@ -491,7 +652,6 @@ def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -
     if "modifiedAt" in post:
         post["modifiedAt"] = modified_at
     source_hash = canonical_hash({"locale": language, "post": post})
-    previous_document_id = str(previous_sync.get("document_id") or "").strip()
     adopted_unlinked = False
     existing: dict[str, Any] | None = None
     if previous_document_id:
@@ -514,7 +674,7 @@ def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -
         if existing.get("published") is not False:
             raise RuntimeError("The linked Payload article is no longer an unpublished draft; Ada will not modify published content.")
     else:
-        existing = _read_article_draft_by_slug(payload, slug, language)
+        existing = route_document
         if existing is not None:
             exact_candidate = _is_exact_unlinked_article_draft(existing, post)
             empty_shell = _is_empty_unlinked_article_draft(existing, post, source_id)
@@ -570,6 +730,7 @@ def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -
     if not document_id:
         raise RuntimeError("Payload did not return the article draft identifier")
     verified = payload.read("posts", identifier=document_id, identifier_kind="id", draft=True, locale=language)
+    verified_media = payload.read_media(image_id, identifier_kind="id", draft=True)
     verified_seo = verified.get("seo") if isinstance(verified.get("seo"), Mapping) else {}
     metadata_value = verified_seo.get("description")
     actual_source_id = str(document.get("sourceId") or "").strip()
@@ -581,7 +742,13 @@ def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -
         "summary": str(verified.get("summary") or "").strip() == summary,
         "body": lexical_text(verified.get("body")) == plain,
         "metadata": str(metadata_value or "").strip() == description,
-        "mainImage": bool(verified.get("featuredImage")) if image_id is not None else True,
+        "mainImage": (
+            _payload_relation_id(verified.get("featuredImage")) == image_id
+            and str(verified_media.get("_helloadaRevision") or "") == str(image_selection.get("media_revision") or "")
+            and bool(str(verified_media.get("alt") or "").strip())
+            and bool(str(verified_media.get("sourceId") or "").strip())
+            and str(verified_media.get("analysisStatus") or "").lower() == "ready"
+        ),
     }
     state = "ready_for_review" if all(checks.values()) else "blocked"
     reason = "" if state == "ready_for_review" else "Payload article validation is incomplete: " + ", ".join(key for key, passed in checks.items() if not passed)
@@ -601,7 +768,14 @@ def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -
             "excerpt": str(verified.get("summary") or "").strip()[:500],
             "meta_description": str(metadata_value or "").strip()[:320],
             "primary_keyword": primary_keyword,
-            "featured_image": _article_image_preview(verified.get("featuredImage")),
+            "featured_image": {
+                **(_article_image_preview(verified_media) or {}),
+                "revision": str(verified_media.get("_helloadaRevision") or ""),
+                "source_id": str(verified_media.get("sourceId") or ""),
+                "source_kind": str(verified_media.get("sourceKind") or ""),
+                "source_url": str(verified_media.get("sourceUrl") or verified_media.get("originalUrl") or ""),
+                "selection_reason": str(image_selection.get("reason") or ""),
+            },
             "validation": {"status": "passed" if state == "ready_for_review" else "blocked", "checks": checks, "reason": reason},
         },
         "payload_post_id": document_id,

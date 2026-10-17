@@ -122,3 +122,71 @@ def test_changed_payload_revision_is_visible_but_not_reviewable(tmp_path):
     assert result["article"]["bodyFormat"] == "lexical"
     assert result["article"]["title"] == "The current title"
     memory.close()
+
+
+def test_changed_cover_image_revision_is_not_reviewable(tmp_path):
+    body = {
+        "root": {
+            "type": "root",
+            "version": 1,
+            "children": [{
+                "type": "paragraph",
+                "version": 1,
+                "children": [{"type": "text", "version": 1, "text": "Reviewed article text", "format": 0, "mode": "normal", "style": "", "detail": 0}],
+                "direction": "ltr",
+                "format": "",
+                "indent": 0,
+            }],
+            "direction": "ltr",
+            "format": "",
+            "indent": 0,
+        }
+    }
+
+    class PayloadWithChangedImage(Payload):
+        def read_media(self, identifier, *, identifier_kind="id", draft=True):
+            assert identifier == "cover-1" and identifier_kind == "id" and draft is True
+            return {
+                "id": "cover-1",
+                "sourceId": "media:cover-1",
+                "analysisStatus": "ready",
+                "alt": "A reviewed cover image",
+                "url": "/media/cover.jpg",
+                "_helloadaRevision": "revision-2",
+            }
+
+    sync = {
+        "state": "ready_for_review",
+        "collection": "posts",
+        "document_id": "post-42",
+        "draft_hash": "revision-1",
+        "locale": "en",
+        "featured_image": {
+            "id": "cover-1",
+            "revision": "revision-1",
+            "source_id": "media:cover-1",
+        },
+        "validation": {"status": "passed", "checks": {"canonicalSchema": True}},
+    }
+    payload = PayloadWithChangedImage({
+        "id": "post-42",
+        "sourceId": "ada-article-1",
+        "slug": "owner-article",
+        "title": "The current title",
+        "summary": "The current summary",
+        "seo": {"description": "The current description"},
+        "body": body,
+        "_helloadaRevision": "revision-1",
+    })
+    memory, draft_id, service, tenant = service_for(
+        tmp_path,
+        {"payload_sync": sync, "review_package_hash": "sha256:review-revision-1"},
+        payload,
+    )
+
+    result = service.growth_article_review(draft_id, tenant=tenant)
+
+    assert result["reviewable"] is False
+    assert result["reviewPackageHash"] is None
+    assert result["blockedReasonCode"] == "articlePayloadChanged"
+    memory.close()

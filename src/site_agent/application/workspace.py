@@ -2477,12 +2477,47 @@ class ChatService:
                     if not lexical_text(document.get("body")):
                         reviewable = False
                         blocked_reason_code = "articlePayloadEmpty"
+                    image = sync.get("featured_image") if isinstance(sync.get("featured_image"), Mapping) else {}
+                    image_id = str(image.get("id") or "").strip()
+                    image_revision = str(image.get("revision") or "").strip()
+                    if reviewable and (not image_id or not image_revision):
+                        reviewable = False
+                        blocked_reason_code = "articleImageNeeded"
+                    elif reviewable:
+                        try:
+                            media = payload.read_media(image_id, identifier_kind="id", draft=True)
+                        except Exception:  # noqa: BLE001 — an unavailable image cannot be approved
+                            reviewable = False
+                            blocked_reason_code = "articlePayloadUnavailable"
+                        else:
+                            if str(media.get("_helloadaRevision") or "") != image_revision:
+                                reviewable = False
+                                blocked_reason_code = "articlePayloadChanged"
+                            elif (
+                                str(media.get("analysisStatus") or "").lower() != "ready"
+                                or not str(media.get("alt") or "").strip()
+                                or str(media.get("sourceId") or "") != str(image.get("source_id") or "")
+                            ):
+                                reviewable = False
+                                blocked_reason_code = "articleImageNeeded"
+                            else:
+                                raw_url = str(media.get("url") or media.get("originalUrl") or "").strip()
+                                article["featuredImage"] = {
+                                    "id": image_id,
+                                    "alt": str(media.get("alt") or ""),
+                                    "filename": str(media.get("filename") or ""),
+                                    "url": raw_url if raw_url.startswith("https://") or raw_url.startswith("/") and not raw_url.startswith("//") else "",
+                                }
         else:
             article = dict(article)
             article["bodyFormat"] = "markdown"
             validation = sync.get("validation") if isinstance(sync.get("validation"), Mapping) else {}
             validation_reason = str(validation.get("reason") or "")
             blocked_reason_code = (
+                "articleImageNeeded"
+                if "Payload Library has no analyzed image" in validation_reason
+                or "no suitable analyzed Payload Library image" in validation_reason
+                else
                 "articlePayloadConflict"
                 if "existing Payload post at this route" in validation_reason
                 else "articlePayloadSyncBlocked"
@@ -2882,6 +2917,22 @@ class ChatService:
             validation = sync.get("validation") if isinstance(sync.get("validation"), Mapping) else {}
             if validation.get("status") != "passed" or sync.get("state") != "ready_for_review":
                 raise BridgeError(str(validation.get("reason") or "the Payload article candidate has not passed validation")[:500])
+            image = sync.get("featured_image") if isinstance(sync.get("featured_image"), Mapping) else {}
+            image_id = str(image.get("id") or "").strip()
+            image_revision = str(image.get("revision") or "").strip()
+            if not image_id or not image_revision:
+                raise BridgeError("the article has no exact validated Payload cover image")
+            try:
+                current_image = payload.read_media(image_id, identifier_kind="id", draft=True)
+            except Exception as exc:  # noqa: BLE001 — publication requires the exact reviewed media
+                raise BridgeError(f"the article cover image could not be verified: {str(exc)[:300]}") from exc
+            if (
+                str(current_image.get("_helloadaRevision") or "") != image_revision
+                or str(current_image.get("analysisStatus") or "").lower() != "ready"
+                or not str(current_image.get("alt") or "").strip()
+                or str(current_image.get("sourceId") or "") != str(image.get("source_id") or "")
+            ):
+                raise BridgeError("the article cover image changed after review; Ada must prepare a current article draft")
             gsc_snapshot = memory.latest_snapshot("gsc") or {}
             ga4_snapshot = memory.latest_snapshot("ga4") or {}
             gsc_data = gsc_snapshot.get("data") if isinstance(gsc_snapshot.get("data"), Mapping) else {}
