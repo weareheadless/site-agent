@@ -462,7 +462,7 @@ export function GrowthTasks({ mode, ownerQueue, onNavigate, tasks = [], pending,
             {selectedTask.kind === "rollback" ? <p>{t("growth.rollbackScope")}</p> : null}
             {selectedTask.kind === "rollback" && selectedTask.previewUrl ? <a className="helloada-growth-task-preview" href={selectedTask.previewUrl} target="_blank" rel="noreferrer">{t("growth.rollbackPreview")} ↗</a> : null}
             {selectedTask.executionIssue && selectedTask.kind !== "assessment" ? <p className="helloada-growth-task-block">{t("growth.taskInternalIssue")}</p> : null}
-            {selectedTask.kind === "code" && selectedTask.lastError ? <details className="helloada-growth-task-evidence">
+            {(selectedTask.kind === "code" || selectedTask.kind === "merge") && selectedTask.lastError ? <details className="helloada-growth-task-evidence">
               <summary>{t("growth.taskStoppedReason")}</summary><p>{selectedTask.lastError}</p>
             </details> : null}
             {selectedTask.kind === "assessment" && selectedTask.nextRun ? <p className="helloada-growth-task-block">
@@ -512,9 +512,9 @@ export function GrowthTasks({ mode, ownerQueue, onNavigate, tasks = [], pending,
                   : selectedTask.kind === "rollback" ? t("growth.keepCurrentWebsite") : t("growth.taskDecline")}
               </button>
             </> : null}
-            {selectedTask.focus === "opportunity" || selectedTask.kind === "analysis_insight"
+            {selectedTask.focus === "opportunity" || selectedTask.kind === "analysis_insight" || selectedTask.executionIssue
               || (selectedTask.kind === "article" || selectedTask.kind === "code") && selectedTask.canApprove || selectedTask.kind === "owner_action" || selectedTask.needsPreparation
-              ? <Link href={discuss(selectedTask)}>{selectedTask.needsPreparation ? t(selectedTask.kind === "settings_proposal" ? "growth.prepareSettingsWithAda" : "growth.prepareChangeWithAda") : selectedTask.focus === "opportunity" ? t("growth.prepareWithAda") : selectedTask.kind === "article" ? t("growth.articleAskChanges") : selectedTask.kind === "code" ? t("growth.codeAskChanges") : t("growth.ask")} ↗</Link>
+              ? <Link href={discuss(selectedTask)}>{selectedTask.needsPreparation ? t(selectedTask.kind === "settings_proposal" ? "growth.prepareSettingsWithAda" : "growth.prepareChangeWithAda") : selectedTask.executionIssue ? t("growth.resolveWithAda") : selectedTask.focus === "opportunity" ? t("growth.prepareWithAda") : selectedTask.kind === "article" ? t("growth.articleAskChanges") : selectedTask.kind === "code" ? t("growth.codeAskChanges") : t("growth.ask")} ↗</Link>
               : null}
             {selectedTask.kind === "article" && !selectedTask.canApprove
               ? <Link href={discuss(selectedTask)}>{t("growth.articleResolve")} ↗</Link>

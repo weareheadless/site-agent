@@ -40,6 +40,44 @@ def test_noop_growth_preparation_is_not_a_technical_failure(monkeypatch):
     assert error.value.code == "no_actionable_change"
 
 
+def test_duplicate_owner_information_is_deferred_to_the_existing_owner_question(tmp_path):
+    from site_agent.application.growth_workflow import _defer_duplicate_owner_information
+
+    memory = Memory(tmp_path / "memory.db")
+    try:
+        cycle = memory.create_strategy_cycle("owner-question-dedupe", "2026-10", "owner-evidence", {})
+        duplicate_id = memory.create_strategy_initiative(
+            cycle["id"], kind="owner_information", title="Confirm service duration",
+            summary="Ada needs the service duration.", state="preparing",
+            validation={"status": "preparing", "preparation": {"question": "duration"}},
+        )
+        existing_question_id = memory.create_strategy_initiative(
+            cycle["id"], kind="owner_information", title="Confirm current business facts",
+            summary="Answer Ada's current question.", state="waiting_for_owner",
+        )
+
+        _defer_duplicate_owner_information(
+            memory, memory.update_strategy_initiative(duplicate_id), existing_question_id,
+        )
+
+        deferred = memory.update_strategy_initiative(duplicate_id)
+        assert deferred["state"] == "deferred"
+        assert deferred["validation"]["status"] == "deferred"
+        assert deferred["validation"]["relatedInitiativeId"] == existing_question_id
+        assert deferred["validation"]["reassessWhen"] == "After the owner answers Ada’s current business question."
+        assert deferred["validation"]["preparation"] == {"question": "duration"}
+
+        waiting = memory.create_strategy_initiative(
+            cycle["id"], kind="owner_information", title="Current owner question",
+            summary="Already awaiting the owner.", state="waiting_for_owner",
+        )
+        stale_projection = {**memory.update_strategy_initiative(waiting), "state": "preparing"}
+        _defer_duplicate_owner_information(memory, stale_projection, existing_question_id)
+        assert memory.update_strategy_initiative(waiting)["state"] == "waiting_for_owner"
+    finally:
+        memory.close()
+
+
 
 
 def test_historical_noop_block_is_reclassified_without_touching_candidate_content(tmp_path):

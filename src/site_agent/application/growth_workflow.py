@@ -84,6 +84,27 @@ def _owner_action_summary(value: Any) -> str:
     return prefix + "…"
 
 
+def _defer_duplicate_owner_information(memory: Any, initiative: Mapping[str, Any] | None, related_id: int) -> None:
+    """Close a duplicate in-preparation owner question with an explicit dependency."""
+    if initiative is None:
+        return
+    current = memory.update_strategy_initiative(int(initiative["id"]))
+    if current.get("state") not in {"preparing", "blocked"}:
+        return
+    previous_validation = current.get("validation") if isinstance(current.get("validation"), Mapping) else {}
+    reason = "Ada already has an unanswered business question. This finding is deferred until the owner replies, so it is not left as a duplicate task in preparation."
+    memory.transition_strategy_initiative(
+        int(current["id"]), "deferred",
+        validation={
+            **dict(previous_validation),
+            "status": "deferred",
+            "reason": reason,
+            "relatedInitiativeId": int(related_id),
+            "reassessWhen": "After the owner answers Ada’s current business question.",
+        },
+    )
+
+
 def _recoverable_saved_assessment_failure(memory: Memory, run: Mapping[str, Any]) -> bool:
     """Resume only exact saved-assessment failures whose shared boundary is fixed.
 
@@ -1148,14 +1169,14 @@ def run_growth_cycle(
             for opportunity in [((row.get("expected") or {}).get("opportunity") or {})]
             if opportunity.get("collection") and opportunity.get("documentId")
         }
-        pending_owner_question = any(
-            row.get("kind") == "owner_information"
+        pending_owner_initiative = next((
+            row for row in all_initiatives
+            if row.get("kind") == "owner_information"
             and row.get("state") == "waiting_for_owner"
+            and row.get("owner_action_id") is not None
             and (action := memory.get_owner_action(int(row["owner_action_id"]))) is not None
             and action.state.value not in {"completed", "dismissed", "stale"}
-            for row in all_initiatives
-            if row.get("owner_action_id") is not None
-        )
+        ), None)
         for opportunity in detail["assessment"]["opportunities"]:
             if opportunity.get("disposition") == "deferred":
                 unprepared_opportunities.append(dict(opportunity))
@@ -1194,15 +1215,18 @@ def run_growth_cycle(
                     "reassessWhen": "After the current proposal for this page is decided.",
                 })
                 continue
-            if opportunity["kind"] == "owner_information" and pending_owner_question:
+            initiative = by_title.get(opportunity["title"])
+            if opportunity["kind"] == "owner_information" and pending_owner_initiative is not None:
+                reason = "Ada already has an unanswered business question. This finding is deferred until the owner replies, so the system does not leave a duplicate task stuck in preparation."
+                _defer_duplicate_owner_information(memory, initiative, int(pending_owner_initiative["id"]))
                 unprepared_opportunities.append({
                     **opportunity,
                     "disposition": "deferred",
-                    "preparationNote": "Ada already has an unanswered business question. This finding is retained and will be reconsidered after your reply, rather than asking you the same kind of question twice.",
-                    "reassessWhen": "After you answer Ada's current business question.",
+                    **({"relatedInitiativeId": int(pending_owner_initiative["id"])} if pending_owner_initiative else {}),
+                    "preparationNote": reason,
+                    "reassessWhen": "After you answer Ada’s current business question.",
                 })
                 continue
-            initiative = by_title.get(opportunity["title"])
             if initiative is not None and initiative["state"] in {
                 "deferred", "rejected", "reviewed", "superseded", "completed", "cancelled",
             }:
@@ -1251,7 +1275,7 @@ def run_growth_cycle(
                 if initiative["state"] == "blocked":
                     memory.transition_strategy_initiative(initiative["id"], "preparing")
                 memory.transition_strategy_initiative(initiative["id"], "waiting_for_owner")
-                pending_owner_question = True
+                pending_owner_initiative = memory.update_strategy_initiative(int(initiative["id"]))
                 continue
             elif opportunity["kind"] == "payload_content":
                 active_targets[target] = initiative
