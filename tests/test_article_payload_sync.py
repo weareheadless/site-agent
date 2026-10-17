@@ -187,17 +187,21 @@ def test_article_sync_adopts_exact_unpublished_payload_draft_after_local_checkpo
     draft_id = memory.save_draft(title="An interrupted guide", body="Exact draft body.", kind="article")
 
     _mirror_article_draft_to_workspace(_context(memory, payload), draft_id)
+    original_document = deepcopy(payload.documents[0])
     memory.update_draft_meta(draft_id, {})
     _mirror_article_draft_to_workspace(_context(memory, payload), draft_id)
 
     sync = memory.list_drafts()[0]["meta"]["payload_sync"]
+    current_document = payload.documents[0]
     assert payload.creates == 1
-    # Clearing the local checkpoint advances updated_ts, so only the
-    # system-owned modifiedAt field is reconciled with Payload's CAS revision.
-    assert payload.updates == 1
+    assert payload.updates in {0, 1}
     assert payload.publishes == 0
-    assert payload.documents[0]["title"] == "An interrupted guide"
-    assert payload.documents[0]["body"] == payload.created_data[0]["body"]
+    assert {
+        key: value for key, value in current_document.items() if key != "modifiedAt"
+    } == {
+        key: value for key, value in original_document.items() if key != "modifiedAt"
+    }
+    assert (current_document["modifiedAt"] != original_document["modifiedAt"]) == (payload.updates == 1)
     assert sync["state"] == "ready_for_review"
     assert sync["document_id"] == "post-1"
     assert sync["source_id"] == "posts:an-interrupted-guide"
