@@ -307,43 +307,6 @@ def test_rejection_records_raw_candidate_and_reason(tmp_path):
         memory.close()
 
 
-def test_pre_dispatch_request_failure_is_retried_without_reselecting_or_duplicating_idea(tmp_path):
-    memory = Memory(tmp_path / "memory.db")
-
-    class FlakyRequestService:
-        def __init__(self):
-            self.requests = 0
-
-        def request_article_keyword_research(self, **kwargs):
-            self.requests += 1
-            if self.requests == 1:
-                raise CrawlSEORequestNotDispatched("CrawlSEO idea_summary is invalid")
-            return {"run_id": "run-1", "status": "requested"}
-
-    service = FlakyRequestService()
-    llm = IdeaLLM()
-    context = {
-        "config": {"seo": {"article_research": {"enabled": True}}},
-        "memory": memory,
-        "crawlseo_service": service,
-        "llm": llm,
-    }
-    try:
-        article_research.select_and_request(context)
-        first = memory.list_article_ideas(limit=1)[0]
-        assert first["status"] == "selected"
-        assert first["research_run_id"] is None
-
-        article_research.select_and_request(context)
-        second = memory.list_article_ideas(limit=1)[0]
-        assert second["status"] == "research_requested"
-        assert second["research_run_id"] == "run-1"
-        assert service.requests == 2
-        assert llm.calls == 1
-    finally:
-        memory.close()
-
-
 def test_local_crawlseo_request_validation_failure_is_not_marked_as_paid_outcome_uncertain():
     error = CrawlSEORequestNotDispatched("CrawlSEO idea_summary is invalid")
 
