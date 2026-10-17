@@ -50,7 +50,7 @@ class Payload:
         self.locales.append(locale)
         self.creates += 1
         self.created_data.append(deepcopy(data))
-        document = {**deepcopy(data), "sourceId": f"posts:{data['slug']}", "id": "post-1", "_helloadaRevision": "sha256:" + "a" * 64}
+        document = {**deepcopy(data), "sourceId": f"posts:{data['slug']}", "id": "post-1", "_status": "draft", "_helloadaRevision": "sha256:" + "a" * 64}
         self.documents.append(document)
         if self.conflict_after_create:
             self.conflict_after_create = False
@@ -207,6 +207,72 @@ def test_article_sync_adopts_exact_unpublished_payload_draft_after_local_checkpo
     assert sync["source_id"] == "posts:an-interrupted-guide"
     memory.close()
 
+
+
+
+def test_article_sync_hydrates_only_an_empty_payload_draft_shell_with_revision_guard(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    payload = Payload()
+    draft_id = memory.save_draft(title="A migrated guide", body="The exact article body.", kind="article")
+    _mirror_article_draft_to_workspace(_context(memory, payload), draft_id)
+    payload.documents[0].update({
+        "title": "",
+        "summary": "",
+        "sections": [],
+        "body": None,
+        "seo": {},
+        "featuredImage": None,
+        "gallery": [],
+        "author": "",
+        "publishedAt": None,
+        "published": True,
+        "_status": "draft",
+    })
+    memory.update_draft_meta(draft_id, {})
+
+    _mirror_article_draft_to_workspace(_context(memory, payload), draft_id)
+
+    document = payload.documents[0]
+    sync = memory.list_drafts()[0]["meta"]["payload_sync"]
+    assert payload.creates == 1
+    assert payload.updates == 1
+    assert payload.publishes == 0
+    assert document["title"] == "A migrated guide"
+    assert document["body"]["root"]["type"] == "root"
+    assert document["published"] is False
+    assert document["_status"] == "draft"
+    assert sync["state"] == "ready_for_review"
+    assert sync["validation"]["status"] == "passed"
+    memory.close()
+
+
+def test_article_sync_does_not_hydrate_an_empty_published_payload_record(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    payload = Payload()
+    draft_id = memory.save_draft(title="A protected guide", body="Candidate body.", kind="article")
+    _mirror_article_draft_to_workspace(_context(memory, payload), draft_id)
+    payload.documents[0].update({
+        "title": "",
+        "summary": "",
+        "sections": [],
+        "body": None,
+        "seo": {},
+        "featuredImage": None,
+        "gallery": [],
+        "author": "",
+        "publishedAt": "2026-08-28T00:00:00Z",
+        "published": True,
+        "_status": "published",
+    })
+    memory.update_draft_meta(draft_id, {})
+
+    with pytest.raises(RuntimeError, match="neither Ada's exact draft nor an empty schema draft"):
+        _mirror_article_draft_to_workspace(_context(memory, payload), draft_id)
+
+    assert payload.creates == 1
+    assert payload.updates == 0
+    assert payload.publishes == 0
+    memory.close()
 
 
 def test_article_sync_updates_only_system_fields_on_exact_adoption_with_revision_guard(tmp_path):
