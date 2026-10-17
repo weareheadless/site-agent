@@ -48,6 +48,29 @@ def test_blocked_article_detail_shows_saved_draft_without_approval_authority(tmp
     memory.close()
 
 
+
+def test_unlinked_nonempty_payload_conflict_has_a_specific_safe_reason(tmp_path):
+    memory, draft_id, service, tenant = service_for(
+        tmp_path,
+        {
+            "payload_sync": {
+                "state": "blocked",
+                "validation": {
+                    "status": "blocked",
+                    "reason": "An existing Payload post at this route is neither Ada's exact draft nor an empty schema draft; its content remains unchanged for owner review.",
+                },
+            },
+        },
+    )
+
+    result = service.growth_article_review(draft_id, tenant=tenant)
+
+    assert result["reviewable"] is False
+    assert result["blockedReasonCode"] == "articlePayloadConflict"
+    assert result["article"]["bodyFormat"] == "markdown"
+    memory.close()
+
+
 def test_changed_payload_revision_is_visible_but_not_reviewable(tmp_path):
     body = {
         "root": {
