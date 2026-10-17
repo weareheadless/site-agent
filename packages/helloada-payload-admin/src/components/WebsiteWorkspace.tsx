@@ -717,6 +717,8 @@ function ReviewWorkspace() {
   const [message, setMessage] = useState('')
   const preparedAsk = searchParams.get('ask')
   const selectedGrowthTask = searchParams.get('growth_task')
+  const selectedGrowthTaskAction = searchParams.get('growth_task_action')
+  const growthTaskActionConsumed = useRef(false)
   const selectedAssetId = searchParams.get('asset_id') || ''
   const selectedAssetUrl = searchParams.get('asset_url') || ''
   const selectedAssetName = searchParams.get('asset_name') || ''
@@ -1546,6 +1548,7 @@ function ReviewWorkspace() {
           conversation_id: conversationId,
           context: {
             ...(selectedGrowthTask ? { growth_task_id: selectedGrowthTask } : {}),
+            ...(selectedGrowthTaskAction === 'revise' && !growthTaskActionConsumed.current ? { growth_task_action: 'revise' } : {}),
              language,
             site: workspace?.site.name || site.siteName,
             route: selectedRoute,
@@ -1574,6 +1577,7 @@ function ReviewWorkspace() {
       if (!body.job_id) throw new Error(t('error.jobAccepted'))
       const activeConversationId = body.conversation_id || conversationId
       if (!activeConversationId) throw new Error(t('error.jobAccepted'))
+      if (selectedGrowthTaskAction === 'revise') growthTaskActionConsumed.current = true
       setConversationId(activeConversationId)
       if (activeConversationId && typeof window !== 'undefined') {
         window.localStorage.setItem('helloada.activeConversationId', String(activeConversationId))

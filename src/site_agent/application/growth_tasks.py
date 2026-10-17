@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 from ..core.article_routes import public_article_path
+from .growth_candidates import content_hash
 
 
 def _future_timestamp(value: Any) -> bool:
@@ -160,6 +161,30 @@ def growth_tasks(
         action = actions.get(action_id) or next((row for row in actions.values() if draft_id and row.get('draft_id') == draft_id), {})
         draft = draft_by_id.get(draft_id, {})
         action_job = _action_chat_job(memory, action)
+        validation = initiative.get('validation') if isinstance(initiative.get('validation'), Mapping) else {}
+        preparation = validation.get('preparation') if isinstance(validation.get('preparation'), Mapping) else {}
+        source_job = None
+        if initiative.get('kind') == 'code' and preparation.get('kind') == 'source_code' and preparation.get('jobId'):
+            try:
+                source_job = memory.get_chat_job(int(preparation['jobId']))
+            except (TypeError, ValueError):
+                source_job = None
+        revision = validation.get('revision') if isinstance(validation.get('revision'), Mapping) else {}
+        revision_job = None
+        if initiative.get('kind') == 'code' and revision.get('chatJobId'):
+            try:
+                revision_job = memory.get_chat_job(int(revision['chatJobId']))
+            except (TypeError, ValueError):
+                revision_job = None
+        draft_meta = draft.get('meta') if isinstance(draft.get('meta'), Mapping) else {}
+        source_preview = draft_meta.get('preview') if isinstance(draft_meta.get('preview'), Mapping) else {}
+        source_work_active = bool(
+            source_job and source_job.get('status') in {'queued', 'running'}
+            or revision_job and revision_job.get('status') in {'queued', 'running'}
+            or source_preview.get('requires_build') is True
+            and source_preview.get('status') not in {'blocked', 'failed', 'error'}
+        )
+        source_waiting_for_owner = bool(validation.get('waitingForWebsiteDecision'))
         if action:
             linked_actions.add(action['id'])
         if draft_id:
@@ -177,7 +202,7 @@ def growth_tasks(
         elif state == 'waiting_for_owner':
             focus = 'needs_you'
         elif state in {'preparing', 'validating'}:
-            focus = 'preparing' if str(initiative.get('growth_run_id') or '') in active_runs else 'paused'
+            focus = 'preparing' if str(initiative.get('growth_run_id') or '') in active_runs or source_work_active or source_waiting_for_owner else 'paused'
         elif state in {'publishing', 'verifying_live'}:
             focus = 'preparing' if action_job else 'paused'
         else:
@@ -186,7 +211,6 @@ def growth_tasks(
             focus = 'needs_you'
         meta = draft.get('meta') or {}
         package = meta.get('growth_package') or {}
-        validation = initiative.get('validation') or {}
         approval_id = initiative.get('approval_id') or action.get('approval_id')
         approval = memory.get_approval_request(approval_id) if approval_id else None
         if approval_id:
@@ -194,8 +218,23 @@ def growth_tasks(
         verified_review = validation.get('status') == 'passed' and validation.get('packageHash') == initiative.get('review_package_hash') and all(
             (validation.get('checks') or {}).get(key) is True for key in ('exactDraft', 'publicRenderer', 'approvalBoundary'))
         article_ready = _article_is_reviewable(draft, meta.get("payload_sync") if isinstance(meta.get("payload_sync"), Mapping) else {})
+        source = package.get('source') if isinstance(package.get('source'), Mapping) else {}
+        source_candidate_ready = bool(
+            initiative.get('kind') == 'code'
+            and package.get('candidateType') == 'source_code'
+            and content_hash(package) == meta.get('review_package_hash') == initiative.get('review_package_hash')
+            and re.fullmatch(r'[0-9a-f]{40}', str(source.get('candidateSha') or ''))
+            and re.fullmatch(r'[0-9a-f]{40}', str(source.get('baseSha') or ''))
+            and str(meta.get('head_sha') or '').lower() == str(source.get('candidateSha') or '').lower()
+            and str(meta.get('base_sha') or '').lower() == str(source.get('baseSha') or '').lower()
+            and source_preview.get('status') == 'ready'
+            and source_preview.get('requires_build') is not True
+            and str(source_preview.get('head_sha') or '').lower() == str(source.get('candidateSha') or '').lower()
+            and bool(source.get('changedPaths'))
+        )
         review_ready = article_ready or (
             state == 'ready_for_review'
+            and (initiative.get('kind') != 'code' or source_candidate_ready)
             and draft.get('status') == 'pending'
             and meta.get('review_package_hash') == initiative.get('review_package_hash')
             and verified_review
@@ -212,8 +251,19 @@ def growth_tasks(
         stale_work = (
             state in {'preparing', 'validating'}
             and str(initiative.get('growth_run_id') or '') not in active_runs
+            and not source_work_active
+            and not source_waiting_for_owner
         ) or (state in {'publishing', 'verifying_live'} and action_job is None)
         summary_key = None
+        if initiative.get('kind') == 'code' and validation.get('revisionFailure'):
+            summary_key = 'sourceRevisionFailed'
+            initiative_summary = str(validation['revisionFailure'])
+        elif initiative.get('kind') == 'code' and source_waiting_for_owner and not review_ready:
+            summary_key = 'sourceWaitingForWebsiteDecision'
+            initiative_summary = 'Ada is ready to continue this recommendation after the current website change is decided.'
+        elif initiative.get('kind') == 'code' and source_work_active and not review_ready:
+            summary_key = 'sourceCandidatePreparing'
+            initiative_summary = 'Ada is preparing and checking the exact website preview. Nothing is published until you approve it.'
         if article_related and not review_ready:
             sync = meta.get("payload_sync") if isinstance(meta.get("payload_sync"), Mapping) else {}
             sync_validation = sync.get("validation") if isinstance(sync.get("validation"), Mapping) else {}
@@ -236,10 +286,13 @@ def growth_tasks(
             'priority': action.get('priority') or initiative.get('priority') or 'normal',
             'requirement': action.get('requirement'),
             'conversationId': action.get('conversation_id'), 'approvalId': approval_id,
-            'reviewPackageHash': review_hash, 'lastError': None,
-            'executionIssue': state in {'blocked', 'uncertain'} or bool(initiative.get('last_error')) or stale_work,
+            'reviewPackageHash': review_hash, 'lastError': validation.get('revisionFailure'),
+            'executionIssue': state in {'blocked', 'uncertain'} or bool(validation.get('revisionFailure')) or stale_work,
             'canApprove': review_ready,
-            'review': {'before': package.get('before'), 'after': package.get('after'), 'changes': package.get('changes'), 'route': package.get('route'), **({'article': article_data} if article_data else {})},
+            'previewUrl': ((package.get('source') or {}).get('previewUrl') if isinstance(package.get('source'), Mapping) else None),
+            'review': {'before': package.get('before'), 'after': package.get('after'), 'changes': package.get('changes'), 'route': package.get('route'),
+                **({'source': source} if package.get('candidateType') == 'source_code' else {}),
+                **({'article': article_data} if article_data else {})},
             'outcomes': [row for row in outcomes if row.get('initiative_id') == initiative['id']],
             'updatedAt': initiative.get('updated_ts'), 'nextRun': next_run})
         expected = initiative.get('expected') if isinstance(initiative.get('expected'), dict) else {}

@@ -45,13 +45,13 @@ def _response(context: Mapping[str, Any], contract: str, material: Mapping[str, 
 def assess(context: Mapping[str, Any], material: Mapping[str, Any]) -> dict[str, Any]:
     result = _response(context,
         "summary: nonempty string; opportunities: array (maximum maxRecommendations). "
-        "Each opportunity has kind (payload_content or owner_information), optional area (a free-form label, not a fixed category), title, why, hypothesis, "
+        "Each opportunity has kind (payload_content, code, or owner_information), optional area (a free-form label, not a fixed category), title, why, hypothesis, "
         "scope, evidence (source IDs copied from supplied evidence), requiredSources (source IDs), "
         "collection and documentId when editing an existing canonical document, metric (gsc.clicks or ga4.sessions). "
         "Investigate this business's growth broadly: do not follow a fixed SEO checklist or limit ideas to named examples. "
         "Consider any evidence-supported improvement in customer understanding, conversion, accessibility, performance, content, design, local visibility, search or AI discovery, trust, navigation, and site health; this list is illustrative, not exhaustive. "
-        "The kind field is an actual available execution route, not a category. This scheduled workflow can prepare exact field changes to an existing canonical Payload document, or ask the owner for a real missing business fact/access decision. It cannot create a document, page, route, or navigation destination. Do not return code changes or new article ideas here: frontend changes use the existing website-design conversation and new articles use the separate scheduled article-research workflow. "
-        "The available route limits what this workflow can execute, not Ada's broader expertise across the product. Every payload_content opportunity must identify one existing document from the supplied inventory and make only an edit to that document; never propose a new page or link to a route that does not exist. If no exact existing-document field change or genuine owner question is justified by the evidence, omit it rather than creating a suggestion that cannot be prepared. "
+        "The kind field is an actual available execution route, not a category. payload_content prepares exact field changes to one existing canonical Payload document. code prepares one existing-source website change through the shared Ada builder and immutable preview/owner-review path; use it for evidence-backed frontend behavior, design, accessibility, performance or technical discoverability work, not editable business copy. owner_information asks only for a real missing business fact/access decision. New articles use the separate scheduled article-research workflow. "
+        "The available route limits what this workflow can execute, not Ada's broader expertise across the product. Every payload_content opportunity must identify one existing document from the supplied inventory and make only an edit to that document; never propose a new page or link to a route that does not exist. Every code opportunity must describe one concrete, bounded source change and cite the exact evidence supporting it; do not use code as a vague bucket or to bypass Payload's editable content contract. If no exact executable change or genuine owner question is justified by the evidence, omit it rather than creating a suggestion that cannot be prepared. "
         "Separate observed evidence from hypotheses, name missing evidence, and do not invent metrics, access, capabilities or outcomes. "
         "No changes yet: preparation follows assessment. An empty array is valid only with a grounded explanation. Prefer a few useful improvements, never an article quota. Do not duplicate active or rejected work. "
         "A research-dependent article requires completed keyword and SERP evidence; independent metadata fixes do not. "
@@ -66,7 +66,7 @@ def assess(context: Mapping[str, Any], material: Mapping[str, Any]) -> dict[str,
     if len(opportunities) > maximum:
         raise ValueError("Ada exceeded the recommendation limit")
     for item in opportunities:
-        if not isinstance(item, dict) or item.get("kind") not in {"payload_content", "owner_information"}:
+        if not isinstance(item, dict) or item.get("kind") not in {"payload_content", "code", "owner_information"}:
             raise ValueError("Ada returned an unsupported opportunity")
         if any(not isinstance(item.get(key), str) or not item[key].strip() for key in ("title", "why", "scope")):
             raise ValueError("An opportunity needs a title, reason and scope")

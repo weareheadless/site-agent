@@ -75,7 +75,7 @@ from .incubation_contracts import (
 
 _OPERATION_FIELD_UNSET = object()
 
-SCHEMA_VERSION = 50
+SCHEMA_VERSION = 52
 
 MIGRATIONS: dict[int, list[str]] = {
     1: [
@@ -1132,6 +1132,43 @@ MIGRATIONS: dict[int, list[str]] = {
         "DROP TABLE strategy_cycles",
         "ALTER TABLE strategy_cycles_v50 RENAME TO strategy_cycles",
         "CREATE INDEX idx_strategy_cycles_period ON strategy_cycles (period, id)",
+    ],
+    51: [
+        """CREATE TABLE chat_jobs_v51 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conversation_id INTEGER REFERENCES conversations(id),
+            message TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'queued',
+            steps TEXT NOT NULL DEFAULT '[]',
+            result TEXT,
+            error TEXT,
+            created_ts TEXT NOT NULL,
+            updated_ts TEXT NOT NULL,
+            claimed_by TEXT,
+            heartbeat_ts REAL,
+            message_id INTEGER REFERENCES chat_messages(id),
+            operation_kind TEXT NOT NULL DEFAULT 'owner_chat',
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            intake_session_id TEXT,
+            idempotency_key TEXT
+        )""",
+        """INSERT INTO chat_jobs_v51
+            (id, conversation_id, message, status, steps, result, error, created_ts,
+             updated_ts, claimed_by, heartbeat_ts, message_id, operation_kind,
+             payload_json, intake_session_id, idempotency_key)
+            SELECT id, conversation_id, message, status, steps, result, error,
+                   created_ts, updated_ts, claimed_by, heartbeat_ts, message_id,
+                   operation_kind, payload_json, intake_session_id, idempotency_key
+            FROM chat_jobs""",
+        "DROP TABLE chat_jobs",
+        "ALTER TABLE chat_jobs_v51 RENAME TO chat_jobs",
+        "CREATE INDEX idx_chat_jobs_status ON chat_jobs (status, id)",
+        "CREATE INDEX idx_chat_jobs_operation ON chat_jobs (operation_kind, status, id)",
+        "CREATE UNIQUE INDEX idx_chat_jobs_idempotency ON chat_jobs (operation_kind, intake_session_id, idempotency_key) WHERE idempotency_key IS NOT NULL",
+    ],
+    52: [
+        "ALTER TABLE strategy_decisions ADD COLUMN source_revision TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE strategy_decisions ADD COLUMN review_package_hash TEXT NOT NULL DEFAULT ''",
     ],
 }
 
@@ -5557,7 +5594,15 @@ class Memory:
         *,
         owner_feedback: str = "",
         baseline: dict[str, Any] | None = None,
+        source_revision: str = "",
+        review_package_hash: str = "",
     ) -> int:
+        source_revision = str(source_revision or "").strip().lower()
+        review_package_hash = str(review_package_hash or "").strip()
+        if source_revision and not re.fullmatch(r"[0-9a-f]{40}", source_revision):
+            raise ContractError("strategy decision source revision must be a full Git SHA")
+        if review_package_hash and not re.fullmatch(r"sha256:[0-9a-f]{64}", review_package_hash):
+            raise ContractError("strategy decision review package hash is invalid")
         rows = [
             dict(row)
             for row in self.conn.execute(
@@ -5568,11 +5613,18 @@ class Memory:
         now_dt = datetime.datetime.fromisoformat(now)
         changed = 0
         for row in rows:
-            self.conn.execute(
-                "INSERT INTO strategy_decisions (initiative_id, decision, reason, owner_feedback, created_ts) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (row["id"], decision, "owner draft decision", owner_feedback[:2000], now),
-            )
+            existing_decision = self.conn.execute(
+                "SELECT id FROM strategy_decisions WHERE initiative_id = ? AND decision = ? "
+                "AND source_revision = ? AND review_package_hash = ? LIMIT 1",
+                (row["id"], decision, source_revision, review_package_hash),
+            ).fetchone()
+            if existing_decision is None:
+                self.conn.execute(
+                    "INSERT INTO strategy_decisions "
+                    "(initiative_id, decision, reason, owner_feedback, created_ts, source_revision, review_package_hash) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (row["id"], decision, "owner draft decision", owner_feedback[:2000], now, source_revision, review_package_hash),
+                )
             try:
                 expected = json.loads(row.get("expected_json") or "{}")
             except (json.JSONDecodeError, TypeError):
@@ -5581,7 +5633,7 @@ class Memory:
                 expected["implementation_baseline"] = baseline
                 expected["implemented_ts"] = now
             updates = {
-                "state": "publishing" if decision == "approved" else "rejected",
+                "state": "publishing" if decision == "approved" else "validating" if decision == "revised" else "rejected",
                 "expected_json": json.dumps(expected),
                 "updated_ts": now,
                 "last_error": "",
@@ -6218,6 +6270,41 @@ class Memory:
         return list(reversed(rows))
 
     @_locked
+    def enqueue_growth_source_candidate_job(self, initiative_id: int, run_id: str, payload: dict[str, Any]) -> int:
+        """Queue source work from Growth without fabricating a chat turn."""
+        initiative_id = int(initiative_id)
+        run_id = str(run_id or "").strip()
+        if initiative_id < 1 or not run_id or not re.fullmatch(r"[A-Za-z0-9._:-]{1,120}", run_id):
+            raise ContractError("growth source job identity is invalid")
+        if not isinstance(payload, dict):
+            raise ContractError("growth source job payload must be an object")
+        encoded = canonical_json(payload)
+        if len(encoded.encode("utf-8")) > 100_000:
+            raise ContractError("growth source job payload exceeds 100000 bytes")
+        key = f"growth-source-{initiative_id}-{run_id}"
+        message = f"Growth source candidate {initiative_id}"
+        with self.conn:
+            existing = self.conn.execute(
+                "SELECT id, message, payload_json FROM chat_jobs "
+                "WHERE operation_kind = 'growth_source_candidate' "
+                "AND intake_session_id IS NULL AND idempotency_key = ?",
+                (key,),
+            ).fetchone()
+            if existing is not None:
+                if existing["message"] != message or existing["payload_json"] != encoded:
+                    raise ContractError("growth source job identity was reused for different work")
+                return int(existing["id"])
+            now = _now()
+            cursor = self.conn.execute(
+                "INSERT INTO chat_jobs "
+                "(conversation_id, message, message_id, status, operation_kind, payload_json, "
+                "intake_session_id, idempotency_key, created_ts, updated_ts) "
+                "VALUES (NULL, ?, NULL, 'queued', 'growth_source_candidate', ?, NULL, ?, ?, ?)",
+                (message, encoded, key, now, now),
+            )
+        return int(cursor.lastrowid)
+
+    @_locked
     def enqueue_chat_job(
         self,
         conversation_id: int,
@@ -6471,10 +6558,11 @@ class Memory:
                             current.value,
                         ),
                     )
-                self.conn.execute(
-                    "INSERT INTO chat_messages (conversation_id, ts, role, text) VALUES (?, ?, 'assistant', ?)",
-                    (row["conversation_id"], completed_ts, completed_result.get("reply") or ""),
-                )
+                if row["conversation_id"] is not None:
+                    self.conn.execute(
+                        "INSERT INTO chat_messages (conversation_id, ts, role, text) VALUES (?, ?, 'assistant', ?)",
+                        (row["conversation_id"], completed_ts, completed_result.get("reply") or ""),
+                    )
         return updated == 1
 
     @_locked

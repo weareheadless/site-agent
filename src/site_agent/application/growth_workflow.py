@@ -918,7 +918,7 @@ def run_growth_cycle(
 ) -> dict[str, Any]:
     """Execute persisted phases, never count labels as proof of completed work."""
     from ..brain import growth as brain_growth
-    from .growth_candidates import prepare_payload_candidate
+    from .growth_candidates import prepare_payload_candidate, queue_source_candidate
 
     memory, config = context["memory"], context["config"]
     policy, goal = GrowthPolicy.from_config(config), ensure_default_goal(memory)
@@ -1048,6 +1048,7 @@ def run_growth_cycle(
         )
         ready_sources = {row["id"] for row in material["sources"] if row["state"] == "ready"}
         candidate_ids, blocks, unprepared_opportunities = [], [], []
+        queued_initiative_ids: list[int] = []
         all_initiatives = memory.list_strategy_initiatives(limit=500)
         active = [row for row in all_initiatives if row["state"] in {"preparing", "validating", "ready_for_review", "publishing", "verifying_live"} and row.get("growth_run_id") != run["run_id"]]
         active_targets = {
@@ -1080,7 +1081,7 @@ def run_growth_cycle(
                     "reassessWhen": "After the next successful scheduled assessment, once the required evidence is available.",
                 })
                 continue
-            if opportunity["kind"] not in {"payload_content", "owner_information"}:
+            if opportunity["kind"] not in {"payload_content", "code", "owner_information"}:
                 missing = set(opportunity["requiredSources"]) - ready_sources
                 unprepared_opportunities.append({
                     **opportunity,
@@ -1186,9 +1187,39 @@ def run_growth_cycle(
                     continue
                 except Exception as exc:
                     reason = str(exc)[:500]
+            elif opportunity["kind"] == "code":
+                preparation = initiative.get("validation") if isinstance(initiative.get("validation"), Mapping) else {}
+                preparation = preparation.get("preparation") if isinstance(preparation.get("preparation"), Mapping) else {}
+                existing_job = memory.get_chat_job(int(preparation["jobId"])) if preparation.get("kind") == "source_code" and preparation.get("jobId") else None
+                if existing_job is not None and existing_job.get("status") in {"queued", "running", "done"}:
+                    continue
+                active_code = next((row for row in active if row.get("kind") == "code"), None)
+                if queued_initiative_ids or active_code:
+                    related_id = active_code.get("id") if active_code else queued_initiative_ids[0]
+                    memory.transition_strategy_initiative(
+                        int(initiative["id"]), "deferred",
+                        validation={
+                            "status": "deferred",
+                            "reason": "Ada is already preparing another website improvement. This finding will be reassessed after that decision.",
+                            "relatedInitiativeId": related_id,
+                            "reassessWhen": "After the current website improvement is decided.",
+                        },
+                    )
+                    continue
+                try:
+                    if initiative["state"] == "blocked":
+                        initiative = memory.transition_strategy_initiative(initiative["id"], "preparing")
+                    job_id = queue_source_candidate(context, initiative, opportunity, detail)
+                    if job_id is not None:
+                        queued_initiative_ids.append(int(initiative["id"]))
+                    continue
+                except Exception as exc:
+                    reason = str(exc)[:500]
             memory.transition_strategy_initiative(initiative["id"], "blocked", last_error=reason)
             blocks.append({"initiativeId": initiative["id"], "reason": reason})
         detail.update(candidateIds=candidate_ids, blocks=blocks)
+        if queued_initiative_ids:
+            detail["queuedInitiativeIds"] = queued_initiative_ids
         if unprepared_opportunities:
             detail["assessment"]["unpreparedOpportunities"] = unprepared_opportunities
         else:
@@ -1262,6 +1293,9 @@ def reconcile_historical_noop_initiatives(memory: Memory) -> int:
 
 def run_pending_growth(context: dict[str, Any], *, recover_interrupted_runs: bool = False) -> None:
     memory = context["memory"]
+    from .growth_candidates import reconcile_source_candidates
+
+    reconcile_source_candidates(context)
     reconcile_historical_noop_initiatives(memory)
     due_by_id = {
         str(run.get("run_id")): run

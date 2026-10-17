@@ -125,9 +125,13 @@ def run_job(context: dict[str, Any], job: dict[str, Any], worker: str,
     timings_on = timing_enabled(context.get("config") or {}, context.get("env"))
     context["_chat_job_id"] = int(job_id)
     context["_chat_job_worker"] = str(worker)
+    job_payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
+    revision_request = job_payload.get("growth_task_revision")
+    if isinstance(revision_request, dict):
+        context["_growth_task_revision"] = dict(revision_request)
 
     def record_job_timing(*, succeeded: bool) -> None:
-        if not timings_on or not hasattr(memory, "record_timing"):
+        if not timings_on or conv_id is None or not hasattr(memory, "record_timing"):
             return
         try:
             memory.record_timing(
@@ -146,6 +150,24 @@ def run_job(context: dict[str, Any], job: dict[str, Any], worker: str,
         memory.append_chat_job_step(job_id, worker, text)
 
     try:
+        if job.get("operation_kind") == "growth_source_candidate":
+            from ..application.growth_candidates import run_growth_source_candidate_job, wake_growth_pending
+
+            result = run_growth_source_candidate_job(context, job, progress)
+            result["duration_ms"] = int(round((time.monotonic() - started) * 1000))
+            if not memory.complete_chat_job(job_id, worker, result):
+                raise RuntimeError("Growth source job ownership was lost before completion")
+            try:
+                memory.record_action(
+                    "growth_candidate_prepared",
+                    f"initiative#{result.get('initiative_id')} -> merge draft #{result.get('merge_draft_id')}",
+                )
+                wake_growth_pending(memory)
+            except Exception:  # noqa: BLE001 - persisted job/candidate are authoritative
+                pass
+            record_job_timing(succeeded=True)
+            return result
+
         message_id = job.get("message_id")
         if message_id is not None:
             source_history = memory.get_messages_before(conv_id, int(message_id), limit=8)
@@ -236,6 +258,8 @@ def run_job(context: dict[str, Any], job: dict[str, Any], worker: str,
             )
         if result.get("error"):
             raise RuntimeError(str(result.get("reply") or "chat job failed")[:300])
+        if isinstance(revision_request, dict) and not result.get("merge_draft_id"):
+            raise RuntimeError("Ada did not prepare a replacement website preview for the requested revision")
 
         result["conversation_id"] = conv_id
         result["duration_ms"] = int(round((time.monotonic() - started) * 1000))
@@ -247,6 +271,10 @@ def run_job(context: dict[str, Any], job: dict[str, Any], worker: str,
 
         if not memory.complete_chat_job(job_id, worker, result):
             raise RuntimeError("chat job ownership was lost before completion")
+        if isinstance(revision_request, dict):
+            from ..application.growth_candidates import wake_growth_pending
+
+            wake_growth_pending(memory)
         try:
             from ..application.growth_owner_response import complete_growth_owner_response
             complete_growth_owner_response(context, job)
@@ -259,11 +287,28 @@ def run_job(context: dict[str, Any], job: dict[str, Any], worker: str,
         return result
     except Exception as exc:  # noqa: BLE001 — a failing job must not kill the loop
         memory.fail_chat_job(job_id, worker, str(exc)[:300])
+        if isinstance(revision_request, dict):
+            try:
+                from ..application.growth_candidates import restore_growth_source_revision
+
+                restore_growth_source_revision(
+                    memory, int(revision_request["initiativeId"]), str(exc)[:700],
+                )
+            except Exception:  # noqa: BLE001 — the durable Growth reconciler retries recovery
+                pass
+        if job.get("operation_kind") == "growth_source_candidate":
+            try:
+                from ..application.growth_candidates import wake_growth_pending
+
+                wake_growth_pending(memory)
+            except Exception:  # noqa: BLE001 - normal scheduler cadence remains authoritative
+                pass
         record_job_timing(succeeded=False)
         return {"error": str(exc)[:300]}
     finally:
         context.pop("_chat_job_id", None)
         context.pop("_chat_job_worker", None)
+        context.pop("_growth_task_revision", None)
 
 
 class ChatJobExecutor:
