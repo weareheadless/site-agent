@@ -41,6 +41,7 @@ from ..brain import monthly_seo_report as brain_monthly_seo_report
 from .article_routes import public_article_path
 from ..application.growth_workflow import (
     has_recoverable_growth_replay,
+    has_recoverable_historical_noop,
     run_growth_reconciler,
     run_growth_cycle,
     run_pending_growth,
@@ -317,6 +318,65 @@ def _article_image_preview(value: Any) -> dict[str, Any] | None:
     return None
 
 
+def _payload_relation_id(value: Any) -> str:
+    if isinstance(value, Mapping):
+        nested = value.get("value")
+        value = nested if isinstance(nested, Mapping) else value
+        if isinstance(value, Mapping):
+            value = value.get("id")
+    return str(value).strip() if value is not None else ""
+
+
+def _payload_field_matches(field: str, actual: Any, expected: Any) -> bool:
+    if field == "featuredImage":
+        return _payload_relation_id(actual) == _payload_relation_id(expected)
+    if field == "gallery":
+        actual_rows = actual if isinstance(actual, list) else ([] if actual is None else [actual])
+        expected_rows = expected if isinstance(expected, list) else ([] if expected is None else [expected])
+        return [_payload_relation_id(value) for value in actual_rows] == [
+            _payload_relation_id(value) for value in expected_rows
+        ]
+    if field == "seo":
+        return isinstance(actual, Mapping) and isinstance(expected, Mapping) and all(
+            canonical_hash(actual.get(key)) == canonical_hash(value)
+            for key, value in expected.items()
+        )
+    return canonical_hash(actual) == canonical_hash(expected)
+
+
+def _is_exact_unlinked_article_draft(document: Mapping[str, Any], post: Mapping[str, Any]) -> bool:
+    """Prove an orphaned Payload draft is the exact unpublished Ada candidate."""
+    revision = str(document.get("_helloadaRevision") or "")
+    if (
+        document.get("id") is None
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", revision)
+        or not str(document.get("sourceId") or "").strip()
+        or document.get("published") is not False
+        or str(document.get("slug") or "") != str(post.get("slug") or "")
+    ):
+        return False
+    required_fields = {"slug", "title", "summary", "body", "seo", "published"}
+    if not required_fields.issubset(post):
+        return False
+    system_fields = {"canonicalUrl", "modifiedAt"}
+    return all(
+        _payload_field_matches(field, document.get(field), expected)
+        for field, expected in post.items()
+        if field not in system_fields
+    )
+
+
+def _read_article_draft_by_slug(payload: Any, slug: str, language: str) -> dict[str, Any] | None:
+    try:
+        return payload.read(
+            "posts", identifier=slug, identifier_kind="slug", draft=True, locale=language
+        )
+    except Exception as exc:  # noqa: BLE001 - only an exact not-found permits a create
+        if getattr(exc, "status_code", None) == 404:
+            return None
+        raise
+
+
 def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -> None:
     """Put one Ada article into Payload and validate the returned draft."""
     payload = context.get("payload_gateway")
@@ -389,38 +449,86 @@ def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -
     if "modifiedAt" in post:
         post["modifiedAt"] = modified_at
     source_hash = canonical_hash({"locale": language, "post": post})
-    existing = next(
-        (item for item in payload.list("posts", draft=True, limit=100) if str(item.get("sourceId") or "") == source_id),
-        None,
-    )
-    if existing and existing.get("id") is not None:
-        document_id = str(existing["id"])
-        if str(previous_sync.get("document_id") or "") != document_id:
-            raise RuntimeError("An existing Payload post is not linked to Ada's exact sync record; it must be reviewed before any update.")
-        current = payload.read("posts", identifier=document_id, identifier_kind="id", draft=True, locale=language)
-        current_revision = str(current.get("_helloadaRevision") or "")
-        if not current_revision or str(previous_sync.get("draft_hash") or "") != current_revision:
-            raise RuntimeError("The Payload article draft changed after Ada's last sync; it must be reconciled before approval.")
-        if str(previous_sync.get("source_hash") or "") == source_hash:
-            document = current
-        else:
-            document = payload.update(
-                "posts", document_id, post, locale=language,
-                expected_hash=current_revision,
+    previous_document_id = str(previous_sync.get("document_id") or "").strip()
+    adopted_unlinked = False
+    existing: dict[str, Any] | None = None
+    if previous_document_id:
+        try:
+            existing = payload.read(
+                "posts", identifier=previous_document_id, identifier_kind="id", draft=True, locale=language
             )
-    elif previous_sync.get("document_id"):
-        raise RuntimeError("The previously linked Payload article is missing; Ada must reconcile it before creating another post.")
+        except Exception as exc:  # noqa: BLE001 - a previously linked ID must never create a duplicate
+            if getattr(exc, "status_code", None) == 404:
+                raise RuntimeError(
+                    "The previously linked Payload article is missing; Ada must reconcile it before creating another post."
+                ) from exc
+            raise
+        recorded_source_id = str(previous_sync.get("source_id") or source_id)
+        if (
+            str(existing.get("sourceId") or "") != recorded_source_id
+            or str(existing.get("slug") or "") != slug
+        ):
+            raise RuntimeError("The previously linked Payload article identity changed and must be reconciled before any update.")
+        if existing.get("published") is not False:
+            raise RuntimeError("The linked Payload article is no longer an unpublished draft; Ada will not modify published content.")
     else:
-        document = payload.create("posts", post, locale=language)
+        existing = _read_article_draft_by_slug(payload, slug, language)
+        if existing is not None:
+            if not _is_exact_unlinked_article_draft(existing, post):
+                raise RuntimeError(
+                    "An existing Payload post is not linked to Ada's exact sync record; its content differs, so it remains blocked for owner review."
+                )
+            adopted_unlinked = True
+
+    document: dict[str, Any] | None = None
+    if existing is None:
+        try:
+            document = payload.create("posts", post, locale=language)
+        except Exception as exc:  # noqa: BLE001 - resolve only an exact route-conflict race
+            if getattr(exc, "status_code", None) != 409:
+                raise
+            existing = _read_article_draft_by_slug(payload, slug, language)
+            if existing is None or not _is_exact_unlinked_article_draft(existing, post):
+                raise RuntimeError(
+                    "The Payload route conflict could not be proven to be Ada's exact unpublished draft; it remains blocked for owner review."
+                ) from exc
+            adopted_unlinked = True
+
+    if existing is not None:
+        document_id = str(existing.get("id") or "").strip()
+        current_revision = str(existing.get("_helloadaRevision") or "")
+        if not document_id or not re.fullmatch(r"sha256:[0-9a-f]{64}", current_revision):
+            raise RuntimeError("Payload article draft has no stable identifier and revision; it cannot be reconciled safely.")
+        if adopted_unlinked:
+            document = (
+                existing
+                if all(_payload_field_matches(key, existing.get(key), value) for key, value in post.items())
+                else payload.update(
+                    "posts", document_id, post, locale=language, expected_hash=current_revision,
+                )
+            )
+        else:
+            if str(previous_sync.get("draft_hash") or "") != current_revision:
+                raise RuntimeError("The Payload article draft changed after Ada's last sync; it must be reconciled before approval.")
+            document = (
+                existing
+                if str(previous_sync.get("source_hash") or "") == source_hash
+                else payload.update(
+                    "posts", document_id, post, locale=language, expected_hash=current_revision,
+                )
+            )
+    if document is None:
+        raise RuntimeError("Payload did not create or reconcile the article draft")
     document_id = str(document.get("id") or "").strip()
     if not document_id:
         raise RuntimeError("Payload did not return the article draft identifier")
     verified = payload.read("posts", identifier=document_id, identifier_kind="id", draft=True, locale=language)
     verified_seo = verified.get("seo") if isinstance(verified.get("seo"), Mapping) else {}
     metadata_value = verified_seo.get("description")
+    actual_source_id = str(document.get("sourceId") or "").strip()
     checks = {
         "document": bool(verified.get("id")),
-        "identity": str(verified.get("sourceId") or "") == source_id,
+        "identity": bool(actual_source_id) and str(verified.get("sourceId") or "") == actual_source_id,
         "slug": str(verified.get("slug") or "") == slug,
         "title": str(verified.get("title") or "").strip() == title,
         "summary": str(verified.get("summary") or "").strip() == summary,
@@ -440,7 +548,7 @@ def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -
             "source_hash": source_hash,
             "source_content_hash": source_content_hash,
             "modified_at": modified_at,
-            "source_id": source_id,
+            "source_id": actual_source_id,
             "slug": slug,
             "locale": language,
             "excerpt": str(verified.get("summary") or "").strip()[:500],
@@ -450,7 +558,7 @@ def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -
             "validation": {"status": "passed" if state == "ready_for_review" else "blocked", "checks": checks, "reason": reason},
         },
         "payload_post_id": document_id,
-        "payload_source_id": source_id,
+        "payload_source_id": actual_source_id,
         "payload_slug": slug,
     })
     memory.update_draft_meta(draft_id, next_meta)
