@@ -748,7 +748,6 @@ def _has_recoverable_article_sync(memory: Memory) -> bool:
     """Wake only pending drafts with an exact structural recovery path."""
     recoverable_reasons = {
         "payload posts contract is missing required fields: sourceid",
-        "the requested locale is not enabled for this website.",
         "an existing payload post is not linked to ada's exact sync record; it must be reviewed before any update.",
         "payload gateway returned 409: a payload document already uses this route; read and update that exact draft instead.",
     }
@@ -759,7 +758,9 @@ def _has_recoverable_article_sync(memory: Memory) -> bool:
         sync = meta.get("payload_sync") if isinstance(meta.get("payload_sync"), Mapping) else {}
         validation = sync.get("validation") if isinstance(sync.get("validation"), Mapping) else {}
         reason = str(validation.get("reason") or "").strip().lower()
-        exact_contract_recovery = reason in recoverable_reasons
+        exact_contract_recovery = reason in recoverable_reasons or (
+            "requested locale" in reason and "not enabled for this website" in reason
+        )
         unlinked_draft_recovery = (
             reason in {
                 "an existing payload post is not linked to ada's exact sync record; it must be reviewed before any update.",
