@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from ..core.contracts import Artifact, ArtifactKind, utc_now
+from ..core.contracts import Artifact, ArtifactKind, ContractError, utc_now
 from ..core.growth_contracts import GrowthGoalRevision, GrowthPolicy
 from ..core.memory import Memory
 
@@ -102,13 +102,19 @@ def _recoverable_saved_assessment_failure(memory: Memory, run: Mapping[str, Any]
     assessment = detail.get("assessment")
     material = detail.get("material")
     failure = str(detail.get("error") or "")
+    recoverable_failures = {
+        "Ada referenced evidence that is not in this run",
+        "summary exceeds 500 characters",
+        "invalid strategy initiative transition deferred -> blocked",
+    }
     if (
-        failure not in {"Ada referenced evidence that is not in this run", "summary exceeds 500 characters"}
+        failure not in recoverable_failures
         or not isinstance(assessment, Mapping)
         or not isinstance(assessment.get("opportunities"), list)
         or not isinstance(material, Mapping)
         or not isinstance(material.get("inventory"), list)
         or detail.get("candidateIds")
+        or detail.get("queuedInitiativeIds")
     ):
         return False
     initiatives = [
@@ -117,11 +123,93 @@ def _recoverable_saved_assessment_failure(memory: Memory, run: Mapping[str, Any]
     ]
     if failure == "Ada referenced evidence that is not in this run":
         return not initiatives
-    return bool(initiatives) and all(
-        row.get("state") in {"preparing", "blocked"}
-        and not any(row.get(key) is not None for key in ("owner_action_id", "artifact_id", "approval_id", "draft_id"))
-        for row in initiatives
+    if not initiatives:
+        return False
+    if failure == "invalid strategy initiative transition deferred -> blocked" and not any(
+        row.get("state") == "deferred" for row in initiatives
+    ):
+        return False
+    side_effect_fields = (
+        "owner_action_id", "artifact_id", "approval_id", "draft_id", "receipt_id",
+        "candidate_hash", "review_package_hash", "published_revision",
     )
+    for row in initiatives:
+        if any(row.get(key) is not None for key in side_effect_fields):
+            return False
+        if row.get("state") not in {"preparing", "blocked"}:
+            if failure != "invalid strategy initiative transition deferred -> blocked" or row.get("state") != "deferred":
+                return False
+        validation = row.get("validation") if isinstance(row.get("validation"), Mapping) else {}
+        if any(validation.get(key) for key in ("candidateHash", "reviewPackageHash")):
+            return False
+    return True
+
+
+def _record_preparation_failure(
+    memory: Memory,
+    initiative_id: int,
+    opportunity: Mapping[str, Any],
+    reason: str,
+    *,
+    candidate_ids: list[int],
+    blocks: list[dict[str, Any]],
+    unprepared_opportunities: list[dict[str, Any]],
+) -> None:
+    """Record a preparation failure without overwriting a concurrent decision.
+
+    Initiative state may advance while a provider or Payload request is in
+    flight. Read the durable state and use its expected value for the update;
+    if another executor wins the race, classify that newer state rather than
+    trying to force it back to ``blocked``.
+    """
+    for _attempt in range(2):
+        current = memory.update_strategy_initiative(int(initiative_id))
+        if current is None:
+            raise ContractError("strategy initiative disappeared during preparation")
+        state = str(current.get("state") or "")
+        if state == "deferred":
+            validation = current.get("validation") if isinstance(current.get("validation"), Mapping) else {}
+            retained = {
+                **dict(opportunity),
+                "disposition": "deferred",
+                "errorCode": str(validation.get("errorCode") or "preparation_deferred"),
+                "preparationNote": str(
+                    validation.get("reason")
+                    or current.get("last_error")
+                    or "This finding was deferred while its preparation state changed. It remains saved for reassessment."
+                ),
+            }
+            if validation.get("reassessWhen"):
+                retained["reassessWhen"] = str(validation["reassessWhen"])
+            unprepared_opportunities.append(retained)
+            return
+        if state == "ready_for_review":
+            candidate_ids.append(int(current["id"]))
+            return
+        if state not in {"preparing", "validating", "blocked", "uncertain"}:
+            # A concurrent owner action, publication, or terminal decision is
+            # authoritative. It must not be converted into a technical block.
+            return
+        try:
+            memory.transition_strategy_initiative(
+                int(initiative_id),
+                "blocked",
+                expected_state=state,
+                last_error=reason,
+            )
+        except ContractError:
+            latest = memory.update_strategy_initiative(int(initiative_id))
+            if latest is None:
+                raise
+            if str(latest.get("state") or "") == state:
+                raise
+            continue
+        blocks.append({"initiativeId": int(initiative_id), "reason": reason})
+        return
+    # A second concurrent state change is unusual but must not be silently
+    # represented as a completed block. Let the run-level failure boundary
+    # persist the exact diagnostic for a later safe replay.
+    raise ContractError("strategy initiative changed repeatedly while recording its preparation failure")
 
 
 _PAYLOAD_GROWTH_CONTRACT_ROUTE_404 = 'Payload gateway returned 404: Route not found "/api/workspace/growth/contract"'
@@ -980,6 +1068,8 @@ def run_growth_cycle(
         elif recover_interrupted:
             previous_error = "The shared API restarted while Ada was preparing an assessed recommendation."
             recovery_code = _GROWTH_RESTART_RECOVERY
+        elif previous_error == "invalid strategy initiative transition deferred -> blocked":
+            recovery_code = "initiative_state_transition_conflict_replayed"
         else:
             recovery_code = (
                 "evidence_binding_fixed"
@@ -1215,8 +1305,15 @@ def run_growth_cycle(
                     continue
                 except Exception as exc:
                     reason = str(exc)[:500]
-            memory.transition_strategy_initiative(initiative["id"], "blocked", last_error=reason)
-            blocks.append({"initiativeId": initiative["id"], "reason": reason})
+            _record_preparation_failure(
+                memory,
+                int(initiative["id"]),
+                opportunity,
+                reason,
+                candidate_ids=candidate_ids,
+                blocks=blocks,
+                unprepared_opportunities=unprepared_opportunities,
+            )
         detail.update(candidateIds=candidate_ids, blocks=blocks)
         if queued_initiative_ids:
             detail["queuedInitiativeIds"] = queued_initiative_ids
