@@ -153,6 +153,7 @@ export function GrowthTasks({ mode, ownerQueue, onNavigate, tasks = [], pending,
     });
   }, [selected, focus]);
   const selectedTask = tasks.find(row => row.id === selected);
+  const ownerInformation = selectedTask?.requirement === "owner_information";
   const articleKey = selectedTask?.kind === "article" && selectedTask.draftId
     ? String(selectedTask.draftId) + ":" + String(selectedTask.reviewPackageHash || "inspection")
     : "";
@@ -222,7 +223,9 @@ export function GrowthTasks({ mode, ownerQueue, onNavigate, tasks = [], pending,
     return label ? readable(label) : Object.values(record).map(readable).filter(item => item !== "—").join(" · ") || "—";
   };
   const discuss = (task: GrowthTask) => {
-    const prompt = task.focus === "opportunity"
+    const prompt = task.requirement === "owner_information"
+      ? [title(task), task.scope || fullTaskSummary(task), t("growth.ownerAnswerLabel")].filter(Boolean).join("\n\n")
+      : task.focus === "opportunity"
       ? title(task) + ". " + (task.scope || fullTaskSummary(task)) + ". " + t("growth.opportunityPrompt")
       : task.needsPreparation
         ? title(task) + ". " + t(task.kind === "settings_proposal" ? "growth.settingsPreparePrompt" : "growth.changePreparePrompt")
@@ -441,7 +444,17 @@ export function GrowthTasks({ mode, ownerQueue, onNavigate, tasks = [], pending,
               </details> : null}
             </> : null}
           </> : <>
-            {fullTaskSummary(selectedTask) ? <HelloAdaChatMessage text={fullTaskSummary(selectedTask)} /> : null}
+            {ownerInformation ? <section className="helloada-growth-owner-question" aria-label={t("growth.ownerQuestionTitle")}>
+              {fullTaskSummary(selectedTask) ? <div className="helloada-growth-owner-evidence">
+                <strong>{t("growth.ownerQuestionObserved")}</strong>
+                <p>{fullTaskSummary(selectedTask)}</p>
+              </div> : null}
+              {selectedTask.scope ? <div className="helloada-growth-owner-evidence is-question">
+                <strong>{t("growth.ownerQuestionDetails")}</strong>
+                <p>{selectedTask.scope}</p>
+              </div> : null}
+              <p className="helloada-growth-owner-hint">{t("growth.ownerQuestionHint")}</p>
+            </section> : fullTaskSummary(selectedTask) ? <HelloAdaChatMessage text={fullTaskSummary(selectedTask)} /> : null}
             {selectedTask.kind === "article_research" && selectedTask.scope ? <section className="helloada-growth-task-analysis-note">
               <strong>{t("growth.articleOpportunityNeed")}</strong><p>{selectedTask.scope}</p>
             </section> : null}
@@ -499,6 +512,9 @@ export function GrowthTasks({ mode, ownerQueue, onNavigate, tasks = [], pending,
           </>}
 
           <footer className="helloada-growth-task-actions">
+            {ownerInformation ? <Link className="helloada-growth-owner-answer" href={discuss(selectedTask)}>
+              {t("growth.decisionCtaAnswer")} <span aria-hidden="true">→</span>
+            </Link> : null}
             {selectedTask.canApprove && selectedTask.draftId && selectedTask.reviewPackageHash
               && (selectedTask.kind !== "article" || exactArticleReview) ? <>
               <button type="button" className="helloada-growth-primary" disabled={Boolean(busy)}
