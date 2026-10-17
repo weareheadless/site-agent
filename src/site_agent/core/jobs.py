@@ -343,6 +343,49 @@ def _payload_field_matches(field: str, actual: Any, expected: Any) -> bool:
     return canonical_hash(actual) == canonical_hash(expected)
 
 
+def _payload_value_is_empty(value: Any) -> bool:
+    """Ignore Lexical's structural metadata while detecting truly empty content."""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, list):
+        return all(_payload_value_is_empty(item) for item in value)
+    if isinstance(value, Mapping):
+        structural = {
+            "type", "version", "direction", "format", "indent", "detail",
+            "mode", "style", "textFormat", "textStyle", "listType", "tag",
+        }
+        return all(
+            str(key) in structural or _payload_value_is_empty(item)
+            for key, item in value.items()
+        )
+    return False
+
+
+def _is_empty_unlinked_article_draft(
+    document: Mapping[str, Any],
+    post: Mapping[str, Any],
+    source_id: str,
+) -> bool:
+    """Recognize only a versioned, content-empty Payload shell at the exact route."""
+    revision = str(document.get("_helloadaRevision") or "")
+    if (
+        not str(document.get("id") or "").strip()
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", revision)
+        or str(document.get("sourceId") or "").strip() != source_id
+        or str(document.get("slug") or "") != str(post.get("slug") or "")
+        or str(document.get("_status") or "") != "draft"
+        or not _payload_value_is_empty(document.get("publishedAt"))
+    ):
+        return False
+    owner_content_fields = (
+        "title", "summary", "sections", "body", "seo",
+        "featuredImage", "gallery", "author", "category",
+    )
+    return all(_payload_value_is_empty(document.get(field)) for field in owner_content_fields)
+
+
 def _is_exact_unlinked_article_draft(document: Mapping[str, Any], post: Mapping[str, Any]) -> bool:
     """Prove an orphaned Payload draft is the exact unpublished Ada candidate."""
     revision = str(document.get("_helloadaRevision") or "")
@@ -473,9 +516,11 @@ def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -
     else:
         existing = _read_article_draft_by_slug(payload, slug, language)
         if existing is not None:
-            if not _is_exact_unlinked_article_draft(existing, post):
+            exact_candidate = _is_exact_unlinked_article_draft(existing, post)
+            empty_shell = _is_empty_unlinked_article_draft(existing, post, source_id)
+            if not (exact_candidate or empty_shell):
                 raise RuntimeError(
-                    "An existing Payload post is not linked to Ada's exact sync record; its content differs, so it remains blocked for owner review."
+                    "An existing Payload post at this route is not linked to Ada's exact sync record; its content differs and it is neither Ada's exact draft nor an empty schema draft, so it remains unchanged for owner review."
                 )
             adopted_unlinked = True
 
@@ -487,9 +532,12 @@ def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -
             if getattr(exc, "status_code", None) != 409:
                 raise
             existing = _read_article_draft_by_slug(payload, slug, language)
-            if existing is None or not _is_exact_unlinked_article_draft(existing, post):
+            if existing is None or not (
+                _is_exact_unlinked_article_draft(existing, post)
+                or _is_empty_unlinked_article_draft(existing, post, source_id)
+            ):
                 raise RuntimeError(
-                    "The Payload route conflict could not be proven to be Ada's exact unpublished draft; it remains blocked for owner review."
+                    "The Payload route conflict is not an exact draft or empty schema draft; its content remains unchanged for owner review."
                 ) from exc
             adopted_unlinked = True
 
@@ -759,6 +807,8 @@ def _has_recoverable_article_sync(memory: Memory) -> bool:
         unlinked_draft_recovery = (
             reason in {
                 "an existing payload post is not linked to ada's exact sync record; it must be reviewed before any update.",
+                "an existing payload post is not linked to ada's exact sync record; its content differs, so it remains blocked for owner review.",
+                "the payload route conflict could not be proven to be ada's exact unpublished draft; it remains blocked for owner review.",
                 "payload gateway returned 409: a payload document already uses this route; read and update that exact draft instead.",
             }
             and not str(sync.get("document_id") or "").strip()

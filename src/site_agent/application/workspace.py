@@ -2397,7 +2397,15 @@ class ChatService:
         else:
             article = dict(article)
             article["bodyFormat"] = "markdown"
-            blocked_reason_code = "articlePayloadSyncBlocked" if sync.get("state") == "blocked" else "articlePayloadSyncPending"
+            validation = sync.get("validation") if isinstance(sync.get("validation"), Mapping) else {}
+            validation_reason = str(validation.get("reason") or "")
+            blocked_reason_code = (
+                "articlePayloadConflict"
+                if "existing Payload post at this route" in validation_reason
+                else "articlePayloadSyncBlocked"
+                if sync.get("state") == "blocked"
+                else "articlePayloadSyncPending"
+            )
             reviewable = False
         return {
             "tenant": scope["tenant"],

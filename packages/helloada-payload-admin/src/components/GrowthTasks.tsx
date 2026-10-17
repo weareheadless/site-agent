@@ -193,7 +193,7 @@ export function GrowthTasks({ mode, ownerQueue, onNavigate, tasks = [], pending,
       cache: "no-store",
     }).then(async response => {
       const body = await response.json().catch(() => ({}));
-      const blockedCodes = ["articlePayloadUnavailable", "articlePayloadChanged", "articlePayloadEmpty", "articlePayloadSyncBlocked", "articlePayloadSyncPending"];
+      const blockedCodes = ["articlePayloadUnavailable", "articlePayloadChanged", "articlePayloadEmpty", "articlePayloadSyncBlocked", "articlePayloadSyncPending", "articlePayloadConflict"];
       if (!response.ok || !body.article || typeof body.reviewable !== "boolean"
         || (body.reviewable && body.blockedReasonCode !== null)
         || (!body.reviewable && !blockedCodes.includes(String(body.blockedReasonCode)))) {
@@ -499,6 +499,9 @@ export function GrowthTasks({ mode, ownerQueue, onNavigate, tasks = [], pending,
             {selectedTask.focus === "opportunity" || selectedTask.kind === "analysis_insight"
               || selectedTask.kind === "article" && selectedTask.canApprove || selectedTask.kind === "owner_action" || selectedTask.needsPreparation
               ? <Link href={discuss(selectedTask)}>{selectedTask.needsPreparation ? t(selectedTask.kind === "settings_proposal" ? "growth.prepareSettingsWithAda" : "growth.prepareChangeWithAda") : selectedTask.focus === "opportunity" ? t("growth.prepareWithAda") : selectedTask.kind === "article" ? t("growth.articleAskChanges") : t("growth.ask")} ↗</Link>
+              : null}
+            {selectedTask.kind === "article" && !selectedTask.canApprove
+              ? <Link href={discuss(selectedTask)}>{t("growth.articleResolve")} ↗</Link>
               : null}
           </footer>
         </div> : <>
