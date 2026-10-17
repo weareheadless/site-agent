@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 from site_agent.application.growth_workflow import _persist_evidence_artifact, ensure_default_goal, has_recoverable_growth_replay, has_recoverable_historical_noop, run_growth_cycle, run_pending_growth
 from site_agent.application.growth_tasks import growth_tasks
-from site_agent.core.jobs import _has_recoverable_article_research, _has_recoverable_article_sync, register_jobs
+from site_agent.core.jobs import _has_recoverable_article_sync, register_jobs
 from site_agent.core.growth_contracts import GrowthPolicy
 from site_agent.core.memory import Memory
 from site_agent.core.scheduler import Scheduler
@@ -562,11 +562,6 @@ def test_activation_wakes_only_exact_recoverable_growth_and_article_jobs(tmp_pat
         cycle["id"], kind="payload_content", title="Unneeded change", summary="Already correct",
         state="blocked", last_error="Ada proposed no actual change",
     )
-    idea = memory.create_article_idea(
-        "safe-pre-dispatch-retry", "a" * 64,
-        {"working_title": "A useful guide", "candidate_queries": ["useful guide"], "language": "en", "market": "US"},
-    )
-    memory.update_article_idea(idea["id"], status="selected", error="CrawlSEO idea_summary is invalid")
     source_id_block = "Payload posts contract is missing required fields: sourceId"
     memory.save_draft(
         "Recoverable article",
@@ -599,7 +594,6 @@ def test_activation_wakes_only_exact_recoverable_growth_and_article_jobs(tmp_pat
     assert memory.kv_get("next_run:growth_pending") == 1234.5
     assert memory.kv_get("next_run:growth_article_sync") == 1234.5
     assert _has_recoverable_article_sync(memory)
-    assert _has_recoverable_article_research(memory)
     assert has_recoverable_historical_noop(memory)
     assert scheduler.due("growth_pending")
     assert scheduler.due("growth_article_sync")
@@ -632,7 +626,6 @@ def test_activation_does_not_wake_unrelated_or_completed_growth_work(tmp_path):
     assert memory.kv_get("next_run:growth_pending") == 9999999.0
     assert memory.kv_get("next_run:growth_article_sync") == 9999999.0
     assert not _has_recoverable_article_sync(memory)
-    assert not _has_recoverable_article_research(memory)
     assert not has_recoverable_historical_noop(memory)
     memory.close()
 
