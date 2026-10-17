@@ -307,43 +307,6 @@ def test_rejection_records_raw_candidate_and_reason(tmp_path):
         memory.close()
 
 
-def test_pre_dispatch_request_failure_is_retried_without_reselecting_or_duplicating_idea(tmp_path):
-    memory = Memory(tmp_path / "memory.db")
-
-    class FlakyRequestService:
-        def __init__(self):
-            self.requests = 0
-
-        def request_article_keyword_research(self, **kwargs):
-            self.requests += 1
-            if self.requests == 1:
-                raise CrawlSEORequestNotDispatched("CrawlSEO idea_summary is invalid")
-            return {"run_id": "run-1", "status": "requested"}
-
-    service = FlakyRequestService()
-    llm = IdeaLLM()
-    context = {
-        "config": {"seo": {"article_research": {"enabled": True}}},
-        "memory": memory,
-        "crawlseo_service": service,
-        "llm": llm,
-    }
-    try:
-        article_research.select_and_request(context)
-        first = memory.list_article_ideas(limit=1)[0]
-        assert first["status"] == "selected"
-        assert first["research_run_id"] is None
-
-        article_research.select_and_request(context)
-        second = memory.list_article_ideas(limit=1)[0]
-        assert second["status"] == "research_requested"
-        assert second["research_run_id"] == "run-1"
-        assert service.requests == 2
-        assert llm.calls == 1
-    finally:
-        memory.close()
-
-
 def test_local_crawlseo_request_validation_failure_is_not_marked_as_paid_outcome_uncertain():
     error = CrawlSEORequestNotDispatched("CrawlSEO idea_summary is invalid")
 
@@ -410,39 +373,44 @@ def test_empty_provider_summary_is_rejected_before_reserving_or_spending_budget(
 
 
 
-def test_reconcile_retries_only_a_persisted_pre_dispatch_summary_rejection(tmp_path, monkeypatch):
+def test_pre_dispatch_research_retry_requires_owner_authorization(tmp_path, monkeypatch):
     memory = Memory(tmp_path / "memory.db")
-    row = memory.create_article_idea("article:2026-W40", "retry-safe-hash", dict(DEFAULT_IDEA))
+    config = {"seo": {"article_research": {"enabled": True}}}
+    cycle_key = article_research._cycle_key(config)
+    row = memory.create_article_idea(cycle_key, "retry-safe-hash", dict(DEFAULT_IDEA))
+    memory.update_article_idea(
+        row["id"], status="selected", error="CrawlSEO idea_summary is invalid"
+    )
 
     class Service:
         requests = 0
 
         def request_article_keyword_research(self, **_kwargs):
             self.requests += 1
-            return {"run_id": "retry-run", "status": "requested"}
+            raise AssertionError("a paid retry requires explicit owner authorization")
 
     service = Service()
-    memory.update_article_idea(
-        row["id"], status="selected", error="CrawlSEO idea_summary is invalid"
-    )
-    monkeypatch.setattr(
-        article_research, "reserve_paid_research",
-        lambda *_args, **_kwargs: {"reservation_id": "reservation-1"},
-    )
-    monkeypatch.setattr(article_research, "settle_paid_research", lambda *_args, **_kwargs: None)
+
+    def reject_reservation(*_args, **_kwargs):
+        raise AssertionError("a paid retry must not reserve or spend automatically")
+
+    monkeypatch.setattr(article_research, "reserve_paid_research", reject_reservation)
     context = {
-        "config": {"seo": {"article_research": {"enabled": True}}},
+        "config": config,
         "memory": memory,
         "crawlseo_service": service,
         "llm": None,
     }
 
     try:
+        article_research.select_and_request(context)
         article_research.reconcile(context)
         saved = memory.get_article_idea(row["id"])
-        assert saved["status"] == "research_requested"
-        assert saved["research_run_id"] == "retry-run"
-        assert service.requests == 1
+        assert saved["status"] == "selected"
+        assert saved["error"] == "CrawlSEO idea_summary is invalid"
+        assert saved["research_run_id"] is None
+        assert saved["keyword_budget_reservation_id"] is None
+        assert service.requests == 0
     finally:
         memory.close()
 

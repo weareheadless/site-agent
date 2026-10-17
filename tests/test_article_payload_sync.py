@@ -3,6 +3,7 @@ import pytest
 
 from site_agent.core.jobs import _mark_article_payload_blocked, _mirror_article_draft_to_workspace
 from site_agent.core.memory import Memory
+from site_agent.hands.payload_gateway import PayloadGatewayError
 
 
 POST_FIELDS = frozenset({
@@ -30,6 +31,7 @@ class Payload:
         self.updates = 0
         self.publishes = 0
         self.locales = []
+        self.conflict_after_create = False
 
     def require_authoring_contract(self):
         return self.authoring_contract
@@ -50,12 +52,19 @@ class Payload:
         self.created_data.append(deepcopy(data))
         document = {**deepcopy(data), "sourceId": f"posts:{data['slug']}", "id": "post-1", "_helloadaRevision": "sha256:" + "a" * 64}
         self.documents.append(document)
+        if self.conflict_after_create:
+            self.conflict_after_create = False
+            raise PayloadGatewayError("Payload gateway returned 409: route conflict", status_code=409)
         return deepcopy(document)
 
     def read(self, collection, *, identifier, identifier_kind, draft, locale=None):
-        assert collection == "posts" and identifier_kind == "id" and draft is True
+        assert collection == "posts" and identifier_kind in {"id", "slug"} and draft is True
         self.locales.append(locale)
-        return deepcopy(next(item for item in self.documents if str(item["id"]) == str(identifier)))
+        key = "id" if identifier_kind == "id" else "slug"
+        document = next((item for item in self.documents if str(item.get(key)) == str(identifier)), None)
+        if document is None:
+            raise PayloadGatewayError("not found", status_code=404)
+        return deepcopy(document)
 
     def update(self, collection, document_id, data, *, locale=None, expected_hash=None):
         self.locales.append(locale)
@@ -133,7 +142,7 @@ def test_article_sync_uses_payload_default_locale_not_owner_language(tmp_path):
 
     _mirror_article_draft_to_workspace(context, draft_id)
 
-    assert payload.locales == ["en", "en"]
+    assert payload.locales == ["en", "en", "en"]
     assert memory.list_drafts()[0]["meta"]["payload_sync"]["locale"] == "en"
     memory.close()
 
@@ -159,7 +168,7 @@ def test_article_sync_does_not_adopt_an_unlinked_payload_post(tmp_path):
     payload = Payload()
     draft_id = memory.save_draft(title="A guide", body="Draft copy.", kind="article")
     payload.documents.append({
-        "id": "foreign-post", "sourceId": "posts:a-guide",
+        "id": "foreign-post", "sourceId": "posts:a-guide", "slug": "a-guide",
         "_helloadaRevision": "sha256:" + "d" * 64,
     })
 
@@ -170,6 +179,88 @@ def test_article_sync_does_not_adopt_an_unlinked_payload_post(tmp_path):
     assert payload.updates == 0
     memory.close()
 
+
+
+def test_article_sync_adopts_exact_unpublished_payload_draft_after_local_checkpoint_loss(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    payload = Payload()
+    draft_id = memory.save_draft(title="An interrupted guide", body="Exact draft body.", kind="article")
+
+    _mirror_article_draft_to_workspace(_context(memory, payload), draft_id)
+    original_document = deepcopy(payload.documents[0])
+    memory.update_draft_meta(draft_id, {})
+    _mirror_article_draft_to_workspace(_context(memory, payload), draft_id)
+
+    sync = memory.list_drafts()[0]["meta"]["payload_sync"]
+    current_document = payload.documents[0]
+    assert payload.creates == 1
+    assert payload.updates in {0, 1}
+    assert payload.publishes == 0
+    assert {
+        key: value for key, value in current_document.items() if key != "modifiedAt"
+    } == {
+        key: value for key, value in original_document.items() if key != "modifiedAt"
+    }
+    assert (current_document["modifiedAt"] != original_document["modifiedAt"]) == (payload.updates == 1)
+    assert sync["state"] == "ready_for_review"
+    assert sync["document_id"] == "post-1"
+    assert sync["source_id"] == "posts:an-interrupted-guide"
+    memory.close()
+
+
+
+def test_article_sync_updates_only_system_fields_on_exact_adoption_with_revision_guard(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    payload = Payload()
+    draft_id = memory.save_draft(title="An exact guide", body="Exact body.", kind="article")
+    _mirror_article_draft_to_workspace(_context(memory, payload), draft_id)
+    memory.update_draft_meta(draft_id, {})
+    payload.documents[0]["canonicalUrl"] = "https://old.example/wrong-route"
+
+    _mirror_article_draft_to_workspace(_context(memory, payload), draft_id)
+
+    sync = memory.list_drafts()[0]["meta"]["payload_sync"]
+    assert payload.creates == 1
+    assert payload.updates == 1
+    assert payload.documents[0]["canonicalUrl"] == "https://business.example/blog/an-exact-guide"
+    assert payload.documents[0]["title"] == "An exact guide"
+    assert payload.documents[0]["body"] == payload.created_data[0]["body"]
+    assert payload.publishes == 0
+    assert sync["state"] == "ready_for_review"
+    memory.close()
+
+def test_article_sync_recovers_exact_route_conflict_race_without_duplicate_or_publish(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    payload = Payload()
+    payload.conflict_after_create = True
+    draft_id = memory.save_draft(title="A route race", body="Exact draft body.", kind="article")
+
+    _mirror_article_draft_to_workspace(_context(memory, payload), draft_id)
+
+    sync = memory.list_drafts()[0]["meta"]["payload_sync"]
+    assert payload.creates == 1
+    assert len(payload.documents) == 1
+    assert payload.updates == 0
+    assert payload.publishes == 0
+    assert sync["state"] == "ready_for_review"
+    memory.close()
+
+
+def test_article_sync_never_adopts_published_or_different_content(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    payload = Payload()
+    draft_id = memory.save_draft(title="A safe guide", body="Ada's exact body.", kind="article")
+    _mirror_article_draft_to_workspace(_context(memory, payload), draft_id)
+    memory.update_draft_meta(draft_id, {})
+    payload.documents[0]["published"] = True
+
+    with pytest.raises(RuntimeError, match="content differs"):
+        _mirror_article_draft_to_workspace(_context(memory, payload), draft_id)
+
+    assert payload.creates == 1
+    assert payload.updates == 0
+    assert payload.documents[0]["published"] is True
+    memory.close()
 
 def test_blocked_sync_preserves_last_exact_payload_revision_for_reconciliation(tmp_path):
     memory = Memory(tmp_path / "memory.db")

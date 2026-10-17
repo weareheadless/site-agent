@@ -1,7 +1,7 @@
 import json
 from types import SimpleNamespace
 
-from site_agent.application.growth_workflow import _persist_evidence_artifact, ensure_default_goal, has_recoverable_growth_replay, run_growth_cycle, run_pending_growth
+from site_agent.application.growth_workflow import _persist_evidence_artifact, ensure_default_goal, has_recoverable_growth_replay, has_recoverable_historical_noop, run_growth_cycle, run_pending_growth
 from site_agent.application.growth_tasks import growth_tasks
 from site_agent.core.jobs import _has_recoverable_article_sync, register_jobs
 from site_agent.core.growth_contracts import GrowthPolicy
@@ -557,6 +557,11 @@ def test_activation_wakes_only_exact_recoverable_growth_and_article_jobs(tmp_pat
     memory = Memory(tmp_path / "memory.db")
     settings = config()
     _failed_saved_assessment(memory, settings)
+    cycle = memory.create_strategy_cycle("historical-noop", "2026-10", "noop-hash", {})
+    memory.create_strategy_initiative(
+        cycle["id"], kind="payload_content", title="Unneeded change", summary="Already correct",
+        state="blocked", last_error="Ada proposed no actual change",
+    )
     source_id_block = "Payload posts contract is missing required fields: sourceId"
     memory.save_draft(
         "Recoverable article",
@@ -589,6 +594,7 @@ def test_activation_wakes_only_exact_recoverable_growth_and_article_jobs(tmp_pat
     assert memory.kv_get("next_run:growth_pending") == 1234.5
     assert memory.kv_get("next_run:growth_article_sync") == 1234.5
     assert _has_recoverable_article_sync(memory)
+    assert has_recoverable_historical_noop(memory)
     assert scheduler.due("growth_pending")
     assert scheduler.due("growth_article_sync")
     memory.close()
@@ -601,6 +607,14 @@ def test_activation_does_not_wake_unrelated_or_completed_growth_work(tmp_path):
         "Article body",
         meta={"payload_sync": {"state": "blocked", "validation": {"status": "blocked", "reason": "Payload posts contract is missing required fields: content"}}},
     )
+    locale_idea = memory.create_article_idea(
+        "provider-locale-failure", "b" * 64,
+        {"working_title": "A guide", "candidate_queries": ["guide"], "language": "en", "market": "US"},
+    )
+    memory.update_article_idea(
+        locale_idea["id"], status="failed",
+        error="DATAFORSEO_TASK_40501_INVALID_FIELD_LANGUAGE_CODE_",
+    )
     memory.kv_set("next_run:growth_pending", 9999999.0)
     memory.kv_set("next_run:growth_article_sync", 9999999.0)
 
@@ -612,8 +626,33 @@ def test_activation_does_not_wake_unrelated_or_completed_growth_work(tmp_path):
     assert memory.kv_get("next_run:growth_pending") == 9999999.0
     assert memory.kv_get("next_run:growth_article_sync") == 9999999.0
     assert not _has_recoverable_article_sync(memory)
+    assert not has_recoverable_historical_noop(memory)
     memory.close()
 
+
+
+def test_activation_wakes_only_exact_unlinked_payload_draft_reconciliation(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    memory.save_draft(
+        "Orphaned article",
+        "Article body",
+        meta={"payload_sync": {
+            "state": "blocked",
+            "validation": {
+                "status": "blocked",
+                "reason": "An existing Payload post is not linked to Ada's exact sync record; it must be reviewed before any update.",
+            },
+        }},
+    )
+    memory.kv_set("next_run:growth_article_sync", 9999999.0)
+
+    scheduler = Scheduler(memory, lock_path=tmp_path / "scheduler.lock", timezone_name="America/Cancun", clock=lambda: 1234.5)
+    settings = config()
+    register_jobs(scheduler, settings, {"config": settings, "memory": memory, "payload_gateway": Payload(), "llm": Ada()})
+
+    assert _has_recoverable_article_sync(memory)
+    assert memory.kv_get("next_run:growth_article_sync") == 1234.5
+    memory.close()
 
 def test_invalid_opportunity_evidence_does_not_abort_valid_preparation(tmp_path):
     class PartlyInvalidAda(Ada):
