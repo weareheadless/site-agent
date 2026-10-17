@@ -410,39 +410,44 @@ def test_empty_provider_summary_is_rejected_before_reserving_or_spending_budget(
 
 
 
-def test_reconcile_retries_only_a_persisted_pre_dispatch_summary_rejection(tmp_path, monkeypatch):
+def test_pre_dispatch_research_retry_requires_owner_authorization(tmp_path, monkeypatch):
     memory = Memory(tmp_path / "memory.db")
-    row = memory.create_article_idea("article:2026-W40", "retry-safe-hash", dict(DEFAULT_IDEA))
+    config = {"seo": {"article_research": {"enabled": True}}}
+    cycle_key = article_research._cycle_key(config)
+    row = memory.create_article_idea(cycle_key, "retry-safe-hash", dict(DEFAULT_IDEA))
+    memory.update_article_idea(
+        row["id"], status="selected", error="CrawlSEO idea_summary is invalid"
+    )
 
     class Service:
         requests = 0
 
         def request_article_keyword_research(self, **_kwargs):
             self.requests += 1
-            return {"run_id": "retry-run", "status": "requested"}
+            raise AssertionError("a paid retry requires explicit owner authorization")
 
     service = Service()
-    memory.update_article_idea(
-        row["id"], status="selected", error="CrawlSEO idea_summary is invalid"
-    )
-    monkeypatch.setattr(
-        article_research, "reserve_paid_research",
-        lambda *_args, **_kwargs: {"reservation_id": "reservation-1"},
-    )
-    monkeypatch.setattr(article_research, "settle_paid_research", lambda *_args, **_kwargs: None)
+
+    def reject_reservation(*_args, **_kwargs):
+        raise AssertionError("a paid retry must not reserve or spend automatically")
+
+    monkeypatch.setattr(article_research, "reserve_paid_research", reject_reservation)
     context = {
-        "config": {"seo": {"article_research": {"enabled": True}}},
+        "config": config,
         "memory": memory,
         "crawlseo_service": service,
         "llm": None,
     }
 
     try:
+        article_research.select_and_request(context)
         article_research.reconcile(context)
         saved = memory.get_article_idea(row["id"])
-        assert saved["status"] == "research_requested"
-        assert saved["research_run_id"] == "retry-run"
-        assert service.requests == 1
+        assert saved["status"] == "selected"
+        assert saved["error"] == "CrawlSEO idea_summary is invalid"
+        assert saved["research_run_id"] is None
+        assert saved["keyword_budget_reservation_id"] is None
+        assert service.requests == 0
     finally:
         memory.close()
 
