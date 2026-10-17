@@ -1185,8 +1185,61 @@ def run_growth_cycle(
             return memory.get_growth_run(run["run_id"])
 
 
+_HISTORICAL_NOOP_ERROR = "Ada proposed no actual change"
+_HISTORICAL_NOOP_EXPLANATION = "No page change was needed. Ada created no draft, so there is nothing to approve."
+
+
+def _is_recoverable_historical_noop(initiative: Mapping[str, Any]) -> bool:
+    if (
+        str(initiative.get("state") or "") != "blocked"
+        or str(initiative.get("kind") or "") != "payload_content"
+        or str(initiative.get("last_error") or "") != _HISTORICAL_NOOP_ERROR
+    ):
+        return False
+    side_effect_fields = (
+        "owner_action_id", "draft_id", "artifact_id", "approval_id", "receipt_id",
+        "candidate_hash", "review_package_hash", "published_revision",
+    )
+    if any(initiative.get(field) for field in side_effect_fields):
+        return False
+    validation = initiative.get("validation") if isinstance(initiative.get("validation"), Mapping) else {}
+    return not any(validation.get(field) for field in ("candidateHash", "reviewPackageHash"))
+
+
+def has_recoverable_historical_noop(memory: Memory) -> bool:
+    return any(
+        _is_recoverable_historical_noop(row)
+        for row in memory.list_strategy_initiatives(limit=None)
+    )
+
+
+def reconcile_historical_noop_initiatives(memory: Memory) -> int:
+    """Move exact persisted no-op failures out of the technical-blocker queue."""
+    reconciled = 0
+    for initiative in memory.list_strategy_initiatives(limit=None):
+        if not _is_recoverable_historical_noop(initiative):
+            continue
+        validation = dict(initiative.get("validation") or {})
+        validation.update({
+            "status": "deferred",
+            "errorCode": "no_actionable_change",
+            "reason": _HISTORICAL_NOOP_EXPLANATION,
+            "recovery": "historical_noop_reconciliation",
+        })
+        memory.transition_strategy_initiative(
+            int(initiative["id"]),
+            "deferred",
+            expected_state="blocked",
+            validation=validation,
+            last_error=_HISTORICAL_NOOP_EXPLANATION,
+        )
+        reconciled += 1
+    return reconciled
+
+
 def run_pending_growth(context: dict[str, Any], *, recover_interrupted_runs: bool = False) -> None:
     memory = context["memory"]
+    reconcile_historical_noop_initiatives(memory)
     due_by_id = {
         str(run.get("run_id")): run
         for run in memory.due_growth_runs(limit=20)
@@ -1287,4 +1340,4 @@ def run_pending_growth(context: dict[str, Any], *, recover_interrupted_runs: boo
         _reconcile_article_research(context)
 
 
-__all__ = ["ensure_default_goal", "queue_growth_check", "run_growth_cycle", "run_growth_reconciler", "run_pending_growth"]
+__all__ = ["ensure_default_goal", "has_recoverable_historical_noop", "queue_growth_check", "reconcile_historical_noop_initiatives", "run_growth_cycle", "run_growth_reconciler", "run_pending_growth"]
