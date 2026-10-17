@@ -745,24 +745,45 @@ def _article_research_cycle(context: dict[str, Any]) -> None:
 
 
 def _has_recoverable_article_sync(memory: Memory) -> bool:
-    """Wake only pending articles blocked by a now-corrected shared contract."""
+    """Wake only pending drafts with an exact structural recovery path."""
+    recoverable_reasons = {
+        "payload posts contract is missing required fields: sourceid",
+        "the requested locale is not enabled for this website.",
+        "an existing payload post is not linked to ada's exact sync record; it must be reviewed before any update.",
+        "payload gateway returned 409: a payload document already uses this route; read and update that exact draft instead.",
+    }
     for draft in memory.list_drafts(limit=None):
         if draft.get("kind") != "article" or draft.get("status") != "pending":
             continue
         meta = draft.get("meta") if isinstance(draft.get("meta"), Mapping) else {}
         sync = meta.get("payload_sync") if isinstance(meta.get("payload_sync"), Mapping) else {}
         validation = sync.get("validation") if isinstance(sync.get("validation"), Mapping) else {}
-        reason = str(validation.get("reason") or "").lower()
-        source_identity_contract = reason == "payload posts contract is missing required fields: sourceid"
-        disabled_site_locale = "requested locale" in reason and "not enabled for this website" in reason
+        reason = str(validation.get("reason") or "").strip().lower()
+        exact_contract_recovery = reason in recoverable_reasons
+        unlinked_draft_recovery = (
+            reason in {
+                "an existing payload post is not linked to ada's exact sync record; it must be reviewed before any update.",
+                "payload gateway returned 409: a payload document already uses this route; read and update that exact draft instead.",
+            }
+            and not str(sync.get("document_id") or "").strip()
+        )
         if (
             sync.get("state") == "blocked"
             and validation.get("status") == "blocked"
-            and (source_identity_contract or disabled_site_locale)
+            and (exact_contract_recovery or unlinked_draft_recovery)
         ):
             return True
     return False
 
+
+def _has_recoverable_article_research(memory: Memory) -> bool:
+    """Wake only the known pre-dispatch validation rejection, never paid/uncertain work."""
+    return any(
+        not idea.get("research_run_id")
+        and not idea.get("serp_run_id")
+        and "crawlseo idea_summary is invalid" in str(idea.get("error") or "").lower()
+        for idea in memory.list_article_ideas(status="selected", limit=50)
+    )
 
 def _wake_persisted_job(scheduler: Scheduler, name: str) -> None:
     """Make an exact, safely recoverable persisted job due on activation."""
@@ -813,7 +834,11 @@ def register_growth_jobs(scheduler: Scheduler, config: dict[str, Any], context: 
         if scheduler.memory.kv_get(f"next_run:{name}") is None:
             next_run = scheduler.clock() if name in {"growth_initial", "growth_pending", "growth_article_sync"} else compute_next(scheduler.jobs[-1][1], scheduler.clock(), timezone_name=scheduler.timezone_name)
             scheduler.memory.kv_set(f"next_run:{name}", next_run)
-        if name == "growth_pending" and has_recoverable_growth_replay(scheduler.memory):
+        if name == "growth_pending" and (
+            has_recoverable_growth_replay(scheduler.memory)
+            or has_recoverable_historical_noop(scheduler.memory)
+            or _has_recoverable_article_research(scheduler.memory)
+        ):
             _wake_persisted_job(scheduler, name)
         elif name == "growth_article_sync" and _has_recoverable_article_sync(scheduler.memory):
             _wake_persisted_job(scheduler, name)
