@@ -72,6 +72,51 @@ def test_historical_noop_block_is_reclassified_without_touching_candidate_conten
     assert reconcile_historical_noop_initiatives(memory) == 0
     memory.close()
 
+
+def test_preparation_failure_preserves_a_concurrently_deferred_initiative(tmp_path):
+    from site_agent.application.growth_workflow import _record_preparation_failure
+
+    class RacingMemory(Memory):
+        race_once = True
+
+        def transition_strategy_initiative(self, initiative_id, state, **kwargs):
+            if self.race_once and state == "blocked":
+                self.race_once = False
+                super().transition_strategy_initiative(
+                    initiative_id,
+                    "deferred",
+                    expected_state="preparing",
+                    validation={"status": "deferred", "reason": "A no-op was recognized."},
+                )
+            return super().transition_strategy_initiative(initiative_id, state, **kwargs)
+
+    memory = RacingMemory(tmp_path / "memory.db")
+    cycle = memory.create_strategy_cycle("transition-race", "2026-10", "race-hash", {})
+    initiative_id = memory.create_strategy_initiative(
+        cycle["id"], kind="payload_content", title="Existing page", summary="No change",
+        expected={"opportunity": {}}, state="preparing",
+    )
+    candidate_ids, blocks, unprepared = [], [], []
+
+    _record_preparation_failure(
+        memory,
+        initiative_id,
+        {"kind": "payload_content", "title": "Existing page"},
+        "Ada proposed no actual change",
+        candidate_ids=candidate_ids,
+        blocks=blocks,
+        unprepared_opportunities=unprepared,
+    )
+
+    initiative = memory.update_strategy_initiative(initiative_id)
+    assert initiative["state"] == "deferred"
+    assert candidate_ids == []
+    assert blocks == []
+    assert len(unprepared) == 1
+    assert unprepared[0]["disposition"] == "deferred"
+    assert unprepared[0]["preparationNote"] == "A no-op was recognized."
+    memory.close()
+
 def test_failed_growth_run_replay_preserves_deferred_candidates_and_continues(tmp_path):
     from site_agent.application.growth_workflow import run_growth_cycle
     from site_agent.core.growth_contracts import GrowthPolicy

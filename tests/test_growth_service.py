@@ -308,6 +308,83 @@ def test_activation_resumes_partial_saved_run_after_bounded_owner_summary_failur
     memory.close()
 
 
+def test_saved_initiative_transition_failure_replays_without_reassessing_or_repeating_research(tmp_path, monkeypatch):
+    memory = Memory(tmp_path / "memory.db")
+    settings = config()
+    run_id = _failed_saved_assessment(
+        memory,
+        settings,
+        error="invalid strategy initiative transition deferred -> blocked",
+    )
+    run = memory.get_growth_run(run_id)
+    detail = dict(run["detail"])
+    payload_opportunity = detail["assessment"]["opportunities"][0]
+    owner_opportunity = {
+        "kind": "owner_information",
+        "title": "Confirm the appointment duration",
+        "scope": "Tell Ada how long a standard appointment takes.",
+        "why": "The public booking information does not specify appointment duration.",
+        "evidence": ["inventory"],
+        "requiredSources": [],
+    }
+    detail["assessment"]["opportunities"].append(owner_opportunity)
+    detail["candidateIds"] = []
+    cycle = memory.growth_strategy_cycle(run_id, detail["evidenceArtifactId"])
+    deferred_id = memory.create_strategy_initiative(
+        cycle["id"],
+        kind="payload_content",
+        title=payload_opportunity["title"],
+        summary=payload_opportunity["scope"],
+        expected={"opportunity": payload_opportunity},
+        state="deferred",
+        growth_run_id=run_id,
+        goal_revision=run["goal_revision"],
+        origin_revision=run["origin_revision"],
+        validation={
+            "status": "deferred",
+            "reason": "No actual page change was needed.",
+            "errorCode": "no_actionable_change",
+        },
+    )
+    owner_id = memory.create_strategy_initiative(
+        cycle["id"],
+        kind="owner_information",
+        title=owner_opportunity["title"],
+        summary=owner_opportunity["scope"],
+        expected={"opportunity": owner_opportunity},
+        state="preparing",
+        growth_run_id=run_id,
+        goal_revision=run["goal_revision"],
+        origin_revision=run["origin_revision"],
+    )
+    detail["blocks"] = [{"initiativeId": deferred_id, "reason": "Ada proposed no actual change"}]
+    memory.update_growth_run(run_id, detail=detail)
+    assert has_recoverable_growth_replay(memory)
+
+    planner = Ada()
+    context = {"config": settings, "memory": memory, "payload_gateway": Payload(), "llm": planner}
+    monkeypatch.setattr(
+        "site_agent.application.growth_workflow._reconcile_article_research",
+        lambda _context: pytest.fail("saved-work replay must not dispatch or poll research"),
+    )
+
+    run_pending_growth(context)
+
+    replayed = memory.get_growth_run(run_id)
+    initiatives = {row["id"]: row for row in memory.list_strategy_initiatives(limit=None)}
+    owner = initiatives[owner_id]
+    assert replayed["status"] == "complete"
+    assert replayed["detail"]["recoveryEvents"][-1]["code"] == "initiative_state_transition_conflict_replayed"
+    assert "error" not in replayed["detail"]
+    assert initiatives[deferred_id]["state"] == "deferred"
+    assert owner["state"] == "waiting_for_owner"
+    assert owner["owner_action_id"] is not None
+    assert memory.get_owner_action(owner["owner_action_id"]) is not None
+    assert planner.stages == []
+    assert context["payload_gateway"].writes == context["payload_gateway"].publishes == 0
+    memory.close()
+
+
 def test_long_owner_question_scope_becomes_bounded_action_summary_without_losing_initiative_detail(tmp_path):
     memory = Memory(tmp_path / "memory.db")
     settings = config()
