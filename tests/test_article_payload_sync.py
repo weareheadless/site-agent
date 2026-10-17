@@ -3,6 +3,7 @@ import pytest
 
 from site_agent.core.jobs import _mark_article_payload_blocked, _mirror_article_draft_to_workspace
 from site_agent.core.memory import Memory
+from site_agent.hands.payload_gateway import PayloadGatewayError
 
 
 POST_FIELDS = frozenset({
@@ -30,6 +31,7 @@ class Payload:
         self.updates = 0
         self.publishes = 0
         self.locales = []
+        self.conflict_after_create = False
 
     def require_authoring_contract(self):
         return self.authoring_contract
@@ -50,12 +52,19 @@ class Payload:
         self.created_data.append(deepcopy(data))
         document = {**deepcopy(data), "sourceId": f"posts:{data['slug']}", "id": "post-1", "_helloadaRevision": "sha256:" + "a" * 64}
         self.documents.append(document)
+        if self.conflict_after_create:
+            self.conflict_after_create = False
+            raise PayloadGatewayError("Payload gateway returned 409: route conflict", status_code=409)
         return deepcopy(document)
 
     def read(self, collection, *, identifier, identifier_kind, draft, locale=None):
-        assert collection == "posts" and identifier_kind == "id" and draft is True
+        assert collection == "posts" and identifier_kind in {"id", "slug"} and draft is True
         self.locales.append(locale)
-        return deepcopy(next(item for item in self.documents if str(item["id"]) == str(identifier)))
+        key = "id" if identifier_kind == "id" else "slug"
+        document = next((item for item in self.documents if str(item.get(key)) == str(identifier)), None)
+        if document is None:
+            raise PayloadGatewayError("not found", status_code=404)
+        return deepcopy(document)
 
     def update(self, collection, document_id, data, *, locale=None, expected_hash=None):
         self.locales.append(locale)
@@ -170,6 +179,59 @@ def test_article_sync_does_not_adopt_an_unlinked_payload_post(tmp_path):
     assert payload.updates == 0
     memory.close()
 
+
+
+def test_article_sync_adopts_exact_unpublished_payload_draft_after_local_checkpoint_loss(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    payload = Payload()
+    draft_id = memory.save_draft(title="An interrupted guide", body="Exact draft body.", kind="article")
+
+    _mirror_article_draft_to_workspace(_context(memory, payload), draft_id)
+    memory.update_draft_meta(draft_id, {})
+    _mirror_article_draft_to_workspace(_context(memory, payload), draft_id)
+
+    sync = memory.list_drafts()[0]["meta"]["payload_sync"]
+    assert payload.creates == 1
+    assert payload.updates == 0
+    assert payload.publishes == 0
+    assert sync["state"] == "ready_for_review"
+    assert sync["document_id"] == "post-1"
+    assert sync["source_id"] == "posts:an-interrupted-guide"
+    memory.close()
+
+
+def test_article_sync_recovers_exact_route_conflict_race_without_duplicate_or_publish(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    payload = Payload()
+    payload.conflict_after_create = True
+    draft_id = memory.save_draft(title="A route race", body="Exact draft body.", kind="article")
+
+    _mirror_article_draft_to_workspace(_context(memory, payload), draft_id)
+
+    sync = memory.list_drafts()[0]["meta"]["payload_sync"]
+    assert payload.creates == 1
+    assert len(payload.documents) == 1
+    assert payload.updates == 0
+    assert payload.publishes == 0
+    assert sync["state"] == "ready_for_review"
+    memory.close()
+
+
+def test_article_sync_never_adopts_published_or_different_content(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    payload = Payload()
+    draft_id = memory.save_draft(title="A safe guide", body="Ada's exact body.", kind="article")
+    _mirror_article_draft_to_workspace(_context(memory, payload), draft_id)
+    memory.update_draft_meta(draft_id, {})
+    payload.documents[0]["published"] = True
+
+    with pytest.raises(RuntimeError, match="content differs"):
+        _mirror_article_draft_to_workspace(_context(memory, payload), draft_id)
+
+    assert payload.creates == 1
+    assert payload.updates == 0
+    assert payload.documents[0]["published"] is True
+    memory.close()
 
 def test_blocked_sync_preserves_last_exact_payload_revision_for_reconciliation(tmp_path):
     memory = Memory(tmp_path / "memory.db")
