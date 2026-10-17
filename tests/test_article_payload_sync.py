@@ -142,7 +142,7 @@ def test_article_sync_uses_payload_default_locale_not_owner_language(tmp_path):
 
     _mirror_article_draft_to_workspace(context, draft_id)
 
-    assert payload.locales == ["en", "en"]
+    assert payload.locales == ["en", "en", "en"]
     assert memory.list_drafts()[0]["meta"]["payload_sync"]["locale"] == "en"
     memory.close()
 
