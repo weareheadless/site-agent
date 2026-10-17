@@ -72,6 +72,105 @@ def test_historical_noop_block_is_reclassified_without_touching_candidate_conten
     assert reconcile_historical_noop_initiatives(memory) == 0
     memory.close()
 
+def test_failed_growth_run_replay_preserves_deferred_candidates_and_continues(tmp_path):
+    from site_agent.application.growth_workflow import run_growth_cycle
+    from site_agent.core.growth_contracts import GrowthPolicy
+
+    memory = Memory(tmp_path / "memory.db")
+    config = {"site": {"public_url": "https://example.test"}, "growth": {"timezone": "UTC"}}
+    context = {"memory": memory, "config": config}
+    evidence = run_growth_reconciler(context)
+    goal = memory.latest_growth_goal()
+    policy = GrowthPolicy.from_config(config)
+    run_id = "growth-replay-deferred-candidate"
+    source_ref = "payload:pages:1"
+    deferred = {
+        "kind": "payload_content",
+        "title": "Improve the existing home page",
+        "scope": "Clarify the existing home page.",
+        "why": "The persisted assessment supports this change.",
+        "evidence": [source_ref],
+        "requiredSources": [],
+        "collection": "pages",
+        "documentId": "1",
+    }
+    owner_question = {
+        "kind": "owner_information",
+        "title": "Confirm the service duration",
+        "scope": "Ada needs the owner's confirmed service duration.",
+        "why": "The existing evidence does not state it.",
+        "evidence": [source_ref],
+        "requiredSources": [],
+    }
+    material = {
+        "inventory": [{
+            "collection": "pages",
+            "document": {"id": "1", "sourceId": "page:home", "slug": "home"},
+            "sourceRef": source_ref,
+            "route": "/",
+        }],
+        "sources": [],
+        "metrics": {},
+        "datasets": {},
+        "ownerResponses": [],
+        "collectionErrors": {},
+    }
+    detail = {
+        "evidenceArtifactId": evidence["detail"]["evidenceArtifactId"],
+        "policy": policy.to_dict(),
+        "material": material,
+        "assessment": {
+            "summary": "Replaying the assessment must preserve its prior disposition.",
+            "opportunities": [deferred, owner_question],
+        },
+    }
+    memory.create_growth_run(
+        run_id=run_id,
+        run_key=run_id,
+        trigger="owner_review",
+        goal_revision=goal["revision"],
+        timezone="UTC",
+        phase="preparing",
+        status="failed",
+        detail=detail,
+        policy=policy.to_dict(),
+        origin_revision=policy.origin_revision,
+        phase_version=2,
+    )
+    cycle = memory.growth_strategy_cycle(run_id, detail["evidenceArtifactId"])
+    reason = "No page change was needed in the previous preparation."
+    reassess_when = "After the page content or supporting evidence changes."
+    deferred_id = memory.create_strategy_initiative(
+        cycle["id"],
+        kind="payload_content",
+        title=deferred["title"],
+        summary=deferred["scope"],
+        evidence=deferred["evidence"],
+        expected={"opportunity": deferred},
+        state="deferred",
+        growth_run_id=run_id,
+        goal_revision=goal["revision"],
+        origin_revision=policy.origin_revision,
+        validation={"status": "deferred", "reason": reason, "reassessWhen": reassess_when},
+        last_error=reason,
+    )
+
+    class PayloadMustNotBeReopened:
+        def require_growth_contract(self):
+            raise AssertionError("a deferred candidate must not be prepared again in the same run")
+
+    context["payload_gateway"] = PayloadMustNotBeReopened()
+    result = run_growth_cycle(context, trigger="owner_review", run_id=run_id)
+
+    assert result["status"] == "complete"
+    saved = {row["id"]: row for row in memory.list_strategy_initiatives(limit=None)}
+    assert saved[deferred_id]["state"] == "deferred"
+    assert saved[deferred_id]["validation"]["reason"] == reason
+    assert saved[deferred_id]["validation"]["reassessWhen"] == reassess_when
+    assert saved[deferred_id]["owner_action_id"] is None
+    assert len([row for row in saved.values() if row["kind"] == "owner_information"]) == 1
+    memory.close()
+
 def test_growth_candidate_lineage_and_lifecycle_are_persisted(tmp_path):
     memory = Memory(tmp_path / "memory.db")
     try:
