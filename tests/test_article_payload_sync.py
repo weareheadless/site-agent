@@ -1,7 +1,8 @@
 from copy import deepcopy
+import json
 import pytest
 
-from site_agent.core.jobs import _mark_article_payload_blocked, _mirror_article_draft_to_workspace
+from site_agent.core.jobs import _mark_article_payload_blocked, _mirror_article_draft_to_workspace, _mirror_article_drafts
 from site_agent.core.memory import Memory
 from site_agent.hands.payload_gateway import PayloadGatewayError
 
@@ -32,6 +33,19 @@ class Payload:
         self.publishes = 0
         self.locales = []
         self.conflict_after_create = False
+        self.media = [{
+            "id": "media-1",
+            "sourceId": "media:cover-1",
+            "filename": "training-cover.jpg",
+            "url": "/media/training-cover.jpg",
+            "alt": "A freediver preparing for a course in clear water",
+            "description": "Freediving course preparation in clear water.",
+            "tags": [{"value": "freediving"}, {"value": "course"}],
+            "suggestedUses": [{"value": "freediving course article cover"}],
+            "sourceKind": "owner_upload",
+            "analysisStatus": "ready",
+            "_helloadaRevision": "sha256:" + "9" * 64,
+        }]
 
     def require_authoring_contract(self):
         return self.authoring_contract
@@ -44,6 +58,17 @@ class Payload:
     def list(self, collection, *, draft=True, limit=100):
         assert collection == "posts" and draft is True
         return [deepcopy(item) for item in self.documents[:limit]]
+
+    def list_media(self, *, draft=True, limit=100):
+        assert draft is True
+        return [deepcopy(item) for item in self.media[:limit]]
+
+    def read_media(self, identifier, *, identifier_kind="id", draft=True):
+        assert identifier_kind == "id" and draft is True
+        document = next((item for item in self.media if str(item.get("id")) == str(identifier)), None)
+        if document is None:
+            raise PayloadGatewayError("media not found", status_code=404)
+        return deepcopy(document)
 
     def create(self, collection, data, *, locale=None):
         assert collection == "posts"
@@ -76,9 +101,18 @@ class Payload:
 
 
 def _context(memory, payload):
+    class MediaSelector:
+        def chat(self, messages, **kwargs):
+            request = json.loads(messages[-1]["content"])
+            return json.dumps({
+                "media_id": request["available_images"][0]["id"],
+                "reason": "The image subject and its analyzed use match the article topic.",
+            })
+
     return {
         "memory": memory,
         "payload_gateway": payload,
+        "llm": MediaSelector(),
         "config": {
             "site": {"url": "https://business.example", "language": "en"},
             "persona": {"name": "Ada"},
@@ -109,11 +143,18 @@ def test_article_is_written_to_canonical_payload_posts_schema_as_unpublished_lex
     assert [node["type"] for node in document["body"]["root"]["children"]] == ["heading", "paragraph"]
     assert document["seo"]["description"] == "A description for search."
     assert document["seo"]["focusKeyword"] == "useful guide"
+    assert document["featuredImage"] == "media-1"
     assert not {"content", "excerpt", "sourceUrl", "metaDescription"} & set(document)
     sync = memory.list_drafts()[0]["meta"]["payload_sync"]
+    selection = memory.list_drafts()[0]["meta"]["article_image_selection"]
     assert sync["state"] == "ready_for_review"
     assert sync["validation"]["status"] == "passed"
     assert sync["draft_hash"] == document["_helloadaRevision"]
+    assert sync["featured_image"]["id"] == "media-1"
+    assert sync["featured_image"]["source_id"] == "media:cover-1"
+    assert sync["featured_image"]["revision"] == payload.media[0]["_helloadaRevision"]
+    assert selection["media_id"] == "media-1"
+    assert selection["media_revision"] == payload.media[0]["_helloadaRevision"]
     memory.close()
 
 
@@ -346,4 +387,62 @@ def test_blocked_sync_preserves_last_exact_payload_revision_for_reconciliation(t
     assert sync["state"] == "blocked"
     assert sync["document_id"] == "post-7"
     assert sync["draft_hash"] == "sha256:" + "e" * 64
+    memory.close()
+
+
+def test_article_without_analyzed_payload_cover_is_blocked_before_post_creation(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    payload = Payload()
+    payload.media = []
+    context = _context(memory, payload)
+    context["llm"] = None
+    draft_id = memory.save_draft(
+        title="A guide that needs a cover",
+        body="A complete article body.",
+        kind="article",
+    )
+
+    _mirror_article_drafts(context)
+
+    draft = next(item for item in memory.list_drafts() if item["id"] == draft_id)
+    sync = draft["meta"]["payload_sync"]
+    assert payload.creates == 0
+    assert sync["state"] == "blocked"
+    assert sync["validation"]["status"] == "blocked"
+    assert "Payload Library has no analyzed image with alt text" in sync["validation"]["reason"]
+    memory.close()
+
+
+def test_article_does_not_attach_an_image_not_returned_by_the_library(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    payload = Payload()
+    context = _context(memory, payload)
+    context["llm"].chat = lambda *_args, **_kwargs: json.dumps({
+        "media_id": "not-in-this-tenant-library",
+        "reason": "This cannot be trusted.",
+    })
+    draft_id = memory.save_draft(title="A safe guide", body="Complete article body.", kind="article")
+
+    _mirror_article_drafts(context)
+
+    draft = next(item for item in memory.list_drafts() if item["id"] == draft_id)
+    assert payload.creates == 0
+    assert draft["meta"]["payload_sync"]["state"] == "blocked"
+    assert "no suitable analyzed Payload Library image" in draft["meta"]["payload_sync"]["validation"]["reason"]
+    memory.close()
+
+
+def test_article_sync_stops_if_selected_cover_revision_changes(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    payload = Payload()
+    draft_id = memory.save_draft(title="A cover-safe guide", body="Complete article body.", kind="article")
+
+    _mirror_article_draft_to_workspace(_context(memory, payload), draft_id)
+    payload.media[0]["_helloadaRevision"] = "sha256:" + "8" * 64
+
+    with pytest.raises(RuntimeError, match="cover image changed after Ada chose it"):
+        _mirror_article_draft_to_workspace(_context(memory, payload), draft_id)
+
+    assert payload.creates == 1
+    assert payload.updates == 0
     memory.close()

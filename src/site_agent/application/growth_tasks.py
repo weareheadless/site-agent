@@ -483,8 +483,16 @@ def growth_tasks(
             if article_ready:
                 summary = _compact_summary(rationale or 'Ada prepared this article for your review.')
             elif blocked:
-                summary = 'This article needs a successful shared Payload check before it can be reviewed.'
-                summary_key = 'articleNeedsRepair'
+                validation_reason = str(validation.get('reason') or '').lower()
+                if (
+                    'payload library has no analyzed image' in validation_reason
+                    or 'no suitable analyzed payload library image' in validation_reason
+                ):
+                    summary = 'Ada needs a suitable, analyzed cover image from your Gallery before this article can be reviewed.'
+                    summary_key = 'articleImageNeeded'
+                else:
+                    summary = 'This article needs a successful shared Payload check before it can be reviewed.'
+                    summary_key = 'articleNeedsRepair'
             elif stale_sync:
                 summary = 'This saved article is not currently being prepared for review.'
                 summary_key = 'articleNotRunning'

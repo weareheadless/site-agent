@@ -194,7 +194,7 @@ export function GrowthTasks({ mode, ownerQueue, onNavigate, tasks = [], pending,
       cache: "no-store",
     }).then(async response => {
       const body = await response.json().catch(() => ({}));
-      const blockedCodes = ["articlePayloadUnavailable", "articlePayloadChanged", "articlePayloadEmpty", "articlePayloadSyncBlocked", "articlePayloadSyncPending", "articlePayloadConflict"];
+      const blockedCodes = ["articleImageNeeded", "articlePayloadUnavailable", "articlePayloadChanged", "articlePayloadEmpty", "articlePayloadSyncBlocked", "articlePayloadSyncPending", "articlePayloadConflict"];
       if (!response.ok || !body.article || typeof body.reviewable !== "boolean"
         || (body.reviewable && body.blockedReasonCode !== null)
         || (!body.reviewable && !blockedCodes.includes(String(body.blockedReasonCode)))) {

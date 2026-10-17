@@ -325,6 +325,26 @@ def test_blocked_article_body_is_available_only_in_explicit_detail_request(tmp_p
     memory.close()
 
 
+def test_missing_article_cover_is_presented_as_a_specific_owner_action(tmp_path):
+    memory = Memory(tmp_path / 'memory.db')
+    memory.save_draft(title='A saved article', body='Article body.', kind='article', meta={
+        'payload_sync': {
+            'state': 'blocked',
+            'validation': {
+                'status': 'blocked',
+                'reason': 'Ada cannot prepare this article for review because the Payload Library has no analyzed image with alt text and a public URL. Add and analyze a suitable image in Gallery.',
+            },
+        },
+    })
+
+    task, = growth_tasks(memory, [], memory.list_drafts(), [], [])
+
+    assert task['summaryKey'] == 'articleImageNeeded'
+    assert 'Gallery' in task['summary']
+    assert task['canApprove'] is False
+    memory.close()
+
+
 def test_initiative_is_only_called_active_when_its_growth_run_has_a_live_lease(tmp_path):
     memory = Memory(tmp_path / 'memory.db')
     initiative = {'id': 12, 'kind': 'payload_content', 'title': 'Improve the services page',
