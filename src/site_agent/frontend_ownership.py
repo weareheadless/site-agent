@@ -11,7 +11,7 @@ from pathlib import PurePosixPath
 
 
 FRONTEND_OWNED_PATTERNS: tuple[str, ...] = (
-    "src/app/(frontend)/site.css",
+    "src/app/(frontend)/*.css",
     "src/components/site/presentation/**",
     "src/components/site/TenantChrome.tsx",
     "public/site/**",
