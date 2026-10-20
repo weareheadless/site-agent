@@ -56,6 +56,25 @@ def test_disabled_schedules_do_not_promise_a_future_cycle(tmp_path):
     memory.close()
 
 
+def test_real_scheduler_specs_are_json_safe_for_growth_and_chat(tmp_path):
+    import datetime
+    from site_agent.core.scheduler import normalize_schedule
+    from site_agent.application.growth import growth_chat_context
+
+    memory = Memory(tmp_path / 'memory.db')
+    spec = normalize_schedule({'every': 'weekly', 'weekday': 'monday', 'at': '08:00'})
+    context = {'scheduler': SimpleNamespace(jobs=[('growth_weekly', spec, object())])}
+    try:
+        for result in (growth_snapshot(memory, {}, context), growth_chat_context(memory, {}, context)):
+            decoded = json.loads(json.dumps(result))
+            activity = next(row for row in decoded['activities'] if row['id'] == 'growth_weekly')
+            assert activity['schedule']['at_time'] == '08:00:00'
+            assert activity['schedule']['weekday'] == 0
+        assert spec['at_time'] == datetime.time(8, 0)
+    finally:
+        memory.close()
+
+
 def test_connection_and_growth_are_authenticated_and_tenant_isolated(tmp_path):
     tenants = {}
     for name in ('alpha', 'beta'):
