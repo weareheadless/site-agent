@@ -3270,6 +3270,7 @@ def install_agent_files(clone: Path, skills_src: Path | None, model: str | None,
                           provider_base_url: str | None = None,
                           provider_env_name: str | None = None,
                           skill_set: Any | None = None,
+                          task_contract: dict[str, Any] | None = None,
                           include_pipeworx: bool = False,
                           pipeworx_url: str = "",
                           researcher_prompt: str = "") -> None:
@@ -3402,7 +3403,19 @@ def install_agent_files(clone: Path, skills_src: Path | None, model: str | None,
         capabilities = context_snapshot.capabilities
         # A typed build must use only the snapshot captured before queueing.
         memory = None
-    rendered = _render_instructions(persona)
+    maintenance = task_contract is not None and task_contract.get('source_kind') == 'maintenance'
+    rendered = (
+        "You are Ada's implementation subagent. Execute only the delegated task and return the result to Ada. "
+        "Read relevant files before editing; retrieve additional evidence only when needed. "
+        "Only the primary session may edit this worktree; delegated exploration is read-only. "
+        "Keep content in Payload and preserve schema, admin, authentication and platform ownership. "
+        "Run the required project checks, leave changes uncommitted, and report changed files, checks and blockers. "
+        "Do not publish, approve, push, install dependencies, start servers or speak for the owner."
+        if maintenance else _render_instructions(persona)
+    )
+    if task_contract is not None:
+        rendered += '\n\nDELEGATED TASK CONTRACT\n' + json.dumps(task_contract, ensure_ascii=False, sort_keys=True)
+        memory = None
     if context_snapshot is not None:
         rendered += (
             "\n\nTYPED DESIGN CONTEXT\n"
@@ -3424,15 +3437,16 @@ def install_agent_files(clone: Path, skills_src: Path | None, model: str | None,
             + canonical_json(list(capabilities))
             + "\n"
         )
-    rendered += (
-        "\n\nDESIGN SKILL SET\n"
-        "Use the package-owned skills installed below in this exact order. They DEFINE the quality "
-        "bar: engineering mastery AND taste. Your creative freedom is in choosing how the subject "
-        "moves through them, never in ignoring them because a simpler approach would be easier. "
-        "A page that is bug-free but reads as a template is a failed page.\n"
-        + "\n".join(f"- {name}" for name in skill_set.names)
-        + f"\ncontent_hash: {skill_set.content_hash}\n"
-    )
+    if not maintenance:
+        rendered += (
+            "\n\nDESIGN SKILL SET\n"
+            "Use the package-owned skills installed below in this exact order. They DEFINE the quality "
+            "bar: engineering mastery AND taste. Your creative freedom is in choosing how the subject "
+            "moves through them, never in ignoring them because a simpler approach would be easier. "
+            "A page that is bug-free but reads as a template is a failed page.\n"
+            + "\n".join(f"- {name}" for name in skill_set.names)
+            + f"\ncontent_hash: {skill_set.content_hash}\n"
+        )
     if site_digest and site_digest.strip():
         rendered += ("\n\nSITE REFERENCE (structural digest — read this before "
                      "reading whole files, it covers what you'd otherwise re-read):\n"
@@ -3744,7 +3758,14 @@ def _opencode_step_usage(event: Mapping[str, Any]) -> dict[str, Any] | None:
     result: dict[str, Any] = {
         "prompt_tokens": prompt_tokens,
         "completion_tokens": output_tokens + reasoning_tokens,
+        "output_tokens": output_tokens,
+        "reasoning_tokens": reasoning_tokens,
     }
+    cache = tokens.get('cache')
+    if isinstance(cache, Mapping):
+        for key in ('read', 'write'):
+            if cache.get(key) is not None:
+                result['reported_cache_' + key + '_tokens'] = number(cache[key])
     if cost is not None:
         result["cost"] = cost
     return result
@@ -3975,6 +3996,8 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
     protocol_error: str | None = None
     last_tool_prose_index = 0
     usage_total = {"prompt_tokens": 0, "completion_tokens": 0}
+    step_started = process_started
+    step_count = 0
     reported_cost = 0.0
     has_reported_cost = False
     usage_recorded = False
@@ -4028,6 +4051,17 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
             events.append(event)
             step_usage = _opencode_step_usage(event)
             if step_usage is not None:
+                step_count += 1
+                step_finished = time.monotonic()
+                if timing_on and memory is not None and hasattr(memory, 'record_timing'):
+                    memory.record_timing(
+                        'builder_step', int((step_finished - step_started) * 1000),
+                        phase='opencode_inference_and_tools', success=True,
+                        job_id=config.get('_delegated_job_id'),
+                        conversation_id=config.get('_delegated_conversation_id'),
+                        metadata={'step': step_count, 'model': builder_model, **step_usage},
+                    )
+                step_started = step_finished
                 usage_total["prompt_tokens"] += int(step_usage.get("prompt_tokens") or 0)
                 usage_total["completion_tokens"] += int(step_usage.get("completion_tokens") or 0)
                 if step_usage.get("cost") is not None:
@@ -4296,14 +4330,10 @@ def _change_state(clone: Path) -> tuple[str, tuple[tuple[str, str], ...]]:
 
 def _validate_build_paths(config: dict[str, Any], clone: Path, base_ref: str) -> None:
     """Enforce the same path sandbox as editor proposals before git can stage."""
-    from .repo_changes import writable
-
-    patterns = [str(p) for p in ((config.get("site") or {}).get("writable_patterns") or [])]
-    profile = str(((config.get("design_engine") or {}).get("build_profile") or "")).strip().lower()
-    frontend_only = profile == "next_react"
+    from .repo_changes import source_path_allowed
     refused = sorted(
         path for path in _changed_paths(clone, base_ref)
-        if not writable(path, patterns, frontend_only=frontend_only)
+        if not source_path_allowed(config, path)
     )
     if refused:
         raise RunnerError("builder changed files outside the writable sandbox: " + ", ".join(refused[:10]))
@@ -4330,30 +4360,53 @@ def _prepare_builder_context(context: dict[str, Any], progress=None,
             progress("placing selected Library images in the preview worktree")
     if progress:
         progress("mapping the existing site")
-    site_digest = _site_digest(context, clone)
+    plan = context.get('_website_change_plan')
+    task_contract = None
+    if isinstance(plan, dict) and plan.get('source_brief'):
+        from .repo_changes import source_authoring_contract
+        task_contract = {key: plan[key] for key in (
+            'source_brief', 'source_paths', 'source_kind', 'acceptance_criteria', 'business_facts',
+        ) if key in plan}
+        task_contract['ownership'] = source_authoring_contract(config)
+        task_contract['payload_receipts'] = context.get('_completed_payload_effects') or []
+    site_digest = '' if task_contract else _site_digest(context, clone)
     if progress and (config.get("vision") or {}).get("enabled"):
         progress("checking the site's imagery")
-    vision_context = _vision_context(config, clone, memory=context.get("memory"))
+    vision_context = '' if task_contract else _vision_context(config, clone, memory=context.get("memory"))
     if vision_context:
         site_digest = (site_digest + "\n\n" + vision_context).strip()
     if progress:
         progress("preparing design tools")
-    template_tokens = _template_tokens(context, clone)
+    template_tokens = '' if task_contract else _template_tokens(context, clone)
     builder = config.get("builder") or {}
     install_agent_files(
         clone, Path(__file__).parent.parent / "skills",
         builder.get("model") or (config.get("llm") or {}).get("model"),
         resolve_secret(config, "llm_api_key"),
-        persona=_current_persona(config, memory),
+        persona='' if task_contract else _current_persona(config, memory),
         site_digest=site_digest,
         template_tokens=template_tokens,
         memory=memory,
+        task_contract=task_contract,
         provider_timeout_seconds=int(builder.get("provider_timeout_seconds", 2100)),
         provider_chunk_timeout_seconds=int(builder.get("provider_chunk_timeout_seconds", 180)),
         output_tokens=int(builder.get("output_tokens", 8192)),
         reasoning_effort=str(builder.get("reasoning_effort", "low")),
         provider_base_url=str((config.get("llm") or {}).get("base_url") or "").strip(),
     )
+    if task_contract and memory is not None:
+        from ..config import timing_enabled
+        if timing_enabled(config, context.get('env')):
+            memory.record_timing(
+                'builder_context', 0, phase=str(task_contract.get('source_kind')), success=True,
+                job_id=context.get('_chat_job_id'),
+                metadata={
+                    'task_contract_bytes': len(json.dumps(task_contract).encode()),
+                    'instructions_bytes': (clone / '.opencode/ada-instructions.md').stat().st_size,
+                    'generic_memory_included': False,
+                    'conversation_history_included': False,
+                },
+            )
     return site_clone, clone, base_ref, _change_state(clone)
 
 
@@ -4621,14 +4674,18 @@ def run_brief(context: dict[str, Any], message: str, progress=None) -> dict[str,
     config = context["config"]
     memory = context.get("memory")
     site_clone, clone, base_ref, prepared_state = _prepare_builder_context(context, progress)
+    current_job = memory.get_chat_job(context['_chat_job_id']) if memory is not None and context.get('_chat_job_id') else None
+    config = {**config, '_delegated_job_id': context.get('_chat_job_id'),
+              '_delegated_conversation_id': current_job.get('conversation_id') if current_job else None}
     output: list[str] = []
     session_id: str | None = None
     try:
         if progress:
             progress("Ada is working autonomously in the preview worktree")
-        initial = run_opencode_turn(
-            clone, build_brief(message, config), config, progress=progress, memory=memory,
-        )
+        plan = context.get('_website_change_plan') or {}
+        focused_maintenance = plan.get('source_kind') == 'maintenance'
+        brief = ('Delegated task: ' + message) if focused_maintenance else build_brief(message, config)
+        initial = run_opencode_turn(clone, brief, config, progress=progress, memory=memory)
         session_id = initial.get("session_id") or None
         output.append(str(initial.get("reply") or ""))
 

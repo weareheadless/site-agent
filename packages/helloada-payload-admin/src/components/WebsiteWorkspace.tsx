@@ -1321,7 +1321,14 @@ function ReviewWorkspace() {
             return
           }
           if (body.status === 'error') {
-            setError(t('error.adaComplete'))
+            const reply = body.result?.reply
+            if (reply) {
+              setMessages((current) => current[current.length - 1]?.role === 'assistant' && current[current.length - 1]?.text === reply
+                ? current : [...current, { role: 'assistant', text: reply }])
+              setError('')
+            } else {
+              setError(t('error.adaComplete'))
+            }
             forgetPendingAdaJob(jobId)
             setAdaSteps([])
             setSending(false)
