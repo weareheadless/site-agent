@@ -203,6 +203,24 @@ def _validate_app_config(source: Path, config: dict[str, Any], node: str, env: d
     return worker
 
 
+def _upload_app_version(source_dir: Path, source_sha: str, release_id: str,
+                        directory: Path, private_key: str, env: dict[str, str]) -> str:
+    # The project selector has no tenant Turnstile provisioning contract. Share
+    # secret custody and version parsing, not the customer-only variable policy.
+    secrets_path = _WORKER_RELEASE.worker_secrets_file(
+        directory, {HELLOADA_APP_CONFIG["privateKeyName"]: private_key},
+    )
+    try:
+        output = _WORKER_RELEASE.run([
+            str(source_dir / "node_modules/.bin/opennextjs-cloudflare"), "upload",
+            "--secrets-file", str(secrets_path),
+            "--var", f"HELLOADA_RELEASE_SHA:{source_sha}", "--tag", release_id,
+        ], source_dir, env)
+        return _WORKER_RELEASE.uploaded_version_id(output)
+    finally:
+        secrets_path.unlink(missing_ok=True)
+
+
 def _health(url: str, expected_sha: str) -> dict[str, Any]:
     request = urllib.request.Request(url, headers={"Accept": "application/json", "Cache-Control": "no-cache",
                                                    "User-Agent": "HelloAda-Release/1.0"})
@@ -310,9 +328,9 @@ def deploy(source_dir: Path, source_sha: str, release_id: str, root: Path,
         stage("upload")
         if _WORKER_RELEASE.cloudflare_deployment(config, deploy_env).get("id") != public.get("id"):
             raise RuntimeError("HelloAda production changed during the build; inspect it before retrying")
-        receipt["uploadedVersion"] = _WORKER_RELEASE.upload_worker_version(
+        receipt["uploadedVersion"] = _upload_app_version(
             source_dir, source_sha, release_id, source_dir.parent,
-            {config["privateKeyName"]: private_key}, deploy_env,
+            private_key, deploy_env,
         )
         if _WORKER_RELEASE.file_hashes(artifact) != artifact_files:
             raise RuntimeError("HelloAda upload changed the inspected artifact")

@@ -151,3 +151,42 @@ def test_legacy_helloada_build_cache_cleanup_removes_only_generated_caches(tmp_p
     assert not (tmp_path / "npm-cache").exists()
     assert not stale_control.exists()
     assert mirror.is_dir()
+
+
+def test_app_upload_uses_its_own_variables_and_private_ephemeral_secrets(tmp_path, monkeypatch):
+    source = tmp_path / 'source'
+    source.mkdir()
+    sha = 'a' * 40
+    version = '12345678-1234-1234-1234-123456789abc'
+    calls = []
+
+    def run(command, cwd, env):
+        secret_path = Path(command[command.index('--secrets-file') + 1])
+        assert secret_path.stat().st_mode & 0o777 == 0o600
+        assert json.loads(secret_path.read_text()) == {'HELLOADA_HANDOFF_PRIVATE_KEY': 'test-key'}
+        assert cwd == source
+        assert env == {'CLOUDFLARE_API_TOKEN': 'test-token'}
+        calls.append((command, secret_path))
+        return 'Uploaded Worker Version ID: ' + version
+
+    monkeypatch.setattr(release._WORKER_RELEASE, 'run', run)
+    result = release._upload_app_version(source, sha, 'app-test', tmp_path, 'test-key', {'CLOUDFLARE_API_TOKEN': 'test-token'})
+    assert result == version
+    command, secret_path = calls[0]
+    assert command == [str(source / 'node_modules/.bin/opennextjs-cloudflare'), 'upload',
+                       '--secrets-file', str(secret_path), '--var', 'HELLOADA_RELEASE_SHA:' + sha, '--tag', 'app-test']
+    assert not secret_path.exists()
+
+
+def test_app_upload_removes_temporary_secret_file_when_upload_fails(tmp_path, monkeypatch):
+    paths = []
+
+    def run(command, cwd, env):
+        paths.append(Path(command[command.index('--secrets-file') + 1]))
+        raise RuntimeError('upload failed')
+
+    monkeypatch.setattr(release._WORKER_RELEASE, 'run', run)
+    with pytest.raises(RuntimeError, match='upload failed'):
+        release._upload_app_version(tmp_path, 'a' * 40, 'app-test', tmp_path, 'test-key', {})
+    assert len(paths) == 1
+    assert not paths[0].exists()
