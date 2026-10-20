@@ -190,3 +190,23 @@ def test_app_upload_removes_temporary_secret_file_when_upload_fails(tmp_path, mo
         release._upload_app_version(tmp_path, 'a' * 40, 'app-test', tmp_path, 'test-key', {})
     assert len(paths) == 1
     assert not paths[0].exists()
+
+
+def test_helloada_app_requires_the_registered_screenshot_browser_binding(tmp_path, monkeypatch):
+    config = release.HELLOADA_APP_CONFIG
+    worker = {
+        'name': config['worker'], 'main': '.open-next/worker.js',
+        'site': config['siteUrl'], 'api': config['siteAgentUrl'],
+        'd1': [config['d1']], 'r2': [config['r2Bucket']],
+        'required': [config['privateKeyName']], 'browser': 'BROWSER',
+    }
+    package = {'packageManager': 'npm@11.13.0', 'scripts': {key: 'test' for key in ('test','lint','typecheck','build')}, 'dependencies': {}}
+    (tmp_path / 'package.json').write_text(json.dumps(package))
+    (tmp_path / 'package-lock.json').write_text(json.dumps({'packages': {'': {'dependencies': {}}}}))
+    (tmp_path / 'src/app/api/health').mkdir(parents=True)
+    (tmp_path / 'src/app/api/health/route.ts').write_text('test health route')
+    monkeypatch.setattr(release, '_run', lambda *args: json.dumps(worker))
+    assert release._validate_app_config(tmp_path, config, 'node', {}, '11.13.0') == worker
+    worker['browser'] = None
+    with pytest.raises(RuntimeError, match='contract differs'):
+        release._validate_app_config(tmp_path, config, 'node', {}, '11.13.0')
