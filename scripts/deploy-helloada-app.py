@@ -172,7 +172,7 @@ def _validate_app_config(source: Path, config: dict[str, Any], node: str, env: d
                "const v=c.vars||{};const d=c.d1_databases||[];const b=c.r2_buckets||[];"
                "process.stdout.write(JSON.stringify({name:c.name,main:c.main,site:v.NEXT_PUBLIC_SITE_URL,"
                "api:v.SITE_AGENT_URL,d1:d.map(x=>({name:x.database_name,id:x.database_id})),"
-               "r2:b.map(x=>x.bucket_name),required:c.secrets?.required||[]}));"]
+               "r2:b.map(x=>x.bucket_name),required:c.secrets?.required||[],browser:c.browser?.binding||null}));"]
     try:
         raw = _run(command, source, env)
         worker = json.loads(raw)
@@ -186,6 +186,7 @@ def _validate_app_config(source: Path, config: dict[str, Any], node: str, env: d
         "d1": [config["d1"]],
         "r2": [config["r2Bucket"]],
         "required": [config["privateKeyName"]],
+        "browser": "BROWSER",
     }
     if worker != expected:
         raise RuntimeError("HelloAda source Worker, site-agent API, D1, R2 or required-secret contract differs from the release registry")
