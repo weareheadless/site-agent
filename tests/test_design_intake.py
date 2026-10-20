@@ -984,7 +984,8 @@ def test_llm_failure_returns_connection_issue_without_fake_follow_up(tmp_path):
     assert result == {"error": "Connection issue, try again."}
     assert memory.get_chat_job(queued["job_id"])["status"] == "error"
     stored = service.get_session(session["session_id"])
-    assert stored["messages"][-1]["role"] == "user"
+    assert stored["messages"][-1]["role"] == "assistant"
+    assert stored["messages"][-1]["text"] == memory.get_chat_job(queued["job_id"])["result"]["reply"]
     assert stored["draft"]["fields"] == {}
     memory.close()
 

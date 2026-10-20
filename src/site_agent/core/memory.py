@@ -6565,6 +6565,30 @@ class Memory:
                     )
         return updated == 1
 
+    def _record_chat_failure_message(self, job_id: int, failed_ts: str) -> None:
+        """Persist the terminal owner outcome inside the caller's transaction."""
+        row = self.conn.execute(
+            "SELECT conversation_id, operation_kind, error, result FROM chat_jobs WHERE id = ?", (job_id,),
+        ).fetchone()
+        if row is None or row['conversation_id'] is None or row['operation_kind'] not in ('owner_chat', 'design_intake_advice'):
+            return
+        scope_failure = 'outside the writable sandbox' in str(row['error'] or '')
+        reply = (
+            "I couldn't prepare these changes for review because they require an update to the shared website system. "
+            "This task stopped without publishing. You can ask me to explain what is blocked and which changes are available now."
+            if scope_failure else
+            "I couldn't complete this task, so there isn't a finished result to review. "
+            "You can ask me to explain the task status and the next step before trying again."
+        )
+        message = self.conn.execute(
+            "INSERT INTO chat_messages (conversation_id, ts, role, text) VALUES (?, ?, 'assistant', ?)",
+            (row['conversation_id'], failed_ts, reply),
+        )
+        result = json.loads(row['result'] or '{}')
+        result.update({'reply': reply, 'failure_message_id': message.lastrowid,
+                       'failure': {'job_id': job_id, 'boundary': 'source_scope' if scope_failure else 'execution'}})
+        self.conn.execute('UPDATE chat_jobs SET result = ? WHERE id = ?', (json.dumps(result), job_id))
+
     @_locked
     def fail_chat_job(self, job_id: int, worker: str, error: str) -> bool:
         failed_ts = _now()
@@ -6575,6 +6599,7 @@ class Memory:
                 (error[:500], failed_ts, job_id, worker),
             ).rowcount
             if updated == 1:
+                self._record_chat_failure_message(job_id, failed_ts)
                 # Failed jobs move active linked actions to waiting atomically.
                 actions = self.conn.execute(
                     "SELECT id, state FROM owner_actions WHERE job_id = ? AND state IN (?, ?)",
@@ -6599,11 +6624,15 @@ class Memory:
     def interrupt_running_chat_jobs(self, error: str = "interrupted by server restart; retry this job") -> int:
         """Make abandoned work visible instead of replaying it automatically."""
         with self.conn:
+            interrupted = self.conn.execute("SELECT id FROM chat_jobs WHERE status = 'running'").fetchall()
+            failed_ts = _now()
             cur = self.conn.execute(
                 "UPDATE chat_jobs SET status = 'error', error = ?, updated_ts = ?, "
                 "claimed_by = NULL, heartbeat_ts = NULL WHERE status = 'running'",
-                (error[:500], _now()),
+                (error[:500], failed_ts),
             )
+            for row in interrupted:
+                self._record_chat_failure_message(row['id'], failed_ts)
         return cur.rowcount
 
     @_locked
@@ -6711,6 +6740,7 @@ class Memory:
                     "claimed_by = NULL, heartbeat_ts = NULL WHERE id = ?",
                     (f"chat job was not completed within {int(max_seconds)} seconds (reason=stale)", _now(), row["id"]),
                 )
+                self._record_chat_failure_message(int(row['id']), _now())
                 stale_ids.append(int(row["id"]))
         return stale_ids
 
