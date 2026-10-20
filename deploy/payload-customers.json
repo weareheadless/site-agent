@@ -19,9 +19,9 @@
       "repository": "https://github.com/weareheadless/helloada-ada-direct-admin-sso-e2e-a76df8a18660acea.git",
       "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
       "schemaRevision": 5,
+      "sharedRuntimeUpdate": "manual",
       "websitePresent": false,
-      "worker": "helloada-ada-direct-admin-sso-e2e-a76df8a18660acea",
-      "sharedRuntimeUpdate": "manual"
+      "worker": "helloada-ada-direct-admin-sso-e2e-a76df8a18660acea"
     },
     "ada-e2e-studio-b39ae17e77014b8c": {
       "adminPath": "/api/helloada",
@@ -36,9 +36,9 @@
       "repository": "https://github.com/weareheadless/helloada-ada-e2e-studio-b39ae17e77014b8c.git",
       "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
       "schemaRevision": 5,
+      "sharedRuntimeUpdate": "manual",
       "websitePresent": false,
-      "worker": "helloada-ada-e2e-studio-b39ae17e77014b8c",
-      "sharedRuntimeUpdate": "manual"
+      "worker": "helloada-ada-e2e-studio-b39ae17e77014b8c"
     },
     "ada-e2e-studio-intake-0aa0b1a55ae48348": {
       "adminPath": "/api/helloada",
@@ -53,9 +53,9 @@
       "repository": "https://github.com/weareheadless/helloada-ada-e2e-studio-intake-0aa0b1a55ae48348.git",
       "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
       "schemaRevision": 5,
+      "sharedRuntimeUpdate": "manual",
       "websitePresent": false,
-      "worker": "helloada-ada-e2e-studio-intake-0aa0b1a55ae48348",
-      "sharedRuntimeUpdate": "manual"
+      "worker": "helloada-ada-e2e-studio-intake-0aa0b1a55ae48348"
     },
     "atelier-harmonie": {
       "adminPath": "/api/helloada",
@@ -63,6 +63,12 @@
       "d1DatabaseId": "9496d871-ab28-42ee-9d38-3f38471f953d",
       "d1DatabaseName": "atelier-harmonie",
       "health": "https://atelier-harmonie.weareheadless.workers.dev/api/health",
+      "mailflareAgentQueueName": "helloada-atelier-harmonie-mail-agent",
+      "mailflareD1DatabaseId": "041b717f-f9b2-4e3d-907e-d9008842751a",
+      "mailflareD1DatabaseName": "helloada-atelier-harmonie-mail",
+      "mailflareInboundQueueName": "helloada-atelier-harmonie-mail-inbound",
+      "mailflareOutboundQueueName": "helloada-atelier-harmonie-mail-outbound",
+      "mailflareR2BucketName": "helloada-atelier-harmonie-mail-files",
       "migrationHead": "2456b18fd6b11b7a9abe562bb37214bf746d6c5815bc2cd07caef32bd05795a3",
       "payloadAdmin": "0.10.24",
       "payloadCore": "0.5.9",
@@ -71,15 +77,33 @@
       "repository": "https://github.com/weareheadless/atelier-harmonie-headless.git",
       "schemaIdentity": "4b299cd55e633851f0fa9b4db83b9d28e4615e02cf1e46495dea7c7633232df4",
       "schemaRevision": 8,
-      "websitePresent": true,
-      "worker": "atelier-harmonie",
       "sharedRuntimeUpdate": "automatic",
-      "mailflareD1DatabaseId": "041b717f-f9b2-4e3d-907e-d9008842751a",
-      "mailflareD1DatabaseName": "helloada-atelier-harmonie-mail",
-      "mailflareR2BucketName": "helloada-atelier-harmonie-mail-files",
-      "mailflareInboundQueueName": "helloada-atelier-harmonie-mail-inbound",
-      "mailflareOutboundQueueName": "helloada-atelier-harmonie-mail-outbound",
-      "mailflareAgentQueueName": "helloada-atelier-harmonie-mail-agent"
+      "websitePresent": true,
+      "worker": "atelier-harmonie"
+    },
+    "inmersion-freediving-bb2a4e404a7fcea4": {
+      "adminPath": "/api/helloada",
+      "contentContract": "helloada-content-v4",
+      "d1DatabaseId": "8e48c514-0ed7-40ac-8362-a226ff9a8eed",
+      "d1DatabaseName": "helloada-inmersion-freediving-bb2a4e404a7fcea4",
+      "health": "https://helloada-inmersion-freediving-bb2a4e404a7fcea4.weareheadless.workers.dev/api/health",
+      "mailflareAgentQueueName": "helloada-inmersion-freediving-bb2a4e404a7fcea4-mail-agent",
+      "mailflareD1DatabaseId": "3e416b20-6e38-4d99-b8e8-f89412759270",
+      "mailflareD1DatabaseName": "helloada-inmersion-freediving-bb2a4e404a7fcea4-mail",
+      "mailflareInboundQueueName": "helloada-inmersion-freediving-bb2a4e404a7fcea4-mail-inbound",
+      "mailflareOutboundQueueName": "helloada-inmersion-freediving-bb2a4e404a7fcea4-mail-outbound",
+      "mailflareR2BucketName": "helloada-inmersion-freediving-bb2a4e404a7fcea4-mail-files",
+      "migrationHead": "63a934836e0868ac7cdea4716bb9a0935708399567e219bac6346950325deb9a",
+      "payloadAdmin": "0.10.23",
+      "payloadCore": "0.5.9",
+      "privateEmailR2BucketName": "helloada-inmersion-freediving-bb2a4e404a7fcea4-email",
+      "r2BucketName": "helloada-inmersion-freediving-bb2a4e404a7fcea4-media",
+      "repository": "https://github.com/weareheadless/helloada-inmersion-freediving-bb2a4e404a7fcea4.git",
+      "schemaIdentity": "4b299cd55e633851f0fa9b4db83b9d28e4615e02cf1e46495dea7c7633232df4",
+      "schemaRevision": 8,
+      "sharedRuntimeUpdate": "automatic",
+      "websitePresent": false,
+      "worker": "helloada-inmersion-freediving-bb2a4e404a7fcea4"
     },
     "northstar-coffee-e2e-validation-8fbf2e6fea671768": {
       "adminPath": "/api/helloada",
@@ -94,9 +118,9 @@
       "repository": "https://github.com/weareheadless/helloada-northstar-coffee-e2e-validation-8fbf2e6fea671768.git",
       "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
       "schemaRevision": 5,
+      "sharedRuntimeUpdate": "manual",
       "websitePresent": false,
-      "worker": "helloada-northstar-coffee-e2e-validation-8fbf2e6fea671768",
-      "sharedRuntimeUpdate": "manual"
+      "worker": "helloada-northstar-coffee-e2e-validation-8fbf2e6fea671768"
     },
     "northstar-coffee-e2e-validation-long-name-d719295b4d086bd3": {
       "adminPath": "/api/helloada",
@@ -111,9 +135,9 @@
       "repository": "https://github.com/weareheadless/helloada-northstar-coffee-e2e-validation-l-8c5745f57bbce7efb441.git",
       "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
       "schemaRevision": 5,
+      "sharedRuntimeUpdate": "manual",
       "websitePresent": false,
-      "worker": "helloada-northstar-coffee-e2e-val-8c5745f57bbce7efb441",
-      "sharedRuntimeUpdate": "manual"
+      "worker": "helloada-northstar-coffee-e2e-val-8c5745f57bbce7efb441"
     },
     "northstar-coffee-full-intake-validation-5a8564dae07494ec": {
       "adminPath": "/api/helloada",
@@ -121,6 +145,12 @@
       "d1DatabaseId": "c8403999-9e07-472a-ae77-b1707d7870c9",
       "d1DatabaseName": "helloada-northstar-coffee-full-intake-vali-ad820fa9f96521e91211",
       "health": "https://helloada-northstar-coffee-full-in-ad820fa9f96521e91211.weareheadless.workers.dev/api/health",
+      "mailflareAgentQueueName": "helloada-northstar-coffee-full-ad820fa9f96521e91211-mail-agent",
+      "mailflareD1DatabaseId": "08224fe1-e4ea-4265-9372-58f1ec8b75a6",
+      "mailflareD1DatabaseName": "helloada-northstar-coffee-full-intake-ad820fa9f96521e91211-mail",
+      "mailflareInboundQueueName": "helloada-northstar-coffee-ful-ad820fa9f96521e91211-mail-inbound",
+      "mailflareOutboundQueueName": "helloada-northstar-coffee-fu-ad820fa9f96521e91211-mail-outbound",
+      "mailflareR2BucketName": "helloada-northstar-coffee-full-ad820fa9f96521e91211-mail-files",
       "migrationHead": "02fb8d92bf5f3fae2bf4b094e2ea1fb686a7121fcf660fe180f428b047b825c4",
       "payloadAdmin": "0.10.6",
       "payloadCore": "0.5.7",
@@ -129,15 +159,9 @@
       "repository": "https://github.com/weareheadless/helloada-northstar-coffee-full-intake-vali-ad820fa9f96521e91211.git",
       "schemaIdentity": "af92eb2228b2e8fdaeccfe578f684db9388f12f58e8ee23c72bfed4dee59a927",
       "schemaRevision": 7,
-      "websitePresent": false,
-      "worker": "helloada-northstar-coffee-full-in-ad820fa9f96521e91211",
       "sharedRuntimeUpdate": "automatic",
-      "mailflareD1DatabaseId": "08224fe1-e4ea-4265-9372-58f1ec8b75a6",
-      "mailflareD1DatabaseName": "helloada-northstar-coffee-full-intake-ad820fa9f96521e91211-mail",
-      "mailflareR2BucketName": "helloada-northstar-coffee-full-ad820fa9f96521e91211-mail-files",
-      "mailflareInboundQueueName": "helloada-northstar-coffee-ful-ad820fa9f96521e91211-mail-inbound",
-      "mailflareOutboundQueueName": "helloada-northstar-coffee-fu-ad820fa9f96521e91211-mail-outbound",
-      "mailflareAgentQueueName": "helloada-northstar-coffee-full-ad820fa9f96521e91211-mail-agent"
+      "websitePresent": false,
+      "worker": "helloada-northstar-coffee-full-in-ad820fa9f96521e91211"
     },
     "northstar-coffee-house-afd6a0232bf10fd4": {
       "adminPath": "/api/helloada",
@@ -152,9 +176,9 @@
       "repository": "https://github.com/weareheadless/helloada-northstar-coffee-house-afd6a0232bf10fd4.git",
       "schemaIdentity": "89ee058005fe2aa951d9c21b625d1f366919cb0a9071658f4a82241f91364532",
       "schemaRevision": 5,
+      "sharedRuntimeUpdate": "manual",
       "websitePresent": false,
-      "worker": "helloada-northstar-coffee-house-afd6a0232bf10fd4",
-      "sharedRuntimeUpdate": "manual"
+      "worker": "helloada-northstar-coffee-house-afd6a0232bf10fd4"
     },
     "oceanicvibes": {
       "adminPath": "/api/helloada",
@@ -162,6 +186,12 @@
       "d1DatabaseId": "56d3f277-fbaf-43d4-91e5-b3a195653a05",
       "d1DatabaseName": "oceanicvibes-content",
       "health": "https://oceanicvibes.com/api/health",
+      "mailflareAgentQueueName": "helloada-oceanicvibes-mail-agent",
+      "mailflareD1DatabaseId": "5e503625-c5a5-4a9a-ad28-be26dd602fd7",
+      "mailflareD1DatabaseName": "helloada-oceanicvibes-mail",
+      "mailflareInboundQueueName": "helloada-oceanicvibes-mail-inbound",
+      "mailflareOutboundQueueName": "helloada-oceanicvibes-mail-outbound",
+      "mailflareR2BucketName": "helloada-oceanicvibes-mail-files",
       "migrationHead": "5befad21e84b0f950d3e926afa69f29fc45c9b5a76366ea2e10b6d5225494345",
       "payloadAdmin": "0.10.8",
       "payloadCore": "0.5.7",
@@ -170,15 +200,9 @@
       "repository": "https://github.com/weareheadless/oceanicvibes.git",
       "schemaIdentity": "af92eb2228b2e8fdaeccfe578f684db9388f12f58e8ee23c72bfed4dee59a927",
       "schemaRevision": 7,
-      "websitePresent": true,
-      "worker": "oceanicvibes",
       "sharedRuntimeUpdate": "canary",
-      "mailflareD1DatabaseId": "5e503625-c5a5-4a9a-ad28-be26dd602fd7",
-      "mailflareD1DatabaseName": "helloada-oceanicvibes-mail",
-      "mailflareR2BucketName": "helloada-oceanicvibes-mail-files",
-      "mailflareInboundQueueName": "helloada-oceanicvibes-mail-inbound",
-      "mailflareOutboundQueueName": "helloada-oceanicvibes-mail-outbound",
-      "mailflareAgentQueueName": "helloada-oceanicvibes-mail-agent"
+      "websitePresent": true,
+      "worker": "oceanicvibes"
     }
   },
   "nodeBin": "/home/admin/.local/share/site-agent-node22.23.3/bin",
