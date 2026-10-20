@@ -142,7 +142,13 @@ def owner_queue(tasks: list[dict[str, Any]], runs: list[dict[str, Any]] | None =
 def growth_snapshot(memory: Memory, config: dict[str, Any], context: dict[str, Any], *, include_article_content: bool = False) -> dict[str, Any]:
     state = context.get("seo_provisioning_state") or memory.kv_get("seo_provisioning_state", {}) or {}
     scheduler = context.get("scheduler")
-    jobs = {name: spec for name, spec, _fn in getattr(scheduler, "jobs", [])}
+    # Scheduler specs contain a datetime.time; expose its ISO value at the
+    # application boundary, not the scheduler's internal Python object.
+    jobs = {
+        name: {key: value.isoformat() if isinstance(value, datetime.time) else value
+               for key, value in spec.items()}
+        for name, spec, _fn in getattr(scheduler, "jobs", [])
+    }
     runs = memory.list_growth_runs(limit=None)
     activities = []
     for name in ("growth_initial", "growth_daily", "growth_weekly", "growth_monthly", "seo_outcomes"):
