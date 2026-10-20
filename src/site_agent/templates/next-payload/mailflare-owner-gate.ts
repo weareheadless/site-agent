@@ -160,10 +160,24 @@ async function registerTenantBookingOwner(database: D1Binding, tenantId: string,
 async function provisionOwnerSession(
   request: Request,
   env: MailflareEnv,
-  identity: PayloadOwnerIdentity,
   defaultLocale: string,
 ): Promise<{ state: 'ready'; token: string; created: boolean } | { state: 'migration_in_progress' }> {
-  const userId = `ha_${await digest(identity.subject)}`
+  // Payload authenticates the person; mailbox/calendar data belongs to the
+  // tenant workspace. Its persisted owner survives login/subject changes.
+  const registeredOwner = await env.MAILFLARE_DB.prepare(
+    'SELECT owner_user_id FROM helloada_tenant_owners WHERE tenant_id = ? LIMIT 1',
+  ).bind(env.HELLOADA_TENANT_ID).first<{ owner_user_id: string }>()
+  const userId = registeredOwner
+    ? registeredOwner.owner_user_id
+    : `ha_${await digest(`tenant:${env.HELLOADA_TENANT_ID}`)}`
+  if (registeredOwner) {
+    const owner = await env.MAILFLARE_DB.prepare(
+      'SELECT password_hash, disabled FROM users WHERE id = ? LIMIT 1',
+    ).bind(userId).first<{ password_hash: string; disabled: number }>()
+    if (!owner || owner.disabled || owner.password_hash !== SSO_PASSWORD_SENTINEL) {
+      throw new Error('Mailflare registered workspace owner is invalid')
+    }
+  }
   const existingToken = cookieValue(request, SESSION_COOKIE)
   if (existingToken) {
     const tokenHash = await digest(existingToken)
@@ -281,7 +295,7 @@ export function createPayloadOwnerGate<Env extends MailflareEnv, Context>({
       throw new Error('Payload owner identity is incomplete')
     }
 
-    const session = await provisionOwnerSession(request, env, identity, defaultLocale)
+    const session = await provisionOwnerSession(request, env, defaultLocale)
     if (session.state === 'migration_in_progress') return mailboxMigrationResponse(pathname, basePath)
     const authorizedRequest = withSessionCookie(request, session.token)
     const secure = new URL(request.url).protocol === 'https:' ? '; Secure' : ''
