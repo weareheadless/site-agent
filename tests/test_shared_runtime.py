@@ -111,6 +111,15 @@ def test_shared_overlay_updates_runtime_and_preserves_tenant_owned_content(tmp_p
     ]
     assert not (checkout / "src/app/api/helloada/bookings/route.ts").exists()
     assert (checkout / "worker.ts").read_bytes() == (TEMPLATE / "worker.ts").read_bytes()
+    for relative in (
+        "src/app/api/helloada/admin-entry/route.ts",
+        "src/app/api/helloada/handoff/route.ts",
+        "src/lib/helloada-handoff.ts",
+        "src/lib/helloada-admin-entry.ts",
+        "src/lib/runtime-env.ts",
+    ):
+        assert (checkout / relative).read_bytes() == (TEMPLATE / relative).read_bytes()
+        assert relative in result["copiedPaths"]
     assert (checkout / "src/lib/cloudflare-context.ts").read_bytes() == (TEMPLATE / "src/lib/cloudflare-context.ts").read_bytes()
     assert (checkout / "src/app/api/workspace/growth/[...path]/route.ts").read_bytes() == (TEMPLATE / "src/app/api/workspace/growth/[...path]/route.ts").read_bytes()
     assert (checkout / "src/lib/growth-operations.ts").read_bytes() == (TEMPLATE / "src/lib/growth-operations.ts").read_bytes()
