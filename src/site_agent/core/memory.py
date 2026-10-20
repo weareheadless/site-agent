@@ -6572,6 +6572,9 @@ class Memory:
         ).fetchone()
         if row is None or row['conversation_id'] is None or row['operation_kind'] not in ('owner_chat', 'design_intake_advice'):
             return
+        result = json.loads(row['result'] or '{}')
+        if result.get('failure_message_id'):
+            return
         scope_failure = 'outside the writable sandbox' in str(row['error'] or '')
         reply = (
             "I couldn't prepare these changes for review because they require an update to the shared website system. "
@@ -6584,7 +6587,6 @@ class Memory:
             "INSERT INTO chat_messages (conversation_id, ts, role, text) VALUES (?, ?, 'assistant', ?)",
             (row['conversation_id'], failed_ts, reply),
         )
-        result = json.loads(row['result'] or '{}')
         result.update({'reply': reply, 'failure_message_id': message.lastrowid,
                        'failure': {'job_id': job_id, 'boundary': 'source_scope' if scope_failure else 'execution'}})
         self.conn.execute('UPDATE chat_jobs SET result = ? WHERE id = ?', (json.dumps(result), job_id))
