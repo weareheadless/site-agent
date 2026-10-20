@@ -3256,6 +3256,33 @@ def _render_instructions(persona: str) -> str:
     return ADA_INSTRUCTIONS.replace("%%PERSONA%%", block).replace("%%BUILDER_TOOLSET%%", BUILDER_TOOLSET)
 
 
+def _delegated_permissions(clone: Path, task: dict[str, Any]) -> dict[str, Any]:
+    """Translate a validated task's exact source scope into native tool rules."""
+    from .repo_changes import normalize_path, source_path_allowed
+
+    ownership = task.get('ownership')
+    paths = task.get('source_paths')
+    if not isinstance(ownership, dict) or not isinstance(paths, list) or not paths:
+        raise RunnerError('delegated source task requires its ownership contract and exact paths')
+    config = {
+        'site': {'writable_patterns': ownership.get('configured_patterns') or []},
+        'design_engine': {'build_profile': 'next_react' if ownership.get('frontend_only') else ''},
+    }
+    root = clone.resolve()
+    edits = {'*': 'deny'}
+    for path in paths:
+        if (not isinstance(path, str) or normalize_path(path) != path
+                or any(char in path for char in '*?[') or not source_path_allowed(config, path)
+                or not (root / path).resolve().is_relative_to(root)):
+            raise RunnerError('delegated source path is outside its ownership contract')
+        edits[path] = 'allow'
+        edits[str(root / path)] = 'allow'
+    # Shell access could bypass edit permissions. The host owns compilation and
+    # validation; this worker needs native file inspection and exact file edits.
+    return {'edit': edits, 'bash': 'deny', 'shell': 'deny',
+            'external_directory': 'deny', 'task': 'deny'}
+
+
 def install_agent_files(clone: Path, skills_src: Path | None, model: str | None,
                         openrouter_key: str | None = None, persona: str = "",
                         site_digest: str = "", template_tokens: str = "",
@@ -3308,6 +3335,10 @@ def install_agent_files(clone: Path, skills_src: Path | None, model: str | None,
         "instructions": [".opencode/ada-instructions.md"],
         "permission": {"task": {"*": "allow"}},
     }
+    if task_contract is not None:
+        permissions = _delegated_permissions(clone, task_contract)
+        opencode_config['permission'] = permissions
+        opencode_config['agent'] = {'build': {'permission': permissions}}
     if model_id:
         opencode_config["model"] = model_id
     if openrouter_key and model_id.startswith(("openrouter/", "entrim/")):
@@ -3409,12 +3440,17 @@ def install_agent_files(clone: Path, skills_src: Path | None, model: str | None,
         "Read relevant files before editing; retrieve additional evidence only when needed. "
         "Only the primary session may edit this worktree; delegated exploration is read-only. "
         "Keep content in Payload and preserve schema, admin, authentication and platform ownership. "
-        "Run the required project checks, leave changes uncommitted, and report changed files, checks and blockers. "
+        "Leave changes uncommitted and report changed files and blockers. The host runs project checks. "
         "Do not publish, approve, push, install dependencies, start servers or speak for the owner."
         if maintenance else _render_instructions(persona)
     )
     if task_contract is not None:
         rendered += '\n\nDELEGATED TASK CONTRACT\n' + json.dumps(task_contract, ensure_ascii=False, sort_keys=True)
+        rendered += (
+            '\nOnly source_paths are writable through native file tools. Shell and further delegation are disabled. '
+            'If another file is required, return that blocker to Ada; do not bypass the scope. '
+            'The host owns build, validation and preview creation after this implementation turn.'
+        )
         memory = None
     if context_snapshot is not None:
         rendered += (
@@ -4405,6 +4441,7 @@ def _prepare_builder_context(context: dict[str, Any], progress=None,
                     'instructions_bytes': (clone / '.opencode/ada-instructions.md').stat().st_size,
                     'generic_memory_included': False,
                     'conversation_history_included': False,
+                    'source_paths': task_contract['source_paths'],
                 },
             )
     return site_clone, clone, base_ref, _change_state(clone)

@@ -2,7 +2,7 @@ import pytest
 from contextlib import closing
 
 from site_agent.brain.editor import _validate_website_change_plan
-from site_agent.hands.repo_changes import source_path_allowed
+from site_agent.hands.repo_changes import source_path_allowed, source_authoring_contract
 
 
 def config():
@@ -17,6 +17,7 @@ def test_source_plan_and_validator_share_the_ownership_boundary():
     accepted = _validate_website_change_plan(plan, None, config())
     assert accepted['source_paths'] == plan['source_paths']
     assert source_path_allowed(config(), accepted['source_paths'][0])
+    assert source_path_allowed(config(), 'src/app/(frontend)/oceanic.css')
     for path in ['public/robots.txt', 'src/app/(frontend)/page.tsx', 'src/app/sitemap.ts', 'next.config.mjs']:
         assert not source_path_allowed(config(), path)
         with pytest.raises(ValueError, match='outside tenant ownership'):
@@ -88,6 +89,7 @@ def test_delegated_context_is_task_local_and_retains_relevant_design_requirement
 
     install_agent_files(tmp_path, None, 'openrouter/deepseek/deepseek-v4.1-flash',
                         memory=MemoryMustNotBeInjected(), task_contract={
+                            'ownership': source_authoring_contract(config()),
                             'source_kind': kind, 'source_brief': 'Improve the selected section',
                             'source_paths': ['src/components/site/presentation/Training.tsx'],
                             'acceptance_criteria': ['Preserve the mobile layout'],
@@ -98,3 +100,38 @@ def test_delegated_context_is_task_local_and_retains_relevant_design_requirement
     assert 'Preserve the mobile layout' in instructions
     assert ('DESIGN SKILL SET' in instructions) == (kind == 'presentation')
     assert 'What you have read lately' not in instructions
+
+
+def test_delegated_permissions_allow_only_planned_files_and_no_shell(tmp_path):
+    import json
+    import subprocess
+    from site_agent.hands.opencode_runner import install_agent_files
+    from site_agent.hands.repo_changes import source_authoring_contract
+
+    subprocess.run(['git', 'init', str(tmp_path)], check=True, capture_output=True)
+    planned = 'src/app/(frontend)/site.css'
+    install_agent_files(tmp_path, None, None, task_contract={
+        'source_kind': 'maintenance', 'source_paths': [planned],
+        'ownership': source_authoring_contract(config()),
+    })
+    installed = json.loads((tmp_path / 'opencode.json').read_text())
+    permissions = installed['permission']
+    assert permissions['edit']['*'] == 'deny'
+    assert permissions['edit'][planned] == 'allow'
+    assert permissions['edit'][str(tmp_path / planned)] == 'allow'
+    assert 'src/app/(frontend)/oceanic.css' not in permissions['edit']
+    assert permissions['bash'] == permissions['shell'] == 'deny'
+    assert permissions['external_directory'] == 'deny'
+    assert permissions['task'] == 'deny'
+    assert installed['agent']['build']['permission'] == permissions
+
+
+def test_delegated_permissions_refuse_unowned_paths_before_install(tmp_path):
+    from site_agent.hands.opencode_runner import _delegated_permissions, RunnerError
+    from site_agent.hands.repo_changes import source_authoring_contract
+
+    for path in ['src/app/(frontend)/layout.tsx', '../outside.css', 'src/components/site/presentation/*']:
+        with pytest.raises(RunnerError, match='delegated source'):
+            _delegated_permissions(tmp_path, {
+                'source_paths': [path], 'ownership': source_authoring_contract(config()),
+            })

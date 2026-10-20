@@ -11,6 +11,14 @@ and platform SEO source require a Site-Agent release; editable SEO content
 remains in the shared Payload fields. Unsupported plans are refused before
 starting the builder.
 
+Tenant frontend CSS is presentation regardless of its basename. The shared
+ownership policy allows frontend CSS files, not only a scaffold's `site.css`;
+route/layout code and platform source remain protected. A delegated worker's
+native OpenCode edit permissions allow only its exact planned files. Shell,
+external-directory access and further delegation are denied for that worker;
+inspection uses native read/search tools and the host owns validation/builds.
+The final ownership validator remains required before a preview is staged.
+
 Ada receives a read-only snapshot of recent jobs in this conversation, with
 their real state, progress, failure boundary and draft identity. The model
 interprets the owner's current request. No phrase classifier decides whether a
