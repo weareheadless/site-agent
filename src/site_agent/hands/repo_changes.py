@@ -4,8 +4,27 @@ from __future__ import annotations
 
 import fnmatch
 from pathlib import PurePosixPath
+from typing import Any
 
 from ..frontend_ownership import is_frontend_owned_path
+
+
+def source_authoring_contract(config: dict[str, Any]) -> dict[str, Any]:
+    from ..frontend_ownership import FRONTEND_OWNED_PATTERNS, PLATFORM_PROTECTED_PATHS
+
+    frontend_only = (config.get('design_engine') or {}).get('build_profile') == 'next_react'
+    return {
+        'configured_patterns': list((config.get('site') or {}).get('writable_patterns') or []),
+        'frontend_only': frontend_only,
+        'frontend_patterns': list(FRONTEND_OWNED_PATTERNS) if frontend_only else [],
+        'protected_paths': list(PLATFORM_PROTECTED_PATHS) if frontend_only else list(HARD_DENY),
+        'rule': 'A source path must pass both the configured allowlist and the frontend ownership policy. Platform changes require a shared Site-Agent release.',
+    }
+
+
+def source_path_allowed(config: dict[str, Any], path: str) -> bool:
+    contract = source_authoring_contract(config)
+    return writable(path, contract['configured_patterns'], frontend_only=contract['frontend_only'])
 
 
 HARD_DENY = (

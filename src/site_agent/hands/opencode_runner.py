@@ -4296,14 +4296,10 @@ def _change_state(clone: Path) -> tuple[str, tuple[tuple[str, str], ...]]:
 
 def _validate_build_paths(config: dict[str, Any], clone: Path, base_ref: str) -> None:
     """Enforce the same path sandbox as editor proposals before git can stage."""
-    from .repo_changes import writable
-
-    patterns = [str(p) for p in ((config.get("site") or {}).get("writable_patterns") or [])]
-    profile = str(((config.get("design_engine") or {}).get("build_profile") or "")).strip().lower()
-    frontend_only = profile == "next_react"
+    from .repo_changes import source_path_allowed
     refused = sorted(
         path for path in _changed_paths(clone, base_ref)
-        if not writable(path, patterns, frontend_only=frontend_only)
+        if not source_path_allowed(config, path)
     )
     if refused:
         raise RunnerError("builder changed files outside the writable sandbox: " + ", ".join(refused[:10]))

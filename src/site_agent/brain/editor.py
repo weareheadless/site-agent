@@ -296,6 +296,7 @@ def _authoring_record_schema(
 def _validate_website_change_plan(
     value: Any,
     authoring_contract: dict[str, Any] | None,
+    config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError("the website change plan must be an object")
@@ -312,6 +313,19 @@ def _validate_website_change_plan(
         raise ValueError("the plan has no content or presentation change")
     if len(source_brief) > 3_000:
         raise ValueError("source_brief is too long")
+    source_paths = value.get('source_paths', [])
+    if not isinstance(source_paths, list) or any(not isinstance(path, str) for path in source_paths):
+        raise ValueError('source_paths must be a list of exact relative file paths')
+    if source_brief and (config or {}).get('design_engine', {}).get('build_profile') == 'next_react':
+        from ..hands.repo_changes import normalize_path, source_path_allowed
+
+        if not source_paths:
+            raise ValueError('source work must declare source_paths before builder execution')
+        refused = [path for path in source_paths if normalize_path(path) != path
+                   or any(char in path for char in '*?') or not source_path_allowed(config, path)]
+        if refused:
+            raise ValueError('source scope is outside tenant ownership: ' + ', '.join(refused)
+                             + '. Use Payload for supported content/SEO fields; platform source needs a shared Site-Agent release.')
     if content_effects and not isinstance(authoring_contract, dict):
         raise ValueError("the canonical Payload authoring contract is unavailable")
     authoring = (authoring_contract or {}).get("authoring") or {}
@@ -390,7 +404,7 @@ def _validate_website_change_plan(
             "summary": summary,
             "completed_fields": [],
         })
-    return {"content_effects": planned, "source_brief": source_brief, "response_only": False}
+    return {"content_effects": planned, "source_brief": source_brief, "source_paths": source_paths, "response_only": False}
 
 
 def _payload_plan_complete(context: dict[str, Any]) -> bool:
@@ -616,12 +630,14 @@ def _tools_spec(
         plan_properties: dict[str, Any] = {
             "content_effects": {"type": "array", "items": {"oneOf": effect_variants} if effect_variants else {"not": {}}, "maxItems": 12},
             "source_brief": {"type": "string", "maxLength": 3000},
+            "source_paths": {"type": "array", "items": {"type": "string"}, "uniqueItems": True},
             "response_only": {"type": "boolean"},
         }
         tools.append(raw_fn(
             "plan_website_change",
             "Declare the exact work before any Payload or source mutation. Use response_only for an answer without changes. "
             "Payload effects must identify exact shared-schema fields and targets; source_brief describes only presentation/code work. "
+            "For source work, declare the exact source_paths allowed by the source ownership contract before delegation. "
             "The host validates this plan and requires Payload drafts to be saved before source work.",
             {
                 "type": "object",
@@ -962,7 +978,7 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
         if context.get("_website_change_plan") is not None:
             return "REFUSED: this request already has a validated plan; do not replace it after effects begin."
         try:
-            plan = _validate_website_change_plan(args, context.get("_authoring_contract"))
+            plan = _validate_website_change_plan(args, context.get("_authoring_contract"), context["config"])
         except (TypeError, ValueError) as exc:
             return f"REFUSED: the website change plan is invalid: {exc}"
         context["_website_change_plan"] = plan
@@ -1050,9 +1066,11 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
             return "Builder agent is not enabled on this instance."
         payload_receipts = context.get("_completed_payload_effects") or []
         authoritative_brief = str(plan["source_brief"]).strip()
-        execution_context = ""
+        from ..hands.repo_changes import source_authoring_contract
+        execution_context = '\n\nSource ownership contract:\n' + json.dumps(source_authoring_contract(context['config']))
+        execution_context += '\n\nPlanned source files:\n' + json.dumps(plan.get('source_paths', []))
         if payload_receipts:
-            execution_context = (
+            execution_context += (
                 "\n\nExact Payload drafts saved before this source task (these are the content authority; do not copy their values into source):\n"
                 + json.dumps(payload_receipts, ensure_ascii=False, sort_keys=True)
             )
@@ -1163,12 +1181,14 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
         context.pop("_authoring_contract", None)
         context.pop("_authoring_contract_error", None)
     patterns = ", ".join(_writable_patterns(context))
+    from ..hands.repo_changes import source_authoring_contract
     inner = inner_life_context(context["memory"])
     system = (
         persona
         + ("\n\n" + inner if inner else "")
         + SYSTEM_NOTE_TOOLS.replace("%%WRITABLE%%", patterns)
     )
+    system += '\n\nAuthoritative source ownership contract:\n' + json.dumps(source_authoring_contract(context['config']))
     profile = configured_site_profile_prompt(context.get("config") or {})
     if profile:
         system += "\n\n" + profile
