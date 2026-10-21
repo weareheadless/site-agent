@@ -13,9 +13,9 @@ test('uncertain Growth effects reconcile exact state without repeating writes', 
     const helloAdaSite = { defaultLocale: 'en', features: { posts: true } }
     const tenantId = () => 'tenant-a'
     const asObject = (x) => x && typeof x === 'object' ? x : {}
-    const hashJson = async (x) => JSON.stringify(x)
+    let hashJson = async (x) => JSON.stringify(x)
     const projectDocument = (doc, fields) => Object.fromEntries(fields.map(key => [key, doc[key] ?? null]))
-    const withoutPayloadMetadata = (x) => x
+    const withoutPayloadMetadata = (x) => { const result = {...x}; for (const key of ['id','updatedAt','createdAt','_status']) delete result[key]; return result }
     const createHelloAdaPreviewToken = async () => 'exact-token'
     const articleIndexPath = () => '/blog'
     const pathForDocument = () => '/'
@@ -25,7 +25,7 @@ test('uncertain Growth effects reconcile exact state without repeating writes', 
     const operationContext = () => {}
     const NextResponse = { json: (body, options = {}) => Response.json(body, {status:options.status || 200}) }
     let writes = 0, reconciliations = 0, saves = 0
-    let live = {id:'1', title:'Before', updatedAt:'base'}
+    let live = {id:'1', title:'Before', updatedAt:'base', route:'/'}
     let draft = {id:'1', title:'After', updatedAt:'candidate'}
     const payload = {
       config: {collections:[{slug:'pages',fields:[{name:'title'}]}]},
@@ -46,7 +46,7 @@ test('uncertain Growth effects reconcile exact state without repeating writes', 
     const saveCandidate = async () => {saves++}
     const failOperation = async () => {throw new Error('Do not rewrite another executor receipt')}
     const fetch = async (url) => new Response(String(url).includes('helloada-preview')
-      ? '<main data-helloada-preview-hash="' + await hashJson(draft) + '" data-helloada-preview-route="/" class="content-page" data-helloada-document-id="1">'
+      ? '<main data-helloada-preview-hash="' + await hashJson(withoutPayloadMetadata(draft)) + '" data-helloada-preview-route="/" class="content-page" data-helloada-document-id="1">'
       : '<main data-helloada-document-id="1" data-helloada-updated-at="' + live.updatedAt + '">',
       {headers:{'content-type':'text/html'}})
     const request = (publish = false) => new Request('https://tenant.example/api/workspace/growth',
@@ -72,6 +72,17 @@ test('uncertain Growth effects reconcile exact state without repeating writes', 
     assert.equal(response.status, 200)
     assert.equal((await response.json()).status, 'published')
     assert.equal(reconciliations, 2)
+    const publicationRequest = (expectedRevision) => new Request('https://tenant.example/api/workspace/growth', {
+      method:'POST', body:JSON.stringify({collection:'pages',documentId:'1',expectedRevision,locale:'en'})})
+    const savedHash = hashJson
+    hashJson = async (document) => document.title === 'After' ? 'sha256:' + 'a'.repeat(64) : 'sha256:' + 'b'.repeat(64)
+    response = await growthPost(publicationRequest('sha256:' + 'a'.repeat(64)), '/growth/verify-publication', principal)
+    assert.equal(response.status, 200)
+    assert.equal((await response.json()).liveVerification.status, 'passed')
+    response = await growthPost(publicationRequest('sha256:' + 'b'.repeat(64)), '/growth/verify-publication', principal)
+    assert.equal(response.status, 409)
+    assert.equal(writes, 0)
+    hashJson = savedHash
     packageData.tenant = 'another-tenant'
     response = await growthPost(request(), '/growth/apply', principal)
     assert.equal(response.status, 409)

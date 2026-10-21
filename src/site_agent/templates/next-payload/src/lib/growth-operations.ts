@@ -204,6 +204,22 @@ export async function growthGet(request: Request, path: string, principal: Growt
 export async function growthPost(request: Request, path: string, principal: GrowthPrincipal) {
   const payload = await payloadFor(principal)
   const body = asObject(await request.json().catch(() => ({})))
+  if (path === '/growth/verify-publication') {
+    const collection = text(body.collection)
+    const documentId = text(body.documentId)
+    const expectedRevision = text(body.expectedRevision)
+    if (!editable(collection) || !collectionEnabled(collection) || !documentId || !/^sha256:[0-9a-f]{64}$/.test(expectedRevision)) return error('Exact publication identity is required')
+    if (body.locale !== helloAdaSite.defaultLocale) return error('Publication verification requires the configured website locale', 409)
+    try {
+      const document = await payload.findByID({ collection: collection as CollectionSlug, id: documentId,
+        draft: false, locale: helloAdaSite.defaultLocale as TypedLocale, ...accessFor(principal) }) as unknown as Record<string, unknown>
+      if (await hashJson(withoutPayloadMetadata(document)) !== expectedRevision) throw new Error('The public document no longer matches the saved publication revision')
+      const liveVerification = await verifyLiveRoutes(request, collection, document, routeForDocument(collection, document))
+      return NextResponse.json({ collection, documentId, documentHash: expectedRevision, liveVerification }, { headers: { 'Cache-Control': 'private, no-store' } })
+    } catch (cause) {
+      return error(cause instanceof Error ? cause.message : 'Publication verification failed', 409)
+    }
+  }
   if (path === '/growth/validate') {
     const packageData = asObject(body.package)
     const packageHash = text(body.packageHash)
