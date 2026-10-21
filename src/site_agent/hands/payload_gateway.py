@@ -548,7 +548,10 @@ class PayloadGatewayClient:
         request = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
             with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                body = _safe_json(response.read(2 * 1024 * 1024))
+                raw = response.read(2 * 1024 * 1024 + 1)
+                if len(raw) > 2 * 1024 * 1024:
+                    raise PayloadGatewayError("Payload gateway response exceeds the supported size; no data was truncated")
+                body = _safe_json(raw)
                 return body if isinstance(body, dict) else {"document": body}
         except urllib.error.HTTPError as exc:
             detail = _safe_json(exc.read(32 * 1024))
@@ -559,6 +562,19 @@ class PayloadGatewayClient:
             raise PayloadGatewayError(f"Payload gateway returned {exc.code}: {message[:300]}", status_code=exc.code) from exc
         except (urllib.error.URLError, TimeoutError) as exc:
             raise PayloadGatewayError("Payload gateway is unreachable") from exc
+
+    def capture_render_snapshot(self, *, tenant: str, source_sha: str):
+        """Capture exact website inputs, not a build or owner-review receipt."""
+        from ..core.render_snapshot import RenderSnapshot, RenderSnapshotError
+
+        result = self._request("GET", f"{self.gateway_prefix}/render-snapshot")
+        try:
+            return RenderSnapshot.verify(
+                result, tenant=tenant, source_sha=source_sha,
+                schema_identity=self.contract.schema_identity,
+            )
+        except RenderSnapshotError as exc:
+            raise PayloadGatewayError(str(exc)) from exc
 
     def _collection(self, collection: str) -> str:
         collection = str(collection or "").strip().lower()
