@@ -868,7 +868,7 @@ def queue_growth_check(context: Mapping[str, Any], *, trigger: str = "owner_revi
 
 
 def _inventory(context: Mapping[str, Any]) -> list[dict[str, Any]]:
-    from .growth_candidates import document_content
+    from .growth_candidates import content_hash, document_content
 
     payload = context.get("payload_gateway")
     if payload is None:
@@ -876,6 +876,7 @@ def _inventory(context: Mapping[str, Any]) -> list[dict[str, Any]]:
     authoring_contract = payload.require_authoring_contract()
     enabled_collections = set((authoring_contract.get("enabled") or {}).get("collections") or [])
     inventory = []
+    content_samples = []
     # Taxonomy is part of the shared schema, but categories are not public pages.
     for collection in ("pages", "posts", "products"):
         if collection not in enabled_collections:
@@ -884,14 +885,37 @@ def _inventory(context: Mapping[str, Any]) -> list[dict[str, Any]]:
         for document in payload.list(collection, draft=False, limit=100):
             if not document.get("id"):
                 raise ValueError("A canonical document has no identity")
-            inventory.append({"collection": collection, "document": {"id": str(document["id"]),
-                "sourceId": document.get("sourceId"), "slug": document.get("slug"),
-                **document_content(document, fields)},
-                "sourceRef": f"payload:{collection}:{document['id']}", "route": document.get("route")})
+            canonical = document_content(document, fields)
+            sample = json.dumps(canonical, ensure_ascii=False, sort_keys=True)
+            metadata = {key: document.get(key) for key in (
+                "sourceId", "slug", "title", "metaTitle", "metaDescription",
+            ) if key in document}
+            partial_fields = []
+            if isinstance(document.get("seo"), Mapping):
+                metadata["seo"] = {key: document["seo"][key] for key in ("title", "description")
+                    if isinstance(document["seo"].get(key), str)}
+                if set(document["seo"]) - set(metadata["seo"]):
+                    partial_fields.append("seo")
+            inventory.append({"collection": collection, "document": {**metadata, "id": str(document["id"])},
+                "sourceRef": f"payload:{collection}:{document['id']}", "route": document.get("route"),
+                "assessmentScope": {"completeDocument": False, "documentHash": content_hash(canonical),
+                    "omittedFields": sorted(set(fields) - set(metadata)),
+                    "partialFields": partial_fields,
+                    "totalCharacters": len(sample), "previewCharacters": 0}, "contentPreview": ""})
+            content_samples.append(sample)
     if not inventory:
         raise RuntimeError("The website has no canonical editable documents")
+    metadata_bytes = len(json.dumps(inventory, ensure_ascii=False).encode())
+    if metadata_bytes > 116_000:
+        raise ValueError("Canonical route metadata exceeds the declared assessment scope")
+    # Account conservatively for UTF-8 and JSON string escaping. Every route
+    # remains represented; excerpts are explicitly not full-document evidence.
+    preview_limit = min(1600, (116_000 - metadata_bytes) // len(inventory) // 8)
+    for entry, sample in zip(inventory, content_samples):
+        entry["contentPreview"] = sample[:preview_limit]
+        entry["assessmentScope"]["previewCharacters"] = len(entry["contentPreview"])
     if len(json.dumps(inventory, ensure_ascii=False).encode()) > 120_000:
-        raise ValueError("Canonical content exceeds the bounded assessment size; select a smaller declared scope")
+        raise ValueError("Assessment inventory exceeded its declared byte budget")
     return inventory
 
 
@@ -1148,6 +1172,7 @@ def run_growth_cycle(
             detail["assessment"] = brain_growth.assess(context, {**material, "goal": goal, "business": business,
                 "maxRecommendations": policy.max_recommendations, "priorWork": memory.list_strategy_initiatives(limit=100),
                 "priorOutcomes": memory.list_strategy_outcomes(limit=20), "allowance": policy.research_allowance_micros})
+            detail["assessmentCompletedAt"] = utc_now()
             run = advance(phase="preparing", detail=detail)
         cycle = memory.growth_strategy_cycle(run["run_id"], detail["evidenceArtifactId"])
         existing = memory.list_strategy_initiatives(cycle["id"])

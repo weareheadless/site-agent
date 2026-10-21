@@ -20,6 +20,7 @@ class GrowthContractError(ValueError):
 
 
 DEFAULT_GROWTH_TIMEZONE = "UTC"
+GROWTH_AREAS = ("content", "search_visibility", "website_health", "audience_competitors", "speed_experience")
 DEFAULT_GROWTH_GOAL_KEY = "relevant_visitors"
 DEFAULT_GROWTH_OBJECTIVE = "Bring relevant visitors to my website"
 DEFAULT_GROWTH_METRICS = ("gsc_clicks", "ga4_engaged_sessions", "qualified_events")

@@ -7,6 +7,101 @@ Audience: the coding AI implementing the shared Growth workflow, API projection 
 
 ## 1. Product outcome
 
+### October 21 service-model and delivery extension
+
+GitHub #260 and #261–#268 extend this contract. Their area-based dashboard
+composition supersedes sections 4/8 where they prescribe a single recommendation
+screen instead of the agreed dashboard. Existing exact-review, scheduling,
+research, permission and evidence requirements remain mandatory.
+
+The target is one linked improvement:
+evidence → investigation → prioritisation → prepared candidate → owner decision
+→ canonical release/publication → live verification → later impact observation.
+GitHub is the engineering brief/journal, existing Growth/approval records are
+execution authority, and the admin/chat/Activity are projections of those records.
+Issue state, comments, labels and PR merges never constitute owner approval.
+
+Use an existing tenant-scoped initiative ID with repository/issue identity,
+candidate hash and Git/Payload revisions, decision ID, actual release/publication
+operation and verification/outcome references. No second task table, scheduler,
+approval service, deployment framework, event store or fallback path. Create one
+issue for concrete work Ada takes up, not every finding. Customer work belongs in
+its registered private repository; shared defects belong in site-agent and are
+linked from affected work. Record meaningful milestones only. Payload-only work
+does not require a fake commit or Worker release. Approval authorises the exact
+candidate; completed means its technical acceptance and live verification passed.
+Later impact measurement is distinct and may be inconclusive.
+
+The future dashboard contains one decisions list, five area summaries (Content,
+Search visibility, Website health, Audience & competitors, Speed & experience),
+and compact verified results. Areas are presentation lenses, not execution kinds
+or limits on Ada's judgment. One cross-area improvement has one decision. Each
+area explains evidence/limitations, business reason, actual action, owner role,
+last assessment and real next assessment. Unsupported/missing data is not health.
+Unclassified historical work stays visible; do not infer areas from title words.
+
+The area projection is read-only over growth_tasks/initiatives/runs; the existing
+candidate validator still determines readiness. The planner can record explicit
+area coverage only with supplied evidence references. Provider observation time,
+assessment completion time and job-update time are separate. New/unpublished
+sites remain awaiting activation. GET must never research or create GitHub issues.
+
+### October 21 audit and implementation ledger (not live acceptance)
+
+Source baseline: 5484c6423b426d79b841d121ab5fd74e5fe28692. Read-only tenant
+inspection used registered config data_dir values, not guessed website paths.
+
+| Boundary | Current owner | Audit finding / next work |
+| --- | --- | --- |
+| Evidence and assessment | growth_workflow._collect_cycle_evidence / brain.growth.assess | Atelier fails before assessment because all full documents exceed 120 KB. Replace with declared bounded inventory metadata/excerpts; retain every document identity/hash and re-read full selected documents during preparation. |
+| Model / owner projection | growth_snapshot / growth_tasks / owner_queue / growth_chat_context | No shared area-coverage view. Add a read projection and evidence-bound planner coverage without another persisted task system. |
+| Exact candidate | growth_candidates and article preparation/sync | Reuse current draft/package/renderer checks. Oceanic has a Payload 409 preparation conflict; diagnose its exact operation receipt before any resumption. |
+| Decisions | approvals / owner actions / growth_owner_response / workspace | Real owner question exists; one earlier owner-information initiative remains preparing. Trace its action/response/job before deciding its disposition. No direct status reset. |
+| Execution | source_deployment / canonical desired queue / Payload publication | Existing immutable release/publication path remains sole authority. Approval and GitHub recording must bind the reviewed contents before effects. |
+| Engineering trace | existing GitHub credential/adapter plus work references | Issue/candidate/decision/release checkpoint linkage is not yet implemented. Required by #268 before full acceptance. |
+| Outcomes | strategy_outcomes and existing publication verification | Link technical completion and later observation to same work; do not close an issue on merge/upload. |
+
+Oceanic audit: six initiatives (two deferred Payload findings; one owner question
+waiting; one owner-information item preparing; one blocked code candidate; one
+blocked Payload candidate). Its weekly run is blocked with a historical model
+404; the code candidate also retains an older provider/model error. Existing
+initial/owner-review/daily/reconciliation completion is not proof that all work
+is healthy. Atelier initial, weekly and six daily runs fail in inventory
+collection. Records and content are preserved. These findings are not proof of
+current provider failure or permission to replay uncertain effects.
+
+Source audit subsequently reproduced a native-write guard identity defect: the
+guard passed its operation key to SQL that excluded a package hash. It blocked
+the same owned operation. The candidate compares operation_key instead and keeps
+other writing/uncertain operations locked; SQLite execution tests reproduce the
+old failures and verify the correction. Existing uncertain destination effects
+still require receipt reconciliation, not a blanket lock reset or automatic retry.
+
+The candidate's read-only live inventory check subsequently passed for both
+registered tenants: Atelier has 96 documents, 1,455,893 full-document characters
+and a 93,322-byte declared assessment view; Oceanic has seven documents, 71,635
+characters and a 20,070-byte view. Nested SEO media relations are excluded from
+assessment metadata and labelled partial; exact hashes still cover the full
+canonical document. This proves inventory retrieval/scoping only, not a completed
+scheduled assessment, candidate recovery, publication or deployed fix.
+
+Implementation order: #262 audit/model → #261 projection with #264 progression
+repair → #263 decision linkage and #268 issue/delivery checkpoints → #265 results
+→ #266 causal multi-tenant acceptance → #267 dashboard. This first source slice
+adds the service projection, planner coverage and bounded inventory assessment;
+it does not implement GitHub journal checkpoints, repair every historical record,
+deploy a new dashboard, or establish end-to-end acceptance. Keep all applicable
+issues open until their evidence is recorded.
+
+For #268, persist the last proven checkpoint using existing work/job/receipt
+facilities. Ambiguous GitHub writes must be reconciled before another write;
+GitHub failure must never enable a memory-only approval or alternate deployment.
+If deployment succeeds but completion recording fails, retain its true immutable
+receipt and resume recording, not deployment. No fabricated closure, blind retry,
+automatic rollback to hide a journal failure, distributed transaction, or complete
+CMS/media rollback system. Mixed code/Payload effects use the existing supported
+route and expose partial/unknown state; unsupported scope blocks explicitly.
+
 The customer is a busy business owner with little knowledge of SEO, analytics or website administration. Ada investigates the website, interprets the evidence, chooses worthwhile improvements, prepares them and brings understandable decisions to the owner.
 
 The owner must immediately understand:
