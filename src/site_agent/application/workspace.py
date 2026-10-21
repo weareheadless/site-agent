@@ -2583,6 +2583,26 @@ class ChatService:
             if not expected or not supplied_hash or not hmac.compare_digest(str(expected).encode(), str(supplied_hash).encode()):
                 raise BridgeError("the reviewed version is missing or stale; reload this improvement before deciding")
 
+    @staticmethod
+    def _start_approved_release(memory: Any, draft_id: int, start: Any, request: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Retain the approved merge before crossing the GitHub queue boundary.
+
+        A queue failure must not require a second merge. Retrying this exact
+        request retains the decision ID and the queue's idempotency identity.
+        """
+        if request.get("draft_id") != draft_id or not re.fullmatch(r"[0-9a-f]{40}", str(request.get("commit") or "")):
+            raise BridgeError("approved release is missing its exact decision and source revision")
+        draft = memory.get_draft(draft_id)
+        if not draft:
+            raise BridgeError("approved release has no persisted decision")
+        meta = dict(draft.get("meta") or {})
+        existing = meta.get("approved_release")
+        if existing is not None and existing != dict(request):
+            raise BridgeError("approved release identity cannot change after the owner decision")
+        meta["approved_release"] = dict(request)
+        memory.update_draft_meta(draft_id, meta)
+        return start(dict(request), allow_production=True)
+
     def _approve_draft(self, draft_id: Any, *, tenant: Tenant | None = None, review_package_hash: str | None = None) -> dict[str, Any]:
         """Publish exactly one pending owner change through its existing lane.
 
@@ -2616,6 +2636,20 @@ class ChatService:
             if receipt and draft.get("status") in {"publishing", "publish_failed", "live"}:
                 return {"ok": receipt.get("status") != "failed", "draft_id": normalized_id,
                         "status": draft["status"], "deployment": receipt, "idempotent": True}
+            approved = (draft.get("meta") or {}).get("approved_release")
+            start = getattr(deployer, "start", None)
+            if draft.get("status") == "publish_failed" and isinstance(approved, Mapping) and callable(start):
+                try:
+                    memory.update_draft_status(normalized_id, "publishing")
+                    receipt = self._start_approved_release(memory, normalized_id, start, approved)
+                except Exception as exc:
+                    memory.update_draft_status(normalized_id, "publish_failed")
+                    memory.record_action("publish_failed", f"#{normalized_id}: {str(exc)[:400]}")
+                    raise BridgeError(f"approved release could not be queued: {str(exc)[:400]}") from exc
+                memory.record_action("publish_retry", f"#{normalized_id}: exact approved source requeued")
+                return {"ok": receipt.get("status") != "failed", "draft_id": normalized_id,
+                        "status": {"deployed": "live", "failed": "publish_failed"}.get(receipt.get("status"), "publishing"),
+                        "deployment": dict(receipt), "idempotent": True}
             raise BridgeError(f"draft already {draft.get('status')}")
 
         kind = str(draft.get("kind") or "edit")
@@ -2663,7 +2697,7 @@ class ChatService:
                     raise BridgeError("design approved but the production commit could not be identified")
                 try:
                     memory.update_draft_status(normalized_id, "publishing")
-                    production_deployment = start({
+                    production_deployment = self._start_approved_release(memory, normalized_id, start, {
                         "branch": str(((tenant.config if tenant is not None else self.config).get("site") or {}).get("branch") or "main"),
                         "commit": commit_sha,
                         "mode": "production",
@@ -2675,7 +2709,7 @@ class ChatService:
                             "version_type": version_type,
                             "commit_message": commit_message,
                         },
-                    }, allow_production=True)
+                    })
                 except Exception as exc:  # noqa: BLE001 - keep the approval boundary explicit
                     memory.update_draft_status(normalized_id, "publish_failed")
                     memory.record_action("publish_failed", f"#{normalized_id}: {str(exc)[:400]}")
@@ -2813,7 +2847,7 @@ class ChatService:
                     raise BridgeError("preview merged but the production commit could not be identified")
                 try:
                     memory.update_draft_status(normalized_id, "publishing")
-                    production_deployment = start({
+                    production_deployment = self._start_approved_release(memory, normalized_id, start, {
                         "branch": str(((config.get("site") if isinstance(config, Mapping) else {}) or {}).get("branch") or "main"),
                         "commit": commit_sha,
                         "mode": "production",
@@ -2825,7 +2859,7 @@ class ChatService:
                             "version_type": version_type,
                             "commit_message": commit_message,
                         },
-                    }, allow_production=True)
+                    })
                 except Exception as exc:  # noqa: BLE001 — the merge already happened; retain an explicit failed state
                     memory.update_draft_status(normalized_id, "publish_failed")
                     memory.record_action("publish_failed", f"#{normalized_id}: {str(exc)[:400]}")

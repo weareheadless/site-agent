@@ -200,7 +200,22 @@ def request_release(
     if not root.is_dir():
         raise ReleaseQueueError("canonical VPS release receipts are not mounted on this service")
     token = github_api_token(config, credential_environment(config, env))
-    tenant, customer = customer_release_identity(config)
+    # Existing tenants are already registered in the canonical control tree.
+    # Their mutable authoring checkout is neither a deployment registry nor
+    # proof of the currently composed shared runtime. Only new-site bootstrap
+    # derives an explicit registration from its validated scaffold.
+    expected_identity = None
+    if initialize_schema:
+        tenant, customer = customer_release_identity(config)
+    else:
+        tenant = str(config.get("instance_name") or "").strip().lower()
+        site = config.get("site") if isinstance(config.get("site"), Mapping) else {}
+        deployment = site.get("source_deployment") if isinstance(site.get("source_deployment"), Mapping) else {}
+        expected_identity = {
+            "repository": _managed_repository_url(site.get("repository")),
+            "worker": str(deployment.get("worker_name") or "").strip(),
+        }
+        customer = None
     try:
         return GitHubReleaseQueue(token).request(
             tenant,
@@ -209,6 +224,7 @@ def request_release(
             approval_id=approval_id,
             initialize_schema=initialize_schema,
             release_id=release_id,
+            **({"expected_identity": expected_identity} if expected_identity is not None else {}),
         )
     except GitHubReleaseQueueError as exc:
         raise ReleaseQueueError(str(exc)) from exc

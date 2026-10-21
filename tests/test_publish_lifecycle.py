@@ -234,6 +234,46 @@ def test_workspace_approval_retries_do_not_merge_or_queue_twice(tmp_path, monkey
     memory.close()
 
 
+def test_queue_failure_retains_the_approved_merge_and_retry_does_not_merge_again(tmp_path, monkeypatch):
+    from site_agent.application.workspace import BridgeError
+    from site_agent.application.release_queue import ReleaseQueueError
+    memory, deployer, draft_id, _root = make_service(tmp_path, monkeypatch, draft_status='pending')
+    monkeypatch.setattr(deployer, '_head', lambda _branch: 'a' * 40)
+    calls = []
+    def request_release(_config, _env, sha, *, approval_id):
+        assert memory.get_draft(draft_id)['meta']['approved_release']['commit'] == sha
+        calls.append((sha, approval_id))
+        if len(calls) == 1:
+            raise ReleaseQueueError('queue unavailable')
+        return {'release_id': '20261004-validation-1', 'control_sha': 'c' * 40}
+    monkeypatch.setattr(deployment, 'request_release', request_release)
+    class Adapter:
+        calls = 0
+        def merge_preview(self, *args):
+            self.calls += 1
+            return {'merged': True, 'commit_sha': 'a' * 40, 'parent_sha': 'b' * 40}
+    adapter = Adapter()
+    chat = ChatService(memory, object(), source_deployment=deployer)
+    monkeypatch.setattr(chat, '_merge_adapter', lambda _tenant: adapter)
+    with pytest.raises(BridgeError, match='live deployment could not be queued'):
+        chat.approve_draft(draft_id)
+    assert memory.get_draft(draft_id)['status'] == 'publish_failed'
+    result = chat.approve_draft(draft_id)
+    assert result['status'] == 'publishing'
+    assert adapter.calls == 1
+    assert calls == [('a' * 40, draft_id)] * 2
+    assert chat.approve_draft(draft_id)['idempotent'] is True
+    assert len(calls) == 2
+    with pytest.raises(BridgeError, match='cannot change'):
+        chat._start_approved_release(memory, draft_id, deployer.start, {
+            **memory.get_draft(draft_id)['meta']['approved_release'], 'commit': 'd' * 40,
+        })
+    assert memory.list_publishes() == []
+    assert deployer._executor.submitted == []
+    deployer.close()
+    memory.close()
+
+
 def test_compiled_preview_recovery_retains_publishing_draft_status(tmp_path, monkeypatch):
     memory, service, draft_id, _release_root = make_service(tmp_path, monkeypatch)
     memory.update_draft_status(draft_id, "publishing")

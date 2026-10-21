@@ -34,7 +34,8 @@ CUSTOMER = {
 }
 
 
-def test_release_request_commits_registry_and_exact_approval_together(monkeypatch):
+@pytest.mark.parametrize('registered_only', [False, True])
+def test_release_request_commits_registry_and_exact_approval_together(monkeypatch, registered_only):
     queue = GitHubReleaseQueue("token")
     legacy_customer = {key: value for key, value in CUSTOMER.items() if key not in {
         "privateEmailR2BucketName",
@@ -43,7 +44,7 @@ def test_release_request_commits_registry_and_exact_approval_together(monkeypatc
     }}
     documents = {
         "payload-customers.json": {
-            "schema": 1, "releaseRoot": "/SOCIAL/payload-releases", "customers": {"demo": legacy_customer},
+            "schema": 1, "releaseRoot": "/SOCIAL/payload-releases", "customers": {"demo": CUSTOMER if registered_only else legacy_customer},
         },
         "desired-releases.json": {"schema": 1, "releases": {}},
     }
@@ -81,7 +82,8 @@ def test_release_request_commits_registry_and_exact_approval_together(monkeypatc
         raise AssertionError((method, path, payload))
 
     monkeypatch.setattr(queue, "_request", request)
-    result = queue.request("demo", SHA, CUSTOMER, approval_id=42)
+    result = queue.request("demo", SHA, None if registered_only else CUSTOMER, approval_id=42,
+                           **({'expected_identity': {key: CUSTOMER[key] for key in ('repository', 'worker')}} if registered_only else {}))
 
     assert result["source_sha"] == SHA
     assert result["control_sha"] == "4" * 40
@@ -93,6 +95,53 @@ def test_release_request_commits_registry_and_exact_approval_together(monkeypatc
         "id": result["release_id"], "sha": SHA, "approvalId": 42,
     }
     assert sum(method == "POST" and path.endswith("/git/commits") for method, path, _ in calls) == 1
+
+
+@pytest.mark.parametrize('registered,expected', [
+    (False, {'repository': CUSTOMER['repository'], 'worker': CUSTOMER['worker']}),
+    (True, {'repository': 'https://github.com/weareheadless/wrong.git', 'worker': CUSTOMER['worker']}),
+])
+def test_registered_only_release_rejects_missing_or_mismatched_identity(monkeypatch, registered, expected):
+    queue = GitHubReleaseQueue('token')
+    documents = {
+        'payload-customers.json': {'schema': 1, 'customers': {'demo': CUSTOMER} if registered else {}},
+        'desired-releases.json': {'schema': 1, 'releases': {}},
+    }
+    def request(method, path, **kwargs):
+        assert method == 'GET', 'invalid identity must never write the queue'
+        if path.endswith('git/ref/heads/main'):
+            return 200, {'object': {'sha': '1' * 40}}
+        if '/git/commits/' in path:
+            return 200, {'tree': {'sha': '2' * 40}}
+        name = path.split('/contents/deploy/')[1].split('?')[0]
+        return 200, {'encoding': 'base64', 'content': base64.b64encode(json.dumps(documents[name]).encode()).decode()}
+    monkeypatch.setattr(queue, '_request', request)
+    with pytest.raises(GitHubReleaseQueueError, match='registered'):
+        queue.request('demo', SHA, approval_id=42, expected_identity=expected)
+
+
+def test_ordinary_release_does_not_read_an_authoring_checkout(monkeypatch, tmp_path):
+    from site_agent.application import release_queue
+    observed = {}
+    class Queue:
+        def __init__(self, token):
+            assert token == 'token'
+        def request(self, tenant, source_sha, customer, **kwargs):
+            observed.update(tenant=tenant, source_sha=source_sha, customer=customer, **kwargs)
+            return {'release_id': 'queued'}
+    def prohibited(*args, **kwargs):
+        raise AssertionError('ordinary release tried to read a mutable customer checkout')
+    monkeypatch.setattr(release_queue, 'customer_release_identity', prohibited)
+    monkeypatch.setattr(release_queue, 'credential_environment', lambda *args: {})
+    monkeypatch.setattr(release_queue, 'github_api_token', lambda *args: 'token')
+    monkeypatch.setattr(release_queue, 'GitHubReleaseQueue', Queue)
+    result = release_queue.request_release({
+        'instance_name': 'demo', 'deployment_pipeline': {'release_root': str(tmp_path)},
+        'site': {'repository': 'weareheadless/demo', 'clone_path': '/does-not-exist', 'source_deployment': {'worker_name': 'helloada-demo'}},
+    }, {}, SHA, approval_id=42)
+    assert result == {'release_id': 'queued'}
+    assert observed['customer'] is None
+    assert observed['expected_identity'] == {'repository': CUSTOMER['repository'], 'worker': CUSTOMER['worker']}
 
 
 def test_bootstrap_queues_only_the_exact_registered_migration_chain(monkeypatch):
