@@ -132,6 +132,19 @@ def test_deferred_initiative_remains_explained_without_becoming_a_decision():
     assert model["areas"][0]["deferredWorkIds"] == ["initiative:9"]
 
 
+def test_capacity_wait_exposes_its_real_run_and_executor_not_an_invented_task():
+    run = {"run_id": "weekly-1", "status": "pending", "next_due_ts": "2026-10-21T01:00:00Z",
+        "detail": {"waitingForCapacity": ["Next article"], "assessment": {"opportunities": [
+            {"title": "Next article", "primaryArea": "content"}]}}}
+    model = project(runs=[run], reconciliation={"enabled": True, "nextRun": "2026-10-21T02:00:00Z"})
+    assert model["areas"][0]["state"] == "waiting_for_capacity"
+    assert model["areas"][0]["pendingRunIds"] == ["weekly-1"]
+    assert model["preparation"][0]["executor"] == "growth_pending"
+    assert model["preparation"][0]["nextReconciliationAt"] == "2026-10-21T02:00:00Z"
+    assert model["work"] == []
+    assert project(runs=[run])["preparation"][0]["executor"] is None
+
+
 def test_approval_or_published_label_does_not_manufacture_a_verified_result():
     model = project(tasks=[{"id": "initiative:1", "focus": "completed", "state": "published"}],
         initiatives=[{"id": 1, "state": "measuring", "published_revision": "payload:pages:1:revision",

@@ -72,6 +72,7 @@ def service_model(
     *, tasks: Sequence[Mapping[str, Any]], initiatives: Sequence[Mapping[str, Any]],
     runs: Sequence[Mapping[str, Any]], sources: Sequence[Mapping[str, Any]],
     activities: Sequence[Mapping[str, Any]], website_present: bool,
+    reconciliation: Mapping[str, Any] | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Never collect evidence, start jobs, infer approval, or manufacture coverage."""
@@ -129,6 +130,23 @@ def service_model(
     schedules.sort(key=lambda row: _date(row["nextRun"]))
     upcoming = next((row for row in schedules if _date(row["nextRun"]) > now), None)
     overdue = [row["id"] for row in schedules if _date(row["nextRun"]) <= now]
+    preparation = []
+    for run in runs:
+        detail = run.get("detail") or {}
+        waiting = detail.get("waitingForCapacity")
+        if run.get("status") != "pending" or not isinstance(waiting, list) or not waiting:
+            continue
+        opportunity_areas = list(dict.fromkeys(
+            area for opportunity in (detail.get("assessment") or {}).get("opportunities", [])
+            if opportunity.get("title") in waiting
+            for area in [opportunity.get("primaryArea"), *opportunity.get("secondaryAreas", [])]
+            if area in AREAS
+        ))
+        preparation.append({"runId": run.get("run_id"), "state": "waiting_for_capacity",
+            "areaIds": opportunity_areas, "findingCount": len(waiting),
+            "eligibleAt": run.get("next_due_ts"),
+            "executor": "growth_pending" if reconciliation and reconciliation.get("enabled") else None,
+            "nextReconciliationAt": reconciliation.get("nextRun") if reconciliation and reconciliation.get("enabled") else None})
     source_states = {
         str(ref): row.get("state")
         for row in sources for ref in (row.get("id"), row.get("sourceRef")) if ref
@@ -141,17 +159,19 @@ def service_model(
         blocked = [row["id"] for row in items if row["executionIssue"]]
         active = [row["id"] for row in items if row["state"] == "preparing"]
         deferred = [row["id"] for row in items if row["state"] == "deferred"]
+        pending_runs = [row["runId"] for row in preparation if area in row["areaIds"]]
         evidence_states = [source_states[ref] for ref in recorded.get("evidence", []) if ref in source_states] if recorded else []
         evidence_state = (
             "unavailable" if any(value not in {"ready", "stale"} for value in evidence_states)
             else "stale" if "stale" in evidence_states else "recorded" if recorded else "not_assessed"
         )
-        state = "awaiting_activation" if not website_present else "needs_decision" if decisions else "blocked" if blocked else "preparing" if active else "deferred" if deferred else evidence_state if evidence_state in {"stale", "unavailable"} else "assessed" if recorded else "not_assessed"
+        state = "awaiting_activation" if not website_present else "needs_decision" if decisions else "blocked" if blocked else "preparing" if active else "waiting_for_capacity" if pending_runs else "deferred" if deferred else evidence_state if evidence_state in {"stale", "unavailable"} else "assessed" if recorded else "not_assessed"
         areas.append({
             "id": area, "state": state, "workIds": [row["id"] for row in items],
             "evidenceState": evidence_state,
             "decisionIds": decisions, "blockedWorkIds": blocked, "activeWorkIds": active,
             "deferredWorkIds": deferred,
+            "pendingRunIds": pending_runs,
             "summary": recorded.get("summary") if recorded else None,
             "evidenceRefs": recorded.get("evidence") if recorded else [],
             "limitations": recorded.get("limitations") if recorded else ["No explicit area assessment has been recorded."],
@@ -162,6 +182,7 @@ def service_model(
         "contractVersion": SERVICE_MODEL_VERSION, "websitePresent": website_present,
         "areas": areas, "work": work, "decisionIds": decision_ids,
         "recentResults": _results(tasks, by_id, now),
+        "preparation": preparation,
         "unassignedWorkIds": [row["id"] for row in work if row["primaryArea"] is None],
         "overdueActivityIds": overdue if website_present else [],
         "sources": [{key: row.get(key) for key in ("id", "state", "reason", "observedAt", "sourceRef", "freshnessHours")} for row in sources],

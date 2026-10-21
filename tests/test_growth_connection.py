@@ -56,6 +56,26 @@ def test_disabled_schedules_do_not_promise_a_future_cycle(tmp_path):
     memory.close()
 
 
+def test_area_model_and_ada_context_share_ids_without_read_side_effects(tmp_path):
+    from site_agent.application.growth import growth_chat_context
+
+    memory = Memory(tmp_path / 'memory.db')
+    context = {'scheduler': SimpleNamespace(jobs=[])}
+    before = memory.conn.total_changes
+    try:
+        snapshot = growth_snapshot(memory, {'site': {'website_present': True}}, context)
+        chat = growth_chat_context(memory, {'site': {'website_present': True}}, context)
+        assert chat['serviceModel']['decisionIds'] == snapshot['serviceModel']['decisionIds']
+        assert [row['id'] for row in chat['serviceModel']['areas']] == [row['id'] for row in snapshot['serviceModel']['areas']]
+        for owner_area, ada_area in zip(snapshot['serviceModel']['areas'], chat['serviceModel']['areas']):
+            for key in ('state', 'decisionIds', 'workIds', 'evidenceState', 'lastAssessedAt', 'nextAssessment'):
+                assert ada_area[key] == owner_area[key]
+        assert chat['serviceModel']['recentResults'] == []
+        assert memory.conn.total_changes == before
+    finally:
+        memory.close()
+
+
 def test_real_scheduler_specs_are_json_safe_for_growth_and_chat(tmp_path):
     import datetime
     from site_agent.core.scheduler import normalize_schedule

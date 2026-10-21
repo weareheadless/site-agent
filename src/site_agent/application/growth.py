@@ -195,6 +195,10 @@ def growth_snapshot(memory: Memory, config: dict[str, Any], context: dict[str, A
         ],
     }
     tasks = growth_tasks(memory, initiatives, drafts, activities, memory.list_strategy_outcomes(limit=100), runs, ideas, include_article_content=include_article_content)
+    pending_stamp = memory.kv_get("next_run:growth_pending")
+    reconciliation = {"enabled": "growth_pending" in jobs, "nextRun":
+        datetime.datetime.fromtimestamp(pending_stamp, datetime.timezone.utc).isoformat()
+        if "growth_pending" in jobs and isinstance(pending_stamp, (int, float)) else None}
     return {
         "growthContractVersion": GROWTH_CONTRACT_VERSION,
         "ownerQueueContractVersion": OWNER_QUEUE_CONTRACT_VERSION,
@@ -208,6 +212,7 @@ def growth_snapshot(memory: Memory, config: dict[str, Any], context: dict[str, A
         "serviceModel": service_model(
             tasks=tasks, initiatives=initiatives, runs=runs, sources=sources, activities=activities,
             website_present=(config.get("site") or {}).get("website_present") is True,
+            reconciliation=reconciliation,
         ),
         "goal": goal,
         "latestInsight": memory.latest_seo_insight(),
@@ -242,6 +247,7 @@ def growth_chat_context(memory: Memory, config: dict[str, Any], context: dict[st
             )} for row in snapshot["serviceModel"]["areas"]],
             "recentResults": [pick(row, ("id", "state", "publishedRevision", "impactState", "nextMeasurement"))
                               for row in snapshot["serviceModel"]["recentResults"]],
+            "preparation": snapshot["serviceModel"]["preparation"],
         },
         "goal": pick(snapshot["goal"], ("revision", "goal_key", "objective", "metrics")) if snapshot["goal"] else None,
         "activities": [pick(row, ("id", "enabled", "schedule", "nextRun")) for row in snapshot["activities"]],
