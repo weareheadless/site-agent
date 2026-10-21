@@ -2087,6 +2087,7 @@ def main() -> int:
 
     def stage(name: str) -> None:
         receipt["stage"] = name
+        receipt["updatedAt"] = utc_now()
         if not args.verify_only:
             atomic_json(receipt_path, receipt)
         print(f"[release] stage={name} tenant={args.tenant}", flush=True)
@@ -2192,6 +2193,7 @@ def main() -> int:
             lambda command, directory: run(command, directory, base),
         )
         run([npm, *NPM_INSTALL_ARGUMENTS], checkout, base)
+        stage("generate-payload-contract")
         contract_generator = ROOT / "scripts/generate-payload-contract.mjs"
         run(["node", "--import", "tsx", str(contract_generator), f"--site-root={checkout}"], checkout, base)
         generated_manifest = json.loads((checkout / "template-manifest.json").read_text(encoding="utf-8"))
@@ -2272,6 +2274,7 @@ def main() -> int:
                 "appliedByReleaseId": applied_lifecycle_release,
             }
         atomic_json(receipt_path, receipt)
+        stage("typecheck")
         run(["npm", "run", "typecheck"], checkout, base)
         unexpected_changes = tracked_changes_outside_runtime_overlay(
             checkout, runtime_provenance["changedPaths"], base,

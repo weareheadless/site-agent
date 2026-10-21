@@ -872,7 +872,7 @@ class WebsiteBootstrapService:
             "id": release_id,
             "status": receipt.get("status"),
             "stage": receipt.get("stage"),
-            "updated_at": receipt.get("finishedAt") or receipt.get("startedAt"),
+            "updated_at": receipt.get("finishedAt") or receipt.get("updatedAt") or receipt.get("startedAt"),
         }
         self._write_state(state)
 
