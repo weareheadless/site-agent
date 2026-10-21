@@ -1812,8 +1812,6 @@ def verification_receipt(directory: Path, tenant: str, sha: str, release_id: str
     expected = {"tenant": tenant, "sourceSha": sha, "releaseId": release_id,
                 "worker": customer["worker"], "repository": customer["repository"],
                 "payloadAdmin": customer["payloadAdmin"], "payloadCore": customer["payloadCore"],
-                "contentContract": customer["contentContract"],
-                "schemaRevision": customer["schemaRevision"], "schemaIdentity": customer["schemaIdentity"],
                 "migrationHead": customer["migrationHead"], "websitePresent": customer["websitePresent"],
                 "privateEmailR2BucketName": customer["privateEmailR2BucketName"],
                 "mailflareD1DatabaseId": customer["mailflareD1DatabaseId"],
@@ -1828,6 +1826,18 @@ def verification_receipt(directory: Path, tenant: str, sha: str, release_id: str
         expected["initialSchemaHead"] = initialization_head
     if any(receipt.get(key) != value for key, value in expected.items()):
         raise ValueError("verification target differs from the recorded release")
+    # Normal builds resolve the schema from the generated Payload manifest,
+    # not the registry's older schema metadata. Verify that same recorded
+    # contract; verify_live still requires its exact current Worker health.
+    resolved_customer = dict(customer)
+    try:
+        synchronize_customer_payload_contract(resolved_customer, receipt, {
+            "coreVersion": receipt.get("payloadCore"),
+            "contract": receipt.get("contentContract"),
+            "schemaRevision": receipt.get("schemaRevision"),
+        })
+    except RuntimeError as error:
+        raise ValueError("recorded release Payload contract is invalid") from error
     try:
         mailflare_migration_receipt(receipt)
     except RuntimeError as error:
@@ -1856,6 +1866,7 @@ def verification_receipt(directory: Path, tenant: str, sha: str, release_id: str
         ("status", "stage", "error", "finishedAt")})
     receipt.pop("error", None)
     receipt.update({"status": "running", "browserVerification": "pending"})
+    customer.update(resolved_customer)
     return receipt
 
 

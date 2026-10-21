@@ -203,7 +203,11 @@ hashes and reads the current 100%-traffic deployment directly from Cloudflare.
 For adoption only, a current version created by a secret-only rotation is
 accepted only when Cloudflare marks it secret-triggered and its script ETag and
 non-secret binding identity exactly match the uploaded release. The verifier
-rechecks the active deployment around the live health and authenticated
+uses the generated Payload schema identity recorded by that build, just as
+normal deployment does, rather than the registry's pre-build schema metadata.
+Registered resources, migration history and locked package versions must still
+match, and the current Worker must report the exact recorded schema contract.
+It rechecks the active deployment around the live health and authenticated
 connection gates; it does not accept a caller-supplied Worker version. Failed
 read-only verification does not rewrite the canonical release receipt. The built
 workspace is not retained on the VPS; source is reproducible from the recorded
