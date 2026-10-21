@@ -3,8 +3,7 @@ import { NextResponse } from 'next/server'
 
 import { helloAdaSite } from '@/helloada.config'
 import { serviceAuthorized } from '@/lib/service-auth'
-import type { BookingD1 } from '@/lib/helloada-booking-service'
-import { getPublicBookingDetails } from '@/lib/helloada-booking-runtime'
+import type { BookingD1 } from '../../../../../mailflare-booking-service'
 import {
   createBookingType,
   deactivateBookingType,
@@ -13,7 +12,7 @@ import {
   resolveTenantBookingOwner,
   updateBookingSettings,
   updateBookingType,
-} from '@/lib/helloada-booking-service'
+} from '../../../../../mailflare-booking-service'
 
 export const dynamic = 'force-dynamic'
 
@@ -36,7 +35,7 @@ function errorResponse(error: unknown) {
   const status = code.endsWith('_conflict') ? 409
     : code === 'booking_type_not_found' ? 404
     : code.includes('_invalid') || code.endsWith('_required') || code.endsWith('_hours') ? 400
-    : code === 'tenant_identity_not_configured' || code === 'booking_database_not_configured' || code === 'booking_owner_not_provisioned' ? 503
+    : code === 'tenant_identity_not_configured' || code === 'booking_database_not_configured' || code === 'booking_owner_not_provisioned' || code === 'booking_availability_unavailable' ? 503
     : 500
   return fail(code, status)
 }
@@ -73,9 +72,17 @@ export async function POST(request: Request) {
     if (operation === 'read_availability') {
       const bookingTypeId = text(body.bookingTypeId)
       const date = text(body.date)
-      const details = await getPublicBookingDetails(db, helloAdaSite.tenantId.trim(), bookingTypeId, date, '')
+      // Availability is owned by the embedded Mailflare public booking API.
+      // Do not duplicate its scheduling implementation in the Payload app.
+      const url = new URL('/mail/api/public/booking/' + encodeURIComponent(bookingTypeId), request.url)
+      url.searchParams.set('date', date)
+      const response = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(10_000) })
+      const details = await response.json() as { event?: { id?: string; timeZone?: string }; slots?: unknown[] }
+      if (!response.ok || details.event?.id !== bookingTypeId || !details.event.timeZone || !Array.isArray(details.slots)) {
+        throw new Error('booking_availability_unavailable')
+      }
       return NextResponse.json({ availability: {
-        bookingTypeId: details.id, date, timeZone: details.timeZone, slots: details.slots,
+        bookingTypeId, date, timeZone: details.event.timeZone, slots: details.slots,
       } }, { headers: noStore })
     }
     if (operation === 'update_type') {

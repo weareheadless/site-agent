@@ -74,7 +74,7 @@ export default function BookingForm({ bookingTypeId, label, siteKey, locale = 'e
         if (!response.ok || !body.event?.timeZone) throw new Error(body.error || copy.unavailable)
         if (cancelled) return
         const event = body.event
-        const zone = event.timeZone
+        const zone = body.event.timeZone
         setType({ name: String(event.name || label), description: String(event.description || ''), durationMinutes: Number(event.durationMinutes) })
         setWindowDays(Number(event.bookingWindowDays))
         setTimeZone(zone)

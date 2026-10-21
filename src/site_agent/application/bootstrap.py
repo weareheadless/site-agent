@@ -278,6 +278,10 @@ class WebsiteBootstrapService:
             },
             "created_at": state.get("created_at"),
             "updated_at": state.get("updated_at"),
+            "release_progress": {
+                key: state["release_progress"].get(key)
+                for key in ("id", "status", "stage", "updated_at")
+            } if isinstance(state.get("release_progress"), Mapping) else None,
         }
 
     def status(self, tenant_id: str) -> dict[str, Any]:
@@ -713,6 +717,7 @@ class WebsiteBootstrapService:
         state["status"] = "running"
         state["step"] = name
         state["diagnostic"] = ""
+        state["steps"][name] = {"status": "running", "updated_at": _now()}
         state["updated_at"] = _now()
         self._write_state(state)
         try:
@@ -863,6 +868,12 @@ class WebsiteBootstrapService:
             )
         else:
             state.update(status="awaiting_release", workspace_ready=False, website_live=False)
+        state["release_progress"] = {
+            "id": release_id,
+            "status": receipt.get("status"),
+            "stage": receipt.get("stage"),
+            "updated_at": receipt.get("finishedAt") or receipt.get("startedAt"),
+        }
         self._write_state(state)
 
     def _prepare_failed_release_retry(self, state: dict[str, Any]) -> bool:
@@ -912,6 +923,7 @@ class WebsiteBootstrapService:
         if isinstance(receipts, dict):
             receipts.pop("queueing_shell_release", None)
         state.pop("release", None)
+        state.pop("release_progress", None)
         state["release_retry_id"] = datetime.now(timezone.utc).strftime("rel-%Y%m%d%H%M%S-") + secrets.token_hex(4)
         state.update(
             status="queued",
