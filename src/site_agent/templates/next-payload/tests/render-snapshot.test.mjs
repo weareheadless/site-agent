@@ -11,6 +11,7 @@ const options = {
 
 const fixture = () => ({
   async find({ collection, page }) {
+    if (collection === 'media') return { docs: [], totalDocs: 0, totalPages: 1, hasNextPage: false }
     assert.equal(collection, 'pages')
     return { docs: Array.from({ length: page === 1 ? 100 : 1 }, (_, i) => ({
       id: (page - 1) * 100 + i + 1, title: `Page ${i}`, slug: `p-${(page - 1) * 100 + i}`,

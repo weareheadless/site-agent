@@ -41,6 +41,33 @@ export async function captureRenderSnapshot(payload: SnapshotPayload, options: S
   }
 
   const capture = async () => {
+    const readRows = async (collection: string, locale: string, depth: number, fields: readonly string[]) => {
+      const rows: Row[] = []
+      const ids = new Set<string>()
+      let page = 1
+      let total: number | undefined
+      while (true) {
+        const result = await payload.find({ collection, locale, draft: false, depth, limit: 100, page, pagination: true, sort: 'id', overrideAccess: true })
+        const empty = result.totalDocs === 0 && page === 1 && !result.hasNextPage && result.docs?.length === 0
+        if (!Number.isSafeInteger(result.totalDocs) || result.totalDocs < 0
+          || !Number.isSafeInteger(result.totalPages) || result.totalPages < (empty ? 0 : 1)
+          || !Array.isArray(result.docs) || typeof result.hasNextPage !== 'boolean'
+          || (total !== undefined && total !== result.totalDocs)) throw new Error('Render snapshot pagination changed or is incomplete')
+        total = result.totalDocs
+        for (const row of result.docs) {
+          const id = String(row.id ?? '')
+          if (!id || ids.has(id)) throw new Error('Render snapshot has duplicate or missing identities')
+          ids.add(id)
+          rows.push(pick(row, fields))
+        }
+        if (!result.hasNextPage) {
+          if (rows.length !== total || (!empty && page !== result.totalPages) || (empty && result.totalPages > 1)) throw new Error('Render snapshot pagination is incomplete')
+          return rows
+        }
+        if (!result.docs.length || page >= result.totalPages || rows.length >= total) throw new Error('Render snapshot pagination is inconsistent')
+        page += 1
+      }
+    }
     const media = new Map<string, Row>()
     const sanitize = (value: unknown): unknown => {
       if (Array.isArray(value)) return value.map(sanitize)
@@ -62,46 +89,33 @@ export async function captureRenderSnapshot(payload: SnapshotPayload, options: S
     }
     const documents: Record<string, Record<string, Row[]>> = {}
     const globals: Record<string, Record<string, Row>> = {}
+    const seed: { collections: Record<string, Row[]>; globals: Record<string, Row> } = { collections: {}, globals: {} }
     for (const locale of options.locales) {
       documents[locale] = {}
       globals[locale] = {}
       for (const collection of Object.keys(options.collections).sort().filter((key) => key !== 'media')) {
-        const docs: Row[] = []
-        const ids = new Set<string>()
-        let page = 1
-        let expectedTotal: number | undefined
-        while (true) {
-          const result = await payload.find({ collection, locale, draft: false, depth: 2, limit: 100, page, pagination: true, sort: 'id', overrideAccess: true })
-          if (!Number.isSafeInteger(result.totalDocs) || result.totalDocs < 0
-            || !Number.isSafeInteger(result.totalPages) || result.totalPages < 1
-            || !Array.isArray(result.docs) || typeof result.hasNextPage !== 'boolean'
-            || (expectedTotal !== undefined && result.totalDocs !== expectedTotal)) throw new Error('Render snapshot pagination changed or is incomplete')
-          expectedTotal = result.totalDocs
-          for (const row of result.docs) {
-            const id = String(row.id ?? '')
-            if (!id || ids.has(id)) throw new Error('Render snapshot pagination contains missing or duplicate identities')
-            ids.add(id)
-            docs.push(sanitize(pick(row, [...identityFields, ...options.collections[collection]])) as Row)
-          }
-          if (!result.hasNextPage) {
-            if (docs.length !== expectedTotal || page !== result.totalPages) throw new Error('Render snapshot pagination is incomplete')
-            break
-          }
-          if (!result.docs.length || page >= result.totalPages || docs.length >= expectedTotal) throw new Error('Render snapshot pagination is inconsistent')
-          page += 1
-        }
-        documents[locale][collection] = docs
+        documents[locale][collection] = (await readRows(collection, locale, 2, [...identityFields, ...options.collections[collection]])).map((row) => sanitize(row) as Row)
       }
       for (const slug of Object.keys(options.globals).sort()) {
         const row = await payload.findGlobal({ slug, locale, draft: false, depth: 2, overrideAccess: true })
         globals[locale][slug] = sanitize(pick(row, options.globals[slug])) as Row
       }
     }
+    // Payload's native locale:'all'/depth:0 representation is the input to
+    // its own database adapter. Preserve numeric relationship IDs and locale
+    // maps instead of converting the site into a parallel content format.
+    for (const collection of Object.keys(options.collections).sort()) {
+      const rows = await readRows(collection, 'all', 0, [...identityFields, ...options.collections[collection], ...(collection === 'media' ? mediaFields : [])])
+      seed.collections[collection] = rows.map((row) => collection === 'media' ? row : sanitize(row) as Row)
+    }
+    for (const slug of Object.keys(options.globals).sort()) {
+      seed.globals[slug] = pick(await payload.findGlobal({ slug, locale: 'all', draft: false, depth: 0, overrideAccess: true }), options.globals[slug])
+    }
     // Detach from Payload objects before the second read or later mutations.
     return JSON.parse(JSON.stringify({
       schema: 1, tenant: options.tenant, sourceSha: options.sourceSha,
       schemaIdentity: options.schemaIdentity, locales: options.locales,
-      defaultLocale: options.defaultLocale, documents, globals,
+      defaultLocale: options.defaultLocale, documents, globals, seed,
       media: [...media.values()].sort((a, b) => String(a.id).localeCompare(String(b.id))),
     })) as Row
   }

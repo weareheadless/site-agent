@@ -13,7 +13,8 @@ IDENTITY = dict(tenant="alpha", source_sha="a" * 40, schema_identity="b" * 64)
 def snapshot():
     return dict(schema=1, tenant="alpha", sourceSha="a" * 40, schemaIdentity="b" * 64,
                 locales=["en"], defaultLocale="en", documents={"en": {"pages": [{"id": 1, "title": "Océan"}]}},
-                globals={"en": {"navigation": {}, "siteSettings": {}}}, media=[])
+                globals={"en": {"navigation": {}, "siteSettings": {}}}, media=[],
+                seed={"collections": {"pages": [{"id": 1, "title": {"en": "Océan"}}]}, "globals": {"navigation": {}, "siteSettings": {}}})
 
 
 def envelope(value):
@@ -70,3 +71,26 @@ def test_gateway_preserves_configured_prefix_and_checks_exact_base(monkeypatch):
     assert requests == [("GET", "/private/workspace/render-snapshot")]
     with pytest.raises(PayloadGatewayError, match="identity"):
         client.capture_render_snapshot(tenant="alpha", source_sha="c" * 40)
+
+
+def test_render_media_uses_exact_frozen_url_and_never_sends_service_token(monkeypatch):
+    import io
+    from email.message import Message
+    from site_agent.hands import payload_gateway
+    client = PayloadGatewayClient('https://example.test', 'must-not-leak', PayloadContract(frozenset(), 'helloada-content-v4', '0.5.9', 8, 'b' * 64))
+    class Response(io.BytesIO):
+        headers = Message()
+    Response.headers['Content-Type'] = 'image/png'
+    class Opener:
+        def open(self, request, **kwargs):
+            assert request.full_url == 'https://example.test/api/media/file/hero.png'
+            assert not request.has_header('Authorization')
+            return Response(b'png')
+    monkeypatch.setattr(payload_gateway.urllib.request, 'build_opener', lambda *args: Opener())
+    metadata = {'filename': 'hero.png', 'url': '/api/media/file/hero.png', 'filesize': 3, 'mimeType': 'image/png'}
+    assert client.read_render_media(metadata) == (b'png', 'image/png')
+    for url in ['https://other.test/hero.png', '/api/media/file/other.png', '/admin', '/api/media/file/hero.png?token=bad']:
+        with pytest.raises(PayloadGatewayError, match='exact canonical'):
+            client.read_render_media({**metadata, 'url': url})
+    with pytest.raises(PayloadGatewayError, match='size'):
+        client.read_render_media({**metadata, 'filesize': 4})

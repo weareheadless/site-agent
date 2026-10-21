@@ -27,7 +27,7 @@ export async function GET(request: Request) {
   try {
     const payload = await getPayload({ config })
     const contract = createHelloAdaContentContract()
-    const collections = ['pages',
+    const collections = ['pages', 'media', 'contactForms', 'appointmentTypes',
       ...(helloAdaSite.features?.posts ? ['posts', 'postCategories'] : []),
       ...(helloAdaSite.features?.commerce ? ['products', 'productCategories'] : []),
     ]

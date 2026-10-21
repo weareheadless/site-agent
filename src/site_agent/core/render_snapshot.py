@@ -56,7 +56,7 @@ class RenderSnapshot:
         except (ValueError, RecursionError) as exc:
             raise RenderSnapshotError("render snapshot JSON is invalid") from exc
         if not isinstance(value, dict) or set(value) != {
-            "schema", "tenant", "sourceSha", "schemaIdentity", "locales", "defaultLocale", "documents", "globals", "media",
+            "schema", "tenant", "sourceSha", "schemaIdentity", "locales", "defaultLocale", "documents", "globals", "media", "seed",
         }:
             raise RenderSnapshotError("render snapshot shape is invalid")
         if (value["schema"] != 1 or value["tenant"] != tenant
@@ -93,4 +93,13 @@ class RenderSnapshot:
                     or not isinstance(row.get("filename"), str) or not isinstance(row.get("mimeType"), str)):
                 raise RenderSnapshotError("render snapshot media manifest is invalid")
             media_ids.add(identity)
+        seed = value["seed"]
+        if (not isinstance(seed, dict) or set(seed) != {"collections", "globals"}
+                or not isinstance(seed["collections"], dict) or "pages" not in seed["collections"]
+                or set(seed["collections"]) - (collections | {"media"})
+                or not isinstance(seed["globals"], dict) or set(seed["globals"]) != {"navigation", "siteSettings"}):
+            raise RenderSnapshotError("render snapshot seed exceeds website scope")
+        for rows in seed["collections"].values():
+            if not isinstance(rows, list) or any(not isinstance(row, dict) or "id" not in row for row in rows):
+                raise RenderSnapshotError("render snapshot seed has invalid identities")
         return cls(encoded, digest)
