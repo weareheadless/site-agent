@@ -22,7 +22,7 @@ def test_defaults_load_without_instance_file():
     assert config["site"]["url"] == ""
     assert "blog" not in config
     assert config["llm"]["base_url"] == "https://openrouter.ai/api/v1"
-    assert config["llm"]["model"] == "deepseek/deepseek-v4-flash-0731"
+    assert config["llm"]["model"] == "deepseek/deepseek-v4.1-flash"
     assert config["builder"]["model"] == "openrouter/deepseek/deepseek-v4.1-flash"
     assert config["design_engine"]["orchestration"] == "legacy"
     assert config["dream"]["residue_count"] == 0
@@ -30,6 +30,17 @@ def test_defaults_load_without_instance_file():
     # Reader-led article research is the always-on default article pipeline.
     assert config["seo"]["article_research"]["enabled"] is True
     assert sources[0] is not None
+
+
+def test_new_tenant_and_direct_client_defaults_match_the_canonical_intake_model():
+    from importlib.resources import files
+    import yaml
+    from site_agent.core.llm import Client
+
+    config, _ = load(env={})
+    intake = yaml.safe_load(files("site_agent").joinpath("intake-ada.yaml").read_text())
+    assert config["llm"]["model"] == intake["llm"]["model"]
+    assert Client({}, env={}).model == config["llm"]["model"]
 
 
 def test_article_research_enabled_by_default_inherits_primary_locale(tmp_path):
