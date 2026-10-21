@@ -1728,7 +1728,7 @@ def test_completed_schema_migration_request_is_idempotent(monkeypatch, tmp_path)
 
 
 def promoted_receipt(tmp_path):
-    customer = CUSTOMER
+    customer = dict(CUSTOMER)
     result = seed_cron_contract({"tenant": "oceanicvibes", "sourceSha": SHA, "releaseId": "release-1",
               "worker": customer["worker"], "repository": customer["repository"],
               "payloadAdmin": customer["payloadAdmin"], "payloadCore": customer["payloadCore"],
@@ -1768,6 +1768,30 @@ def test_read_only_continuation_preserves_prior_failure(tmp_path):
     result = release.verification_receipt(tmp_path, "oceanicvibes", SHA, "release-1", customer, "website")
     assert result["status"] == "running" and "error" not in result
     assert result["verificationHistory"][-1]["error"] == "connection failed"
+
+
+def test_read_only_continuation_uses_the_built_payload_contract(tmp_path):
+    receipt, customer = promoted_receipt(tmp_path)
+    receipt.update(contentContract="helloada-content-v99", schemaRevision=99, schemaIdentity="d" * 64)
+    (tmp_path / "receipt.json").write_text(json.dumps(receipt))
+    release.verification_receipt(tmp_path, "oceanicvibes", SHA, "release-1", customer, "website")
+    assert customer["contentContract"] == "helloada-content-v99"
+    assert customer["schemaRevision"] == 99
+    assert customer["schemaIdentity"] == "d" * 64
+
+
+@pytest.mark.parametrize("field,value", [
+    ("migrationHead", "d" * 64), ("payloadCore", "99.0.0"),
+    ("schemaIdentity", "invalid"), ("schemaRevision", 0), ("contentContract", "invalid"),
+])
+def test_read_only_continuation_rejects_invalid_built_contract(tmp_path, field, value):
+    receipt, customer = promoted_receipt(tmp_path)
+    before = dict(customer)
+    receipt[field] = value
+    (tmp_path / "receipt.json").write_text(json.dumps(receipt))
+    with pytest.raises(ValueError):
+        release.verification_receipt(tmp_path, "oceanicvibes", SHA, "release-1", customer, "website")
+    assert customer == before
 
 
 def test_read_only_continuation_requires_the_same_explicit_release_purpose(tmp_path):
