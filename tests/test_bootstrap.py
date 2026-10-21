@@ -4,6 +4,7 @@ import json
 import re
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from site_agent.application.bootstrap import WebsiteBootstrapService
@@ -618,7 +619,14 @@ def test_read_only_runtime_activation_requires_verified_current_worker_proof(tmp
     assert len(mounted) == 1
 
 
-def test_regular_release_activation_syncs_contract_without_bootstrap_state(tmp_path):
+@pytest.mark.parametrize("approval_id,initial_schema,valid", [
+    (None, False, True), (61, False, True),
+    (0, False, False), (-1, False, False), (True, False, False),
+    ("61", False, False), (61, True, False),
+])
+def test_regular_release_activation_syncs_contract_without_bootstrap_state(
+    tmp_path, approval_id, initial_schema, valid,
+):
     import threading
 
     tenant_id = "oceanicvibes"
@@ -631,7 +639,7 @@ def test_regular_release_activation_syncs_contract_without_bootstrap_state(tmp_p
         "sourceSha": source_sha,
         "status": "running",
         "stage": "verify-connection",
-        "approvalId": None,
+        "approvalId": approval_id,
         "uploadedVersion": "version-current",
         "deployment": {"versions": [{"version_id": "version-current", "percentage": 100}]},
         "payloadAdmin": "0.10.1",
@@ -642,6 +650,8 @@ def test_regular_release_activation_syncs_contract_without_bootstrap_state(tmp_p
         "migrationHead": "c" * 64,
         "websitePresent": True,
     }
+    if initial_schema:
+        receipt["initialSchemaHead"] = receipt["migrationHead"]
     receipt["health"] = {
         "ok": True,
         "tenant": tenant_id,
@@ -670,6 +680,16 @@ def test_regular_release_activation_syncs_contract_without_bootstrap_state(tmp_p
     service._mount_runtime = lambda selected_tenant, state, **kwargs: activated.append(
         (selected_tenant, state, kwargs)
     )
+
+    if not valid:
+        from site_agent.application.bootstrap import BootstrapError
+
+        with pytest.raises(BootstrapError, match="valid verified Worker boundary"):
+            service.activate_runtime_after_health(
+                tenant_id, release_id=release_id, source_sha=source_sha,
+            )
+        assert activated == []
+        return
 
     result = service.activate_runtime_after_health(
         tenant_id, release_id=release_id, source_sha=source_sha,
