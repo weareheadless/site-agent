@@ -137,17 +137,20 @@ class GitHubReleaseQueue:
         self,
         tenant: str,
         source_sha: str,
-        customer: Mapping[str, Any],
+        customer: Mapping[str, Any] | None = None,
         *,
         approval_id: int | str | None = None,
         initialize_schema: bool = False,
         release_id: str | None = None,
+        expected_identity: Mapping[str, str] | None = None,
     ) -> dict[str, str]:
         tenant = str(tenant or "").strip().lower()
         source_sha = str(source_sha or "").strip().lower()
         if not _TENANT.fullmatch(tenant) or not _SHA.fullmatch(source_sha):
             raise GitHubReleaseQueueError("release requires a tenant and full immutable source SHA")
-        normalized_customer = self._required_customer(customer)
+        supplied_customer = self._required_customer(customer) if customer is not None else None
+        if initialize_schema and supplied_customer is None:
+            raise GitHubReleaseQueueError("bootstrap requires its explicit validated customer registration")
         if approval_id is not None and (isinstance(approval_id, bool) or not str(approval_id).isdigit() or int(approval_id) < 1):
             raise GitHubReleaseQueueError("approval identity must be a positive integer")
         if initialize_schema and approval_id is not None:
@@ -191,6 +194,17 @@ class GitHubReleaseQueue:
             if queue.get("schema") != 1 or not isinstance(releases, dict):
                 raise GitHubReleaseQueueError("canonical release queue schema is invalid")
             existing = customers.get(tenant)
+            if supplied_customer is None:
+                if not isinstance(existing, dict):
+                    raise GitHubReleaseQueueError("ordinary release requires an existing registered tenant")
+                normalized_customer = self._required_customer(existing)
+            else:
+                normalized_customer = supplied_customer
+            if expected_identity is not None:
+                if set(expected_identity) != {"repository", "worker"} or any(
+                    normalized_customer.get(key) != value for key, value in expected_identity.items()
+                ):
+                    raise GitHubReleaseQueueError("registered release identity does not match the approved tenant")
             if existing is None:
                 customers[tenant] = {**normalized_customer, "sharedRuntimeUpdate": "automatic"}
             elif not isinstance(existing, dict):

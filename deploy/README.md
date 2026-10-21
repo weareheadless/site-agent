@@ -142,6 +142,22 @@ release before promotion; no manual dashboard setup or test key is accepted.
 
 ## Release command
 
+Ordinary owner-approved updates resolve the existing tenant from
+`deploy/payload-customers.json` in the same exact control-tree snapshot used
+to commit the queue request. The managed authoring checkout is not a registry:
+it can be clean but still contain an older platform manifest. Never inspect or
+repair each tenant checkout to rediscover deployment settings. The request
+checks the registered tenant, repository and Worker identity; the release runner
+then validates the immutable customer source with the shared runtime overlay.
+Only initial workspace bootstrap supplies an explicit, validated scaffold
+registration and migration chain.
+
+The application saves the exact approved merge/release request with its decision
+before calling GitHub. If queueing fails before a release receipt exists,
+retrying approval reuses that saved source SHA and decision; it does not merge
+the preview branch again. Existing release receipts remain authoritative and a
+failed/interrupted VPS release ID remains terminal.
+
 1. Review, test and push the customer source to its official GitHub `main`.
 2. In `site-agent`, update `deploy/desired-releases.json` with the registered
    tenant, full customer commit SHA and a new release ID:
