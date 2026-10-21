@@ -7,7 +7,7 @@ from typing import Any
 from ..core.contracts import ArtifactKind
 from ..core.growth_contracts import GrowthPolicy
 from ..core.memory import Memory
-from .growth_workflow import _source_state
+from .growth_workflow import _freshness_hours, _source_state
 from .growth_tasks import growth_tasks
 from .growth_service_model import service_model
 
@@ -213,6 +213,7 @@ def growth_snapshot(memory: Memory, config: dict[str, Any], context: dict[str, A
             tasks=tasks, initiatives=initiatives, runs=runs, sources=sources, activities=activities,
             website_present=(config.get("site") or {}).get("website_present") is True,
             reconciliation=reconciliation,
+            inventory_freshness_hours=_freshness_hours(config, "inventory"),
         ),
         "goal": goal,
         "latestInsight": memory.latest_seo_insight(),

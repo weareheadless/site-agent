@@ -85,6 +85,38 @@ assessment metadata and labelled partial; exact hashes still cover the full
 canonical document. This proves inventory retrieval/scoping only, not a completed
 scheduled assessment, candidate recovery, publication or deployed fix.
 
+Further source verification: commit dcd7bd4c5a5bfaa4d2ad9e4e9c678405df3b5b5c
+passed GitHub workflow 39691623539. Its executable Worker-handler regression
+reproduced the former successful-HTTP response containing a saved failure.
+The corrected handler reconciles an existing uncertain operation by reading the
+exact destination and checking its renderer; it never repeats that write.
+The Node group passed 26 tests, including the mailbox ownership contracts.
+Area assessment ordering uses assessment completion rather than later execution
+updates. Deferred initiatives retain their reasons/reassessment conditions.
+Technical results require actual verification references; measured traffic is
+separate, observational and never labelled causal attribution.
+
+The subsequent scheduler correction keeps capacity-limited findings pending on
+the existing Growth reconciliation invocation, counts queued source work toward
+capacity, and preserves owner questions independently of candidate capacity.
+Seven focused recovery tests cover the new boundaries. This is source evidence,
+not proof that a real scheduled tenant run has crossed the repaired boundary.
+
+A further read-only destination check found exactly one uncertain Oceanic
+operation, targeting posts:6. Its saved base still matches the public document;
+the current draft matches that base, not the proposed candidate. The operation
+and its failure remain intact: no lock was cleared, draft invented or mutation
+replayed. Atelier has no Growth operations. Oceanic initiative 2 is an
+effect-free orphan question from completed work; the shared reconciliation can
+defer it explicitly behind initiative 4/action 22, without creating an answer
+or restarting completed research. This reconciliation has not been run live.
+
+GitHub journal/source-publication integration is being tested in PR #269.
+Do not treat helper functions, a passing subset, or these notes as acceptance of
+#268 or permission to implement the dependent dashboard. Exact-source complete
+tests, required checkpoint integration, scheduled causal tenant evidence and
+canonical releases remain required.
+
 Implementation order: #262 audit/model → #261 projection with #264 progression
 repair → #263 decision linkage and #268 issue/delivery checkpoints → #265 results
 → #266 causal multi-tenant acceptance → #267 dashboard. This first source slice

@@ -64,7 +64,7 @@ def test_ready_state_without_approval_or_owner_action_does_not_create_a_decision
 
 
 def test_area_assessment_time_is_not_run_update_or_raw_measurement_time():
-    model = project(runs=[{"updated_ts": "2026-10-21T05:00:00Z", "detail": {
+    model = project(sources=[{"id": "crawl:1", "state": "ready"}], runs=[{"updated_ts": "2026-10-21T05:00:00Z", "detail": {
         "assessmentCompletedAt": "2026-10-20T02:00:00Z",
         "assessment": {"coverage": [{"area": "website_health", "summary": "Checked the supplied crawl.", "evidence": ["crawl:1"], "limitations": ["No speed measurement"]}]},
     }}])
@@ -143,6 +143,33 @@ def test_capacity_wait_exposes_its_real_run_and_executor_not_an_invented_task():
     assert model["preparation"][0]["nextReconciliationAt"] == "2026-10-21T02:00:00Z"
     assert model["work"] == []
     assert project(runs=[run])["preparation"][0]["executor"] is None
+
+
+def test_missing_historical_evidence_cannot_imply_current_coverage():
+    model = project(runs=[{"detail": {"assessmentCompletedAt": "2026-01-01T00:00:00Z",
+        "assessment": {"coverage": [{"area": "content", "summary": "Old check",
+            "evidence": ["ga4:old"], "limitations": []}]}}}])
+    area = model["areas"][0]
+    assert area["state"] == "unavailable"
+    assert area["unresolvedEvidenceRefs"] == ["ga4:old"]
+    assert area["limitations"]
+
+
+def test_inventory_evidence_uses_its_capture_time_and_retains_scope():
+    def model(captured):
+        return project(runs=[{"detail": {"assessmentCompletedAt": "2026-10-20T00:00:00Z",
+            "material": {"sources": [{"id": "inventory", "sourceRef": "canonical_payload_inventory",
+                "state": "ready", "observedAt": captured}], "inventory": [{"sourceRef": "payload:pages:1"}]},
+            "assessment": {"coverage": [{"area": "content", "summary": "Inventory check",
+                "evidence": ["payload:pages:1"], "limitations": ["Metadata only"]}]}}}])["areas"][0]
+    assert model("2026-10-20T00:00:00Z")["state"] == "assessed"
+    assert model("2026-01-01T00:00:00Z")["state"] == "stale"
+
+
+def test_speed_area_does_not_claim_core_web_vitals_monitoring():
+    area = next(row for row in project()["areas"] if row["id"] == "speed_experience")
+    assert area["capability"]["automatedMeasurement"] == "not_supported"
+    assert area["state"] == "not_assessed"
 
 
 def test_approval_or_published_label_does_not_manufacture_a_verified_result():

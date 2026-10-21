@@ -2,12 +2,21 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import re
 from typing import Any
 from ..core.growth_contracts import GROWTH_AREAS as AREAS
 
 SERVICE_MODEL_VERSION = "growth-service-v1"
+
+# Existing capabilities only. A planner's assessment is not a measurement.
+AREA_CAPABILITIES = {
+    "content": {"scope": "canonical_content_inventory", "sourceIds": ["inventory"], "automatedMeasurement": "content_inventory"},
+    "search_visibility": {"scope": "search_and_keyword_evidence", "sourceIds": ["gsc", "dataforseo"], "automatedMeasurement": "configured_sources"},
+    "website_health": {"scope": "available_crawl_evidence", "sourceIds": ["inventory"], "automatedMeasurement": "crawl_when_available"},
+    "audience_competitors": {"scope": "traffic_and_available_competitor_evidence", "sourceIds": ["ga4", "dataforseo"], "automatedMeasurement": "configured_sources"},
+    "speed_experience": {"scope": "evidence_led_source_investigation", "sourceIds": [], "automatedMeasurement": "not_supported"},
+}
 
 
 def _date(value: Any) -> datetime | None:
@@ -73,6 +82,7 @@ def service_model(
     runs: Sequence[Mapping[str, Any]], sources: Sequence[Mapping[str, Any]],
     activities: Sequence[Mapping[str, Any]], website_present: bool,
     reconciliation: Mapping[str, Any] | None = None,
+    inventory_freshness_hours: int = 168,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Never collect evidence, start jobs, infer approval, or manufacture coverage."""
@@ -147,10 +157,26 @@ def service_model(
             "eligibleAt": run.get("next_due_ts"),
             "executor": "growth_pending" if reconciliation and reconciliation.get("enabled") else None,
             "nextReconciliationAt": reconciliation.get("nextRun") if reconciliation and reconciliation.get("enabled") else None})
-    source_states = {
+    source_states = {}
+    material = (latest.get("detail") or {}).get("material") or {} if latest else {}
+    for source in material.get("sources", []):
+        observed = _date(source.get("observedAt"))
+        state = source.get("state")
+        if state == "ready":
+            max_age = source.get("freshnessHours", inventory_freshness_hours)
+            state = "unavailable" if observed is None else "stale" if now - observed > timedelta(hours=max_age) else "ready"
+        for ref in (source.get("id"), source.get("sourceRef")):
+            if ref:
+                source_states[str(ref)] = state
+    for document in material.get("inventory", []):
+        if document.get("sourceRef"):
+            source_states[str(document["sourceRef"])] = source_states.get("inventory", "unavailable")
+    # Current provider state can invalidate a previously usable source. Exact
+    # historical snapshot references remain bound to their own capture time.
+    source_states.update({
         str(ref): row.get("state")
         for row in sources for ref in (row.get("id"), row.get("sourceRef")) if ref
-    }
+    })
     areas = []
     for area in AREAS:
         items = [row for row in work if row["primaryArea"] == area or area in row["secondaryAreas"]]
@@ -160,21 +186,40 @@ def service_model(
         active = [row["id"] for row in items if row["state"] == "preparing"]
         deferred = [row["id"] for row in items if row["state"] == "deferred"]
         pending_runs = [row["runId"] for row in preparation if area in row["areaIds"]]
-        evidence_states = [source_states[ref] for ref in recorded.get("evidence", []) if ref in source_states] if recorded else []
+        unresolved = [ref for ref in recorded.get("evidence", []) if ref not in source_states] if recorded else []
+        evidence_states = [source_states.get(ref, "unavailable") for ref in recorded.get("evidence", [])] if recorded else []
         evidence_state = (
             "unavailable" if any(value not in {"ready", "stale"} for value in evidence_states)
             else "stale" if "stale" in evidence_states else "recorded" if recorded else "not_assessed"
         )
-        state = "awaiting_activation" if not website_present else "needs_decision" if decisions else "blocked" if blocked else "preparing" if active else "waiting_for_capacity" if pending_runs else "deferred" if deferred else evidence_state if evidence_state in {"stale", "unavailable"} else "assessed" if recorded else "not_assessed"
+        if not website_present:
+            state = "awaiting_activation"
+        elif decisions:
+            state = "needs_decision"
+        elif blocked:
+            state = "blocked"
+        elif active:
+            state = "preparing"
+        elif pending_runs:
+            state = "waiting_for_capacity"
+        elif deferred:
+            state = "deferred"
+        elif evidence_state in {"stale", "unavailable"}:
+            state = evidence_state
+        else:
+            state = "assessed" if recorded else "not_assessed"
         areas.append({
             "id": area, "state": state, "workIds": [row["id"] for row in items],
+            "capability": AREA_CAPABILITIES[area],
             "evidenceState": evidence_state,
             "decisionIds": decisions, "blockedWorkIds": blocked, "activeWorkIds": active,
             "deferredWorkIds": deferred,
             "pendingRunIds": pending_runs,
             "summary": recorded.get("summary") if recorded else None,
             "evidenceRefs": recorded.get("evidence") if recorded else [],
-            "limitations": recorded.get("limitations") if recorded else ["No explicit area assessment has been recorded."],
+            "unresolvedEvidenceRefs": unresolved,
+            "limitations": ([*recorded.get("limitations", []), *(["Some assessment evidence can no longer be resolved."] if unresolved else [])]
+                            if recorded else ["No explicit area assessment has been recorded."]),
             "lastAssessedAt": (latest.get("detail") or {}).get("assessmentCompletedAt") if recorded else None,
             "nextAssessment": {"activityId": upcoming["id"], "at": upcoming["nextRun"], "scope": "shared_growth_review"} if upcoming and website_present else None,
         })
