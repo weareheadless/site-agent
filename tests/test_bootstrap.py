@@ -1066,6 +1066,40 @@ def test_git_status_preserves_porcelain_columns(tmp_path, monkeypatch):
     assert service._git(tmp_path, "status", "--porcelain") == " M wrangler.jsonc"
 
 
+def test_bootstrap_persists_the_active_step_before_executing_it(tmp_path):
+    service = WebsiteBootstrapService.__new__(WebsiteBootstrapService)
+    service.root = tmp_path
+    state = {"tenant_id": "demo", "steps": {}, "resource_receipts": {}}
+
+    def operation():
+        persisted = json.loads((tmp_path / "demo/bootstrap.json").read_text())
+        assert persisted["steps"]["creating_worker_identity"]["status"] == "running"
+        return {"worker": "demo"}
+
+    service._run_step(state, "creating_worker_identity", operation)
+    assert service._public_state(state)["steps"]["creating_worker_identity"]["status"] == "done"
+
+
+def test_bootstrap_exposes_the_exact_release_failure_stage_without_private_fields(tmp_path):
+    service = WebsiteBootstrapService.__new__(WebsiteBootstrapService)
+    service.root = tmp_path / "tenants"
+    releases = tmp_path / "releases"
+    service.config = {"deployment_pipeline": {"release_root": str(releases)}}
+    state = {"tenant_id": "demo", "status": "awaiting_release", "step": "deploying_shell",
+             "release": {"release_id": "release-1", "source_sha": "a" * 40}, "steps": {}}
+    path = releases / "runs/demo/release-1/receipt.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"tenant": "demo", "releaseId": "release-1", "sourceSha": "a" * 40,
+                               "status": "failed", "stage": "dependencies", "error": "starter typecheck failed"}))
+    service._refresh_release_state(state)
+    state["release_progress"]["token"] = "must-not-be-exposed"
+    public = service._public_state(state)
+    assert public["status"] == "failed"
+    assert public["release_progress"]["stage"] == "dependencies"
+    assert public["diagnostic"] == "starter typecheck failed"
+    assert "token" not in public["release_progress"]
+
+
 def test_bootstrap_retry_reconciles_a_completed_source_configuration_step(tmp_path):
     service = WebsiteBootstrapService.__new__(WebsiteBootstrapService)
     service.root = tmp_path

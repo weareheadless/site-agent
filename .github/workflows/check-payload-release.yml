@@ -48,12 +48,21 @@ jobs:
 
   next-payload-template:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22.23.3'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: npm install --global npm@11.13.0
+      - run: python -m pip install -e '.[dev]'
+      - name: Compile the canonical new-tenant starter
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/check-next-payload-starter.py --github-token-env GITHUB_TOKEN
       - name: Test Resend and Mailflare Worker contracts
         working-directory: src/site_agent/templates/next-payload
         run: node --experimental-strip-types --test tests/resend-mail.test.mjs tests/mailflare-runtime.test.mjs tests/mailflare-inbox.test.mjs tests/mailflare-owner-gate.test.mjs

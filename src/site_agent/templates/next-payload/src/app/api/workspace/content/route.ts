@@ -8,8 +8,8 @@ import { hashJson, withoutPayloadMetadata } from '@/lib/payload-hash'
 import { resolvePayloadLocale, type HelloAdaPayloadLocale } from '@/lib/payload-locale'
 import { serviceAuthorized } from '@/lib/service-auth'
 import { validateHelloAdaAuthoringData } from '@weareheadless/helloada-payload-core/schema'
-import type { BookingD1 } from '@/lib/helloada-booking-service'
-import { readBookingSettings, readBookingTypeById, resolveTenantBookingOwner } from '@/lib/helloada-booking-service'
+import type { BookingD1 } from '../../../../../mailflare-booking-service'
+import { readBookingSettings, readBookingTypeById, resolveTenantBookingOwner } from '../../../../../mailflare-booking-service'
 
 const collections = ['pages', 'posts', 'products'] as const
 const collectionFor = (value: unknown) => collections.find(item => item === value)
