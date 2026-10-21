@@ -23,6 +23,16 @@ from site_agent.core.memory import Memory
 from site_agent.core.media_contracts import MediaAsset, MediaKind, MediaStatus
 
 
+def test_advisor_prompt_guides_adaptive_evidence_led_intake_without_industry_scripts():
+    prompt = _advisor_prompt(DesignIntakeDraft.empty(), [], "design guidance")
+    assert "Adapt your questions and research priorities to this particular business" in prompt
+    assert "Use the supplied research findings, working brief, and conversation" in prompt
+    assert "Ask only for useful information that is genuinely unresolved" in prompt
+    assert "at most two or three related questions per turn" in prompt
+    assert "Never claim to have researched a source without evidence" in prompt
+    assert "full industry checklist" in prompt
+
+
 def _intake() -> SiteIntake:
     return SiteIntake.from_dict({
         "schema_version": 1,
