@@ -280,7 +280,7 @@ editorial:
 
 llm:
   base_url: https://openrouter.ai/api/v1
-  model: deepseek/deepseek-v4-flash-0731
+  model: deepseek/deepseek-v4.1-flash
   timeout_seconds: 300
   max_tokens: 16384      # generous output budget for creative work
   tool_calling: true   # native function-calling loop for the admin chat

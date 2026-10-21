@@ -211,7 +211,7 @@ class Client:
 
         cfg = config.get("llm") or {}
         self.base_url = str(cfg.get("base_url", "https://openrouter.ai/api/v1")).rstrip("/")
-        self.model = str(cfg.get("model", "deepseek/deepseek-v4-flash-0731"))
+        self.model = str(cfg.get("model", "deepseek/deepseek-v4.1-flash"))
         self.timeout = float(cfg.get("timeout_seconds", 60))
         self.max_retries = int(cfg.get("max_retries", 2))
         self.max_tokens = int(cfg.get("max_tokens", 0)) or None
