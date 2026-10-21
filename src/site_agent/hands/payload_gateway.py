@@ -35,6 +35,11 @@ class PayloadGatewayError(RuntimeError):
         self.status_code = status_code
 
 
+class _RenderMediaRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, message, headers, url):
+        raise PayloadGatewayError("render media redirects are not part of the canonical storage contract")
+
+
 @dataclass(frozen=True)
 class PayloadContract:
     """Expected identity for the remotely enforced shared authoring schema."""
@@ -548,7 +553,10 @@ class PayloadGatewayClient:
         request = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
             with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                body = _safe_json(response.read(2 * 1024 * 1024))
+                raw = response.read(2 * 1024 * 1024 + 1)
+                if len(raw) > 2 * 1024 * 1024:
+                    raise PayloadGatewayError("Payload gateway response exceeds the supported size; no data was truncated")
+                body = _safe_json(raw)
                 return body if isinstance(body, dict) else {"document": body}
         except urllib.error.HTTPError as exc:
             detail = _safe_json(exc.read(32 * 1024))
@@ -559,6 +567,45 @@ class PayloadGatewayClient:
             raise PayloadGatewayError(f"Payload gateway returned {exc.code}: {message[:300]}", status_code=exc.code) from exc
         except (urllib.error.URLError, TimeoutError) as exc:
             raise PayloadGatewayError("Payload gateway is unreachable") from exc
+
+    def capture_render_snapshot(self, *, tenant: str, source_sha: str):
+        """Capture exact website inputs, not a build or owner-review receipt."""
+        from ..core.render_snapshot import RenderSnapshot, RenderSnapshotError
+
+        result = self._request("GET", f"{self.gateway_prefix}/render-snapshot")
+        try:
+            return RenderSnapshot.verify(
+                result, tenant=tenant, source_sha=source_sha,
+                schema_identity=self.contract.schema_identity,
+            )
+        except RenderSnapshotError as exc:
+            raise PayloadGatewayError(str(exc)) from exc
+
+    def read_render_media(self, metadata: Mapping[str, Any]) -> tuple[bytes, str]:
+        """Read the frozen metadata's exact public file, without service secrets."""
+        filename = str(metadata.get("filename") or "")
+        url = urllib.parse.urljoin(self.base_url + "/", str(metadata.get("url") or ""))
+        parsed, origin = urllib.parse.urlsplit(url), urllib.parse.urlsplit(self.base_url)
+        if (not filename or filename in {".", ".."} or any(ord(char) < 32 or char in "/\\" for char in filename)
+                or parsed.scheme != "https" or parsed.netloc != origin.netloc
+                or parsed.username or parsed.password or parsed.query or parsed.fragment
+                or not parsed.path.startswith("/api/media/file/")
+                or urllib.parse.unquote(parsed.path.rsplit("/", 1)[-1]) != filename):
+            raise PayloadGatewayError("render media must use its exact canonical tenant file URL")
+        request = urllib.request.Request(url, headers={"Accept": "*/*", "User-Agent": "HelloAda-Render-Snapshot/1.0"})
+        try:
+            with urllib.request.build_opener(_RenderMediaRedirect()).open(request, timeout=self.timeout_seconds) as response:
+                content = response.read(25 * 1024 * 1024 + 1)
+                mime = response.headers.get_content_type()
+        except urllib.error.HTTPError as exc:
+            raise PayloadGatewayError(f"render media returned HTTP {exc.code}") from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise PayloadGatewayError("render media could not be captured") from exc
+        if len(content) > 25 * 1024 * 1024 or len(content) != metadata.get("filesize"):
+            raise PayloadGatewayError("render media size does not match its frozen metadata")
+        if mime != metadata.get("mimeType"):
+            raise PayloadGatewayError("render media type does not match its frozen metadata")
+        return content, mime
 
     def _collection(self, collection: str) -> str:
         collection = str(collection or "").strip().lower()
