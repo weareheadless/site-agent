@@ -89,6 +89,74 @@ def test_new_workspace_has_no_fake_checks_or_growth_commitments():
     assert all(row["nextAssessment"] is None for row in model["areas"])
 
 
+def test_later_execution_update_does_not_replace_a_newer_assessment():
+    def run(assessed, updated, summary):
+        return {"updated_ts": updated, "detail": {"assessmentCompletedAt": assessed,
+            "assessment": {"coverage": [{"area": "content", "summary": summary,
+                "evidence": ["inventory"], "limitations": []}]}}}
+    model = project(runs=[
+        run("2026-10-19T01:00:00Z", "2026-10-21T12:00:00Z", "Old assessment"),
+        run("2026-10-20T01:00:00Z", "2026-10-20T02:00:00Z", "New assessment"),
+    ])
+    assert model["areas"][0]["summary"] == "New assessment"
+
+
+def test_unavailable_or_stale_evidence_is_not_presented_as_current_coverage():
+    for source_state, expected in [("stale", "stale"), ("unauthorised", "unavailable")]:
+        model = project(sources=[{"id": "gsc", "state": source_state}], runs=[{
+            "detail": {"assessmentCompletedAt": "2026-10-20T01:00:00Z", "assessment": {
+                "coverage": [{"area": "search_visibility", "summary": "Reviewed search",
+                    "evidence": ["gsc"], "limitations": []}]}}}])
+        area = next(row for row in model["areas"] if row["id"] == "search_visibility")
+        assert area["evidenceState"] == expected
+        assert area["state"] == expected
+
+
+def test_coverage_without_assessment_completion_is_not_a_completed_check():
+    model = project(runs=[{"updated_ts": "2026-10-21T00:00:00Z", "detail": {
+        "assessment": {"coverage": [{"area": "content", "summary": "Not completed",
+            "evidence": ["inventory"], "limitations": []}]}}}])
+    assert model["areas"][0]["state"] == "not_assessed"
+    assert model["areas"][0]["lastAssessedAt"] is None
+
+
+def test_deferred_initiative_remains_explained_without_becoming_a_decision():
+    model = project(initiatives=[{"id": 9, "state": "deferred", "title": "Improve a page",
+        "expected": {"opportunity": {"primaryArea": "content"}}, "validation": {
+            "reason": "Evidence is too limited", "reassessWhen": "After new search data arrives"}}])
+    assert model["decisionIds"] == []
+    work = model["work"][0]
+    assert work["id"] == "initiative:9"
+    assert work["state"] == "deferred"
+    assert work["reassessWhen"] == "After new search data arrives"
+    assert model["areas"][0]["deferredWorkIds"] == ["initiative:9"]
+
+
+def test_approval_or_published_label_does_not_manufacture_a_verified_result():
+    model = project(tasks=[{"id": "initiative:1", "focus": "completed", "state": "published"}],
+        initiatives=[{"id": 1, "state": "measuring", "published_revision": "payload:pages:1:revision",
+            "validation": {"status": "passed"}}])
+    assert model["recentResults"] == []
+
+
+def test_verified_implementation_and_later_impact_are_separate_and_bounded():
+    task = {"id": "initiative:1", "focus": "planned", "state": "measuring", "title": "Clearer title",
+        "draftId": 5, "outcomes": [{"id": 3, "horizon_days": 30, "measured_ts": "2026-11-20",
+            "baseline": {"value": 1, "metric": "gsc.clicks", "private": "not for overview"},
+            "observed": {"value": 2, "metric": "gsc.clicks"}, "assessment": "positive", "confidence": "low"}]}
+    initiative = {"id": 1, "state": "measuring", "published_revision": "payload:pages:1:revision",
+        "review_90_ts": "2027-01-20T00:00:00Z", "validation": {"status": "passed",
+            "liveVerification": {"status": "passed", "checks": [{"route": "/", "status": 200,
+                "documentId": "1", "updatedAt": "revision", "verifiedAt": "2026-10-20T00:00:00Z"}]}}}
+    result = project(tasks=[task], initiatives=[initiative])["recentResults"][0]
+    assert result["state"] == "verified"
+    assert result["impact"][0]["baseline"] == 1
+    assert result["impact"][0]["observed"] == 2
+    assert result["impact"][0]["causalAttribution"] is False
+    assert "private" not in str(result)
+    assert result["nextMeasurement"]["horizonDays"] == 90
+
+
 @pytest.mark.parametrize("coverage", [
     [{"area": "speed_experience", "summary": "Fast", "evidence": ["invented"], "limitations": []}],
     [{"area": "not_a_product_area", "summary": "Checked", "evidence": ["inventory"], "limitations": []}],

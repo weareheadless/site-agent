@@ -234,10 +234,14 @@ def growth_chat_context(memory: Memory, config: dict[str, Any], context: dict[st
             "contractVersion": snapshot["serviceModel"]["contractVersion"],
             "websitePresent": snapshot["serviceModel"]["websitePresent"],
             "decisionCount": len(snapshot["serviceModel"]["decisionIds"]),
+            "decisionIds": snapshot["serviceModel"]["decisionIds"],
             "unassignedWorkCount": len(snapshot["serviceModel"]["unassignedWorkIds"]),
             "areas": [{key: row.get(key) for key in (
                 "id", "state", "summary", "lastAssessedAt", "nextAssessment", "limitations",
+                "workIds", "decisionIds", "blockedWorkIds", "deferredWorkIds", "evidenceState",
             )} for row in snapshot["serviceModel"]["areas"]],
+            "recentResults": [pick(row, ("id", "state", "publishedRevision", "impactState", "nextMeasurement"))
+                              for row in snapshot["serviceModel"]["recentResults"]],
         },
         "goal": pick(snapshot["goal"], ("revision", "goal_key", "objective", "metrics")) if snapshot["goal"] else None,
         "activities": [pick(row, ("id", "enabled", "schedule", "nextRun")) for row in snapshot["activities"]],

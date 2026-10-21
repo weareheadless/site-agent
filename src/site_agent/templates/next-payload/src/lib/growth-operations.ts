@@ -18,6 +18,7 @@ import {
   operationResult,
   operationContext,
   projectDocument,
+  reconcileOperation,
   saveCandidate,
   tenantId,
 } from '@/lib/growth-contract'
@@ -71,6 +72,7 @@ const verifyPackage = async (
   packageData: Record<string, unknown>,
   packageHash: string,
   requireDraftCandidate = true,
+  allowPublishedCandidate = false,
 ): Promise<GrowthParams> => {
   if (await hashJson(packageData) !== packageHash) throw new Error('Growth package hash does not match its contents')
   if (text(packageData.tenant) !== tenantId() || !text(packageData.initiativeId)) throw new Error('Growth package belongs to a different tenant or initiative')
@@ -91,10 +93,11 @@ const verifyPackage = async (
   const draft = await payload.findByID({ collection: collection as CollectionSlug, depth: 2, draft: true, id: documentId, locale, ...access }) as unknown as Record<string, unknown>
   const liveProjection = projectDocument(live, fields)
   const draftProjection = projectDocument(draft, fields)
-  if (await hashJson(liveProjection) !== text(packageData.baseHash)) throw new Error('The published document changed; this Growth package is stale')
+  const liveHash = await hashJson(liveProjection)
+  if (liveHash !== text(packageData.baseHash) && !(allowPublishedCandidate && liveHash === text(packageData.candidateHash))) throw new Error('The published document changed; this Growth package is stale')
   if (await hashJson(before) !== text(packageData.baseHash)) throw new Error('Growth package does not describe the published base')
   if (await hashJson(after) !== text(packageData.candidateHash)) throw new Error('Growth package candidate hash is invalid')
-  const expected = { ...liveProjection, ...changes }
+  const expected = { ...before, ...changes }
   if (await hashJson(after) !== await hashJson(expected)) throw new Error('Growth package after-state is not the exact base plus requested changes')
   if (requireDraftCandidate && await hashJson(draftProjection) !== text(packageData.candidateHash)) throw new Error('The exact Growth candidate is not the current Payload draft')
   const route = text(packageData.route) || routeForDocument(collection, live)
@@ -231,7 +234,21 @@ export async function growthPost(request: Request, path: string, principal: Grow
     const claimed = await claimOperation(operationKey, documentKey, packageHash)
     if (!claimed.row) return error('A different Growth operation is already writing this document', 409)
     const saved = operationResult(claimed.row)
-    if (saved) return NextResponse.json(saved, { headers: { 'Cache-Control': 'private, no-store' } })
+    if (claimed.row.state === 'completed' && saved?.ok === true) return NextResponse.json(saved, { headers: { 'Cache-Control': 'private, no-store' } })
+    if (!claimed.inserted) {
+      // A timeout is not permission to repeat a write. Read and verify its exact
+      // effect, including the real preview, before settling the existing receipt.
+      try {
+        const verified = await verifyPackage(payload, principal, packageData, packageHash)
+        const preview = await verifyExactPreview(request, payload, principal, verified.collection, verified.draft, verified.route)
+        const proof = { ok: true, packageHash, candidateHash: packageData.candidateHash, validation: { status: 'passed', packageHash, checks: { canonicalSchema: true, exactDraft: true, private: true, publicRenderer: true, approvalBoundary: true }, preview } }
+        await saveCandidate(packageData, packageHash, proof.validation)
+        await reconcileOperation(operationKey, proof)
+        return NextResponse.json(proof, { headers: { 'Cache-Control': 'private, no-store' } })
+      } catch (cause) {
+        return error(cause instanceof Error ? cause.message : 'The prior Growth preparation effect could not be verified; no write was repeated', 409)
+      }
+    }
     try {
       const verified = await verifyPackage(payload, principal, packageData, packageHash, false)
       const currentDraftHash = await hashJson(projectDocument(verified.draft, verified.fields))
@@ -273,7 +290,19 @@ export async function growthPost(request: Request, path: string, principal: Grow
     const claimed = await claimOperation(operationKey, documentKey, packageHash)
     if (!claimed.row) return error('A different publication is already writing this document', 409)
     const saved = operationResult(claimed.row)
-    if (saved) return NextResponse.json(saved, { headers: { 'Cache-Control': 'private, no-store' } })
+    if (claimed.row.state === 'completed' && saved?.ok === true) return NextResponse.json(saved, { headers: { 'Cache-Control': 'private, no-store' } })
+    if (!claimed.inserted) {
+      try {
+        const verified = await verifyPackage(payload, principal, packageData, packageHash, true, true)
+        if (await hashJson(verified.liveProjection) !== text(packageData.candidateHash)) throw new Error('The prior Growth publication effect is not proven; no publication was repeated')
+        const liveVerification = await verifyLiveRoutes(request, collection, verified.live, verified.route)
+        const result = { ok: true, packageHash, candidateHash: packageData.candidateHash, status: 'published', published: { collection, documentId, updatedAt: text(verified.live.updatedAt) }, liveVerification }
+        await reconcileOperation(operationKey, result)
+        return NextResponse.json(result, { headers: { 'Cache-Control': 'private, no-store' } })
+      } catch (cause) {
+        return error(cause instanceof Error ? cause.message : 'The prior Growth publication effect could not be verified; no publication was repeated', 409)
+      }
+    }
     try {
       const verified = await verifyPackage(payload, principal, packageData, packageHash)
       const req = await requestForWrite(request, payload, principal)
