@@ -588,7 +588,14 @@ class WebsiteBootstrapService:
                 or receipt.get("releaseId") != release_id
                 or receipt.get("sourceSha") != source_sha
                 or not boundary_valid
-                or receipt.get("approvalId") is not None
+                or (
+                    receipt.get("approvalId") is not None
+                    and (
+                        type(receipt["approvalId"]) is not int
+                        or receipt["approvalId"] <= 0
+                        or receipt.get("initialSchemaHead") is not None
+                    )
+                )
             ):
                 raise BootstrapError("runtime activation is not backed by a valid verified Worker boundary")
 
