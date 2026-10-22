@@ -307,3 +307,122 @@ def test_changed_ga_measurement_id_is_written_once_and_persisted(monkeypatch, tm
     )
     assert state["ga4_secret_measurement_id"] == "G-NEW"
     assert worker.writes == [("GA_MEASUREMENT_ID", "G-NEW")]
+
+
+def test_pending_gsc_secret_is_reused_only_for_the_same_target_and_token(monkeypatch, tmp_path):
+    memory = FakeMemory()
+    worker = FakeWorker()
+    current_tag = {"value": "google-site-verification=GSC-TOKEN-1"}
+
+    class FakeProvisioning:
+        def __init__(self, config, env):
+            pass
+
+        def provision(self, **kwargs):
+            return {
+                "site_url": kwargs["site_url"],
+                "gsc_property": kwargs["gsc_property"],
+                "gsc_pending": True,
+                "gsc_meta_tag": current_tag["value"],
+                "provisioning_state": "awaiting_gsc_verification",
+            }
+
+    monkeypatch.setattr(bootstrap, "SeoProvisioningService", FakeProvisioning)
+    monkeypatch.setattr(bootstrap, "_worker_client", lambda config, env: worker)
+    monkeypatch.setattr(bootstrap, "load_tenant_environment", lambda config, env=None: env or {})
+    config = _config(tmp_path)
+    env = {"CLOUDFLARE_ACCOUNT_ID": "account-one"}
+
+    for _ in range(2):
+        bootstrap.auto_provision_seo(config, tenant_id="workspace-harmonie", memory=memory, env=env)
+    assert len(worker.writes) == 1
+    config["site"]["source_deployment"]["worker_name"] = "workspace-harmonie-next"
+    bootstrap.auto_provision_seo(config, tenant_id="workspace-harmonie", memory=memory, env=env)
+    env["CLOUDFLARE_ACCOUNT_ID"] = "account-two"
+    bootstrap.auto_provision_seo(config, tenant_id="workspace-harmonie", memory=memory, env=env)
+    current_tag["value"] = "google-site-verification=GSC-TOKEN-2"
+    bootstrap.auto_provision_seo(config, tenant_id="workspace-harmonie", memory=memory, env=env)
+
+    assert len(worker.writes) == 4
+    assert [value for _name, value in worker.writes] == [
+        "GSC-TOKEN-1", "GSC-TOKEN-1", "GSC-TOKEN-1", "GSC-TOKEN-2",
+    ]
+
+
+def test_uncertain_gsc_put_stays_pending_and_blocks_retries_and_rotation(monkeypatch, tmp_path):
+    memory = FakeMemory()
+    worker = FakeWorker()
+    calls = []
+    tag = {"value": "google-site-verification=GSC-TOKEN-1"}
+
+    def uncertain_put(name, value):
+        worker.writes.append((name, value))
+        raise bootstrap.CloudflareWorkerError("request outcome is unknown")
+
+    worker.put_secret = uncertain_put
+
+    class FakeProvisioning:
+        def __init__(self, config, env):
+            pass
+
+        def provision(self, **kwargs):
+            calls.append(kwargs)
+            return {
+                "site_url": kwargs["site_url"],
+                "gsc_property": kwargs["gsc_property"],
+                "gsc_pending": True,
+                "gsc_meta_tag": tag["value"],
+                "provisioning_state": "awaiting_gsc_verification",
+            }
+
+    monkeypatch.setattr(bootstrap, "SeoProvisioningService", FakeProvisioning)
+    monkeypatch.setattr(bootstrap, "_worker_client", lambda config, env: worker)
+    monkeypatch.setattr(bootstrap, "load_tenant_environment", lambda config, env=None: {"CLOUDFLARE_ACCOUNT_ID": "account"})
+    config = _config(tmp_path)
+
+    first, _ = bootstrap.auto_provision_seo(config, tenant_id="workspace-harmonie", memory=memory)
+    assert first["state"] == "error"
+    assert "gsc_secret_pending_fingerprint" in memory.state["seo_provisioning_state"]
+    assert "gsc_secret_fingerprint" not in memory.state["seo_provisioning_state"]
+
+    tag["value"] = "google-site-verification=GSC-TOKEN-2"
+    second, _ = bootstrap.auto_provision_seo(config, tenant_id="workspace-harmonie", memory=memory)
+    assert second["state"] == "error"
+    assert "operator reconciliation is required" in second["error"]
+    assert len(calls) == 1
+    assert len(worker.writes) == 1
+    assert "gsc_secret_pending_fingerprint" in memory.state["seo_provisioning_state"]
+
+
+def test_later_seo_error_keeps_confirmed_gsc_secret_marker(monkeypatch, tmp_path):
+    memory = FakeMemory()
+    worker = FakeWorker()
+    calls = []
+
+    class FakeProvisioning:
+        def __init__(self, config, env):
+            pass
+
+        def provision(self, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 2:
+                raise bootstrap.SeoProvisioningError("later SEO step failed")
+            return {
+                "site_url": kwargs["site_url"],
+                "gsc_property": kwargs["gsc_property"],
+                "gsc_pending": True,
+                "gsc_meta_tag": "google-site-verification=GSC-TOKEN",
+                "provisioning_state": "awaiting_gsc_verification",
+            }
+
+    monkeypatch.setattr(bootstrap, "SeoProvisioningService", FakeProvisioning)
+    monkeypatch.setattr(bootstrap, "_worker_client", lambda config, env: worker)
+    monkeypatch.setattr(bootstrap, "load_tenant_environment", lambda config, env=None: {"CLOUDFLARE_ACCOUNT_ID": "account"})
+    config = _config(tmp_path)
+
+    state, _ = bootstrap.auto_provision_seo(config, tenant_id="workspace-harmonie", memory=memory)
+    persisted = memory.state["seo_provisioning_state"]
+    assert state["state"] == "error"
+    assert "gsc_secret_fingerprint" in persisted
+    assert "gsc_secret_pending_fingerprint" not in persisted
+    assert len(worker.writes) == 1

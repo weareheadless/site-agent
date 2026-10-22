@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import copy
 import datetime
+import hashlib
 import os
 import re
 from collections.abc import Mapping
@@ -66,9 +67,9 @@ def _safe_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
     return value
 
 
-def _worker_client(config: Mapping[str, Any], env: Mapping[str, str]) -> CloudflareWorkerSecretsClient:
+def _worker_identity(config: Mapping[str, Any], env: Mapping[str, str]) -> tuple[str, str]:
     profile = credential_profile(config, "cloudflare")
-    token_name, account_name = cloudflare_env_names(config)
+    _, account_name = cloudflare_env_names(config)
     site = _mapping(config.get("site"))
     deployment = _mapping(site.get("source_deployment"))
     worker_name = str(
@@ -83,8 +84,15 @@ def _worker_client(config: Mapping[str, Any], env: Mapping[str, str]) -> Cloudfl
         preview_host = str(urlsplit(str(site.get("preview_url") or "")).hostname or "").lower()
         if preview_host.endswith(".workers.dev"):
             worker_name = preview_host.split(".", 1)[0]
-    token = str(env.get(str(profile.get("api_token_env") or token_name)) or env.get(token_name) or "")
     account = str(env.get(str(profile.get("account_id_env") or account_name)) or env.get(account_name) or "")
+    return account, worker_name
+
+
+def _worker_client(config: Mapping[str, Any], env: Mapping[str, str]) -> CloudflareWorkerSecretsClient:
+    profile = credential_profile(config, "cloudflare")
+    token_name, _ = cloudflare_env_names(config)
+    token = str(env.get(str(profile.get("api_token_env") or token_name)) or env.get(token_name) or "")
+    account, worker_name = _worker_identity(config, env)
     return CloudflareWorkerSecretsClient(token, account, worker_name)
 
 
@@ -128,6 +136,15 @@ def auto_provision_seo(
     resolved_env = load_tenant_environment(config, env)
     existing = memory.kv_get("seo_provisioning_state", {}) if memory is not None else {}
     state = dict(existing) if isinstance(existing, Mapping) else {}
+    if state.get("gsc_secret_pending_fingerprint"):
+        state.update({
+            "state": "error",
+            "error": "A prior Cloudflare GSC secret update has an unresolved outcome; operator reconciliation is required.",
+            "last_attempt_at": _now(),
+        })
+        if memory is not None:
+            memory.kv_set("seo_provisioning_state", state)
+        return state, resolved_env
     # SEO provisioning is the platform default for every enabled public site.
     # A tenant may explicitly opt out with seo.provisioning.auto: false, but
     # omission must not silently leave a customer disconnected.
@@ -222,12 +239,28 @@ def auto_provision_seo(
         if memory is not None:
             memory.kv_set("seo_provisioning_state", attempt)
 
+        gsc_secret_fingerprint = str(state.get("gsc_secret_fingerprint") or "")
         if receipt.get("gsc_pending"):
-            worker = _worker_client(config, resolved_env)
             tag = _meta_content(str(receipt.get("gsc_meta_tag") or ""))
             if not tag:
                 raise SeoProvisioningError("Google did not return a meta verification token")
-            worker.put_secret("GOOGLE_SITE_VERIFICATION", tag)
+            if memory is None:
+                raise SeoProvisioningError("Durable state is required before writing the GSC verification secret")
+            account_id, worker_name = _worker_identity(config, resolved_env)
+            candidate_fingerprint = hashlib.sha256(
+                f"{account_id}\0{worker_name}\0{gsc_property}\0{tag}".encode("utf-8")
+            ).hexdigest()
+            if candidate_fingerprint != state.get("gsc_secret_fingerprint"):
+                worker = _worker_client(config, resolved_env)
+                attempt["gsc_secret_pending_fingerprint"] = candidate_fingerprint
+                memory.kv_set("seo_provisioning_state", attempt)
+                worker.put_secret("GOOGLE_SITE_VERIFICATION", tag)
+                attempt.pop("gsc_secret_pending_fingerprint", None)
+                attempt["gsc_secret_fingerprint"] = candidate_fingerprint
+                gsc_secret_fingerprint = candidate_fingerprint
+                memory.kv_set("seo_provisioning_state", attempt)
+            else:
+                gsc_secret_fingerprint = candidate_fingerprint
             # The Worker serves the tag at runtime. Re-enter the same
             # idempotent chain so GSC is verified before CrawlSEO queues jobs.
             receipt = service.provision(
@@ -278,6 +311,8 @@ def auto_provision_seo(
             resolved_env[token_env] = token
 
         sanitized = _safe_receipt(receipt)
+        if gsc_secret_fingerprint:
+            sanitized["gsc_secret_fingerprint"] = gsc_secret_fingerprint
         if measurement_id:
             sanitized["ga4_secret_measurement_id"] = measurement_id
         sanitized.update({
