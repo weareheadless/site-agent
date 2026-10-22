@@ -1,18 +1,16 @@
 import Link from 'next/link'
 import type { ReactNode } from 'react'
 import { helloAdaGlobalBindingId } from '@weareheadless/helloada-payload-core/bindings'
+import { validateHelloAdaLink } from '@weareheadless/helloada-payload-core/schema'
 import { mediaAlt, mediaUrl } from '@/lib/content'
 
 type RecordValue = Record<string, unknown>
 
 const navList = (value: unknown) => Array.isArray(value) ? value as RecordValue[] : []
 const safeHref = (value: unknown) => {
-  const href = String(value || '').trim()
-  if (!href || href.startsWith('//') || href.includes('\\')) throw new Error('Payload navigation contains an unsafe destination.')
-  if (href.startsWith('/') || href.startsWith('#')) return href
-  const parsed = new URL(href)
-  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') throw new Error('Payload navigation contains an unsupported destination.')
-  return href
+  const validation = validateHelloAdaLink(value)
+  if (validation !== true) throw new Error(`Payload navigation: ${validation}`)
+  return String(value).trim()
 }
 
 function NavItems({ items, global }: { items: RecordValue[]; global: 'navigation' }) {
