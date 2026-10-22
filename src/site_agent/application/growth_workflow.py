@@ -95,6 +95,7 @@ def _defer_duplicate_owner_information(memory: Any, initiative: Mapping[str, Any
     reason = "Ada already has an unanswered business question. This finding is deferred until the owner replies, so it is not left as a duplicate task in preparation."
     memory.transition_strategy_initiative(
         int(current["id"]), "deferred",
+        expected_state=str(current["state"]),
         validation={
             **dict(previous_validation),
             "status": "deferred",
@@ -164,6 +165,46 @@ def _recoverable_saved_assessment_failure(memory: Memory, run: Mapping[str, Any]
         if any(validation.get(key) for key in ("candidateHash", "reviewPackageHash")):
             return False
     return True
+
+
+def _reconcile_orphan_owner_questions(memory: Memory) -> None:
+    """Retain effect-free duplicates left behind by a completed assessment.
+
+    Never reclaim in-flight work or a linked action/candidate. The existing
+    owner question remains the only decision, with its normal answer-resumption
+    path; the duplicate records its dependency instead of consuming capacity.
+    """
+    initiatives = memory.list_strategy_initiatives(limit=None)
+    pending = [
+        row for row in initiatives
+        if row.get("kind") == "owner_information"
+        and row.get("state") == "waiting_for_owner"
+        and row.get("owner_action_id") is not None
+        and (action := memory.get_owner_action(int(row["owner_action_id"]))) is not None
+        and action.source_ref == f"growth-initiative:{row['id']}"
+        and action.state.value not in {"completed", "dismissed", "stale"}
+    ]
+    for row in initiatives:
+        if row.get("kind") != "owner_information" or row.get("state") != "preparing":
+            continue
+        if any(row.get(key) is not None for key in (
+            "owner_action_id", "artifact_id", "approval_id", "draft_id", "receipt_id",
+            "candidate_hash", "review_package_hash", "published_revision",
+        )):
+            continue
+        validation = row.get("validation") if isinstance(row.get("validation"), Mapping) else {}
+        if any(validation.get(key) for key in (
+            "ownerResponse", "preparation", "candidateHash", "reviewPackageHash",
+        )):
+            continue
+        run = memory.get_growth_run(str(row.get("growth_run_id") or ""))
+        if run is None or run.get("status") != "complete":
+            continue
+        related = next((question for question in pending
+            if question.get("goal_revision") == row.get("goal_revision")
+            and question.get("origin_revision") == row.get("origin_revision")), None)
+        if related is not None:
+            _defer_duplicate_owner_information(memory, row, int(related["id"]))
 
 
 def _record_preparation_failure(
@@ -868,7 +909,7 @@ def queue_growth_check(context: Mapping[str, Any], *, trigger: str = "owner_revi
 
 
 def _inventory(context: Mapping[str, Any]) -> list[dict[str, Any]]:
-    from .growth_candidates import document_content
+    from .growth_candidates import content_hash, document_content
 
     payload = context.get("payload_gateway")
     if payload is None:
@@ -876,6 +917,7 @@ def _inventory(context: Mapping[str, Any]) -> list[dict[str, Any]]:
     authoring_contract = payload.require_authoring_contract()
     enabled_collections = set((authoring_contract.get("enabled") or {}).get("collections") or [])
     inventory = []
+    content_samples = []
     # Taxonomy is part of the shared schema, but categories are not public pages.
     for collection in ("pages", "posts", "products"):
         if collection not in enabled_collections:
@@ -884,14 +926,37 @@ def _inventory(context: Mapping[str, Any]) -> list[dict[str, Any]]:
         for document in payload.list(collection, draft=False, limit=100):
             if not document.get("id"):
                 raise ValueError("A canonical document has no identity")
-            inventory.append({"collection": collection, "document": {"id": str(document["id"]),
-                "sourceId": document.get("sourceId"), "slug": document.get("slug"),
-                **document_content(document, fields)},
-                "sourceRef": f"payload:{collection}:{document['id']}", "route": document.get("route")})
+            canonical = document_content(document, fields)
+            sample = json.dumps(canonical, ensure_ascii=False, sort_keys=True)
+            metadata = {key: document.get(key) for key in (
+                "sourceId", "slug", "title", "metaTitle", "metaDescription",
+            ) if key in document}
+            partial_fields = []
+            if isinstance(document.get("seo"), Mapping):
+                metadata["seo"] = {key: document["seo"][key] for key in ("title", "description")
+                    if isinstance(document["seo"].get(key), str)}
+                if set(document["seo"]) - set(metadata["seo"]):
+                    partial_fields.append("seo")
+            inventory.append({"collection": collection, "document": {**metadata, "id": str(document["id"])},
+                "sourceRef": f"payload:{collection}:{document['id']}", "route": document.get("route"),
+                "assessmentScope": {"completeDocument": False, "documentHash": content_hash(canonical),
+                    "omittedFields": sorted(set(fields) - set(metadata)),
+                    "partialFields": partial_fields,
+                    "totalCharacters": len(sample), "previewCharacters": 0}, "contentPreview": ""})
+            content_samples.append(sample)
     if not inventory:
         raise RuntimeError("The website has no canonical editable documents")
+    metadata_bytes = len(json.dumps(inventory, ensure_ascii=False).encode())
+    if metadata_bytes > 116_000:
+        raise ValueError("Canonical route metadata exceeds the declared assessment scope")
+    # Account conservatively for UTF-8 and JSON string escaping. Every route
+    # remains represented; excerpts are explicitly not full-document evidence.
+    preview_limit = min(1600, (116_000 - metadata_bytes) // len(inventory) // 8)
+    for entry, sample in zip(inventory, content_samples):
+        entry["contentPreview"] = sample[:preview_limit]
+        entry["assessmentScope"]["previewCharacters"] = len(entry["contentPreview"])
     if len(json.dumps(inventory, ensure_ascii=False).encode()) > 120_000:
-        raise ValueError("Canonical content exceeds the bounded assessment size; select a smaller declared scope")
+        raise ValueError("Assessment inventory exceeded its declared byte budget")
     return inventory
 
 
@@ -1148,6 +1213,7 @@ def run_growth_cycle(
             detail["assessment"] = brain_growth.assess(context, {**material, "goal": goal, "business": business,
                 "maxRecommendations": policy.max_recommendations, "priorWork": memory.list_strategy_initiatives(limit=100),
                 "priorOutcomes": memory.list_strategy_outcomes(limit=20), "allowance": policy.research_allowance_micros})
+            detail["assessmentCompletedAt"] = utc_now()
             run = advance(phase="preparing", detail=detail)
         cycle = memory.growth_strategy_cycle(run["run_id"], detail["evidenceArtifactId"])
         existing = memory.list_strategy_initiatives(cycle["id"])
@@ -1160,8 +1226,9 @@ def run_growth_cycle(
         ready_sources = {row["id"] for row in material["sources"] if row["state"] == "ready"}
         candidate_ids, blocks, unprepared_opportunities = [], [], []
         queued_initiative_ids: list[int] = []
+        waiting_for_capacity: list[str] = []
         all_initiatives = memory.list_strategy_initiatives(limit=500)
-        active = [row for row in all_initiatives if row["state"] in {"preparing", "validating", "ready_for_review", "publishing", "verifying_live"} and row.get("growth_run_id") != run["run_id"]]
+        active = [row for row in all_initiatives if row.get("kind") != "owner_information" and row["state"] in {"preparing", "validating", "ready_for_review", "publishing", "verifying_live"} and row.get("growth_run_id") != run["run_id"]]
         active_targets = {
             (str(opportunity.get("collection") or ""), str(opportunity.get("documentId") or "")): row
             for row in active
@@ -1250,22 +1317,38 @@ def run_growth_cycle(
                         unprepared["reassessWhen"] = str(validation["reassessWhen"])
                     unprepared_opportunities.append(unprepared)
                 continue
+            if initiative is not None and initiative["state"] == "ready_for_review":
+                candidate_ids.append(initiative["id"])
+                continue
+            if initiative is not None and opportunity["kind"] == "code":
+                preparation = initiative.get("validation") if isinstance(initiative.get("validation"), Mapping) else {}
+                preparation = preparation.get("preparation") if isinstance(preparation.get("preparation"), Mapping) else {}
+                existing_job = memory.get_chat_job(int(preparation["jobId"])) if preparation.get("kind") == "source_code" and preparation.get("jobId") else None
+                if existing_job is not None and existing_job.get("status") in {"queued", "running", "done"}:
+                    queued_initiative_ids.append(int(initiative["id"]))
+                    continue
+            # Capacity is a dependency, not an unsuccessful external effect.
+            # Keep this assessment pending on the existing hourly invocation;
+            # do not manufacture a blocked/preparing initiative with no job.
+            if opportunity["kind"] != "owner_information" and (
+                len(active) + len(candidate_ids) + len(queued_initiative_ids)
+                >= policy.max_active_candidates
+            ):
+                waiting_for_capacity.append(str(opportunity["title"]))
+                continue
             if initiative is None:
                 initiative_id = memory.create_strategy_initiative(cycle["id"], kind=opportunity["kind"], title=opportunity["title"],
                     summary=opportunity["scope"], hypothesis=str(opportunity.get("hypothesis") or ""), rationale=opportunity["why"], evidence=opportunity["evidence"],
                     expected={"opportunity": opportunity}, state="preparing", growth_run_id=run["run_id"], goal_revision=int(goal["revision"]), origin_revision=policy.origin_revision)
                 initiative = memory.update_strategy_initiative(initiative_id)
-            if initiative["state"] == "ready_for_review":
-                candidate_ids.append(initiative["id"])
-                continue
             missing = set(opportunity["requiredSources"]) - ready_sources
             if missing:
                 reason = "Required evidence is not ready: " + ", ".join(sorted(missing))
-            elif len(active) + len(candidate_ids) >= policy.max_active_candidates:
-                reason = "Existing improvements are awaiting review; no additional candidate was prepared."
             elif opportunity["kind"] == "owner_information":
                 from .actions import OwnerActionService
+                from .growth_delivery import journal
                 from ..core.contracts import ActionPriority, ActionRequirement, OwnerAction
+                journal(context).issue(initiative)
                 action = OwnerActionService(memory).create(OwnerAction(
                     capability_id="growth.owner_information", provider_id="site-agent", title=opportunity["title"],
                     summary=_owner_action_summary(opportunity["scope"]), action_label="Answer Ada", priority=ActionPriority.NORMAL,
@@ -1302,11 +1385,6 @@ def run_growth_cycle(
                 except Exception as exc:
                     reason = str(exc)[:500]
             elif opportunity["kind"] == "code":
-                preparation = initiative.get("validation") if isinstance(initiative.get("validation"), Mapping) else {}
-                preparation = preparation.get("preparation") if isinstance(preparation.get("preparation"), Mapping) else {}
-                existing_job = memory.get_chat_job(int(preparation["jobId"])) if preparation.get("kind") == "source_code" and preparation.get("jobId") else None
-                if existing_job is not None and existing_job.get("status") in {"queued", "running", "done"}:
-                    continue
                 active_code = next((row for row in active if row.get("kind") == "code"), None)
                 if queued_initiative_ids or active_code:
                     related_id = active_code.get("id") if active_code else queued_initiative_ids[0]
@@ -1341,13 +1419,21 @@ def run_growth_cycle(
         detail.update(candidateIds=candidate_ids, blocks=blocks)
         if queued_initiative_ids:
             detail["queuedInitiativeIds"] = queued_initiative_ids
+        else:
+            detail.pop("queuedInitiativeIds", None)
+        if waiting_for_capacity:
+            detail["waitingForCapacity"] = waiting_for_capacity
+        else:
+            detail.pop("waitingForCapacity", None)
         if unprepared_opportunities:
             detail["assessment"]["unpreparedOpportunities"] = unprepared_opportunities
         else:
             detail["assessment"].pop("unpreparedOpportunities", None)
-        memory.update_strategy_cycle(cycle["id"], summary=detail["assessment"]["summary"], status="blocked" if blocks else "completed")
-        retry_at = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=24)).isoformat(timespec="seconds") if blocks else None
-        return advance(phase="preparing" if blocks else "complete", status="blocked" if blocks else "complete", detail=detail, completed=not blocks,
+        pending = bool(waiting_for_capacity)
+        status = "blocked" if blocks else "pending" if pending else "complete"
+        memory.update_strategy_cycle(cycle["id"], summary=detail["assessment"]["summary"], status="blocked" if blocks else "pending" if pending else "completed")
+        retry_at = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1 if pending else 24)).isoformat(timespec="seconds") if blocks or pending else None
+        return advance(phase="preparing" if blocks or pending else "complete", status=status, detail=detail, completed=not (blocks or pending),
             lease_owner=None, lease_until=None, next_due_ts=retry_at)
     except Exception as exc:
         detail["error"] = str(exc)[:700]
@@ -1415,9 +1501,14 @@ def reconcile_historical_noop_initiatives(memory: Memory) -> int:
 def run_pending_growth(context: dict[str, Any], *, recover_interrupted_runs: bool = False) -> None:
     memory = context["memory"]
     from .growth_candidates import reconcile_source_candidates
+    from .growth_delivery import reconcile_delivery
 
+    # Recording is independently resumable; the receipt remains execution truth.
+    # This existing scheduled boundary, never GET, owns external journal work.
+    reconcile_delivery(context)
     reconcile_source_candidates(context)
     reconcile_historical_noop_initiatives(memory)
+    _reconcile_orphan_owner_questions(memory)
     due_by_id = {
         str(run.get("run_id")): run
         for run in memory.due_growth_runs(limit=20)

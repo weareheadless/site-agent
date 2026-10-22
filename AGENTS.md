@@ -101,7 +101,13 @@ realization, autonomous repair, or end-to-end acceptance requirements.
 For the current Growth owner experience, article-schema repair, connected
 backlog, recommendation progression and coordinated API/Worker release
 acceptance, follow `docs/growth-owner-experience-implementation-plan.md`. It
-is the current owner-approved implementation contract and supersedes the
+includes the October 21 area/service model and GitHub issue-to-exact-approval,
+release/publication and live-verification contract tracked in #260–#268.
+GitHub is the engineering journal, not an approval or deployment authority.
+Reuse existing tenant-scoped work IDs, jobs, approvals and immutable receipts;
+never add a parallel workflow, local-only fallback or manual customer deployment.
+Do not build the dashboard before the underlying causal acceptance gate passes.
+It is the current owner-approved implementation contract and supersedes the
 earlier screen/state plan in
 `docs/growth-decision-workspace-implementation-plan.md`. Rendering a screen
 is not end-to-end Growth validation. Retain

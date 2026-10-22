@@ -211,6 +211,12 @@ class SourceDeploymentService:
             job.pop("error", None)
             if should_record:
                 self._record_production_publish(job, job)
+            draft = next((row for row in self.memory.list_drafts(limit=500)
+                if int(row.get("id") or 0) == int(job.get("draft_id") or 0)), None) if self.memory is not None else None
+            if isinstance(((draft or {}).get("meta") or {}).get("growth_package"), Mapping):
+                # Receipt refresh is also called by GET. It may project a pending
+                # checkpoint, but it must never perform GitHub writes here.
+                job.setdefault("growth_journal", {"status": "recording_pending"})
         elif receipt.get("status") in {"failed", "interrupted"}:
             job.update(
                 status="failed",
@@ -1118,6 +1124,66 @@ class SourceDeploymentService:
         with self._lock:
             jobs = [j for j in self._jobs.values() if j.get("mode") == _PRODUCTION and j.get("draft_id") == draft_id]
             return dict(max(jobs, key=lambda j: str(j.get("created_at") or ""))) if jobs else {}
+
+    def reconcile_growth_delivery(self) -> list[dict[str, Any]]:
+        """Explicit durable Growth-job hook; resume journal, never a release.
+
+        Status/GET/receipt refresh do not call this method. A successful release
+        remains deployed if journal recording fails, with a separate diagnostic.
+        """
+        if self.memory is None:
+            raise SourceDeploymentError("Growth journal reconciliation requires tenant memory")
+        from .growth_delivery import release_checkpoint
+
+        context = {"memory": self.memory, "config": self.config, "env": self.env,
+            "tenant_id": str(self.config.get("instance_name") or "")}
+        drafts = {int(row["id"]): row for row in self.memory.list_drafts(limit=500)}
+        with self._lock:
+            jobs = [dict(row) for row in self._jobs.values() if row.get("mode") == _PRODUCTION]
+        results = []
+        for saved_job in jobs:
+            draft = drafts.get(int(saved_job.get("draft_id") or 0))
+            meta = (draft or {}).get("meta") or {}
+            package = meta.get("growth_package") or {}
+            if package.get("candidateType") != "source_code":
+                continue
+            initiative = next((row for row in self.memory.list_strategy_initiatives(limit=None)
+                if int(row.get("draft_id") or 0) == int(draft["id"])), None)
+            try:
+                if initiative is None:
+                    raise SourceDeploymentError("The released Growth initiative is missing")
+                if package.get("tenant") != context["tenant_id"] or int(package.get("initiativeId") or 0) != int(initiative["id"]):
+                    raise SourceDeploymentError("The released Growth scope does not match this tenant/work")
+                receipt = self.status(str(saved_job["id"]))
+                release_checkpoint(context, initiative, str(meta.get("review_package_hash") or ""), receipt)
+                checkpoint = {"status": "recorded", "releaseId": receipt.get("release_id"),
+                    "sourceSha": receipt.get("commit"), "executionStatus": receipt.get("status")}
+                if receipt.get("status") == "deployed":
+                    proof_path = release_root(self.config) / "runs" / context["tenant_id"] / str(receipt["release_id"]) / "browser-verification.json"
+                    try:
+                        proof = json.loads(proof_path.read_text(encoding="utf-8"))
+                    except FileNotFoundError:
+                        proof = None
+                    if proof is None:
+                        checkpoint["status"] = "acceptance_pending"
+                    else:
+                        checks = proof.get("technicalChecks") or []
+                        if (proof.get("tenant") != context["tenant_id"] or proof.get("releaseId") != receipt["release_id"]
+                            or proof.get("sourceSha") != receipt["commit"] or proof.get("packageHash") != meta.get("review_package_hash")
+                            or proof.get("status") != "passed" or not proof.get("verifiedAt") or not checks
+                            or any(not isinstance(check, Mapping) or check.get("status") != "passed" or not check.get("criterion") or not check.get("evidence") for check in checks)):
+                            raise SourceDeploymentError("Source technical browser acceptance does not match the exact approved release")
+                        self.memory.update_strategy_initiative(int(initiative["id"]), validation={
+                            **(initiative.get("validation") or {}), "sourceTechnicalAcceptance": proof,
+                        })
+            except Exception as exc:
+                checkpoint = {"status": "recording_pending", "error": type(exc).__name__,
+                    "releaseId": saved_job.get("release_id"), "sourceSha": saved_job.get("commit")}
+            with self._lock:
+                self._jobs[str(saved_job["id"])]["growth_journal"] = checkpoint
+                self._persist()
+            results.append({"draftId": int(draft["id"]), **checkpoint})
+        return results
 
     def latest(self, branch: str | None = None, *, mode: str | None = None) -> dict[str, Any]:
         with self._lock:

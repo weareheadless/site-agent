@@ -6,6 +6,8 @@ from site_agent.core.memory import Memory
 
 
 def test_noop_growth_preparation_is_not_a_technical_failure(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr("site_agent.application.growth_candidates.journal", lambda _context: SimpleNamespace(issue=lambda _initiative: None))
     from site_agent.application.growth_candidates import prepare_payload_candidate
     from site_agent.brain.growth import UnsupportedGrowthPreparation
 
@@ -155,13 +157,17 @@ def test_preparation_failure_preserves_a_concurrently_deferred_initiative(tmp_pa
     assert unprepared[0]["preparationNote"] == "A no-op was recognized."
     memory.close()
 
-def test_failed_growth_run_replay_preserves_deferred_candidates_and_continues(tmp_path):
+def test_failed_growth_run_replay_preserves_deferred_candidates_and_continues(tmp_path, monkeypatch):
+    from tests.test_growth_delivery import GitHub
+    from site_agent.application import growth_delivery
+    monkeypatch.setattr(growth_delivery, "_request", GitHub())
+    monkeypatch.setattr(growth_delivery, "github_api_token", lambda *_args: "test-token")
     from site_agent.application.growth_workflow import run_growth_cycle
     from site_agent.core.growth_contracts import GrowthPolicy
 
     memory = Memory(tmp_path / "memory.db")
-    config = {"site": {"public_url": "https://example.test"}, "growth": {"timezone": "UTC"}}
-    context = {"memory": memory, "config": config}
+    config = {"site": {"repository": "owner/customer", "public_url": "https://example.test"}, "growth": {"timezone": "UTC"}}
+    context = {"tenant_id": "test-business", "memory": memory, "config": config}
     evidence = run_growth_reconciler(context)
     goal = memory.latest_growth_goal()
     policy = GrowthPolicy.from_config(config)

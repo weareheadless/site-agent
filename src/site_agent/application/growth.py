@@ -7,8 +7,10 @@ from typing import Any
 from ..core.contracts import ArtifactKind
 from ..core.growth_contracts import GrowthPolicy
 from ..core.memory import Memory
-from .growth_workflow import _source_state
+from .growth_workflow import _freshness_hours, _source_state
 from .growth_tasks import growth_tasks
+from .growth_service_model import service_model
+from .growth_delivery import journal_reference
 
 GROWTH_CONTRACT_VERSION = "owner-decisions-v1"
 OWNER_QUEUE_CONTRACT_VERSION = "owner-queue-progression-v1"
@@ -194,6 +196,22 @@ def growth_snapshot(memory: Memory, config: dict[str, Any], context: dict[str, A
         ],
     }
     tasks = growth_tasks(memory, initiatives, drafts, activities, memory.list_strategy_outcomes(limit=100), runs, ideas, include_article_content=include_article_content)
+    pending_stamp = memory.kv_get("next_run:growth_pending")
+    reconciliation = {"enabled": "growth_pending" in jobs, "nextRun":
+        datetime.datetime.fromtimestamp(pending_stamp, datetime.timezone.utc).isoformat()
+        if "growth_pending" in jobs and isinstance(pending_stamp, (int, float)) else None}
+    model = service_model(
+        tasks=tasks, initiatives=initiatives, runs=runs, sources=sources, activities=activities,
+        website_present=(config.get("site") or {}).get("website_present") is True,
+        reconciliation=reconciliation, inventory_freshness_hours=_freshness_hours(config, "inventory"),
+    )
+    journal_context = {"memory": memory, "config": config, "tenant_id": context.get("tenant_id")}
+    initiative_by_id = {f"initiative:{row['id']}": row for row in initiatives}
+    for item in [*model["work"], *model["recentResults"]]:
+        initiative = initiative_by_id.get(item["id"])
+        if initiative is not None:
+            item["engineering"] = journal_reference(journal_context, initiative)
+    model["deliveryDiagnostics"] = memory.kv_get("growth_delivery_diagnostics", [])
     return {
         "growthContractVersion": GROWTH_CONTRACT_VERSION,
         "ownerQueueContractVersion": OWNER_QUEUE_CONTRACT_VERSION,
@@ -204,6 +222,7 @@ def growth_snapshot(memory: Memory, config: dict[str, Any], context: dict[str, A
         "activities": activities,
         "tasks": tasks,
         "ownerQueue": owner_queue(tasks, runs),
+        "serviceModel": model,
         "goal": goal,
         "latestInsight": memory.latest_seo_insight(),
         "keywords": [{"keyword": row.get("seed"), **pick(row, ("id", "language", "market", "research_count", "last_researched_ts"))} for row in memory.list_seo_seeds(limit=40)],
@@ -225,6 +244,20 @@ def growth_chat_context(memory: Memory, config: dict[str, Any], context: dict[st
         return {key: row.get(key) for key in keys}
     return {
         "sources": snapshot["sources"],
+        "serviceModel": {
+            "contractVersion": snapshot["serviceModel"]["contractVersion"],
+            "websitePresent": snapshot["serviceModel"]["websitePresent"],
+            "decisionCount": len(snapshot["serviceModel"]["decisionIds"]),
+            "decisionIds": snapshot["serviceModel"]["decisionIds"],
+            "unassignedWorkCount": len(snapshot["serviceModel"]["unassignedWorkIds"]),
+            "areas": [{key: row.get(key) for key in (
+                "id", "state", "summary", "lastAssessedAt", "nextAssessment", "limitations",
+                "workIds", "decisionIds", "blockedWorkIds", "deferredWorkIds", "evidenceState",
+            )} for row in snapshot["serviceModel"]["areas"]],
+            "recentResults": [pick(row, ("id", "state", "publishedRevision", "impactState", "nextMeasurement"))
+                              for row in snapshot["serviceModel"]["recentResults"]],
+            "preparation": snapshot["serviceModel"]["preparation"],
+        },
         "goal": pick(snapshot["goal"], ("revision", "goal_key", "objective", "metrics")) if snapshot["goal"] else None,
         "activities": [pick(row, ("id", "enabled", "schedule", "nextRun")) for row in snapshot["activities"]],
         "tasks": [pick(row, ("id", "kind", "title", "summary", "focus", "state", "nextRun", "executionIssue", "canApprove")) for row in snapshot["tasks"][:30]],

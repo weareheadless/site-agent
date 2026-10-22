@@ -199,7 +199,7 @@ def _article(context: dict[str, Any]) -> None:
     if isinstance(draft_id, int):
         try:
             _mirror_article_draft_to_workspace(context, draft_id)
-            _sync_strategy_initiative_for_draft(context["memory"], draft_id)
+            _sync_strategy_initiative_for_draft(context["memory"], draft_id, context=context)
         except Exception as exc:  # noqa: BLE001 - expose the canonical content boundary
             _mark_article_payload_blocked(context["memory"], draft_id, str(exc))
 
@@ -217,12 +217,12 @@ def _mirror_article_drafts(context: dict[str, Any]) -> None:
             continue
         try:
             _mirror_article_draft_to_workspace(context, int(draft["id"]))
-            _sync_strategy_initiative_for_draft(memory, int(draft["id"]))
+            _sync_strategy_initiative_for_draft(memory, int(draft["id"]), context=context)
         except Exception as exc:  # noqa: BLE001 - persist a precise blocked state, never a local ready fallback
             _mark_article_payload_blocked(memory, int(draft["id"]), str(exc))
 
 
-def _sync_strategy_initiative_for_draft(memory: Memory, draft_id: int) -> None:
+def _sync_strategy_initiative_for_draft(memory: Memory, draft_id: int, *, context: dict[str, Any]) -> None:
     """Move a strategy candidate only after the canonical Payload check passes."""
 
     draft = next((row for row in memory.list_drafts(limit=200) if int(row.get("id") or 0) == draft_id), None)
@@ -263,6 +263,22 @@ def _sync_strategy_initiative_for_draft(memory: Memory, draft_id: int) -> None:
     for initiative in memory.list_strategy_initiatives(limit=500):
         if int(initiative.get("draft_id") or 0) == draft_id and initiative.get("state") in {"preparing", "validating", "ready_for_review"}:
             initiative_id = int(initiative["id"])
+            if state == "ready_for_review":
+                from ..application.growth_delivery import article_candidate_checkpoint
+                from ..application.actions import OwnerActionService
+                from ..application.approvals import ApprovalService
+                from .contracts import Artifact, ArtifactKind, EffectClass
+                current_draft = {**draft, "meta": {**meta, "review_package_hash": review_package_hash}}
+                article_candidate_checkpoint(context, initiative, current_draft)
+                approval = memory.get_approval_request(int(initiative.get("approval_id") or 0)) if initiative.get("approval_id") else None
+                if approval is None or approval.artifact_hash != review_package_hash:
+                    artifact = memory.create_artifact(Artifact(
+                        kind=ArtifactKind.ARTICLE, title=str(draft.get("title") or "Article"), summary="Exact Payload article candidate",
+                        renderer="article", capability_id="growth.publish", provider_id="payload",
+                        content_hash=review_package_hash, preview_data={"draftId": draft_id}))
+                    approval = ApprovalService(memory, actions=OwnerActionService(memory)).create(artifact,
+                        owner_action_label="Publish this exact article", effect_class=EffectClass.SITE_MUTATION)
+                    memory.update_strategy_initiative(initiative_id, artifact_id=artifact.artifact_id, approval_id=approval.approval_id)
             memory.update_strategy_initiative(
                 initiative_id,
                 candidate_hash=candidate_hash,

@@ -11,6 +11,7 @@ from ..brain import growth as brain_growth
 from ..core.contracts import ActionPriority, ActionRequirement, Artifact, ArtifactKind, EffectClass, OwnerAction
 from .approvals import ApprovalService
 from .actions import OwnerActionService
+from .growth_delivery import candidate_checkpoint, journal
 
 
 def wake_growth_pending(memory: Any) -> None:
@@ -54,6 +55,7 @@ def prepare_payload_candidate(context: Mapping[str, Any], initiative: Mapping[st
     if current != base and not resumed:
         raise ValueError("This document already has owner draft changes. Ada will not overwrite them.")
     if changes is None:
+        journal(context).issue(initiative)
         changes = brain_growth.prepare(context, opportunity=opportunity, document=current, fields=editable, evidence=evidence)
         if all(current.get(key) == value for key, value in changes.items()):
             raise brain_growth.UnsupportedGrowthPreparation(
@@ -76,6 +78,7 @@ def prepare_payload_candidate(context: Mapping[str, Any], initiative: Mapping[st
         "sourceId": draft.get("sourceId"), "slug": draft.get("slug"), "route": entry.get("route"),
         "why": opportunity["why"], "scope": opportunity["scope"], "metric": opportunity.get("metric") or "gsc.clicks"}
     package_hash = content_hash(package)
+    candidate_checkpoint(context, initiative, package_hash, package, stage="preparing")
     if not resumed:
         payload.apply_growth_candidate(package, package_hash)
         actual = payload.read(collection, identifier=document_id, identifier_kind="id", draft=True)
@@ -83,6 +86,7 @@ def prepare_payload_candidate(context: Mapping[str, Any], initiative: Mapping[st
         raise ValueError("Payload did not save the exact prepared candidate")
     memory.transition_strategy_initiative(int(initiative["id"]), "validating")
     proof = payload.validate_growth_candidate(package, package_hash)
+    candidate_checkpoint(context, initiative, package_hash, package)
     existing_draft = next((row for row in memory.list_drafts(limit=500) if (row.get("meta") or {}).get("review_package_hash") == package_hash), None)
     draft_id = existing_draft["id"] if existing_draft else memory.save_draft(title=opportunity["title"], body=opportunity["scope"], kind="payload_content", meta={"growth_package": package, "review_package_hash": package_hash})
     action = OwnerActionService(memory).create(OwnerAction(
@@ -188,6 +192,7 @@ def queue_source_candidate(context: Mapping[str, Any], initiative: Mapping[str, 
         "brief_hash": preparation["briefHash"],
         "evidence_hash": preparation["evidenceHash"],
     }
+    journal(context).issue(initiative)
     job_id = memory.enqueue_growth_source_candidate_job(initiative_id, run_id, payload)
     preparation["jobId"] = job_id
     preparation.pop("waitingForWebsiteDecision", None)
@@ -373,6 +378,7 @@ def finalize_source_candidate(context: Mapping[str, Any], initiative: Mapping[st
         },
     }
     package_hash = content_hash(package)
+    candidate_checkpoint(context, initiative, package_hash, package, draft_id=draft_id)
     meta["growth_package"] = package
     meta["review_package_hash"] = package_hash
     meta["growth_candidate_pending"] = False

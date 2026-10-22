@@ -2568,11 +2568,11 @@ class ChatService:
             "insights": memory.list_seo_insights(limit=bounded),
         }
 
-    def approve_draft(self, draft_id: Any, *, tenant: Tenant | None = None, review_package_hash: str | None = None) -> dict[str, Any]:
+    def approve_draft(self, draft_id: Any, *, tenant: Tenant | None = None, review_package_hash: str | None = None, owner_actor_id: str | None = None) -> dict[str, Any]:
         # A retried HTTP request must observe the first approval's durable
         # receipt rather than perform the same merge twice.
         with self._approval_lock:
-            return self._approve_draft(draft_id, tenant=tenant, review_package_hash=review_package_hash)
+            return self._approve_draft(draft_id, tenant=tenant, review_package_hash=review_package_hash, owner_actor_id=owner_actor_id)
 
     @staticmethod
     def _assert_review_package(draft: Mapping[str, Any], supplied_hash: str | None) -> None:
@@ -2603,7 +2603,7 @@ class ChatService:
         memory.update_draft_meta(draft_id, meta)
         return start(dict(request), allow_production=True)
 
-    def _approve_draft(self, draft_id: Any, *, tenant: Tenant | None = None, review_package_hash: str | None = None) -> dict[str, Any]:
+    def _approve_draft(self, draft_id: Any, *, tenant: Tenant | None = None, review_package_hash: str | None = None, owner_actor_id: str | None = None) -> dict[str, Any]:
         """Publish exactly one pending owner change through its existing lane.
 
         Design candidates use the immutable design service. Legacy/source merge
@@ -2629,11 +2629,37 @@ class ChatService:
         if draft.get("kind") == "reflection" and draft.get("status") == "approved":
             return {"ok": True, "draft_id": normalized_id, "status": "applied", "idempotent": True}
         self._assert_review_package(draft, review_package_hash)
+        # A successful Payload effect is durable before recording to GitHub.
+        # Retrying a failed journal checkpoint must never publish it again.
+        saved_publication = (draft.get("meta") or {}).get("growth_publication_receipt")
+        if isinstance(saved_publication, Mapping) and tenant is not None:
+            from .growth_delivery import publication_checkpoint
+            initiative = next((row for row in memory.list_strategy_initiatives(limit=None)
+                if int(row.get("draft_id") or 0) == normalized_id), None)
+            if initiative is None:
+                raise BridgeError("the published Growth work identity is missing")
+            publication_checkpoint(tenant.context, initiative, str((draft.get("meta") or {}).get("review_package_hash") or ""), saved_publication)
+            return {"ok": True, "draft_id": normalized_id, "status": "published", "idempotent": True}
+        saved_article = (draft.get("meta") or {}).get("growth_article_publication_receipt")
+        if isinstance(saved_article, Mapping) and tenant is not None:
+            from .growth_delivery import finalize_article_publication
+            initiative = next((row for row in memory.list_strategy_initiatives(limit=None)
+                if int(row.get("draft_id") or 0) == normalized_id), None)
+            if initiative is None:
+                raise BridgeError("the published article work identity is missing")
+            return finalize_article_publication(tenant.context, initiative, draft)
         if draft.get("status") != "pending":
             deployer = tenant.context.get("source_deployment") if tenant else self.source_deployment
             lookup = getattr(deployer, "for_draft", None)
             receipt = lookup(normalized_id) if callable(lookup) else {}
             if receipt and draft.get("status") in {"publishing", "publish_failed", "live"}:
+                if tenant is not None and (draft.get("meta") or {}).get("growth_package"):
+                    from .growth_delivery import release_checkpoint
+                    initiative = next((row for row in memory.list_strategy_initiatives(limit=None)
+                        if int(row.get("draft_id") or 0) == normalized_id), None)
+                    if initiative is None:
+                        raise BridgeError("the released Growth work identity is missing")
+                    release_checkpoint(tenant.context, initiative, str((draft.get("meta") or {}).get("review_package_hash") or ""), receipt)
                 return {"ok": receipt.get("status") != "failed", "draft_id": normalized_id,
                         "status": draft["status"], "deployment": receipt, "idempotent": True}
             approved = (draft.get("meta") or {}).get("approved_release")
@@ -2653,6 +2679,12 @@ class ChatService:
             raise BridgeError(f"draft already {draft.get('status')}")
 
         kind = str(draft.get("kind") or "edit")
+        if meta_package := (draft.get("meta") or {}).get("growth_package"):
+            from .growth_delivery import require_owner_actor
+            require_owner_actor(owner_actor_id)
+        elif kind in {"article", "payload_content"}:
+            from .growth_delivery import require_owner_actor
+            require_owner_actor(owner_actor_id)
         if kind in {"design", "merge", "rollback"}:
             current = self._current_pending_owner_update(memory)
             if current is not None and int(current.get("id") or 0) != normalized_id:
@@ -2785,12 +2817,16 @@ class ChatService:
                     approval = approval_service.decide(approval_id, True)
                 if approval.status.value != "approved":
                     raise BridgeError("Ada's website improvement was not approved")
+                from .growth_delivery import decision_checkpoint
+                decision_checkpoint(tenant.context, growth_initiative, package_hash, approval, actor_id=owner_actor_id)
                 if growth_initiative.get("state") == "ready_for_review":
                     memory.record_strategy_decision_for_draft(
                         normalized_id, "approved", source_revision=str(source.get("candidateSha") or ""),
                         review_package_hash=package_hash,
                     )
-                elif growth_initiative.get("state") != "publishing":
+                elif growth_initiative.get("state") != "publishing" and not (
+                    growth_initiative.get("state") == "uncertain" and meta.get("growth_source_merge_intent")
+                ):
                     raise BridgeError("Ada's website improvement is not in an approvable state")
             if kind == "rollback":
                 preview_state = meta.get("preview") if isinstance(meta.get("preview"), Mapping) else {}
@@ -2810,26 +2846,49 @@ class ChatService:
                 merge = getattr(adapter, "merge_preview", None)
             if not callable(merge):
                 raise BridgeError("the configured site cannot publish the exact website candidate")
+            saved_merge = meta.get("growth_source_merge_receipt") if growth_source else None
+            if growth_source and not saved_merge and meta.get("growth_source_merge_intent"):
+                if meta["growth_source_merge_intent"].get("packageHash") != package_hash:
+                    raise BridgeError("the source merge intent belongs to a different reviewed package")
+                from .growth_delivery import reconcile_source_merge
+                reconciled = reconcile_source_merge(tenant.context, growth_initiative, package_hash, growth_package)
+                saved_merge = {"packageHash": package_hash, "result": reconciled}
+                current_meta = next(row["meta"] for row in memory.list_drafts(limit=500) if int(row["id"]) == normalized_id)
+                memory.update_draft_meta(normalized_id, {**current_meta, "growth_source_merge_receipt": saved_merge})
             try:
-                if kind == "merge" and tenant is not None and tenant.context.get("source_deployment") is not None:
+                if not saved_merge and kind == "merge" and tenant is not None and tenant.context.get("source_deployment") is not None:
                     self._assert_reviewable_merge_candidate(draft, adapter, tenant)
-                if kind == "rollback":
+                if saved_merge:
+                    if saved_merge.get("packageHash") != package_hash:
+                        raise BridgeError("the merged source receipt belongs to a different reviewed package")
+                    candidate = saved_merge.get("result")
+                elif kind == "rollback":
                     candidate = merge(
                         config, candidate_sha, base_sha,
                         f"Restore frontend version: {str(draft.get('title') or normalized_id)[:160]}",
                     )
                 else:
+                    if growth_source:
+                        current_meta = next(row["meta"] for row in memory.list_drafts(limit=500) if int(row["id"]) == normalized_id)
+                        memory.update_draft_meta(normalized_id, {**current_meta, "growth_source_merge_intent": {"packageHash": package_hash}})
                     candidate = merge(
                         config,
                         f"Publish website update: {str(draft.get('title') or normalized_id)[:160]}",
                     )
             except Exception as exc:  # noqa: BLE001 — approval must return a bounded error
-                block_growth_source(str(exc))
+                current_meta = next(row["meta"] for row in memory.list_drafts(limit=500) if int(row["id"]) == normalized_id)
+                if growth_source and current_meta.get("growth_source_merge_intent"):
+                    memory.transition_strategy_initiative(int(growth_initiative["id"]), "uncertain", last_error="The exact approved source merge requires read-only reconciliation")
+                else:
+                    block_growth_source(str(exc))
                 raise BridgeError(str(exc)[:500]) from exc
             if not isinstance(candidate, Mapping) or not candidate.get("merged"):
                 reason = candidate.get("reason") if isinstance(candidate, Mapping) else "merge was rejected"
                 block_growth_source(str(reason or "merge was rejected"))
                 raise BridgeError(str(reason)[:500])
+            if growth_source and not saved_merge:
+                current_meta = next(row["meta"] for row in memory.list_drafts(limit=500) if int(row["id"]) == normalized_id)
+                memory.update_draft_meta(normalized_id, {**current_meta, "growth_source_merge_receipt": {"packageHash": package_hash, "result": dict(candidate)}})
             published = candidate
             version_type = "rollback" if kind == "rollback" else "merge"
             summary = str(draft.get("title") or f"{kind}: {normalized_id}")
@@ -2845,6 +2904,9 @@ class ChatService:
                     memory.update_draft_status(normalized_id, "publish_failed")
                     block_growth_source("the approved preview merge returned no full production Git SHA")
                     raise BridgeError("preview merged but the production commit could not be identified")
+                if growth_source:
+                    from .growth_delivery import verify_source_promotion
+                    verify_source_promotion(tenant.context, growth_initiative, package_hash, growth_package, commit_sha)
                 try:
                     memory.update_draft_status(normalized_id, "publishing")
                     production_deployment = self._start_approved_release(memory, normalized_id, start, {
@@ -2869,6 +2931,9 @@ class ChatService:
                 result["deployment"] = dict(production_deployment)
                 if production_deployment.get("status") == "failed":
                     block_growth_source(str(production_deployment.get("error") or "The approved website release failed"))
+                if growth_source:
+                    from .growth_delivery import release_checkpoint
+                    release_checkpoint(tenant.context, growth_initiative, package_hash, production_deployment)
             else:
                 memory.update_draft_status(normalized_id, "approved")
             if kind == "rollback":
@@ -2905,6 +2970,8 @@ class ChatService:
                 approval = approval_service.decide(approval_id, True)
             if approval.status.value != "approved":
                 raise BridgeError(f"the content candidate is not approved ({approval.status.value})")
+            from .growth_delivery import decision_checkpoint, publication_checkpoint
+            decision_checkpoint(tenant.context, initiative, package_hash, approval, actor_id=owner_actor_id)
             # Freeze the owner decision before crossing the Payload mutation boundary.
             memory.record_strategy_decision_for_draft(normalized_id, "approved")
             try:
@@ -2916,6 +2983,10 @@ class ChatService:
                 raise BridgeError(f"Payload candidate publication could not be verified: {str(exc)[:400]}") from exc
             if not isinstance(published, Mapping) or published.get("status") != "published":
                 raise BridgeError("Payload returned no verified publication receipt")
+            # Store the destination's exact result before journal I/O. A later
+            # recording failure is not a failed/unknown publication.
+            current_meta = next(row["meta"] for row in memory.list_drafts(limit=500) if int(row["id"]) == normalized_id)
+            memory.update_draft_meta(normalized_id, {**current_meta, "growth_publication_receipt": dict(published)})
             baseline = {
                 "metric": str(package.get("metric") or "gsc.clicks"),
                 "scope": {"document_id": str(package.get("documentId") or ""), "collection": str(package.get("collection") or ""), "path": str(package.get("route") or "")},
@@ -2926,6 +2997,7 @@ class ChatService:
             published_revision = f"payload:{package.get('collection')}:{package.get('documentId')}:{published_meta.get('updatedAt') or 'verified'}"
             memory.record_strategy_publication_for_draft(normalized_id, baseline=baseline, published_revision=published_revision, validation={"status": "passed", "liveVerification": published.get("liveVerification") or {}})
             memory.update_draft_status(normalized_id, "approved")
+            publication_checkpoint(tenant.context, initiative, package_hash, published)
             action_service = tenant.context.get("owner_action_service")
             if action_service is not None and hasattr(action_service, "reconcile"):
                 action_service.reconcile(draft_id=normalized_id, succeeded=True)
@@ -2982,13 +3054,31 @@ class ChatService:
             # Record the exact owner decision and freeze the measurement plan
             # before any external mutation. Publication is a separate,
             # receipt-backed transition below.
+            article_initiative = next((row for row in memory.list_strategy_initiatives(limit=None)
+                if int(row.get("draft_id") or 0) == normalized_id), None)
+            if article_initiative is None:
+                raise BridgeError("the article has no canonical Growth initiative")
+            from .approvals import ApprovalService
+            from .actions import OwnerActionService
+            from .growth_delivery import article_candidate_checkpoint, article_publication_checkpoint, decision_checkpoint
+            article_approval_id = int(article_initiative.get("approval_id") or 0)
+            article_approval = memory.get_approval_request(article_approval_id) if article_approval_id else None
+            if article_approval is None:
+                raise BridgeError("the article has no exact durable owner approval; Ada must prepare its review")
+            article_candidate_checkpoint(tenant.context, article_initiative, draft)
+            if article_approval.status.value == "pending":
+                article_approval = ApprovalService(memory, actions=OwnerActionService(memory)).decide(article_approval_id, True)
+            decision_checkpoint(tenant.context, article_initiative, str(meta.get("review_package_hash") or ""), article_approval, actor_id=owner_actor_id)
             memory.record_strategy_decision_for_draft(normalized_id, "approved", baseline=baseline)
             try:
-                payload.publish(
+                article_destination_receipt = payload.publish(
                     "posts", document_id,
                     locale=str(sync.get("locale") or "").strip() or None,
                     expected_hash=str(sync.get("draft_hash") or ""),
                 )
+                current_meta = next(row["meta"] for row in memory.list_drafts(limit=500) if int(row["id"]) == normalized_id)
+                article_receipt = {"packageHash": str(meta.get("review_package_hash") or ""), "document": article_destination_receipt}
+                memory.update_draft_meta(normalized_id, {**current_meta, "growth_article_publication_receipt": article_receipt})
                 published_document = payload.read(
                     "posts",
                     identifier=document_id,
@@ -3021,13 +3111,17 @@ class ChatService:
                         memory.update_strategy_initiative(
                             initiative_id,
                             published_revision=f"payload:{document_id}:{published_document.get('updatedAt') or published_document.get('updated_at') or 'verified'}",
-                            validation={**(current.get("validation") or {}), "liveVerification": {"status": "passed", "documentId": document_id}},
+                            validation={**(current.get("validation") or {}), "publicationReadback": {"status": "passed", "documentId": document_id}},
                             last_error="",
                         )
-                        memory.transition_strategy_initiative(initiative_id, "measuring")
+                        # Exact CMS readback is not proof of public route/render
+                        # acceptance; the technical verifier must finish this.
             action_service = tenant.context.get("owner_action_service")
             if action_service is not None and hasattr(action_service, "reconcile"):
                 action_service.reconcile(draft_id=normalized_id, succeeded=True)
+            current_draft = next(row for row in memory.list_drafts(limit=500) if int(row["id"]) == normalized_id)
+            from .growth_delivery import finalize_article_publication
+            finalize_article_publication(tenant.context, article_initiative, current_draft)
             result["status"] = "published"
         else:
             raise BridgeError(f"draft type '{kind}' cannot be published from the workspace")
@@ -3055,7 +3149,7 @@ class ChatService:
         result.setdefault("published", dict(published) if published else None)
         return result
 
-    def discard_draft(self, draft_id: Any, *, tenant: Tenant | None = None, review_package_hash: str | None = None) -> dict[str, Any]:
+    def discard_draft(self, draft_id: Any, *, tenant: Tenant | None = None, review_package_hash: str | None = None, owner_actor_id: str | None = None) -> dict[str, Any]:
         """Cancel one pending draft and clean its review branch when needed."""
         memory, _llm, _tenant_id = self._scope(tenant)
         try:
@@ -3070,6 +3164,9 @@ class ChatService:
             raise BridgeError(f"draft already {draft.get('status')}")
 
         kind = str(draft.get("kind") or "")
+        if (draft.get("meta") or {}).get("growth_package") or kind in {"article", "payload_content"}:
+            from .growth_delivery import require_owner_actor
+            require_owner_actor(owner_actor_id)
         if kind in {"design", "merge", "rollback"}:
             current = self._current_pending_owner_update(memory)
             if current is not None and int(current.get("id") or 0) != normalized_id:
@@ -3093,6 +3190,8 @@ class ChatService:
                 approval = ApprovalService(memory, actions=OwnerActionService(memory)).decide(approval_id, False)
             if approval.status.value != "declined":
                 raise BridgeError("Ada's website recommendation could not be declined")
+            from .growth_delivery import decision_checkpoint
+            decision_checkpoint(tenant.context, initiative, str(meta.get("review_package_hash") or ""), approval, actor_id=owner_actor_id)
             if initiative.get("state") == "ready_for_review":
                 source = growth_package.get("source") if isinstance(growth_package.get("source"), Mapping) else {}
                 memory.record_strategy_decision_for_draft(
@@ -3101,6 +3200,25 @@ class ChatService:
                 )
             elif initiative.get("state") != "rejected":
                 raise BridgeError("Ada's website recommendation is not in a declinable state")
+            from .growth_delivery import close_declined
+            close_declined(tenant.context, initiative, str(meta.get("review_package_hash") or ""), approval)
+        elif kind in {"payload_content", "article"}:
+            if tenant is None:
+                raise BridgeError("Growth decline requires a tenant")
+            from .approvals import ApprovalService
+            from .actions import OwnerActionService
+            from .growth_delivery import decision_checkpoint, close_declined
+            initiative = next((row for row in memory.list_strategy_initiatives(limit=None)
+                if int(row.get("draft_id") or 0) == normalized_id), None)
+            approval_id = int((initiative or {}).get("approval_id") or 0)
+            approval = memory.get_approval_request(approval_id) if approval_id else None
+            if initiative is None or approval is None or approval.status.value not in {"pending", "declined"}:
+                raise BridgeError("the Growth candidate has no exact owner decision to decline")
+            if approval.status.value == "pending":
+                approval = ApprovalService(memory, actions=OwnerActionService(memory)).decide(approval_id, False)
+            decision_checkpoint(tenant.context, initiative, str(meta.get("review_package_hash") or ""), approval, actor_id=owner_actor_id)
+            memory.record_strategy_decision_for_draft(normalized_id, "rejected")
+            close_declined(tenant.context, initiative, str(meta.get("review_package_hash") or ""), approval)
         if kind in {"merge", "rollback"}:
             other_pending = [
                 item for item in memory.list_drafts(status="pending", limit=500)

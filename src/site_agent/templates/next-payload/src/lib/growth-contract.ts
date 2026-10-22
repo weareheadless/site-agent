@@ -79,11 +79,11 @@ export const claimOperation = async (operationKey: string, documentKey: string, 
   return { inserted: Number(inserted.meta?.changes || 0) > 0, row: row ? asObject(row) : undefined }
 }
 
-export const activeOperation = async (documentKey: string, packageHash: string) => {
+export const activeOperation = async (documentKey: string, operationKey: string) => {
   const db = await database()
   const row = await db.prepare(
-    "SELECT * FROM helloada_growth_operations WHERE document_key = ?1 AND state = 'writing' AND package_hash != ?2 ORDER BY updated_at DESC LIMIT 1",
-  ).bind(documentKey, packageHash).first()
+    "SELECT * FROM helloada_growth_operations WHERE document_key = ?1 AND state IN ('writing', 'uncertain') AND operation_key != ?2 ORDER BY updated_at DESC LIMIT 1",
+  ).bind(documentKey, operationKey).first()
   return row ? asObject(row) : undefined
 }
 

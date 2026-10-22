@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ..core.llm import extract_json
+from ..core.growth_contracts import GROWTH_AREAS
 
 
 class UnsupportedGrowthPreparation(ValueError):
@@ -45,6 +46,11 @@ def _response(context: Mapping[str, Any], contract: str, material: Mapping[str, 
 def assess(context: Mapping[str, Any], material: Mapping[str, Any]) -> dict[str, Any]:
     result = _response(context,
         "summary: nonempty string; opportunities: array (maximum maxRecommendations). "
+        "Link each opportunity using primaryArea and optional secondaryAreas to content, search_visibility, "
+        "website_health, audience_competitors or speed_experience. These are presentation lenses, not limits "
+        "on expertise or execution routes. Include coverage: an array of areas actually assessed, each with "
+        "area, summary, evidence (supplied source IDs), limitations (array of strings). Omit areas without "
+        "sufficient evidence; never infer clean health or measured speed from missing data. "
         "Each opportunity has kind (payload_content, code, or owner_information), optional area (a free-form label, not a fixed category), title, why, hypothesis, "
         "scope, evidence (source IDs copied from supplied evidence), requiredSources (source IDs), "
         "collection and documentId when editing an existing canonical document, metric (gsc.clicks or ga4.sessions). "
@@ -54,6 +60,9 @@ def assess(context: Mapping[str, Any], material: Mapping[str, Any]) -> dict[str,
         "The available route limits what this workflow can execute, not Ada's broader expertise across the product. Every payload_content opportunity must identify one existing document from the supplied inventory and make only an edit to that document; never propose a new page or link to a route that does not exist. Every code opportunity must describe one concrete, bounded source change and cite the exact evidence supporting it; do not use code as a vague bucket or to bypass Payload's editable content contract. If no exact executable change or genuine owner question is justified by the evidence, omit it rather than creating a suggestion that cannot be prepared. "
         "Separate observed evidence from hypotheses, name missing evidence, and do not invent metrics, access, capabilities or outcomes. "
         "No changes yet: preparation follows assessment. An empty array is valid only with a grounded explanation. Prefer a few useful improvements, never an article quota. Do not duplicate active or rejected work. "
+        "Inventory assessmentScope declares metadata and a bounded contentPreview, not full page contents. "
+        "Do not conclude that omitted text or fields are absent, fully checked, or defective. "
+        "Preparation re-reads the full selected canonical document before creating an exact candidate. "
         "A research-dependent article requires completed keyword and SERP evidence; independent metadata fixes do not. "
         "owner_information is only for an actual missing business fact, access or extra-cost decision, not internal configuration.",
         {"stage": "assess", **dict(material)})
@@ -65,6 +74,21 @@ def assess(context: Mapping[str, Any], material: Mapping[str, Any]) -> dict[str,
     maximum = int(material.get("maxRecommendations", 3))
     if len(opportunities) > maximum:
         raise ValueError("Ada exceeded the recommendation limit")
+    valid_refs = {str(row.get("id")) for row in material.get("sources", []) if row.get("id")}
+    valid_refs.update(str(row["sourceRef"]) for row in material.get("sources", []) if row.get("sourceRef"))
+    valid_refs.update(str(row["sourceRef"]) for row in material.get("inventory", []) if row.get("sourceRef"))
+    coverage = result.get("coverage", [])
+    if not isinstance(coverage, list):
+        raise ValueError("Growth area coverage must be an array")
+    seen_areas = set()
+    for row in coverage:
+        if (not isinstance(row, Mapping) or row.get("area") not in GROWTH_AREAS
+            or row["area"] in seen_areas or not isinstance(row.get("summary"), str) or not row["summary"].strip()
+            or not isinstance(row.get("evidence"), list) or not row["evidence"]
+            or any(not isinstance(ref, str) or ref not in valid_refs for ref in row["evidence"])
+            or not isinstance(row.get("limitations"), list) or any(not isinstance(limit, str) for limit in row["limitations"])):
+            raise ValueError("Growth area coverage needs unique areas and supplied evidence references")
+        seen_areas.add(row["area"])
     for item in opportunities:
         if not isinstance(item, dict) or item.get("kind") not in {"payload_content", "code", "owner_information"}:
             raise ValueError("Ada returned an unsupported opportunity")
@@ -74,6 +98,11 @@ def assess(context: Mapping[str, Any], material: Mapping[str, Any]) -> dict[str,
             raise ValueError("An opportunity must reference real evidence")
         if not isinstance(item.get("requiredSources"), list) or not item["requiredSources"]:
             raise ValueError("An opportunity must declare its required evidence")
+        if item.get("primaryArea") is not None and item["primaryArea"] not in GROWTH_AREAS:
+            raise ValueError("Unknown primary Growth area")
+        secondary = item.get("secondaryAreas", [])
+        if not isinstance(secondary, list) or any(area not in GROWTH_AREAS for area in secondary):
+            raise ValueError("Unknown secondary Growth area")
         if item["kind"] == "payload_content":
             collection, document_id = str(item.get("collection") or ""), str(item.get("documentId") or "")
             target_exists = any(

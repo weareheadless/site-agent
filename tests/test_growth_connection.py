@@ -56,6 +56,26 @@ def test_disabled_schedules_do_not_promise_a_future_cycle(tmp_path):
     memory.close()
 
 
+def test_area_model_and_ada_context_share_ids_without_read_side_effects(tmp_path):
+    from site_agent.application.growth import growth_chat_context
+
+    memory = Memory(tmp_path / 'memory.db')
+    context = {'scheduler': SimpleNamespace(jobs=[])}
+    before = memory.conn.total_changes
+    try:
+        snapshot = growth_snapshot(memory, {'site': {'website_present': True}}, context)
+        chat = growth_chat_context(memory, {'site': {'website_present': True}}, context)
+        assert chat['serviceModel']['decisionIds'] == snapshot['serviceModel']['decisionIds']
+        assert [row['id'] for row in chat['serviceModel']['areas']] == [row['id'] for row in snapshot['serviceModel']['areas']]
+        for owner_area, ada_area in zip(snapshot['serviceModel']['areas'], chat['serviceModel']['areas']):
+            for key in ('state', 'decisionIds', 'workIds', 'evidenceState', 'lastAssessedAt', 'nextAssessment'):
+                assert ada_area[key] == owner_area[key]
+        assert chat['serviceModel']['recentResults'] == []
+        assert memory.conn.total_changes == before
+    finally:
+        memory.close()
+
+
 def test_real_scheduler_specs_are_json_safe_for_growth_and_chat(tmp_path):
     import datetime
     from site_agent.core.scheduler import normalize_schedule
@@ -158,10 +178,22 @@ def test_site_origin_change_is_persisted_before_runtime_reconciliation(tmp_path,
     assert calls[0][2]['api_token_env'] == 'CUSTOM_DEMO_TOKEN'
 
 
-def test_managed_draft_http_decisions_require_the_saved_exact_review(tmp_path):
+def test_managed_draft_http_decisions_require_the_saved_exact_review(tmp_path, monkeypatch):
+    from tests.test_growth_delivery import GitHub
+    from site_agent.application import growth_delivery
+    from site_agent.core.contracts import Artifact, ArtifactKind, EffectClass
+    from site_agent.application.approvals import ApprovalService
+    monkeypatch.setattr(growth_delivery, '_request', GitHub())
+    monkeypatch.setattr(growth_delivery, 'github_api_token', lambda *_args: 'test-token')
     memory = Memory(tmp_path / 'memory.db')
     draft = memory.save_draft('Exact change', 'Only this version', kind='payload_content', meta={'review_package_hash': 'sha256:exact'})
-    tenant = Tenant('demo', {}, memory, None, {'llm': SimpleNamespace(api_key='configured')}, 'demo-token')
+    config = {'site': {'repository': 'owner/customer'}}
+    context = {'tenant_id': 'demo', 'config': config, 'memory': memory, 'llm': SimpleNamespace(api_key='configured')}
+    artifact = memory.create_artifact(Artifact(kind=ArtifactKind.SITE_CHANGE, title='Exact change', summary='Bounded', renderer='site_change', capability_id='growth.publish', provider_id='payload', content_hash='sha256:exact'))
+    approval = ApprovalService(memory).create(artifact, owner_action_label='Apply exact change', effect_class=EffectClass.SITE_MUTATION)
+    cycle = memory.create_strategy_cycle('http-review', '2026-10', 'hash', {})
+    memory.create_strategy_initiative(cycle['id'], kind='payload_content', title='Exact change', summary='Bounded', state='ready_for_review', draft_id=draft, approval_id=approval.approval_id)
+    tenant = Tenant('demo', config, memory, None, context, 'demo-token')
     registry = TenantRegistry({'demo': tenant})
     service = ChatService(registry=registry)
     app = FastAPI()
@@ -177,6 +209,9 @@ def test_managed_draft_http_decisions_require_the_saved_exact_review(tmp_path):
                 assert memory.list_drafts()[0]['status'] == 'pending'
         # A decline carries no public effect and is allowed only for this exact package.
         response = client.post(f'/api/workspace/drafts/{draft}/discard', headers=headers, json={'review_package_hash': 'sha256:exact'})
+        assert response.status_code == 409
+        assert memory.get_approval_request(approval.approval_id).status.value == 'pending'
+        response = client.post(f'/api/workspace/drafts/{draft}/discard', headers={**headers, 'X-HelloAda-Owner-Id': 'payload:demo:11'}, json={'review_package_hash': 'sha256:exact'})
         assert response.status_code == 200
         assert response.json()['status'] == 'discarded'
     memory.close()

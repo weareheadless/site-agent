@@ -525,6 +525,20 @@ class PayloadGatewayClient:
             raise PayloadGatewayError("The destination did not verify publication of the approved Growth candidate")
         return result
 
+    def verify_publication(self, collection: str, document_id: str, expected_revision: str, *, locale: str) -> dict[str, Any]:
+        """Read-only destination/public-render proof; never publish on recovery."""
+        if collection not in {"pages", "posts", "products"} or not document_id or not re.fullmatch(r"sha256:[0-9a-f]{64}", expected_revision):
+            raise PayloadGatewayError("Publication verification requires an exact document revision")
+        result = self._request("POST", self._gateway_path("growth/verify-publication"), payload={
+            "collection": collection, "documentId": str(document_id), "expectedRevision": expected_revision, "locale": locale,
+        })
+        proof = result.get("liveVerification")
+        if (result.get("collection") != collection or str(result.get("documentId")) != str(document_id)
+                or result.get("documentHash") != expected_revision or not isinstance(proof, Mapping)
+                or proof.get("status") != "passed" or not proof.get("checks")):
+            raise PayloadGatewayError("The exact publication lacks public-render verification")
+        return dict(proof)
+
     def _request(
         self,
         method: str,
