@@ -25,7 +25,7 @@ test('uncertain Growth effects reconcile exact state without repeating writes', 
     const createLocalReq = async () => ({})
     const operationContext = () => {}
     const NextResponse = { json: (body, options = {}) => Response.json(body, {status:options.status || 200}) }
-    let writes = 0, reconciliations = 0, saves = 0, claims = 0
+    let writes = 0, reconciliations = 0, saves = 0, claims = 0, previewRevision = 'candidate'
     let live = {id:'1', title:'Before', updatedAt:'base', route:'/'}
     let draft = {id:'1', title:'After', updatedAt:'candidate'}
     const payload = {
@@ -50,7 +50,7 @@ test('uncertain Growth effects reconcile exact state without repeating writes', 
     const saveCandidate = async () => {saves++}
     const failOperation = async () => {throw new Error('Do not rewrite another executor receipt')}
     const fetch = async (url) => new Response(String(url).includes('helloada-preview')
-      ? '<main data-helloada-preview-hash="' + await hashJson(withoutPayloadMetadata(draft)) + '" data-helloada-preview-route="/" class="content-page" data-helloada-document-id="1">'
+      ? '<main data-helloada-preview-hash="' + await hashJson(withoutPayloadMetadata(draft)) + '" data-helloada-preview-route="/" class="approved-custom-article" data-helloada-document-id="1" data-helloada-updated-at="' + previewRevision + '">'
       : '<main data-helloada-document-id="1" data-helloada-updated-at="' + live.updatedAt + '">',
       {headers:{'content-type':'text/html'}})
     const request = (publish = false) => new Request('https://tenant.example/api/workspace/growth',
@@ -64,6 +64,13 @@ test('uncertain Growth effects reconcile exact state without repeating writes', 
     assert.equal(reconciliations, 1)
     assert.equal(saves, 1)
     assert.equal(writes, 0)
+    previewRevision = 'wrong-revision'
+    response = await growthPost(request(), '/growth/apply', principal)
+    assert.equal(response.status, 409)
+    assert.match((await response.json()).message, /approved document and route markers/)
+    assert.equal(reconciliations, 1)
+    assert.equal(writes, 0)
+    previewRevision = 'candidate'
     draft = {...draft,title:'Owner changed this'}
     response = await growthPost(request(), '/growth/apply', principal)
     assert.equal(response.status, 409)

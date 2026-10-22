@@ -153,7 +153,8 @@ const verifyExactPreview = async (
   const html = await response.text()
   const escapedRoute = route.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
   const escapedId = text(document.id).replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
-  if ([`data-helloada-preview-hash="${documentHash}"`, `data-helloada-preview-route="${escapedRoute}"`, 'class="content-page', `data-helloada-document-id="${escapedId}"`].some((marker) => !html.includes(marker))) {
+  const escapedRevision = text(document.updatedAt).replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+  if (!escapedRevision || [`data-helloada-preview-hash="${documentHash}"`, `data-helloada-preview-route="${escapedRoute}"`, `data-helloada-document-id="${escapedId}"`, `data-helloada-updated-at="${escapedRevision}"`].some((marker) => !html.includes(marker))) {
     throw new Error('The exact public page renderer did not return the approved document and route markers.')
   }
   return {
