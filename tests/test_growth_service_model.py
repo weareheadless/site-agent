@@ -44,6 +44,63 @@ def test_unclassified_work_stays_visible_without_title_keyword_guessing():
     assert model["work"][0]["primaryArea"] is None
 
 
+def test_assessment_requires_a_canonical_primary_area_and_distinct_secondary_areas():
+    opportunity = {
+        "kind": "code", "title": "Improve navigation", "why": "Visitors miss key pages", "scope": "Navigation",
+        "evidence": ["crawl"], "requiredSources": ["crawl"], "primaryArea": "website_health",
+        "secondaryAreas": ["content"],
+    }
+
+    class LLM:
+        def __init__(self, item):
+            self.item = item
+            self.messages = None
+
+        def chat(self, messages, **kwargs):
+            self.messages = messages
+            return json.dumps({"summary": "Assessed", "opportunities": [self.item]})
+
+    llm = LLM(opportunity)
+    result = assess({"llm": llm}, {"sources": [{"id": "crawl"}], "inventory": []})
+    assert result["opportunities"][0]["primaryArea"] == "website_health"
+    contract = llm.messages[0]["content"]
+    assert "Every opportunity must include primaryArea" in contract
+    assert "secondaryAreas is optional" in contract
+
+
+@pytest.mark.parametrize("area", [None, "not_a_product_area"])
+def test_assessment_rejects_missing_or_unknown_primary_area(area):
+    opportunity = {
+        "kind": "code", "title": "Improve navigation", "why": "Visitors miss key pages", "scope": "Navigation",
+        "evidence": ["crawl"], "requiredSources": ["crawl"],
+    }
+    if area is not None:
+        opportunity["primaryArea"] = area
+
+    class LLM:
+        def chat(self, *args, **kwargs):
+            return json.dumps({"summary": "Assessed", "opportunities": [opportunity]})
+
+    with pytest.raises(ValueError, match="primary Growth area"):
+        assess({"llm": LLM()}, {"sources": [{"id": "crawl"}], "inventory": []})
+
+
+@pytest.mark.parametrize("secondary", [["website_health"], ["not_a_product_area"]])
+def test_assessment_rejects_invalid_secondary_areas(secondary):
+    opportunity = {
+        "kind": "code", "title": "Improve navigation", "why": "Visitors miss key pages", "scope": "Navigation",
+        "evidence": ["crawl"], "requiredSources": ["crawl"], "primaryArea": "website_health",
+        "secondaryAreas": secondary,
+    }
+
+    class LLM:
+        def chat(self, *args, **kwargs):
+            return json.dumps({"summary": "Assessed", "opportunities": [opportunity]})
+
+    with pytest.raises(ValueError, match="secondary Growth area"):
+        assess({"llm": LLM()}, {"sources": [{"id": "crawl"}], "inventory": []})
+
+
 def test_article_scope_is_content_and_does_not_copy_its_full_body():
     model = project(tasks=[{"id": "article:1", "kind": "article", "focus": "preparing", "body": "private full body"}])
     assert model["work"][0]["primaryArea"] == "content"
