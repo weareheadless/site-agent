@@ -79,6 +79,9 @@ def test_source_candidate_waits_for_owner_and_resumes_from_its_saved_brief(tmp_p
 
 
 def test_blocked_private_preview_does_not_hold_a_new_growth_candidate_or_reuse_bad_base(tmp_path, monkeypatch):
+    # This unit exercises source concurrency; journal failure/idempotency has
+    # real-Memory/fake-transport coverage in test_growth_delivery.py.
+    monkeypatch.setattr("site_agent.application.growth_candidates.journal", lambda _context: SimpleNamespace(issue=lambda _initiative: None))
     memory = Memory(tmp_path / "memory.db")
     try:
         monkeypatch.setattr(opencode_runner, "builder_available", lambda _config: True)

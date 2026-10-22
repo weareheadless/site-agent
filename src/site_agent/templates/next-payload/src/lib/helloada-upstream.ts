@@ -11,7 +11,7 @@ const upstreamPath = (path: string) => {
   return `${base}${path.startsWith('/') ? path : `/${path}`}`
 }
 
-export async function fetchHelloAdaUpstream(path: string, request: Request): Promise<Response | undefined> {
+export async function fetchHelloAdaUpstream(path: string, request: Request, ownerActorId?: string): Promise<Response | undefined> {
   const mapped = helloAdaWorkspacePath(path, request.method, new URL(request.url).search)
   const url = mapped ? upstreamPath(mapped) : undefined
   if (!url) return undefined
@@ -20,6 +20,9 @@ export async function fetchHelloAdaUpstream(path: string, request: Request): Pro
   try {
     const headers = new Headers({ Accept: request.headers.get('accept') || 'application/json' })
     headers.set('Authorization', `Bearer ${upstreamToken()}`)
+    // Only the authenticated server caller supplies this value. Never copy an
+    // incoming browser actor header/body into the trusted service request.
+    if (ownerActorId) headers.set('X-HelloAda-Owner-Id', ownerActorId)
     const contentType = request.headers.get('content-type')
     if (contentType) headers.set('Content-Type', contentType)
     const body = request.method === 'GET' || request.method === 'HEAD' ? undefined : await request.arrayBuffer()

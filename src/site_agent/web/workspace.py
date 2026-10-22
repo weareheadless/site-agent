@@ -11,6 +11,7 @@ The route prefix remains configurable because the first customer still uses
 from __future__ import annotations
 
 import hmac
+import re
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,7 @@ from fastapi.responses import JSONResponse, Response
 
 from ..application.analytics import AnalyticsError, GoogleAnalyticsService
 from ..application.growth_evidence import growth_evidence
+from ..application.growth_delivery import GrowthDeliveryError
 from ..application.bootstrap import BootstrapError, WebsiteBootstrapService
 from ..application.tenant_registration import TenantRegistrationError, TenantRegistrationService
 from ..application.workspace import BridgeError, ChatService, SourceConflict, Tenant, TenantRegistry
@@ -35,6 +37,22 @@ from .design_preview import (
     render_candidate_file,
 )
 from .preview import PreviewAccess, PreviewBuildCache
+
+
+def authenticated_owner_actor(request: Request, tenant: Tenant | None = None) -> str | None:
+    """Read only after service/control authentication, never from owner JSON.
+
+    The authenticated Worker/HelloAda proxy sets this from its own principal;
+    it must not forward an incoming browser header or body actor claim.
+    """
+    actor = request.headers.get("x-helloada-owner-id")
+    if actor is None:
+        return None
+    if not re.fullmatch(r"(?:payload|helloada):[A-Za-z0-9_.:-]{1,180}", actor):
+        raise HTTPException(status_code=400, detail="Authenticated owner identity is invalid")
+    if tenant is not None and actor.startswith("payload:") and not actor.startswith(f"payload:{tenant.tenant_id}:"):
+        raise HTTPException(status_code=403, detail="Authenticated owner identity does not belong to this tenant")
+    return actor
 
 def register_workspace_routes(
     app: FastAPI,
@@ -688,16 +706,16 @@ def register_workspace_routes(
     def workspace_approve_draft(draft_id: int, request: Request, body: dict[str, Any] | None = Body(default=None)):
         tenant = require_service(request)
         try:
-            return service.approve_draft(draft_id, tenant=tenant, review_package_hash=(body or {}).get("review_package_hash"))
-        except BridgeError as exc:
+            return service.approve_draft(draft_id, tenant=tenant, review_package_hash=(body or {}).get("review_package_hash"), owner_actor_id=authenticated_owner_actor(request, tenant))
+        except (BridgeError, GrowthDeliveryError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post(f"{prefix}/drafts/{{draft_id}}/discard")
     def workspace_discard_draft(draft_id: int, request: Request, body: dict[str, Any] | None = Body(default=None)):
         tenant = require_service(request)
         try:
-            return service.discard_draft(draft_id, tenant=tenant, review_package_hash=(body or {}).get("review_package_hash"))
-        except BridgeError as exc:
+            return service.discard_draft(draft_id, tenant=tenant, review_package_hash=(body or {}).get("review_package_hash"), owner_actor_id=authenticated_owner_actor(request, tenant))
+        except (BridgeError, GrowthDeliveryError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post(f"{prefix}/versions/{{version_id}}/restore")
@@ -1100,8 +1118,8 @@ def register_workspace_routes(
         def control_plane_approve_draft(website_id: str, draft_id: int, request: Request, body: dict[str, Any] | None = Body(default=None)):
             tenant = require_control_tenant(request, website_id)
             try:
-                return service.approve_draft(draft_id, tenant=tenant, review_package_hash=(body or {}).get("review_package_hash"))
-            except BridgeError as exc:
+                return service.approve_draft(draft_id, tenant=tenant, review_package_hash=(body or {}).get("review_package_hash"), owner_actor_id=authenticated_owner_actor(request, tenant))
+            except (BridgeError, GrowthDeliveryError) as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 

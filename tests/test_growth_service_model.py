@@ -179,6 +179,14 @@ def test_approval_or_published_label_does_not_manufacture_a_verified_result():
     assert model["recentResults"] == []
 
 
+def test_source_health_receipt_without_technical_acceptance_is_not_a_result():
+    task = {"id": "initiative:1", "focus": "completed", "state": "live"}
+    initiative = {"id": 1, "published_revision": 'git:' + 'a' * 40,
+        "validation": {"status": "passed", "liveVerification": {
+            "verified": True, "commit": 'a' * 40, "releaseId": 'release-1'}}}
+    assert project(tasks=[task], initiatives=[initiative])["recentResults"] == []
+
+
 def test_verified_implementation_and_later_impact_are_separate_and_bounded():
     task = {"id": "initiative:1", "focus": "planned", "state": "measuring", "title": "Clearer title",
         "draftId": 5, "outcomes": [{"id": 3, "horizon_days": 30, "measured_ts": "2026-11-20",

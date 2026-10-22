@@ -530,6 +530,6 @@ export async function POST(request: Request, { params }: RouteProps) {
     const document = await auth.payload.restoreVersion({ collection: collection as CollectionSlug, draft: true, id: versionId, overrideAccess: false, req: auth.req })
     return NextResponse.json({ ok: true, collection, versionId, document })
   }
-  const upstream = await fetchHelloAdaUpstream(`/api/helloada${path}`, request)
+  const upstream = await fetchHelloAdaUpstream(`/api/helloada${path}`, request, `payload:${tenantId()}:${text(auth.user.id)}`)
   return upstream || errorResponse('HelloAda service is unavailable', 503)
 }

@@ -47,8 +47,16 @@ def _results(tasks, by_id, now):
             isinstance(check, Mapping) and isinstance(check.get("status"), int) and 200 <= check["status"] < 300
             and check.get("documentId") and check.get("updatedAt") and _date(check.get("verifiedAt")) for check in checks
         )
+        source_acceptance = validation.get("sourceTechnicalAcceptance") or {}
+        source_checks = source_acceptance.get("technicalChecks") or []
         source_verified = (verification.get("verified") is True and verification.get("releaseId")
-                           and re.fullmatch(r"[0-9a-f]{40}", str(verification.get("commit") or "")))
+            and re.fullmatch(r"[0-9a-f]{40}", str(verification.get("commit") or ""))
+            and source_acceptance.get("status") == "passed"
+            and source_acceptance.get("sourceSha") == verification.get("commit")
+            and source_acceptance.get("releaseId") == verification.get("releaseId")
+            and source_acceptance.get("packageHash") == initiative.get("review_package_hash")
+            and bool(source_checks) and all(isinstance(check, Mapping) and check.get("status") == "passed"
+                and check.get("criterion") and check.get("evidence") for check in source_checks))
         if (not initiative.get("published_revision") or validation.get("status") != "passed"
                 or not isinstance(verification, Mapping)
                 or not (payload_verified or source_verified)):

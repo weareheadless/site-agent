@@ -1,4 +1,5 @@
 import json
+import pytest
 from types import SimpleNamespace
 
 from site_agent.application.growth_workflow import _persist_evidence_artifact, ensure_default_goal, has_recoverable_growth_replay, has_recoverable_historical_noop, run_growth_cycle, run_pending_growth
@@ -9,12 +10,22 @@ from site_agent.core.memory import Memory
 from site_agent.core.scheduler import Scheduler
 
 
+@pytest.fixture(autouse=True)
+def github_journal_transport(monkeypatch):
+    from tests.test_growth_delivery import GitHub
+    from site_agent.application import growth_delivery
+    github = GitHub()
+    monkeypatch.setattr(growth_delivery, "_request", github)
+    monkeypatch.setattr(growth_delivery, "github_api_token", lambda *_args: "test-token")
+    return github
+
+
 def config():
     return {
         "instance_name": "test-business",
         "scheduler": {"enabled": True},
         "growth": {"timezone": "America/Cancun", "approval_required": True},
-        "site": {"website_present": True, "public_url": "https://business.test", "payload": {"enabled": True}},
+        "site": {"repository": "owner/customer", "website_present": True, "public_url": "https://business.test", "payload": {"enabled": True}},
     }
 
 
@@ -93,7 +104,7 @@ def test_live_payload_registers_one_growth_service_not_independent_producers(tmp
     memory = Memory(tmp_path / "memory.db")
     scheduler = Scheduler(memory, lock_path=tmp_path / "scheduler.lock", timezone_name="America/Cancun")
     settings = config()
-    context = {"config": settings, "memory": memory, "payload_gateway": Payload(), "llm": Ada()}
+    context = {"tenant_id": "test-business", "config": settings, "memory": memory, "payload_gateway": Payload(), "llm": Ada()}
     register_jobs(scheduler, settings, context)
     names = [name for name, _, _ in scheduler.jobs]
     assert {"growth_initial", "growth_daily", "growth_weekly", "growth_monthly", "growth_pending", "growth_article_sync"} <= set(names)
@@ -106,7 +117,7 @@ def test_live_payload_registers_one_growth_service_not_independent_producers(tmp
 def test_weekly_service_prepares_real_draft_without_publication_or_duplicate_work(tmp_path):
     memory = Memory(tmp_path / "memory.db")
     payload = Payload()
-    context = {"config": config(), "memory": memory, "payload_gateway": payload, "llm": Ada()}
+    context = {"tenant_id": "test-business", "config": config(), "memory": memory, "payload_gateway": payload, "llm": Ada()}
     first = run_growth_cycle(context, trigger="weekly")
     assert first["status"] == "complete"
     assert first["detail"]["candidateIds"]
@@ -137,7 +148,7 @@ def test_growth_candidate_gets_one_exact_schema_correction_before_payload_write(
 
     memory = Memory(tmp_path / "memory.db")
     payload, planner = Payload(), CorrectingAda()
-    run = run_growth_cycle({"config": config(), "memory": memory, "payload_gateway": payload, "llm": planner}, trigger="weekly")
+    run = run_growth_cycle({"tenant_id": "test-business", "config": config(), "memory": memory, "payload_gateway": payload, "llm": planner}, trigger="weekly")
 
     assert run["status"] == "complete"
     assert len(run["detail"]["candidateIds"]) == 1
@@ -159,7 +170,7 @@ def test_growth_candidate_stops_after_one_failed_schema_correction(tmp_path):
 
     memory = Memory(tmp_path / "memory.db")
     payload, planner = Payload(), InvalidAda()
-    run = run_growth_cycle({"config": config(), "memory": memory, "payload_gateway": payload, "llm": planner}, trigger="weekly")
+    run = run_growth_cycle({"tenant_id": "test-business", "config": config(), "memory": memory, "payload_gateway": payload, "llm": planner}, trigger="weekly")
 
     assert run["status"] == "blocked"
     assert len(run["detail"]["blocks"]) == 1
@@ -182,7 +193,7 @@ def test_unsupported_new_page_scope_is_deferred_without_creating_a_fake_task(tmp
 
     memory = Memory(tmp_path / "memory.db")
     payload, planner = Payload(), DeferredAda()
-    run = run_growth_cycle({"config": config(), "memory": memory, "payload_gateway": payload, "llm": planner}, trigger="weekly")
+    run = run_growth_cycle({"tenant_id": "test-business", "config": config(), "memory": memory, "payload_gateway": payload, "llm": planner}, trigger="weekly")
 
     initiative = memory.list_strategy_initiatives()[0]
     assert run["status"] == "complete"
@@ -208,7 +219,7 @@ def test_payload_assessment_without_an_exact_inventory_target_is_deferred(tmp_pa
 
     memory = Memory(tmp_path / "memory.db")
     payload, planner = Payload(), UnboundTargetAda()
-    run = run_growth_cycle({"config": config(), "memory": memory, "payload_gateway": payload, "llm": planner}, trigger="weekly")
+    run = run_growth_cycle({"tenant_id": "test-business", "config": config(), "memory": memory, "payload_gateway": payload, "llm": planner}, trigger="weekly")
 
     deferred = run["detail"]["assessment"]["unpreparedOpportunities"][0]
     assert run["status"] == "complete"
@@ -294,7 +305,7 @@ def test_activation_resumes_partial_saved_run_after_bounded_owner_summary_failur
     assert has_recoverable_growth_replay(memory)
 
     planner = Ada()
-    context = {"config": settings, "memory": memory, "payload_gateway": Payload(), "llm": planner}
+    context = {"tenant_id": "test-business", "config": settings, "memory": memory, "payload_gateway": Payload(), "llm": planner}
     reconciled = []
     monkeypatch.setattr("site_agent.application.growth_workflow._reconcile_article_research", lambda _context: reconciled.append(True))
     run_pending_growth(context)
@@ -362,7 +373,7 @@ def test_saved_initiative_transition_failure_replays_without_reassessing_or_repe
     assert has_recoverable_growth_replay(memory)
 
     planner = Ada()
-    context = {"config": settings, "memory": memory, "payload_gateway": Payload(), "llm": planner}
+    context = {"tenant_id": "test-business", "config": settings, "memory": memory, "payload_gateway": Payload(), "llm": planner}
     monkeypatch.setattr(
         "site_agent.application.growth_workflow._reconcile_article_research",
         lambda _context: pytest.fail("saved-work replay must not dispatch or poll research"),
@@ -408,7 +419,7 @@ def test_long_owner_question_scope_becomes_bounded_action_summary_without_losing
         expected={"opportunity": opportunity}, state="preparing", growth_run_id=run_id,
         goal_revision=run["goal_revision"], origin_revision=run["origin_revision"],
     )
-    context = {"config": settings, "memory": memory, "payload_gateway": Payload(), "llm": Ada()}
+    context = {"tenant_id": "test-business", "config": settings, "memory": memory, "payload_gateway": Payload(), "llm": Ada()}
 
     run_pending_growth(context)
 
@@ -428,7 +439,7 @@ def test_pending_growth_resumes_exact_historical_failure_from_saved_assessment(t
     payload = Payload()
     planner = Ada()
     run_id = _failed_saved_assessment(memory, settings)
-    context = {"config": settings, "memory": memory, "payload_gateway": payload, "llm": planner}
+    context = {"tenant_id": "test-business", "config": settings, "memory": memory, "payload_gateway": payload, "llm": planner}
     reconciled = []
     monkeypatch.setattr("site_agent.application.growth_workflow._reconcile_article_research", lambda _context: reconciled.append(True))
 
@@ -518,7 +529,7 @@ def test_pending_growth_resumes_only_the_saved_payload_candidate_after_contract_
 
     payload = Payload()
     planner = Ada()
-    context = {"config": settings, "memory": memory, "payload_gateway": payload, "llm": planner}
+    context = {"tenant_id": "test-business", "config": settings, "memory": memory, "payload_gateway": payload, "llm": planner}
     reconciled = []
     monkeypatch.setattr("site_agent.application.growth_workflow._reconcile_article_research", lambda _context: reconciled.append(True))
 
@@ -558,7 +569,7 @@ def test_pending_growth_leaves_contract_blocked_candidate_untouched_when_route_i
 
     payload = UnavailablePayload()
     planner = Ada()
-    context = {"config": settings, "memory": memory, "payload_gateway": payload, "llm": planner}
+    context = {"tenant_id": "test-business", "config": settings, "memory": memory, "payload_gateway": payload, "llm": planner}
     reconciled = []
     monkeypatch.setattr("site_agent.application.growth_workflow._reconcile_article_research", lambda _context: reconciled.append(True))
     before = memory.get_growth_run(run_id)
@@ -602,7 +613,7 @@ def test_pending_growth_replays_only_saved_schema_failure_once_and_defers_unsupp
     assert has_recoverable_growth_replay(memory)
 
     payload, planner = Payload(), DeferredAda()
-    context = {"config": settings, "memory": memory, "payload_gateway": payload, "llm": planner}
+    context = {"tenant_id": "test-business", "config": settings, "memory": memory, "payload_gateway": payload, "llm": planner}
     reconciled = []
     monkeypatch.setattr("site_agent.application.growth_workflow._reconcile_article_research", lambda _context: reconciled.append(True))
     run_pending_growth(context)
@@ -665,7 +676,7 @@ def test_activation_wakes_only_exact_recoverable_growth_and_article_jobs(tmp_pat
     memory.kv_set("next_run:growth_article_sync", 9999999.0)
 
     scheduler = Scheduler(memory, lock_path=tmp_path / "scheduler.lock", timezone_name="America/Cancun", clock=lambda: 1234.5)
-    context = {"config": settings, "memory": memory, "payload_gateway": Payload(), "llm": Ada()}
+    context = {"tenant_id": "test-business", "config": settings, "memory": memory, "payload_gateway": Payload(), "llm": Ada()}
     register_jobs(scheduler, settings, context)
 
     assert memory.kv_get("next_run:growth_pending") == 1234.5
@@ -697,7 +708,7 @@ def test_activation_does_not_wake_unrelated_or_completed_growth_work(tmp_path):
 
     scheduler = Scheduler(memory, lock_path=tmp_path / "scheduler.lock", timezone_name="America/Cancun", clock=lambda: 1234.5)
     settings = config()
-    context = {"config": settings, "memory": memory, "payload_gateway": Payload(), "llm": Ada()}
+    context = {"tenant_id": "test-business", "config": settings, "memory": memory, "payload_gateway": Payload(), "llm": Ada()}
     register_jobs(scheduler, settings, context)
 
     assert memory.kv_get("next_run:growth_pending") == 9999999.0
@@ -736,7 +747,7 @@ def test_activation_wakes_only_exact_unlinked_payload_draft_reconciliation(tmp_p
 
     scheduler = Scheduler(memory, lock_path=tmp_path / "scheduler.lock", timezone_name="America/Cancun", clock=lambda: 1234.5)
     settings = config()
-    register_jobs(scheduler, settings, {"config": settings, "memory": memory, "payload_gateway": Payload(), "llm": Ada()})
+    register_jobs(scheduler, settings, {"tenant_id": "test-business", "config": settings, "memory": memory, "payload_gateway": Payload(), "llm": Ada()})
 
     assert _has_recoverable_article_sync(memory)
     assert memory.kv_get("next_run:growth_article_sync") == 1234.5
@@ -754,7 +765,7 @@ def test_invalid_opportunity_evidence_does_not_abort_valid_preparation(tmp_path)
 
     memory = Memory(tmp_path / "memory.db")
     payload = Payload()
-    run = run_growth_cycle({"config": config(), "memory": memory, "payload_gateway": payload, "llm": PartlyInvalidAda()}, trigger="weekly")
+    run = run_growth_cycle({"tenant_id": "test-business", "config": config(), "memory": memory, "payload_gateway": payload, "llm": PartlyInvalidAda()}, trigger="weekly")
 
     assert run["status"] == "complete"
     assert len(run["detail"]["candidateIds"]) == 1
@@ -774,7 +785,7 @@ def test_missing_required_evidence_blocks_only_that_candidate_not_fabricated_com
 
     memory = Memory(tmp_path / "memory.db")
     payload = Payload()
-    run = run_growth_cycle({"config": config(), "memory": memory, "payload_gateway": payload, "llm": UnavailableAda()}, trigger="weekly")
+    run = run_growth_cycle({"tenant_id": "test-business", "config": config(), "memory": memory, "payload_gateway": payload, "llm": UnavailableAda()}, trigger="weekly")
     assert run["status"] == "blocked"
     assert payload.writes == 0
     assert memory.list_strategy_initiatives()[0]["state"] == "blocked"
@@ -787,7 +798,7 @@ def test_unprotected_gateway_is_rejected_before_any_content_write(tmp_path):
             raise RuntimeError("The managed publication contract is not installed")
     memory = Memory(tmp_path / "memory.db")
     payload = UnprotectedPayload()
-    run = run_growth_cycle({"config": config(), "memory": memory, "payload_gateway": payload, "llm": Ada()}, trigger="weekly")
+    run = run_growth_cycle({"tenant_id": "test-business", "config": config(), "memory": memory, "payload_gateway": payload, "llm": Ada()}, trigger="weekly")
     assert run["status"] == "blocked"
     assert run["next_due_ts"]
     assert payload.writes == payload.publishes == 0
@@ -801,7 +812,7 @@ def test_renderer_failure_is_not_a_validated_candidate_or_owner_decision(tmp_pat
             raise RuntimeError("The public renderer could not display the exact candidate")
     memory = Memory(tmp_path / "memory.db")
     payload = BrokenRenderer()
-    run = run_growth_cycle({"config": config(), "memory": memory, "payload_gateway": payload, "llm": Ada()}, trigger="weekly")
+    run = run_growth_cycle({"tenant_id": "test-business", "config": config(), "memory": memory, "payload_gateway": payload, "llm": Ada()}, trigger="weekly")
     assert run["status"] == "blocked"
     assert memory.list_strategy_initiatives()[0]["state"] == "blocked"
     assert not memory.list_owner_actions()
@@ -832,7 +843,7 @@ def test_monthly_growth_run_reuses_one_durable_research_request_and_polls_it(tmp
     monkeypatch.setattr("site_agent.brain.seo.previous_period", lambda _config: "2026-09")
     monkeypatch.setattr("site_agent.brain.seo.run", lambda _context: None)
     run = run_growth_cycle(
-        {"config": settings, "memory": memory, "payload_gateway": payload, "crawlseo_service": object()},
+        {"tenant_id": "test-business", "config": settings, "memory": memory, "payload_gateway": payload, "crawlseo_service": object()},
         trigger="monthly",
     )
     assert run["status"] == "pending"
@@ -848,7 +859,7 @@ def test_payload_growth_jobs_default_on_independently_of_legacy_scheduler_flag(t
     settings = config()
     settings["scheduler"]["enabled"] = False
     settings["growth"].pop("enabled", None)
-    context = {"config": settings, "memory": memory, "payload_gateway": Payload(), "llm": Ada()}
+    context = {"tenant_id": "test-business", "config": settings, "memory": memory, "payload_gateway": Payload(), "llm": Ada()}
 
     register_jobs(scheduler, settings, context)
 
@@ -865,7 +876,7 @@ def test_pending_payload_growth_reconciles_saved_article_drafts(monkeypatch, tmp
     calls = []
     monkeypatch.setattr("site_agent.core.jobs._mirror_article_drafts", lambda context: calls.append(context["tenant_id"]))
     monkeypatch.setattr("site_agent.application.growth_workflow._reconcile_article_research", lambda _context: None)
-    context = {"config": config(), "memory": memory, "payload_gateway": object(), "tenant_id": "growth-demo"}
+    context = {"tenant_id": "test-business", "config": config(), "memory": memory, "payload_gateway": object(), "tenant_id": "growth-demo"}
 
     run_pending_growth(context)
     assert calls == []
@@ -905,7 +916,7 @@ def test_pending_growth_retries_exact_truncated_proposal_once_without_hidden_rea
 
     payload = Payload()
     planner = Ada()
-    context = {"config": settings, "memory": memory, "payload_gateway": payload, "llm": planner}
+    context = {"tenant_id": "test-business", "config": settings, "memory": memory, "payload_gateway": payload, "llm": planner}
     monkeypatch.setattr("site_agent.application.growth_workflow._reconcile_article_research", lambda _context: None)
 
     run_pending_growth(context)
@@ -939,7 +950,7 @@ def test_failed_non_reasoning_growth_replay_is_not_repeated(tmp_path, monkeypatc
     settings = config()
     run_id, _ = _growth_json_truncation_run(memory, settings)
     planner = TruncatedAda()
-    context = {"config": settings, "memory": memory, "payload_gateway": Payload(), "llm": planner}
+    context = {"tenant_id": "test-business", "config": settings, "memory": memory, "payload_gateway": Payload(), "llm": planner}
     monkeypatch.setattr("site_agent.application.growth_workflow._reconcile_article_research", lambda _context: None)
 
     run_pending_growth(context)
