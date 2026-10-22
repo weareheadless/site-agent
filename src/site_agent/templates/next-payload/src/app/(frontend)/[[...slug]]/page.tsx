@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation'
 
 import BlogListingPresentation from '@/components/site/presentation/BlogListingPresentation'
 import PublicDocument from '@/components/PublicDocument'
+import { PublicRevisionList } from '@/components/platform/PublicRevision'
 import { articleDetailPath, articleIndexPath, pathForDocument, postSlugForPath } from '@/lib/content-routes'
 import { getPageBySlug, getPostBySlug, getProductBySlug, getPublishedPosts, getSiteSettings, seoFor } from '@/lib/content'
 
@@ -58,7 +59,10 @@ export default async function PublicRoute({ params }: Props) {
   if (postRoute?.kind === 'index') {
     const [posts, settings] = await Promise.all([getPublishedPosts(), getSiteSettings()])
     if (path !== articleIndexPath()) throw new Error('Articles listing route configuration is inconsistent.')
-    return <BlogListingPresentation posts={posts} settings={settings} detailBasePath={articleDetailPath()} />
+    return <>
+      <PublicRevisionList documents={posts} />
+      <BlogListingPresentation posts={posts} settings={settings} detailBasePath={articleDetailPath()} />
+    </>
   }
 
   const post = postRoute?.kind === 'detail' ? await getPostBySlug(postRoute.slug) : undefined

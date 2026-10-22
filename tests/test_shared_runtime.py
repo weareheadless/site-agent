@@ -76,6 +76,12 @@ def test_shared_overlay_updates_runtime_and_preserves_tenant_owned_content(tmp_p
     checkout = _tenant_checkout(tmp_path)
     upstream_path = checkout / "src/lib/helloada-upstream.ts"
     upstream_path.write_text("export function upstreamHeaders(request, path) {}")
+    public_wrappers = (
+        "src/components/PublicDocument.tsx",
+        "src/app/(frontend)/[[...slug]]/page.tsx",
+    )
+    for relative in public_wrappers:
+        (checkout / relative).write_text("tenant-approved routing and presentation adapter")
     preview_path = checkout / "src/app/(frontend)/helloada-preview/[token]/page.tsx"
     preview_path.parent.mkdir(parents=True, exist_ok=True)
     preview_path.write_text("tenant-specific preview renderer")
@@ -119,6 +125,8 @@ def test_shared_overlay_updates_runtime_and_preserves_tenant_owned_content(tmp_p
         "src/lib/helloada-handoff.ts",
         "src/lib/helloada-admin-entry.ts",
         "src/lib/helloada-upstream.ts",
+        "src/components/platform/PublicRevision.tsx",
+        "src/lib/public-revision.ts",
         "src/lib/runtime-env.ts",
     ):
         assert (checkout / relative).read_bytes() == (TEMPLATE / relative).read_bytes()
@@ -129,6 +137,9 @@ def test_shared_overlay_updates_runtime_and_preserves_tenant_owned_content(tmp_p
     assert "src/lib/cloudflare-context.ts" in result["changedPaths"]
     assert (checkout / "template-manifest.json").read_bytes() == manifest_before
     assert (checkout / "src/components/site/TenantSections.tsx").read_bytes() == design_before
+    for relative in public_wrappers:
+        assert (checkout / relative).read_text() == "tenant-approved routing and presentation adapter"
+        assert relative not in result["copiedPaths"]
     assert preview_path.read_bytes() == (TEMPLATE / "src/app/(frontend)/helloada-preview/[token]/page.tsx").read_bytes()
     assert "src/app/(frontend)/helloada-preview/[token]/page.tsx" in result["copiedPaths"]
     assert preview_renderer_path.read_bytes() == preview_renderer_before

@@ -7,6 +7,50 @@ Audience: the coding AI implementing the shared Growth workflow, API projection 
 
 ## 1. Product outcome
 
+### October 22 live release finding: public revision proof
+
+PR #269 and corrective overlay PR #270 passed the full 1,592-test suite and
+GitHub CI. The first canary stopped before deployment because the upstream
+helper was absent from the overlay manifest; #270 adds it with a reproduced
+stale-helper regression. Fresh canary `runtime-20261022010628-a512bcad` deployed
+with runtime fingerprint
+`c38eaef314b9f8a3e65adc3f4234c88cd63d3ac1084463046b53315c4fc0b538`.
+Authenticated Oceanic Growth and embedded Inbox were freshly loaded; browser
+evidence is beside the immutable receipt. This is not causal Growth acceptance.
+
+A read-only call of the new publication verifier against existing published
+Oceanic post 6 passed exact document hashing, then correctly rejected its public
+HTML: it has a document-ID marker but lacks the revision timestamp marker.
+No publish, unlock, DB patch or customer content change was performed.
+The API queue PR #271 stays staged until that proof works on selected consumers.
+
+Do not fix this by copying generic `PublicDocument` or the generic catch-all
+router over customer files. Despite their protected classification, existing
+adapters still contain approved tenant routing/composition: Atelier has locale,
+cart, home, product and related-content handling, and Oceanic uses separate blog
+routes. Replacing those adapters would repeat the design regressions the owner
+explicitly rejected.
+
+Required correction: one protected shared `PublicRevision` component emits the
+actual supplied Payload ID and updatedAt without adding a layout wrapper. The
+starter uses it for public documents and each listing document. Only this
+component is added to the shared-runtime overlay. Existing adapter adoption is
+an explicit, reviewed one-time source migration: add the same component around
+the existing document render and existing published-post listing, preserving all
+current logic, props, presentation files, locale handling and public routes.
+Do not weaken the live verifier, infer revisions from HTML text, stamp an
+unverified response after rendering, or add an alternate verification endpoint.
+No customer schema/content migration is needed.
+
+Validate the adoption through ordinary immutable source release requests, not
+manual Worker commands. Before/after source review must prove that the adapter
+only gains revision proof and that all approved frontend logic is retained.
+Fresh browser checks must cover the existing home, blog listing/detail, nav,
+images, motion and tenant-specific routes. The exact-publication read verifier
+must then pass both detail and listing against the current canonical document.
+Continue #266/#268 causal tests only after this boundary is proven. The dashboard
+remains gated; no source test or healthy Worker substitutes for that acceptance.
+
 ### October 21 service-model and delivery extension
 
 GitHub #260 and #261–#268 extend this contract. Their area-based dashboard
