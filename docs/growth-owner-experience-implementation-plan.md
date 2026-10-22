@@ -7,6 +7,41 @@ Audience: the coding AI implementing the shared Growth workflow, API projection 
 
 ## 1. Product outcome
 
+### October 22 API activation and first causal analysis
+
+API release `20261022-api-growth-service-1` activated exact source
+`29b61712bf5f08d89fe3eca3a603bd1d6fc81f2a` after 1,592 passing tests,
+isolated wheel installation and health verification. Both tenant source
+adoptions deployed through #273. Read-only exact-revision verification passed
+published detail and listing for Oceanic post 6 and Atelier post 5. Fresh
+authenticated Growth loaded for both tenants; this is not candidate acceptance.
+
+Normal POST `/growth/check` created durable owner-review runs for both tenants.
+Oceanic reached preparation and stopped before content mutation because its
+configured GitHub token returns 403 on repository Issues. Grant the existing
+central integration Issues read/write for managed customer repositories before
+retrying this stage; never substitute another credential or bypass the journal.
+The owner subsequently authorised that exact scope expansion. It was saved on
+the existing token without changing repository coverage, expiration or other
+permissions; read-only runtime checks now return HTTP 200 for both repositories.
+Its orphaned owner-information initiative 2 was reconciled to deferred behind
+the actual unanswered initiative 4. No owner facts were invented.
+
+The request boundary also exposed a scheduler omission: creating a pending run
+did not wake the existing `growth_pending` job. Correct that handoff with the
+existing wake helper, preserving the idempotent run key and never waking a
+completed request. A focused test must reproduce the delay before the fix and
+assert duplicate requests do not create runs or postpone the wake. Do not add
+another executor or manually change tenant scheduler state for acceptance.
+An explicit repeat may also bring forward a retry already scheduled on that
+same blocked/failed run. Preserve its assessment, candidate identities, receipts,
+status and phase. Do not manufacture a retry for hard stops without a due date,
+reclaim a running lease, or rerun completed/cancelled work. The same scheduler
+and destination idempotency/uncertain-effect guards remain execution authority.
+
+The #266/#268 causal gate remains open. A successful model GET, old publication
+read proof, or blocked real analysis is not proof of a fresh approved improvement.
+
 ### October 22 live release finding: public revision proof
 
 PR #269 and corrective overlay PR #270 passed the full 1,592-test suite and

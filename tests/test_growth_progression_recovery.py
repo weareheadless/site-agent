@@ -44,9 +44,60 @@ def opportunity(title, kind="payload_content", document="1"):
             "collection": "pages", "documentId": document}
 
 
+def test_requested_check_wakes_existing_scheduler_without_duplicate_runs(tmp_path):
+    import datetime
+
+    with closing(Memory(tmp_path / "memory.db")) as memory:
+        context = {"memory": memory, "config": {"growth": {"timezone": "UTC"}}}
+        future = datetime.datetime.now(datetime.timezone.utc).timestamp() + 3600
+        memory.kv_set("next_run:growth_pending", future)
+        first = workflow.queue_growth_check(context)
+        wake = memory.kv_get("next_run:growth_pending")
+        assert wake < future
+        second = workflow.queue_growth_check(context)
+        assert second["run_id"] == first["run_id"]
+        assert len(memory.list_growth_runs()) == 1
+        assert memory.kv_get("next_run:growth_pending") == wake
+        memory.update_growth_run(first["run_id"], status="complete", phase="complete")
+        memory.kv_set("next_run:growth_pending", future)
+        completed = workflow.queue_growth_check(context)
+        assert completed["status"] == "complete"
+        assert memory.kv_get("next_run:growth_pending") == future
+
+
 def ready_candidate(memory, initiative, *args):
     memory.transition_strategy_initiative(initiative["id"], "validating")
     return memory.transition_strategy_initiative(initiative["id"], "ready_for_review")
+
+
+def test_explicit_check_brings_forward_existing_retry_without_resetting_work(tmp_path):
+    with closing(Memory(tmp_path / "memory.db")) as memory:
+        context = {"memory": memory, "config": {"growth": {"timezone": "UTC"}}}
+        first = workflow.queue_growth_check(context)
+        saved = {"assessment": {"summary": "Persisted assessment"}, "blocks": [{"initiativeId": 7}]}
+        memory.update_growth_run(first["run_id"], status="blocked", phase="preparing",
+            detail=saved, next_due_ts="2099-01-01T00:00:00+00:00")
+        memory.kv_set("next_run:growth_pending", 4070908800.0)
+        requested = workflow.queue_growth_check(context)
+        assert requested["run_id"] == first["run_id"]
+        assert requested["status"] == "blocked"
+        assert requested["detail"] == saved
+        assert requested["phase"] == "preparing"
+        assert [row["run_id"] for row in memory.due_growth_runs()] == [first["run_id"]]
+        assert memory.kv_get("next_run:growth_pending") < 4070908800.0
+
+
+@pytest.mark.parametrize("status", ["running", "complete", "cancelled", "blocked", "failed"])
+def test_check_does_not_invent_retry_or_reclaim_execution(tmp_path, status):
+    with closing(Memory(tmp_path / "memory.db")) as memory:
+        context = {"memory": memory, "config": {"growth": {"timezone": "UTC"}}}
+        first = workflow.queue_growth_check(context)
+        memory.update_growth_run(first["run_id"], status=status, next_due_ts=None)
+        memory.kv_set("next_run:growth_pending", 4070908800.0)
+        result = workflow.queue_growth_check(context)
+        assert result["status"] == status
+        assert result["next_due_ts"] is None
+        assert memory.kv_get("next_run:growth_pending") == 4070908800.0
 
 
 def test_capacity_wait_has_runnable_due_time_then_resumes_saved_assessment(tmp_path, monkeypatch):
