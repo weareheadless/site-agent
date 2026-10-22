@@ -46,8 +46,9 @@ def _response(context: Mapping[str, Any], contract: str, material: Mapping[str, 
 def assess(context: Mapping[str, Any], material: Mapping[str, Any]) -> dict[str, Any]:
     result = _response(context,
         "summary: nonempty string; opportunities: array (maximum maxRecommendations). "
-        "Link each opportunity using primaryArea and optional secondaryAreas to content, search_visibility, "
-        "website_health, audience_competitors or speed_experience. These are presentation lenses, not limits "
+        "Every opportunity must include primaryArea, exactly one of content, search_visibility, website_health, "
+        "audience_competitors or speed_experience. secondaryAreas is optional and, when present, must contain "
+        "only other IDs from that same set; it must exclude primaryArea. These are presentation lenses, not limits "
         "on expertise or execution routes. Include coverage: an array of areas actually assessed, each with "
         "area, summary, evidence (supplied source IDs), limitations (array of strings). Omit areas without "
         "sufficient evidence; never infer clean health or measured speed from missing data. "
@@ -98,11 +99,12 @@ def assess(context: Mapping[str, Any], material: Mapping[str, Any]) -> dict[str,
             raise ValueError("An opportunity must reference real evidence")
         if not isinstance(item.get("requiredSources"), list) or not item["requiredSources"]:
             raise ValueError("An opportunity must declare its required evidence")
-        if item.get("primaryArea") is not None and item["primaryArea"] not in GROWTH_AREAS:
-            raise ValueError("Unknown primary Growth area")
+        primary = item.get("primaryArea")
+        if primary not in GROWTH_AREAS:
+            raise ValueError("Missing or unknown primary Growth area")
         secondary = item.get("secondaryAreas", [])
-        if not isinstance(secondary, list) or any(area not in GROWTH_AREAS for area in secondary):
-            raise ValueError("Unknown secondary Growth area")
+        if not isinstance(secondary, list) or any(area not in GROWTH_AREAS or area == primary for area in secondary):
+            raise ValueError("Unknown or duplicate secondary Growth area")
         if item["kind"] == "payload_content":
             collection, document_id = str(item.get("collection") or ""), str(item.get("documentId") or "")
             target_exists = any(
