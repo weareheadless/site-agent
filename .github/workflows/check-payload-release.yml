@@ -65,7 +65,7 @@ jobs:
         run: python scripts/check-next-payload-starter.py --github-token-env GITHUB_TOKEN
       - name: Test Resend and Mailflare Worker contracts
         working-directory: src/site_agent/templates/next-payload
-        run: node --experimental-strip-types --test tests/resend-mail.test.mjs tests/mailflare-runtime.test.mjs tests/mailflare-inbox.test.mjs tests/mailflare-owner-gate.test.mjs tests/growth-recovery.test.mjs tests/growth-owner-identity.test.mjs
+        run: node --experimental-strip-types --test tests/resend-mail.test.mjs tests/mailflare-runtime.test.mjs tests/mailflare-inbox.test.mjs tests/mailflare-owner-gate.test.mjs tests/growth-recovery.test.mjs tests/growth-owner-identity.test.mjs tests/public-revision.test.mjs
 
   mailflare-integration:
     runs-on: ubuntu-latest

@@ -126,6 +126,7 @@ def test_shared_overlay_updates_runtime_and_preserves_tenant_owned_content(tmp_p
         "src/lib/helloada-admin-entry.ts",
         "src/lib/helloada-upstream.ts",
         "src/components/platform/PublicRevision.tsx",
+        "src/lib/public-revision.ts",
         "src/lib/runtime-env.ts",
     ):
         assert (checkout / relative).read_bytes() == (TEMPLATE / relative).read_bytes()
