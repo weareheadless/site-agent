@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 from ..core.contracts import Artifact, ArtifactKind, ContractError, utc_now
 from ..core.growth_contracts import GrowthGoalRevision, GrowthPolicy
 from ..core.memory import Memory
+from .actions import owner_action_summary
 
 
 def ensure_default_goal(memory: Memory) -> dict[str, Any]:
@@ -73,15 +74,6 @@ def _parsed_timestamp(value: Any) -> datetime.datetime | None:
     except (TypeError, ValueError, OverflowError):
         return None
     return parsed.replace(tzinfo=datetime.timezone.utc) if parsed.tzinfo is None else parsed.astimezone(datetime.timezone.utc)
-
-
-def _owner_action_summary(value: Any) -> str:
-    """Project long evidence scope into the bounded owner-action summary field."""
-    summary = " ".join(str(value or "").split())
-    if len(summary) <= 500:
-        return summary
-    prefix = summary[:497].rsplit(" ", 1)[0].rstrip(" .,;:") or summary[:497]
-    return prefix + "…"
 
 
 def _defer_duplicate_owner_information(memory: Any, initiative: Mapping[str, Any] | None, related_id: int) -> None:
@@ -1362,7 +1354,7 @@ def run_growth_cycle(
                 journal(context).issue(initiative)
                 action = OwnerActionService(memory).create(OwnerAction(
                     capability_id="growth.owner_information", provider_id="site-agent", title=opportunity["title"],
-                    summary=_owner_action_summary(opportunity["scope"]), action_label="Answer Ada", priority=ActionPriority.NORMAL,
+                    summary=owner_action_summary(opportunity["scope"]), action_label="Answer Ada", priority=ActionPriority.NORMAL,
                     requirement=ActionRequirement.OWNER_INFORMATION, source_ref=f"growth-initiative:{initiative['id']}",
                     dedupe_key=f"growth-initiative:{initiative['id']}"))
                 memory.update_strategy_initiative(initiative["id"], owner_action_id=action.id)

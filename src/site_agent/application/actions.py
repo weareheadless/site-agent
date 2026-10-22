@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import datetime
 import sqlite3
+from typing import Any
 
 from ..core.contracts import (
     ActionState,
@@ -20,6 +21,15 @@ from ..core.contracts import (
 
 class ActionServiceError(RuntimeError):
     pass
+
+
+def owner_action_summary(value: Any) -> str:
+    """Project long evidence into the owner's bounded summary field."""
+    summary = " ".join(str(value or "").split())
+    if len(summary) <= 500:
+        return summary
+    prefix = summary[:497].rsplit(" ", 1)[0].rstrip(" .,;:") or summary[:497]
+    return prefix + "…"
 
 
 class OwnerActionService:
