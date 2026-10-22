@@ -486,7 +486,13 @@ def _plan_effect_for_tool(context: dict[str, Any], name: str, args: dict[str, An
     effect = candidates[0]
     planned_fields = set(effect.get("fields") or [])
     if set(data) != planned_fields:
-        raise ValueError("the Payload fields must exactly match the validated plan")
+        missing_fields = sorted(planned_fields - set(data))
+        unexpected_fields = sorted(set(data) - planned_fields)
+        raise ValueError(
+            "the Payload fields must exactly match the validated plan "
+            f"(missing planned fields: {', '.join(missing_fields) or '(none)'}; "
+            f"unexpected data fields: {', '.join(unexpected_fields) or '(none)'})"
+        )
     if effect.get("completed_fields"):
         raise ValueError("this planned Payload effect has already been applied")
 
