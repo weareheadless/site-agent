@@ -1196,6 +1196,11 @@ SIDE_EFFECTS = {
 }
 
 
+def _safe_tool_name_for_log(name: Any) -> str:
+    value = str(name or "")
+    return value if re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]{0,63}", value) else "invalid"
+
+
 def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message: str,
                            history: list[dict[str, str]] | None, progress, persona: str,
                            source_message_id: int | None = None) -> dict[str, Any]:
@@ -1378,6 +1383,13 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
                 ]
                 source_pending = bool(str(plan.get("source_brief") or "").strip()) and not context.get("_source_build_completed")
                 if unfinished or source_pending:
+                    logging.getLogger(__name__).warning(
+                        "editor_tool_loop_refused tenant=%s job=%s code=incomplete_plan_without_tool_calls "
+                        "tool_names=none tool_count=0 pending_effect_count=%d pending_source_build_count=%d "
+                        "step=%d step_limit=%d",
+                        context.get("tenant_id"), context.get("_chat_job_id"), len(unfinished),
+                        int(source_pending), hop + 1, max_steps,
+                    )
                     pending = []
                     if unfinished:
                         pending.append(f"{len(unfinished)} planned Payload effect(s) are incomplete")
@@ -1399,6 +1411,15 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
             }
         side_effect_calls = [c for c in calls if c["function"]["name"] in SIDE_EFFECTS]
         if side_effect_calls and len(calls) != 1:
+            tool_names = ",".join(sorted(
+                _safe_tool_name_for_log(call["function"]["name"]) for call in calls
+            ))
+            logging.getLogger(__name__).warning(
+                "editor_tool_loop_refused tenant=%s job=%s code=mixed_side_effect_batch "
+                "tool_names=%s tool_count=%d side_effect_count=%d",
+                context.get("tenant_id"), context.get("_chat_job_id"), tool_names,
+                len(calls), len(side_effect_calls),
+            )
             error = "REFUSED: send exactly one mutating tool call in a model turn; read-only calls may be batched."
             for call in calls:
                 convo.append({"role": "tool", "tool_call_id": call["id"], "content": error})
@@ -1412,6 +1433,12 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
                 continue
             name = call["function"]["name"]
             if name not in offered_tools:
+                logging.getLogger(__name__).warning(
+                    "editor_tool_loop_refused tenant=%s job=%s code=unoffered_tool "
+                    "tool_names=%s tool_count=1",
+                    context.get("tenant_id"), context.get("_chat_job_id"),
+                    _safe_tool_name_for_log(name),
+                )
                 result = f"REFUSED: tool '{name}' is not available for this request. Use one of the tools offered in this turn."
                 convo.append({"role": "tool", "tool_call_id": call["id"], "content": result})
                 continue

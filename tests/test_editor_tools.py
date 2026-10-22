@@ -589,30 +589,107 @@ def test_read_file_truncates_with_marker_and_guards_repeat_reads(env):
     assert result["reply"] == "I have what I need."
 
 
-def test_tool_loop_rejects_mixed_mutation_batch(env):
+def test_tool_loop_logs_mixed_mutation_batch_refusal_without_executing_effects(env, caplog):
     from site_agent.hands.base import SiteAdapter
 
     class Adapter(SiteAdapter):
         name = "t"
+        def __init__(self): self.commits = 0
         def get_file(self, path, branch=None): return (None, None)
-        def commit_file(self, path, data, message, branch=None): return {}
+        def commit_file(self, path, data, message, branch=None):
+            self.commits += 1
+            return {}
 
+    env[1]["builder"] = {"enabled": True}
+    env[1]["site"]["clone_path"] = "/tmp/existing-site"
     mixed = [
         {"id": "read", "type": "function",
-         "function": {"name": "read_file", "arguments": json.dumps({"path": "styles.css"})}},
+         "function": {"name": "read_file", "arguments": json.dumps({"path": "https://private.example/article"})}},
         {"id": "write", "type": "function",
-         "function": {"name": "propose_changes", "arguments": json.dumps({
-             "summary": "unsafe batch", "ops": [{"op": "write", "path": "x.html", "content": "x"}]
+         "function": {"name": "spawn_build", "arguments": json.dumps({
+             "brief": "PRIVATE_ARTICLE_BODY https://private.example/article"
          })}},
     ]
     llm = FakeToolsLLM([
         {"content": None, "tool_calls": mixed},
         {"content": "I did not stage an ambiguous batch.", "tool_calls": None},
     ])
-    result = handle_message({"config": env[1], "memory": env[0], "llm": llm}, Adapter(), "change it")
+    adapter = Adapter()
+    context = {"config": env[1], "memory": env[0], "llm": llm,
+               "tenant_id": "tenant-test", "_chat_job_id": 42}
+    result = handle_message(context, adapter, "change it")
     assert result["proposal_id"] is None
     assert env[0].list_drafts(status="pending") == []
+    assert adapter.commits == 0
     assert llm.calls[1]["messages"][-1]["content"].startswith("REFUSED")
+    warning = caplog.text
+    assert "tenant=tenant-test job=42 code=mixed_side_effect_batch" in warning
+    assert "tool_names=read_file,spawn_build tool_count=2 side_effect_count=1" in warning
+    assert "private.example" not in warning
+    assert "PRIVATE_ARTICLE_BODY" not in warning
+
+
+def test_tool_loop_logs_unoffered_tool_without_arguments_or_response(env, caplog):
+    from site_agent.hands.base import SiteAdapter
+
+    class Adapter(SiteAdapter):
+        name = "t"
+        def get_file(self, path, branch=None): raise AssertionError("unoffered tool executed")
+        def commit_file(self, path, data, message, branch=None): raise AssertionError("unoffered tool executed")
+
+    llm = FakeToolsLLM([
+        {"content": "PRIVATE_MODEL_RESPONSE", "tool_calls": _tc(
+            "unoffered_tool", url="https://private.example/path", article="PRIVATE_ARTICLE_BODY")},
+        {"content": "The unavailable tool was refused.", "tool_calls": None},
+    ])
+    context = {"config": env[1], "memory": env[0], "llm": llm,
+               "tenant_id": "tenant-test", "_chat_job_id": 43}
+
+    handle_message(context, Adapter(), "change it")
+
+    assert "tenant=tenant-test job=43 code=unoffered_tool" in caplog.text
+    assert "tool_names=unoffered_tool tool_count=1" in caplog.text
+    assert "private.example" not in caplog.text
+    assert "PRIVATE_ARTICLE_BODY" not in caplog.text
+    assert "PRIVATE_MODEL_RESPONSE" not in caplog.text
+
+
+def test_incomplete_plan_continuation_is_logged_and_uses_existing_step_budget(env, caplog):
+    from site_agent.hands.base import SiteAdapter
+
+    class Adapter(SiteAdapter):
+        name = "t"
+        def __init__(self): self.commits = 0
+        def get_file(self, path, branch=None): return (None, None)
+        def commit_file(self, path, data, message, branch=None):
+            self.commits += 1
+            return {}
+
+    config = env[1]
+    config["builder"] = {"enabled": True}
+    config["site"]["clone_path"] = "/tmp/existing-site"
+    config["llm"]["max_work_steps"] = 2
+    llm = FakeToolsLLM([
+        {"content": None, "tool_calls": _tc(
+            "plan_website_change", content_effects=[],
+            source_brief="PRIVATE_ARTICLE_BODY https://private.example/article",
+            response_only=False)},
+        {"content": "The source build is complete.", "tool_calls": None},
+    ])
+    adapter = Adapter()
+    context = {"config": config, "memory": env[0], "llm": llm,
+               "tenant_id": "tenant-test", "_chat_job_id": 44}
+
+    with pytest.raises(RuntimeError, match=r"configured tool-step limit \(2\)"):
+        handle_message(context, adapter, "change it")
+
+    assert len(llm.calls) == 2
+    assert adapter.commits == 0
+    assert env[0].list_drafts(status="pending") == []
+    assert "tenant=tenant-test job=44 code=incomplete_plan_without_tool_calls" in caplog.text
+    assert "tool_names=none tool_count=0 pending_effect_count=0 pending_source_build_count=1 step=2 step_limit=2" in caplog.text
+    assert "PRIVATE_ARTICLE_BODY" not in caplog.text
+    assert "private.example" not in caplog.text
 
 
 def test_site_source_cannot_be_written_by_chat_tools(env):
