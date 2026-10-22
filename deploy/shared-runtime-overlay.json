@@ -21,6 +21,7 @@
     "src/lib/growth-contract.ts",
     "src/lib/growth-operations.ts",
     "src/lib/helloada-auth.ts",
+    "src/lib/helloada-upstream.ts",
     "src/lib/helloada-admin-entry.ts",
     "src/lib/helloada-handoff.ts",
     "src/lib/helloada-form-runtime.ts",

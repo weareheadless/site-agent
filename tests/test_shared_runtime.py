@@ -74,6 +74,8 @@ def _tenant_checkout(root: Path) -> Path:
 
 def test_shared_overlay_updates_runtime_and_preserves_tenant_owned_content(tmp_path: Path):
     checkout = _tenant_checkout(tmp_path)
+    upstream_path = checkout / "src/lib/helloada-upstream.ts"
+    upstream_path.write_text("export function upstreamHeaders(request, path) {}")
     preview_path = checkout / "src/app/(frontend)/helloada-preview/[token]/page.tsx"
     preview_path.parent.mkdir(parents=True, exist_ok=True)
     preview_path.write_text("tenant-specific preview renderer")
@@ -116,6 +118,7 @@ def test_shared_overlay_updates_runtime_and_preserves_tenant_owned_content(tmp_p
         "src/app/api/helloada/handoff/route.ts",
         "src/lib/helloada-handoff.ts",
         "src/lib/helloada-admin-entry.ts",
+        "src/lib/helloada-upstream.ts",
         "src/lib/runtime-env.ts",
     ):
         assert (checkout / relative).read_bytes() == (TEMPLATE / relative).read_bytes()
