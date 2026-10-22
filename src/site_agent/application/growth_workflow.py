@@ -903,9 +903,14 @@ def queue_growth_check(context: Mapping[str, Any], *, trigger: str = "owner_revi
     now = datetime.datetime.now(datetime.timezone.utc)
     # Coalesce an explicit owner review for this day/goal/origin. GET never queues.
     key = _cycle_key(policy, int(goal["revision"]), trigger + ":" + now.date().isoformat(), now)
-    return memory.create_growth_run(run_id=f"growth-{uuid.uuid4().hex}", run_key=key, trigger=trigger,
+    run = memory.create_growth_run(run_id=f"growth-{uuid.uuid4().hex}", run_key=key, trigger=trigger,
         goal_revision=int(goal["revision"]), timezone=policy.timezone, phase="collecting", status="pending",
         policy=policy.to_dict(), origin_revision=policy.origin_revision, phase_version=2)
+    if run["status"] == "pending":
+        from .growth_candidates import wake_growth_pending
+
+        wake_growth_pending(memory)
+    return run
 
 
 def _inventory(context: Mapping[str, Any]) -> list[dict[str, Any]]:

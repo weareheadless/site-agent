@@ -44,6 +44,27 @@ def opportunity(title, kind="payload_content", document="1"):
             "collection": "pages", "documentId": document}
 
 
+def test_requested_check_wakes_existing_scheduler_without_duplicate_runs(tmp_path):
+    import datetime
+
+    with closing(Memory(tmp_path / "memory.db")) as memory:
+        context = {"memory": memory, "config": {"growth": {"timezone": "UTC"}}}
+        future = datetime.datetime.now(datetime.timezone.utc).timestamp() + 3600
+        memory.kv_set("next_run:growth_pending", future)
+        first = workflow.queue_growth_check(context)
+        wake = memory.kv_get("next_run:growth_pending")
+        assert wake < future
+        second = workflow.queue_growth_check(context)
+        assert second["run_id"] == first["run_id"]
+        assert len(memory.list_growth_runs()) == 1
+        assert memory.kv_get("next_run:growth_pending") == wake
+        memory.update_growth_run(first["run_id"], status="complete", phase="complete")
+        memory.kv_set("next_run:growth_pending", future)
+        completed = workflow.queue_growth_check(context)
+        assert completed["status"] == "complete"
+        assert memory.kv_get("next_run:growth_pending") == future
+
+
 def ready_candidate(memory, initiative, *args):
     memory.transition_strategy_initiative(initiative["id"], "validating")
     return memory.transition_strategy_initiative(initiative["id"], "ready_for_review")
