@@ -906,7 +906,13 @@ def queue_growth_check(context: Mapping[str, Any], *, trigger: str = "owner_revi
     run = memory.create_growth_run(run_id=f"growth-{uuid.uuid4().hex}", run_key=key, trigger=trigger,
         goal_revision=int(goal["revision"]), timezone=policy.timezone, phase="collecting", status="pending",
         policy=policy.to_dict(), origin_revision=policy.origin_revision, phase_version=2)
-    if run["status"] == "pending":
+    # An explicit request may bring forward an already scheduled retry. Keep
+    # its phase, saved evidence, candidates and effect receipts untouched; the
+    # same leased scheduler and destination guards still own execution.
+    scheduled_retry = run["status"] in {"blocked", "failed"} and bool(run.get("next_due_ts"))
+    if scheduled_retry:
+        run = memory.update_growth_run(run["run_id"], next_due_ts=now.isoformat(timespec="seconds"))
+    if run["status"] == "pending" or scheduled_retry:
         from .growth_candidates import wake_growth_pending
 
         wake_growth_pending(memory)
