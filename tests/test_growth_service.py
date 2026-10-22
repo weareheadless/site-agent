@@ -718,6 +718,69 @@ def test_activation_does_not_wake_unrelated_or_completed_growth_work(tmp_path):
     memory.close()
 
 
+def test_long_payload_evidence_is_projected_only_in_bounded_review_summaries_and_resumes_once(tmp_path, monkeypatch):
+    why = "Evidence for this recommendation remains complete. " * 18
+    scope = "Detailed change scope remains available to the owner. " * 18
+
+    class LongEvidenceAda(Ada):
+        def chat(self, messages, **kwargs):
+            material = json.loads(messages[-1]["content"])
+            if material.get("stage") == "prepare":
+                return super().chat(messages, **kwargs)
+            self.stages.append("assess")
+            return json.dumps({"summary": "A long-evidence opportunity.", "opportunities": [{
+                "kind": "payload_content", "title": "Make the homepage clearer in search",
+                "why": why, "hypothesis": "A clear description helps search visitors.", "primaryArea": "search_visibility",
+                "collection": "pages", "documentId": "1", "evidence": ["inventory", "ga4"],
+                "requiredSources": ["inventory"], "scope": scope, "metric": "gsc.clicks",
+            }]})
+
+    memory = Memory(tmp_path / "memory.db")
+    payload, planner = Payload(), LongEvidenceAda()
+    context = {"tenant_id": "test-business", "config": config(), "memory": memory, "payload_gateway": payload, "llm": planner}
+    update_strategy_cycle = memory.update_strategy_cycle
+    fail_once = True
+
+    def interrupt_after_candidate(*args, **kwargs):
+        nonlocal fail_once
+        if fail_once:
+            fail_once = False
+            raise RuntimeError("simulated interruption after candidate preparation")
+        return update_strategy_cycle(*args, **kwargs)
+
+    monkeypatch.setattr(memory, "update_strategy_cycle", interrupt_after_candidate)
+    interrupted = run_growth_cycle(context, trigger="weekly")
+    assert interrupted["status"] == "failed"
+    initiatives = memory.list_strategy_initiatives()
+    assert len(initiatives) == 1, interrupted.get("detail", {}).get("error")
+    initiative, = initiatives
+    assert initiative["state"] == "ready_for_review"
+    action, = [a for a in memory.list_owner_actions(limit=None) if a.source_ref == f"growth-initiative:{initiative['id']}"]
+    artifact, = [a for a in memory.list_artifacts(limit=500) if a.source_action_id == action.id]
+    draft, = [d for d in memory.list_drafts(limit=None) if d["kind"] == "payload_content"]
+    package = draft["meta"]["growth_package"]
+
+    assert len(action.summary) <= 500
+    assert len(artifact.summary) <= 500
+    assert initiative["rationale"] == why
+    assert initiative["summary"] == scope
+    assert initiative["expected"]["opportunity"]["why"] == why
+    assert initiative["expected"]["opportunity"]["scope"] == scope
+    assert draft["body"] == scope
+    assert package["why"] == why and package["scope"] == scope
+    assert artifact.preview_data["why"] == why
+    assert payload.draft["metaDescription"]
+
+    memory.update_growth_run(interrupted["run_id"], status="running", next_due_ts=None)
+    resumed = run_growth_cycle(context, trigger="weekly", run_id=interrupted["run_id"], resume_interrupted=True)
+    assert resumed["status"] == "complete"
+    assert resumed["detail"]["recoveryEvents"][-1]["code"] == "growth_worker_restart_recovery"
+    assert payload.writes == 1
+    assert payload.publishes == 0
+    assert len(memory.list_owner_actions(limit=None)) == 1
+    assert len([a for a in memory.list_artifacts(limit=500) if a.source_action_id == action.id]) == 1
+    assert len([d for d in memory.list_drafts(limit=None) if d["kind"] == "payload_content"]) == 1
+    memory.close()
 
 def test_activation_wakes_only_exact_unlinked_payload_draft_reconciliation(tmp_path):
     memory = Memory(tmp_path / "memory.db")

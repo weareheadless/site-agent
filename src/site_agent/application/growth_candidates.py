@@ -10,7 +10,7 @@ from typing import Any
 from ..brain import growth as brain_growth
 from ..core.contracts import ActionPriority, ActionRequirement, Artifact, ArtifactKind, EffectClass, OwnerAction
 from .approvals import ApprovalService
-from .actions import OwnerActionService
+from .actions import OwnerActionService, owner_action_summary
 from .growth_delivery import candidate_checkpoint, journal
 
 
@@ -90,11 +90,11 @@ def prepare_payload_candidate(context: Mapping[str, Any], initiative: Mapping[st
     existing_draft = next((row for row in memory.list_drafts(limit=500) if (row.get("meta") or {}).get("review_package_hash") == package_hash), None)
     draft_id = existing_draft["id"] if existing_draft else memory.save_draft(title=opportunity["title"], body=opportunity["scope"], kind="payload_content", meta={"growth_package": package, "review_package_hash": package_hash})
     action = OwnerActionService(memory).create(OwnerAction(
-        capability_id="growth.candidate.review", provider_id="site-agent", title=opportunity["title"], summary=opportunity["why"],
+        capability_id="growth.candidate.review", provider_id="site-agent", title=opportunity["title"], summary=owner_action_summary(opportunity["why"]),
         action_label="Review this version", priority=ActionPriority.NORMAL, requirement=ActionRequirement.OWNER_DECISION,
         source_ref=f"growth-initiative:{initiative['id']}", dedupe_key=f"growth-initiative:{initiative['id']}", draft_id=draft_id))
     artifact = memory.create_artifact(Artifact(
-        kind=ArtifactKind.SITE_CHANGE, title=opportunity["title"], summary=opportunity["scope"], renderer="site_change",
+        kind=ArtifactKind.SITE_CHANGE, title=opportunity["title"], summary=owner_action_summary(opportunity["scope"]), renderer="site_change",
         capability_id="growth.publish", provider_id="payload", content_hash=package_hash,
         preview_data={"before": base, "after": expected, "route": entry.get("route"), "why": opportunity["why"]},
         source_action_id=action.id,
@@ -399,7 +399,7 @@ def finalize_source_candidate(context: Mapping[str, Any], initiative: Mapping[st
     action = action_service.create(OwnerAction(
         capability_id="growth.candidate.review", provider_id="site-agent",
         title=str(initiative.get("title") or "Review Ada's website improvement"),
-        summary=str(initiative.get("rationale") or initiative.get("summary") or "")[:500],
+        summary=owner_action_summary(initiative.get("rationale") or initiative.get("summary") or ""),
         action_label="Review this website change", priority=ActionPriority.NORMAL,
         requirement=ActionRequirement.OWNER_DECISION,
         source_ref=f"growth-initiative:{initiative_id}",
@@ -411,7 +411,7 @@ def finalize_source_candidate(context: Mapping[str, Any], initiative: Mapping[st
         artifact = memory.create_artifact(Artifact(
             kind=ArtifactKind.SITE_CHANGE,
             title=str(initiative.get("title") or "Website improvement"),
-            summary=str(initiative.get("summary") or ""),
+            summary=owner_action_summary(initiative.get("summary") or ""),
             renderer="site_change", capability_id="growth.publish", provider_id="site-agent",
             content_hash=package_hash,
             preview_data={"package": package, "packageHash": package_hash},
