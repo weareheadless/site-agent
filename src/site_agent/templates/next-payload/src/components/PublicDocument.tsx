@@ -1,4 +1,5 @@
 import PagePresentation from '@/components/site/presentation/PagePresentation'
+import { PublicRevision } from '@/components/platform/PublicRevision'
 
 type RecordValue = Record<string, unknown>
 type Props = {
@@ -11,5 +12,8 @@ type Props = {
 
 export default function PublicDocument({ document, settings, kind, collection: requestedCollection, preview = false }: Props) {
   const collection = requestedCollection || (kind === 'post' ? 'posts' : kind === 'product' ? 'products' : 'pages')
-  return <PagePresentation document={document} settings={settings} kind={kind} collection={collection} preview={preview} />
+  return <>
+    <PublicRevision document={document} />
+    <PagePresentation document={document} settings={settings} kind={kind} collection={collection} preview={preview} />
+  </>
 }

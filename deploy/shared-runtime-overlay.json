@@ -8,6 +8,7 @@
     "mailflare-provisioning.ts",
     "mailflare-runtime.ts",
     "mailflare-bindings.ts",
+    "src/components/platform/PublicRevision.tsx",
     "src/app/(frontend)/helloada-preview/[token]/page.tsx",
     "src/app/api/health/route.ts",
     "src/app/api/helloada/[...path]/route.ts",
