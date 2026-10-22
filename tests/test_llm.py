@@ -157,6 +157,22 @@ def test_openrouter_requests_authoritative_usage_receipt(tmp_path):
     mem.close()
 
 
+def test_chat_tools_serializes_parallel_tool_call_setting_only_when_requested():
+    captured = []
+
+    def fake_post(url, headers, payload, timeout):
+        captured.append(dict(payload))
+        return _response()
+
+    client = Client(_config(), memory=None, env=_FAKE_ENV)
+    with mock.patch("site_agent.core.llm._http_post", fake_post):
+        client.chat_tools([], [], parallel_tool_calls=False)
+        client.chat_tools([], [])
+
+    assert captured[0]["parallel_tool_calls"] is False
+    assert "parallel_tool_calls" not in captured[1]
+
+
 def test_client_can_disable_provider_thinking_for_structured_output(tmp_path):
     mem = Memory(tmp_path / "memory.db")
     config = _config("https://openrouter.ai/api/v1")

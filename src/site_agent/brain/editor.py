@@ -1389,6 +1389,7 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
             convo,
             tool_spec,
             temperature=0.4,
+            parallel_tool_calls=False,
         )
         calls = resp.get("tool_calls") or []
         assistant_msg = {"role": "assistant", "content": resp.get("content")}
