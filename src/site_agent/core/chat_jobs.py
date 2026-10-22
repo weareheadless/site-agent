@@ -25,17 +25,30 @@ def _job_worker_id() -> str:
     return f"{time.time_ns()}-{threading.get_ident()}"
 
 
-def _owner_action_started(result: dict[str, Any]) -> bool:
-    """Return whether this job actually queued an owner-visible operation.
+def _owner_action_started(result: dict[str, Any], context: dict[str, Any] | None = None) -> bool:
+    """Return whether this job actually started or completed owner-visible work.
 
     An intake advisor's ``ui_action`` is only a model suggestion; it is not
-    evidence that a build or preview happened. Only concrete handoffs and
-    follow-up build results count here.
+    evidence that a build or preview happened. Concrete handoffs, follow-up
+    build results, and verified Payload-write receipts count here.
     """
     if result.get("merge_draft_id") or result.get("design_run_id"):
         return True
     followup = result.get("build_followup")
-    return isinstance(followup, dict) and followup.get("modification_status") == "started"
+    if isinstance(followup, dict) and followup.get("modification_status") == "started":
+        return True
+    receipts = (context or {}).get("_completed_payload_effects")
+    return isinstance(receipts, list) and any(
+        isinstance(receipt, dict)
+        and receipt.get("kind") in {"collection", "global"}
+        and receipt.get("operation") in {"create", "update"}
+        and bool(str(receipt.get("document_id") or "").strip())
+        and str(receipt.get("revision") or "").startswith("sha256:")
+        and isinstance(receipt.get("fields"), list)
+        and bool(receipt["fields"])
+        and all(isinstance(field, str) and field for field in receipt["fields"])
+        for receipt in receipts
+    )
 
 
 def _handoff_design_request(
@@ -123,6 +136,7 @@ def run_job(context: dict[str, Any], job: dict[str, Any], worker: str,
     from ..config import timing_enabled
 
     timings_on = timing_enabled(context.get("config") or {}, context.get("env"))
+    context.pop("_completed_payload_effects", None)
     context["_chat_job_id"] = int(job_id)
     context["_chat_job_worker"] = str(worker)
     job_payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
@@ -254,7 +268,7 @@ def run_job(context: dict[str, Any], job: dict[str, Any], worker: str,
         if isinstance(result.get("reply"), str):
             result["reply"] = owner_message_without_unstarted_build(
                 result["reply"],
-                action_started=_owner_action_started(result),
+                action_started=_owner_action_started(result, context),
             )
         if result.get("error"):
             raise RuntimeError(str(result.get("reply") or "chat job failed")[:300])

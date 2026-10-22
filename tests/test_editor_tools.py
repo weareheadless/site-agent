@@ -14,8 +14,13 @@ class FakeToolsLLM:
         self.rounds = list(rounds)
         self.calls = []
 
-    def chat_tools(self, messages, tools, temperature=None):
-        self.calls.append({"messages": [dict(m) for m in messages], "tools": tools})
+    def chat_tools(self, messages, tools, temperature=None, *, parallel_tool_calls: bool | None = None):
+        assert parallel_tool_calls is False
+        self.calls.append({
+            "messages": [dict(m) for m in messages],
+            "tools": tools,
+            "parallel_tool_calls": parallel_tool_calls,
+        })
         r = self.rounds.pop(0)
         if isinstance(r, Exception):
             raise r

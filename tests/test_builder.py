@@ -1010,7 +1010,8 @@ def test_tweakmap_injected_into_tool_prompt(tmp_path):
         def __init__(self):
             self.calls = []
 
-        def chat_tools(self, messages, tools, temperature=None):
+        def chat_tools(self, messages, tools, temperature=None, *, parallel_tool_calls: bool | None = None):
+            assert parallel_tool_calls is False
             self.calls.append(messages)
             return {"content": "I have the site context.", "tool_calls": None}
 
@@ -1386,7 +1387,8 @@ def test_template_tokens_injected_into_chat_tools_prompt(tmp_path):
         def __init__(self):
             self.calls = []
 
-        def chat_tools(self, messages, tools, temperature=None):
+        def chat_tools(self, messages, tools, temperature=None, *, parallel_tool_calls: bool | None = None):
+            assert parallel_tool_calls is False
             self.calls.append(messages)
             return {"content": "I have the design context.", "tool_calls": None}
 

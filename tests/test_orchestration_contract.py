@@ -57,6 +57,64 @@ def test_failure_outcome_is_durable_and_not_duplicated(tmp_path, failure):
         assert job['result']['failure']['job_id'] == job_id
 
 
+@pytest.mark.parametrize(
+    ("payload_effects", "expected_reply"),
+    [
+        ([{
+            "kind": "collection",
+            "operation": "update",
+            "target": "posts",
+            "document_id": "7",
+            "revision": "sha256:" + "b" * 64,
+            "fields": ["body", "seo"],
+            "locale": "en",
+            "summary": "Updated the requested draft fields",
+        }], "I've updated the page draft with the requested fields. It remains unpublished."),
+        ([], "To be clear, I haven't built or previewed this yet. These are directions only. "
+             "Choose a direction, then ask me to build it when you're ready."),
+        ([{"kind": "collection", "operation": "update"}],
+         "To be clear, I haven't built or previewed this yet. These are directions only. "
+         "Choose a direction, then ask me to build it when you're ready."),
+        (None, "To be clear, I haven't built or previewed this yet. These are directions only. "
+              "Choose a direction, then ask me to build it when you're ready."),
+    ],
+)
+def test_chat_job_uses_payload_receipt_for_reply_safety_without_weakening_build_guard(
+    tmp_path, monkeypatch, payload_effects, expected_reply
+):
+    from site_agent.brain import editor
+    from site_agent.core.chat_jobs import run_job
+    from site_agent.core.memory import Memory
+
+    model_reply = "I've updated the page draft with the requested fields. It remains unpublished."
+
+    def handle_message(context, *args, **kwargs):
+        if payload_effects is not None:
+            context["_completed_payload_effects"] = payload_effects
+        return {"reply": model_reply, "proposal_id": None, "merge_draft_id": None}
+
+    monkeypatch.setattr(editor, "handle_message", handle_message)
+    with closing(Memory(tmp_path / "memory.db")) as memory:
+        conversation = memory.create_conversation()
+        job_id = memory.enqueue_chat_job(conversation, "Update the selected post draft")
+        memory.claim_chat_job("test-worker")
+        job = memory.get_chat_job(job_id)
+        context = {
+            "memory": memory,
+            "config": {"site": {}},
+            "env": {},
+            "_completed_payload_effects": [{
+                "kind": "collection", "operation": "update", "target": "posts",
+                "document_id": "old-job", "revision": "sha256:" + "c" * 64,
+                "fields": ["body"], "locale": "en", "summary": "Prior job receipt",
+            }],
+        }
+
+        result = run_job(context, job, "test-worker", adapter_factory=lambda: object())
+
+        assert result["reply"] == expected_reply
+
+
 def test_orchestrator_gets_previous_job_evidence_without_raw_errors(tmp_path):
     from site_agent.core.memory import Memory
     from site_agent.brain.task_context import conversation_tasks
@@ -75,6 +133,106 @@ def test_orchestrator_gets_previous_job_evidence_without_raw_errors(tmp_path):
         assert tasks[0]['failure_boundary'] == 'source_scope'
         assert tasks[0]['latest_progress'][0]['text'] == 'validating the generated preview'
         assert 'private-path' not in str(tasks)
+
+
+def test_editor_requests_sequential_tool_calls(monkeypatch):
+    from site_agent.application import growth
+    from site_agent.brain import editor, prompts, task_context
+
+    class ToolsLLM:
+        def __init__(self):
+            self.kwargs = None
+
+        def chat_tools(self, messages, tools, **kwargs):
+            self.kwargs = kwargs
+            return {"content": "I checked the request.", "tool_calls": None}
+
+    llm = ToolsLLM()
+    memory = object()
+    monkeypatch.setattr(editor, "_payload_gateway", lambda context: None)
+    monkeypatch.setattr(editor, "_writable_patterns", lambda context: [])
+    monkeypatch.setattr(editor, "inner_life_context", lambda memory: "")
+    monkeypatch.setattr(editor, "configured_site_profile_prompt", lambda config: "")
+    monkeypatch.setattr(editor, "_workspace_language", lambda message: None)
+    monkeypatch.setattr(editor, "_tweakmap_block", lambda context: "")
+    monkeypatch.setattr(editor, "_template_tokens_block", lambda context: "")
+    monkeypatch.setattr(editor, "_decision_ledger_block", lambda context: "")
+    monkeypatch.setattr(editor, "_looks_like_design_request", lambda message: False)
+    monkeypatch.setattr(editor, "_tools_spec", lambda *args, **kwargs: [])
+    monkeypatch.setattr(editor, "_max_work_steps", lambda context: 1)
+    monkeypatch.setattr(task_context, "conversation_tasks", lambda context: [])
+    monkeypatch.setattr(growth, "growth_chat_context", lambda *args: {})
+    monkeypatch.setattr(prompts, "memory_context", lambda *args, **kwargs: "")
+
+    editor._handle_message_tools(
+        {"llm": llm, "memory": memory, "config": config()},
+        adapter=None,
+        message="Check the current draft status",
+        history=[],
+        progress=None,
+        persona="",
+    )
+
+    assert llm.kwargs["parallel_tool_calls"] is False
+
+
+def test_mixed_side_effect_batch_remains_fail_closed(monkeypatch):
+    from site_agent.application import growth
+    from site_agent.brain import editor, prompts, task_context
+
+    calls = [
+        {"id": "plan-1", "type": "function", "function": {"name": "plan_website_change", "arguments": "{}"}},
+        {"id": "plan-2", "type": "function", "function": {"name": "plan_website_change", "arguments": "{}"}},
+    ]
+
+    class ToolsLLM:
+        def __init__(self):
+            self.responses = [
+                {"content": None, "tool_calls": calls},
+                {"content": "The batch was refused; no change was made.", "tool_calls": None},
+            ]
+            self.requests = []
+
+        def chat_tools(self, messages, tools, **kwargs):
+            self.requests.append((messages, kwargs))
+            return self.responses.pop(0)
+
+    llm = ToolsLLM()
+    memory = object()
+    monkeypatch.setattr(editor, "_payload_gateway", lambda context: None)
+    monkeypatch.setattr(editor, "_writable_patterns", lambda context: [])
+    monkeypatch.setattr(editor, "inner_life_context", lambda memory: "")
+    monkeypatch.setattr(editor, "configured_site_profile_prompt", lambda config: "")
+    monkeypatch.setattr(editor, "_workspace_language", lambda message: None)
+    monkeypatch.setattr(editor, "_tweakmap_block", lambda context: "")
+    monkeypatch.setattr(editor, "_template_tokens_block", lambda context: "")
+    monkeypatch.setattr(editor, "_decision_ledger_block", lambda context: "")
+    monkeypatch.setattr(editor, "_looks_like_design_request", lambda message: False)
+    monkeypatch.setattr(
+        editor, "_tools_spec",
+        lambda *args, **kwargs: [{"function": {"name": "plan_website_change"}}],
+    )
+    monkeypatch.setattr(editor, "_execute_tool", lambda *args, **kwargs: pytest.fail("batch executed"))
+    monkeypatch.setattr(editor, "_max_work_steps", lambda context: 2)
+    monkeypatch.setattr(task_context, "conversation_tasks", lambda context: [])
+    monkeypatch.setattr(growth, "growth_chat_context", lambda *args: {})
+    monkeypatch.setattr(prompts, "memory_context", lambda *args, **kwargs: "")
+
+    result = editor._handle_message_tools(
+        {"llm": llm, "memory": memory, "config": config()},
+        adapter=None,
+        message="Check the draft",
+        history=[],
+        progress=None,
+        persona="",
+    )
+
+    assert result["reply"] == "The batch was refused; no change was made."
+    assert len(llm.requests) == 2
+    assert all(kwargs["parallel_tool_calls"] is False for _, kwargs in llm.requests)
+    tool_results = [message for message in llm.requests[1][0] if message["role"] == "tool"]
+    assert len(tool_results) == 2
+    assert all(message["content"].startswith("REFUSED:") for message in tool_results)
 
 
 @pytest.mark.parametrize('kind', ['maintenance', 'presentation'])

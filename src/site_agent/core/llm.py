@@ -323,6 +323,7 @@ class Client:
         max_tokens: int | None = None,
         timeout_seconds: float | None = None,
         max_retries: int | None = None,
+        parallel_tool_calls: bool | None = None,
     ):
         """Native tool-calling round -> {"content", "tool_calls"}."""
         if not self.api_key:
@@ -334,6 +335,8 @@ class Client:
             "tools": tools,
             "tool_choice": "auto",
         }
+        if parallel_tool_calls is not None:
+            payload["parallel_tool_calls"] = bool(parallel_tool_calls)
         if temperature is not None:
             payload["temperature"] = temperature
         if max_tokens is not None or self.max_tokens:
