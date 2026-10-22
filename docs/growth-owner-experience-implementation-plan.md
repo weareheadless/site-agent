@@ -7,6 +7,29 @@ Audience: the coding AI implementing the shared Growth workflow, API projection 
 
 ## 1. Product outcome
 
+### October 22 candidate read/claim boundary finding
+
+The real scheduler advanced Atelier's owner-review run through inventory and
+assessment and created owner question 3. Content initiatives 1/2 stopped on a
+base-revision conflict. Read-only checks show both saved bases still match the
+canonical gateway (pages 54/24); the unchanged Oceanic post 6 base also matches.
+The existing raw-revision verifier accepts Atelier page 54 and Oceanic post 6.
+Atelier page 24 additionally has a public category-route 404; do not conflate
+that separate renderer issue with the revision check.
+
+Align Growth verification/readback with the authoring gateway's configured
+Payload read shape rather than forcing a separate relationship depth. Preserve
+exact hash, schema, tenant, concurrent-draft and immutable-preview checks. A
+revision conflict should identify differing field names only, never content.
+This source correction still requires a fresh causal tenant check after rollout;
+do not infer live success from query-shape alignment or a fixture.
+
+Reject deterministic schema/base preflight failures before claiming a write
+operation. Recheck inside the claim before a write, retaining existing destination
+guards. A preflight rejection must not lock a document as an uncertain effect.
+Existing uncertain operations remain preserved and read-only reconciled; neither
+this fix nor a retry request authorises clearing them or replaying unknown writes.
+
 ### October 22 API activation and first causal analysis
 
 API release `20261022-api-growth-service-1` activated exact source

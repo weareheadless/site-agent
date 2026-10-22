@@ -14,6 +14,7 @@ test('uncertain Growth effects reconcile exact state without repeating writes', 
     const tenantId = () => 'tenant-a'
     const asObject = (x) => x && typeof x === 'object' ? x : {}
     let hashJson = async (x) => JSON.stringify(x)
+    const stableJson = (x) => JSON.stringify(x)
     const projectDocument = (doc, fields) => Object.fromEntries(fields.map(key => [key, doc[key] ?? null]))
     const withoutPayloadMetadata = (x) => { const result = {...x}; for (const key of ['id','updatedAt','createdAt','_status']) delete result[key]; return result }
     const createHelloAdaPreviewToken = async () => 'exact-token'
@@ -24,12 +25,15 @@ test('uncertain Growth effects reconcile exact state without repeating writes', 
     const createLocalReq = async () => ({})
     const operationContext = () => {}
     const NextResponse = { json: (body, options = {}) => Response.json(body, {status:options.status || 200}) }
-    let writes = 0, reconciliations = 0, saves = 0
+    let writes = 0, reconciliations = 0, saves = 0, claims = 0
     let live = {id:'1', title:'Before', updatedAt:'base', route:'/'}
     let draft = {id:'1', title:'After', updatedAt:'candidate'}
     const payload = {
       config: {collections:[{slug:'pages',fields:[{name:'title'}]}]},
-      findByID: async (options) => options.draft ? draft : live,
+      findByID: async (options) => {
+        assert.equal(options.depth, undefined, 'Candidate reads must match the canonical authoring query')
+        return options.draft ? draft : live
+      },
       findGlobal: async () => ({}),
       update: async () => { writes++; throw new Error('Reconciliation must never repeat a write') },
     }
@@ -40,7 +44,7 @@ test('uncertain Growth effects reconcile exact state without repeating writes', 
     const packageHash = JSON.stringify(packageData)
     const candidateRow = async () => ({state:'validated',package_json:JSON.stringify(packageData)})
     const operationResult = () => ({ok:false,error:'previous timeout'})
-    const claimOperation = async () => ({inserted:false,row:{state:'uncertain'}})
+    const claimOperation = async () => { claims++; return {inserted:false,row:{state:'uncertain'}} }
     const completeOperation = async () => {throw new Error('Use reconciliation, not first-write completion')}
     const reconcileOperation = async () => {reconciliations++}
     const saveCandidate = async () => {saves++}
@@ -83,6 +87,14 @@ test('uncertain Growth effects reconcile exact state without repeating writes', 
     assert.equal(response.status, 409)
     assert.equal(writes, 0)
     hashJson = savedHash
+    const previousClaims = claims
+    const savedLive = live
+    live = {...live,title:'A newer owner revision'}
+    response = await growthPost(request(), '/growth/apply', principal)
+    assert.equal(response.status, 409)
+    assert.match((await response.json()).message, /fields: title/)
+    assert.equal(claims, previousClaims, 'Rejected preflight must not claim a write or lock the document')
+    live = savedLive
     packageData.tenant = 'another-tenant'
     response = await growthPost(request(), '/growth/apply', principal)
     assert.equal(response.status, 409)
