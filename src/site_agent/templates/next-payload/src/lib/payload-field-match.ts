@@ -19,9 +19,22 @@ function normalize(value: unknown): unknown {
     .map(([key, child]) => [key, normalize(child)]))
 }
 
+function requestedValueMatches(actual: unknown, requested: unknown): boolean {
+  if (Array.isArray(requested)) {
+    return Array.isArray(actual) && actual.length === requested.length
+      && requested.every((value, index) => requestedValueMatches(actual[index], value))
+  }
+  if (requested && typeof requested === 'object') {
+    return Boolean(actual && typeof actual === 'object' && !Array.isArray(actual))
+      && Object.entries(requested).every(([key, value]) =>
+        requestedValueMatches((actual as PayloadDocument)[key], value))
+  }
+  return Object.is(actual, requested)
+}
+
 export function fieldMismatchKeys(document: PayloadDocument, input: PayloadDocument): string[] {
   return Object.entries(input)
-    .filter(([key, value]) => JSON.stringify(normalize(document[key])) !== JSON.stringify(normalize(value)))
+    .filter(([key, value]) => !requestedValueMatches(normalize(document[key]), normalize(value)))
     .map(([key]) => key)
 }
 

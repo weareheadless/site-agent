@@ -45,3 +45,16 @@ assert.ok(!diagnostic.includes('/private/stored.png'))
 assert.ok(!diagnostic.includes('Draft title'))
 
 console.log('payload field comparison regression tests passed')
+
+const seoPatch = { seo: { title: 'New search title', description: 'New description' } }
+assert.equal(fieldValueMatches({ seo: { ...seoPatch.seo, image: null } }, seoPatch), true,
+  'Optional group defaults must not make a schema-valid partial update look unsaved')
+assert.equal(fieldValueMatches({ seo: { ...seoPatch.seo, image: 52 } }, seoPatch), true,
+  'A partial group update must preserve unrequested existing values')
+assert.equal(fieldValueMatches({ seo: { ...seoPatch.seo, title: 'Different' } }, seoPatch), false)
+assert.equal(fieldValueMatches({ seo: { title: seoPatch.seo.title } }, seoPatch), false,
+  'Every explicitly requested nested value must be persisted')
+assert.equal(fieldValueMatches({ content: [{ text: 'First' }, { text: 'Unexpected' }] },
+  { content: [{ text: 'First' }] }), false, 'Arrays remain exact in length and order')
+assert.equal(fieldValueMatches({ content: [{ text: 'Second' }, { text: 'First' }] },
+  { content: [{ text: 'First' }, { text: 'Second' }] }), false)
