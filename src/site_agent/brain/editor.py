@@ -437,6 +437,20 @@ def _payload_plan_complete(context: dict[str, Any]) -> bool:
     )
 
 
+def _mark_website_change_dispatched(
+    context: dict[str, Any],
+    *,
+    effect: dict[str, Any] | None = None,
+    source_build: bool = False,
+) -> None:
+    """Record an external attempt before entering its adapter/build boundary."""
+    context["_website_change_plan_dispatched"] = True
+    if effect is not None:
+        effect["_dispatched"] = True
+    if source_build:
+        context["_website_change_source_build_dispatched"] = True
+
+
 def _plan_effect_for_tool(context: dict[str, Any], name: str, args: dict[str, Any]) -> dict[str, Any]:
     plan = context.get("_website_change_plan")
     if not isinstance(plan, dict) or plan.get("response_only"):
@@ -484,6 +498,8 @@ def _plan_effect_for_tool(context: dict[str, Any], name: str, args: dict[str, An
     if len(candidates) != 1:
         raise ValueError("the Payload change does not match one exact target in Ada's validated plan")
     effect = candidates[0]
+    if effect.get("_dispatched"):
+        raise ValueError("this planned Payload effect was already dispatched; do not replay an uncertain write")
     planned_fields = set(effect.get("fields") or [])
     if set(data) != planned_fields:
         missing_fields = sorted(planned_fields - set(data))
@@ -1005,8 +1021,8 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
         except Exception as exc:  # noqa: BLE001 — explain service failures to Ada
             return f"Booking service action failed: {str(exc)[:400]}"
     if name == "plan_website_change":
-        if context.get("_website_change_plan") is not None:
-            return "REFUSED: this request already has a validated plan; do not replace it after effects begin."
+        if context.get("_website_change_plan_dispatched"):
+            return "REFUSED: this request's plan is frozen because the host recorded a Payload write or source build dispatch; do not replace it after dispatch."
         try:
             plan = _validate_website_change_plan(args, context.get("_authoring_contract"), context["config"])
         except (TypeError, ValueError) as exc:
@@ -1052,6 +1068,7 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
             if name == "create_payload_draft":
                 effect = _plan_effect_for_tool(context, name, args)
                 write_kwargs = {"locale": locale}
+                _mark_website_change_dispatched(context, effect=effect)
                 document = payload.create(str(args.get("collection") or ""), args.get("data") or {}, **write_kwargs)
                 _record_payload_effect(context, effect, document)
                 context["_last_action_succeeded"] = True
@@ -1059,6 +1076,7 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
             if name == "update_payload_draft":
                 effect = _plan_effect_for_tool(context, name, args)
                 write_kwargs = {"locale": locale}
+                _mark_website_change_dispatched(context, effect=effect)
                 document = payload.update(
                     str(args.get("collection") or ""),
                     str(args.get("id") or ""),
@@ -1072,6 +1090,7 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
             if name == "update_payload_global":
                 effect = _plan_effect_for_tool(context, name, args)
                 write_kwargs = {"locale": locale}
+                _mark_website_change_dispatched(context, effect=effect)
                 document = payload.update_global(
                     str(args.get("global") or ""), args.get("data") or {},
                     expected_hash=str(args.get("expected_hash") or ""), **write_kwargs,
@@ -1089,6 +1108,8 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
             return f"REFUSED: Payload content action failed: {str(exc)[:500]}"
     if name == "spawn_build":
         from ..hands import opencode_runner as runner
+        if context.get("_website_change_source_build_dispatched"):
+            return "REFUSED: the source build was already dispatched for this request; do not replay an uncertain build."
         brief = str(args.get("brief", "")).strip()
         if not brief:
             return "REFUSED: spawn_build needs a non-empty brief."
@@ -1110,6 +1131,7 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
                 + json.dumps(payload_receipts, ensure_ascii=False, sort_keys=True)
             )
         try:
+            _mark_website_change_dispatched(context, source_build=True)
             outcome = runner.stage_build(context, authoritative_brief + execution_context, say)
         except Exception as exc:  # noqa: BLE001
             raise RuntimeError(f"Builder failed: {exc}") from exc
@@ -1308,10 +1330,14 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
             "Keep booking schema, availability, persistence, and notifications in the shared service; do not create parallel stores or endpoints."
         )
     system += (
-        "\n\nMutation protocol: before any Payload or source change, call plan_website_change exactly once. "
+        "\n\nMutation protocol: call plan_website_change before any Payload or source change. "
         "Declare every requested Payload target and exact top-level field, plus any source presentation brief. "
         "Read the exact Payload document/global and revision before updating it. The host refuses unplanned fields, "
-        "targets, and source work before required Payload drafts are saved. A response_only plan is for read-only answers."
+        "targets, and source work before required Payload drafts are saved. Before a planned Payload adapter write or source-build call, "
+        "the host records per-request dispatch evidence; a corrected validated plan may replace an earlier plan only while "
+        "that evidence is absent. Once recorded, the plan stays frozen even if the call raises or its outcome is uncertain. "
+        "Do not replay a dispatched Payload effect or source build, and do not infer that no dispatch occurred from missing "
+        "completed_fields or a missing receipt. A response_only plan is for read-only answers."
     )
     try:
         from .prompts import memory_context
@@ -1336,6 +1362,8 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
     context.pop("_design_request", None)
     context.pop("_read_cache", None)
     context.pop("_website_change_plan", None)
+    context.pop("_website_change_plan_dispatched", None)
+    context.pop("_website_change_source_build_dispatched", None)
     context.pop("_completed_payload_effects", None)
     context.pop("_resolved_payload_locale", None)
     context.pop("_payload_read_documents", None)
