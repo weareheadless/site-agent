@@ -5,6 +5,7 @@ import { getPayload } from 'payload'
 import config from '@payload-config'
 import { helloAdaSite } from '@/helloada.config'
 import { hashJson, withoutPayloadMetadata } from '@/lib/payload-hash'
+import { fieldMismatchDiagnostic, fieldMismatchKeys, fieldValueMatches } from '@/lib/payload-field-match'
 import { resolvePayloadLocale, type HelloAdaPayloadLocale } from '@/lib/payload-locale'
 import { serviceAuthorized } from '@/lib/service-auth'
 import { validateHelloAdaAuthoringData } from '@weareheadless/helloada-payload-core/schema'
@@ -18,24 +19,6 @@ const collectionEnabled = (collection: (typeof collections)[number]) =>
   collection === 'pages'
   || (collection === 'posts' && Boolean(helloAdaSite.features?.posts))
   || (collection === 'products' && Boolean(helloAdaSite.features?.commerce))
-
-const fieldValueMatches = (document: Record<string, unknown>, input: Record<string, unknown>) => {
-  const normalize = (value: unknown): unknown => {
-    if (Array.isArray(value)) return value.map(normalize)
-    if (!value || typeof value !== 'object') return value
-    const row = value as Record<string, unknown>
-    if (Object.hasOwn(row, 'id') && (Object.hasOwn(row, 'url') || Object.hasOwn(row, 'filename') || Object.hasOwn(row, 'collection'))) {
-      return row.id
-    }
-    const meaningfulKeys = Object.keys(row).filter((key) => !['createdAt', 'updatedAt', '_status'].includes(key))
-    if (meaningfulKeys.length === 1 && meaningfulKeys[0] === 'id') return row.id
-    return Object.fromEntries(Object.entries(row)
-      .filter(([key]) => !['id', 'createdAt', 'updatedAt', '_status'].includes(key))
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, child]) => [key, normalize(child)]))
-  }
-  return Object.entries(input).every(([key, value]) => JSON.stringify(normalize(document[key])) === JSON.stringify(normalize(value)))
-}
 
 function errorResponse(message: string, status: number) {
   return NextResponse.json({ error: 'workspace_gateway_error', message }, { status })
@@ -227,7 +210,8 @@ export async function POST(request: Request) {
         if (raced.docs.length > 0) return errorResponse('A Payload document already occupies this route with different content.', 409)
         return payloadFailure(error, 'Payload could not create the draft. No duplicate will be attempted automatically.')
       }
-      if (!fieldValueMatches(document, data)) return errorResponse('Payload did not persist the exact requested draft fields', 409)
+      const mismatchKeys = fieldMismatchKeys(document, data)
+      if (mismatchKeys.length) return errorResponse(fieldMismatchDiagnostic(mismatchKeys), 409)
       return NextResponse.json({
         collection,
         document,
@@ -269,7 +253,8 @@ export async function POST(request: Request) {
           effectKey: `${collection}:${id}:${expectedHash}`,
         }, { headers: { 'Cache-Control': 'no-store' } })
       }
-      if (!fieldValueMatches(document, data)) return errorResponse('Payload did not persist the exact requested draft fields', 409)
+      const mismatchKeys = fieldMismatchKeys(document, data)
+      if (mismatchKeys.length) return errorResponse(fieldMismatchDiagnostic(mismatchKeys), 409)
       return NextResponse.json({
         collection,
         document,
