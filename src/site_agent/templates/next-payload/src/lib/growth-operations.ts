@@ -7,7 +7,7 @@ import { helloAdaRuntime } from '@weareheadless/helloada-payload-admin/server'
 import { helloAdaSite } from '@/helloada.config'
 import { createHelloAdaPreviewToken } from '@/lib/helloada-preview'
 import { articleIndexPath, pathForDocument } from '@/lib/content-routes'
-import { hashJson, withoutPayloadMetadata } from '@/lib/payload-hash'
+import { hashJson, stableJson, withoutPayloadMetadata } from '@/lib/payload-hash'
 import {
   asObject,
   candidateRow,
@@ -89,12 +89,17 @@ const verifyPackage = async (
   if (!Object.keys(after).length || Object.keys(changes).some((field) => !fields.includes(field))) throw new Error('Growth package candidate fields are invalid')
   const access = accessFor(principal)
   const locale = helloAdaSite.defaultLocale as TypedLocale
-  const live = await payload.findByID({ collection: collection as CollectionSlug, depth: 2, draft: false, id: documentId, locale, ...access }) as unknown as Record<string, unknown>
-  const draft = await payload.findByID({ collection: collection as CollectionSlug, depth: 2, draft: true, id: documentId, locale, ...access }) as unknown as Record<string, unknown>
+  // Match the authoring gateway's configured read shape. Forcing a separate
+  // relationship depth changes the revision even when no content was edited.
+  const live = await payload.findByID({ collection: collection as CollectionSlug, draft: false, id: documentId, locale, ...access }) as unknown as Record<string, unknown>
+  const draft = await payload.findByID({ collection: collection as CollectionSlug, draft: true, id: documentId, locale, ...access }) as unknown as Record<string, unknown>
   const liveProjection = projectDocument(live, fields)
   const draftProjection = projectDocument(draft, fields)
   const liveHash = await hashJson(liveProjection)
-  if (liveHash !== text(packageData.baseHash) && !(allowPublishedCandidate && liveHash === text(packageData.candidateHash))) throw new Error('The published document changed; this Growth package is stale')
+  if (liveHash !== text(packageData.baseHash) && !(allowPublishedCandidate && liveHash === text(packageData.candidateHash))) {
+    const changedFields = fields.filter((field) => stableJson(liveProjection[field]) !== stableJson(before[field]))
+    throw new Error(`The published document changed; this Growth package is stale (fields: ${changedFields.slice(0, 8).join(', ') || 'hash serialization'}).`)
+  }
   if (await hashJson(before) !== text(packageData.baseHash)) throw new Error('Growth package does not describe the published base')
   if (await hashJson(after) !== text(packageData.candidateHash)) throw new Error('Growth package candidate hash is invalid')
   const expected = { ...before, ...changes }
@@ -245,6 +250,13 @@ export async function growthPost(request: Request, path: string, principal: Grow
     const collection = text(packageData.collection)
     const documentId = text(packageData.documentId)
     if (!editable(collection) || !collectionEnabled(collection) || !documentId) return error('Growth package target is invalid')
+    // A rejected read/schema/base check has no external write to reconcile.
+    // Do not create an uncertain operation (and lock the document) for it.
+    try {
+      await verifyPackage(payload, principal, packageData, packageHash, false)
+    } catch (cause) {
+      return error(cause instanceof Error ? cause.message : 'Growth candidate preflight failed', 409)
+    }
     const documentKey = `${collection}:${documentId}`
     const operationKey = `draft:${tenantId()}:${documentKey}:${packageHash}`
     const claimed = await claimOperation(operationKey, documentKey, packageHash)
@@ -280,7 +292,7 @@ export async function growthPost(request: Request, path: string, principal: Grow
         })
       }
       const access = accessFor(principal)
-      const afterWrite = await payload.findByID({ collection: verified.collection as CollectionSlug, depth: 2, draft: true, id: documentId, locale: helloAdaSite.defaultLocale as TypedLocale, ...access }) as unknown as Record<string, unknown>
+      const afterWrite = await payload.findByID({ collection: verified.collection as CollectionSlug, draft: true, id: documentId, locale: helloAdaSite.defaultLocale as TypedLocale, ...access }) as unknown as Record<string, unknown>
       if (await hashJson(projectDocument(afterWrite, verified.fields)) !== text(packageData.candidateHash)) throw new Error('Payload did not retain the exact Growth candidate')
       const preview = await verifyExactPreview(request, payload, principal, verified.collection, afterWrite, verified.route)
       const proof = { ok: true, packageHash, candidateHash: packageData.candidateHash, validation: { status: 'passed', packageHash, checks: { canonicalSchema: true, exactDraft: true, private: true, publicRenderer: true, approvalBoundary: true }, preview } }
@@ -330,7 +342,7 @@ export async function growthPost(request: Request, path: string, principal: Grow
         req,
       })
       const access = accessFor(principal)
-      const published = await payload.findByID({ collection: verified.collection as CollectionSlug, depth: 2, draft: false, id: documentId, locale: helloAdaSite.defaultLocale as TypedLocale, ...access }) as unknown as Record<string, unknown>
+      const published = await payload.findByID({ collection: verified.collection as CollectionSlug, draft: false, id: documentId, locale: helloAdaSite.defaultLocale as TypedLocale, ...access }) as unknown as Record<string, unknown>
       if (await hashJson(projectDocument(published, verified.fields)) !== text(packageData.candidateHash)) throw new Error('The public Payload document does not match the approved candidate')
       const liveVerification = await verifyLiveRoutes(request, collection, published, verified.route)
       const result = { ok: true, packageHash, candidateHash: packageData.candidateHash, status: 'published', published: { collection, documentId, updatedAt: text(published.updatedAt) }, liveVerification }
