@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
 from ..hands.base import SiteAdapter
 from ..core.design_contracts import DesignRequest
+from ..core.contracts import safe_provider_message
 from .owner_copy import owner_safe_reply as _owner_safe_reply
 from .prompts import configured_site_profile_prompt, inner_life_context
 
@@ -390,6 +392,12 @@ def _validate_website_change_plan(
         unknown = sorted(set(fields) - names)
         if unknown:
             raise ValueError(f"content_effects[{index}] includes fields outside the shared schema: {', '.join(unknown)}")
+        if operation == "create":
+            required = {str(field.get("name")) for field in schema_fields or []
+                        if isinstance(field, dict) and field.get("required") is True}
+            missing = sorted(required - set(fields))
+            if missing:
+                raise ValueError("creation plan is missing required authoring fields: " + ", ".join(missing))
         if operation == "update" and not identifier:
             raise ValueError(f"content_effects[{index}] updates need an exact document/global identity")
         if operation == "update" and kind == "collection" and identifier_kind not in {"id", "sourceId", "slug"}:
@@ -1067,6 +1075,11 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
                 return f"Payload global draft updated: {_payload_result(document, action='write')}"
             return "REFUSED: unknown Payload action."
         except Exception as exc:  # noqa: BLE001 — a tool failure should be explained to Ada
+            logging.getLogger(__name__).warning(
+                "payload_tool_failed tenant=%s job=%s tool=%s reason=%s",
+                context.get("tenant_id"), context.get("_chat_job_id"), name,
+                safe_provider_message(str(exc), max_chars=500),
+            )
             return f"REFUSED: Payload content action failed: {str(exc)[:500]}"
     if name == "spawn_build":
         from ..hands import opencode_runner as runner
@@ -1418,7 +1431,7 @@ def _handle_message_tools(context: dict[str, Any], adapter: SiteAdapter, message
                     "change": context.get("_last_change"),
                     "changed": context.get("_last_changed"),
                 }
-    raise RuntimeError("Connection issue, try again.")
+    raise RuntimeError(f"Ada reached the configured tool-step limit ({max_steps}); the request did not complete.")
 
 
 def handle_message(
