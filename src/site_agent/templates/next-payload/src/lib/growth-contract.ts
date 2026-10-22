@@ -27,8 +27,13 @@ export const tenantId = () => String(process.env.HELLOADA_TENANT_ID || '').trim(
 export const asObject = (value: unknown): JsonObject =>
   value && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : {}
 
-export const projectDocument = (document: JsonObject, fields: string[]) =>
-  Object.fromEntries([...new Set(fields)].sort().map((field) => [field, document[field] ?? null]))
+export const projectDocument = (document: JsonObject, fields: string[]) => {
+  const projection = Object.fromEntries([...new Set(fields)].sort().map((field) => [field, document[field] ?? null]))
+  // Match the gateway's JSON response: nested undefined object properties are
+  // omitted and undefined array entries become null. Keep declared top-level
+  // missing fields explicit as null before the roundtrip.
+  return JSON.parse(JSON.stringify(projection)) as JsonObject
+}
 
 export const candidateRow = async (packageHash: string) => {
   const db = await database()
