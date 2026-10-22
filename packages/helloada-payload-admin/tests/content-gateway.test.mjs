@@ -8,6 +8,12 @@ const source = readFileSync(new URL('../../../src/site_agent/templates/next-payl
 const compiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText
+const fieldMatchSource = readFileSync(new URL('../../../src/site_agent/templates/next-payload/src/lib/payload-field-match.ts', import.meta.url), 'utf8')
+const fieldMatchCompiled = ts.transpileModule(fieldMatchSource, {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText
+const fieldMatchModule = { exports: {} }
+vm.runInNewContext(fieldMatchCompiled, fieldMatchModule)
 
 test('the default content gateway bounds requested lists and requires service authentication', async () => {
   let authorized = true
@@ -20,6 +26,7 @@ test('the default content gateway bounds requested lists and requires service au
     '@/lib/service-auth': { serviceAuthorized: () => authorized },
     '@/helloada.config': { helloAdaSite: { locales: ['en'] } },
     '@/lib/payload-locale': { resolvePayloadLocale: () => undefined },
+    '@/lib/payload-field-match': fieldMatchModule.exports,
   }
   const sandbox = { exports: {}, URL, require: name => modules[name] }
   vm.runInNewContext(compiled, sandbox)
@@ -52,6 +59,7 @@ test('draft updates require the exact current Payload revision', async () => {
     '@/lib/service-auth': { serviceAuthorized: () => true },
     '@/helloada.config': { helloAdaSite: { locales: ['en'] } },
     '@/lib/payload-locale': { resolvePayloadLocale: () => undefined },
+    '@/lib/payload-field-match': fieldMatchModule.exports,
     '@weareheadless/helloada-payload-core/schema': { validateHelloAdaAuthoringData: () => true },
     '@/lib/payload-hash': {
       hashJson: async () => revision,
