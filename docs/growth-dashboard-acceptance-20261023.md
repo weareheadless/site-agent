@@ -117,3 +117,84 @@ No customer recommendation is approved by this engineering record. No paid
 research authorization or browser acceptance is implied by passing source tests.
 
 The corrected API source queued by this activation is `4c0dd35fc387a44a7ed829024900cdd5dad3955e`; its regular merge must preserve that exact source commit on official `main`. It retains the verified admin v0.10.28 pins. This is a queue/source identity, not proof of activation.
+
+
+## Live API and shared-runtime checkpoint after PR #298
+
+- PR #298 merged as `ca93a0a60e8eea6899fd486bbeaaff46e2566033` after CI
+  `39982246691` passed. The official timer deployed API
+  `20261023-api-growth-exact-revisions-1`, exact source
+  `4c0dd35fc387a44a7ed829024900cdd5dad3955e`, with `health-passed` receipt and
+  wheel SHA-256 `31479855a170663b17ec71a76763136e8e00c2460fdc64908c1299f998e8b334`.
+- Shared admin `0.10.28` reached all five enrolled targets with runtime
+  fingerprint `4b92e52f1012eda448606f78cf810e10e8883edca19ef98d49333fb82307ba84`:
+  Oceanic `runtime-20261023160538-489ce2d9`; Atelier
+  `runtime-20261023161333-e1bce43e`; Northstar full-intake validation
+  `runtime-20261023161333-d591c51f`; handoff validation
+  `runtime-20261023161333-c1d378af`; Inmersion
+  `runtime-20261023161333-3e08d411`. Each receipt is deployed and explicitly
+  awaits browser verification. These are deployment passes, not visual passes.
+- Atelier's normal authenticated retry reused run
+  `growth-d72520e9c9dd434f9e3cbdacdf56a440`. The scheduler reused the saved
+  material and assessment, persisted evidence artifact 6 with material reference
+  `growth-run:growth-d72520e9c9dd434f9e3cbdacdf56a440:material` and exact material
+  hash `d5e07e04181930c7a00901c7026b800bf0b5c13e7abf6f204d8bdb902caf4d12`,
+  then produced ready initiative 7, draft 14, action 2 and approval 1. Its exact
+  review hash is `sha256:aa7a1b05d4476a66ba07275836d77c82f909060075450cfc0f537cd651c9d5ff`.
+  Another item remains preparing; the whole run is not declared complete.
+- Fresh service-token GET projections passed the actual shared admin contract
+  and priority checks on pinned Node 22.23.3. Oceanic's validating initiative 8
+  was not approvable; independent initiative 7 remained ready. Atelier exposed
+  ready initiative 7 plus owner question 3. The exact Northstar tenant is
+  `northstar-coffee-full-intake-validation-5a8564dae07494ec`; its five areas
+  truthfully remain awaiting activation with no registered published website.
+  Service-token API checks do not substitute for owner browser acceptance.
+- The owner explicitly approved the unchanged idea-12 payload to CrawlSEO for
+  one keyword-overview/SERP cycle, at most US$0.20 additional and no publication.
+  Keyword run `cmvl5yvca000xoy5bfmbfvn43` completed (reported provider cost
+  12,240 micros). SERP run `cmvl7hglr0011oy5ba5fdtawl` failed with
+  `DATAFORSEO_TASK_40101_INTERNAL_SE_SERVER_ERROR_`; no SERP provider task/cost
+  was returned and no draft was created. Seven settled allowance reservations
+  total 700,000 micros; that is the allowance ledger, not proof of actual
+  provider billing. No second cycle, paid retry, reservation reset or publication
+  is authorized or executed.
+- Draft-only revision initiative 8 queued durable job 69/conversation 49 against
+  draft 63 and the original exact hash. Published posts/4 stayed at canonical
+  hash `sha256:0cd872a6e466c6a77b396f3a704fec65e9634a685c66361e451c106573fefc37`
+  and `updatedAt=2026-10-16T01:54:14.693Z` before revision. Live execution exposed
+  a false base conflict: a subset edit was hashed against a base covering the
+  complete reviewed field scope. Runtime activation then interrupted the job
+  before any recorded Payload write, leaving its prior review held. Shared guard
+  and terminal-job recovery corrections are being validated; neither a new
+  revision hash nor successful revision acceptance is claimed yet.
+- The owner confirms the in-app browser is signed in. This chat currently has no
+  browser inspection tool or reachable host browser/CDP session. Fresh DOM,
+  screenshots, keyboard/mobile/language checks and live controlled decisions
+  therefore remain unverified; sign-in itself is not the missing permission.
+
+Issues #267 and #268 remain open. The external SERP failure and unavailable
+browser inspection prevent complete end-to-end acceptance; independent source
+and deployment work above is recorded separately.
+
+
+### Corrective API-only release staged after live revision checks
+
+Source `b40e7769cdac735d6a2c839309fe706a8bb6802d` corrects the base guard to
+hash all reviewed fields while retaining the bounded edit subset. It also
+reconciles terminal Payload revision jobs through the existing Growth pending
+job: exact saved receipts finalize without a second write, a recorded attempt
+without a receipt remains uncertain, and a verified pre-write interruption
+restores the original review. Missing job-ID checkpoints are left alone so an
+active enqueue cannot be mistaken for an abandoned job. The existing activation
+wake predicate recognizes these terminal linked jobs; there is no second
+scheduler or status-reset repair script.
+
+The editor regression reproduced the false conflict before the fix. Focused
+editor tests passed 32; Growth/recovery tests passed 48. The full backend suite
+passed 1,663 tests (three deprecation warnings), release/dispatcher checks passed
+142 tests, and compile plus corrected wheel build passed. API request
+`20261023-api-growth-interrupted-revision-recovery-1` is staged for that exact
+source and is not yet activated. Shared admin/runtime inputs are unchanged, so
+this correction requires no new private package or Worker fan-out. A fresh
+canonical read after the completed rollout still matches the saved posts/4
+published baseline exactly; no customer publication was performed.

@@ -1198,7 +1198,13 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
                     )
                     from ..application.growth_candidates import content_hash, document_content
 
-                    fields = effect.get("fields") or []
+                    fields = revision.get("fields")
+                    if (
+                        not isinstance(fields, list) or not fields
+                        or any(not isinstance(field, str) or not field for field in fields)
+                        or len(set(fields)) != len(fields)
+                    ):
+                        raise ValueError("the exact reviewed Payload Growth revision fields are unavailable")
                     if (
                         str(live.get("id") or "") != str(revision.get("documentId") or "")
                         or content_hash(document_content(live, fields)) != str(revision.get("baseHash") or "")

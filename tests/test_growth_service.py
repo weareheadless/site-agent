@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from site_agent.application.growth_workflow import _persist_evidence_artifact, ensure_default_goal, has_recoverable_growth_replay, has_recoverable_historical_noop, run_growth_cycle, run_pending_growth
 from site_agent.application.growth_tasks import growth_tasks
-from site_agent.core.jobs import _has_recoverable_article_sync, register_jobs
+from site_agent.core.jobs import _has_recoverable_article_sync, register_growth_jobs, register_jobs
 from site_agent.core.growth_contracts import GrowthPolicy
 from site_agent.core.memory import Memory
 from site_agent.core.scheduler import Scheduler
@@ -1169,3 +1169,214 @@ def test_failed_non_reasoning_growth_replay_is_not_repeated(tmp_path, monkeypatc
     run_pending_growth(context)
     assert planner.calls == 1
     memory.close()
+
+
+def _interrupted_payload_revision(memory, context, payload, *, write_attempted=False, save_receipt=False, persist_job_id=True):
+    run = run_growth_cycle(context, trigger="weekly")
+    assert run["status"] == "complete"
+    initiative, = memory.list_strategy_initiatives(limit=None)
+    initiative_id = int(initiative["id"])
+    previous_draft = memory.get_draft(int(initiative["draft_id"]))
+    previous_package = previous_draft["meta"]["growth_package"]
+    previous_hash = previous_draft["meta"]["review_package_hash"]
+    previous_approval_id = int(initiative["approval_id"])
+    previous_id = int(previous_draft["id"])
+    previous_validation = dict(initiative.get("validation") or {})
+    memory.update_draft_meta(previous_id, {
+        **previous_draft["meta"], "growth_revision_pending": True,
+        "growth_revision_initiative_id": initiative_id,
+    })
+    revision_request = {
+        "initiativeId": initiative_id,
+        "previousDraftId": previous_id,
+        "previousApprovalId": previous_approval_id,
+        "previousReviewPackageHash": previous_hash,
+        "candidateType": "payload_content",
+        "collection": str(previous_package["collection"]),
+        "documentId": str(previous_package["documentId"]),
+        "baseHash": str(previous_package["baseHash"]),
+        "previousCandidateHash": str(previous_package["candidateHash"]),
+        "fields": list(previous_package["fields"]),
+    }
+    conversation_id = memory.create_conversation("Growth revision")
+    job_id = memory.enqueue_chat_job(
+        conversation_id,
+        "Revise this proposal",
+        payload={"growth_task_revision": revision_request},
+    )
+    revision = {**revision_request, "previousValidation": previous_validation}
+    if write_attempted:
+        revision.update({
+            "writeAttempted": True,
+            "writeTarget": {
+                "collection": revision_request["collection"],
+                "documentId": revision_request["documentId"],
+                "fields": ["metaDescription"],
+            },
+            "locale": "en",
+        })
+    saved_revision = {**revision}
+    if persist_job_id:
+        saved_revision["chatJobId"] = job_id
+    validation = {**previous_validation, "status": "validating", "revision": saved_revision}
+    memory.transition_strategy_initiative(
+        initiative_id, "validating", expected_state="ready_for_review", validation=validation,
+    )
+    job = memory.claim_chat_job("revision-worker") if persist_job_id else None
+    if persist_job_id:
+        assert job and int(job["id"]) == job_id
+    writes_before_revision = payload.writes
+    if save_receipt:
+        assert job is not None
+        updated = payload.update(revision_request["collection"], revision_request["documentId"], {
+            "metaDescription": "A revised description prepared from the exact owner request.",
+        })
+        receipt = {
+            "kind": "collection", "operation": "update", "target": revision_request["collection"],
+            "document_id": revision_request["documentId"], "revision": updated["_helloadaRevision"],
+            "locale": "en", "fields": ["metaDescription"],
+            "summary": "Updated the reviewed description.",
+        }
+        assert memory.record_chat_job_effect(job_id, "revision-worker", receipt)
+    memory.interrupt_running_chat_jobs()
+    return {
+        "initiative_id": initiative_id,
+        "previous_draft_id": previous_id,
+        "previous_hash": previous_hash,
+        "previous_package": previous_package,
+        "previous_base": dict(previous_package["before"]),
+        "previous_approval_id": previous_approval_id,
+        "job_id": job_id,
+        "writes_before_revision": writes_before_revision,
+    }
+
+
+def _reconcile_interrupted_payload_revision(context, monkeypatch):
+    from site_agent.application import growth_delivery
+
+    # The recovery test exercises only the tenant's existing durable Growth
+    # reconciliation boundary; no engineering journal transport is needed.
+    monkeypatch.setattr(growth_delivery, "reconcile_delivery", lambda _context: None)
+    run_pending_growth(context)
+
+
+def test_normal_growth_reconciliation_restores_interrupted_prewrite_payload_revision(tmp_path, monkeypatch):
+    from site_agent.application.growth_candidates import content_hash
+
+    memory = Memory(tmp_path / "interrupted-payload-revision.db")
+    settings = config()
+    payload = Payload()
+    context = {"tenant_id": "test-business", "config": settings, "memory": memory, "payload_gateway": payload, "llm": Ada()}
+    try:
+        saved = _interrupted_payload_revision(memory, context, payload, write_attempted=False)
+        # A missing writeAttempted checkpoint is the exact pre-dispatch case:
+        # the target Payload draft still equals the approved candidate.
+        assert content_hash({field: payload.live.get(field) for field in sorted(saved["previous_package"]["fields"])}) == saved["previous_package"]["baseHash"]
+        assert has_recoverable_growth_replay(memory)
+        assert memory.get_chat_job(saved["job_id"])["error"] == "interrupted by server restart; retry this job"
+        scheduler = Scheduler(memory, lock_path=tmp_path / "scheduler.lock", timezone_name="America/Cancun")
+        memory.kv_set("next_run:growth_pending", scheduler.clock() + 3600)
+        register_growth_jobs(scheduler, settings, context)
+        assert memory.kv_get("next_run:growth_pending") <= scheduler.clock()
+
+        _reconcile_interrupted_payload_revision(context, monkeypatch)
+
+        initiative = memory.update_strategy_initiative(saved["initiative_id"])
+        previous = memory.get_draft(saved["previous_draft_id"])
+        assert initiative["state"] == "ready_for_review"
+        assert initiative["draft_id"] == saved["previous_draft_id"]
+        assert initiative["validation"]["revisionFailure"]
+        assert initiative["review_package_hash"] == saved["previous_hash"]
+        assert previous["status"] == "pending"
+        assert "growth_revision_pending" not in previous["meta"]
+        assert previous["meta"]["growth_package"] == saved["previous_package"]
+        assert previous["meta"]["review_package_hash"] == saved["previous_hash"]
+        assert content_hash({field: payload.live.get(field) for field in sorted(saved["previous_package"]["fields"])}) == saved["previous_package"]["baseHash"]
+        assert payload.writes == saved["writes_before_revision"]
+        assert memory.get_chat_job(saved["job_id"])["status"] == "error"
+        assert not has_recoverable_growth_replay(memory)
+    finally:
+        memory.close()
+
+
+def test_normal_growth_reconciliation_skips_revision_during_enqueue_id_checkpoint_window(tmp_path, monkeypatch):
+    memory = Memory(tmp_path / "payload-revision-enqueue-window.db")
+    settings = config()
+    payload = Payload()
+    context = {"tenant_id": "test-business", "config": settings, "memory": memory, "payload_gateway": payload, "llm": Ada()}
+    try:
+        saved = _interrupted_payload_revision(memory, context, payload, persist_job_id=False)
+        revision = memory.update_strategy_initiative(saved["initiative_id"])["validation"]["revision"]
+        assert "chatJobId" not in revision
+        assert memory.get_chat_job(saved["job_id"])["status"] == "queued"
+        assert not has_recoverable_growth_replay(memory)
+        scheduler = Scheduler(memory, lock_path=tmp_path / "scheduler.lock", timezone_name="America/Cancun")
+        future = scheduler.clock() + 3600
+        memory.kv_set("next_run:growth_pending", future)
+        register_growth_jobs(scheduler, settings, context)
+        assert memory.kv_get("next_run:growth_pending") == future
+
+        _reconcile_interrupted_payload_revision(context, monkeypatch)
+
+        initiative = memory.update_strategy_initiative(saved["initiative_id"])
+        previous = memory.get_draft(saved["previous_draft_id"])
+        assert initiative["state"] == "validating"
+        assert "revisionFailure" not in initiative["validation"]
+        assert previous["status"] == "pending"
+        assert previous["meta"]["growth_revision_pending"] is True
+        assert memory.get_chat_job(saved["job_id"])["status"] == "queued"
+    finally:
+        memory.close()
+
+
+def test_normal_growth_reconciliation_keeps_interrupted_attempt_without_receipt_uncertain(tmp_path, monkeypatch):
+    memory = Memory(tmp_path / "interrupted-payload-attempt.db")
+    settings = config()
+    payload = Payload()
+    context = {"tenant_id": "test-business", "config": settings, "memory": memory, "payload_gateway": payload, "llm": Ada()}
+    try:
+        saved = _interrupted_payload_revision(memory, context, payload, write_attempted=True)
+        assert has_recoverable_growth_replay(memory)
+
+        _reconcile_interrupted_payload_revision(context, monkeypatch)
+
+        initiative = memory.update_strategy_initiative(saved["initiative_id"])
+        revision = initiative["validation"]["revision"]
+        previous = memory.get_draft(saved["previous_draft_id"])
+        assert initiative["state"] == "validating"
+        assert revision["status"] == "uncertain"
+        assert revision["writeAttempted"] is True
+        assert previous["status"] == "pending"
+        assert previous["meta"]["growth_revision_pending"] is True
+        assert payload.writes == saved["writes_before_revision"]
+        assert not has_recoverable_growth_replay(memory)
+    finally:
+        memory.close()
+
+
+def test_normal_growth_reconciliation_finalizes_exact_saved_payload_receipt_without_replay(tmp_path, monkeypatch):
+    memory = Memory(tmp_path / "interrupted-payload-receipt.db")
+    settings = config()
+    payload = Payload()
+    context = {"tenant_id": "test-business", "config": settings, "memory": memory, "payload_gateway": payload, "llm": Ada()}
+    try:
+        saved = _interrupted_payload_revision(memory, context, payload, write_attempted=True, save_receipt=True)
+        writes_after_receipt = payload.writes
+        assert has_recoverable_growth_replay(memory)
+
+        _reconcile_interrupted_payload_revision(context, monkeypatch)
+
+        initiative = memory.update_strategy_initiative(saved["initiative_id"])
+        previous = memory.get_draft(saved["previous_draft_id"])
+        replacement = memory.get_draft(int(initiative["draft_id"]))
+        assert initiative["state"] == "ready_for_review"
+        assert initiative["validation"]["lastRevision"]["chatJobId"] == saved["job_id"]
+        assert replacement["status"] == "pending"
+        assert replacement["meta"]["growth_package"]["revisionOf"] == saved["previous_hash"]
+        assert previous["status"] == "superseded"
+        assert memory.get_approval_request(saved["previous_approval_id"]).status.value == "declined"
+        assert memory.get_chat_job(saved["job_id"])["status"] == "error"
+        assert payload.writes == writes_after_receipt
+        assert not has_recoverable_growth_replay(memory)
+    finally:
+        memory.close()
