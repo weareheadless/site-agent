@@ -288,3 +288,86 @@ Final review tightened both local retirement retry paths to require the same
 operator attribution and plan proof. The complete workspace/gateway suites then
 passed 54 tests. The Worker retirement regression is included in official
 Payload release CI. No cleanup endpoints were invoked before activation.
+
+### October 23 obsolete-operation cleanup: live resolution
+
+PR #301 merged as `41efaecbd5cf5367f481ac118e56584c312346a4` after all
+five official CI jobs passed (workflow `40023314487`; final backend suite
+1,670 passed). API `20261023-api-growth-operation-cleanup-1` activated exact
+source `8f5f323b79e87f3637b3d75e39f2818d2c58bec2` with a `health-passed`
+receipt. Its wheel SHA-256 is
+`a7809b7310a7a1b57806d3ed1f1cf370847e027905c43943b893beff4d00468c`.
+
+Shared Worker fingerprint
+`c7a3c153f4ac380416942edbf351bc8c3d567331fcc7dd2562e0b2cac9e3bc9f`
+passed the Oceanic canary (`runtime-20261023210713-a32a59e3`) and deployed
+to Atelier (`runtime-20261023211412-16bfc3ed`). Both have authenticated
+Worker round trips and the new `obsoleteOperationRetirement` capability.
+Their deployment receipts still say `awaiting-browser-verification`; this is
+not a visual acceptance pass. The other three automatic fleet releases are
+still being observed at this checkpoint.
+
+The first operator plan refused to use the historical bootstrap schema as
+current identity. The helper was corrected to bind the immutable deployment
+receipt's schema and the live authoring contract. No cleanup call was applied
+until those identities agreed.
+
+The user's explicit cleanup request was applied through the protected shared
+control plane, never SQL patches or direct Payload document writes:
+
+- Oceanic initiative 6/posts 6 and Atelier initiatives 1/pages 54,
+  2/pages 24 and 4/pages 48 are `superseded`. Their exact old destination
+  operations are terminal withdrawals with `effectStatus: unknown`; history
+  was retained rather than reclassified as successful content changes.
+- Oceanic initiative 8/job 70's obsolete revision authority was retired after
+  current published-base, exact prior candidate, approval and renderer proof.
+  Initiative 8 is again `ready_for_review`. The failed job's attempted-write
+  marker and error history remain recorded.
+- All four affected documents retain identical published/draft content hashes
+  and `updatedAt` values before and after cleanup. Atelier pages 48's distinct
+  unpublished draft is preserved. Published Oceanic posts 4 also retains
+  canonical hash `sha256:0cd872a6e466c6a77b396f3a704fec65e9634a685c66361e451c106573fefc37`
+  and `updatedAt=2026-10-16T01:54:14.693Z`.
+- All three current proposal lineages and pending approvals are preserved.
+  The only changes to those review records are initiative 8's transition from
+  `validating` to `ready_for_review` and removal of its obsolete draft hold.
+- Read-only D1 verification across all five rollout tenants finds zero
+  `writing` or `uncertain` operations. Oceanic retains three terminal rows,
+  Atelier four; the other three tenants have none. No rows were deleted.
+- Five completed mode-0600 operator receipts and immutable mode-0400 plans are
+  retained under each affected registered tenant's
+  `data/maintenance/growth-operation-cleanup-20261023`, using request ID
+  `growth-operation-cleanup-20261023-current-snapshot-v1`.
+
+Fresh Oceanic, Atelier and Northstar canonical Growth responses pass the shared
+admin's `isGrowthServiceModel` validator with five areas. Oceanic decisions are
+4, 7 and 8; Atelier decisions are 3 and 7. Northstar still correctly reports
+`websitePresent: false` and no owner decisions. Retired preparations are
+terminal history and cannot be approved or replayed.
+
+No replacement revision, customer approval/publication, additional paid
+research, spend-ledger reset or provider retry was requested during cleanup.
+The already failed approved SERP cycle remains a provider failure. The current
+tool session has no browser inspection capability, so visual/click-through
+acceptance remains unverified despite the user's signed-in browser being open.
+
+### Completed shared-runtime fleet verification
+
+The automatic runner subsequently completed the remaining releases:
+
+- Handoff validation: `runtime-20261023211412-e7ba75d9`.
+- Inmersion: `runtime-20261023211412-c02bd31c`.
+- Northstar full-intake validation: `runtime-20261023211413-6a74bcc2`.
+
+The canonical runner reports `state=complete`, `canary=oceanicvibes`,
+`blocked=none`. A final independent read-only pass verified all five latest
+deployed receipts against the exact fingerprint above, current public health,
+authenticated Growth retirement capability and live authoring schema identity.
+The private verification capture is
+`/tmp/growth-operation-cleanup-fleet-20261023.json` (mode 0600).
+All five remain `awaiting-browser-verification`, which is preserved honestly.
+
+A final post-cleanup check also validated the three canonical dashboard models
+and verified that all four withdrawn preparations have
+`executionState: superseded`, cannot be approved, are absent from decision IDs,
+and do not appear in verified recent results. No replacement request was queued.
