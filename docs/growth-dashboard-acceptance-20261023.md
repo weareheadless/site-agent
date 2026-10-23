@@ -350,3 +350,24 @@ research, spend-ledger reset or provider retry was requested during cleanup.
 The already failed approved SERP cycle remains a provider failure. The current
 tool session has no browser inspection capability, so visual/click-through
 acceptance remains unverified despite the user's signed-in browser being open.
+
+### Completed shared-runtime fleet verification
+
+The automatic runner subsequently completed the remaining releases:
+
+- Handoff validation: `runtime-20261023211412-e7ba75d9`.
+- Inmersion: `runtime-20261023211412-c02bd31c`.
+- Northstar full-intake validation: `runtime-20261023211413-6a74bcc2`.
+
+The canonical runner reports `state=complete`, `canary=oceanicvibes`,
+`blocked=none`. A final independent read-only pass verified all five latest
+deployed receipts against the exact fingerprint above, current public health,
+authenticated Growth retirement capability and live authoring schema identity.
+The private verification capture is
+`/tmp/growth-operation-cleanup-fleet-20261023.json` (mode 0600).
+All five remain `awaiting-browser-verification`, which is preserved honestly.
+
+A final post-cleanup check also validated the three canonical dashboard models
+and verified that all four withdrawn preparations have
+`executionState: superseded`, cannot be approved, are absent from decision IDs,
+and do not appear in verified recent results. No replacement request was queued.
