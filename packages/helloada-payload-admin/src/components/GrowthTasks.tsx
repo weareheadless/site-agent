@@ -7,7 +7,7 @@ import { fetchHelloAda } from "../api/fetchHelloAda";
 import { useHelloAdaTranslations } from "../api/useHelloAdaTranslations";
 import { HelloAdaMark } from "./HelloAdaLogo";
 import { HelloAdaChatMessage } from "./HelloAdaChatMessage";
-import { type GrowthAreaKey, type GrowthResultTab, type GrowthServiceArea, type GrowthServiceModel, type GrowthServiceWork } from "../lib/growth-data";
+import { readableReviewValue, type GrowthAreaKey, type GrowthResultTab, type GrowthServiceArea, type GrowthServiceModel, type GrowthServiceWork } from "../lib/growth-data";
 
 type Focus = "needs_you" | "preparing" | "planned" | "paused" | "opportunity" | "completed";
 type ArticleReviewData = {
@@ -87,9 +87,10 @@ function renderLexicalNode(node: unknown, key: string): ReactNode {
   return <span key={key}>{children}</span>;
 }
 
-export function GrowthTasks({ mode, serviceModel, onNavigate, tasks = [], pending, refresh, ask, date, goal, brief }: {
+export function GrowthTasks({ mode, serviceModel, decisionOrder, onNavigate, tasks = [], pending, refresh, ask, date, goal, brief }: {
   mode: "home" | "decisions" | "work";
   serviceModel: GrowthServiceModel;
+  decisionOrder: string[];
   onNavigate: (panel: GrowthPanel, resultsTab?: GrowthResultTab) => void;
   tasks?: GrowthTask[]; pending: boolean; refresh: () => void; ask: (prompt?: string) => string;
   date: (value: unknown) => string; goal?: { objective?: string; goal_key?: string };
@@ -140,7 +141,7 @@ export function GrowthTasks({ mode, serviceModel, onNavigate, tasks = [], pendin
   const taskById = new Map(tasks.map(task => [task.id, task] as const));
   const agendaTask = (id: string | null | undefined) => id ? taskById.get(id) : undefined;
   const serviceWorkById = new Map(serviceModel.work.map((row) => [row.id, row] as const));
-  const decisionRows = serviceModel.decisionIds.map(agendaTask).filter((row): row is GrowthTask => Boolean(row));
+  const decisionRows = decisionOrder.map(agendaTask).filter((row): row is GrowthTask => Boolean(row));
   const canonicalDecisionIds = new Set(serviceModel.decisionIds);
   const featuredDecision = decisionRows[0];
   const additionalDecisions = decisionRows.slice(1);
@@ -193,17 +194,7 @@ export function GrowthTasks({ mode, serviceModel, onNavigate, tasks = [], pendin
   }, [articleKey, selectedTask?.draftId, articleRefresh]);
 
   const title = (task: GrowthTask) => task.titleKey ? t("growth." + task.titleKey) : task.title || "—";
-  const readable = (value: unknown): string => {
-    if (value == null || value === "") return "—";
-    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
-    if (Array.isArray(value)) return value.map(readable).filter(item => item !== "—").join(" · ") || "—";
-    const record = value as Record<string, unknown>;
-    if (record.root) return readable(record.root);
-    if (typeof record.text === "string") return record.text;
-    if (Array.isArray(record.children)) return readable(record.children);
-    const label = record.title || record.alt || record.filename || record.url || record.slug || record.id;
-    return label ? readable(label) : Object.values(record).map(readable).filter(item => item !== "—").join(" · ") || "—";
-  };
+  const readable = readableReviewValue;
   const discuss = (task: GrowthTask) => {
     const prompt = task.requirement === "owner_information"
       ? [title(task), task.scope || fullTaskSummary(task), t("growth.ownerAnswerLabel")].filter(Boolean).join("\n\n")
@@ -215,6 +206,8 @@ export function GrowthTasks({ mode, serviceModel, onNavigate, tasks = [], pendin
         ? title(task) + ". " + (task.scope || fullTaskSummary(task)) + ". " + t("growth.codeRevisionPrompt")
       : task.kind === "article"
         ? title(task) + ". " + (task.canApprove ? t("growth.articleRevisionPrompt") : t("growth.articleResolvePrompt"))
+      : task.canApprove && task.draftId && task.reviewPackageHash
+        ? title(task) + ". " + (task.scope || fullTaskSummary(task)) + ". " + t("growth.taskResolvePrompt")
         : task.executionIssue
           ? title(task) + ". " + (task.scope || fullTaskSummary(task)) + ". " + t("growth.taskResolvePrompt")
         : title(task) + ". " + t("growth.decisionPrompt");
@@ -586,8 +579,8 @@ export function GrowthTasks({ mode, serviceModel, onNavigate, tasks = [], pendin
               </button>
             </> : null}
             {selectedTask.focus === "opportunity" || selectedTask.kind === "analysis_insight" || selectedTask.executionIssue
-              || (selectedTask.kind === "article" || selectedTask.kind === "code") && selectedTask.canApprove || selectedTask.kind === "owner_action" || selectedTask.needsPreparation
-              ? <Link href={discuss(selectedTask)}>{selectedTask.needsPreparation ? t(selectedTask.kind === "settings_proposal" ? "growth.prepareSettingsWithAda" : "growth.prepareChangeWithAda") : selectedTask.executionIssue ? t("growth.resolveWithAda") : selectedTask.focus === "opportunity" ? t("growth.prepareWithAda") : selectedTask.kind === "article" ? t("growth.articleAskChanges") : selectedTask.kind === "code" ? t("growth.codeAskChanges") : t("growth.ask")} ↗</Link>
+              || selectedTask.canApprove && selectedTask.draftId && selectedTask.reviewPackageHash || selectedTask.kind === "owner_action" || selectedTask.needsPreparation
+              ? <Link href={discuss(selectedTask)}>{selectedTask.needsPreparation ? t(selectedTask.kind === "settings_proposal" ? "growth.prepareSettingsWithAda" : "growth.prepareChangeWithAda") : selectedTask.executionIssue ? t("growth.resolveWithAda") : selectedTask.focus === "opportunity" ? t("growth.prepareWithAda") : selectedTask.canApprove && selectedTask.draftId && selectedTask.reviewPackageHash ? t(selectedTask.kind === "article" ? "growth.articleAskChanges" : "growth.codeAskChanges") : t("growth.ask")} ↗</Link>
               : null}
             {selectedTask.kind === "article" && !selectedTask.canApprove
               ? <Link href={discuss(selectedTask)}>{t("growth.articleResolve")} ↗</Link>

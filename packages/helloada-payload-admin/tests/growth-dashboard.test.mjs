@@ -85,6 +85,43 @@ test('uses primary/secondary area relations and keeps one canonical decision acr
   assert.deepEqual(serviceModel.decisionIds, ['decision-1']);
 });
 
+test('preserves owner queue decision priority independently of service model order', () => {
+  const rawDecisionIds = ['initiative:4', 'initiative:7', 'initiative:8'];
+  const ownerQueue = { featuredDecisionId: 'initiative:8', additionalDecisionIds: ['initiative:7', 'initiative:4'], decisionCount: 3 };
+  assert.deepEqual(Array.from(sandbox.exports.growthDecisionOrder(ownerQueue, rawDecisionIds)), [
+    'initiative:8', 'initiative:7', 'initiative:4',
+  ]);
+  assert.equal(sandbox.exports.growthDecisionOrder({ ...ownerQueue, additionalDecisionIds: ['initiative:7', 'initiative:7'] }, rawDecisionIds), null);
+  assert.equal(sandbox.exports.growthDecisionOrder({ ...ownerQueue, decisionCount: 2 }, rawDecisionIds), null);
+  assert.equal(sandbox.exports.growthDecisionOrder({ ...ownerQueue, additionalDecisionIds: ['initiative:7', 'initiative:9'] }, rawDecisionIds), null);
+  const parent = source('src/components/HelloAdaGrowth.tsx');
+  const component = source('src/components/GrowthTasks.tsx');
+  assert.match(parent, /growthDecisionOrder\(body\.ownerQueue, body\.serviceModel\.decisionIds\)/);
+  assert.match(parent, /Owner queue and Growth service decisions are incompatible/);
+  assert.match(component, /decisionOrder\.map\(agendaTask\)/);
+  assert.match(component, /area\.decisionIds/);
+});
+
+test('renders all before and after review object fields, including changed SEO descriptions', () => {
+  const before = { title: 'Same title', description: 'Old SEO description' };
+  const after = { title: 'Same title', description: 'New SEO description' };
+  const readableBefore = sandbox.exports.readableReviewValue(before);
+  const readableAfter = sandbox.exports.readableReviewValue(after);
+  assert.match(readableBefore, /title: Same title/);
+  assert.match(readableBefore, /description: Old SEO description/);
+  assert.match(readableAfter, /title: Same title/);
+  assert.match(readableAfter, /description: New SEO description/);
+  assert.notEqual(readableBefore, readableAfter);
+  const lexicalBefore = sandbox.exports.readableReviewValue({ type: 'text', text: 'Copy', format: 0, style: 'font-size: 16px' });
+  const lexicalAfter = sandbox.exports.readableReviewValue({ type: 'text', text: 'Copy', format: 0, style: 'font-size: 20px' });
+  assert.match(lexicalBefore, /style: font-size: 16px/);
+  assert.match(lexicalAfter, /style: font-size: 20px/);
+  assert.notEqual(lexicalBefore, lexicalAfter);
+  assert.equal(sandbox.exports.readableReviewValue(['first', { nested: 'second' }]), 'first · nested: second');
+  const component = source('src/components/GrowthTasks.tsx');
+  assert.match(component, /const readable = readableReviewValue/);
+});
+
 test('keeps unknown historical work explicitly unassigned and displayable without keyword inference', () => {
   const historical = serviceModel.work.find((row) => row.id === 'initiative:88');
   assert.equal(historical.primaryArea, null);
@@ -148,4 +185,7 @@ test('area work cannot create a second approval widget and review remains on can
   assert.match(component, /loaded\.reviewPackageHash === selectedTask\.reviewPackageHash/);
   assert.match(component, /task \? "\/api\/helloada\/drafts\/" \+ task\.draftId \+ "\/" \+ operation/);
   assert.match(component, /review_package_hash: task\?\.reviewPackageHash/);
+  assert.match(component, /selectedTask\.canApprove && selectedTask\.draftId && selectedTask\.reviewPackageHash/);
+  assert.match(component, /growth\.taskResolvePrompt/);
+  assert.match(component, /growth\.articleAskChanges/);
 });

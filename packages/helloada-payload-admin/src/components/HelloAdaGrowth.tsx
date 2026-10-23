@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { fetchHelloAda } from "../api/fetchHelloAda";
 import { useHelloAdaTranslations } from "../api/useHelloAdaTranslations";
-import { isGrowthServiceModel, type GrowthResultTab, type GrowthRow, type GrowthServiceModel } from "../lib/growth-data";
+import { growthDecisionOrder, isGrowthServiceModel, type GrowthResultTab, type GrowthRow, type GrowthServiceModel } from "../lib/growth-data";
 import { GrowthTasks, type GrowthTask } from "./GrowthTasks";
 import { WorkspaceIcon } from "./WorkspaceIcon";
 import {
@@ -52,6 +52,7 @@ type Insight = {
 type Growth = {
   tasks?: GrowthTask[];
   serviceModel: GrowthServiceModel;
+  decisionOrder: string[];
   ownerQueue: OwnerQueue;
   ownerTimezone?: string | null;
   growthContractVersion: string;
@@ -152,7 +153,9 @@ export function HelloAdaGrowth() {
         const growthTaskIds = new Set(body.tasks.map((task: GrowthTask) => task?.id));
         if (body.serviceModel.decisionIds.some((id: string) => !growthTaskIds.has(id)))
           throw new Error("Growth service decision has no canonical review task");
-        if (!controller.signal.aborted) setGrowth(body);
+        const decisionOrder = growthDecisionOrder(body.ownerQueue, body.serviceModel.decisionIds);
+        if (!decisionOrder) throw new Error("Owner queue and Growth service decisions are incompatible");
+        if (!controller.signal.aborted) setGrowth({ ...body, decisionOrder });
       })
       .catch(() => {
         if (!controller.signal.aborted)
@@ -353,6 +356,7 @@ export function HelloAdaGrowth() {
           mode={panel === "home" ? "home" : panel === "decisions" ? "decisions" : "work"}
           tasks={growth?.tasks}
           serviceModel={growth.serviceModel}
+          decisionOrder={growth.decisionOrder}
           pending={loading.growth}
           refresh={refresh}
           ask={ask}
