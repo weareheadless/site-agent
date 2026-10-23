@@ -552,6 +552,10 @@ def _block_interrupted_growth_run(memory: Memory, run: Mapping[str, Any], *, rea
 
 def has_recoverable_growth_replay(memory: Memory) -> bool:
     """Whether activation should immediately resume a known safe saved run."""
+    from .growth_candidates import has_recoverable_payload_revision
+
+    if has_recoverable_payload_revision(memory):
+        return True
     return any(
         _recoverable_saved_assessment_failure(memory, run)
         or _recoverable_payload_contract_failure(memory, run)
@@ -1512,12 +1516,13 @@ def reconcile_historical_noop_initiatives(memory: Memory) -> int:
 
 def run_pending_growth(context: dict[str, Any], *, recover_interrupted_runs: bool = False) -> None:
     memory = context["memory"]
-    from .growth_candidates import reconcile_source_candidates
+    from .growth_candidates import reconcile_payload_growth_revisions, reconcile_source_candidates
     from .growth_delivery import reconcile_delivery
 
     # Recording is independently resumable; the receipt remains execution truth.
     # This existing scheduled boundary, never GET, owns external journal work.
     reconcile_delivery(context)
+    reconcile_payload_growth_revisions(context)
     reconcile_source_candidates(context)
     reconcile_historical_noop_initiatives(memory)
     _reconcile_orphan_owner_questions(memory)

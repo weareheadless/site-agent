@@ -359,6 +359,79 @@ def test_payload_growth_revision_plan_rejects_fields_outside_reviewed_candidate(
         _validate_payload_growth_revision_plan(context, plan)
 
 
+def test_payload_growth_revision_checks_full_reviewed_base_when_effect_updates_subset(env, monkeypatch):
+    from site_agent.application.growth_candidates import content_hash, document_content
+    from site_agent.brain import editor
+    from site_agent.brain.editor import _execute_tool
+    from site_agent.hands.base import SiteAdapter
+
+    reviewed_fields = ["title", "summary"]
+    base = {"id": "doc-1", "title": "Original title", "summary": "Original summary",
+            "_helloadaRevision": "sha256:" + "a" * 64}
+    revision = {
+        "candidateType": "payload_content", "initiativeId": 8, "chatJobId": 63,
+        "collection": "pages", "documentId": "doc-1", "fields": reviewed_fields,
+        "baseHash": content_hash(document_content(base, reviewed_fields)),
+    }
+    plan = {"source_brief": "", "source_paths": [], "response_only": False, "content_effects": [{
+        "kind": "collection", "operation": "update", "target": "pages", "collection": "pages",
+        "identifier": "doc-1", "identifier_kind": "id", "fields": ["summary"], "summary": "Revise summary",
+    }]}
+
+    class Payload:
+        def __init__(self, live):
+            self.live = live
+            self.writes = []
+
+        def require_authoring_contract(self):
+            return {"locales": ["en"], "defaultLocale": "en"}
+
+        def read(self, collection, **kwargs):
+            assert collection == "pages"
+            assert kwargs["identifier"] == "doc-1" and kwargs["identifier_kind"] == "id"
+            assert kwargs["draft"] is False
+            return dict(self.live)
+
+        def update(self, collection, document_id, data, *, expected_hash, locale):
+            self.writes.append((collection, document_id, data, expected_hash, locale))
+            return {"id": document_id, **data, "_helloadaRevision": "sha256:" + "b" * 64}
+
+    class Adapter(SiteAdapter):
+        name = "test"
+
+        def get_file(self, path, branch=None):
+            return None, None
+
+        def commit_file(self, path, data, message, branch=None):
+            raise AssertionError("a Payload revision must not touch source")
+
+    def execute(live):
+        payload = Payload(live)
+        context = {
+            **env[2], "payload_gateway": payload, "_growth_task_revision": dict(revision),
+            "_website_change_plan": json.loads(json.dumps(plan)),
+            "_payload_read_documents": {("pages", "doc-1"): dict(base)},
+        }
+        result = _execute_tool(context, Adapter(), "update_payload_draft", {
+            "collection": "pages", "id": "doc-1", "expected_hash": base["_helloadaRevision"],
+            "data": {"summary": "Revised summary"},
+        }, lambda _message: None)
+        return result, payload
+
+    monkeypatch.setattr(editor, "_mark_website_change_dispatched", lambda *_args, **_kwargs: None)
+    result, payload = execute(base)
+    assert result.startswith("Payload draft updated:")
+    assert len(payload.writes) == 1
+
+    # A change to title is outside the update subset, but still invalidates the
+    # exact reviewed base because title was included in that review.
+    changed_outside_subset = {**base, "title": "Changed after review"}
+    result, payload = execute(changed_outside_subset)
+    assert result.startswith("REFUSED:")
+    assert "published Payload base changed" in result
+    assert payload.writes == []
+
+
 def test_payload_gateway_tools_read_then_update_draft(env):
     from site_agent.brain.editor import _tools_spec
     from site_agent.hands.base import SiteAdapter

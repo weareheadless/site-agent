@@ -380,6 +380,99 @@ def mark_payload_revision_uncertain(memory: Any, initiative: Mapping[str, Any] |
     return True
 
 
+def has_recoverable_payload_revision(memory: Any) -> bool:
+    """Wake the existing Growth reconciler for a terminal Payload revision job."""
+    for initiative in memory.list_strategy_initiatives(limit=None):
+        if initiative.get("kind") != "payload_content" or initiative.get("state") != "validating":
+            continue
+        validation = initiative.get("validation") if isinstance(initiative.get("validation"), Mapping) else {}
+        revision = validation.get("revision") if isinstance(validation.get("revision"), Mapping) else {}
+        if revision.get("candidateType") != "payload_content":
+            continue
+        job_id = revision.get("chatJobId")
+        if not job_id:
+            # The owner-request handler persists this checkpoint immediately
+            # after enqueue; absence can be the normal enqueue window.
+            continue
+        try:
+            job = memory.get_chat_job(int(job_id)) if job_id else None
+        except (TypeError, ValueError):
+            continue
+        if job is None:
+            continue
+        result = job.get("result") if isinstance(job, Mapping) and isinstance(job.get("result"), Mapping) else {}
+        receipts = result.get("payload_effects") if isinstance(result.get("payload_effects"), list) else []
+        if revision.get("status") == "uncertain" and not receipts:
+            continue
+        if job is None or job.get("status") not in {"queued", "running"}:
+            return True
+    return False
+
+
+def reconcile_payload_growth_revisions(context: Mapping[str, Any]) -> int:
+    """Recover terminal Payload revision jobs through the existing Growth lane.
+
+    Persisted exact receipts are finalized idempotently. Without a receipt, a
+    recorded write attempt remains held as uncertain; only a proven pre-write
+    failure restores the earlier owner proposal.
+    """
+    memory = context["memory"]
+    recovered = 0
+    for initiative in memory.list_strategy_initiatives(limit=None):
+        if initiative.get("kind") != "payload_content" or initiative.get("state") != "validating":
+            continue
+        validation = initiative.get("validation") if isinstance(initiative.get("validation"), Mapping) else {}
+        revision = validation.get("revision") if isinstance(validation.get("revision"), Mapping) else None
+        if revision is None or revision.get("candidateType") != "payload_content":
+            continue
+        try:
+            job_id = int(revision.get("chatJobId") or 0)
+        except (TypeError, ValueError):
+            continue
+        if job_id <= 0:
+            # Do not race the owner-request handler while it is between
+            # enqueueing the durable job and persisting its ID on the revision.
+            continue
+        job = memory.get_chat_job(job_id)
+        if job is None:
+            continue
+        if job.get("status") in {"queued", "running"}:
+            continue
+        result = job.get("result") if isinstance((job or {}).get("result"), Mapping) else {}
+        raw_receipts = result.get("payload_effects") if isinstance(result.get("payload_effects"), list) else []
+        receipts = [dict(item) for item in raw_receipts if isinstance(item, Mapping)]
+        if revision.get("status") == "uncertain" and not receipts:
+            continue
+        if receipts:
+            payload = (job.get("payload") or {}).get("growth_task_revision") if isinstance(job, Mapping) else None
+            if not isinstance(payload, Mapping):
+                mark_payload_revision_uncertain(
+                    memory, initiative,
+                    "A persisted Payload write receipt has no matching revision request; the old proposal remains held.",
+                )
+                recovered += 1
+                continue
+            revision_request = {**dict(payload), "chatJobId": job_id}
+            try:
+                finalize_payload_growth_revision(context, revision_request, receipts)
+            except Exception as exc:  # noqa: BLE001 — never replay a write whose receipt cannot be finalized
+                mark_payload_revision_uncertain(memory, initiative, str(exc)[:700])
+            recovered += 1
+            continue
+        reason = str((job or {}).get("error") or "Ada's Payload revision job did not complete.")
+        if revision.get("writeAttempted") or revision.get("payloadEffect"):
+            mark_payload_revision_uncertain(memory, initiative, reason)
+        elif not restore_growth_source_revision(memory, initiative, reason):
+            # If the saved prior proposal no longer matches its exact receipt,
+            # leave it held for review rather than clearing its protection.
+            mark_payload_revision_uncertain(
+                memory, initiative,
+                "The prior Payload proposal could not be verified for safe restoration.",
+            )
+        recovered += 1
+    return recovered
+
+
 def _has_exact_revised_decision(memory: Any, initiative_id: int, source_hash: str, package_hash: str) -> bool:
     """Read the existing decision row that binds this old review to revision."""
     connection = getattr(memory, "conn", None)
