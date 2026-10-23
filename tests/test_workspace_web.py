@@ -1314,6 +1314,85 @@ def test_shared_api_approves_a_design_draft_through_the_design_adapter(tmp_path)
     memory.close()
 
 
+def test_payload_growth_revision_hold_blocks_old_exact_approval_until_and_after_revision(tmp_path):
+    from site_agent.application.approvals import ApprovalService
+    from site_agent.application.workspace import BridgeError
+    from site_agent.core.contracts import Artifact, ArtifactKind, EffectClass
+    from site_agent.application.growth_candidates import content_hash
+
+    class Payload:
+        publishes = 0
+
+        def publish_growth_candidate(self, package_hash):
+            self.publishes += 1
+            return {"status": "published", "packageHash": package_hash}
+
+    memory = Memory(tmp_path / "payload-revision-hold.db")
+    payload = Payload()
+    package = {"tenant": "held-growth", "initiativeId": 8, "candidateType": "payload_content",
+               "collection": "pages", "documentId": "1", "candidateHash": "candidate-1"}
+    package_hash = content_hash(package)
+    cycle = memory.create_strategy_cycle("hold-test", "2026-10", "sha256:hold", {})
+    draft_id = memory.save_draft("Held page", "Review summary", kind="payload_content", meta={
+        "growth_package": package, "review_package_hash": package_hash, "growth_revision_pending": True,
+    })
+    artifact = memory.create_artifact(Artifact(
+        kind=ArtifactKind.SITE_CHANGE, title="Held page", summary="Review summary", renderer="site_change",
+        capability_id="growth.publish", provider_id="payload", content_hash=package_hash,
+        preview_data={"before": {}, "after": {}},
+    ))
+    approval = ApprovalService(memory).create(
+        artifact, owner_action_label="Publish this exact version", effect_class=EffectClass.SITE_MUTATION,
+    )
+    initiative_id = memory.create_strategy_initiative(
+        cycle["id"], kind="payload_content", title="Held page", summary="Review summary",
+        state="validating", draft_id=draft_id, approval_id=approval.approval_id,
+        review_package_hash=package_hash, candidate_hash=package["candidateHash"],
+        validation={"status": "validating", "revision": {"candidateType": "payload_content"}},
+    )
+    tenant = Tenant(
+        tenant_id="held-growth", config={}, memory=memory, runtime=None,
+        context={"llm": object(), "payload_gateway": payload}, api_token="held-token",
+    )
+    service = ChatService(registry=TenantRegistry({tenant.tenant_id: tenant}))
+
+    with pytest.raises(BridgeError, match="held while Ada prepares"):
+        service.approve_draft(draft_id, tenant=tenant, review_package_hash=package_hash, owner_actor_id="payload:owner-1")
+    assert memory.get_approval_request(approval.approval_id).status.value == "pending"
+    assert payload.publishes == 0
+
+    # Once replaced, the stale exact hash remains unusable even if a caller
+    # bypasses the UI and addresses the old draft directly.
+    memory.update_draft_status(draft_id, "superseded")
+    memory.update_strategy_initiative(
+        initiative_id, state="ready_for_review", draft_id=draft_id + 1,
+        review_package_hash="sha256:" + "b" * 64,
+    )
+    with pytest.raises(BridgeError, match="held while Ada prepares"):
+        service.approve_draft(draft_id, tenant=tenant, review_package_hash=package_hash, owner_actor_id="payload:owner-1")
+    assert memory.get_approval_request(approval.approval_id).status.value == "pending"
+    assert payload.publishes == 0
+    memory.close()
+
+
+def test_payload_revision_context_carries_exact_root_and_target_without_changing_user_text():
+    visible_text = "Please make the services page description clearer."
+    prompt = ChatService._contextual_message(visible_text, {
+        "collection": "pages",
+        "document_id": "page-17",
+        "target": {
+            "payload": {"collection": "pages", "id": "page-17"},
+            "route": {"path": "/services", "kind": "page"},
+        },
+    })
+
+    assert '"collection": "pages"' in prompt
+    assert '"document_id": "page-17"' in prompt
+    assert '"payload": {"collection": "pages", "id": "page-17"}' in prompt
+    assert '"route": {"kind": "page", "path": "/services"}' in prompt
+    assert prompt.endswith(f"[User request]\n{visible_text}")
+
+
 def test_shared_api_publishes_and_rolls_back_preview_changes_through_the_workspace(tmp_path):
     memory = Memory(tmp_path / "workspace-rollback" / "memory.db")
 

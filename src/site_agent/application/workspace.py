@@ -1397,7 +1397,7 @@ class ChatService:
             if selected_task.get("kind") == "article" and isinstance(article_review, Mapping):
                 owner_context["growth_task"]["article"] = dict(article_review)
             if growth_task_action:
-                if growth_task_action != "revise" or selected_task.get("kind") != "code" or not selected_task.get("canApprove"):
+                if growth_task_action != "revise" or selected_task.get("kind") not in {"code", "payload_content"} or not selected_task.get("canApprove"):
                     raise BridgeError("only a ready Ada website recommendation can be revised")
                 try:
                     initiative_id = int(str(task_id).removeprefix("initiative:"))
@@ -1415,24 +1415,89 @@ class ChatService:
                 previous_meta = (previous_draft or {}).get("meta") if isinstance((previous_draft or {}).get("meta"), Mapping) else {}
                 previous_package = previous_meta.get("growth_package") if isinstance(previous_meta.get("growth_package"), Mapping) else {}
                 approval = memory.get_approval_request(int((initiative or {}).get("approval_id") or 0)) if initiative else None
-                if (
-                    initiative is None
-                    or initiative.get("kind") != "code"
-                    or initiative.get("state") != "ready_for_review"
-                    or int(initiative.get("draft_id") or 0) != previous_draft_id
-                    or previous_draft is None
-                    or previous_draft.get("status") != "pending"
-                    or previous_meta.get("review_package_hash") != revision_hash
-                    or content_hash(previous_package) != revision_hash
-                    or approval is None
-                    or approval.status.value != "pending"
-                ):
+                common_exact = (
+                    initiative is not None
+                    and initiative.get("kind") == selected_task.get("kind")
+                    and initiative.get("state") == "ready_for_review"
+                    and int(initiative.get("draft_id") or 0) == previous_draft_id
+                    and previous_draft is not None
+                    and previous_draft.get("status") == "pending"
+                    and previous_meta.get("review_package_hash") == revision_hash
+                    and content_hash(previous_package) == revision_hash
+                    and str(initiative.get("review_package_hash") or "") == revision_hash
+                    and approval is not None
+                    and approval.status.value == "pending"
+                )
+                if not common_exact:
                     raise BridgeError("this exact Growth proposal is no longer available for revision")
                 revision_request = {
                     "initiativeId": initiative_id,
                     "previousDraftId": previous_draft_id,
                     "previousReviewPackageHash": revision_hash,
+                    "previousApprovalId": int(approval.approval_id),
                 }
+                if selected_task.get("kind") == "payload_content":
+                    package = previous_package
+                    package_hash = str(package.get("candidateHash") or "")
+                    collection = str(package.get("collection") or "")
+                    document_id = str(package.get("documentId") or "")
+                    payload = runtime_context.get("payload_gateway")
+                    artifact = memory.get_artifact(int(approval.artifact_id)) if approval.artifact_id else None
+                    fields = [str(field) for field in package.get("fields", []) if isinstance(field, str)]
+                    if (
+                        not package_hash or not collection or not document_id or not fields
+                        or content_hash(package.get("after")) != package_hash
+                        or content_hash(package.get("before")) != str(package.get("baseHash") or "")
+                        or previous_draft.get("kind") != "payload_content"
+                        or package.get("collection") != collection
+                        or package.get("documentId") != document_id
+                        or artifact is None
+                        or str(getattr(artifact, "content_hash", "")) != revision_hash
+                        or payload is None
+                    ):
+                        raise BridgeError("this exact Payload Growth proposal is no longer available for revision")
+                    try:
+                        contract = payload.require_authoring_contract()
+                        allowed_fields = set(payload.authoring_fields("collection", collection, authoring_contract=contract))
+                        live = payload.read(collection, identifier=document_id, identifier_kind="id", draft=False)
+                        draft = payload.read(collection, identifier=document_id, identifier_kind="id", draft=True)
+                        from .growth_candidates import document_content
+
+                        if (
+                            set(fields) - allowed_fields
+                            or content_hash(document_content(live, fields)) != str(package.get("baseHash") or "")
+                            or content_hash(document_content(draft, fields)) != package_hash
+                            or str(draft.get("id") or "") != document_id
+                        ):
+                            raise BridgeError("the Payload document or its published base changed after this proposal")
+                    except BridgeError:
+                        raise
+                    except Exception as exc:  # noqa: BLE001 — exact revision requires current Payload reads
+                        raise BridgeError("the exact Payload Growth proposal could not be verified") from exc
+                    revision_request.update({
+                        "candidateType": "payload_content",
+                        "collection": collection,
+                        "documentId": document_id,
+                        "baseHash": str(package["baseHash"]),
+                        "previousCandidateHash": package_hash,
+                        "fields": list(fields),
+                    })
+                    route = str(package.get("route") or "").strip()
+                    # Keep target identity in bounded, hidden workspace metadata.
+                    # The visible chat message remains the owner's exact text.
+                    owner_context["collection"] = collection
+                    owner_context["document_id"] = document_id
+                    owner_context["target"] = {
+                        "payload": {"collection": collection, "id": document_id},
+                        "route": {
+                            "path": route,
+                            "kind": "page",
+                            **({"sourceId": str(package.get("sourceId"))} if package.get("sourceId") else {}),
+                        },
+                    }
+                else:
+                    if initiative.get("kind") != "code":
+                        raise BridgeError("this exact Growth proposal is no longer available for revision")
         if not message and not attachments:
             raise BridgeError("empty message")
         if len(message) > 8000:
@@ -1506,6 +1571,8 @@ class ChatService:
                 raise BridgeError(str(exc)[:500]) from exc
         job_payload = {}
         if revision_request:
+            from .growth_candidates import restore_growth_source_revision
+
             initiative_id = int(revision_request["initiativeId"])
             initiative = next((
                 row for row in memory.list_strategy_initiatives(limit=500)
@@ -2578,6 +2645,8 @@ class ChatService:
     def _assert_review_package(draft: Mapping[str, Any], supplied_hash: str | None) -> None:
         """Membership comes from saved work, never from an optional HTTP field."""
         meta = draft.get("meta") if isinstance(draft.get("meta"), Mapping) else {}
+        if meta.get("growth_revision_pending") is True:
+            raise BridgeError("this exact Growth proposal is held while Ada prepares its requested revision")
         expected = meta.get("review_package_hash")
         if expected or meta.get("growth_package") or draft.get("kind") == "payload_content":
             if not expected or not supplied_hash or not hmac.compare_digest(str(expected).encode(), str(supplied_hash).encode()):
@@ -2957,6 +3026,14 @@ class ChatService:
                 raise BridgeError("the content candidate has no exact managed Payload package")
             initiatives = [row for row in memory.list_strategy_initiatives(limit=500) if int(row.get("draft_id") or 0) == normalized_id]
             initiative = initiatives[0] if initiatives else None
+            if (
+                initiative is None
+                or initiative.get("kind") != "payload_content"
+                or int(initiative.get("draft_id") or 0) != normalized_id
+                or initiative.get("state") not in {"ready_for_review", "publishing"}
+                or str(initiative.get("review_package_hash") or "") != package_hash
+            ):
+                raise BridgeError("the exact Payload Growth proposal is held or no longer current")
             approval_id = int((initiative or {}).get("approval_id") or 0)
             if not approval_id:
                 raise BridgeError("the content candidate has no durable owner approval")

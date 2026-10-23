@@ -63,16 +63,30 @@ class Payload:
         raise AssertionError((kind, slug))
 
     def validate_growth_candidate(self, package, package_hash):
-        return {"status": "passed", "packageHash": package_hash, "checks": {
-            "canonicalSchema": True, "exactDraft": True, "private": True,
-            "publicRenderer": True, "approvalBoundary": True}}
+        return {
+            "status": "passed", "packageHash": package_hash, "tenant": "test-business",
+            "checks": {
+                "canonicalSchema": True, "exactDraft": True, "private": True,
+                "publicRenderer": True, "approvalBoundary": True,
+            },
+            "preview": {
+                "status": "passed", "route": package.get("route") or "/",
+                "kind": "page", "collection": package.get("collection"),
+                "documentId": package.get("documentId"),
+                "documentHash": "sha256:" + "a" * 64,
+                "verifiedAt": "2026-10-23T00:00:00Z", "expiresAt": 1792713600,
+            },
+        }
 
     def read(self, collection, *, draft=True, **kwargs):
         return dict(self.draft if draft else self.live)
 
     def update(self, collection, document_id, data, **kwargs):
         self.writes += 1
-        self.draft.update(data, updatedAt=f"revision-{self.writes + 1}")
+        self.draft.update(
+            data, updatedAt=f"revision-{self.writes + 1}",
+            _helloadaRevision="sha256:" + f"{self.writes:064x}",
+        )
         return dict(self.draft)
 
     def apply_growth_candidate(self, package, package_hash):
@@ -111,6 +125,136 @@ def test_live_payload_registers_one_growth_service_not_independent_producers(tmp
     assert "seo_outcomes" in names
     assert not set(names) & {"article", "seo_insight", "seo_research_cycle", "seo_site_report_cycle", "article_research_cycle", "growth_reconciler"}
     assert all(item["next_run"] is not None for item in scheduler.upcoming())
+    memory.close()
+
+
+def test_payload_revision_write_failure_never_restores_the_held_old_approval():
+    from site_agent.application.growth_candidates import restore_growth_source_revision
+
+    class MemoryStub:
+        def __init__(self):
+            self.initiative = {
+                "id": 8, "state": "validating",
+                "validation": {"revision": {
+                    "candidateType": "payload_content", "writeAttempted": True,
+                    "previousDraftId": 63, "previousReviewPackageHash": "old-hash",
+                }},
+                "draft_id": 63,
+            }
+            self.draft = {"id": 63, "status": "pending", "meta": {
+                "review_package_hash": "old-hash", "growth_revision_pending": True,
+            }}
+
+        def list_strategy_initiatives(self, limit=None):
+            return [self.initiative]
+
+        def list_drafts(self, limit=500):
+            return [self.draft]
+
+        def update_strategy_initiative(self, _id, **kwargs):
+            self.initiative.update(kwargs)
+
+    memory = MemoryStub()
+    assert restore_growth_source_revision(memory, 8, "Payload write outcome is uncertain")
+    assert memory.initiative["state"] == "validating"
+    assert memory.initiative["validation"]["revision"]["status"] == "uncertain"
+    assert memory.draft["status"] == "pending"
+    assert memory.draft["meta"]["growth_revision_pending"] is True
+
+
+def test_payload_revision_retry_resumes_exact_checkpoint_after_old_approval_closes(tmp_path, monkeypatch):
+    from site_agent.application.growth_candidates import content_hash, finalize_payload_growth_revision
+
+    memory = Memory(tmp_path / "payload-revision-retry.db")
+    payload = Payload()
+    context = {
+        "tenant_id": "test-business", "config": config(), "memory": memory,
+        "payload_gateway": payload, "llm": Ada(),
+    }
+    run = run_growth_cycle(context, trigger="weekly")
+    assert run["status"] == "complete"
+    initiative, = memory.list_strategy_initiatives(limit=None)
+    previous_draft = memory.get_draft(int(initiative["draft_id"]))
+    previous_package = previous_draft["meta"]["growth_package"]
+    previous_hash = previous_draft["meta"]["review_package_hash"]
+    previous_approval_id = int(initiative["approval_id"])
+    memory.update_draft_meta(previous_draft["id"], {
+        **previous_draft["meta"], "growth_revision_pending": True,
+        "growth_revision_initiative_id": initiative["id"],
+    })
+    updated = payload.update("pages", "1", {
+        "metaDescription": "A clearer revised description for local service customers.",
+    })
+    receipt = {
+        "kind": "collection", "operation": "update", "target": "pages", "document_id": "1",
+        "revision": updated["_helloadaRevision"], "locale": "en", "fields": ["metaDescription"],
+    }
+    revision_request = {
+        "initiativeId": int(initiative["id"]), "chatJobId": 9001,
+        "previousDraftId": int(previous_draft["id"]), "previousApprovalId": previous_approval_id,
+        "previousReviewPackageHash": previous_hash, "candidateType": "payload_content",
+        "collection": "pages", "documentId": "1", "baseHash": previous_package["baseHash"],
+        "previousCandidateHash": previous_package["candidateHash"], "fields": list(previous_package["fields"]),
+    }
+    validation = dict(initiative.get("validation") or {})
+    validation.update({"status": "validating", "revision": {
+        **revision_request, "writeAttempted": True, "locale": "en",
+        "writeTarget": {"collection": "pages", "documentId": "1", "fields": ["metaDescription"]},
+    }})
+    memory.transition_strategy_initiative(
+        int(initiative["id"]), "validating", expected_state="ready_for_review", validation=validation,
+    )
+
+    with pytest.raises(ValueError, match="receipt exceeds or differs"):
+        finalize_payload_growth_revision(context, revision_request, [{
+            **receipt, "fields": ["metaDescription", "title"],
+        }])
+    assert memory.get_approval_request(previous_approval_id).status.value == "pending"
+
+    update_draft_status = memory.update_draft_status
+    failed_once = False
+
+    def interrupt_after_old_decision(draft_id, status):
+        nonlocal failed_once
+        if int(draft_id) == int(previous_draft["id"]) and status == "superseded" and not failed_once:
+            failed_once = True
+            raise RuntimeError("injected crash after old approval decision")
+        return update_draft_status(draft_id, status)
+
+    monkeypatch.setattr(memory, "update_draft_status", interrupt_after_old_decision)
+    with pytest.raises(RuntimeError, match="injected crash"):
+        finalize_payload_growth_revision(context, revision_request, [receipt])
+    assert memory.get_approval_request(previous_approval_id).status.value == "declined"
+    assert payload.writes == 2  # one initial candidate write plus the one revision write
+    interrupted = next(
+        row for row in memory.list_strategy_initiatives(limit=None)
+        if int(row["id"]) == int(initiative["id"])
+    )
+    checkpoint = interrupted["validation"]["revision"]
+    checkpoint_draft = memory.get_draft(int(checkpoint["newDraftId"]))
+    assert checkpoint_draft["meta"]["review_package_hash"] == checkpoint["newReviewPackageHash"]
+    assert memory.get_approval_request(int(checkpoint["newApprovalId"])).status.value == "pending"
+    revised_decision = memory.conn.execute(
+        "SELECT 1 FROM strategy_decisions WHERE initiative_id = ? AND decision = 'revised' "
+        "AND source_revision = '' AND review_package_hash = ?",
+        (int(initiative["id"]), previous_hash),
+    ).fetchone()
+    assert revised_decision is not None
+
+    monkeypatch.setattr(memory, "update_draft_status", update_draft_status)
+    completed = finalize_payload_growth_revision(context, revision_request, [receipt])
+    assert completed["idempotent"] is False
+    assert payload.writes == 2
+    current = next(row for row in memory.list_strategy_initiatives(limit=None) if int(row["id"]) == int(initiative["id"]))
+    replacement = memory.get_draft(int(current["draft_id"]))
+    assert replacement["status"] == "pending"
+    assert replacement["meta"]["review_package_hash"] == current["review_package_hash"]
+    assert content_hash(replacement["meta"]["growth_package"]) == current["review_package_hash"]
+    assert memory.get_approval_request(int(current["approval_id"])).status.value == "pending"
+    assert memory.get_approval_request(previous_approval_id).status.value == "declined"
+    payload_candidate_drafts = [row for row in memory.list_drafts(limit=None) if row.get("kind") == "payload_content"]
+    assert len(payload_candidate_drafts) == 2
+    assert sorted(row["status"] for row in payload_candidate_drafts) == ["pending", "superseded"]
     memory.close()
 
 
