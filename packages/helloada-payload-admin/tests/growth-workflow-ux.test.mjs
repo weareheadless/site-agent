@@ -5,6 +5,17 @@ import test from 'node:test';
 const component = readFileSync(new URL('../src/components/GrowthTasks.tsx', import.meta.url), 'utf8');
 const styles = readFileSync(new URL('../src/styles/growth.scss', import.meta.url), 'utf8');
 
+test('additional decisions wrap long titles within their grid track', () => {
+  assert.match(styles, /\.helloada-growth-additional-decisions \{[^}]*min-width: 0/);
+  assert.match(styles, /\.helloada-growth-additional-decisions li \{ min-width: 0/);
+  assert.match(styles, /\.helloada-growth-additional-decisions strong \{[^}]*overflow-wrap: anywhere; white-space: normal/);
+});
+
+test('ready Payload and source candidates use the explicit revision action', () => {
+  assert.match(component, /task\.kind === "code" \|\| task\.kind === "payload_content"/);
+  assert.match(component, /task\.canApprove\) url\.searchParams\.set\("growth_task_action", "revise"\)/);
+});
+
 test('Ada’s work is one task list, not separate status buckets or counters', () => {
   assert.match(component, /const workRows = tasks\.filter/);
   assert.match(component, /workRows\.map\(task =>/);

@@ -213,7 +213,7 @@ export function GrowthTasks({ mode, serviceModel, decisionOrder, onNavigate, tas
         : title(task) + ". " + t("growth.decisionPrompt");
     const url = new URL(ask(prompt), "https://workspace.invalid");
     url.searchParams.set("growth_task", task.id);
-    if (task.kind === "code" && task.canApprove) url.searchParams.set("growth_task_action", "revise");
+    if ((task.kind === "code" || task.kind === "payload_content") && task.canApprove) url.searchParams.set("growth_task_action", "revise");
     if (task.conversationId) url.searchParams.set("conversation_id", String(task.conversationId));
     return url.pathname + url.search;
   };
