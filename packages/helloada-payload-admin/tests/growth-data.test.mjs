@@ -26,11 +26,11 @@ test('Growth has one task list, not separate advice, schedule and approval windo
   assert.doesNotMatch(component, /helloada-growth-work-strip|backgroundIdle/);
   assert.ok(component.includes('<GrowthTasks'));
   assert.ok(component.includes('tasks={growth?.tasks}'));
-  assert.ok(component.includes('ownerQueue={growth?.ownerQueue}'));
+  assert.ok(component.includes('serviceModel={growth.serviceModel}'));
   assert.doesNotMatch(component, /reviewQueue\?\.map|reviewCandidates|helloada-growth-side|helloada-growth-advice/);
   const tasks = readFileSync(new URL('../src/components/GrowthTasks.tsx', import.meta.url), 'utf8');
   assert.doesNotMatch(tasks, /role="tablist" aria-label=\{t\("growth\.taskFocus"\)\}/);
-  assert.match(tasks, /const visible = tasks\.filter\(row => row\.focus === "needs_you"\)/);
+  assert.match(tasks, /const visible = decisionRows/);
   assert.doesNotMatch(tasks, /rows: tasks\.filter\(row => row\.focus === "needs_you"\)/);
   assert.match(tasks, /const workRows = tasks\.filter/);
   assert.match(tasks, /workRows\.map\(task =>/);
@@ -38,10 +38,11 @@ test('Growth has one task list, not separate advice, schedule and approval windo
   assert.match(tasks, /helloada-growth-task-list/);
   assert.doesNotMatch(tasks, /helloada-growth-sidebar/);
   assert.doesNotMatch(tasks, /helloada-growth-support-rail/);
-  assert.match(tasks, /const recentWork = ownerQueue\?\.recentResultIds\.map\(agendaTask\)/);
-  assert.match(tasks, /progressionTask\s*\?\s*openTask\(progressionTask\)/);
+  assert.match(tasks, /const recentWork = serviceModel\.recentResults/);
+  assert.match(tasks, /serviceModel\.preparation\.length/);
+  assert.match(tasks, /serviceModel\.areas\.map\(\(area\) => area\.nextAssessment\)/);
   assert.match(tasks, /task\.kind === "assessment" \? "growth\.assessmentNextRetry"/);
-  assert.ok(tasks.includes("[taskSummary(task) || task.area || stateLabel(task), task.nextRun"));
+  assert.ok(tasks.includes("[taskSummary(task) || stateLabel(task), task.nextRun"));
   assert.match(tasks, /growth_task/);
   assert.match(tasks, /lastOpenedTask/);
   assert.match(tasks, /writeGrowthLocation\(task\.focus, task\.id, "pushState"\)/);

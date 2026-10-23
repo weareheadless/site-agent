@@ -25,6 +25,16 @@ const packedText = file => execFileSync('tar', ['-xOf', archive, `package/${file
 const growth = packedText('src/components/HelloAdaGrowth.tsx')
 if (!/<GrowthTasks(?:\s|>)/.test(growth) || growth.includes('helloada-growth-sidebar') || !growth.includes('owner-decisions-v1') || !growth.includes('owner-queue-progression-v1')) throw new Error('Packed artifact has the old scattered Growth overview or lacks the supported progression contract check')
 const growthTasks = packedText('src/components/GrowthTasks.tsx')
+const growthData = packedText('src/lib/growth-data.ts')
+if (!growth.includes('isGrowthServiceModel(body.serviceModel)')
+  || !growthData.includes('growth-service-v1')
+  || !growthTasks.includes('serviceModel.areas.map')
+  || !growthTasks.includes('serviceModel.decisionIds')
+  || !growthTasks.includes('serviceModel.preparation')
+  || !growthTasks.includes('serviceModel.recentResults')
+  || /task\.area|growthAreaTasks/.test(growthTasks)) {
+  throw new Error('Packed admin artifact lacks the canonical Growth service dashboard or invents a parallel area model')
+}
 if (!growthTasks.includes('articlePayloadConflict') || !growthTasks.includes('growth.articleResolve')) throw new Error('Packed admin artifact cannot explain or resolve blocked Payload article drafts')
 if (/HelloAdaMessages|HelloAdaCalendar/.test(packedText('src/index.ts'))) throw new Error('Packed admin package exposes a parallel Payload mailbox or calendar UI')
 if (!packedText('src/components/HelloAdaNav.tsx').includes('href="/admin?view=messages"')

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { fetchHelloAda } from "../api/fetchHelloAda";
 import { useHelloAdaTranslations } from "../api/useHelloAdaTranslations";
-import { type GrowthRow } from "../lib/growth-data";
+import { isGrowthServiceModel, type GrowthResultTab, type GrowthRow, type GrowthServiceModel } from "../lib/growth-data";
 import { GrowthTasks, type GrowthTask } from "./GrowthTasks";
 import { WorkspaceIcon } from "./WorkspaceIcon";
 import {
@@ -14,7 +14,6 @@ import {
 import { GrowthEvidence } from "./GrowthEvidence";
 import { GrowthCompetition } from "./GrowthCompetition";
 type GrowthPanel = "home" | "decisions" | "work" | "results";
-type GrowthResultsTab = "analytics" | "search" | "competitionTab" | "health" | "content" | "connections";
 type OwnerQueue = {
   featuredDecisionId: string | null;
   additionalDecisionIds: string[];
@@ -52,6 +51,7 @@ type Insight = {
 };
 type Growth = {
   tasks?: GrowthTask[];
+  serviceModel: GrowthServiceModel;
   ownerQueue: OwnerQueue;
   ownerTimezone?: string | null;
   growthContractVersion: string;
@@ -76,7 +76,7 @@ type Growth = {
 export function HelloAdaGrowth() {
   const { t, language } = useHelloAdaTranslations();
   const [panel, setPanel] = useState<GrowthPanel>("home");
-  const [tab, setTab] = useState<GrowthResultsTab>("analytics");
+  const [tab, setTab] = useState<GrowthResultTab>("analytics");
   const [days, setDays] = useState(28);
   const [revision, setRevision] = useState(0);
   const [growth, setGrowth] = useState<Growth>();
@@ -107,7 +107,7 @@ export function HelloAdaGrowth() {
     window.addEventListener("popstate", restorePanel);
     return () => window.removeEventListener("popstate", restorePanel);
   }, []);
-  const navigatePanel = (next: GrowthPanel, resultsTab: "analytics" | "search" = "analytics") => {
+  const navigatePanel = (next: GrowthPanel, resultsTab: GrowthResultTab = "analytics") => {
     setPanel(next);
     if (next === "results") setTab(resultsTab);
     const url = new URL(window.location.href);
@@ -133,6 +133,7 @@ export function HelloAdaGrowth() {
         const progressionStates = ["ready_for_review", "preparing", "service_issue", "assessing", "scheduled", "deferred_findings", "assessed", "not_started"];
         if (!body || body.growthContractVersion !== "owner-decisions-v1"
           || body.ownerQueueContractVersion !== "owner-queue-progression-v1"
+          || !isGrowthServiceModel(body.serviceModel)
           || !Array.isArray(body.tasks) || !body.ownerQueue
           || !Array.isArray(body.ownerQueue.additionalDecisionIds) || !Array.isArray(body.ownerQueue.recentResultIds)
           || !Number.isInteger(body.ownerQueue.decisionCount) || body.ownerQueue.decisionCount < 0
@@ -148,6 +149,9 @@ export function HelloAdaGrowth() {
           || !(progression.deferredReassessWhen === undefined || progression.deferredReassessWhen === null || typeof progression.deferredReassessWhen === "string")
           || !(progression.nextAssessmentAt === undefined || progression.nextAssessmentAt === null || typeof progression.nextAssessmentAt === "string"))
           throw new Error("incompatible Growth response");
+        const growthTaskIds = new Set(body.tasks.map((task: GrowthTask) => task?.id));
+        if (body.serviceModel.decisionIds.some((id: string) => !growthTaskIds.has(id)))
+          throw new Error("Growth service decision has no canonical review task");
         if (!controller.signal.aborted) setGrowth(body);
       })
       .catch(() => {
@@ -344,11 +348,11 @@ export function HelloAdaGrowth() {
       {panel !== "results" && errors.growth ? <div className="helloada-growth-error" role="alert">
         {t("growth.unavailable")} <button type="button" onClick={refresh}>{t("growth.retry")}</button>
       </div> : null}
-      {panel !== "results" && !errors.growth ? (
+      {panel !== "results" && !errors.growth && growth ? (
         <GrowthTasks
           mode={panel === "home" ? "home" : panel === "decisions" ? "decisions" : "work"}
           tasks={growth?.tasks}
-          ownerQueue={growth?.ownerQueue}
+          serviceModel={growth.serviceModel}
           pending={loading.growth}
           refresh={refresh}
           ask={ask}
@@ -357,7 +361,7 @@ export function HelloAdaGrowth() {
           brief={insight}
           onNavigate={navigatePanel}
         />
-      ) : null}
+      ) : panel !== "results" && loading.growth ? <div className="helloada-growth-empty" role="status">{t("growth.loading")}</div> : null}
       {panel === "results" && tab === "analytics" ? (
         <>
           {errors.analytics ? <ErrorNotice /> : null}
