@@ -344,6 +344,94 @@ def test_ambiguous_provider_failure_is_not_retried_as_a_pre_dispatch_rejection(t
         memory.close()
 
 
+def test_budget_exhaustion_blocks_without_dispatch_and_resumes_after_cap_increase(tmp_path, monkeypatch):
+    memory = Memory(tmp_path / "memory.db")
+    cycle_key = "article:2026-W40"
+    row = memory.create_article_idea(cycle_key, "budget-retry-hash", dict(DEFAULT_IDEA))
+    memory.update_article_idea(row["id"], status="blocked", error="growth research allowance is exhausted")
+
+    class Service:
+        requests = 0
+
+        def request_article_keyword_research(self, **_kwargs):
+            self.requests += 1
+            return {"run_id": "run-approved-retry", "status": "requested"}
+
+    service = Service()
+    config = {
+        "growth": {"monthly_research_cap_micros": 0, "research_quote_micros": 100},
+        "seo": {"article_research": {"enabled": True}},
+    }
+    monkeypatch.setattr(article_research, "_cycle_key", lambda _config: cycle_key)
+    context = {"config": config, "memory": memory, "crawlseo_service": service, "llm": IdeaLLM()}
+    try:
+        article_research.select_and_request(context)
+        blocked = memory.get_article_idea(row["id"])
+        assert blocked["status"] == "blocked"
+        assert blocked["keyword_budget_reservation_id"] is None
+        assert service.requests == 0
+
+        config["growth"]["monthly_research_cap_micros"] = 100
+        article_research.select_and_request(context)
+        article_research.select_and_request(context)
+        saved = memory.get_article_idea(row["id"])
+        reservation = memory.get_growth_budget_reservation(saved["keyword_budget_reservation_id"])
+        assert saved["status"] == "research_requested"
+        assert reservation["status"] == "settled"
+        assert service.requests == 1
+        assert reservation["amount_micros"] == 100
+    finally:
+        memory.close()
+
+
+def test_released_budget_reservation_reactivation_rechecks_period_cap(tmp_path):
+    from site_agent.core.contracts import ContractError
+    from site_agent.core.growth_contracts import GrowthBudgetAllowanceExhausted
+
+    memory = Memory(tmp_path / "memory.db")
+    try:
+        memory.reserve_growth_budget(
+            reservation_id="released-slot", period="2026-10", idempotency_key="released-key",
+            amount_micros=10, cap_micros=15, operation="keyword",
+        )
+        memory.settle_growth_budget("released-slot", status="released")
+        memory.reserve_growth_budget(
+            reservation_id="other-slot", period="2026-10", idempotency_key="other-key",
+            amount_micros=10, cap_micros=15, operation="keyword",
+        )
+
+        with pytest.raises(GrowthBudgetAllowanceExhausted):
+            memory.reserve_growth_budget(
+                reservation_id="released-slot", period="2026-10", idempotency_key="released-key",
+                amount_micros=10, cap_micros=15, operation="keyword",
+            )
+        assert memory.get_growth_budget_reservation("released-slot")["status"] == "released"
+        assert isinstance(GrowthBudgetAllowanceExhausted("full"), ContractError)
+    finally:
+        memory.close()
+
+
+def test_idempotency_identity_error_is_not_translated_to_budget_block(tmp_path):
+    from site_agent.application.growth_budget import GrowthBudgetBlocked, budget_period, reserve_paid_research
+    from site_agent.core.contracts import ContractError
+
+    memory = Memory(tmp_path / "memory.db")
+    config = {"growth": {"monthly_research_cap_micros": 1000, "research_quote_micros": 100}}
+    try:
+        memory.reserve_growth_budget(
+            reservation_id="different-reservation", period=budget_period(config),
+            idempotency_key="same-key", amount_micros=100, cap_micros=1000, operation="keyword",
+        )
+        with pytest.raises(ContractError) as error:
+            reserve_paid_research(
+                {"memory": memory, "config": config},
+                idempotency_key="same-key", operation="keyword",
+            )
+        assert not isinstance(error.value, GrowthBudgetBlocked)
+    finally:
+        memory.close()
+
+
 def test_empty_provider_summary_is_rejected_before_reserving_or_spending_budget(tmp_path):
     memory = Memory(tmp_path / "memory.db")
 

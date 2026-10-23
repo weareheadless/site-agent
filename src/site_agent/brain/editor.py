@@ -444,11 +444,109 @@ def _mark_website_change_dispatched(
     source_build: bool = False,
 ) -> None:
     """Record an external attempt before entering its adapter/build boundary."""
+    revision = _payload_growth_revision(context)
+    if revision is not None:
+        if source_build or effect is None or effect.get("kind") != "collection" or effect.get("operation") != "update":
+            raise ValueError("a Payload Growth revision can only update its exact reviewed collection document")
+        _persist_payload_growth_revision_attempt(context, effect)
     context["_website_change_plan_dispatched"] = True
     if effect is not None:
         effect["_dispatched"] = True
     if source_build:
         context["_website_change_source_build_dispatched"] = True
+
+
+def _payload_growth_revision(context: dict[str, Any]) -> dict[str, Any] | None:
+    revision = context.get("_growth_task_revision")
+    return revision if isinstance(revision, dict) and revision.get("candidateType") == "payload_content" else None
+
+
+def _persist_payload_growth_revision_attempt(context: dict[str, Any], effect: dict[str, Any]) -> None:
+    revision = _payload_growth_revision(context)
+    if revision is None:
+        return
+    collection = str(revision.get("collection") or "")
+    document_id = str(revision.get("documentId") or "")
+    if (
+        effect.get("target") != collection or effect.get("collection") != collection
+        or str(effect.get("identifier") or "") != document_id
+        or effect.get("identifier_kind") != "id"
+        or effect.get("kind") != "collection" or effect.get("operation") != "update"
+    ):
+        raise ValueError("the Payload Growth revision target must match its exact reviewed document")
+    memory = context["memory"]
+    initiative_id = int(revision.get("initiativeId") or 0)
+    initiative = next((row for row in memory.list_strategy_initiatives(limit=500) if int(row.get("id") or 0) == initiative_id), None)
+    validation = dict((initiative or {}).get("validation") or {})
+    state = validation.get("revision") if isinstance(validation.get("revision"), dict) else None
+    if (
+        initiative is None or initiative.get("state") != "validating" or state is None
+        or state.get("candidateType") != "payload_content"
+        or int(state.get("chatJobId") or 0) != int(context.get("_chat_job_id") or 0)
+        or state.get("writeAttempted")
+    ):
+        raise ValueError("this Payload Growth revision has already dispatched or is no longer active")
+    validation["revision"] = {
+        **state,
+        "writeAttempted": True,
+        "writeTarget": {"collection": collection, "documentId": document_id, "fields": list(effect.get("fields") or [])},
+        "locale": str(context.get("_resolved_payload_locale") or ""),
+    }
+    memory.update_strategy_initiative(initiative_id, validation=validation)
+
+
+def _validate_payload_growth_revision_plan(context: dict[str, Any], plan: dict[str, Any]) -> None:
+    revision = _payload_growth_revision(context)
+    if revision is None:
+        return
+    effects = plan.get("content_effects") if isinstance(plan.get("content_effects"), list) else []
+    collection = str(revision.get("collection") or "")
+    document_id = str(revision.get("documentId") or "")
+    if str(plan.get("source_brief") or "").strip() or plan.get("source_paths") or len(effects) != 1:
+        raise ValueError("a Payload Growth revision permits only one update to its exact Payload document")
+    effect = effects[0]
+    reviewed_fields = {
+        str(field) for field in revision.get("fields", [])
+        if isinstance(field, str) and field
+    }
+    effect_fields = {
+        str(field) for field in effect.get("fields", [])
+        if isinstance(field, str) and field
+    }
+    if (
+        effect.get("kind") != "collection" or effect.get("operation") != "update"
+        or effect.get("target") != collection or effect.get("collection") != collection
+        or str(effect.get("identifier") or "") != document_id or effect.get("identifier_kind") != "id"
+    ):
+        raise ValueError("a Payload Growth revision can update only its exact reviewed collection document")
+    if not reviewed_fields or not effect_fields or effect_fields - reviewed_fields:
+        raise ValueError("a Payload Growth revision can change only fields included in the exact reviewed candidate")
+
+
+def _guard_payload_growth_revision_tool(context: dict[str, Any], name: str, args: dict[str, Any]) -> str | None:
+    revision = _payload_growth_revision(context)
+    if revision is None:
+        return None
+    if name == "plan_website_change":
+        return None
+    if name == "read_payload_content":
+        if (
+            str(args.get("collection") or "") != str(revision.get("collection") or "")
+            or str(args.get("identifier") or "") != str(revision.get("documentId") or "")
+            or str(args.get("identifier_kind") or "id") != "id"
+        ):
+            return "the Payload Growth revision may read only its exact reviewed document by ID"
+        return None
+    if name == "update_payload_draft":
+        if (
+            str(args.get("collection") or "") != str(revision.get("collection") or "")
+            or str(args.get("id") or "") != str(revision.get("documentId") or "")
+        ):
+            return "the Payload Growth revision may update only its exact reviewed document"
+        return None
+    if name in {"get_growth", "get_metrics", "list_drafts"}:
+        return None
+    return "a Payload Growth revision permits only review reads, its exact document read, a bounded plan, and one exact document update"
 
 
 def _plan_effect_for_tool(context: dict[str, Any], name: str, args: dict[str, Any]) -> dict[str, Any]:
@@ -498,6 +596,15 @@ def _plan_effect_for_tool(context: dict[str, Any], name: str, args: dict[str, An
     if len(candidates) != 1:
         raise ValueError("the Payload change does not match one exact target in Ada's validated plan")
     effect = candidates[0]
+    revision = _payload_growth_revision(context)
+    if revision is not None:
+        _validate_payload_growth_revision_plan(context, plan)
+        if name != "update_payload_draft":
+            raise ValueError("a Payload Growth revision permits only an exact document update")
+        reads = context.get("_payload_read_documents") or {}
+        document = reads.get((str(revision.get("collection") or ""), str(revision.get("documentId") or ""))) if isinstance(reads, dict) else None
+        if not isinstance(document, dict) or not any(document.get(key) != data.get(key) for key in data):
+            raise ValueError("the requested Payload revision contains no substantive field change")
     if effect.get("_dispatched"):
         raise ValueError("this planned Payload effect was already dispatched; do not replay an uncertain write")
     planned_fields = set(effect.get("fields") or [])
@@ -843,6 +950,9 @@ def _tools_spec(
             _runner.BUILDER_TOOLSET,
             {"brief": {"type": "string"}}, ["brief"]),
         )
+    if _payload_growth_revision(context) is not None:
+        allowed = {"get_growth", "get_metrics", "list_drafts", "read_payload_content", "plan_website_change", "update_payload_draft"}
+        tools = [tool for tool in tools if tool.get("function", {}).get("name") in allowed]
     return tools
 
 
@@ -873,6 +983,9 @@ SYSTEM_NOTE_TOOLS = (
 
 
 def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args: dict[str, Any], say) -> str:
+    refusal = _guard_payload_growth_revision_tool(context, name, args)
+    if refusal:
+        return "REFUSED: " + refusal
     memory = context["memory"]
     context.pop("_last_action_succeeded", None)
     context.pop("_last_payload_effect", None)
@@ -1025,6 +1138,7 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
             return "REFUSED: this request's plan is frozen because the host recorded a Payload write or source build dispatch; do not replace it after dispatch."
         try:
             plan = _validate_website_change_plan(args, context.get("_authoring_contract"), context["config"])
+            _validate_payload_growth_revision_plan(context, plan)
         except (TypeError, ValueError) as exc:
             return f"REFUSED: the website change plan is invalid: {exc}"
         context["_website_change_plan"] = plan
@@ -1075,6 +1189,21 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
                 return f"Payload draft created: {_payload_result(document, action='write')}"
             if name == "update_payload_draft":
                 effect = _plan_effect_for_tool(context, name, args)
+                revision = _payload_growth_revision(context)
+                if revision is not None:
+                    live = payload.read(
+                        str(revision.get("collection") or ""),
+                        identifier=str(revision.get("documentId") or ""),
+                        identifier_kind="id", draft=False, locale=locale,
+                    )
+                    from ..application.growth_candidates import content_hash, document_content
+
+                    fields = effect.get("fields") or []
+                    if (
+                        str(live.get("id") or "") != str(revision.get("documentId") or "")
+                        or content_hash(document_content(live, fields)) != str(revision.get("baseHash") or "")
+                    ):
+                        raise ValueError("the published Payload base changed after this Growth proposal was reviewed")
                 write_kwargs = {"locale": locale}
                 _mark_website_change_dispatched(context, effect=effect)
                 document = payload.update(

@@ -9,7 +9,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from ..core.contracts import ContractError
-from ..core.growth_contracts import growth_timezone
+from ..core.growth_contracts import GrowthBudgetAllowanceExhausted, growth_timezone
 
 
 class GrowthBudgetBlocked(RuntimeError):
@@ -56,15 +56,18 @@ def reserve_paid_research(context: Mapping[str, Any], *, idempotency_key: str, o
     if not idempotency_key:
         raise ContractError("paid research idempotency key is required")
     reservation_id = "growth-budget-" + hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest()[:24]
-    reservation = memory.reserve_growth_budget(
-        reservation_id=reservation_id,
-        period=period,
-        idempotency_key=idempotency_key,
-        amount_micros=quote_micros(config, operation),
-        cap_micros=allowance_micros(config),
-        operation=operation,
-        detail={"period": period, **dict(detail or {})},
-    )
+    try:
+        reservation = memory.reserve_growth_budget(
+            reservation_id=reservation_id,
+            period=period,
+            idempotency_key=idempotency_key,
+            amount_micros=quote_micros(config, operation),
+            cap_micros=allowance_micros(config),
+            operation=operation,
+            detail={"period": period, **dict(detail or {})},
+        )
+    except GrowthBudgetAllowanceExhausted as exc:
+        raise GrowthBudgetBlocked(str(exc)) from exc
     status = str(reservation.get("status") or "reserved")
     if status != "reserved":
         raise GrowthBudgetBlocked(f"paid {operation} is {status}; reconcile reservation {reservation.get('reservation_id')} before retrying")

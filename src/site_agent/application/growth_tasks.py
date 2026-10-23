@@ -191,7 +191,7 @@ def growth_tasks(
                 source_job = None
         revision = validation.get('revision') if isinstance(validation.get('revision'), Mapping) else {}
         revision_job = None
-        if initiative.get('kind') == 'code' and revision.get('chatJobId'):
+        if initiative.get('kind') in {'code', 'payload_content'} and revision.get('chatJobId'):
             try:
                 revision_job = memory.get_chat_job(int(revision['chatJobId']))
             except (TypeError, ValueError):
@@ -211,6 +211,9 @@ def growth_tasks(
             and failed_website_change
         )
         source_failure_reason = None
+        payload_revision_uncertain = bool(
+            initiative.get('kind') == 'payload_content' and revision.get('status') == 'uncertain'
+        )
         if source_blocked_by_preview and isinstance(failed_website_change.get('meta'), Mapping):
             failed_preview = failed_website_change['meta'].get('preview')
             if isinstance(failed_preview, Mapping):
@@ -283,11 +286,15 @@ def growth_tasks(
             and str(initiative.get('growth_run_id') or '') not in active_runs
             and not source_work_active
             and not source_waiting_for_owner
+            and not payload_revision_uncertain
         ) or (state in {'publishing', 'verifying_live'} and action_job is None)
         summary_key = None
         if initiative.get('kind') == 'code' and validation.get('revisionFailure'):
             summary_key = 'sourceRevisionFailed'
             initiative_summary = str(validation['revisionFailure'])
+        elif payload_revision_uncertain:
+            summary_key = 'payloadRevisionUncertain'
+            initiative_summary = 'Ada’s Payload revision could not be verified. The previous approval remains held until the exact saved document revision can be reconciled.'
         elif initiative.get('kind') == 'code' and source_blocked_by_preview and not review_ready:
             summary_key = 'sourceWebsitePreviewBlocked'
             initiative_summary = 'Ada’s earlier website preview failed a required check. It was not published; Ada must prepare a valid preview before continuing this source change.'
@@ -310,7 +317,12 @@ def growth_tasks(
             focus = 'needs_you'
         elif stale_work:
             focus = 'paused'
-        task_state = 'ready_for_review' if review_ready else 'blocked' if state in {'ready_for_review', 'blocked', 'uncertain'} else state
+        task_state = (
+            'ready_for_review' if review_ready
+            else 'uncertain' if payload_revision_uncertain
+            else 'blocked' if state in {'ready_for_review', 'blocked', 'uncertain'}
+            else state
+        )
         if stale_work or source_waiting_for_owner:
             task_state = 'not_running'
         tasks.append({'id': f"initiative:{initiative['id']}", 'kind': initiative.get('kind'), 'title': (draft.get('title') or initiative.get('title')) if article_draft else initiative.get('title'),
@@ -320,8 +332,8 @@ def growth_tasks(
             'requirement': action.get('requirement'),
             'conversationId': action.get('conversation_id'), 'approvalId': approval_id,
             'reviewPackageHash': review_hash,
-            'lastError': validation.get('revisionFailure') or source_failure_reason,
-            'executionIssue': state in {'blocked', 'uncertain'} or bool(validation.get('revisionFailure')) or stale_work or source_blocked_by_preview,
+            'lastError': validation.get('revisionFailure') or (revision.get('error') if payload_revision_uncertain else None) or source_failure_reason,
+            'executionIssue': state in {'blocked', 'uncertain'} or payload_revision_uncertain or bool(validation.get('revisionFailure')) or stale_work or source_blocked_by_preview,
             'canApprove': review_ready,
             'previewUrl': ((package.get('source') or {}).get('previewUrl') if isinstance(package.get('source'), Mapping) else None),
             'review': {'before': package.get('before'), 'after': package.get('after'), 'changes': package.get('changes'), 'route': package.get('route'),

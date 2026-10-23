@@ -32,6 +32,32 @@ customer rollout and authenticated acceptance. An unfinished row is not a pass.
 
 ## Required evidence still to record
 
+### October 23 live checkpoint (not final acceptance)
+
+- API release `20261023-api-growth-evidence-checkpoint-1` serves source
+  `553af9e67cfe00217351f183215a24cdf4962dc8`.
+- Shared admin `0.10.27` is published with SHA-256
+  `cec50a0f484a32767df23cd4f4e45479b8778b53d67260afb5a8a6f38d668882`.
+- Oceanic release `runtime-20261023124308-e9201db1` and Atelier release
+  `runtime-20261023125035-919f680d` passed deployment gates. Authenticated fresh
+  documents show the five-area overview. Oceanic shows prioritized decisions
+  8, 7 and 4; Atelier's answer control opens initiative 3 with its actual question.
+- Visual checking found additional-decision title overflow. A narrow wrapping
+  correction is staged for the next immutable package, not yet live.
+- The normal Atelier retry exposed a second root failure: the evidence artifact
+  embeds the entire durable inventory and exceeds the 100,000-byte contract.
+  This must be fixed without raising the cap or discarding checkpointed evidence.
+- A prepared Payload candidate's revision link needs an end-to-end exact-target
+  revision contract, not merely a chat link. That correction is still under test.
+- Approved paid acceptance cycle `growth-b6413f1b850241b5baf8bfc30e140b78`
+  selected idea 12 for `article:2026-W43`. No provider request or reservation was
+  created: the exhausted allowance was incorrectly classified as uncertain.
+  The typed allowance correction is committed as `f82216a`, not yet activated.
+  The owner-approved monthly cap of 700,000 micros is saved in the canonical
+  tenant config; the next queued API release must load it. No history was reset.
+- Browser transport disconnected intermittently during deeper review checks.
+  An unobserved click or transport timeout is not recorded as a product pass.
+
 - Full test results and immutable package artifact identity.
 - Official-main API release receipt for the evidence-checkpoint correction.
 - Canonical canary/fanout receipts for the new shared admin package.

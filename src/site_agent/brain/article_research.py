@@ -453,7 +453,13 @@ def select_and_request(context: dict[str, Any]) -> None:
         existing_idea = existing.get("idea_json")
         if (
             not existing.get("research_run_id")
-            and existing.get("status") in {"selected", "failed"}
+            and (
+                existing.get("status") in {"selected", "failed"}
+                or (
+                    existing.get("status") == "blocked"
+                    and not existing.get("keyword_budget_reservation_id")
+                )
+            )
             and isinstance(existing_idea, Mapping)
         ):
             _request_selected_idea(context, existing, existing_idea)

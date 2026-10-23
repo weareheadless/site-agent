@@ -285,6 +285,80 @@ def test_payload_tool_schema_uses_the_gateway_contract(env):
     assert "publish_payload_global" not in by_name
 
 
+def test_payload_growth_revision_toolset_and_editor_reject_unrelated_write_before_adapter(env):
+    from site_agent.brain.editor import _execute_tool, _tools_spec
+    from site_agent.hands.base import SiteAdapter
+
+    class Payload:
+        writes = 0
+
+        def update(self, *args, **kwargs):
+            self.writes += 1
+            raise AssertionError("mismatched revision target reached the Payload adapter")
+
+    class Adapter(SiteAdapter):
+        name = "t"
+
+        def get_file(self, path, branch=None):
+            return None, None
+
+        def commit_file(self, path, data, message, branch=None):
+            raise AssertionError("source adapter must not be touched")
+
+    payload = Payload()
+    revision = {
+        "candidateType": "payload_content", "initiativeId": 8,
+        "chatJobId": 63, "collection": "pages", "documentId": "doc-1",
+    }
+    context = {**env[2], "payload_gateway": payload, "_growth_task_revision": revision}
+    tools = _tools_spec(context, authoring_contract={
+        "enabled": {"collections": ["pages"], "globals": []},
+        "authoring": {"collections": {"pages": [{"name": "title", "type": "text"}]}, "globals": {}},
+    })
+    names = {tool["function"]["name"] for tool in tools}
+    assert names <= {"get_growth", "get_metrics", "list_drafts", "read_payload_content", "plan_website_change", "update_payload_draft"}
+    assert "design_request" not in names and "spawn_build" not in names
+
+    result = _execute_tool(context, Adapter(), "update_payload_draft", {
+        "collection": "pages", "id": "other-doc", "expected_hash": "sha256:old", "data": {"title": "Changed"},
+    }, lambda _text: None)
+    assert result.startswith("REFUSED:")
+    assert payload.writes == 0
+
+
+def test_payload_growth_revision_rejects_design_handoff_before_host_handoff(env):
+    from site_agent.brain.editor import _execute_tool
+
+    context = {**env[2], "_growth_task_revision": {"candidateType": "payload_content", "collection": "pages", "documentId": "doc-1"}}
+    result = _execute_tool(context, None, "design_request", {"intent": "redesign"}, lambda _text: None)
+    assert result.startswith("REFUSED:")
+    assert "_design_request" not in context
+
+
+def test_payload_growth_revision_plan_rejects_fields_outside_reviewed_candidate(env):
+    from site_agent.brain.editor import _validate_payload_growth_revision_plan
+
+    context = {
+        **env[2],
+        "_growth_task_revision": {
+            "candidateType": "payload_content", "collection": "pages",
+            "documentId": "doc-1", "fields": ["title"],
+        },
+    }
+    plan = {
+        "source_brief": "",
+        "source_paths": [],
+        "content_effects": [{
+            "kind": "collection", "operation": "update", "target": "pages",
+            "collection": "pages", "identifier": "doc-1", "identifier_kind": "id",
+            "fields": ["title", "summary"],
+        }],
+    }
+
+    with pytest.raises(ValueError, match="fields included in the exact reviewed candidate"):
+        _validate_payload_growth_revision_plan(context, plan)
+
+
 def test_payload_gateway_tools_read_then_update_draft(env):
     from site_agent.brain.editor import _tools_spec
     from site_agent.hands.base import SiteAdapter

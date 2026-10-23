@@ -142,6 +142,7 @@ def run_job(context: dict[str, Any], job: dict[str, Any], worker: str,
     job_payload = job.get("payload") if isinstance(job.get("payload"), dict) else {}
     revision_request = job_payload.get("growth_task_revision")
     if isinstance(revision_request, dict):
+        revision_request = {**revision_request, "chatJobId": int(job_id)}
         context["_growth_task_revision"] = dict(revision_request)
 
     def record_job_timing(*, succeeded: bool) -> None:
@@ -164,6 +165,26 @@ def run_job(context: dict[str, Any], job: dict[str, Any], worker: str,
         memory.append_chat_job_step(job_id, worker, text)
 
     try:
+        if isinstance(revision_request, dict) and revision_request.get("candidateType") == "payload_content":
+            persisted = job.get("result") if isinstance(job.get("result"), dict) else {}
+            receipts = persisted.get("payload_effects") if isinstance(persisted.get("payload_effects"), list) else []
+            if receipts:
+                from ..application.growth_candidates import finalize_payload_growth_revision, wake_growth_pending
+
+                completed = finalize_payload_growth_revision(context, revision_request, receipts)
+                replay_result = {"reply": "The revised Payload Growth candidate is ready for owner review.", "growth_revision": completed,
+                                 "conversation_id": conv_id, "duration_ms": int(round((time.monotonic() - started) * 1000))}
+                if not memory.complete_chat_job(job_id, worker, replay_result):
+                    raise RuntimeError("Payload revision job ownership was lost during receipt reconciliation")
+                wake_growth_pending(memory)
+                record_job_timing(succeeded=True)
+                return replay_result
+            initiatives = memory.list_strategy_initiatives(limit=None)
+            active = next((row for row in initiatives if int(row.get("id") or 0) == int(revision_request.get("initiativeId") or 0)), None)
+            active_validation = dict((active or {}).get("validation") or {})
+            active_revision = active_validation.get("revision") if isinstance(active_validation.get("revision"), dict) else {}
+            if active_revision.get("writeAttempted"):
+                raise RuntimeError("Payload revision write was already dispatched without a verifiable receipt; automatic replay is forbidden")
         if job.get("operation_kind") == "growth_source_candidate":
             from ..application.growth_candidates import run_growth_source_candidate_job, wake_growth_pending
 
@@ -248,6 +269,8 @@ def run_job(context: dict[str, Any], job: dict[str, Any], worker: str,
                 source_message_id=message_id,
             )
 
+        if isinstance(revision_request, dict) and revision_request.get("candidateType") == "payload_content" and (result.get("design_request") or result.get("build_brief")):
+            raise RuntimeError("Payload Growth revisions cannot queue a design handoff or source build")
         if result.get("design_request"):
             handoff = _handoff_design_request(context, job, result["design_request"], progress)
             result.update(handoff)
@@ -272,7 +295,14 @@ def run_job(context: dict[str, Any], job: dict[str, Any], worker: str,
             )
         if result.get("error"):
             raise RuntimeError(str(result.get("reply") or "chat job failed")[:300])
-        if isinstance(revision_request, dict) and not result.get("merge_draft_id"):
+        if isinstance(revision_request, dict) and revision_request.get("candidateType") == "payload_content":
+            from ..application.growth_candidates import finalize_payload_growth_revision
+
+            completed = finalize_payload_growth_revision(
+                context, revision_request, list(context.get("_completed_payload_effects") or []),
+            )
+            result["growth_revision"] = completed
+        elif isinstance(revision_request, dict) and not result.get("merge_draft_id"):
             raise RuntimeError("Ada did not prepare a replacement website preview for the requested revision")
 
         result["conversation_id"] = conv_id
@@ -303,11 +333,12 @@ def run_job(context: dict[str, Any], job: dict[str, Any], worker: str,
         memory.fail_chat_job(job_id, worker, str(exc)[:300])
         if isinstance(revision_request, dict):
             try:
-                from ..application.growth_candidates import restore_growth_source_revision
-
-                restore_growth_source_revision(
-                    memory, int(revision_request["initiativeId"]), str(exc)[:700],
-                )
+                if revision_request.get("candidateType") == "payload_content":
+                    from ..application.growth_candidates import mark_payload_revision_uncertain
+                    mark_payload_revision_uncertain(memory, int(revision_request["initiativeId"]), str(exc)[:700])
+                else:
+                    from ..application.growth_candidates import restore_growth_source_revision
+                    restore_growth_source_revision(memory, int(revision_request["initiativeId"]), str(exc)[:700])
             except Exception:  # noqa: BLE001 — the durable Growth reconciler retries recovery
                 pass
         if job.get("operation_kind") == "growth_source_candidate":

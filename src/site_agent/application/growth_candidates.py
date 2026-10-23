@@ -32,6 +32,56 @@ def document_content(document: Mapping[str, Any], fields) -> dict[str, Any]:
     return {key: document.get(key) for key in sorted(fields)}
 
 
+def _save_payload_review_candidate(
+    context: Mapping[str, Any], initiative: Mapping[str, Any], package: Mapping[str, Any],
+    package_hash: str, proof: Mapping[str, Any], *, title: str, summary: str,
+    route: str | None, preparation: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Persist one hash-addressed Payload review candidate idempotently."""
+    memory = context["memory"]
+    existing = next((
+        row for row in memory.list_drafts(limit=500)
+        if (row.get("meta") or {}).get("review_package_hash") == package_hash
+        and row.get("status") == "pending"
+    ), None)
+    draft_id = int(existing["id"]) if existing else int(memory.save_draft(
+        title=title, body=summary, kind="payload_content",
+        meta={"growth_package": dict(package), "review_package_hash": package_hash},
+    ))
+    if existing:
+        meta = dict(existing.get("meta") or {})
+        if meta.get("growth_package") != dict(package):
+            raise ValueError("The saved Payload review draft does not match its exact package hash")
+    action_service = OwnerActionService(memory)
+    action = action_service.create(OwnerAction(
+        capability_id="growth.candidate.review", provider_id="site-agent", title=title,
+        summary=owner_action_summary(summary), action_label="Review this version",
+        priority=ActionPriority.NORMAL, requirement=ActionRequirement.OWNER_DECISION,
+        source_ref=f"growth-initiative:{initiative['id']}",
+        dedupe_key=f"growth-initiative:{initiative['id']}:{package_hash}", draft_id=draft_id,
+    ))
+    approval = memory.get_approval_request(int(action.approval_id)) if action.approval_id else None
+    artifact_id = int(approval.artifact_id) if approval is not None and approval.artifact_id else None
+    if approval is None:
+        artifact = memory.create_artifact(Artifact(
+            kind=ArtifactKind.SITE_CHANGE, title=title, summary=owner_action_summary(summary),
+            renderer="site_change", capability_id="growth.publish", provider_id="payload",
+            content_hash=package_hash,
+            preview_data={"before": package.get("before"), "after": package.get("after"), "route": route, "why": package.get("why")},
+            source_action_id=action.id,
+        ))
+        artifact_id = int(artifact.artifact_id)
+        approval = ApprovalService(memory, actions=action_service).create(
+            artifact, owner_action_label="Publish this exact version",
+            effect_class=EffectClass.SITE_MUTATION, action_id=action.id,
+        )
+    return {
+        "draft_id": draft_id, "action_id": int(action.id),
+        "approval_id": int(approval.approval_id), "artifact_id": artifact_id,
+        "proof": dict(proof), "preparation": dict(preparation or {}),
+    }
+
+
 def prepare_payload_candidate(context: Mapping[str, Any], initiative: Mapping[str, Any], opportunity: Mapping[str, Any], inventory: list[dict[str, Any]], evidence: Mapping[str, Any]) -> dict[str, Any]:
     memory = context["memory"]
     payload = context.get("payload_gateway")
@@ -87,23 +137,15 @@ def prepare_payload_candidate(context: Mapping[str, Any], initiative: Mapping[st
     memory.transition_strategy_initiative(int(initiative["id"]), "validating")
     proof = payload.validate_growth_candidate(package, package_hash)
     candidate_checkpoint(context, initiative, package_hash, package)
-    existing_draft = next((row for row in memory.list_drafts(limit=500) if (row.get("meta") or {}).get("review_package_hash") == package_hash), None)
-    draft_id = existing_draft["id"] if existing_draft else memory.save_draft(title=opportunity["title"], body=opportunity["scope"], kind="payload_content", meta={"growth_package": package, "review_package_hash": package_hash})
-    action = OwnerActionService(memory).create(OwnerAction(
-        capability_id="growth.candidate.review", provider_id="site-agent", title=opportunity["title"], summary=owner_action_summary(opportunity["why"]),
-        action_label="Review this version", priority=ActionPriority.NORMAL, requirement=ActionRequirement.OWNER_DECISION,
-        source_ref=f"growth-initiative:{initiative['id']}", dedupe_key=f"growth-initiative:{initiative['id']}", draft_id=draft_id))
-    artifact = memory.create_artifact(Artifact(
-        kind=ArtifactKind.SITE_CHANGE, title=opportunity["title"], summary=owner_action_summary(opportunity["scope"]), renderer="site_change",
-        capability_id="growth.publish", provider_id="payload", content_hash=package_hash,
-        preview_data={"before": base, "after": expected, "route": entry.get("route"), "why": opportunity["why"]},
-        source_action_id=action.id,
-    ))
-    approval = ApprovalService(memory, actions=OwnerActionService(memory)).create(
-        artifact, owner_action_label="Publish this exact version", effect_class=EffectClass.SITE_MUTATION, action_id=action.id,
+    review = _save_payload_review_candidate(
+        context, initiative, package, package_hash, proof, title=opportunity["title"],
+        summary=opportunity["scope"], route=entry.get("route"),
+        preparation={"changes": changes, "baseHash": content_hash(base)},
     )
-    memory.update_strategy_initiative(int(initiative["id"]), draft_id=draft_id, owner_action_id=action.id, candidate_hash=candidate_hash,
-        artifact_id=artifact.artifact_id, approval_id=approval.approval_id, review_package_hash=package_hash,
+    draft_id = review["draft_id"]
+    memory.update_strategy_initiative(int(initiative["id"]), draft_id=draft_id,
+        owner_action_id=review["action_id"], candidate_hash=candidate_hash,
+        artifact_id=review["artifact_id"], approval_id=review["approval_id"], review_package_hash=package_hash,
         validation={**proof, "preparation": {"changes": changes, "baseHash": content_hash(base)}})
     return memory.transition_strategy_initiative(int(initiative["id"]), "ready_for_review")
 
@@ -286,6 +328,9 @@ def restore_growth_source_revision(memory: Any, initiative: Mapping[str, Any] | 
     revision = validation.get("revision") if isinstance(validation.get("revision"), Mapping) else None
     if revision is None:
         return False
+    if revision.get("candidateType") == "payload_content" and (revision.get("writeAttempted") or revision.get("payloadEffect")):
+        mark_payload_revision_uncertain(memory, initiative_id, reason)
+        return True
     previous_id = int(revision.get("previousDraftId") or 0)
     previous_hash = str(revision.get("previousReviewPackageHash") or "")
     drafts = memory.list_drafts(limit=500)
@@ -317,6 +362,232 @@ def restore_growth_source_revision(memory: Any, initiative: Mapping[str, Any] | 
     )
     wake_growth_pending(memory)
     return True
+
+
+def mark_payload_revision_uncertain(memory: Any, initiative: Mapping[str, Any] | int, reason: str) -> bool:
+    """Keep a Payload revision held when its external write may have happened."""
+    initiative_id = int(initiative.get("id") if isinstance(initiative, Mapping) else initiative)
+    current = next((row for row in memory.list_strategy_initiatives(limit=None) if int(row["id"]) == initiative_id), None)
+    if current is None:
+        return False
+    validation = dict(current.get("validation") or {})
+    revision = validation.get("revision") if isinstance(validation.get("revision"), Mapping) else None
+    if not revision or revision.get("candidateType") != "payload_content":
+        return False
+    revision = {**dict(revision), "status": "uncertain", "error": str(reason or "Payload revision outcome is uncertain")[:700]}
+    validation.update({"revision": revision, "status": "uncertain"})
+    memory.update_strategy_initiative(initiative_id, validation=validation, last_error=revision["error"])
+    return True
+
+
+def _has_exact_revised_decision(memory: Any, initiative_id: int, source_hash: str, package_hash: str) -> bool:
+    """Read the existing decision row that binds this old review to revision."""
+    connection = getattr(memory, "conn", None)
+    if connection is None:
+        return False
+    try:
+        row = connection.execute(
+            "SELECT 1 FROM strategy_decisions WHERE initiative_id = ? AND decision = ? "
+            "AND source_revision = ? AND review_package_hash = ? LIMIT 1",
+            (initiative_id, "revised", source_hash, package_hash),
+        ).fetchone()
+        return row is not None
+    except Exception:  # noqa: BLE001 — absent decision evidence is never permission to resume
+        return False
+
+
+def finalize_payload_growth_revision(
+    context: Mapping[str, Any], revision_request: Mapping[str, Any], receipts: list[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Validate an exact chat write and replace the corresponding Payload review package."""
+    memory = context["memory"]
+    payload = context.get("payload_gateway")
+    initiative_id = int(revision_request.get("initiativeId") or 0)
+    job_id = int(revision_request.get("chatJobId") or 0)
+    current = next((row for row in memory.list_strategy_initiatives(limit=None) if int(row["id"]) == initiative_id), None)
+    if current is None or current.get("kind") != "payload_content":
+        raise ValueError("The Payload Growth initiative no longer matches this revision")
+    validation = dict(current.get("validation") or {})
+    revision = validation.get("revision") if isinstance(validation.get("revision"), Mapping) else None
+    if revision is None:
+        completed = validation.get("lastRevision") if isinstance(validation.get("lastRevision"), Mapping) else {}
+        if int(completed.get("chatJobId") or 0) == job_id and completed.get("newReviewPackageHash"):
+            return {"draft_id": int(completed["newDraftId"]), "review_package_hash": str(completed["newReviewPackageHash"]), "idempotent": True}
+        raise ValueError("The Payload Growth revision is no longer active")
+    if (
+        current.get("state") != "validating"
+        or revision.get("candidateType") != "payload_content"
+        or int(revision.get("chatJobId") or 0) != job_id
+        or int(revision.get("previousDraftId") or 0) != int(revision_request.get("previousDraftId") or 0)
+        or str(revision.get("previousReviewPackageHash") or "") != str(revision_request.get("previousReviewPackageHash") or "")
+        or any(
+            str(revision.get(key) or "") != str(revision_request.get(key) or "")
+            for key in ("candidateType", "collection", "documentId", "baseHash", "previousCandidateHash")
+        )
+        or sorted(str(field) for field in revision.get("fields", []) if isinstance(field, str))
+        != sorted(str(field) for field in revision_request.get("fields", []) if isinstance(field, str))
+        or payload is None
+    ):
+        raise ValueError("The exact Payload Growth revision identity changed")
+    previous_id = int(revision["previousDraftId"])
+    previous_hash = str(revision["previousReviewPackageHash"])
+    previous_draft = memory.get_draft(previous_id)
+    previous_meta = dict((previous_draft or {}).get("meta") or {})
+    previous_package = previous_meta.get("growth_package") if isinstance(previous_meta.get("growth_package"), Mapping) else {}
+    previous_approval_id = int(current.get("approval_id") or 0)
+    previous_approval = memory.get_approval_request(previous_approval_id) if previous_approval_id else None
+    decision_recovery = bool(
+        revision.get("newDraftId") and revision.get("newReviewPackageHash")
+        and revision.get("newApprovalId")
+        and previous_approval is not None and previous_approval.status.value == "declined"
+        and _has_exact_revised_decision(memory, initiative_id, "", previous_hash)
+    )
+    if (
+        previous_draft is None
+        or previous_draft.get("kind") != "payload_content"
+        or previous_draft.get("status") not in {"pending", "superseded"}
+        or previous_meta.get("review_package_hash") != previous_hash
+        or content_hash(previous_package) != previous_hash
+        or previous_package.get("candidateType") == "source_code"
+        or previous_approval_id != int(revision_request.get("previousApprovalId") or 0)
+        or previous_approval is None
+        or (previous_approval.status.value != "pending" and not decision_recovery)
+    ):
+        raise ValueError("The earlier Payload Growth review is no longer the exact owner decision")
+
+    collection = str(revision.get("collection") or "")
+    document_id = str(revision.get("documentId") or "")
+    if collection != str(previous_package.get("collection") or "") or document_id != str(previous_package.get("documentId") or ""):
+        raise ValueError("The Payload revision target differs from the reviewed candidate")
+    fields = [str(field) for field in previous_package.get("fields", []) if isinstance(field, str)]
+    if (
+        not fields
+        or set(str(field) for field in revision.get("fields", []) if isinstance(field, str)) != set(fields)
+        or content_hash(previous_package.get("before")) != str(previous_package.get("baseHash") or "")
+    ):
+        raise ValueError("The reviewed Payload candidate has no verifiable published base")
+    receipt = next((item for item in receipts if (
+        item.get("kind") == "collection" and item.get("operation") == "update"
+        and str(item.get("target") or "") == collection
+        and str(item.get("document_id") or "") == document_id
+        and str(item.get("revision") or "").startswith("sha256:")
+    )), None)
+    if receipt is None:
+        raise ValueError("The revision job has no exact persisted Payload write receipt")
+    dispatched_target = revision.get("writeTarget") if isinstance(revision.get("writeTarget"), Mapping) else {}
+    reviewed_fields = {str(field) for field in fields}
+    dispatched_fields = {
+        str(field) for field in dispatched_target.get("fields", [])
+        if isinstance(field, str) and field
+    }
+    receipt_fields = {
+        str(field) for field in receipt.get("fields", [])
+        if isinstance(field, str) and field
+    }
+    if (
+        not dispatched_fields or not dispatched_fields <= reviewed_fields
+        or receipt_fields != dispatched_fields
+        or str(dispatched_target.get("collection") or "") != collection
+        or str(dispatched_target.get("documentId") or "") != document_id
+    ):
+        raise ValueError("The Payload write receipt exceeds or differs from the exact reviewed field scope")
+    if receipt.get("locale") != str(revision.get("locale") or ""):
+        raise ValueError("The Payload write receipt has a different locale")
+    contract = payload.require_authoring_contract()
+    if set(fields) - set(payload.authoring_fields("collection", collection, authoring_contract=contract)):
+        raise ValueError("The reviewed Payload fields no longer match the shared authoring contract")
+    live = payload.read(collection, identifier=document_id, identifier_kind="id", draft=False)
+    draft = payload.read(collection, identifier=document_id, identifier_kind="id", draft=True)
+    if (
+        content_hash(document_content(live, fields)) != str(previous_package.get("baseHash") or "")
+        or str(draft.get("id") or "") != document_id
+        or str(draft.get("_helloadaRevision") or "") != str(receipt.get("revision") or "")
+    ):
+        raise ValueError("Payload no longer matches the exact revision receipt and original published base")
+    before = dict(previous_package["before"])
+    after = document_content(draft, fields)
+    if content_hash(after) == str(previous_package.get("candidateHash") or ""):
+        raise ValueError("The requested Payload revision did not produce a substantive new candidate")
+    changes = {key: after[key] for key in fields if after.get(key) != before.get(key)}
+    package = {
+        **dict(previous_package),
+        "before": before,
+        "after": after,
+        "changes": changes,
+        "baseHash": content_hash(before),
+        "candidateHash": content_hash(after),
+        "revisionOf": previous_hash,
+    }
+    package_hash = content_hash(package)
+    proof = payload.validate_growth_candidate(package, package_hash)
+    required_checks = {"canonicalSchema", "exactDraft", "private", "publicRenderer", "approvalBoundary"}
+    if (
+        not isinstance(proof, Mapping) or proof.get("status") != "passed" or proof.get("packageHash") != package_hash
+        or not isinstance(proof.get("checks"), Mapping)
+        or any(proof["checks"].get(name) is not True for name in required_checks)
+    ):
+        raise ValueError("Payload did not validate the exact revised Growth candidate")
+    candidate_checkpoint(context, current, package_hash, package)
+    review = _save_payload_review_candidate(
+        context, current, package, package_hash, proof,
+        title=str(current.get("title") or previous_draft.get("title") or "Website improvement"),
+        summary=str(current.get("summary") or previous_draft.get("body") or ""),
+        route=str(previous_package.get("route") or ""),
+        preparation={"changes": changes, "baseHash": package["baseHash"]},
+    )
+    new_approval = memory.get_approval_request(review["approval_id"])
+    new_artifact = memory.get_artifact(review["artifact_id"]) if review.get("artifact_id") else None
+    if (
+        new_approval is None or new_approval.status.value != "pending"
+        or new_artifact is None or str(getattr(new_artifact, "content_hash", "")) != package_hash
+    ):
+        raise ValueError("The exact replacement Payload owner approval could not be verified")
+    if decision_recovery and (
+        int(revision.get("newDraftId") or 0) != int(review["draft_id"])
+        or str(revision.get("newReviewPackageHash") or "") != package_hash
+        or int(revision.get("newApprovalId") or 0) != int(review["approval_id"])
+    ):
+        raise ValueError("The persisted Payload revision checkpoint does not match its replacement approval")
+
+    revision = {
+        **dict(revision), "newDraftId": review["draft_id"], "newReviewPackageHash": package_hash,
+        "newApprovalId": review["approval_id"], "newArtifactId": review["artifact_id"],
+        "newActionId": review["action_id"], "status": "validated",
+    }
+    validation["revision"] = revision
+    memory.update_strategy_initiative(initiative_id, validation=validation)
+    # Persist the exact old decision before closing the approval. This makes a
+    # crash after decline recoverable only for this checkpoint-bound revision.
+    memory.record_strategy_decision_for_draft(
+        previous_id, "revised", owner_feedback="The owner requested a Payload revision.",
+        review_package_hash=previous_hash,
+    )
+    if previous_approval.status.value == "pending":
+        previous_approval = ApprovalService(memory, actions=OwnerActionService(memory)).decide(
+            previous_approval_id, False, feedback="The owner asked Ada to prepare a revised Payload version.",
+        )
+    if previous_approval.status.value != "declined":
+        raise ValueError("The earlier Payload approval could not be closed as revised")
+    if previous_draft.get("status") == "pending":
+        memory.update_draft_status(previous_id, "superseded")
+    completed_validation = {
+        **{key: value for key, value in validation.items() if key not in {"revision", "status"}},
+        **dict(proof),
+        "preparation": {"changes": changes, "baseHash": package["baseHash"]},
+        "lastRevision": {
+            "chatJobId": job_id, "previousDraftId": previous_id,
+            "previousReviewPackageHash": previous_hash, "newDraftId": review["draft_id"],
+            "newReviewPackageHash": package_hash,
+        },
+    }
+    memory.update_strategy_initiative(
+        initiative_id, draft_id=review["draft_id"], owner_action_id=review["action_id"],
+        candidate_hash=package["candidateHash"], artifact_id=review["artifact_id"],
+        approval_id=review["approval_id"], review_package_hash=package_hash,
+        validation=completed_validation, last_error="",
+    )
+    memory.transition_strategy_initiative(initiative_id, "ready_for_review", expected_state="validating", validation=completed_validation)
+    return {"draft_id": review["draft_id"], "review_package_hash": package_hash, "idempotent": False}
 
 
 def finalize_source_candidate(context: Mapping[str, Any], initiative: Mapping[str, Any], draft: Mapping[str, Any]) -> dict[str, Any]:

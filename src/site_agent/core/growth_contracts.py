@@ -14,9 +14,15 @@ from typing import Any, Mapping
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from .contracts import ContractError
+
 
 class GrowthContractError(ValueError):
     """Raised when a growth policy cannot be safely interpreted."""
+
+
+class GrowthBudgetAllowanceExhausted(ContractError):
+    """Raised when a valid paid operation does not fit the remaining allowance."""
 
 
 DEFAULT_GROWTH_TIMEZONE = "UTC"

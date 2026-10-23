@@ -366,6 +366,45 @@ def test_initiative_is_only_called_active_when_its_growth_run_has_a_live_lease(t
     memory.close()
 
 
+def test_payload_revision_job_is_active_and_uncertain_failure_is_reported():
+    class MemoryStub:
+        def __init__(self):
+            self.job = {"id": 71, "status": "running"}
+
+        def list_owner_actions(self, limit=None):
+            return []
+
+        def get_chat_job(self, job_id):
+            return dict(self.job) if int(job_id) == 71 else None
+
+        def get_approval_request(self, _approval_id):
+            return None
+
+    memory = MemoryStub()
+    initiative = {
+        "id": 8, "kind": "payload_content", "title": "Revise the services page",
+        "summary": "Improve the reviewed description.", "state": "validating",
+        "validation": {"revision": {"chatJobId": 71, "status": "running"}},
+    }
+
+    active, = growth_tasks(memory, [initiative], [], [], [])
+    assert active["focus"] == "preparing"
+    assert active["state"] == "validating"
+    assert active["executionIssue"] is False
+
+    memory.job["status"] = "error"
+    initiative["validation"]["revision"] = {
+        "chatJobId": 71, "status": "uncertain",
+        "error": "Payload returned no verifiable revision receipt",
+    }
+    uncertain, = growth_tasks(memory, [initiative], [], [], [])
+    assert uncertain["focus"] == "paused"
+    assert uncertain["state"] == "uncertain"
+    assert uncertain["summaryKey"] == "payloadRevisionUncertain"
+    assert uncertain["lastError"] == "Payload returned no verifiable revision receipt"
+    assert uncertain["executionIssue"] is True
+
+
 def test_stale_article_research_is_not_shown_as_active_or_as_a_full_brief(tmp_path):
     memory = Memory(tmp_path / 'memory.db')
     audience_need = 'A very long audience need that should be available in task detail but never shown as a list-row summary.'

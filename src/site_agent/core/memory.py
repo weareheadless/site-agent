@@ -46,6 +46,7 @@ from .design_contracts import (
     validate_design_phase,
     validate_design_phase_status,
 )
+from .growth_contracts import GrowthBudgetAllowanceExhausted
 from .design_operation_contracts import DesignOperation, OperationStatus
 from .design_intake_contracts import (
     DESIGN_INTAKE_SCHEMA_VERSION,
@@ -1469,8 +1470,10 @@ class Memory:
         cap_micros = int(cap_micros)
         if not reservation_id or not period or not idempotency_key or not operation:
             raise ContractError("growth budget reservation identity is incomplete")
-        if amount_micros < 0 or cap_micros < 0 or amount_micros > cap_micros:
-            raise ContractError("growth budget amount exceeds the configured cap")
+        if amount_micros < 0 or cap_micros < 0:
+            raise ContractError("growth budget amount and cap cannot be negative")
+        if amount_micros > cap_micros:
+            raise GrowthBudgetAllowanceExhausted("growth research allowance is exhausted for this period")
         now = _now()
         with self.conn:
             existing = self.conn.execute(
@@ -1478,9 +1481,21 @@ class Memory:
                 (idempotency_key,),
             ).fetchone()
             if existing is not None:
-                if int(existing["amount_micros"]) != amount_micros or existing["period"] != period:
+                if (
+                    existing["reservation_id"] != reservation_id
+                    or int(existing["amount_micros"]) != amount_micros
+                    or existing["period"] != period
+                    or existing["operation"] != operation
+                ):
                     raise ContractError("growth budget idempotency key was reused for a different reservation")
                 if existing["status"] == "released":
+                    spent = self.conn.execute(
+                        "SELECT COALESCE(SUM(amount_micros), 0) FROM growth_budget_reservations "
+                        "WHERE period = ? AND status IN ('reserved', 'uncertain', 'settled')",
+                        (period,),
+                    ).fetchone()[0]
+                    if int(spent) + amount_micros > cap_micros:
+                        raise GrowthBudgetAllowanceExhausted("growth research allowance is exhausted for this period")
                     self.conn.execute(
                         "UPDATE growth_budget_reservations SET status = 'reserved', detail_json = ?, updated_ts = ?, settled_ts = NULL WHERE reservation_id = ?",
                         (json.dumps(detail or {}), now, existing["reservation_id"]),
@@ -1495,7 +1510,7 @@ class Memory:
                 (period,),
             ).fetchone()[0]
             if int(spent) + amount_micros > cap_micros:
-                raise ContractError("growth research allowance is exhausted for this period")
+                raise GrowthBudgetAllowanceExhausted("growth research allowance is exhausted for this period")
             self.conn.execute(
                 "INSERT INTO growth_budget_reservations "
                 "(reservation_id, period, idempotency_key, amount_micros, currency, operation, status, detail_json, created_ts, updated_ts) "

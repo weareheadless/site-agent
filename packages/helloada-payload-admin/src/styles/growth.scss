@@ -999,14 +999,15 @@
   .helloada-growth-featured-decision.is-service-blocked .helloada-growth-decision-eyebrow { color: #80531f; }
   .helloada-growth-featured-decision.is-service-blocked > small { margin: -4px 0 12px; color: #6d5b43; font-size: 12px; }
   .helloada-growth-featured-decision.is-service-blocked .helloada-growth-secondary { margin-top: 3px; }
-  .helloada-growth-additional-decisions { display: grid; align-content: start; margin: 0; padding: 0 16px; list-style: none; border: 1px solid #e5e9ed; border-radius: 15px; background: #fff; }
+  .helloada-growth-additional-decisions { display: grid; min-width: 0; align-content: start; margin: 0; padding: 0 16px; list-style: none; border: 1px solid #e5e9ed; border-radius: 15px; background: #fff; }
+  .helloada-growth-additional-decisions li { min-width: 0; }
   .helloada-growth-additional-decisions li + li { border-top: 1px solid #edf0f2; }
   .helloada-growth-additional-decisions button { display: flex; width: 100%; min-height: 64px; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 2px; border: 0; background: transparent; text-align: left; }
   .helloada-growth-additional-decisions button:hover { color: #a63c26; }
-  .helloada-growth-additional-decisions button span:first-child { min-width: 0; }
+  .helloada-growth-additional-decisions button span:first-child { flex: 1 1 0; min-width: 0; }
   .helloada-growth-additional-decisions strong, .helloada-growth-additional-decisions small { display: block; }
-  .helloada-growth-additional-decisions strong { overflow: hidden; color: #29394b; font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
-  .helloada-growth-additional-decisions small { overflow: hidden; margin-top: 3px; color: #667384; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+  .helloada-growth-additional-decisions strong { color: #29394b; font-size: 13px; font-weight: 650; overflow-wrap: anywhere; white-space: normal; }
+  .helloada-growth-additional-decisions small { margin-top: 3px; color: #667384; font-size: 11px; overflow-wrap: anywhere; white-space: normal; }
   .helloada-growth-agenda-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #687686; font-size: 12px; }
   .helloada-growth-agenda-actions button, .helloada-growth-agenda-empty a { border: 0; background: transparent; color: #b5412a; font-weight: 680; text-decoration: none; }
   .helloada-growth-agenda-empty { grid-column: 1 / -1; min-height: 150px; border-color: #e4e9ee; border-left-color: #a7b2be; background: #f9fafb; }
