@@ -198,3 +198,63 @@ source and is not yet activated. Shared admin/runtime inputs are unchanged, so
 this correction requires no new private package or Worker fan-out. A fresh
 canonical read after the completed rollout still matches the saved posts/4
 published baseline exactly; no customer publication was performed.
+
+
+### Corrective API activation and interrupted-job recovery proof
+
+PR #299 merged as `80ec863f96a76fc5d6c5e462ddcb874b2eddcbe5` after CI
+`40010974707` succeeded. The official timer deployed
+`20261023-api-growth-interrupted-revision-recovery-1`, source
+`b40e7769cdac735d6a2c839309fe706a8bb6802d`, with `health-passed` receipt;
+wheel SHA-256 is `8450e3eeacfbd98c098790c5322483c8477f748bc9a5e985447c737f1491e417`.
+The shared runtime fingerprint stayed unchanged and the existing five Worker
+receipts remain the deployed identities.
+
+The new API's normal scheduled reconciliation restored initiative 8 from
+interrupted job 69 to `ready_for_review`, retaining original draft 63/action
+24/approval 2 and exact old hash. The revision hold was removed through the
+shared recovery service; no database patch, direct restoration helper, or
+Payload mutation was used. Initiative 7 retained draft 62/action 23/approval 1
+and its original review hash. This proves the previously stopped item recovered.
+
+After a fresh published-base check, the normal authenticated chat API queued
+one draft-only retry as job 70/conversation 50. Its original approval remains
+pending but held during preparation. The retry result is still being observed;
+a new candidate/hash is not claimed until its exact lineage and unchanged
+published base are verified.
+
+
+### Final observed retry outcome: held destination operation, no acceptance pass
+
+Job 70 reached the corrected published-base guard, then the native Payload
+write boundary returned HTTP 409: an older Ada operation is still preparing the
+document. The job retained `writeAttempted=true` without a persisted success
+receipt, exhausted its bounded tool loop, and ended `error`. Initiative 8 remains
+`validating` with revision status `uncertain`; its original approval stays held.
+No write replay, lock clearing, SQL patch, fabricated receipt or approval was used.
+
+Read-only registered D1 inspection identifies the exact pre-existing operation:
+`draft:oceanicvibes:posts:4:sha256:644734dbd66755ac06c16e1203e1145d28f43c8369f398dd9ba72c48f3e03cea`,
+state `uncertain`, created October 22. Posts/5 has a corresponding uncertain
+operation for initiative 7's exact package. These are older destination receipts,
+not newly created operations from this retry. A final canonical read shows
+published posts/4 still has the saved baseline hash/timestamp and the current
+draft still matches the original candidate, with
+`updatedAt=2026-10-22T11:28:19.871Z`. Unchanged observations are recorded as such;
+they are not substituted for an exact revision write receipt.
+
+The next canonical repair must reconcile the matching historical preparation
+receipt through the existing exact destination service before offering resumed
+work as executable. Source inspection found that resumed preparation skips
+`apply_growth_candidate` when the draft already equals the candidate; that can
+leave the older uncertain operation behind even after candidate validation.
+The existing destination `/growth/apply` path can reconcile an already-claimed
+exact operation by verifying its effect/preview without replaying the content
+write. Job 70 additionally requires a supported exact non-effect/receipt
+reconciliation before its hold may be removed; a generic 409 or manual marker
+reset is not enough. These obligations remain open, alongside the provider SERP
+failure, browser inspection access, and live approve/revise/decline acceptance.
+
+This record therefore documents successful source tests, API activation,
+five-tenant package deployment and Atelier recovery, but explicitly does not
+claim complete Growth or dashboard acceptance.
