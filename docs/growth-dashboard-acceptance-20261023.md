@@ -42,13 +42,15 @@ customer rollout and authenticated acceptance. An unfinished row is not a pass.
   `runtime-20261023125035-919f680d` passed deployment gates. Authenticated fresh
   documents show the five-area overview. Oceanic shows prioritized decisions
   8, 7 and 4; Atelier's answer control opens initiative 3 with its actual question.
-- Visual checking found additional-decision title overflow. A narrow wrapping
-  correction is staged for the next immutable package, not yet live.
+- Visual checking found additional-decision title overflow. The narrow wrapping
+  correction is implemented in the newer source/package below; it is not yet live.
 - The normal Atelier retry exposed a second root failure: the evidence artifact
   embeds the entire durable inventory and exceeds the 100,000-byte contract.
-  This must be fixed without raising the cap or discarding checkpointed evidence.
-- A prepared Payload candidate's revision link needs an end-to-end exact-target
-  revision contract, not merely a chat link. That correction is still under test.
+  The source correction is implemented without raising the cap or discarding
+  checkpointed evidence; activation and live recovery remain pending.
+- A prepared Payload candidate's revision link needed an end-to-end exact-target
+  revision contract, not merely a chat link. That source correction is implemented;
+  exact live review acceptance remains pending.
 - Approved paid acceptance cycle `growth-b6413f1b850241b5baf8bfc30e140b78`
   selected idea 12 for `article:2026-W43`. No provider request or reservation was
   created: the exhausted allowance was incorrectly classified as uncertain.
@@ -58,9 +60,35 @@ customer rollout and authenticated acceptance. An unfinished row is not a pass.
 - Browser transport disconnected intermittently during deeper review checks.
   An unobserved click or transport timeout is not recorded as a product pass.
 
-- Full test results and immutable package artifact identity.
-- Official-main API release receipt for the evidence-checkpoint correction.
-- Canonical canary/fanout receipts for the new shared admin package.
+### Reviewed source and immutable admin artifact (activation pending)
+
+- PR #297 source commit `06743d4fb89b711c721e55bf363921e77422efaa` contains the
+  dashboard wrapping, bounded evidence checkpoint, exact-target revision and
+  typed allowance corrections. Source implementation is recorded; API activation
+  and customer-visible recovery are still pending the root release checks.
+- The `payload-admin-v0.10.28` publication workflow completed successfully for
+  that exact commit: workflow run `39974996739`.
+- The authenticated immutable tarball is
+  `weareheadless-helloada-payload-admin-0.10.28.tgz` (asset ID `669479709`). Its
+  package identity is `@weareheadless/helloada-payload-admin@0.10.28`; SHA-256 is
+  `95ed679fdd54e04853d4db02a6cbd39d2e331c303187b1d0d3af5b2a8484c7dc` and
+  lockfile integrity is
+  `sha512-BLSjJlQPniS9Lt6wpmoyxBJb1xJJ6vtXUKFn5664ursu/1clZ326AYtbGEHzlxkUlWpo2Dtc5zKhUOLu6KSIrw==`.
+  The downloaded bytes, GitHub asset digest, package contents and canonical
+  `site_agent.credentials` release-asset verifier agree.
+- Focused release/API/queue/template/dispatcher/credential tests passed: 162.
+  The shared admin package suite passed: 54. The focused template
+  `payload-first-contract.test.mjs` passed. The full backend suite passed: 1,654
+  tests (three deprecation warnings). Compile checks and wheel build passed.
+  The clean starter check is still running; no build result is claimed yet.
+- The scaffold now pins v0.10.28, but this publication is not a customer
+  deployment. API activation, canary/fanout receipts and fresh authenticated
+  review/browser evidence remain outstanding.
+
+- Root full-test and clean-starter results, once complete.
+- Official-main API release receipt for the implemented evidence/revision and
+  allowance corrections.
+- Canonical canary/fanout receipts for shared admin v0.10.28.
 - Fresh authenticated populated overview and exact review screenshots.
 - Normal scheduled recovery of Atelier's interrupted assessment.
 - Controlled approve/revise/decline and verified outcome acceptance.
