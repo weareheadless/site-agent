@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 from unittest import mock
 
@@ -1372,6 +1373,235 @@ def test_payload_growth_revision_hold_blocks_old_exact_approval_until_and_after_
         service.approve_draft(draft_id, tenant=tenant, review_package_hash=package_hash, owner_actor_id="payload:owner-1")
     assert memory.get_approval_request(approval.approval_id).status.value == "pending"
     assert payload.publishes == 0
+    memory.close()
+
+
+def _payload_growth_review_fixture(tmp_path, *, publish_gate=None):
+    from site_agent.application.approvals import ApprovalService
+    from site_agent.application.growth_candidates import content_hash
+    from site_agent.core.contracts import Artifact, ArtifactKind, EffectClass
+
+    class Payload:
+        def __init__(self):
+            self.live = {"id": "page-1", "title": "Current title", "metaDescription": "Current description"}
+            self.draft = {"id": "page-1", "title": "Reviewed title", "metaDescription": "Reviewed description"}
+            self.publish_count = 0
+            self.publish_entered = threading.Event()
+
+        def require_authoring_contract(self):
+            return {**_PAYLOAD_CONTRACT, "enabled": True, "locales": ["en"], "defaultLocale": "en"}
+
+        def authoring_fields(self, _kind, _name, *, authoring_contract):
+            assert authoring_contract["contract"] == _PAYLOAD_CONTRACT["contract"]
+            return ["title", "metaDescription"]
+
+        def read(self, _collection, *, identifier, identifier_kind, draft, **_kwargs):
+            assert identifier == "page-1"
+            assert identifier_kind == "id"
+            return dict(self.draft if draft else self.live)
+
+        def publish_growth_candidate(self, package_hash):
+            self.publish_count += 1
+            self.publish_entered.set()
+            if publish_gate is not None:
+                if not publish_gate.wait(timeout=5):
+                    raise AssertionError("test did not release the Payload publication gate")
+            return {
+                "status": "published",
+                "packageHash": package_hash,
+                "liveVerification": {"status": "passed"},
+                "published": {"collection": "pages", "documentId": "page-1", "updatedAt": "revision-2"},
+            }
+
+    memory = Memory(tmp_path / "workspace-growth-review-race.db")
+    payload = Payload()
+    cycle = memory.create_strategy_cycle("review-race", "2026-10", "sha256:review-race", {})
+    initiative_id = memory.create_strategy_initiative(
+        cycle["id"], kind="payload_content", title="Reviewed home page", summary="Review the proposed page changes.",
+        state="proposed", validation={"status": "preparing"},
+    )
+    fields = ["title", "metaDescription"]
+    before = {key: payload.live[key] for key in fields}
+    after = {key: payload.draft[key] for key in fields}
+    package = {
+        "tenant": "growth-review-race",
+        "initiativeId": initiative_id,
+        "candidateType": "payload_content",
+        "collection": "pages",
+        "documentId": "page-1",
+        "fields": fields,
+        "before": before,
+        "after": after,
+        "baseHash": content_hash(before),
+        "candidateHash": content_hash(after),
+        "changes": {"title": after["title"], "metaDescription": after["metaDescription"]},
+        "route": "/",
+        "sourceId": "page:home",
+    }
+    package_hash = content_hash(package)
+    draft_id = memory.save_draft(
+        "Reviewed home page", "Review the proposed page changes.", kind="payload_content",
+        meta={"growth_package": package, "review_package_hash": package_hash},
+    )
+    artifact = memory.create_artifact(Artifact(
+        kind=ArtifactKind.SITE_CHANGE, title="Reviewed home page", summary="Review the proposed page changes.",
+        renderer="site_change", capability_id="growth.publish", provider_id="payload",
+        content_hash=package_hash, preview_data={"before": before, "after": after},
+    ))
+    approval = ApprovalService(memory).create(
+        artifact, owner_action_label="Publish this exact version", effect_class=EffectClass.SITE_MUTATION,
+    )
+    memory.update_strategy_initiative(
+        initiative_id, state="ready_for_review", draft_id=draft_id, artifact_id=artifact.artifact_id,
+        approval_id=approval.approval_id, candidate_hash=package["candidateHash"],
+        review_package_hash=package_hash, validation={"status": "passed"},
+    )
+    tenant = Tenant(
+        tenant_id="growth-review-race", config={}, memory=memory, runtime=None,
+        context={"llm": object(), "payload_gateway": payload}, api_token="growth-review-race-token",
+    )
+    service = ChatService(registry=TenantRegistry({tenant.tenant_id: tenant}))
+    task = {
+        "id": f"initiative:{initiative_id}", "kind": "payload_content", "canApprove": True,
+        "draftId": draft_id, "approvalId": approval.approval_id,
+        "ownerActionId": None, "reviewPackageHash": package_hash,
+        "title": "Reviewed home page", "summary": "Review the proposed page changes.",
+        "scope": "Update the home page.", "state": "ready_for_review",
+    }
+    return memory, payload, package_hash, draft_id, initiative_id, approval, tenant, service, task
+
+
+def _thread_result(callback):
+    result = {}
+    started = threading.Event()
+
+    def run():
+        started.set()
+        try:
+            result["value"] = callback()
+        except Exception as exc:  # noqa: BLE001 - the calling test asserts the exact boundary
+            result["error"] = exc
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    return thread, started, result
+
+
+def test_growth_revision_serializes_approve_and_decline_until_exact_hold_is_durable(tmp_path, monkeypatch):
+    from site_agent.application.workspace import BridgeError
+    from site_agent.application.growth_candidates import content_hash
+
+    memory, payload, package_hash, draft_id, initiative_id, approval, tenant, service, task = _payload_growth_review_fixture(tmp_path)
+    monkeypatch.setattr("site_agent.application.growth.growth_snapshot", lambda *_args, **_kwargs: {"tasks": [task]})
+    transition = memory.transition_strategy_initiative
+    paused_at_transition = threading.Event()
+    release_transition = threading.Event()
+
+    def pause_revision_transition(*args, **kwargs):
+        if kwargs.get("expected_state") == "ready_for_review" and len(args) > 1 and args[1] == "validating":
+            paused_at_transition.set()
+            if not release_transition.wait(timeout=5):
+                raise AssertionError("test did not release the revision transition")
+        return transition(*args, **kwargs)
+
+    monkeypatch.setattr(memory, "transition_strategy_initiative", pause_revision_transition)
+    revision_thread, revision_started, revision_result = _thread_result(lambda: service.enqueue(
+        {"message": "Please revise this exact page.", "context": {
+            "growth_task_id": f"initiative:{initiative_id}", "growth_task_action": "revise",
+        }}, tenant=tenant,
+    ))
+    assert revision_started.wait(timeout=5)
+    reached_transition = paused_at_transition.wait(timeout=5)
+    if not reached_transition:
+        release_transition.set()
+        revision_thread.join(timeout=5)
+    assert reached_transition, revision_result
+    # The revision owns the shared review lock while the exact candidate is
+    # being moved from review to held; an owner decision cannot pass it.
+    can_steal_lock = service._approval_lock.acquire(blocking=False)
+    if can_steal_lock:
+        service._approval_lock.release()
+        release_transition.set()
+    assert not can_steal_lock
+
+    approve_thread, approve_started, approve_result = _thread_result(lambda: service.approve_draft(
+        draft_id, tenant=tenant, review_package_hash=package_hash, owner_actor_id="payload:owner-1",
+    ))
+    decline_thread, decline_started, decline_result = _thread_result(lambda: service.discard_draft(
+        draft_id, tenant=tenant, review_package_hash=package_hash, owner_actor_id="payload:owner-1",
+    ))
+    assert approve_started.wait(timeout=5)
+    assert decline_started.wait(timeout=5)
+
+    release_transition.set()
+    revision_thread.join(timeout=5)
+    approve_thread.join(timeout=5)
+    decline_thread.join(timeout=5)
+    assert not revision_thread.is_alive()
+    assert not approve_thread.is_alive()
+    assert not decline_thread.is_alive()
+    assert "value" in revision_result
+    assert isinstance(approve_result.get("error"), BridgeError)
+    assert isinstance(decline_result.get("error"), BridgeError)
+    assert "held while Ada prepares" in str(approve_result["error"])
+    assert "held while Ada prepares" in str(decline_result["error"])
+    assert payload.publish_count == 0
+    current = next(row for row in memory.list_strategy_initiatives(limit=None) if row["id"] == initiative_id)
+    assert current["state"] == "validating"
+    assert current["review_package_hash"] == package_hash
+    assert memory.get_draft(draft_id)["meta"]["growth_revision_pending"] is True
+    assert memory.get_approval_request(approval.approval_id).status.value == "pending"
+    assert content_hash(memory.get_draft(draft_id)["meta"]["growth_package"]) == package_hash
+    memory.close()
+
+
+def test_growth_revision_rechecks_exact_candidate_after_approval_wins(tmp_path, monkeypatch):
+    from site_agent.application.workspace import BridgeError
+
+    release_publication = threading.Event()
+    memory, payload, package_hash, draft_id, initiative_id, approval, tenant, service, task = _payload_growth_review_fixture(
+        tmp_path, publish_gate=release_publication,
+    )
+    monkeypatch.setattr("site_agent.application.growth_delivery.decision_checkpoint", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("site_agent.application.growth_delivery.publication_checkpoint", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("site_agent.application.growth.growth_snapshot", lambda *_args, **_kwargs: {"tasks": [task]})
+
+    approve_thread, approve_started, approve_result = _thread_result(lambda: service.approve_draft(
+        draft_id, tenant=tenant, review_package_hash=package_hash, owner_actor_id="payload:owner-1",
+    ))
+    assert approve_started.wait(timeout=5)
+    reached_publication = payload.publish_entered.wait(timeout=5)
+    if not reached_publication:
+        release_publication.set()
+        approve_thread.join(timeout=5)
+    assert reached_publication
+    can_steal_lock = service._approval_lock.acquire(blocking=False)
+    if can_steal_lock:
+        service._approval_lock.release()
+        release_publication.set()
+    assert not can_steal_lock
+
+    revision_thread, revision_started, revision_result = _thread_result(lambda: service.enqueue(
+        {"message": "Please revise this exact page.", "context": {
+            "growth_task_id": f"initiative:{initiative_id}", "growth_task_action": "revise",
+        }}, tenant=tenant,
+    ))
+    assert revision_started.wait(timeout=5)
+    release_publication.set()
+    approve_thread.join(timeout=5)
+    revision_thread.join(timeout=5)
+    assert not approve_thread.is_alive()
+    assert not revision_thread.is_alive()
+    assert "value" in approve_result
+    assert isinstance(revision_result.get("error"), BridgeError)
+    assert "no longer available for revision" in str(revision_result["error"])
+    assert payload.publish_count == 1
+    assert memory.get_approval_request(approval.approval_id).status.value == "approved"
+    current = next(row for row in memory.list_strategy_initiatives(limit=None) if row["id"] == initiative_id)
+    assert current["state"] == "measuring"
+    assert current["review_package_hash"] == package_hash
+    assert memory.get_draft(draft_id)["status"] == "approved"
+    assert memory.get_draft(draft_id)["meta"]["review_package_hash"] == package_hash
     memory.close()
 
 

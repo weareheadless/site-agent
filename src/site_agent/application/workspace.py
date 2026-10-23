@@ -1368,6 +1368,19 @@ class ChatService:
         return journey.initial_phase if journey is not None else "intake"
 
     def enqueue(self, body: Mapping[str, Any], *, tenant: Tenant | None = None) -> dict[str, Any]:
+        context = body.get("context") if isinstance(body, Mapping) else None
+        if isinstance(context, Mapping) and (
+            str(context.get("growth_task_action") or "").strip() == "revise"
+            and str(context.get("growth_task_id") or "").strip()
+        ):
+            # Serialize the exact candidate check, hold, and durable chat-job
+            # checkpoint against approve/decline. Otherwise an approval can
+            # pass its initial read while this request is preparing the hold.
+            with self._approval_lock:
+                return self._enqueue_unlocked(body, tenant=tenant)
+        return self._enqueue_unlocked(body, tenant=tenant)
+
+    def _enqueue_unlocked(self, body: Mapping[str, Any], *, tenant: Tenant | None = None) -> dict[str, Any]:
         memory, _llm, tenant_id = self._scope(tenant)
         message = str(body.get("message") or "").strip()
         attachments = self._attachment_rows(body.get("attachments"))
@@ -3227,6 +3240,15 @@ class ChatService:
         return result
 
     def discard_draft(self, draft_id: Any, *, tenant: Tenant | None = None, review_package_hash: str | None = None, owner_actor_id: str | None = None) -> dict[str, Any]:
+        # Decline/discard competes with both approval and a request to revise
+        # the same exact Growth candidate; use the same serialization boundary.
+        with self._approval_lock:
+            return self._discard_draft(
+                draft_id, tenant=tenant, review_package_hash=review_package_hash,
+                owner_actor_id=owner_actor_id,
+            )
+
+    def _discard_draft(self, draft_id: Any, *, tenant: Tenant | None = None, review_package_hash: str | None = None, owner_actor_id: str | None = None) -> dict[str, Any]:
         """Cancel one pending draft and clean its review branch when needed."""
         memory, _llm, _tenant_id = self._scope(tenant)
         try:
