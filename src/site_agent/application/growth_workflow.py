@@ -752,6 +752,9 @@ def _persist_evidence_artifact(
         if isinstance(existing_manifest, Mapping) and existing_manifest.get("runId") == run["run_id"]:
             if existing.artifact_id is None:
                 raise ValueError("growth evidence artifact has no id")
+            expected_manifest = {**manifest, "capturedAt": existing_manifest.get("capturedAt")}
+            if dict(existing_manifest) != expected_manifest:
+                raise ValueError("growth evidence artifact for this run is bound to different evidence")
             return existing.artifact_id, existing.content_hash, existing_manifest
     artifact = memory.create_artifact(
         Artifact(
@@ -1175,6 +1178,10 @@ def run_growth_cycle(
     try:
         if "material" not in detail:
             detail["material"] = _collect_cycle_evidence(context, trigger, str(run["run_id"]))
+            # Collection can be expensive. Persist its exact result before the
+            # evidence artifact boundary so a failure there resumes from here.
+            run = advance(phase="collecting", detail=detail, next_due_ts=None)
+        if not detail.get("evidenceArtifactId"):
             artifact_id, evidence_hash, _ = _persist_evidence_artifact(memory, run=run, goal=goal, policy=policy, sources=detail["material"]["sources"], material=detail["material"])
             detail.update(evidenceArtifactId=artifact_id, evidenceHash=evidence_hash, policy=policy.to_dict())
             run = advance(phase="assessing", detail=detail, next_due_ts=None)

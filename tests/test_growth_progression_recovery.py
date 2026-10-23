@@ -125,6 +125,115 @@ def test_capacity_wait_has_runnable_due_time_then_resumes_saved_assessment(tmp_p
         assert memory.list_strategy_initiatives()[-1]["state"] == "ready_for_review"
 
 
+def test_missing_evidence_binding_resumes_saved_material_and_assessment(tmp_path, monkeypatch):
+    with closing(Memory(tmp_path / "memory.db")) as memory:
+        context, run = saved_run(memory, [])
+        original = memory.get_growth_run(run["run_id"])
+        material = original["detail"]["material"]
+        artifact_id = original["detail"]["evidenceArtifactId"]
+        saved_assessment = {"summary": "Already assessed", "opportunities": []}
+        memory.update_growth_run(run["run_id"], status="failed", phase="collecting", detail={
+            "material": material,
+            "assessment": saved_assessment,
+            "assessmentCompletedAt": "2026-10-23T00:00:00Z",
+            "articleResearch": {"status": "not_due"},
+            "error": "'evidenceArtifactId'",
+        })
+        monkeypatch.setattr(workflow, "_collect_cycle_evidence", lambda *args: pytest.fail("must reuse collected material"))
+        from site_agent.brain import growth as brain_growth
+        monkeypatch.setattr(brain_growth, "assess", lambda *args: pytest.fail("must reuse saved assessment"))
+
+        result = workflow.run_growth_cycle(context, run_id=run["run_id"], trigger="weekly")
+
+        assert result["status"] == "complete"
+        assert result["detail"]["assessment"] == saved_assessment
+        assert result["detail"]["evidenceArtifactId"] == artifact_id
+        evidence = memory.list_artifacts(kind="growth_evidence", limit=100)
+        assert len(evidence) == 1
+
+
+def test_artifact_persist_crash_reuses_collection_and_created_artifact(tmp_path, monkeypatch):
+    with closing(Memory(tmp_path / "memory.db")) as memory:
+        config = {"growth": {"timezone": "UTC"}}
+        context = {"memory": memory, "config": config}
+        goal = workflow.ensure_default_goal(memory)
+        policy = GrowthPolicy.from_config(config)
+        run = memory.create_growth_run(
+            run_id="evidence-persist-crash",
+            run_key="evidence-persist-crash",
+            trigger="owner_review",
+            goal_revision=goal["revision"],
+            timezone="UTC",
+            phase="collecting",
+            status="pending",
+            policy=policy.to_dict(),
+            origin_revision=policy.origin_revision,
+            phase_version=2,
+        )
+        material = {
+            "inventory": [],
+            "sources": [{"id": "inventory", "sourceRef": "inventory", "state": "ready"}],
+            "metrics": {},
+            "datasets": {},
+            "ownerResponses": [],
+            "collectionErrors": [],
+        }
+        collection_calls = []
+        assessment_calls = []
+        monkeypatch.setattr(workflow, "_collect_cycle_evidence", lambda *args: collection_calls.append(1) or material)
+        from site_agent.brain import growth as brain_growth
+        monkeypatch.setattr(brain_growth, "assess", lambda *args: assessment_calls.append(1) or {
+            "summary": "Recovered from saved evidence",
+            "opportunities": [],
+        })
+        monkeypatch.setattr(workflow, "_queue_article_research", lambda *args: pytest.fail("must not dispatch paid research"))
+        persist = workflow._persist_evidence_artifact
+        persist_calls = []
+
+        def create_then_interrupt(*args, **kwargs):
+            result = persist(*args, **kwargs)
+            persist_calls.append(1)
+            if len(persist_calls) == 1:
+                raise RuntimeError("simulated interruption after artifact creation")
+            return result
+
+        monkeypatch.setattr(workflow, "_persist_evidence_artifact", create_then_interrupt)
+        failed = workflow.run_growth_cycle(context, run_id=run["run_id"], trigger="owner_review")
+
+        assert failed["status"] == "failed"
+        assert failed["detail"]["material"] == material
+        assert "evidenceArtifactId" not in failed["detail"]
+        artifact_id = memory.list_artifacts(kind="growth_evidence", limit=100)[0].artifact_id
+        assert artifact_id is not None
+        assert collection_calls == [1]
+        assert assessment_calls == []
+
+        memory.update_growth_run(run["run_id"], next_due_ts="2000-01-01T00:00:00+00:00")
+        recovered = workflow.run_growth_cycle(context, run_id=run["run_id"], trigger="owner_review")
+
+        assert recovered["status"] == "complete"
+        assert recovered["detail"]["evidenceArtifactId"] == artifact_id
+        assert collection_calls == [1]
+        assert assessment_calls == [1]
+        assert len(memory.list_artifacts(kind="growth_evidence", limit=100)) == 1
+
+
+def test_evidence_artifact_reuse_rejects_different_material(tmp_path):
+    with closing(Memory(tmp_path / "memory.db")) as memory:
+        context, run = saved_run(memory, [])
+        detail = memory.get_growth_run(run["run_id"])["detail"]
+        altered = {**detail["material"], "inventory": [{"sourceRef": "different"}]}
+        with pytest.raises(ValueError, match="bound to different evidence"):
+            workflow._persist_evidence_artifact(
+                memory,
+                run=run,
+                goal=workflow.ensure_default_goal(memory),
+                policy=GrowthPolicy.from_config(context["config"]),
+                sources=detail["material"]["sources"],
+                material=altered,
+            )
+
+
 def test_queued_source_work_consumes_capacity_before_another_payload_candidate(tmp_path, monkeypatch):
     with closing(Memory(tmp_path / "memory.db")) as memory:
         context, run = saved_run(memory, [opportunity("Source", "code"), opportunity("Payload")])

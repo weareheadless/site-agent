@@ -2,6 +2,199 @@ export type GrowthRow = Record<string, unknown>;
 
 export type GrowthActivity = { id: string; enabled: boolean; nextRun?: string | null };
 
+export const growthAreaKeys = [
+  "content",
+  "search_visibility",
+  "website_health",
+  "audience_competitors",
+  "speed_experience",
+] as const;
+
+export type GrowthAreaKey = (typeof growthAreaKeys)[number];
+export type GrowthResultTab = "analytics" | "search" | "competitionTab" | "health" | "content" | "connections";
+export type GrowthAreaState = "awaiting_activation" | "needs_decision" | "blocked" | "preparing"
+  | "waiting_for_capacity" | "deferred" | "stale" | "unavailable" | "assessed" | "not_assessed";
+export type GrowthEvidenceState = "unavailable" | "stale" | "recorded" | "not_assessed";
+
+export type GrowthServiceWork = {
+  id: string;
+  draftId?: number | null;
+  ownerActionId?: number | null;
+  approvalId?: number | null;
+  reviewPackageHash?: string | null;
+  conversationId?: number | null;
+  primaryArea: GrowthAreaKey | null;
+  secondaryAreas: GrowthAreaKey[];
+  title?: string | null;
+  why?: string | null;
+  scope?: string | null;
+  state: string;
+  executionState?: string | null;
+  actor: "owner" | "platform" | "ada";
+  canApprove: boolean;
+  evidenceRefs: string[];
+  updatedAt?: string | null;
+  nextRun?: string | null;
+  executionIssue: boolean;
+  dispositionReason?: string | null;
+  reassessWhen?: string | null;
+};
+
+export type GrowthServiceArea = {
+  id: GrowthAreaKey;
+  state: GrowthAreaState;
+  workIds: string[];
+  capability: { scope: string; sourceIds: string[]; automatedMeasurement: string };
+  evidenceState: GrowthEvidenceState;
+  decisionIds: string[];
+  blockedWorkIds: string[];
+  activeWorkIds: string[];
+  deferredWorkIds: string[];
+  pendingRunIds: Array<string | number | null>;
+  summary: string | null;
+  evidenceRefs: string[];
+  unresolvedEvidenceRefs: string[];
+  limitations: string[];
+  lastAssessedAt: string | null;
+  nextAssessment: { activityId: string; at: string; scope: string } | null;
+};
+
+export type GrowthServiceResult = {
+  id: string;
+  draftId?: number | null;
+  ownerActionId?: number | null;
+  approvalId?: number | null;
+  reviewPackageHash?: string | null;
+  conversationId?: number | null;
+  title?: string | null;
+  state: "verified";
+  publishedRevision: string | number;
+  releaseId?: string | null;
+  sourceSha?: string | null;
+  implementedAt?: string | null;
+  impactState: "observed" | "awaiting_data";
+  impact: Array<{ id?: number | null; horizonDays?: number | null; measuredAt?: string | null; assessment?: string | null;
+    confidence?: string | null; metric?: string | null; baseline?: unknown; observed?: unknown; notes: string; causalAttribution: false }>;
+  nextMeasurement: { horizonDays: number; at: string; state: "scheduled" | "overdue" } | null;
+};
+
+export type GrowthServicePreparation = {
+  runId: string | number | null;
+  state: "waiting_for_capacity";
+  areaIds: GrowthAreaKey[];
+  findingCount: number;
+  eligibleAt?: string | null;
+  executor?: string | null;
+  nextReconciliationAt?: string | null;
+};
+
+export type GrowthServiceModel = {
+  contractVersion: "growth-service-v1";
+  websitePresent: boolean;
+  areas: GrowthServiceArea[];
+  work: GrowthServiceWork[];
+  decisionIds: string[];
+  recentResults: GrowthServiceResult[];
+  preparation: GrowthServicePreparation[];
+  unassignedWorkIds: string[];
+  overdueActivityIds: string[];
+  sources: Array<{ id: string; state: string; reason?: string | null; observedAt?: string | null; sourceRef?: string | null; freshnessHours?: number | null }>;
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
+const strings = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((item) => typeof item === "string");
+const nullableString = (value: unknown): value is string | null => value === null || typeof value === "string";
+const areaKey = (value: unknown): value is GrowthAreaKey =>
+  typeof value === "string" && (growthAreaKeys as readonly string[]).includes(value);
+const nullableArea = (value: unknown): value is GrowthAreaKey | null => value === null || areaKey(value);
+const nullableDate = (value: unknown): value is string | null =>
+  value === null || (typeof value === "string" && Number.isFinite(Date.parse(value)));
+
+export function isGrowthServiceModel(value: unknown): value is GrowthServiceModel {
+  if (!isRecord(value) || value.contractVersion !== "growth-service-v1" || typeof value.websitePresent !== "boolean") return false;
+  if (!Array.isArray(value.areas) || value.areas.length !== growthAreaKeys.length
+      || !Array.isArray(value.work) || !Array.isArray(value.decisionIds)
+      || !Array.isArray(value.recentResults) || !Array.isArray(value.preparation)
+      || !strings(value.unassignedWorkIds) || !strings(value.overdueActivityIds)
+      || !value.overdueActivityIds.every((id) => id === "growth_initial" || id === "growth_weekly")) return false;
+  const areaRows: unknown[] = value.areas;
+  const workRows: unknown[] = value.work;
+  const decisionIds: unknown[] = value.decisionIds;
+  const unassignedWorkIds: string[] = value.unassignedWorkIds;
+
+  const workIds = new Set<string>();
+  for (const row of workRows) {
+    if (!isRecord(row) || typeof row.id !== "string" || workIds.has(row.id)
+        || !nullableArea(row.primaryArea) || !Array.isArray(row.secondaryAreas)
+        || !row.secondaryAreas.every(areaKey) || typeof row.state !== "string") return false;
+    for (const key of ["title", "why", "scope"]) {
+      if (row[key] !== undefined && !nullableString(row[key])) return false;
+    }
+    workIds.add(row.id);
+  }
+  const idsReferToWork = (ids: unknown): ids is string[] => strings(ids) && ids.every((id) => workIds.has(id));
+  if (!strings(decisionIds) || new Set(decisionIds).size !== decisionIds.length) return false;
+  const canonicalDecisionIds = decisionIds;
+  if (!idsReferToWork(canonicalDecisionIds)
+      || workRows.filter((row: unknown) => isRecord(row) && row.state === "awaiting_owner")
+        .some((row: unknown) => !canonicalDecisionIds.includes((row as Record<string, unknown>).id as string))
+      || canonicalDecisionIds.some((id: string) => !workRows.some((row: unknown) => isRecord(row) && row.id === id && row.state === "awaiting_owner"))
+      || !unassignedWorkIds.every((id: string) => workIds.has(id))) return false;
+
+  const areaIds = new Set<string>();
+  for (const area of areaRows) {
+    if (!isRecord(area) || !areaKey(area.id) || areaIds.has(area.id)
+        || !["awaiting_activation", "needs_decision", "blocked", "preparing", "waiting_for_capacity", "deferred", "stale", "unavailable", "assessed", "not_assessed"].includes(String(area.state))
+        || !idsReferToWork(area.workIds) || new Set(area.workIds).size !== area.workIds.length || !idsReferToWork(area.decisionIds)
+        || !["unavailable", "stale", "recorded", "not_assessed"].includes(String(area.evidenceState))
+        || !nullableString(area.summary) || !strings(area.evidenceRefs)
+        || !strings(area.unresolvedEvidenceRefs) || !strings(area.limitations)
+        || !nullableDate(area.lastAssessedAt)) return false;
+    if (area.nextAssessment !== null && (!isRecord(area.nextAssessment)
+        || typeof area.nextAssessment.activityId !== "string"
+        || typeof area.nextAssessment.at !== "string" || !nullableDate(area.nextAssessment.at)
+        || typeof area.nextAssessment.scope !== "string")) return false;
+    areaIds.add(area.id);
+  }
+  if (growthAreaKeys.some((area) => !areaIds.has(area))) return false;
+  if (areaRows.some((area: unknown) => {
+    const row = area as Record<string, unknown>;
+    const linked = workRows.filter((item: unknown) => isRecord(item) && (item.primaryArea === row.id || (item.secondaryAreas as unknown[]).includes(row.id))).map((item: unknown) => (item as Record<string, unknown>).id);
+    const linkedDecisions = workRows.filter((item: unknown) => isRecord(item) && item.state === "awaiting_owner"
+      && (item.primaryArea === row.id || (item.secondaryAreas as unknown[]).includes(row.id))).map((item: unknown) => (item as Record<string, unknown>).id);
+    return new Set(linked).size !== new Set(row.workIds as string[]).size
+      || linked.some((id) => !(row.workIds as string[]).includes(id as string))
+      || new Set(linkedDecisions).size !== new Set(row.decisionIds as string[]).size
+      || linkedDecisions.some((id) => !(row.decisionIds as string[]).includes(id as string));
+  })) return false;
+  if (new Set(unassignedWorkIds).size !== unassignedWorkIds.length
+      || unassignedWorkIds.length !== workRows.filter((row: unknown) => isRecord(row) && row.primaryArea === null).length
+      || unassignedWorkIds.some((id: string) => {
+        const row = workRows.find((candidate: unknown): candidate is Record<string, unknown> => isRecord(candidate) && candidate.id === id);
+        return row?.primaryArea !== null;
+      })) return false;
+
+  for (const row of value.preparation) {
+    if (!isRecord(row) || (typeof row.runId !== "string" && typeof row.runId !== "number" && row.runId !== null)
+        || row.state !== "waiting_for_capacity" || typeof row.findingCount !== "number" || !Number.isInteger(row.findingCount) || row.findingCount < 0
+        || !nullableDate(row.eligibleAt ?? null)
+        || !nullableDate(row.nextReconciliationAt ?? null)) return false;
+  }
+  for (const row of value.recentResults) {
+    if (!isRecord(row) || typeof row.id !== "string" || row.state !== "verified"
+        || (typeof row.publishedRevision !== "string" && (typeof row.publishedRevision !== "number" || !Number.isFinite(row.publishedRevision)))
+        || !["observed", "awaiting_data"].includes(String(row.impactState))
+        || (row.nextMeasurement !== null && (!isRecord(row.nextMeasurement)
+          || typeof row.nextMeasurement.horizonDays !== "number" || !Number.isFinite(row.nextMeasurement.horizonDays)
+          || typeof row.nextMeasurement.at !== "string" || !nullableDate(row.nextMeasurement.at)
+          || !["scheduled", "overdue"].includes(String(row.nextMeasurement.state))))) return false;
+    if (row.title !== undefined && !nullableString(row.title)) return false;
+  }
+  return true;
+}
+
 export function growthPlan(activities: GrowthActivity[] = []) {
   const upcoming = activities.filter(item => item.enabled).sort((a, b) =>
     (a.nextRun || "9999").localeCompare(b.nextRun || "9999"));
