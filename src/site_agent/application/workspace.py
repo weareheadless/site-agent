@@ -1483,6 +1483,25 @@ class ChatService:
                             or str(draft.get("id") or "") != document_id
                         ):
                             raise BridgeError("the Payload document or its published base changed after this proposal")
+                        # Settle the prior canonical preparation operation
+                        # before holding its owner review for a revision. The
+                        # destination reconciles an exact existing operation
+                        # read-only; it must never replay an uncertain write.
+                        operation_proof = payload.apply_growth_candidate(package, revision_hash)
+                        if (
+                            not isinstance(operation_proof, Mapping)
+                            or operation_proof.get("ok") is not True
+                            or operation_proof.get("candidateHash") != package_hash
+                        ):
+                            raise BridgeError("the prior Payload Growth preparation could not be reconciled")
+                        live = payload.read(collection, identifier=document_id, identifier_kind="id", draft=False)
+                        draft = payload.read(collection, identifier=document_id, identifier_kind="id", draft=True)
+                        if (
+                            content_hash(document_content(live, fields)) != str(package.get("baseHash") or "")
+                            or content_hash(document_content(draft, fields)) != package_hash
+                            or str(draft.get("id") or "") != document_id
+                        ):
+                            raise BridgeError("the exact Payload proposal changed during operation reconciliation")
                     except BridgeError:
                         raise
                     except Exception as exc:  # noqa: BLE001 — exact revision requires current Payload reads
@@ -2491,6 +2510,154 @@ class ChatService:
         scope = self.connection(tenant=tenant)
         memory, tenant_id = (tenant.memory if tenant else self.memory), scope["tenant"]
         return {"tenant": tenant_id, **growth_snapshot(memory, tenant.config if tenant else {}, tenant.context if tenant else {})}
+
+    def retire_growth_revision(
+        self, initiative_id: Any, body: Mapping[str, Any], *, tenant: Tenant | None = None,
+    ) -> dict[str, Any]:
+        """Operator-only plan/apply path serialized with existing owner decisions."""
+        if tenant is None or self.registry is None or tenant.tenant_id not in self.registry.tenants:
+            raise BridgeError("tenant is not authorized")
+        try:
+            normalized_id = int(initiative_id)
+            chat_job_id = int(body.get("chat_job_id"))
+        except (TypeError, ValueError) as exc:
+            raise BridgeError("initiative_id and chat_job_id must be integers") from exc
+        mode = str(body.get("mode") or "")
+        expected_hash = str(body.get("expected_review_package_hash") or "")
+        reason = str(body.get("reason") or "")
+        operator_request_id = str(body.get("operator_request_id") or "")
+        if mode not in {"plan", "apply"}:
+            raise BridgeError("mode must be plan or apply")
+        if not expected_hash:
+            raise BridgeError("expected_review_package_hash is required")
+        if mode == "apply" and (not reason or not operator_request_id):
+            raise BridgeError("apply requires reason and operator_request_id")
+        with self._approval_lock:
+            try:
+                from .growth_candidates import retire_uncertain_payload_revision
+
+                return retire_uncertain_payload_revision(
+                    {**tenant.context, "tenant_id": tenant.tenant_id, "config": tenant.config,
+                     "memory": tenant.memory},
+                    normalized_id, chat_job_id, mode=mode,
+                    expected_review_package_hash=expected_hash,
+                    expected_proof_hash=str(body.get("expected_proof_hash") or "") or None,
+                    reason=reason, operator_request_id=operator_request_id,
+                )
+            except Exception as exc:  # noqa: BLE001 — keep operator bridge errors bounded
+                raise BridgeError(str(exc)[:500]) from exc
+
+    def retire_growth_preparation(
+        self, initiative_id: Any, body: Mapping[str, Any], *, tenant: Tenant | None = None,
+    ) -> dict[str, Any]:
+        """Withdraw one audited old preparation intent while preserving current content."""
+        if tenant is None or self.registry is None or tenant.tenant_id not in self.registry.tenants:
+            raise BridgeError("tenant is not authorized")
+        try:
+            normalized_id = int(initiative_id)
+        except (TypeError, ValueError) as exc:
+            raise BridgeError("initiative_id must be an integer") from exc
+        mode = str(body.get("mode") or "")
+        operation_key = str(body.get("operation_key") or "")
+        package_hash = str(body.get("package_hash") or "")
+        preparation_hash = str(body.get("expected_preparation_hash") or "")
+        proof_hash = str(body.get("expected_snapshot_proof_hash") or "")
+        expected_updated_at = str(body.get("expected_updated_at") or "")
+        expected_result_hash = str(body.get("expected_result_hash") or "")
+        reason = str(body.get("reason") or "")
+        operator_request_id = str(body.get("operator_request_id") or "")
+        if mode not in {"plan", "apply"}:
+            raise BridgeError("mode must be plan or apply")
+        if mode == "apply" and (not preparation_hash or not proof_hash or not expected_updated_at
+                                 or not expected_result_hash or not reason or not operator_request_id):
+            raise BridgeError("apply requires the exact plan proof, row version, reason and operator request ID")
+        if mode == "apply" and len(reason) > 500:
+            raise BridgeError("reason exceeds the supported limit")
+        with self._approval_lock:
+            try:
+                from .growth_candidates import content_hash
+
+                memory = tenant.memory
+                initiative = next((row for row in memory.list_strategy_initiatives(limit=None)
+                                   if int(row.get("id") or 0) == normalized_id), None)
+                validation = initiative.get("validation") if isinstance((initiative or {}).get("validation"), Mapping) else {}
+                retired = validation.get("retiredPreparation") if isinstance(validation.get("retiredPreparation"), Mapping) else {}
+                if (initiative is not None and initiative.get("state") == "superseded"
+                        and retired.get("operatorRequestId") == operator_request_id
+                        and retired.get("operationKey") == operation_key
+                        and retired.get("packageHash") == package_hash
+                        and retired.get("preparationHash") == preparation_hash
+                        and retired.get("snapshotProofHash") == proof_hash
+                        and retired.get("expectedUpdatedAt") == expected_updated_at
+                        and retired.get("expectedResultHash") == expected_result_hash
+                        and retired.get("reason") == reason):
+                    return {**dict(retired), "status": "retired", "initiativeId": normalized_id, "idempotent": True}
+                if (initiative is None or initiative.get("kind") != "payload_content"
+                        or initiative.get("state") != "blocked"
+                        or any(initiative.get(key) is not None for key in (
+                            "approval_id", "draft_id", "artifact_id", "candidate_hash", "review_package_hash",
+                        ))):
+                    raise BridgeError("only an unapproved blocked Payload preparation can be retired")
+                preparation = validation.get("preparation") if isinstance(validation.get("preparation"), Mapping) else {}
+                collection = str(preparation.get("collection") or "")
+                document_id = str(preparation.get("documentId") or "")
+                if (preparation.get("baseHash") is None or not package_hash.startswith("sha256:")
+                        or not operation_key or operation_key != f"draft:{tenant.tenant_id}:{collection}:{document_id}:{package_hash}"):
+                    raise BridgeError("the exact audited destination operation identity is required")
+                if len(operator_request_id) > 200 or (mode == "apply" and not operator_request_id):
+                    raise BridgeError("operator_request_id is invalid")
+                if mode == "apply" and content_hash(preparation) != preparation_hash:
+                    raise BridgeError("the saved Growth preparation changed after the retirement plan")
+                payload = tenant.context.get("payload_gateway")
+                if payload is None:
+                    raise BridgeError("the canonical Payload gateway is unavailable")
+                destination = payload.retire_obsolete_growth_operation_current_snapshot(
+                    tenant_id=tenant.tenant_id, mode=mode, operation_key=operation_key,
+                    package_hash=package_hash, collection=collection, document_id=document_id,
+                    expected_snapshot_proof_hash=proof_hash or None,
+                    expected_updated_at=expected_updated_at or None,
+                    expected_result_hash=expected_result_hash or None,
+                    reason=reason, operator_request_id=operator_request_id,
+                    preserve_existing_draft=True,
+                )
+                if mode == "plan":
+                    return {
+                        "status": "ready_to_retire", "initiativeId": normalized_id,
+                        "operationKey": operation_key, "packageHash": package_hash,
+                        "collection": collection, "documentId": document_id,
+                        "preparationHash": content_hash(preparation), **destination,
+                    }
+                audit = {
+                    "status": "retired_obsolete_preparation",
+                    "basis": "current_site_snapshot", "effectStatus": "unknown",
+                    "withdrawal": "explicit", "reason": reason,
+                    "operatorRequestId": operator_request_id, "operationKey": operation_key,
+                    "packageHash": package_hash, "collection": collection, "documentId": document_id,
+                    "preparationHash": preparation_hash,
+                    "linkBasis": "operator_selected_old_operation_for_blocked_target",
+                    "preparationBaseHash": str(preparation.get("baseHash") or ""),
+                    "snapshotProofHash": proof_hash, "expectedUpdatedAt": expected_updated_at,
+                    "expectedResultHash": expected_result_hash,
+                    "destinationReceipt": {
+                        key: destination.get(key) for key in (
+                            "basis", "disposition", "effectStatus", "withdrawal", "operationKey", "packageHash",
+                            "collection", "documentId", "snapshotProofHash", "expectedUpdatedAt",
+                            "expectedResultHash", "preserveExistingDraft", "snapshot",
+                        ) if key in destination
+                    },
+                }
+                updated_validation = {**dict(validation), "status": "superseded", "retiredPreparation": audit}
+                result = memory.transition_strategy_initiative(
+                    normalized_id, "superseded", expected_state="blocked",
+                    expected_validation_hash=content_hash(validation), validation=updated_validation,
+                )
+                if result is None or result.get("state") != "superseded":
+                    raise BridgeError("the exact blocked Growth preparation changed during retirement")
+                return {**audit, "status": "retired", "initiativeId": normalized_id, "idempotent": False}
+            except BridgeError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — keep operator bridge errors bounded
+                raise BridgeError(str(exc)[:500]) from exc
 
     def growth_article_review(self, draft_id: Any, *, tenant: Tenant | None = None) -> dict[str, Any]:
         """Return one exact, validated article review only when its owner opens it."""

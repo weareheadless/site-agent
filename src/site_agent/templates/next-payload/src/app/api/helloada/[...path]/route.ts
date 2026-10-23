@@ -318,7 +318,7 @@ export async function GET(request: Request, { params }: RouteProps) {
 export async function POST(request: Request, { params }: RouteProps) {
   const path = `/${(await params).path?.join('/') || ''}`.replace(/\/$/, '') || '/'
   if (path.startsWith('/internal/mailflare/')) return internalMailflareRoute(request, path)
-  if (path === '/growth/validate' || path === '/growth/apply' || path === '/growth/publish') {
+  if (path === '/growth/validate' || path === '/growth/apply' || path === '/growth/publish' || path === '/growth/retire-obsolete') {
     const growthAuth = await authenticateHelloAdaRequest(request)
     if (!growthAuth) return errorResponse('authentication_required', 401)
     return growthPost(request, path, { kind: 'owner', auth: growthAuth })

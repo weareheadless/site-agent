@@ -1376,16 +1376,19 @@ def test_payload_growth_revision_hold_blocks_old_exact_approval_until_and_after_
     memory.close()
 
 
-def _payload_growth_review_fixture(tmp_path, *, publish_gate=None):
+def _payload_growth_review_fixture(tmp_path, *, publish_gate=None, reconcile_error=None):
     from site_agent.application.approvals import ApprovalService
     from site_agent.application.growth_candidates import content_hash
     from site_agent.core.contracts import Artifact, ArtifactKind, EffectClass
 
     class Payload:
         def __init__(self):
-            self.live = {"id": "page-1", "title": "Current title", "metaDescription": "Current description"}
-            self.draft = {"id": "page-1", "title": "Reviewed title", "metaDescription": "Reviewed description"}
+            self.live = {"id": "page-1", "title": "Current title", "metaDescription": "Current description",
+                         "_helloadaRevision": "sha256:" + "1" * 64}
+            self.draft = {"id": "page-1", "title": "Reviewed title", "metaDescription": "Reviewed description",
+                          "_helloadaRevision": "sha256:" + "2" * 64}
             self.publish_count = 0
+            self.reconcile_calls = 0
             self.publish_entered = threading.Event()
 
         def require_authoring_contract(self):
@@ -1399,6 +1402,17 @@ def _payload_growth_review_fixture(tmp_path, *, publish_gate=None):
             assert identifier == "page-1"
             assert identifier_kind == "id"
             return dict(self.draft if draft else self.live)
+
+        def apply_growth_candidate(self, package, package_hash):
+            self.reconcile_calls += 1
+            if reconcile_error is not None:
+                raise reconcile_error
+            return {"ok": True, "candidateHash": package["candidateHash"]}
+
+        def validate_growth_candidate(self, package, package_hash):
+            return {"status": "passed", "packageHash": package_hash,
+                    "checks": {"canonicalSchema": True, "exactDraft": True, "private": True,
+                               "publicRenderer": True, "approvalBoundary": True}}
 
         def publish_growth_candidate(self, package_hash):
             self.publish_count += 1
@@ -1469,6 +1483,265 @@ def _payload_growth_review_fixture(tmp_path, *, publish_gate=None):
         "scope": "Update the home page.", "state": "ready_for_review",
     }
     return memory, payload, package_hash, draft_id, initiative_id, approval, tenant, service, task
+
+
+def test_growth_revision_requires_prior_preparation_operation_reconciliation(tmp_path, monkeypatch):
+    from site_agent.application.workspace import BridgeError
+
+    memory, payload, package_hash, draft_id, initiative_id, _approval, tenant, service, task = (
+        _payload_growth_review_fixture(tmp_path, reconcile_error=RuntimeError("operation remains uncertain"))
+    )
+    monkeypatch.setattr("site_agent.application.growth.growth_snapshot", lambda *_args, **_kwargs: {"tasks": [task]})
+
+    with pytest.raises(BridgeError, match="exact Payload Growth proposal could not be verified"):
+        service.enqueue({"message": "Please revise this exact page.", "context": {
+            "growth_task_id": f"initiative:{initiative_id}", "growth_task_action": "revise",
+        }}, tenant=tenant)
+
+    current = next(row for row in memory.list_strategy_initiatives(limit=None) if row["id"] == initiative_id)
+    assert payload.reconcile_calls == 1
+    assert current["state"] == "ready_for_review"
+    assert memory.get_draft(draft_id)["meta"].get("growth_revision_pending") is None
+    memory.close()
+
+
+def test_operator_retirement_releases_job70_only_after_exact_candidate_proof(tmp_path):
+    from site_agent.application.growth_candidates import retire_uncertain_payload_revision
+
+    memory, payload, package_hash, draft_id, initiative_id, _approval, tenant, _service, _task = (
+        _payload_growth_review_fixture(tmp_path)
+    )
+    draft = memory.get_draft(draft_id)
+    memory.update_draft_meta(draft_id, {**draft["meta"], "growth_revision_pending": True,
+                                       "growth_revision_initiative_id": initiative_id})
+    conversation_id = memory.create_conversation(title="revision")
+    job_id = memory.enqueue_chat_job(conversation_id, "revise")
+    memory.conn.execute("UPDATE chat_jobs SET status = 'failed', error = ? WHERE id = ?",
+                        ("old revision write attempted without receipt", job_id))
+    initiative = next(row for row in memory.list_strategy_initiatives(limit=None) if row["id"] == initiative_id)
+    revision = {
+        "candidateType": "payload_content", "chatJobId": job_id, "writeAttempted": True,
+        "previousDraftId": draft_id, "previousReviewPackageHash": package_hash,
+        "previousValidation": dict(initiative.get("validation") or {}),
+    }
+    memory.update_strategy_initiative(initiative_id, state="validating",
+        validation={"status": "uncertain", "revision": revision})
+    context = {"memory": memory, "payload_gateway": payload}
+
+    plan = retire_uncertain_payload_revision(
+        context, initiative_id, job_id, mode="plan", expected_review_package_hash=package_hash,
+    )
+    assert plan["status"] == "ready_to_retire"
+    assert memory.get_draft(draft_id)["meta"]["growth_revision_pending"] is True
+    planned_draft_revision = payload.draft["_helloadaRevision"]
+    payload.draft["_helloadaRevision"] = "sha256:" + "3" * 64
+    with pytest.raises(ValueError, match="unchanged plan proof"):
+        retire_uncertain_payload_revision(
+            context, initiative_id, job_id, mode="apply", expected_review_package_hash=package_hash,
+            expected_proof_hash=plan["proofHash"], reason="operator requested cleanup of obsolete revision",
+            operator_request_id="cleanup-test-70",
+        )
+    assert payload.reconcile_calls == 0
+    payload.draft["_helloadaRevision"] = planned_draft_revision
+    memory.conn.execute(
+        "CREATE TRIGGER fail_growth_retirement BEFORE UPDATE OF state ON strategy_initiatives "
+        "WHEN NEW.id = " + str(initiative_id) + " AND NEW.state = 'ready_for_review' "
+        "BEGIN SELECT RAISE(ABORT, 'injected retirement failure'); END"
+    )
+    with pytest.raises(ValueError, match="injected retirement failure"):
+        retire_uncertain_payload_revision(
+            context, initiative_id, job_id, mode="apply", expected_review_package_hash=package_hash,
+            expected_proof_hash=plan["proofHash"], reason="operator requested cleanup of obsolete revision",
+            operator_request_id="cleanup-test-70",
+        )
+    assert memory.get_draft(draft_id)["meta"]["growth_revision_pending"] is True
+    still_active = next(row for row in memory.list_strategy_initiatives(limit=None) if row["id"] == initiative_id)
+    assert still_active["state"] == "validating"
+    assert still_active["validation"]["revision"]["writeAttempted"] is True
+    memory.conn.execute("DROP TRIGGER fail_growth_retirement")
+    retired = retire_uncertain_payload_revision(
+        context, initiative_id, job_id, mode="apply", expected_review_package_hash=package_hash,
+        expected_proof_hash=plan["proofHash"], reason="operator requested cleanup of obsolete revision",
+        operator_request_id="cleanup-test-70",
+    )
+
+    current = next(row for row in memory.list_strategy_initiatives(limit=None) if row["id"] == initiative_id)
+    audit = current["validation"]["retiredRevision"]
+    assert retired["status"] == "retired"
+    assert current["state"] == "ready_for_review"
+    assert current["draft_id"] == draft_id
+    assert audit["writeAttempted"] is True
+    assert audit["jobError"] == "old revision write attempted without receipt"
+    assert audit["reason"] == "operator requested cleanup of obsolete revision"
+    assert audit["operatorRequestId"] == "cleanup-test-70"
+    assert memory.get_draft(draft_id)["meta"].get("growth_revision_pending") is None
+    assert payload.reconcile_calls == 2  # injected DB rollback retries only the idempotent destination proof
+    replayed = retire_uncertain_payload_revision(
+        context, initiative_id, job_id, mode="apply", expected_review_package_hash=package_hash,
+        expected_proof_hash=plan["proofHash"], reason="operator requested cleanup of obsolete revision",
+        operator_request_id="cleanup-test-70",
+    )
+    assert replayed["idempotent"] is True
+    assert payload.reconcile_calls == 2
+    with pytest.raises(ValueError, match="not an active held Growth proposal"):
+        retire_uncertain_payload_revision(
+            context, initiative_id, job_id, mode="apply", expected_review_package_hash=package_hash,
+            expected_proof_hash=plan["proofHash"], reason="different attribution",
+            operator_request_id="cleanup-test-70",
+        )
+    with pytest.raises(ValueError, match="not an active held Growth proposal"):
+        retire_uncertain_payload_revision(
+            context, initiative_id, job_id, mode="apply", expected_review_package_hash=package_hash,
+            expected_proof_hash="sha256:" + "f" * 64,
+            reason="operator requested cleanup of obsolete revision", operator_request_id="cleanup-test-70",
+        )
+    memory.close()
+
+
+def test_operator_revision_retirement_requires_control_plane_auth_and_registered_tenant(tmp_path):
+    memory, payload, package_hash, draft_id, initiative_id, _approval, tenant, service, _task = (
+        _payload_growth_review_fixture(tmp_path)
+    )
+    draft = memory.get_draft(draft_id)
+    memory.update_draft_meta(draft_id, {**draft["meta"], "growth_revision_pending": True,
+                                       "growth_revision_initiative_id": initiative_id})
+    conversation_id = memory.create_conversation(title="revision")
+    job_id = memory.enqueue_chat_job(conversation_id, "revise")
+    memory.conn.execute("UPDATE chat_jobs SET status = 'failed', error = ? WHERE id = ?", ("attempted", job_id))
+    initiative = next(row for row in memory.list_strategy_initiatives(limit=None) if row["id"] == initiative_id)
+    memory.update_strategy_initiative(initiative_id, state="validating", validation={
+        "revision": {
+            "candidateType": "payload_content", "chatJobId": job_id, "writeAttempted": True,
+            "previousDraftId": draft_id, "previousReviewPackageHash": package_hash,
+            "previousValidation": dict(initiative.get("validation") or {}),
+        },
+    })
+    app = FastAPI()
+    register_workspace_routes(
+        app, config={}, env={}, service=service, registry=service.registry,
+        control_prefix="/control", control_token="host-control-secret",
+    )
+    route = f"/control/{tenant.tenant_id}/growth/initiatives/{initiative_id}/retire-revision"
+    body = {"mode": "plan", "chat_job_id": job_id, "expected_review_package_hash": package_hash}
+
+    with TestClient(app) as client:
+        denied = client.post(route, headers={"Authorization": f"Bearer {tenant.api_token}"}, json=body)
+        missing = client.post("/control/unknown/growth/initiatives/1/retire-revision",
+                              headers={"Authorization": "Bearer host-control-secret"}, json=body)
+        allowed = client.post(route, headers={"Authorization": "Bearer host-control-secret"}, json=body)
+        applied = client.post(route, headers={"Authorization": "Bearer host-control-secret"}, json={
+            **body, "mode": "apply", "expected_proof_hash": allowed.json().get("proofHash"),
+            "reason": "operator requested cleanup of obsolete revision", "operator_request_id": "route-cleanup-70",
+        })
+
+    assert denied.status_code == 401
+    assert missing.status_code == 404
+    assert allowed.status_code == 200
+    assert allowed.json()["status"] == "ready_to_retire"
+    assert applied.status_code == 200
+    assert applied.json()["status"] == "retired"
+    memory.close()
+
+
+def test_operator_preparation_retirement_uses_snapshot_proof_and_supersedes_only_audited_block(tmp_path):
+    memory = Memory(tmp_path / "operator-preparation-retirement.db")
+    cycle = memory.create_strategy_cycle("old-preparation", "2026-10", "old-preparation-hash", {})
+    memory.create_strategy_initiative(
+        cycle["id"], kind="owner_information", title="Unrelated history", summary="Retained history.",
+        state="deferred",
+    )
+    initiative_id = memory.create_strategy_initiative(
+        cycle["id"], kind="payload_content", title="Old page recommendation", summary="Old proposal.",
+        state="blocked", validation={"status": "blocked", "preparation": {
+            "changes": {"title": "Suggested title"}, "baseHash": "sha256:" + "a" * 64,
+            "collection": "pages", "documentId": "24",
+        }},
+    )
+    package_hash = "sha256:" + "b" * 64
+    operation_key = f"draft:test-business:pages:24:{package_hash}"
+
+    class Payload:
+        def __init__(self):
+            self.calls = []
+
+        def retire_obsolete_growth_operation_current_snapshot(self, **kwargs):
+            self.calls.append(dict(kwargs))
+            if kwargs["mode"] == "plan":
+                return {"eligible": True, "basis": "current_site_snapshot", "operationKey": operation_key,
+                        "packageHash": package_hash, "collection": "pages", "documentId": "24",
+                        "expectedUpdatedAt": "version-7", "expectedResultHash": "sha256:" + "c" * 64,
+                        "snapshotProofHash": "sha256:" + "d" * 64,
+                        "snapshot": {"currentPublished": {"canonicalHash": "live"},
+                                     "currentDraft": {"canonicalHash": "owner-draft"}}}
+            return {"ok": False, "disposition": "retired_obsolete", "basis": "current_site_snapshot",
+                    "effectStatus": "unknown", "withdrawal": "explicit", "operationKey": operation_key,
+                    "packageHash": package_hash, "collection": "pages", "documentId": "24",
+                    "snapshotProofHash": kwargs["expected_snapshot_proof_hash"],
+                    "expectedUpdatedAt": kwargs["expected_updated_at"],
+                    "expectedResultHash": kwargs["expected_result_hash"], "preserveExistingDraft": True,
+                    "priorResult": {"packageHash": package_hash},
+                    "snapshot": {"currentPublished": {"canonicalHash": "live"},
+                                 "currentDraft": {"canonicalHash": "owner-draft"}}}
+
+    payload = Payload()
+    tenant = Tenant(
+        tenant_id="test-business", config={}, memory=memory, runtime=None,
+        context={"llm": object(), "payload_gateway": payload}, api_token="test-business-service-token",
+    )
+    service = ChatService(registry=TenantRegistry({"test-business": tenant}))
+    app = FastAPI()
+    register_workspace_routes(
+        app, config={}, env={}, service=service, registry=service.registry,
+        control_prefix="/control", control_token="host-control-secret",
+    )
+    route = f"/control/test-business/growth/initiatives/{initiative_id}/retire-preparation"
+    body = {"mode": "plan", "operation_key": operation_key, "package_hash": package_hash,
+            "operator_request_id": "cleanup-test-business-init-2"}
+
+    with TestClient(app) as client:
+        denied = client.post(route, headers={"Authorization": "Bearer test-business-service-token"}, json=body)
+        plan_response = client.post(route, headers={"Authorization": "Bearer host-control-secret"}, json=body)
+        missing = client.post("/control/unknown/growth/initiatives/2/retire-preparation",
+                              headers={"Authorization": "Bearer host-control-secret"}, json=body)
+        assert plan_response.status_code == 200, plan_response.text
+        plan = plan_response.json()
+        applied = client.post(route, headers={"Authorization": "Bearer host-control-secret"}, json={
+            **body, "mode": "apply", "expected_preparation_hash": plan["preparationHash"],
+            "expected_snapshot_proof_hash": plan["snapshotProofHash"],
+            "expected_updated_at": plan["expectedUpdatedAt"], "expected_result_hash": plan["expectedResultHash"],
+            "reason": "Operator requested cleanup based on the current site snapshot.",
+        })
+        replay = client.post(route, headers={"Authorization": "Bearer host-control-secret"}, json={
+            **body, "mode": "apply", "expected_preparation_hash": plan["preparationHash"],
+            "expected_snapshot_proof_hash": plan["snapshotProofHash"],
+            "expected_updated_at": plan["expectedUpdatedAt"], "expected_result_hash": plan["expectedResultHash"],
+            "reason": "Operator requested cleanup based on the current site snapshot.",
+        })
+        changed_attribution = client.post(route, headers={"Authorization": "Bearer host-control-secret"}, json={
+            **body, "mode": "apply", "expected_preparation_hash": plan["preparationHash"],
+            "expected_snapshot_proof_hash": plan["snapshotProofHash"],
+            "expected_updated_at": plan["expectedUpdatedAt"], "expected_result_hash": plan["expectedResultHash"],
+            "reason": "operator requested cleanup of obsolete preparation",
+        })
+
+    assert denied.status_code == 401
+    assert missing.status_code == 404
+    assert plan_response.status_code == 200
+    assert plan_response.json()["status"] == "ready_to_retire"
+    assert plan_response.json()["initiativeId"] == initiative_id
+    assert applied.status_code == 200
+    assert applied.json()["status"] == "retired"
+    assert applied.json()["initiativeId"] == initiative_id
+    assert replay.status_code == 200 and replay.json()["idempotent"] is True
+    assert replay.json()["status"] == "retired"
+    assert replay.json()["initiativeId"] == initiative_id
+    assert changed_attribution.status_code == 409
+    current = memory.update_strategy_initiative(initiative_id)
+    assert current["state"] == "superseded"
+    assert current["validation"]["retiredPreparation"]["effectStatus"] == "unknown"
+    assert payload.calls[1]["preserve_existing_draft"] is True
+    assert len(payload.calls) == 2
+    memory.close()
 
 
 def _thread_result(callback):

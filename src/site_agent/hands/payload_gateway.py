@@ -519,6 +519,108 @@ class PayloadGatewayClient:
             raise PayloadGatewayError("The destination did not save the exact Growth candidate")
         return result
 
+    def retire_obsolete_growth_operation(
+        self, *, tenant_id: str, mode: str, package: Mapping[str, Any], package_hash: str,
+        operation_key: str, document_key: str, expected_updated_at: str | None = None,
+        expected_result_hash: str | None = None, reason: str = "",
+        operator_request_id: str = "",
+    ) -> dict[str, Any]:
+        """Plan/apply a destination-side retirement of a proven obsolete operation."""
+        if mode not in {"plan", "apply"}:
+            raise PayloadGatewayError("Obsolete Growth operation retirement requires plan or apply mode")
+        contract = self.require_growth_contract()
+        if "obsoleteOperationRetirement" not in set(contract.get("capabilities") or []):
+            raise PayloadGatewayError("The destination does not support obsolete Growth operation retirement")
+        tenant_id = str(tenant_id or "").strip()
+        expected_operation_key = f"draft:{tenant_id}:{package.get('collection')}:{package.get('documentId')}:{package_hash}"
+        expected_document_key = f"{package.get('collection')}:{package.get('documentId')}"
+        if (not tenant_id or not package_hash.startswith("sha256:") or not package.get("collection")
+                or not package.get("documentId") or operation_key != expected_operation_key
+                or document_key != expected_document_key):
+            raise PayloadGatewayError("Obsolete Growth operation retirement identity is invalid")
+        body: dict[str, Any] = {
+            "mode": mode, "package": dict(package), "packageHash": package_hash,
+            "operationKey": operation_key, "documentKey": document_key,
+        }
+        if expected_updated_at is not None:
+            body["expectedUpdatedAt"] = expected_updated_at
+        if expected_result_hash is not None:
+            body["expectedResultHash"] = expected_result_hash
+        if mode == "apply":
+            if not reason or len(reason) > 500 or not operator_request_id or len(operator_request_id) > 200:
+                raise PayloadGatewayError("Obsolete Growth operation retirement requires a bounded reason and request ID")
+            body.update({"reason": reason, "operatorRequestId": operator_request_id})
+        result = self._request("POST", self._gateway_path("growth/retire-obsolete"), payload=body)
+        if (result.get("eligible") is not True and mode == "plan"):
+            raise PayloadGatewayError("The destination could not prove the obsolete Growth operation is safe to retire")
+        if (result.get("ok") is not False or result.get("disposition") != "retired_obsolete") and mode == "apply":
+            raise PayloadGatewayError("The destination did not return an exact obsolete-operation retirement receipt")
+        if mode == "apply" and (
+            result.get("operatorRequestId") != operator_request_id
+            or ("reason" in result and result.get("reason") != reason)
+        ):
+            raise PayloadGatewayError("The obsolete-operation retirement receipt has different operator attribution")
+        for key, expected in (("operationKey", operation_key), ("documentKey", document_key), ("packageHash", package_hash)):
+            if result.get(key) != expected:
+                raise PayloadGatewayError("The obsolete Growth operation retirement receipt identity differs")
+        return result
+
+    def retire_obsolete_growth_operation_current_snapshot(
+        self, *, tenant_id: str, mode: str, operation_key: str, package_hash: str,
+        collection: str, document_id: str, expected_snapshot_proof_hash: str | None = None,
+        expected_updated_at: str | None = None, expected_result_hash: str | None = None,
+        reason: str = "", operator_request_id: str = "", preserve_existing_draft: bool = True,
+    ) -> dict[str, Any]:
+        """Plan/apply retirement of an old operation against today's exact site snapshot."""
+        if mode not in {"plan", "apply"}:
+            raise PayloadGatewayError("Obsolete Growth operation retirement requires plan or apply mode")
+        contract = self.require_growth_contract()
+        if "obsoleteOperationRetirement" not in set(contract.get("capabilities") or []):
+            raise PayloadGatewayError("The destination does not support obsolete Growth operation retirement")
+        tenant_id, collection, document_id = (
+            str(tenant_id or "").strip(), str(collection or "").strip(), str(document_id or "").strip(),
+        )
+        expected_operation_key = f"draft:{tenant_id}:{collection}:{document_id}:{package_hash}"
+        if (not tenant_id or not collection or not document_id or not package_hash.startswith("sha256:")
+                or operation_key != expected_operation_key or preserve_existing_draft is not True):
+            raise PayloadGatewayError("Current-snapshot Growth retirement identity is invalid")
+        body: dict[str, Any] = {
+            "basis": "current_site_snapshot", "mode": mode, "operationKey": operation_key,
+            "packageHash": package_hash, "collection": collection, "documentId": document_id,
+            "preserveExistingDraft": True,
+        }
+        if mode == "apply":
+            if (not expected_snapshot_proof_hash or not expected_updated_at or not expected_result_hash
+                    or not reason or len(reason) > 500 or not operator_request_id or len(operator_request_id) > 200):
+                raise PayloadGatewayError("Current-snapshot retirement requires the exact plan proof and bounded attribution")
+            body.update({
+                "expectedSnapshotProofHash": expected_snapshot_proof_hash,
+                "expectedUpdatedAt": expected_updated_at,
+                "expectedResultHash": expected_result_hash,
+                "reason": reason, "operatorRequestId": operator_request_id,
+            })
+        result = self._request("POST", self._gateway_path("growth/retire-obsolete"), payload=body)
+        if mode == "plan":
+            if (result.get("eligible") is not True or result.get("basis") != "current_site_snapshot"
+                    or not result.get("snapshotProofHash") or not result.get("expectedUpdatedAt")
+                    or not result.get("expectedResultHash")):
+                raise PayloadGatewayError("The destination could not prove current-snapshot retirement eligibility")
+        elif (result.get("ok") is not False or result.get("disposition") != "retired_obsolete"
+              or result.get("basis") != "current_site_snapshot" or result.get("effectStatus") != "unknown"
+              or result.get("withdrawal") != "explicit"
+              or result.get("snapshotProofHash") != expected_snapshot_proof_hash
+              or result.get("preserveExistingDraft") is not True
+              or result.get("expectedUpdatedAt") != expected_updated_at
+              or result.get("expectedResultHash") != expected_result_hash
+              or result.get("operatorRequestId") != operator_request_id
+              or result.get("reason") != reason):
+            raise PayloadGatewayError("The destination did not return the exact current-snapshot retirement receipt")
+        for key, expected in (("operationKey", operation_key), ("packageHash", package_hash),
+                              ("collection", collection), ("documentId", document_id)):
+            if result.get(key) != expected:
+                raise PayloadGatewayError("The current-snapshot retirement identity differs")
+        return result
+
     def publish_growth_candidate(self, package_hash: str) -> dict[str, Any]:
         result = self._request("POST", self._gateway_path("growth/publish"), payload={"packageHash": package_hash})
         if result.get("ok") is not True or result.get("status") != "published":

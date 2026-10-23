@@ -258,3 +258,33 @@ failure, browser inspection access, and live approve/revise/decline acceptance.
 This record therefore documents successful source tests, API activation,
 five-tenant package deployment and Atelier recovery, but explicitly does not
 claim complete Growth or dashboard acceptance.
+
+### Obsolete operation cleanup implementation (activation pending)
+
+The user explicitly requested removal of obsolete operations that no longer fit
+current sites. The shared cleanup contract now supports protected operator
+plan/apply retirement, with exact operation/version and current document proofs.
+It preserves customer content, unpublished drafts, valid approvals and historical
+uncertainty. Abandoned preparations become terminal withdrawals; a failed
+revision hold can be released only after verifying its exact prior candidate,
+approval, published base and destination preview. The transaction retains the
+failed job's attempted-write/error audit. See `growth-operation-cleanup.md`.
+
+The two current Oceanic preparation operations (posts 4 and 5) were reconciled
+through the existing canonical `growth/apply` service, without repeating their
+content writes. Durable maintenance receipts record unchanged published/draft
+hashes and timestamps. Four obsolete uncertain preparations and job 70's held
+revision remain pending deployment of the new protected cleanup contract.
+Atelier pages 48 has unpublished changes; its draft must be preserved.
+
+The complete backend suite passed 1,670 tests (three existing Pillow deprecation
+warnings). The six focused Worker contract files passed, including real SQLite
+retirement compare-and-swap and draft-preservation checks. A clean canonical
+starter install, typecheck and Next.js build passed, and the wheel built.
+Final review corrections and official CI are recorded separately when complete.
+No new paid research or customer publication was performed during cleanup.
+
+Final review tightened both local retirement retry paths to require the same
+operator attribution and plan proof. The complete workspace/gateway suites then
+passed 54 tests. The Worker retirement regression is included in official
+Payload release CI. No cleanup endpoints were invoked before activation.
