@@ -9,17 +9,18 @@ from site_agent.application.growth_candidates import (
     restore_growth_source_revision,
 )
 from site_agent.application.growth_tasks import growth_tasks
+from site_agent.core.chat_jobs import run_job
 from site_agent.core.memory import Memory
 from site_agent.hands import opencode_runner
 
 
-def _initiative(memory, *, state="preparing", validation=None, last_error=""):
+def _initiative(memory, *, state="preparing", validation=None, last_error="", kind="code"):
     cycle = memory.create_strategy_cycle("growth-source-test", "2026-10-17", "evidence-hash", {})
     initiative_id = memory.create_strategy_initiative(
-        cycle["id"], kind="code", title="Improve the public crawler path",
+        cycle["id"], kind=kind, title="Improve the public crawler path",
         summary="Update the source-controlled crawler behavior.",
         rationale="The current public response blocks discovery.", evidence=["source:crawl"],
-        expected={"opportunity": {"kind": "code", "title": "Improve the public crawler path"}},
+        expected={"opportunity": {"kind": kind, "title": "Improve the public crawler path"}},
         state=state, growth_run_id="growth-run-source-test", goal_revision=1,
         validation=validation or {}, last_error=last_error,
     )
@@ -333,5 +334,91 @@ def test_failed_growth_revision_restores_the_exact_original_proposal(tmp_path):
         assert draft["status"] == "pending"
         assert draft["meta"]["review_package_hash"] == previous_hash
         assert "growth_revision_pending" not in draft["meta"]
+    finally:
+        memory.close()
+
+
+def _payload_revision_job(memory, *, write_attempted):
+    previous_hash = "sha256:" + "b" * 64
+    previous_id = memory.save_draft(
+        "Original Payload proposal", "", kind="payload_content",
+        meta={"review_package_hash": previous_hash, "growth_revision_pending": True},
+    )
+    validation = {
+        "status": "validating",
+        "revision": {
+            "candidateType": "payload_content",
+            "writeAttempted": write_attempted,
+            "payloadEffect": False,
+            "previousDraftId": previous_id,
+            "previousReviewPackageHash": previous_hash,
+            "previousValidation": {"status": "passed", "checks": {"exactDraft": True}},
+        },
+    }
+    initiative = _initiative(memory, state="validating", validation=validation, kind="payload_content")
+    memory.update_strategy_initiative(initiative["id"], draft_id=previous_id)
+    conversation_id = memory.create_conversation("Growth revision")
+    job_id = memory.enqueue_chat_job(
+        conversation_id, "Revise this proposal", payload={
+            "growth_task_revision": {
+                "initiativeId": initiative["id"],
+                "candidateType": "payload_content",
+            },
+        },
+    )
+    job = memory.claim_chat_job("chat-worker")
+    assert job and job["id"] == job_id
+    return initiative["id"], previous_id, job
+
+
+def test_pre_dispatch_payload_revision_refusal_restores_original_proposal(tmp_path, monkeypatch):
+    from site_agent.brain import editor
+
+    memory = Memory(tmp_path / "memory.db")
+    try:
+        initiative_id, previous_id, job = _payload_revision_job(memory, write_attempted=False)
+        monkeypatch.setattr(editor, "handle_message", lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("tool refused before Payload dispatch")
+        ))
+        result = run_job(
+            {"memory": memory, "config": {}, "llm": object()},
+            job, "chat-worker", adapter_factory=lambda: object(),
+        )
+
+        initiative = memory.update_strategy_initiative(initiative_id)
+        previous = memory.get_draft(previous_id)
+        assert result["error"] == "tool refused before Payload dispatch"
+        assert memory.get_chat_job(job["id"])["status"] == "error"
+        assert initiative["state"] == "ready_for_review"
+        assert initiative["draft_id"] == previous_id
+        assert initiative["validation"]["status"] == "passed"
+        assert initiative["validation"]["revisionFailure"]
+        assert previous["status"] == "pending"
+        assert "growth_revision_pending" not in previous["meta"]
+
+    finally:
+        memory.close()
+
+
+def test_attempted_payload_revision_refusal_remains_held_as_uncertain(tmp_path, monkeypatch):
+    memory = Memory(tmp_path / "memory.db")
+    try:
+        initiative_id, previous_id, job = _payload_revision_job(memory, write_attempted=True)
+        result = run_job(
+            {"memory": memory, "config": {}, "llm": object()},
+            job, "chat-worker", adapter_factory=lambda: object(),
+        )
+
+        initiative = memory.update_strategy_initiative(initiative_id)
+        previous = memory.get_draft(previous_id)
+        revision = initiative["validation"]["revision"]
+        assert "automatic replay is forbidden" in result["error"]
+        assert memory.get_chat_job(job["id"])["status"] == "error"
+        assert initiative["state"] == "validating"
+        assert revision["status"] == "uncertain"
+        assert revision["writeAttempted"] is True
+        assert previous["status"] == "pending"
+        assert previous["meta"]["growth_revision_pending"] is True
+
     finally:
         memory.close()

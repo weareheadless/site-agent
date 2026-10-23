@@ -333,12 +333,11 @@ def run_job(context: dict[str, Any], job: dict[str, Any], worker: str,
         memory.fail_chat_job(job_id, worker, str(exc)[:300])
         if isinstance(revision_request, dict):
             try:
-                if revision_request.get("candidateType") == "payload_content":
-                    from ..application.growth_candidates import mark_payload_revision_uncertain
-                    mark_payload_revision_uncertain(memory, int(revision_request["initiativeId"]), str(exc)[:700])
-                else:
-                    from ..application.growth_candidates import restore_growth_source_revision
-                    restore_growth_source_revision(memory, int(revision_request["initiativeId"]), str(exc)[:700])
+                from ..application.growth_candidates import restore_growth_source_revision
+
+                # This helper restores pre-dispatch failures and preserves an
+                # uncertain hold whenever a Payload write may have happened.
+                restore_growth_source_revision(memory, int(revision_request["initiativeId"]), str(exc)[:700])
             except Exception:  # noqa: BLE001 — the durable Growth reconciler retries recovery
                 pass
         if job.get("operation_kind") == "growth_source_candidate":
