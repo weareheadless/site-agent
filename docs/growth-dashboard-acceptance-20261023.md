@@ -80,12 +80,12 @@ customer rollout and authenticated acceptance. An unfinished row is not a pass.
   The shared admin package suite passed: 54. The focused template
   `payload-first-contract.test.mjs` passed. The full backend suite passed: 1,654
   tests (three deprecation warnings). Compile checks and wheel build passed.
-  The clean starter check is still running; no build result is claimed yet.
+  A clean canonical starter install, typecheck and Next.js build passed using
+  pinned Node 22.23.3/npm 11.13.0 and the authenticated immutable package bytes.
 - The scaffold now pins v0.10.28, but this publication is not a customer
   deployment. API activation, canary/fanout receipts and fresh authenticated
   review/browser evidence remain outstanding.
 
-- Root full-test and clean-starter results, once complete.
 - Official-main API release receipt for the implemented evidence/revision and
   allowance corrections.
 - Canonical canary/fanout receipts for shared admin v0.10.28.
