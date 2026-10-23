@@ -112,6 +112,29 @@ const nullableArea = (value: unknown): value is GrowthAreaKey | null => value ==
 const nullableDate = (value: unknown): value is string | null =>
   value === null || (typeof value === "string" && Number.isFinite(Date.parse(value)));
 
+export function growthDecisionOrder(ownerQueue: unknown, decisionIds: unknown): string[] | null {
+  if (!isRecord(ownerQueue) || !strings(decisionIds)
+      || !(ownerQueue.featuredDecisionId === null || typeof ownerQueue.featuredDecisionId === "string")
+      || !strings(ownerQueue.additionalDecisionIds)
+      || !Number.isInteger(ownerQueue.decisionCount)) return null;
+  const orderedIds = [
+    ...(ownerQueue.featuredDecisionId === null ? [] : [ownerQueue.featuredDecisionId]),
+    ...ownerQueue.additionalDecisionIds,
+  ];
+  if (orderedIds.some((id) => !id) || new Set(orderedIds).size !== orderedIds.length
+      || ownerQueue.decisionCount !== orderedIds.length || decisionIds.length !== orderedIds.length) return null;
+  const canonicalIds = new Set(decisionIds);
+  return orderedIds.every((id) => canonicalIds.has(id)) ? orderedIds : null;
+}
+
+export function readableReviewValue(value: unknown): string {
+  if (value == null || value === "") return "—";
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return value.map(readableReviewValue).filter((item) => item !== "—").join(" · ") || "—";
+  if (!isRecord(value)) return String(value);
+  return Object.entries(value).map(([key, item]) => `${key}: ${readableReviewValue(item)}`).join(" · ");
+}
+
 export function isGrowthServiceModel(value: unknown): value is GrowthServiceModel {
   if (!isRecord(value) || value.contractVersion !== "growth-service-v1" || typeof value.websitePresent !== "boolean") return false;
   if (!Array.isArray(value.areas) || value.areas.length !== growthAreaKeys.length
