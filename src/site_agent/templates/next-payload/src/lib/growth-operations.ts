@@ -16,9 +16,11 @@ import {
   contractCapabilities,
   failOperation,
   operationResult,
+  operationByKey,
   operationContext,
   projectDocument,
   reconcileOperation,
+  retireObsoleteOperation,
   saveCandidate,
   tenantId,
 } from '@/lib/growth-contract'
@@ -190,6 +192,19 @@ const verifyLiveRoutes = async (request: Request, collection: EditableCollection
   return { status: 'passed', checks }
 }
 
+const retiredPreparation = async (packageData: Record<string, unknown>, packageHash: string) => {
+  if (await hashJson(packageData) !== packageHash) return undefined
+  const collection = text(packageData.collection)
+  const documentId = text(packageData.documentId)
+  if (!editable(collection) || !documentId || text(packageData.tenant) !== tenantId()) return undefined
+  const documentKey = `${collection}:${documentId}`
+  const operationKey = `draft:${tenantId()}:${documentKey}:${packageHash}`
+  const row = await operationByKey(operationKey)
+  if (!row || row.tenant_id !== tenantId() || row.document_key !== documentKey || row.package_hash !== packageHash) return undefined
+  const result = operationResult(row)
+  return result?.disposition === 'retired_obsolete' && result.packageHash === packageHash ? result : undefined
+}
+
 export async function growthGet(request: Request, path: string, principal: GrowthPrincipal) {
   const payload = await payloadFor(principal)
   if (path === '/growth/contract') {
@@ -226,11 +241,176 @@ export async function growthPost(request: Request, path: string, principal: Grow
       return error(cause instanceof Error ? cause.message : 'Publication verification failed', 409)
     }
   }
+  if (path === '/growth/retire-obsolete') {
+    if (principal.kind !== 'service') return error('Obsolete operation retirement requires the operator service route', 403)
+    const basis = text(body.basis) || 'exact_package'
+    const mode = text(body.mode)
+    if (basis === 'current_site_snapshot') {
+      const operationKey = text(body.operationKey)
+      const packageHash = text(body.packageHash)
+      const collection = text(body.collection)
+      const documentId = text(body.documentId)
+      const documentKey = `${collection}:${documentId}`
+      const expectedOperationKey = `draft:${tenantId()}:${documentKey}:${packageHash}`
+      const expectedUpdatedAt = text(body.expectedUpdatedAt)
+      const expectedResultHash = text(body.expectedResultHash)
+      const expectedSnapshotProofHash = text(body.expectedSnapshotProofHash)
+      const reason = text(body.reason)
+      const operatorRequestId = text(body.operatorRequestId)
+      if (!['plan', 'apply'].includes(mode) || !editable(collection) || !collectionEnabled(collection)
+        || !documentId || !/^sha256:[0-9a-f]{64}$/.test(packageHash) || operationKey !== expectedOperationKey) {
+        return error('Snapshot retirement requires the exact registered tenant operation and collection target', 409)
+      }
+      if (mode === 'apply' && (body.preserveExistingDraft !== true || !expectedUpdatedAt
+        || !/^sha256:[0-9a-f]{64}$/.test(expectedResultHash)
+        || !/^sha256:[0-9a-f]{64}$/.test(expectedSnapshotProofHash)
+        || !reason || reason.length > 500 || !operatorRequestId || operatorRequestId.length > 200)) {
+        return error('Snapshot apply requires explicit draft preservation, planned versions, reason (max 500 characters), and operator request ID (max 200 characters)', 409)
+      }
+      try {
+        const row = await operationByKey(operationKey)
+        if (!row || row.tenant_id !== tenantId() || row.document_key !== documentKey || row.package_hash !== packageHash) {
+          throw new Error('The exact tenant Growth operation was not found')
+        }
+        const priorResult = operationResult(row)
+        if (row.state === 'completed' && priorResult?.disposition === 'retired_obsolete'
+          && priorResult.packageHash === packageHash && priorResult.basis === 'current_site_snapshot') {
+          if (mode === 'apply' && body.preserveExistingDraft === true
+            && priorResult.operationKey === operationKey && priorResult.collection === collection && priorResult.documentId === documentId
+            && priorResult.expectedUpdatedAt === expectedUpdatedAt && priorResult.expectedResultHash === expectedResultHash
+            && priorResult.snapshotProofHash === expectedSnapshotProofHash
+            && priorResult.operatorRequestId === operatorRequestId && priorResult.reason === reason) {
+            return NextResponse.json(priorResult, { headers: { 'Cache-Control': 'private, no-store' } })
+          }
+          throw new Error('This operation was already retired by a different request or plan')
+        }
+        if (row.state !== 'uncertain' || !priorResult || priorResult.packageHash !== packageHash) {
+          throw new Error('Only an uncertain operation with a matching durable preparation result can be withdrawn')
+        }
+        const priorResultJson = String(row.result_json || '')
+        const priorResultHash = await hashJson(JSON.parse(priorResultJson))
+        const schemaIdentity = text(process.env.HELLOADA_SCHEMA_IDENTITY)
+        if (!schemaIdentity) throw new Error('The registered Payload schema identity is unavailable')
+        const editableFields = [...collectionFieldNames(payload, collection)].sort()
+        if (!editableFields.length) throw new Error('The destination collection has no registered editable schema fields')
+        const locale = helloAdaSite.defaultLocale as TypedLocale
+        const access = accessFor(principal)
+        const [published, draft] = await Promise.all([
+          payload.findByID({ collection: collection as CollectionSlug, draft: false, id: documentId, locale, ...access }) as unknown as Promise<Record<string, unknown>>,
+          payload.findByID({ collection: collection as CollectionSlug, draft: true, id: documentId, locale, ...access }) as unknown as Promise<Record<string, unknown>>,
+        ])
+        const snapshot = {
+          schemaIdentity,
+          editableFields,
+          currentPublished: { updatedAt: text(published.updatedAt), canonicalHash: await hashJson(withoutPayloadMetadata(published)) },
+          currentDraft: { updatedAt: text(draft.updatedAt), canonicalHash: await hashJson(withoutPayloadMetadata(draft)) },
+        }
+        if (!snapshot.currentPublished.updatedAt || !snapshot.currentDraft.updatedAt) throw new Error('Both current Payload revisions must have an updatedAt identity')
+        const snapshotProofHash = await hashJson({
+          basis, tenant: tenantId(), documentKey, operationKey, packageHash, state: row.state,
+          rowUpdatedAt: String(row.updated_at), priorResultHash, ...snapshot,
+        })
+        if (mode === 'plan') {
+          return NextResponse.json({ eligible: true, basis, operationKey, packageHash, collection, documentId,
+            expectedUpdatedAt: String(row.updated_at), expectedResultHash: priorResultHash, snapshotProofHash, snapshot },
+          { headers: { 'Cache-Control': 'private, no-store' } })
+        }
+        if (String(row.updated_at) !== expectedUpdatedAt || priorResultHash !== expectedResultHash
+          || snapshotProofHash !== expectedSnapshotProofHash) {
+          throw new Error('The operation, registered schema, or current Payload snapshot changed after the plan; request a fresh plan')
+        }
+        const receipt = {
+          ok: false, disposition: 'retired_obsolete', basis, effectStatus: 'unknown', withdrawal: 'explicit',
+          interpretation: 'Historical effect unknown; obsolete intent explicitly withdrawn and current draft preserved.',
+          operationKey, documentKey, tenant: tenantId(), packageHash, collection, documentId,
+          expectedUpdatedAt, expectedResultHash, snapshotProofHash: expectedSnapshotProofHash,
+          preserveExistingDraft: true, reason, operatorRequestId, snapshot, priorResult,
+        }
+        if (!await retireObsoleteOperation({ operationKey, documentKey, packageHash,
+          expectedUpdatedAt, expectedResultHash, priorResultJson, receipt })) {
+          throw new Error('The uncertain operation changed during retirement; re-read and reconcile it')
+        }
+        return NextResponse.json(receipt, { headers: { 'Cache-Control': 'private, no-store' } })
+      } catch (cause) {
+        return error(cause instanceof Error ? cause.message : 'Current-site snapshot withdrawal failed', 409)
+      }
+    }
+    if (basis !== 'exact_package') return error('Unsupported obsolete operation retirement basis', 400)
+    const operationKey = text(body.operationKey)
+    const documentKey = text(body.documentKey)
+    const packageHash = text(body.packageHash)
+    const expectedUpdatedAt = text(body.expectedUpdatedAt)
+    const expectedResultHash = text(body.expectedResultHash)
+    const reason = text(body.reason)
+    const operatorRequestId = text(body.operatorRequestId)
+    const packageData = asObject(body.package)
+    if (!['plan', 'apply'].includes(mode) || !operationKey || !documentKey || !packageHash) {
+      return error('Retirement mode and exact operation/package identity are required')
+    }
+    if (mode === 'apply' && (!expectedUpdatedAt || !/^sha256:[0-9a-f]{64}$/.test(expectedResultHash)
+      || !reason || reason.length > 500 || !operatorRequestId || operatorRequestId.length > 200)) {
+      return error('Apply requires the planned row version, prior result hash, reason (max 500 characters), and operator request ID (max 200 characters)')
+    }
+    try {
+      if (await hashJson(packageData) !== packageHash) throw new Error('Growth package hash does not match its contents')
+      const collection = text(packageData.collection)
+      const documentId = text(packageData.documentId)
+      const expectedDocumentKey = `${collection}:${documentId}`
+      const expectedOperationKey = `draft:${tenantId()}:${expectedDocumentKey}:${packageHash}`
+      if (!editable(collection) || !collectionEnabled(collection) || documentKey !== expectedDocumentKey
+        || operationKey !== expectedOperationKey || text(packageData.tenant) !== tenantId()) {
+        throw new Error('Retirement identity does not match the registered tenant and exact preparation package')
+      }
+      const row = await operationByKey(operationKey)
+      if (!row || row.tenant_id !== tenantId() || row.document_key !== documentKey || row.package_hash !== packageHash) {
+        throw new Error('The exact tenant Growth operation was not found')
+      }
+      const priorResult = operationResult(row)
+      if (row.state === 'completed' && priorResult?.disposition === 'retired_obsolete' && priorResult.packageHash === packageHash) {
+        if (mode === 'apply' && priorResult.basis === 'exact_package'
+          && priorResult.operationKey === operationKey && priorResult.documentKey === documentKey
+          && priorResult.expectedUpdatedAt === expectedUpdatedAt && priorResult.expectedResultHash === expectedResultHash
+          && priorResult.operatorRequestId === operatorRequestId && priorResult.reason === reason) {
+          return NextResponse.json(priorResult, { headers: { 'Cache-Control': 'private, no-store' } })
+        }
+        throw new Error('This operation was already retired by a different request or plan')
+      }
+      if (row.state !== 'uncertain') throw new Error('Only an uncertain preparation can be retired')
+      const priorResultJson = String(row.result_json || '')
+      const priorResultHash = await hashJson(JSON.parse(priorResultJson))
+      if (!priorResult || priorResult.packageHash !== packageHash) {
+        throw new Error('The uncertain operation changed or does not prove this preparation intent')
+      }
+      const verified = await verifyPackage(payload, principal, packageData, packageHash, false)
+      if (await hashJson(verified.liveProjection) !== text(packageData.baseHash)
+        || await hashJson(verified.draftProjection) !== text(packageData.baseHash)) {
+        throw new Error('Published content and draft no longer match the saved preparation base')
+      }
+      const proof = { publishedBaseHash: text(packageData.baseHash), currentDraftHash: text(packageData.baseHash), verifiedAt: new Date().toISOString() }
+      if (mode === 'plan') {
+        return NextResponse.json({ eligible: true, operationKey, documentKey, packageHash, expectedUpdatedAt: String(row.updated_at), expectedResultHash: priorResultHash, proof }, { headers: { 'Cache-Control': 'private, no-store' } })
+      }
+      if (priorResultHash !== expectedResultHash || String(row.updated_at) !== expectedUpdatedAt) {
+        throw new Error('The uncertain operation changed after the retirement plan; request a fresh plan')
+      }
+      const receipt = {
+        ok: false, disposition: 'retired_obsolete', basis: 'exact_package', operationKey, documentKey, tenant: tenantId(), packageHash,
+        expectedUpdatedAt, expectedResultHash, proof, priorResult, reason, operatorRequestId,
+      }
+      const retired = await retireObsoleteOperation({ operationKey, documentKey, packageHash,
+        expectedUpdatedAt, expectedResultHash, priorResultJson, receipt })
+      if (!retired) throw new Error('The uncertain operation changed during retirement; re-read and reconcile it')
+      return NextResponse.json(receipt, { headers: { 'Cache-Control': 'private, no-store' } })
+    } catch (cause) {
+      return error(cause instanceof Error ? cause.message : 'Obsolete preparation could not be retired', 409)
+    }
+  }
   if (path === '/growth/validate') {
     const packageData = asObject(body.package)
     const packageHash = text(body.packageHash)
     if (!packageHash) return error('packageHash is required')
     try {
+      if (await retiredPreparation(packageData, packageHash)) throw new Error('This Growth preparation was retired and cannot be validated again')
       const verified = await verifyPackage(payload, principal, packageData, packageHash)
       const preview = await verifyExactPreview(request, payload, principal, verified.collection, verified.draft, verified.route)
       const validation = {
@@ -251,6 +431,11 @@ export async function growthPost(request: Request, path: string, principal: Grow
     const collection = text(packageData.collection)
     const documentId = text(packageData.documentId)
     if (!editable(collection) || !collectionEnabled(collection) || !documentId) return error('Growth package target is invalid')
+    try {
+      if (await retiredPreparation(packageData, packageHash)) return error('This Growth preparation was retired and cannot be replayed', 409)
+    } catch (cause) {
+      return error(cause instanceof Error ? cause.message : 'Growth preparation identity could not be verified', 409)
+    }
     // A rejected read/schema/base check has no external write to reconcile.
     // Do not create an uncertain operation (and lock the document) for it.
     try {
@@ -263,6 +448,7 @@ export async function growthPost(request: Request, path: string, principal: Grow
     const claimed = await claimOperation(operationKey, documentKey, packageHash)
     if (!claimed.row) return error('A different Growth operation is already writing this document', 409)
     const saved = operationResult(claimed.row)
+    if (saved?.disposition === 'retired_obsolete') return error('This Growth preparation was retired and cannot be replayed', 409)
     if (claimed.row.state === 'completed' && saved?.ok === true) return NextResponse.json(saved, { headers: { 'Cache-Control': 'private, no-store' } })
     if (!claimed.inserted) {
       // A timeout is not permission to repeat a write. Read and verify its exact
@@ -314,11 +500,17 @@ export async function growthPost(request: Request, path: string, principal: Grow
     const collection = text(packageData.collection)
     const documentId = text(packageData.documentId)
     if (!editable(collection) || !collectionEnabled(collection) || !documentId) return error('Stored Growth package target is invalid', 409)
+    try {
+      if (await retiredPreparation(packageData, packageHash)) return error('This Growth preparation was retired and cannot be published', 409)
+    } catch (cause) {
+      return error(cause instanceof Error ? cause.message : 'Growth preparation identity could not be verified', 409)
+    }
     const documentKey = `${collection}:${documentId}`
     const operationKey = `publish:${tenantId()}:${documentKey}:${packageHash}`
     const claimed = await claimOperation(operationKey, documentKey, packageHash)
     if (!claimed.row) return error('A different publication is already writing this document', 409)
     const saved = operationResult(claimed.row)
+    if (saved?.disposition === 'retired_obsolete') return error('This Growth preparation was retired and cannot be replayed', 409)
     if (claimed.row.state === 'completed' && saved?.ok === true) return NextResponse.json(saved, { headers: { 'Cache-Control': 'private, no-store' } })
     if (!claimed.inserted) {
       try {

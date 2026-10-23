@@ -43,6 +43,7 @@ test('uncertain Growth effects reconcile exact state without repeating writes', 
       baseHash:JSON.stringify({title:'Before'}),candidateHash:JSON.stringify({title:'After'}),route:'/'}
     const packageHash = JSON.stringify(packageData)
     const candidateRow = async () => ({state:'validated',package_json:JSON.stringify(packageData)})
+    const operationByKey = async () => undefined
     const operationResult = () => ({ok:false,error:'previous timeout'})
     const claimOperation = async () => { claims++; return {inserted:false,row:{state:'uncertain'}} }
     const completeOperation = async () => {throw new Error('Use reconciliation, not first-write completion')}

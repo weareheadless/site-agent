@@ -863,6 +863,34 @@ def register_workspace_routes(
     if control_prefix:
         control_prefix = "/" + control_prefix.strip("/")
 
+        @app.post(f"{control_prefix}/{{website_id}}/growth/initiatives/{{initiative_id}}/retire-revision")
+        async def control_plane_retire_growth_revision(website_id: str, initiative_id: int, request: Request):
+            tenant = require_control_tenant(request, website_id)
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            if not isinstance(body, dict):
+                raise HTTPException(status_code=400, detail="request body must be an object")
+            try:
+                return service.retire_growth_revision(initiative_id, body, tenant=tenant)
+            except BridgeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        @app.post(f"{control_prefix}/{{website_id}}/growth/initiatives/{{initiative_id}}/retire-preparation")
+        async def control_plane_retire_growth_preparation(website_id: str, initiative_id: int, request: Request):
+            tenant = require_control_tenant(request, website_id)
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            if not isinstance(body, dict):
+                raise HTTPException(status_code=400, detail="request body must be an object")
+            try:
+                return service.retire_growth_preparation(initiative_id, body, tenant=tenant)
+            except BridgeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+
         @app.post(f"{control_prefix}/{{website_id}}/register")
         async def control_plane_register(website_id: str, request: Request):
             require_control_plane(request)

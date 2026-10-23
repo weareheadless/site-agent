@@ -8,6 +8,7 @@ open so upgrading the package never erases what she learned.
 from __future__ import annotations
 
 import datetime
+import hashlib
 from functools import wraps
 import json
 import re
@@ -5519,12 +5520,129 @@ class Memory:
         return result
 
     @_locked
+    def retire_payload_growth_revision(
+        self, *, initiative_id: int, chat_job_id: int, expected_review_package_hash: str,
+        expected_validation_hash: str, expected_draft_meta_hash: str,
+        expected_proof_hash: str, expected_job_status: str, expected_job_error: str,
+        operator_request_id: str, validation: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Atomically clear one proven obsolete Payload revision hold.
+
+        This is deliberately specific to the operator retirement contract. It
+        serializes the terminal job, held draft, pending approval and initiative
+        transition in one SQLite transaction; it is not a general workflow API.
+        """
+        def digest(value: Any) -> str:
+            encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+            return "sha256:" + hashlib.sha256(encoded.encode()).hexdigest()
+
+        request_id = str(operator_request_id or "")
+        if (not request_id or len(request_id) > 200 or not isinstance(validation, dict)
+                or not isinstance(validation.get("retiredRevision"), dict)):
+            raise ContractError("Payload Growth revision retirement proof is invalid")
+        audit = validation["retiredRevision"]
+        if (audit.get("operatorRequestId") != request_id
+                or audit.get("chatJobId") != int(chat_job_id)
+                or audit.get("reviewPackageHash") != expected_review_package_hash
+                or audit.get("proofHash") != expected_proof_hash):
+            raise ContractError("Payload Growth revision retirement proof identity differs")
+
+        with self.conn:
+            # Lock out a concurrent approval/decline before reading its state.
+            self.conn.execute("BEGIN IMMEDIATE")
+            initiative_row = self.conn.execute(
+                "SELECT * FROM strategy_initiatives WHERE id = ?", (int(initiative_id),),
+            ).fetchone()
+            if initiative_row is None:
+                raise ContractError("Payload Growth initiative does not exist")
+            initiative = dict(initiative_row)
+            try:
+                current_validation = json.loads(initiative.get("validation_json") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                current_validation = {}
+            existing = current_validation.get("retiredRevision") if isinstance(current_validation, dict) else None
+            if (initiative.get("state") == "ready_for_review" and isinstance(existing, dict)
+                    and existing.get("operatorRequestId") == request_id
+                    and existing.get("chatJobId") == int(chat_job_id)
+                    and existing.get("reviewPackageHash") == expected_review_package_hash
+                    and existing.get("proofHash") == expected_proof_hash):
+                return {"status": "retired", "idempotent": True, "validation": current_validation}
+
+            if (initiative.get("state") != "validating"
+                    or initiative.get("kind") != "payload_content"
+                    or int(initiative.get("draft_id") or 0) <= 0
+                    or str(initiative.get("review_package_hash") or "") != expected_review_package_hash
+                    or digest(current_validation) != expected_validation_hash):
+                raise ContractError("Payload Growth initiative changed concurrently")
+            revision = current_validation.get("revision") if isinstance(current_validation, dict) else None
+            if (not isinstance(revision, dict) or revision.get("candidateType") != "payload_content"
+                    or int(revision.get("chatJobId") or 0) != int(chat_job_id)
+                    or str(revision.get("previousReviewPackageHash") or "") != expected_review_package_hash
+                    or not (revision.get("writeAttempted") or revision.get("payloadEffect"))):
+                raise ContractError("Payload Growth revision identity changed concurrently")
+
+            job_row = self.conn.execute("SELECT status, error, result FROM chat_jobs WHERE id = ?", (int(chat_job_id),)).fetchone()
+            if (job_row is None or job_row["status"] in {"queued", "running"}
+                    or str(job_row["status"] or "") != expected_job_status
+                    or str(job_row["error"] or "") != expected_job_error):
+                raise ContractError("Payload Growth revision job is no longer terminal")
+            try:
+                job_result = json.loads(job_row["result"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                job_result = {}
+            if isinstance(job_result, dict) and job_result.get("payload_effects"):
+                raise ContractError("Payload Growth revision now has a write receipt")
+
+            draft_row = self.conn.execute("SELECT id, status, meta FROM drafts WHERE id = ?", (int(initiative["draft_id"]),)).fetchone()
+            if draft_row is None or draft_row["status"] != "pending":
+                raise ContractError("The held Payload Growth draft changed concurrently")
+            try:
+                draft_meta = json.loads(draft_row["meta"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                draft_meta = {}
+            if (not isinstance(draft_meta, dict) or digest(draft_meta) != expected_draft_meta_hash
+                    or draft_meta.get("review_package_hash") != expected_review_package_hash
+                    or draft_meta.get("growth_revision_pending") is not True
+                    or int(draft_meta.get("growth_revision_initiative_id") or 0) != int(initiative_id)):
+                raise ContractError("The held Payload Growth draft metadata changed concurrently")
+            approval_row = self.conn.execute(
+                "SELECT ar.status, ar.artifact_id, ar.artifact_hash, a.content_hash FROM approval_requests ar "
+                "JOIN artifacts a ON a.id = ar.artifact_id WHERE ar.id = ?",
+                (int(initiative.get("approval_id") or 0),),
+            ).fetchone()
+            if (approval_row is None or approval_row["status"] != "pending"
+                    or str(approval_row["artifact_hash"] or "") != expected_review_package_hash
+                    or str(approval_row["content_hash"] or "") != expected_review_package_hash
+                    or int(initiative.get("artifact_id") or 0) != int(approval_row["artifact_id"])):
+                raise ContractError("The exact Payload Growth approval changed concurrently")
+
+            draft_meta.pop("growth_revision_pending", None)
+            draft_meta.pop("growth_revision_initiative_id", None)
+            draft_update = self.conn.execute(
+                "UPDATE drafts SET meta = ?, updated_ts = ? WHERE id = ? AND status = 'pending' AND meta = ?",
+                (json.dumps(draft_meta), _now(), int(draft_row["id"]), str(draft_row["meta"] or "{}")),
+            )
+            if draft_update.rowcount != 1:
+                raise ContractError("The held Payload Growth draft changed concurrently")
+            update = self.conn.execute(
+                "UPDATE strategy_initiatives SET state = 'ready_for_review', validation_json = ?, last_error = '', "
+                "updated_ts = ? WHERE id = ? AND state = 'validating' AND validation_json = ? "
+                "AND draft_id = ? AND review_package_hash = ?",
+                (json.dumps(validation), _now(), int(initiative_id), str(initiative_row["validation_json"] or "{}"),
+                 int(initiative["draft_id"]), expected_review_package_hash),
+            )
+            if update.rowcount != 1:
+                raise ContractError("Payload Growth initiative changed concurrently")
+        return {"status": "retired", "idempotent": False, "validation": validation}
+
+    @_locked
     def transition_strategy_initiative(
         self,
         initiative_id: int,
         state: str,
         *,
         expected_state: str | None = None,
+        expected_validation_hash: str | None = None,
         validation: dict[str, Any] | None = None,
         last_error: str | None = None,
     ) -> dict[str, Any] | None:
@@ -5553,7 +5671,7 @@ class Memory:
             "superseded": set(),
         }
         current_row = self.conn.execute(
-            "SELECT state FROM strategy_initiatives WHERE id = ?", (int(initiative_id),)
+            "SELECT state, validation_json FROM strategy_initiatives WHERE id = ?", (int(initiative_id),)
         ).fetchone()
         if current_row is None:
             raise ContractError("strategy initiative does not exist")
@@ -5561,6 +5679,14 @@ class Memory:
         target = str(state or "").strip()
         if expected_state is not None and current != expected_state:
             raise ContractError(f"strategy initiative is {current}, expected {expected_state}")
+        current_validation_json = str(current_row["validation_json"] or "{}")
+        if expected_validation_hash is not None:
+            digest = "sha256:" + hashlib.sha256(json.dumps(
+                json.loads(current_validation_json), sort_keys=True, separators=(",", ":"),
+                ensure_ascii=False, default=str,
+            ).encode()).hexdigest()
+            if digest != expected_validation_hash:
+                raise ContractError("strategy initiative validation changed concurrently")
         if target != current and target not in allowed.get(current, set()):
             raise ContractError(f"invalid strategy initiative transition {current} -> {target}")
         fields: dict[str, Any] = {"state": target, "updated_ts": _now()}
@@ -5568,10 +5694,14 @@ class Memory:
             fields["validation_json"] = json.dumps(validation)
         if last_error is not None:
             fields["last_error"] = str(last_error)[:2000]
+        where = "id = ? AND state = ?"
+        params = [*fields.values(), int(initiative_id), current]
+        if expected_validation_hash is not None:
+            where += " AND validation_json = ?"
+            params.append(current_validation_json)
         with self.conn:
             cur = self.conn.execute(
-                f"UPDATE strategy_initiatives SET {', '.join(f'{key} = ?' for key in fields)} WHERE id = ? AND state = ?",
-                [*fields.values(), int(initiative_id), current],
+                f"UPDATE strategy_initiatives SET {', '.join(f'{key} = ?' for key in fields)} WHERE {where}", params,
             )
             if cur.rowcount != 1:
                 raise ContractError("strategy initiative changed concurrently")

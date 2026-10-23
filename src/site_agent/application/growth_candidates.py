@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import datetime
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -129,9 +130,12 @@ def prepare_payload_candidate(context: Mapping[str, Any], initiative: Mapping[st
         "why": opportunity["why"], "scope": opportunity["scope"], "metric": opportunity.get("metric") or "gsc.clicks"}
     package_hash = content_hash(package)
     candidate_checkpoint(context, initiative, package_hash, package, stage="preparing")
-    if not resumed:
-        payload.apply_growth_candidate(package, package_hash)
-        actual = payload.read(collection, identifier=document_id, identifier_kind="id", draft=True)
+    # Re-enter the canonical destination operation even when the exact draft is
+    # already present. The destination reconciles a previously claimed
+    # operation read-only when its exact draft/base/preview proof matches; a
+    # caller-side equality check cannot settle an uncertain operation receipt.
+    payload.apply_growth_candidate(package, package_hash)
+    actual = payload.read(collection, identifier=document_id, identifier_kind="id", draft=True)
     if document_content(actual, fields) != expected:
         raise ValueError("Payload did not save the exact prepared candidate")
     memory.transition_strategy_initiative(int(initiative["id"]), "validating")
@@ -378,6 +382,185 @@ def mark_payload_revision_uncertain(memory: Any, initiative: Mapping[str, Any] |
     validation.update({"revision": revision, "status": "uncertain"})
     memory.update_strategy_initiative(initiative_id, validation=validation, last_error=revision["error"])
     return True
+
+
+def retire_uncertain_payload_revision(
+    context: Mapping[str, Any], initiative_id: int, chat_job_id: int, *, mode: str,
+    expected_review_package_hash: str, expected_proof_hash: str | None = None,
+    reason: str = "", operator_request_id: str = "",
+) -> dict[str, Any]:
+    """Dry-run or explicitly retire a failed revision after exact destination proof.
+
+    This operator recovery path never treats the worker's attempted-write flag
+    as a no-effect result. It proves that the published base and current draft
+    are still the prior exact owner proposal, asks the canonical destination to
+    reconcile that operation, and records the retained attempt/job error before
+    removing the active revision authority.
+    """
+    memory = context["memory"]
+    payload = context.get("payload_gateway")
+    initiative = next((row for row in memory.list_strategy_initiatives(limit=None)
+                       if int(row.get("id") or 0) == int(initiative_id)), None)
+    if mode not in {"plan", "apply"}:
+        raise ValueError("Revision retirement requires plan or apply mode")
+    if initiative is None or initiative.get("kind") != "payload_content":
+        raise ValueError("The Payload revision is not an active held Growth proposal")
+    validation = initiative.get("validation") if isinstance(initiative.get("validation"), Mapping) else {}
+    revision = validation.get("revision") if isinstance(validation.get("revision"), Mapping) else {}
+    existing_retirement = validation.get("retiredRevision") if isinstance(validation.get("retiredRevision"), Mapping) else {}
+    if (initiative.get("state") == "ready_for_review"
+            and existing_retirement.get("status") == "retired_with_exact_prior_candidate_proof"
+            and int(existing_retirement.get("chatJobId") or 0) == int(chat_job_id)
+            and existing_retirement.get("reviewPackageHash") == expected_review_package_hash
+            and (mode != "apply" or (
+                existing_retirement.get("operatorRequestId") == operator_request_id
+                and existing_retirement.get("proofHash") == expected_proof_hash
+                and existing_retirement.get("reason") == reason
+            ))):
+        return {"status": "retired", "idempotent": True, "initiativeId": int(initiative_id),
+                "chatJobId": int(chat_job_id), "proofHash": existing_retirement.get("proofHash"),
+                "reviewPackageHash": expected_review_package_hash}
+    if initiative.get("state") != "validating":
+        raise ValueError("The Payload revision is not an active held Growth proposal")
+    if (revision.get("candidateType") != "payload_content"
+            or int(revision.get("chatJobId") or 0) != int(chat_job_id)
+            or not (revision.get("writeAttempted") or revision.get("payloadEffect"))):
+        raise ValueError("The selected uncertain Payload revision identity does not match")
+    job = memory.get_chat_job(int(chat_job_id))
+    if job is None or job.get("status") in {"queued", "running"}:
+        raise ValueError("The selected Payload revision job is not terminal")
+    job_result = job.get("result") if isinstance(job.get("result"), Mapping) else {}
+    if job_result.get("payload_effects"):
+        raise ValueError("A Payload write receipt exists; use normal revision reconciliation")
+    if payload is None:
+        raise ValueError("The canonical Payload gateway is unavailable")
+    previous_id = int(revision.get("previousDraftId") or 0)
+    previous_hash = str(revision.get("previousReviewPackageHash") or "")
+    if (not expected_review_package_hash
+            or expected_review_package_hash != previous_hash):
+        raise ValueError("The selected prior review package hash does not match the held proposal")
+    previous = memory.get_draft(previous_id)
+    previous_meta = dict((previous or {}).get("meta") or {})
+    package = previous_meta.get("growth_package") if isinstance(previous_meta.get("growth_package"), Mapping) else {}
+    package_hash = str(package.get("candidateHash") or "")
+    collection, document_id = str(package.get("collection") or ""), str(package.get("documentId") or "")
+    fields = [str(field) for field in package.get("fields", []) if isinstance(field, str)]
+    approval = memory.get_approval_request(int(initiative.get("approval_id") or 0))
+    artifact = memory.get_artifact(int(initiative.get("artifact_id") or 0)) if initiative.get("artifact_id") else None
+    if (
+        previous is None or previous.get("status") != "pending"
+        or previous_meta.get("growth_revision_pending") is not True
+        or int(previous_meta.get("growth_revision_initiative_id") or 0) != int(initiative_id)
+        or previous_meta.get("review_package_hash") != previous_hash
+        or content_hash(package) != previous_hash
+        or not package_hash or content_hash(package.get("after")) != package_hash
+        or content_hash(package.get("before")) != str(package.get("baseHash") or "")
+        or not collection or not document_id or not fields
+        or int(initiative.get("draft_id") or 0) != previous_id
+        or str(initiative.get("review_package_hash") or "") != previous_hash
+        or approval is None or approval.status.value != "pending"
+        or str(getattr(approval, "artifact_hash", "")) != previous_hash
+        or artifact is None or str(getattr(artifact, "content_hash", "")) != previous_hash
+    ):
+        raise ValueError("The held prior Payload proposal is no longer the exact pending owner decision")
+    contract = payload.require_authoring_contract()
+    allowed = set(payload.authoring_fields("collection", collection, authoring_contract=contract))
+    if set(fields) - allowed:
+        raise ValueError("The exact Payload proposal no longer matches the shared authoring contract")
+
+    def read_exact() -> tuple[dict[str, Any], dict[str, Any]]:
+        live_doc = payload.read(collection, identifier=document_id, identifier_kind="id", draft=False)
+        draft_doc = payload.read(collection, identifier=document_id, identifier_kind="id", draft=True)
+        if (
+            str(draft_doc.get("id") or "") != document_id
+            or content_hash(document_content(live_doc, fields)) != str(package.get("baseHash") or "")
+            or content_hash(document_content(draft_doc, fields)) != package_hash
+        ):
+            raise ValueError("The published base or current Payload draft differs from the exact prior proposal")
+        return live_doc, draft_doc
+
+    def proof_hash(live_doc: Mapping[str, Any], draft_doc: Mapping[str, Any]) -> str:
+        live_revision = str(live_doc.get("_helloadaRevision") or "")
+        draft_revision = str(draft_doc.get("_helloadaRevision") or "")
+        if (not re.fullmatch(r"sha256:[0-9a-f]{64}", live_revision)
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", draft_revision)):
+            raise ValueError("Payload does not provide exact published and draft revision hashes")
+        return content_hash({
+            "tenant": str(context.get("tenant_id") or context.get("config", {}).get("instance_name") or ""),
+            "initiativeId": int(initiative_id), "chatJobId": int(chat_job_id),
+            "reviewPackageHash": previous_hash, "candidateHash": package_hash,
+            "baseHash": str(package.get("baseHash") or ""),
+            "liveRevision": live_revision,
+            "draftRevision": draft_revision,
+            "jobStatus": str(job.get("status") or ""), "jobError": str(job.get("error") or ""),
+            "approvalId": int(approval.approval_id), "artifactId": int(approval.artifact_id or 0),
+        })
+
+    live_doc, draft_doc = read_exact()
+    initial_proof_hash = proof_hash(live_doc, draft_doc)
+    if mode == "plan":
+        return {
+            "status": "ready_to_retire", "initiativeId": int(initiative_id), "chatJobId": int(chat_job_id),
+            "reviewPackageHash": previous_hash, "candidateHash": package_hash,
+            "publishedBaseHash": str(package.get("baseHash") or ""), "jobError": str(job.get("error") or ""),
+            "proofHash": initial_proof_hash,
+        }
+    if (not expected_proof_hash or expected_proof_hash != initial_proof_hash
+            or not reason or len(reason) > 500 or not operator_request_id or len(operator_request_id) > 200):
+        raise ValueError("Apply requires the unchanged plan proof, a bounded reason and operator request ID")
+
+    operation = payload.apply_growth_candidate(package, previous_hash)
+    if (not isinstance(operation, Mapping) or operation.get("ok") is not True
+            or operation.get("candidateHash") != package_hash):
+        raise ValueError("The exact prior Payload preparation operation could not be reconciled")
+    proof = payload.validate_growth_candidate(package, previous_hash)
+    if proof.get("status") != "passed" or proof.get("packageHash") != previous_hash:
+        raise ValueError("The exact prior Payload proposal lacks a current destination preview proof")
+    live_after, draft_after = read_exact()
+    if proof_hash(live_after, draft_after) != expected_proof_hash:
+        raise ValueError("The exact prior Payload proof changed during operation reconciliation")
+
+    # Re-read application state immediately before clearing the failed job's
+    # execution authority. The caller must hold the tenant's ordinary Growth
+    # review serialization lock while applying this operation.
+    current = next((row for row in memory.list_strategy_initiatives(limit=None)
+                    if int(row.get("id") or 0) == int(initiative_id)), None)
+    current_validation = current.get("validation") if isinstance((current or {}).get("validation"), Mapping) else {}
+    current_revision = current_validation.get("revision") if isinstance(current_validation.get("revision"), Mapping) else {}
+    if (current is None or current.get("state") != "validating"
+            or int(current_revision.get("chatJobId") or 0) != int(chat_job_id)
+            or current_revision.get("previousReviewPackageHash") != previous_hash):
+        raise ValueError("The held Payload revision changed during retirement proof")
+    retired = {
+        "status": "retired_with_exact_prior_candidate_proof",
+        "reason": reason,
+        "operatorRequestId": operator_request_id,
+        "chatJobId": int(chat_job_id), "jobError": str(job.get("error") or ""),
+        "writeAttempted": bool(revision.get("writeAttempted")),
+        "payloadEffect": bool(revision.get("payloadEffect")),
+        "reviewPackageHash": previous_hash, "candidateHash": package_hash,
+        "baseHash": str(package.get("baseHash") or ""), "proofHash": expected_proof_hash,
+        "previewProof": dict(proof),
+    }
+    prior_validation = dict(revision.get("previousValidation") or {})
+    prior_validation["retiredRevision"] = retired
+    prior_validation["revisionFailure"] = "The obsolete revision request was retired after exact prior-candidate verification."
+    prior_validation.pop("revision", None)
+    try:
+        result = memory.retire_payload_growth_revision(
+            initiative_id=int(initiative_id), chat_job_id=int(chat_job_id),
+            expected_review_package_hash=previous_hash,
+            expected_validation_hash=content_hash(current_validation),
+            expected_draft_meta_hash=content_hash(previous_meta), expected_proof_hash=expected_proof_hash,
+            expected_job_status=str(job.get("status") or ""), expected_job_error=str(job.get("error") or ""),
+            operator_request_id=operator_request_id, validation=prior_validation,
+        )
+    except Exception as exc:  # noqa: BLE001 — atomically reject concurrent owner/job state changes
+        raise ValueError(str(exc)[:500]) from exc
+    wake_growth_pending(memory)
+    return {"status": "retired", "initiativeId": int(initiative_id), "chatJobId": int(chat_job_id),
+            "reviewPackageHash": previous_hash, "candidateHash": package_hash,
+            "proofHash": expected_proof_hash, "idempotent": bool(result.get("idempotent"))}
 
 
 def has_recoverable_payload_revision(memory: Any) -> bool:

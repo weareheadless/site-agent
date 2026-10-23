@@ -34,6 +34,7 @@ class Payload:
         self.live = {"id": "1", "sourceId": "page:home", "slug": "home", "title": "Business", "summary": "Local service", "metaDescription": "", "updatedAt": "revision-1"}
         self.draft = dict(self.live)
         self.writes = 0
+        self.apply_calls = 0
         self.publishes = 0
         self.growth_contract_checks = 0
         self.contract = SimpleNamespace(collections=("pages",), collection_fields={"pages": frozenset(("title", "summary", "metaDescription"))}, globals=())
@@ -91,7 +92,9 @@ class Payload:
 
     def apply_growth_candidate(self, package, package_hash):
         assert package_hash
-        self.update(package["collection"], package["documentId"], package["changes"])
+        self.apply_calls += 1
+        if any(self.draft.get(key) != value for key, value in package["after"].items()):
+            self.update(package["collection"], package["documentId"], package["changes"])
         return {"ok": True, "candidateHash": package["candidateHash"]}
 
     def publish_growth_candidate(self, package_hash):
@@ -920,10 +923,45 @@ def test_long_payload_evidence_is_projected_only_in_bounded_review_summaries_and
     assert resumed["status"] == "complete"
     assert resumed["detail"]["recoveryEvents"][-1]["code"] == "growth_worker_restart_recovery"
     assert payload.writes == 1
+    assert payload.apply_calls == 1
     assert payload.publishes == 0
     assert len(memory.list_owner_actions(limit=None)) == 1
     assert len([a for a in memory.list_artifacts(limit=500) if a.source_action_id == action.id]) == 1
     assert len([d for d in memory.list_drafts(limit=None) if d["kind"] == "payload_content"]) == 1
+    memory.close()
+
+
+def test_resumed_payload_preparation_reconciles_before_creating_review(tmp_path, monkeypatch):
+    from site_agent.application.growth_candidates import content_hash, prepare_payload_candidate
+    from site_agent.application import growth_candidates
+
+    memory = Memory(tmp_path / "resumed-payload-preparation.db")
+    payload = Payload()
+    changes = {"metaDescription": "A clearer description for local service customers."}
+    base = {key: payload.live[key] for key in payload.contract.collection_fields["pages"]}
+    payload.draft.update(changes)
+    cycle = memory.create_strategy_cycle("resume", "2026-10", "resume-hash", {})
+    initiative_id = memory.create_strategy_initiative(
+        cycle["id"], kind="payload_content", title="Improve search description", summary="Review the description.",
+        state="preparing", validation={"preparation": {
+            "changes": changes, "baseHash": content_hash(base), "collection": "pages", "documentId": "1",
+        }},
+    )
+    initiative = memory.update_strategy_initiative(initiative_id)
+    opportunity = {"collection": "pages", "documentId": "1", "title": "Improve description",
+                   "why": "No description exists.", "scope": "Improve the search result."}
+    inventory = [{"collection": "pages", "document": {"id": "1"}, "route": "/"}]
+    evidence = {"policy": {"policy_version": "1"}, "evidenceHash": "evidence-hash"}
+    monkeypatch.setattr(growth_candidates, "journal", lambda _context: SimpleNamespace(issue=lambda _row: None))
+
+    result = prepare_payload_candidate(
+        {"tenant_id": "test-business", "config": config(), "memory": memory, "payload_gateway": payload},
+        initiative, opportunity, inventory, evidence,
+    )
+    assert result["state"] == "ready_for_review"
+    assert payload.apply_calls == 1
+    assert payload.writes == 0
+    assert len([row for row in memory.list_drafts(limit=None) if row.get("kind") == "payload_content"]) == 1
     memory.close()
 
 def test_activation_wakes_only_exact_unlinked_payload_draft_reconciliation(tmp_path):

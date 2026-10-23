@@ -108,6 +108,27 @@ export const reconcileOperation = async (operationKey: string, result: JsonObjec
     .bind(stableJson(result), now(), operationKey).run()
 }
 
+/** Retire an explicitly abandoned uncertain preparation only if its exact row is unchanged. */
+export const retireObsoleteOperation = async (input: {
+  operationKey: string
+  documentKey: string
+  packageHash: string
+  expectedUpdatedAt: string
+  expectedResultHash: string
+  priorResultJson: string
+  receipt: JsonObject
+}) => {
+  const db = await database()
+  const result = await db.prepare(`UPDATE helloada_growth_operations
+    SET state = 'completed', result_json = ?1, updated_at = ?2
+    WHERE operation_key = ?3 AND document_key = ?4 AND tenant_id = ?5
+      AND package_hash = ?6 AND state = 'uncertain' AND updated_at = ?7
+      AND result_json = ?8`)
+    .bind(stableJson(input.receipt), now(), input.operationKey, input.documentKey,
+      tenantId(), input.packageHash, input.expectedUpdatedAt, input.priorResultJson).run()
+  return Number(result.meta?.changes || 0) === 1
+}
+
 /** Persist the exact desired document hash before invoking a Payload write. */
 export const prepareOperation = async (operationKey: string, intent: JsonObject) => {
   const db = await database()
@@ -151,4 +172,5 @@ export const contractCapabilities = [
   'exactApproval',
   'allPublisherGuard',
   'effectReceipts',
+  'obsoleteOperationRetirement',
 ] as const

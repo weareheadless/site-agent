@@ -42,6 +42,161 @@ def test_noop_growth_preparation_is_not_a_technical_failure(monkeypatch):
     assert error.value.code == "no_actionable_change"
 
 
+def test_obsolete_growth_retirement_uses_typed_service_contract_and_requires_capability(monkeypatch):
+    from site_agent.hands.payload_gateway import PayloadContract, PayloadGatewayClient, PayloadGatewayError
+
+    client = PayloadGatewayClient(
+        "https://payload.example", "token",
+        PayloadContract(frozenset(), "helloada-content-v3", "0.5.1", 5, "a" * 64),
+    )
+    package = {"collection": "posts", "documentId": "4", "candidateHash": "sha256:" + "b" * 64}
+    package_hash = "sha256:" + "c" * 64
+    operation_key = f"draft:oceanic:posts:4:{package_hash}"
+    document_key = "posts:4"
+    calls = []
+
+    def request(_self, method, path, *, payload=None, **_kwargs):
+        calls.append((method, path, payload))
+        if path.endswith("growth/contract"):
+            return {"version": 1, "capabilities": ["conditionalDraft", "immutablePreview", "exactApproval",
+                "allPublisherGuard", "effectReceipts", "obsoleteOperationRetirement"]}
+        return {"eligible": True, "operationKey": operation_key, "documentKey": document_key,
+                "packageHash": package_hash, "expectedUpdatedAt": "u1", "expectedResultHash": package["candidateHash"],
+                "proof": {"publishedBaseHash": "base", "currentDraftHash": "base"}}
+
+    monkeypatch.setattr(PayloadGatewayClient, "_request", request)
+    plan = client.retire_obsolete_growth_operation(
+        tenant_id="oceanic", mode="plan", package=package, package_hash=package_hash,
+        operation_key=operation_key, document_key=document_key,
+    )
+    assert plan["eligible"] is True
+    assert calls[-1][1].endswith("growth/retire-obsolete")
+    assert calls[-1][2]["mode"] == "plan"
+
+    def apply_request(_self, method, path, *, payload=None, **_kwargs):
+        calls.append((method, path, payload))
+        if path.endswith("growth/contract"):
+            return {"version": 1, "capabilities": ["conditionalDraft", "immutablePreview", "exactApproval",
+                "allPublisherGuard", "effectReceipts", "obsoleteOperationRetirement"]}
+        return {"ok": False, "disposition": "retired_obsolete", "operationKey": operation_key,
+                "documentKey": document_key, "packageHash": package_hash,
+                "operatorRequestId": "cleanup-post-6", "reason": "operator cleanup",
+                "expectedUpdatedAt": "version-7", "expectedResultHash": "sha256:" + "d" * 64}
+
+    monkeypatch.setattr(PayloadGatewayClient, "_request", apply_request)
+    retired = client.retire_obsolete_growth_operation(
+        tenant_id="oceanic", mode="apply", package=package, package_hash=package_hash,
+        operation_key=operation_key, document_key=document_key,
+        expected_updated_at="version-7", expected_result_hash="sha256:" + "d" * 64,
+        reason="operator cleanup", operator_request_id="cleanup-post-6",
+    )
+    assert retired["operatorRequestId"] == "cleanup-post-6"
+
+    def wrong_attribution(_self, method, path, *, payload=None, **_kwargs):
+        if path.endswith("growth/contract"):
+            return {"version": 1, "capabilities": ["conditionalDraft", "immutablePreview", "exactApproval",
+                "allPublisherGuard", "effectReceipts", "obsoleteOperationRetirement"]}
+        return {"ok": False, "disposition": "retired_obsolete", "operationKey": operation_key,
+                "documentKey": document_key, "packageHash": package_hash,
+                "operatorRequestId": "different-request", "reason": "operator cleanup"}
+
+    monkeypatch.setattr(PayloadGatewayClient, "_request", wrong_attribution)
+    with pytest.raises(PayloadGatewayError, match="different operator attribution"):
+        client.retire_obsolete_growth_operation(
+            tenant_id="oceanic", mode="apply", package=package, package_hash=package_hash,
+            operation_key=operation_key, document_key=document_key,
+            expected_updated_at="version-7", expected_result_hash="sha256:" + "d" * 64,
+            reason="operator cleanup", operator_request_id="cleanup-post-6",
+        )
+
+    def missing_capability(_self, method, path, *, payload=None, **_kwargs):
+        return {"version": 1, "capabilities": ["conditionalDraft", "immutablePreview", "exactApproval",
+            "allPublisherGuard", "effectReceipts"]}
+
+    monkeypatch.setattr(PayloadGatewayClient, "_request", missing_capability)
+    with pytest.raises(PayloadGatewayError, match="does not support"):
+        client.retire_obsolete_growth_operation(
+            tenant_id="oceanic", mode="plan", package=package, package_hash=package_hash,
+            operation_key=operation_key, document_key=document_key,
+        )
+
+
+def test_current_snapshot_retirement_requires_plan_cas_and_preserves_draft(monkeypatch):
+    from site_agent.hands.payload_gateway import PayloadContract, PayloadGatewayClient, PayloadGatewayError
+
+    client = PayloadGatewayClient(
+        "https://payload.example", "token",
+        PayloadContract(frozenset(), "helloada-content-v3", "0.5.1", 5, "a" * 64),
+    )
+    package_hash = "sha256:" + "c" * 64
+    operation_key = f"draft:atelier:pages:24:{package_hash}"
+    calls = []
+
+    def request(_self, method, path, *, payload=None, **_kwargs):
+        calls.append((method, path, payload))
+        if path.endswith("growth/contract"):
+            return {"version": 1, "capabilities": ["conditionalDraft", "immutablePreview", "exactApproval",
+                "allPublisherGuard", "effectReceipts", "obsoleteOperationRetirement"]}
+        return {"eligible": True, "basis": "current_site_snapshot", "operationKey": operation_key,
+                "packageHash": package_hash, "collection": "pages", "documentId": "24",
+                "expectedUpdatedAt": "version-7", "expectedResultHash": "sha256:" + "d" * 64,
+                "snapshotProofHash": "sha256:" + "e" * 64,
+                "snapshot": {"currentPublished": {"canonicalHash": "live-hash"},
+                             "currentDraft": {"canonicalHash": "draft-hash"}}}
+
+    monkeypatch.setattr(PayloadGatewayClient, "_request", request)
+    plan = client.retire_obsolete_growth_operation_current_snapshot(
+        tenant_id="atelier", mode="plan", operation_key=operation_key, package_hash=package_hash,
+        collection="pages", document_id="24",
+    )
+    assert plan["eligible"] is True
+    assert plan["snapshot"]["currentDraft"]["canonicalHash"] == "draft-hash"
+    assert calls[-1][2]["preserveExistingDraft"] is True
+
+    def apply_request(_self, method, path, *, payload=None, **_kwargs):
+        calls.append((method, path, payload))
+        if path.endswith("growth/contract"):
+            return {"version": 1, "capabilities": ["conditionalDraft", "immutablePreview", "exactApproval",
+                "allPublisherGuard", "effectReceipts", "obsoleteOperationRetirement"]}
+        return {"ok": False, "disposition": "retired_obsolete", "basis": "current_site_snapshot",
+                "effectStatus": "unknown", "withdrawal": "explicit", "operationKey": operation_key,
+                "packageHash": package_hash, "collection": "pages", "documentId": "24",
+                "snapshotProofHash": plan["snapshotProofHash"], "preserveExistingDraft": True,
+                "expectedUpdatedAt": plan["expectedUpdatedAt"], "expectedResultHash": plan["expectedResultHash"],
+                "reason": "operator requested cleanup of obsolete preparation",
+                "operatorRequestId": "atelier-init-2",
+                "snapshot": plan["snapshot"], "priorResult": {"ok": False}}
+
+    monkeypatch.setattr(PayloadGatewayClient, "_request", apply_request)
+    retired = client.retire_obsolete_growth_operation_current_snapshot(
+        tenant_id="atelier", mode="apply", operation_key=operation_key, package_hash=package_hash,
+        collection="pages", document_id="24", expected_snapshot_proof_hash=plan["snapshotProofHash"],
+        expected_updated_at=plan["expectedUpdatedAt"], expected_result_hash=plan["expectedResultHash"],
+        reason="operator requested cleanup of obsolete preparation", operator_request_id="atelier-init-2",
+    )
+    assert retired["effectStatus"] == "unknown"
+    assert calls[-1][2]["expectedUpdatedAt"] == "version-7"
+    def wrong_attribution(_self, method, path, *, payload=None, **_kwargs):
+        if path.endswith("growth/contract"):
+            return {"version": 1, "capabilities": ["conditionalDraft", "immutablePreview", "exactApproval",
+                "allPublisherGuard", "effectReceipts", "obsoleteOperationRetirement"]}
+        return {**retired, "operatorRequestId": "different-request"}
+
+    monkeypatch.setattr(PayloadGatewayClient, "_request", wrong_attribution)
+    with pytest.raises(PayloadGatewayError, match="exact current-snapshot retirement receipt"):
+        client.retire_obsolete_growth_operation_current_snapshot(
+            tenant_id="atelier", mode="apply", operation_key=operation_key, package_hash=package_hash,
+            collection="pages", document_id="24", expected_snapshot_proof_hash=plan["snapshotProofHash"],
+            expected_updated_at=plan["expectedUpdatedAt"], expected_result_hash=plan["expectedResultHash"],
+            reason="operator requested cleanup of obsolete preparation", operator_request_id="atelier-init-2",
+        )
+    with pytest.raises(PayloadGatewayError, match="requires the exact plan proof"):
+        client.retire_obsolete_growth_operation_current_snapshot(
+            tenant_id="atelier", mode="apply", operation_key=operation_key, package_hash=package_hash,
+            collection="pages", document_id="24", reason="cleanup", operator_request_id="id",
+        )
+
+
 def test_duplicate_owner_information_is_deferred_to_the_existing_owner_question(tmp_path):
     from site_agent.application.growth_workflow import _defer_duplicate_owner_information
 
