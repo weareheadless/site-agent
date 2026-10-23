@@ -724,7 +724,9 @@ def _evidence_manifest(
         ],
     }
     if material is not None:
-        manifest["material"] = dict(material)
+        canonical_material = json.dumps(dict(material), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        manifest["materialHash"] = hashlib.sha256(canonical_material.encode("utf-8")).hexdigest()
+        manifest["materialRef"] = f"growth-run:{run['run_id']}:material"
     encoded = json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return manifest, hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 

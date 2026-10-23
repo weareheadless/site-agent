@@ -1,6 +1,8 @@
 """Scheduler-level capacity is waiting work, not a failed preparation effect."""
 
 from contextlib import closing
+import hashlib
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -20,7 +22,7 @@ def journal_provider(monkeypatch):
     return recorded
 
 
-def saved_run(memory, opportunities, *, key="scheduled-assessment"):
+def saved_run(memory, opportunities, *, key="scheduled-assessment", material=None):
     config = {"growth": {"timezone": "UTC", "max_active_candidates": 1},
               "site": {"website_present": True, "public_url": "https://example.test"}}
     goal = workflow.ensure_default_goal(memory)
@@ -28,7 +30,9 @@ def saved_run(memory, opportunities, *, key="scheduled-assessment"):
     run = memory.create_growth_run(run_id=key, run_key=key, trigger="weekly",
         goal_revision=goal["revision"], timezone="UTC", phase="preparing", status="pending",
         policy=policy.to_dict(), origin_revision=policy.origin_revision, phase_version=2)
-    material = {"inventory": [], "sources": [{"id": "inventory", "sourceRef": "inventory", "state": "ready"}]}
+    material = material if material is not None else {
+        "inventory": [], "sources": [{"id": "inventory", "sourceRef": "inventory", "state": "ready"}]
+    }
     artifact_id, _, _ = workflow._persist_evidence_artifact(memory, run=run, goal=goal,
         policy=policy, sources=material["sources"], material=material)
     memory.update_growth_run(run["run_id"], detail={"evidenceArtifactId": artifact_id,
@@ -232,6 +236,38 @@ def test_evidence_artifact_reuse_rejects_different_material(tmp_path):
                 sources=detail["material"]["sources"],
                 material=altered,
             )
+
+
+def test_large_evidence_material_is_referenced_by_hash_and_reuses_exact_artifact(tmp_path):
+    material = {
+        "inventory": [{"sourceRef": "page:large", "description": "x" * 110_000}],
+        "sources": [{"id": "inventory", "sourceRef": "inventory", "state": "ready"}],
+    }
+    with closing(Memory(tmp_path / "memory.db")) as memory:
+        context, run = saved_run(memory, [], material=material)
+        detail = memory.get_growth_run(run["run_id"])["detail"]
+        artifact = memory.get_artifact(detail["evidenceArtifactId"])
+        manifest = artifact.preview_data["manifest"]
+        canonical_material = json.dumps(material, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+        assert len(json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")) < 100_000
+        assert "material" not in manifest
+        assert manifest["materialHash"] == hashlib.sha256(canonical_material.encode("utf-8")).hexdigest()
+        assert manifest["materialRef"] == f"growth-run:{run['run_id']}:material"
+        assert manifest["sources"] == material["sources"]
+        assert detail["material"] == material
+
+        reused_id, reused_hash, reused_manifest = workflow._persist_evidence_artifact(
+            memory,
+            run=run,
+            goal=workflow.ensure_default_goal(memory),
+            policy=GrowthPolicy.from_config(context["config"]),
+            sources=material["sources"],
+            material=material,
+        )
+        assert reused_id == artifact.artifact_id
+        assert reused_hash == artifact.content_hash
+        assert reused_manifest == manifest
 
 
 def test_queued_source_work_consumes_capacity_before_another_payload_candidate(tmp_path, monkeypatch):

@@ -236,7 +236,7 @@ def test_growth_run_lease_and_budget_reservation_are_idempotent(tmp_path):
         operation="keyword_discovery",
     )
     repeat = memory.reserve_growth_budget(
-        reservation_id="growth-budget-ignored",
+        reservation_id="growth-budget-1",
         period="2026-10",
         idempotency_key="research:2026-10:one",
         amount_micros=250_000,
@@ -244,6 +244,15 @@ def test_growth_run_lease_and_budget_reservation_are_idempotent(tmp_path):
         operation="keyword_discovery",
     )
     assert reservation["reservation_id"] == repeat["reservation_id"] == "growth-budget-1"
+    with pytest.raises(ContractError, match="idempotency key was reused for a different reservation"):
+        memory.reserve_growth_budget(
+            reservation_id="growth-budget-ignored",
+            period="2026-10",
+            idempotency_key="research:2026-10:one",
+            amount_micros=250_000,
+            cap_micros=500_000,
+            operation="keyword_discovery",
+        )
     memory.settle_growth_budget("growth-budget-1", status="uncertain", provider_task_id="task-1")
     memory.close()
 
