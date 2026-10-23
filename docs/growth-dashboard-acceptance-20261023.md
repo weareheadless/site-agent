@@ -78,13 +78,31 @@ customer rollout and authenticated acceptance. An unfinished row is not a pass.
   `site_agent.credentials` release-asset verifier agree.
 - Focused release/API/queue/template/dispatcher/credential tests passed: 162.
   The shared admin package suite passed: 54. The focused template
-  `payload-first-contract.test.mjs` passed. The full backend suite passed: 1,654
-  tests (three deprecation warnings). Compile checks and wheel build passed.
+  `payload-first-contract.test.mjs` passed. At the earlier checkpoint, before
+  the held-merge review fixes below, the full backend suite passed 1,654 tests
+  (three deprecation warnings); compile checks and wheel build passed. Those
+  earlier results do not include the later fixes.
   A clean canonical starter install, typecheck and Next.js build passed using
   pinned Node 22.23.3/npm 11.13.0 and the authenticated immutable package bytes.
+- Independent held-merge review found that an exact Growth revision request
+  could race approval or decline while it was validating and placing the old
+  candidate on hold. The narrow fix now serializes revision enqueue, approval
+  and decline through the existing review lock; it adds no second approval
+  state or lock.
+- The review also found that a revision job failure after enqueue needed to
+  distinguish a safe pre-dispatch refusal from a possibly attempted Payload
+  write. `run_job` now invokes the shared restoration helper: safe pre-dispatch
+  refusal restores the original review candidate, while an attempted or
+  uncertain write remains held and uncertain for reconciliation. It is not
+  reported as restored or retried automatically.
+- Concurrency and job-failure regression tests reproduce the missing-lock and
+  pre-dispatch recovery failures. The corrected workspace suite passed 40 tests;
+  Growth/recovery/orchestration checks passed 60 tests. The final full backend
+  suite passed 1,658 tests (three deprecation warnings); compile and wheel build
+  passed for the corrected source.
 - The scaffold now pins v0.10.28, but this publication is not a customer
   deployment. API activation, canary/fanout receipts and fresh authenticated
-  review/browser evidence remain outstanding.
+  review/browser evidence remain outstanding. No API-live claim is made.
 
 - Official-main API release receipt for the implemented evidence/revision and
   allowance corrections.
@@ -97,3 +115,5 @@ customer rollout and authenticated acceptance. An unfinished row is not a pass.
 
 No customer recommendation is approved by this engineering record. No paid
 research authorization or browser acceptance is implied by passing source tests.
+
+The corrected API source queued by this activation is `4c0dd35fc387a44a7ed829024900cdd5dad3955e`; its regular merge must preserve that exact source commit on official `main`. It retains the verified admin v0.10.28 pins. This is a queue/source identity, not proof of activation.
