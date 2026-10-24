@@ -26,6 +26,30 @@ export type GrowthAreaState = "awaiting_activation" | "needs_decision" | "blocke
   | "waiting_for_capacity" | "deferred" | "stale" | "unavailable" | "assessed" | "not_assessed";
 export type GrowthEvidenceState = "unavailable" | "stale" | "recorded" | "not_assessed";
 
+export type GrowthAreaFinding = {
+  id: string;
+  runId: string;
+  opportunityIndex: number;
+  assessedAt: string | null;
+  kind: string;
+  title: string;
+  problem: string | null;
+  hypothesis: string | null;
+  nextStep: string | null;
+  primaryArea: GrowthAreaKey;
+  secondaryAreas: GrowthAreaKey[];
+  evidenceRefs: string[];
+  requiredSources: string[];
+  evidenceState: "unavailable" | "stale" | "current";
+  target?: { collection?: string; documentId?: string };
+  initiativeId?: string | number | null;
+  candidateId?: string | null;
+  status: string;
+  statusReason?: string | null;
+  capacityState?: "full" | "available";
+  waitingOnWorkIds: string[];
+};
+
 export type GrowthServiceWork = {
   id: string;
   draftId?: number | null;
@@ -67,7 +91,26 @@ export type GrowthServiceArea = {
   limitations: string[];
   lastAssessedAt: string | null;
   nextAssessment: { activityId: string; at: string; scope: string } | null;
+  findings?: GrowthAreaFinding[];
+  ownerSummary?: { headline: string; problem: string; nextStep: string };
 };
+
+const currentGrowthWorkStates = new Set(["preparing", "validating", "publishing", "verifying_live", "building"]);
+
+export function growthFindingsNewestFirst(area: Pick<GrowthServiceArea, "findings">) {
+  return [...(area.findings || [])].sort((left, right) =>
+    (Date.parse(right.assessedAt || "") || 0) - (Date.parse(left.assessedAt || "") || 0));
+}
+
+export function growthAreaLeadWork(area: Pick<GrowthServiceArea, "workIds" | "activeWorkIds" | "blockedWorkIds" | "findings">,
+  work: GrowthServiceWork[]): GrowthServiceWork | undefined {
+  const currentIds = new Set([...area.activeWorkIds, ...area.blockedWorkIds, ...(area.findings || []).flatMap((finding) => finding.waitingOnWorkIds)]);
+  return work.filter((item) => area.workIds.includes(item.id)
+      && (item.canApprove || currentGrowthWorkStates.has(item.state) || currentIds.has(item.id)))
+    .sort((left, right) => Number(right.canApprove) - Number(left.canApprove)
+      || Number(currentGrowthWorkStates.has(right.state)) - Number(currentGrowthWorkStates.has(left.state))
+      || String(right.updatedAt || "").localeCompare(String(left.updatedAt || "")))[0];
+}
 
 export function growthAreaCardCounts(area: Pick<GrowthServiceArea, "decisionIds" | "activeWorkIds" | "blockedWorkIds" | "deferredWorkIds" | "pendingRunIds">) {
   return {
@@ -131,6 +174,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === "object" && !Array.isArray(value);
 const strings = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every((item) => typeof item === "string");
+const nonEmptyString = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
 const nullableString = (value: unknown): value is string | null => value === null || typeof value === "string";
 const areaKey = (value: unknown): value is GrowthAreaKey =>
   typeof value === "string" && (growthAreaKeys as readonly string[]).includes(value);
@@ -205,6 +249,29 @@ export function isGrowthServiceModel(value: unknown): value is GrowthServiceMode
         || !nullableString(area.summary) || !strings(area.evidenceRefs)
         || !strings(area.unresolvedEvidenceRefs) || !strings(area.limitations)
         || !nullableDate(area.lastAssessedAt)) return false;
+    if (area.ownerSummary !== undefined && (!isRecord(area.ownerSummary)
+        || !nonEmptyString(area.ownerSummary.headline) || !nonEmptyString(area.ownerSummary.problem)
+        || !nonEmptyString(area.ownerSummary.nextStep))) return false;
+    if (area.findings !== undefined && (!Array.isArray(area.findings) || !area.findings.every((finding: unknown) => {
+      if (!isRecord(finding) || !nonEmptyString(finding.id) || !nonEmptyString(finding.runId)
+          || !Number.isInteger(finding.opportunityIndex) || (finding.opportunityIndex as number) < 0
+          || !nullableDate(finding.assessedAt) || !nonEmptyString(finding.kind) || !nonEmptyString(finding.title)
+          || !nullableString(finding.problem) || !nullableString(finding.hypothesis) || !nullableString(finding.nextStep)
+          || !areaKey(finding.primaryArea) || !Array.isArray(finding.secondaryAreas) || !finding.secondaryAreas.every(areaKey)
+          || !strings(finding.evidenceRefs) || !strings(finding.requiredSources)
+          || !["unavailable", "stale", "current"].includes(String(finding.evidenceState)) || !nonEmptyString(finding.status)
+          || !Array.isArray(finding.waitingOnWorkIds) || !finding.waitingOnWorkIds.every((id: unknown) => typeof id === "string" && workIds.has(id))) return false;
+      if (finding.statusReason !== undefined && !nullableString(finding.statusReason)) return false;
+      if (finding.capacityState !== undefined && !["full", "available"].includes(String(finding.capacityState))) return false;
+      if (finding.status === "waiting_for_capacity" && finding.capacityState === undefined) return false;
+      if (finding.initiativeId !== undefined && finding.initiativeId !== null
+          && typeof finding.initiativeId !== "string" && typeof finding.initiativeId !== "number") return false;
+      if (finding.candidateId !== undefined && finding.candidateId !== null && !nullableString(finding.candidateId)) return false;
+      if (finding.target !== undefined && (!isRecord(finding.target)
+          || (finding.target.collection !== undefined && !nonEmptyString(finding.target.collection))
+          || (finding.target.documentId !== undefined && !nonEmptyString(finding.target.documentId)))) return false;
+      return true;
+    }))) return false;
     if (area.nextAssessment !== null && (!isRecord(area.nextAssessment)
         || typeof area.nextAssessment.activityId !== "string"
         || typeof area.nextAssessment.at !== "string" || !nullableDate(area.nextAssessment.at)

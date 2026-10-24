@@ -69,6 +69,56 @@ def test_requested_check_wakes_existing_scheduler_without_duplicate_runs(tmp_pat
         assert memory.kv_get("next_run:growth_pending") == future
 
 
+def test_owner_review_contract_revision_queues_one_new_run_without_mutating_old_lineage_or_review(tmp_path, monkeypatch):
+    with closing(Memory(tmp_path / "memory.db")) as memory:
+        context = {"memory": memory, "config": {"growth": {"timezone": "UTC"}}}
+        monkeypatch.setattr(workflow, "_OWNER_REVIEW_ASSESSMENT_CONTRACT", "owner-summary-v0")
+        old = workflow.queue_growth_check(context)
+        old_detail = {"assessment": {"summary": "Original assessment", "opportunities": []},
+            "assessmentCompletedAt": "2026-10-24T00:00:00Z", "material": {"sources": [{"id": "inventory"}]}}
+        memory.update_growth_run(old["run_id"], status="complete", phase="complete", detail=old_detail)
+
+        cycle = memory.create_strategy_cycle(old["run_id"], "2026-10", "sha256:test", {})
+        initiative_id = memory.create_strategy_initiative(cycle["id"], kind="payload_content",
+            title="Existing owner review", summary="Keep this exact candidate", state="ready_for_review",
+            growth_run_id=old["run_id"], approval_id=917, expected={"opportunity": {"documentId": "1"}})
+        initiative_before = next(row for row in memory.list_strategy_initiatives(limit=None)
+            if row["id"] == initiative_id)
+
+        monkeypatch.setattr(workflow, "_OWNER_REVIEW_ASSESSMENT_CONTRACT", "owner-summary-v1")
+        fresh = workflow.queue_growth_check(context)
+        repeated = workflow.queue_growth_check(context)
+
+        assert fresh["run_id"] != old["run_id"]
+        assert fresh["trigger"] == "owner_review"
+        assert fresh["run_key"].endswith(":assessment-owner-summary-v1")
+        assert repeated["run_id"] == fresh["run_id"]
+        assert len(memory.list_growth_runs()) == 2
+        assert memory.get_growth_run(old["run_id"])["detail"] == old_detail
+        initiative_after = next(row for row in memory.list_strategy_initiatives(limit=None)
+            if row["id"] == initiative_id)
+        assert initiative_after["state"] == initiative_before["state"] == "ready_for_review"
+        assert initiative_after["approval_id"] == initiative_before["approval_id"] == 917
+        assert initiative_after["growth_run_id"] == old["run_id"]
+
+
+def test_non_owner_review_queue_key_is_unchanged_by_summary_contract_revision(tmp_path):
+    import datetime
+
+    with closing(Memory(tmp_path / "memory.db")) as memory:
+        context = {"memory": memory, "config": {"growth": {"timezone": "UTC"}}}
+        run = workflow.queue_growth_check(context, trigger="weekly")
+        assert run["trigger"] == "weekly"
+        assert ":assessment-" not in run["run_key"]
+        goal = workflow.ensure_default_goal(memory)
+        policy = GrowthPolicy.from_config(context["config"])
+        now = datetime.datetime.now(datetime.timezone.utc)
+        previous_weekly_key = workflow._cycle_key(
+            policy, goal["revision"], "weekly:" + now.date().isoformat(), now,
+        )
+        assert run["run_key"] == previous_weekly_key
+
+
 def ready_candidate(memory, initiative, *args):
     memory.transition_strategy_initiative(initiative["id"], "validating")
     return memory.transition_strategy_initiative(initiative["id"], "ready_for_review")

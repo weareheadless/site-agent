@@ -50,7 +50,11 @@ def assess(context: Mapping[str, Any], material: Mapping[str, Any]) -> dict[str,
         "audience_competitors or speed_experience. secondaryAreas is optional and, when present, must contain "
         "only other IDs from that same set; it must exclude primaryArea. These are presentation lenses, not limits "
         "on expertise or execution routes. Include coverage: an array of areas actually assessed, each with "
-        "area, summary, evidence (supplied source IDs), limitations (array of strings). Omit areas without "
+        "area, summary, evidence (supplied source IDs), limitations (array of strings), and ownerSummary "
+        "with headline, problem, and nextStep in plain language; this is required for every new coverage row. "
+        "Keep headline to 90 characters or fewer and problem and nextStep to 160 characters or fewer. Each ownerSummary statement "
+        "must be grounded in that coverage row's evidence, distinguish observed facts from qualified hypotheses, "
+        "state a supported next action, make no outcome promises, and say when the evidence does not establish an effect. Omit areas without "
         "sufficient evidence; never infer clean health or measured speed from missing data. "
         "Each opportunity has kind (payload_content, code, or owner_information), optional area (a free-form label, not a fixed category), title, why, hypothesis, "
         "scope, evidence (source IDs copied from supplied evidence), requiredSources (source IDs), "
@@ -94,6 +98,15 @@ def assess(context: Mapping[str, Any], material: Mapping[str, Any]) -> dict[str,
             or any(not isinstance(ref, str) or ref not in valid_refs for ref in row["evidence"])
             or not isinstance(row.get("limitations"), list) or any(not isinstance(limit, str) for limit in row["limitations"])):
             raise ValueError("Growth area coverage needs unique areas and supplied evidence references")
+        owner_summary = row.get("ownerSummary")
+        if owner_summary is not None:
+            if (not isinstance(owner_summary, Mapping)
+                or set(owner_summary) != {"headline", "problem", "nextStep"}
+                or any(not isinstance(owner_summary.get(key), str)
+                    or not owner_summary[key].strip()
+                    or len(owner_summary[key]) > limit
+                    for key, limit in (("headline", 180), ("problem", 500), ("nextStep", 500)))):
+                raise ValueError("Growth ownerSummary needs bounded headline, problem and nextStep strings")
         seen_areas.add(row["area"])
     for item in opportunities:
         if not isinstance(item, dict) or item.get("kind") not in {"payload_content", "code", "owner_information"}:

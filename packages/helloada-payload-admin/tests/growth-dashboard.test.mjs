@@ -77,7 +77,41 @@ test('accepts the growth-service-v1 projection shape and all five canonical area
   assert.equal(serviceModel.areas.length, 5);
 });
 
-test('restores Areas from the URL and reports only explicit per-area service counts', () => {
+test('selects canonical review or active work before the newest saved finding', () => {
+  const content = serviceModel.areas.find((area) => area.id === 'content');
+  const active = { ...work[2], id: 'active-now', state: 'building', updatedAt: '2026-10-22T12:00:00Z' };
+  const paused = { ...work[2], id: 'paused-initiative', state: 'paused', executionState: 'not_running', executionIssue: true, updatedAt: '2026-10-24T12:00:00Z' };
+  const review = { ...work[0], primaryArea: 'content', secondaryAreas: [], id: 'review-now', canApprove: true };
+  const area = { ...content, workIds: ['paused-initiative', 'active-now', 'review-now'], blockedWorkIds: ['paused-initiative'] };
+  assert.equal(sandbox.exports.growthAreaLeadWork(area, [paused, active]), active);
+  assert.equal(sandbox.exports.growthAreaLeadWork(area, [paused, active, review]), review);
+  assert.equal(sandbox.exports.growthAreaLeadWork({ ...area, workIds: ['paused-initiative'], blockedWorkIds: ['paused-initiative'] }, [paused]), paused);
+  const newest = [
+    { id: 'older', assessedAt: '2026-10-20T12:00:00Z' },
+    { id: 'newer', assessedAt: '2026-10-24T12:00:00Z' },
+  ];
+  assert.deepEqual(Array.from(sandbox.exports.growthFindingsNewestFirst({ findings: newest }), row => row.id), ['newer', 'older']);
+});
+
+test('validates persisted owner summaries and finding evidence references fail closed', () => {
+  const validFinding = {
+    id: 'run:0', runId: 'run', opportunityIndex: 0, assessedAt: '2026-10-24T12:00:00Z', kind: 'code', title: 'Recorded finding',
+    problem: 'Saved problem with evidence.', hypothesis: null, nextStep: 'Review this bounded change.', primaryArea: 'content', secondaryAreas: [],
+    evidenceRefs: ['inventory:home'], requiredSources: ['inventory'], evidenceState: 'current', status: 'waiting_for_capacity',
+    capacityState: 'full', waitingOnWorkIds: ['preparing-1'], initiativeId: 'initiative:88', candidateId: 'candidate-1',
+  };
+  const withFinding = (finding = validFinding, ownerSummary = { headline: 'Saved headline', problem: 'Saved problem', nextStep: 'Saved next step' }) => ({
+    ...serviceModel,
+    areas: serviceModel.areas.map(area => area.id === 'content' ? { ...area, findings: [finding], ownerSummary } : area),
+  });
+  assert.equal(sandbox.exports.isGrowthServiceModel(withFinding()), true);
+  assert.equal(sandbox.exports.isGrowthServiceModel(withFinding({ ...validFinding, assessedAt: 'not-a-date' })), false);
+  assert.equal(sandbox.exports.isGrowthServiceModel(withFinding({ ...validFinding, waitingOnWorkIds: ['missing-work'] })), false);
+  assert.equal(sandbox.exports.isGrowthServiceModel(withFinding({ ...validFinding, capacityState: undefined })), false);
+  assert.equal(sandbox.exports.isGrowthServiceModel(withFinding(validFinding, { headline: ' ', problem: 'valid', nextStep: 'valid' })), false);
+});
+
+test('restores Areas from the URL and renders compact findings rather than numeric dashboards', () => {
   assert.equal(sandbox.exports.growthPanelFromSearch('?growth_panel=areas'), 'areas');
   assert.equal(sandbox.exports.growthPanelFromSearch('?growth_panel=decisions'), 'decisions');
   assert.equal(sandbox.exports.growthPanelFromSearch('?growth_panel=invalid'), 'home');
@@ -103,11 +137,16 @@ test('restores Areas from the URL and reports only explicit per-area service cou
   assert.match(component, /area\.evidenceState/);
   assert.match(component, /area\.lastAssessedAt/);
   assert.match(component, /area\.nextAssessment/);
-  assert.match(component, /growthAreaCardCounts\(area\)/);
-  assert.match(component, /pendingRunCount > 0[\s\S]*areaPendingRunUnknown/);
-  assert.match(component, /area\.state === "waiting_for_capacity" \? "growth\.areaCardState_work_queued"/);
-  assert.match(component, /onClick=\{\(\) => onNavigate\("results", AREA_TABS\[area\.id\]\)\}/);
-  assert.match(component, /t\(AREA_EXPLORE\[area\.id\]\)/);
+  assert.match(component, /const leadWork = growthAreaLeadWork\(area, areaWork\)/);
+  assert.match(component, /const findings = growthFindingsNewestFirst\(area\)/);
+  assert.match(component, /growth\.areaProposedChange/);
+  assert.match(component, /date\(finding\.assessedAt\)/);
+  assert.match(component, /finding\.evidenceRefs\.join/);
+  assert.match(component, /canonicalWorkStatus\(finding\)/);
+  assert.match(component, /area\.ownerSummary \? <div className="helloada-growth-owner-summary"/);
+  assert.match(component, /helloada-growth-owner-summary-full/);
+  assert.match(component, /!area\.ownerSummary && \(!leadFinding \|\| showFinding\) && leadWork\.why/);
+  assert.doesNotMatch(component, /growthAreaCardCounts\(area\)|AREA_EXPLORE\[area\.id\]/);
   assert.doesNotMatch(component.slice(component.indexOf('{mode === "home" && !selectedTask ? <section className="helloada-growth-owner-agenda"'), component.indexOf('{mode === "areas" && !selectedTask ? <section')), /helloada-growth-area-card/);
 });
 
@@ -120,8 +159,7 @@ test('validates per-area work arrays and preserves unknown pending-run presence'
   assert.equal(sandbox.exports.isGrowthServiceModel({ ...serviceModel, areas: areas.map((area) => area.id === 'content' ? { ...area, pendingRunIds: [{}] } : area) }), false);
   assert.equal(sandbox.exports.isGrowthServiceModel({ ...serviceModel, areas: areas.map((area) => area.id === 'content' ? { ...area, activeWorkIds: ['missing'] } : area) }), false);
   const component = source('src/components/GrowthTasks.tsx');
-  assert.match(component, /areaWork\.length === 0 && !hasPendingRuns/);
-  assert.match(component, /growth\.areaPendingRunUnknown/);
+  assert.match(component, /growth\.areaNoSavedFinding/);
 });
 
 test('uses primary/secondary area relations and keeps one canonical decision across areas', () => {
@@ -146,8 +184,7 @@ test('preserves owner queue decision priority independently of service model ord
   assert.match(parent, /growthDecisionOrder\(body\.ownerQueue, body\.serviceModel\.decisionIds\)/);
   assert.match(parent, /Owner queue and Growth service decisions are incompatible/);
   assert.match(component, /decisionOrder\.map\(agendaTask\)/);
-  assert.match(component, /growthAreaCardCounts\(area\)/);
-  assert.match(component, /pendingRunCount > 0[\s\S]*areaPendingRunUnknown/);
+  assert.match(component, /growthFindingsNewestFirst\(area\)/);
 });
 
 test('renders owner review through a sparse field comparison instead of full raw objects', () => {
@@ -216,7 +253,7 @@ test('rejects absent or incompatible projection instead of falling back to tasks
 
 test('renders preparation, next assessment, verified results and area evidence from the service projection', () => {
   const component = source('src/components/GrowthTasks.tsx');
-  for (const field of ['serviceModel.preparation', 'area.workIds', 'growthAreaCardCounts(area)', 'area.state', 'area.evidenceState',
+  for (const field of ['serviceModel.preparation', 'area.workIds', 'area.state', 'area.evidenceState',
     'area.summary', 'area.limitations', 'area.lastAssessedAt', 'area.nextAssessment', 'serviceModel.recentResults',
     'serviceModel.unassignedWorkIds']) assert.ok(component.includes(field), `missing binding: ${field}`);
   assert.match(component, /"growth\.resultVerified"/);
@@ -237,8 +274,12 @@ test('renders preparation, next assessment, verified results and area evidence f
 test('area and evidence UI copy exists in English, French and Mexican Spanish', () => {
   const { growthCopy } = load(new URL('../src/lib/growth-copy.ts', import.meta.url));
   for (const language of ['en', 'fr', 'es']) {
-    for (const key of ['growth.areasTitle', 'growth.panel_areas', 'growth.areaPurpose_content', 'growth.areaPurpose_search_visibility', 'growth.areaPurpose_website_health', 'growth.areaPurpose_audience_competitors', 'growth.areaPurpose_speed_experience', 'growth.areaExplore_content', 'growth.areaExplore_search_visibility', 'growth.areaExplore_website_health', 'growth.areaExplore_audience_competitors', 'growth.areaExplore_speed_experience', 'growth.areaActiveWorkCount', 'growth.areaPendingRunCount', 'growth.areaPendingRunUnknown', 'growth.areaBlockedCount', 'growth.areaDeferredCount', 'growth.areaCardState_work_queued', 'growth.areaAssessmentDatesUnavailable', 'growth.areaDetails', 'growth.areaContent', 'growth.areaSearchVisibility', 'growth.areaWebsiteHealth',
-      'growth.areaAudienceCompetitors', 'growth.areaSpeedExperience', 'growth.areaNoAssessmentSummary',
+    for (const key of ['growth.areasTitle', 'growth.panel_areas', 'growth.areaPurpose_content', 'growth.areaPurpose_search_visibility', 'growth.areaPurpose_website_health', 'growth.areaPurpose_audience_competitors', 'growth.areaPurpose_speed_experience', 'growth.areaFindingsDetails', 'growth.areaFindingDate', 'growth.areaFindingType', 'growth.areaProposedChange', 'growth.areaSavedAssessmentDetails', 'growth.areaContent', 'growth.areaSearchVisibility', 'growth.areaWebsiteHealth',
+      'growth.areaAudienceCompetitors', 'growth.areaSpeedExperience', 'growth.areaNoAssessmentSummary', 'growth.areaProposedDetails',
+      'growth.areaWorkInProgress', 'growth.areaOpenWork', 'growth.areaQueuedProposal', 'growth.areaWorkPaused', 'growth.areaWorkBlocked',
+      'growth.areaWorkStoppedHelp', 'growth.areasIntro',
+      'growth.areaFindingStatusWaiting', 'growth.areaFindingStatusDeferred', 'growth.areaFindingStatusReview', 'growth.areaFindingStatusRecorded',
+      'growth.areaFindingKindContent', 'growth.areaFindingKindTechnical', 'growth.areaFindingKindQuestion', 'growth.areaFindingKindAssessment',
       'growth.areaState_needs_decision', 'growth.evidence_recorded', 'growth.preparationTitle', 'growth.resultVerified',
       'growth.unassignedWork', 'growth.secondaryAreaLinks', 'growth.scopeSharedGrowthReview', 'growth.scopeGenericAssessment',
       'growth.receiptDetails', 'growth.releaseId', 'growth.sourceSha']) {

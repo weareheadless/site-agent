@@ -66,6 +66,48 @@ def test_assessment_requires_a_canonical_primary_area_and_distinct_secondary_are
     contract = llm.messages[0]["content"]
     assert "Every opportunity must include primaryArea" in contract
     assert "secondaryAreas is optional" in contract
+    assert "required for every new coverage row" in contract
+    assert "headline to 90 characters or fewer" in contract
+    assert "problem and nextStep to 160 characters or fewer" in contract
+
+
+def test_assessment_accepts_optional_bounded_owner_summary_on_evidenced_coverage():
+    class LLM:
+        def chat(self, *args, **kwargs):
+            return json.dumps({"summary": "Reviewed the supplied evidence.", "opportunities": [], "coverage": [{
+                "area": "content", "summary": "Canonical inventory was reviewed.", "evidence": ["inventory"],
+                "limitations": ["Metadata only"], "ownerSummary": {
+                    "headline": "Some entries lack destinations.",
+                    "problem": "Visitors cannot open the matching details from this page.",
+                    "nextStep": "Link each entry to its existing destination."}}]})
+    result = assess({"llm": LLM()}, {"sources": [{"id": "inventory"}], "inventory": []})
+    assert result["coverage"][0]["ownerSummary"]["nextStep"].startswith("Link each entry")
+
+
+def test_assessment_keeps_legacy_owner_summary_storage_bounds_compatible():
+    owner_summary = {"headline": "h" * 170, "problem": "p" * 480, "nextStep": "n" * 480}
+    class LLM:
+        def chat(self, *args, **kwargs):
+            return json.dumps({"summary": "Reviewed the supplied evidence.", "opportunities": [], "coverage": [{
+                "area": "content", "summary": "Canonical inventory was reviewed.", "evidence": ["inventory"],
+                "limitations": [], "ownerSummary": owner_summary}]})
+    result = assess({"llm": LLM()}, {"sources": [{"id": "inventory"}], "inventory": []})
+    assert result["coverage"][0]["ownerSummary"] == owner_summary
+
+
+@pytest.mark.parametrize("owner_summary", [
+    {"headline": "Okay", "problem": "Only two keys"},
+    {"headline": "x" * 181, "problem": "Problem", "nextStep": "Action"},
+    {"headline": "Headline", "problem": " ", "nextStep": "Action"},
+])
+def test_assessment_rejects_malformed_or_unbounded_owner_summary(owner_summary):
+    class LLM:
+        def chat(self, *args, **kwargs):
+            return json.dumps({"summary": "Reviewed the supplied evidence.", "opportunities": [], "coverage": [{
+                "area": "content", "summary": "Canonical inventory was reviewed.", "evidence": ["inventory"],
+                "limitations": [], "ownerSummary": owner_summary}]})
+    with pytest.raises(ValueError, match="ownerSummary"):
+        assess({"llm": LLM()}, {"sources": [{"id": "inventory"}], "inventory": []})
 
 
 @pytest.mark.parametrize("area", [None, "not_a_product_area"])
@@ -123,6 +165,7 @@ def test_ready_state_without_approval_or_owner_action_does_not_create_a_decision
 def test_area_assessment_time_is_not_run_update_or_raw_measurement_time():
     model = project(sources=[{"id": "crawl:1", "state": "ready"}], runs=[{"updated_ts": "2026-10-21T05:00:00Z", "detail": {
         "assessmentCompletedAt": "2026-10-20T02:00:00Z",
+        "material": {"sources": [{"id": "crawl:1", "state": "ready", "observedAt": "2026-10-20T01:00:00Z"}]},
         "assessment": {"coverage": [{"area": "website_health", "summary": "Checked the supplied crawl.", "evidence": ["crawl:1"], "limitations": ["No speed measurement"]}]},
     }}])
     health = next(row for row in model["areas"] if row["id"] == "website_health")
@@ -200,6 +243,116 @@ def test_capacity_wait_exposes_its_real_run_and_executor_not_an_invented_task():
     assert model["preparation"][0]["nextReconciliationAt"] == "2026-10-21T02:00:00Z"
     assert model["work"] == []
     assert project(runs=[run])["preparation"][0]["executor"] is None
+
+
+def test_findings_preserve_run_index_and_exact_initiative_linkage_without_title_join():
+    opportunity = {"kind": "payload_content", "title": "Fix the home page", "why": "Visitors cannot find the route.",
+        "hypothesis": "Clear links may help visitors continue.", "scope": "Add links to the two existing routes.",
+        "primaryArea": "content", "secondaryAreas": ["search_visibility"], "evidence": ["inventory"],
+        "requiredSources": ["inventory"], "collection": "pages", "documentId": "1"}
+    run = {"run_id": "run-1", "status": "pending", "detail": {
+        "assessmentCompletedAt": "2026-10-20T00:00:00Z",
+        "candidateIds": [10],
+        "assessment": {"opportunities": [opportunity]}}}
+    blocker = {"id": 9, "kind": "code", "state": "preparing", "growth_run_id": "other-run"}
+    same_run = {"id": 10, "kind": "payload_content", "state": "ready_for_review", "growth_run_id": "run-1",
+        "expected": {"opportunity": dict(opportunity)}}
+    model = project(runs=[run], initiatives=[blocker, same_run], max_active_candidates=1,
+        sources=[{"id": "inventory", "state": "ready"}])
+    content = next(row for row in model["areas"] if row["id"] == "content")
+    finding = content["findings"][0]
+    assert finding["id"] == "run-1:0"
+    assert finding["runId"] == "run-1" and finding["opportunityIndex"] == 0
+    assert finding["problem"] == opportunity["why"] and finding["nextStep"] == opportunity["scope"]
+    assert finding["status"] == "ready_for_review"
+    assert finding["initiativeId"] == 10
+    assert finding["candidateId"] == 10
+    assert finding["target"] == {"collection": "pages", "documentId": "1"}
+    assert finding["waitingOnWorkIds"] == []
+    # It remains cross-area work with the same lineage, rather than a second finding.
+    search = next(row for row in model["areas"] if row["id"] == "search_visibility")
+    assert search["findings"] == content["findings"]
+
+
+def test_waiting_findings_only_join_unique_titles_and_report_current_external_capacity_work():
+    first = {"kind": "code", "title": "Same title", "why": "Problem one", "scope": "Action one",
+        "evidence": ["inventory"], "requiredSources": ["inventory"], "primaryArea": "website_health"}
+    second = {**first, "why": "Problem two", "scope": "Action two"}
+    run = {"run_id": "run-2", "status": "pending", "detail": {
+        "assessmentCompletedAt": "2026-10-20T00:00:00Z", "waitingForCapacity": ["Same title"],
+        "assessment": {"opportunities": [first, second]}}}
+    model = project(runs=[run], initiatives=[
+        {"id": 1, "kind": "code", "state": "preparing", "growth_run_id": "other"},
+        {"id": 2, "kind": "payload_content", "state": "ready_for_review", "growth_run_id": "other"},
+        {"id": 3, "kind": "code", "state": "preparing", "growth_run_id": "run-2"},
+        {"id": 4, "kind": "owner_information", "state": "waiting_for_owner", "growth_run_id": "other"},
+    ], sources=[{"id": "inventory", "state": "ready"}], max_active_candidates=2)
+    findings = next(row for row in model["areas"] if row["id"] == "website_health")["findings"]
+    assert [row["status"] for row in findings] == ["unknown", "unknown"]
+    assert all(row["waitingOnWorkIds"] == [] for row in findings)
+
+    candidate_opportunity = {"kind": "payload_content", "title": "Other finding", "why": "Other problem",
+        "scope": "Other action", "evidence": ["inventory"], "requiredSources": ["inventory"],
+        "primaryArea": "content"}
+    unique = {**run, "run_id": "run-3", "detail": {**run["detail"], "candidateIds": [3], "queuedInitiativeIds": [5],
+        "assessment": {"opportunities": [first, candidate_opportunity]}}}
+    model = project(runs=[unique], initiatives=[
+        {"id": 1, "kind": "code", "state": "preparing", "growth_run_id": "other"},
+        {"id": 3, "kind": "payload_content", "state": "ready_for_review", "growth_run_id": "run-3",
+            "expected": {"opportunity": candidate_opportunity}},
+        {"id": 5, "kind": "code", "state": "validating", "growth_run_id": "run-3"},
+        {"id": 4, "kind": "owner_information", "state": "waiting_for_owner", "growth_run_id": "other"},
+    ], sources=[{"id": "inventory", "state": "ready"}], max_active_candidates=3)
+    finding = next(row for row in model["areas"] if row["id"] == "website_health")["findings"][0]
+    assert finding["status"] == "waiting_for_capacity"
+    assert finding["waitingOnWorkIds"] == ["initiative:1", "initiative:3", "initiative:5"]
+    assert finding["capacityState"] == "full"
+
+
+def test_saved_wait_marker_does_not_claim_current_blockage_when_capacity_is_available():
+    opportunity = {"kind": "code", "title": "One finding", "why": "A current issue.", "scope": "Fix it.",
+        "evidence": ["inventory"], "requiredSources": ["inventory"], "primaryArea": "website_health"}
+    run = {"run_id": "run-free", "status": "pending", "detail": {
+        "assessmentCompletedAt": "2026-10-20T00:00:00Z", "waitingForCapacity": [opportunity["title"]],
+        "assessment": {"opportunities": [opportunity]}}}
+    model = project(runs=[run], initiatives=[
+        {"id": 9, "kind": "code", "state": "preparing", "growth_run_id": "other"}],
+        sources=[{"id": "inventory", "state": "ready"}], max_active_candidates=2)
+    finding = next(row for row in model["areas"] if row["id"] == "website_health")["findings"][0]
+    assert finding["status"] == "waiting_for_capacity"
+    assert finding["capacityState"] == "available"
+    assert finding["waitingOnWorkIds"] == []
+    assert "currently available" in finding["statusReason"]
+
+
+def test_owner_summary_is_optional_and_suppressed_when_coverage_evidence_is_stale_or_missing():
+    coverage = {"area": "content", "summary": "Canonical content was reviewed.", "evidence": ["inventory"],
+        "limitations": ["Metadata only"], "ownerSummary": {
+            "headline": "The home page has unlabeled entries.",
+            "problem": "Visitors cannot tell which existing page an entry opens.",
+            "nextStep": "Link the entries to the matching existing pages."}}
+    run = {"detail": {"assessmentCompletedAt": "2026-10-20T00:00:00Z", "material": {"sources": [
+        {"id": "inventory", "sourceRef": "inventory", "state": "ready", "observedAt": "2026-10-20T00:00:00Z"}]},
+        "assessment": {"coverage": [coverage]}}}
+    area = project(runs=[run], sources=[{"id": "inventory", "state": "ready"}])["areas"][0]
+    assert area["ownerSummary"] == coverage["ownerSummary"]
+    stale = project(runs=[run], sources=[{"id": "inventory", "state": "stale"}])["areas"][0]
+    assert "ownerSummary" not in stale
+    missing = project(runs=[{**run, "detail": {**run["detail"], "material": {},
+        "assessment": {"coverage": [coverage]}}}])["areas"][0]
+    assert "ownerSummary" not in missing
+
+
+def test_current_ready_source_does_not_refresh_an_old_findings_evidence_snapshot():
+    opportunity = {"kind": "code", "title": "Old finding", "why": "Historical issue.", "scope": "Review it.",
+        "evidence": ["gsc"], "requiredSources": ["gsc"], "primaryArea": "search_visibility"}
+    run = {"run_id": "old-run", "status": "completed", "detail": {
+        "assessmentCompletedAt": "2026-01-01T00:00:00Z", "material": {"sources": [
+            {"id": "gsc", "state": "ready", "observedAt": "2026-01-01T00:00:00Z", "freshnessHours": 24}]},
+        "assessment": {"opportunities": [opportunity]}}}
+    finding = next(row for row in project(runs=[run], sources=[{"id": "gsc", "state": "ready"}])["areas"]
+        if row["id"] == "search_visibility")["findings"][0]
+    assert finding["evidenceState"] == "stale"
 
 
 def test_missing_historical_evidence_cannot_imply_current_coverage():

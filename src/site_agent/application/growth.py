@@ -206,6 +206,7 @@ def growth_snapshot(memory: Memory, config: dict[str, Any], context: dict[str, A
         tasks=tasks, initiatives=initiatives, runs=runs, sources=sources, activities=activities,
         website_present=(config.get("site") or {}).get("website_present") is True,
         reconciliation=reconciliation, inventory_freshness_hours=_freshness_hours(config, "inventory"),
+        max_active_candidates=GrowthPolicy.from_config(config).max_active_candidates,
     )
     journal_context = {"memory": memory, "config": config, "tenant_id": context.get("tenant_id")}
     initiative_by_id = {f"initiative:{row['id']}": row for row in initiatives}

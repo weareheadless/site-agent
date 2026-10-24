@@ -16,6 +16,8 @@ from ..core.growth_contracts import GrowthGoalRevision, GrowthPolicy
 from ..core.memory import Memory
 from .actions import owner_action_summary
 
+_OWNER_REVIEW_ASSESSMENT_CONTRACT = "owner-summary-v1"
+
 
 def ensure_default_goal(memory: Memory) -> dict[str, Any]:
     """Create the new-site goal once, at a provisioning/scheduler boundary."""
@@ -893,17 +895,25 @@ def _cycle_key(policy: GrowthPolicy, goal_revision: int, trigger: str, now: date
         period = local.strftime("%Y-%m")
     elif trigger == "daily":
         period = local.date().isoformat()
+    elif trigger == "owner_review":
+        period = f"owner_review:{local.date().isoformat()}"
     else:
         period = trigger
-    return f"growth-v2:{policy.origin_revision}:goal-{goal_revision}:{trigger}:{period}"
+    key = f"growth-v2:{policy.origin_revision}:goal-{goal_revision}:{trigger}:{period}"
+    if trigger == "owner_review":
+        key += f":assessment-{_OWNER_REVIEW_ASSESSMENT_CONTRACT}"
+    return key
 
 
 def queue_growth_check(context: Mapping[str, Any], *, trigger: str = "owner_review") -> dict[str, Any]:
     memory, config = context["memory"], context["config"]
     policy, goal = GrowthPolicy.from_config(config), ensure_default_goal(memory)
     now = datetime.datetime.now(datetime.timezone.utc)
-    # Coalesce an explicit owner review for this day/goal/origin. GET never queues.
-    key = _cycle_key(policy, int(goal["revision"]), trigger + ":" + now.date().isoformat(), now)
+    # Coalesce an explicit owner review for this day/goal/origin and the
+    # assessment contract. A contract upgrade gets one new durable run while
+    # leaving the previous run and its candidates untouched. GET never queues.
+    key_trigger = trigger if trigger == "owner_review" else trigger + ":" + now.date().isoformat()
+    key = _cycle_key(policy, int(goal["revision"]), key_trigger, now)
     run = memory.create_growth_run(run_id=f"growth-{uuid.uuid4().hex}", run_key=key, trigger=trigger,
         goal_revision=int(goal["revision"]), timezone=policy.timezone, phase="collecting", status="pending",
         policy=policy.to_dict(), origin_revision=policy.origin_revision, phase_version=2)
