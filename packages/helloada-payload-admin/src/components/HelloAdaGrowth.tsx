@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { fetchHelloAda } from "../api/fetchHelloAda";
 import { useHelloAdaTranslations } from "../api/useHelloAdaTranslations";
-import { growthDecisionOrder, isGrowthServiceModel, type GrowthResultTab, type GrowthRow, type GrowthServiceModel } from "../lib/growth-data";
+import { growthDecisionOrder, growthPanelFromSearch, growthResultTabFromSearch, isGrowthServiceModel, type GrowthResultTab, type GrowthRow, type GrowthServiceModel } from "../lib/growth-data";
 import { GrowthTasks, type GrowthTask } from "./GrowthTasks";
 import { WorkspaceIcon } from "./WorkspaceIcon";
 import {
@@ -13,7 +13,7 @@ import {
 } from "./GrowthAnalytics";
 import { GrowthEvidence } from "./GrowthEvidence";
 import { GrowthCompetition } from "./GrowthCompetition";
-type GrowthPanel = "home" | "decisions" | "work" | "results";
+type GrowthPanel = "home" | "decisions" | "work" | "results" | "areas";
 type OwnerQueue = {
   featuredDecisionId: string | null;
   additionalDecisionIds: string[];
@@ -101,22 +101,42 @@ export function HelloAdaGrowth() {
     `/admin?ask=${encodeURIComponent(prompt)}`;
   useEffect(() => {
     const restorePanel = () => {
-      const value = new URLSearchParams(window.location.search).get("growth_panel");
-      setPanel(value === "decisions" || value === "work" || value === "results" ? value : "home");
+      const search = window.location.search;
+      setPanel(growthPanelFromSearch(search));
+      setTab(growthResultTabFromSearch(search));
     };
     restorePanel();
     window.addEventListener("popstate", restorePanel);
     return () => window.removeEventListener("popstate", restorePanel);
   }, []);
+  useEffect(() => {
+    const tabs = document.querySelector<HTMLElement>(".helloada-growth-tabs");
+    const active = tabs?.querySelector<HTMLElement>('button[aria-pressed="true"]');
+    if (tabs && active) {
+      const left = active.offsetLeft - Math.max(0, (tabs.clientWidth - active.clientWidth) / 2);
+      tabs.scrollTo({ left: Math.max(0, left), behavior: "instant" });
+    }
+  }, [panel]);
   const navigatePanel = (next: GrowthPanel, resultsTab: GrowthResultTab = "analytics") => {
     setPanel(next);
     if (next === "results") setTab(resultsTab);
     const url = new URL(window.location.href);
     if (next === "home") url.searchParams.delete("growth_panel");
     else url.searchParams.set("growth_panel", next);
+    if (next === "results") url.searchParams.set("growth_results", resultsTab);
+    else url.searchParams.delete("growth_results");
     url.searchParams.delete("growth_task");
     url.searchParams.delete("growth_focus");
     window.history.pushState({ ...window.history.state, helloAdaGrowthPanel: next }, "", url.toString());
+  };
+  const navigateResultsTab = (next: GrowthResultTab) => {
+    setTab(next);
+    const url = new URL(window.location.href);
+    url.searchParams.set("growth_panel", "results");
+    url.searchParams.set("growth_results", next);
+    url.searchParams.delete("growth_task");
+    url.searchParams.delete("growth_focus");
+    window.history.pushState({ ...window.history.state, helloAdaGrowthPanel: "results" }, "", url.toString());
   };
   // Changing the reporting period must not clear or refetch Ada's brief.
   useEffect(() => {
@@ -301,6 +321,7 @@ export function HelloAdaGrowth() {
           <button type="button" aria-pressed={panel === "home"} onClick={() => navigatePanel("home")}>{t("growth.panel_next")}</button>
           <button type="button" aria-pressed={panel === "decisions"} onClick={() => navigatePanel("decisions")}>{t("growth.panel_decisions")}</button>
           <button type="button" aria-pressed={panel === "work"} onClick={() => navigatePanel("work")}>{t("growth.panel_work")}</button>
+          <button type="button" aria-pressed={panel === "areas"} onClick={() => navigatePanel("areas")}>{t("growth.panel_areas")}</button>
           <button type="button" aria-pressed={panel === "results"} onClick={() => navigatePanel("results")}>{t("growth.panel_results")}</button>
         </div>
         <div className="helloada-growth-controls">
@@ -341,7 +362,7 @@ export function HelloAdaGrowth() {
                 type="button"
                 role="tab"
                 aria-selected={tab === view}
-                onClick={() => setTab(view)}
+                onClick={() => navigateResultsTab(view)}
               >
                 {t(`growth.${view}`)}
               </button>
@@ -354,7 +375,8 @@ export function HelloAdaGrowth() {
       </div> : null}
       {panel !== "results" && !errors.growth && growth ? (
         <GrowthTasks
-          mode={panel === "home" ? "home" : panel === "decisions" ? "decisions" : "work"}
+          key={panel}
+          mode={panel === "home" ? "home" : panel === "decisions" ? "decisions" : panel === "areas" ? "areas" : "work"}
           tasks={growth?.tasks}
           serviceModel={growth.serviceModel}
           decisionOrder={growth.decisionOrder}

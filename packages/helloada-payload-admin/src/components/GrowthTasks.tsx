@@ -9,7 +9,7 @@ import { HelloAdaMark } from "./HelloAdaLogo";
 import { HelloAdaChatMessage } from "./HelloAdaChatMessage";
 import { getDecisionPresentation, getReviewChanges, getReviewTarget, groupReviewDecisions } from "../lib/growth-review";
 import { GrowthChangeReview } from "./GrowthChangeReview";
-import { type GrowthAreaKey, type GrowthResultTab, type GrowthServiceArea, type GrowthServiceModel, type GrowthServiceWork } from "../lib/growth-data";
+import { growthAreaCardCounts, growthFeaturedAreaId, type GrowthAreaKey, type GrowthResultTab, type GrowthServiceArea, type GrowthServiceModel, type GrowthServiceWork } from "../lib/growth-data";
 
 type Focus = "needs_you" | "preparing" | "planned" | "paused" | "opportunity" | "completed";
 type ArticleReviewData = {
@@ -34,7 +34,7 @@ export type GrowthTask = {
 };
 
 type ArticleResponse = { article: ArticleReviewData; reviewable: boolean; blockedReasonCode: string | null; reviewPackageHash?: string | null };
-type GrowthPanel = "home" | "decisions" | "work" | "results";
+type GrowthPanel = "home" | "decisions" | "work" | "results" | "areas";
 const AREA_LABELS: Record<GrowthAreaKey, string> = {
   content: "growth.areaContent", search_visibility: "growth.areaSearchVisibility",
   website_health: "growth.areaWebsiteHealth", audience_competitors: "growth.areaAudienceCompetitors",
@@ -43,6 +43,18 @@ const AREA_LABELS: Record<GrowthAreaKey, string> = {
 const AREA_TABS: Record<GrowthAreaKey, GrowthResultTab> = {
   content: "content", search_visibility: "search", website_health: "health",
   audience_competitors: "competitionTab", speed_experience: "health",
+};
+const AREA_EXPLORE: Record<GrowthAreaKey, string> = {
+  content: "growth.areaExplore_content", search_visibility: "growth.areaExplore_search_visibility",
+  website_health: "growth.areaExplore_website_health", audience_competitors: "growth.areaExplore_audience_competitors",
+  speed_experience: "growth.areaExplore_speed_experience",
+};
+const AREA_GLYPHS: Record<GrowthAreaKey, string> = {
+  content: "M6 3.5h8l4 4V20H6z M14 3.5V8h4 M9 12h6 M9 15.5h6",
+  search_visibility: "M10.5 4.5a6 6 0 1 0 0 12 6 6 0 0 0 0-12z M15 15l5 5",
+  website_health: "M3.5 5.5h17v13h-17z M3.5 9h17 M7 7.2h.01 M9.5 7.2h.01 M12 7.2h.01",
+  audience_competitors: "M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M3.5 19v-1.2A4.8 4.8 0 0 1 8.3 13h1.4a4.8 4.8 0 0 1 4.8 4.8V19z M16 5.4a2.7 2.7 0 0 1 0 5.2 M16 13h.7a4 4 0 0 1 3.8 4v2",
+  speed_experience: "M13 2.8 5.8 13h5l-.8 8.2L18.2 11h-5.1z",
 };
 const FILTERS: Focus[] = ["needs_you", "preparing", "planned", "paused", "opportunity", "completed"];
 
@@ -96,7 +108,7 @@ function renderLexicalNode(node: unknown, key: string): ReactNode {
 }
 
 export function GrowthTasks({ mode, serviceModel, decisionOrder, onNavigate, tasks = [], pending, refresh, ask, date, goal, brief }: {
-  mode: "home" | "decisions" | "work";
+  mode: "home" | "decisions" | "work" | "areas";
   serviceModel: GrowthServiceModel;
   decisionOrder: string[];
   onNavigate: (panel: GrowthPanel, resultsTab?: GrowthResultTab) => void;
@@ -150,7 +162,6 @@ export function GrowthTasks({ mode, serviceModel, decisionOrder, onNavigate, tas
   const agendaTask = (id: string | null | undefined) => id ? taskById.get(id) : undefined;
   const serviceWorkById = new Map(serviceModel.work.map((row) => [row.id, row] as const));
   const decisionRows = decisionOrder.map(agendaTask).filter((row): row is GrowthTask => Boolean(row));
-  const canonicalDecisionIds = new Set(serviceModel.decisionIds);
   const featuredDecision = decisionRows[0];
   const featuredPresentation = featuredDecision ? getDecisionPresentation(featuredDecision, t) : null;
   const selectedReviewChanges = selectedTask?.kind === "payload_content" ? getReviewChanges(selectedTask.review) : [];
@@ -172,6 +183,7 @@ export function GrowthTasks({ mode, serviceModel, decisionOrder, onNavigate, tas
       ? t("growth.clarityShortDescriptionGroupHeading").replace("{count}", String(group.tasks.length))
       : t("growth.clarityRelatedGroupHeading").replace("{count}", String(group.tasks.length));
   const visible = decisionRows;
+  const featuredAreaId = growthFeaturedAreaId(serviceModel.areas);
   const recentWork = serviceModel.recentResults;
   const recentWorkIds = new Set(recentWork.map(row => row.id));
   const workRows = tasks.filter(row => row.focus !== "needs_you" && row.focus !== "opportunity"
@@ -333,8 +345,8 @@ export function GrowthTasks({ mode, serviceModel, decisionOrder, onNavigate, tas
     && loaded.reviewPackageHash === selectedTask.reviewPackageHash
   );
 
-  const panelTitleKey = mode === "home" ? "growth.homeTitle" : mode === "decisions" ? "growth.decisionListTitle" : "growth.workTitle";
-  const panelNoteKey = mode === "home" ? "growth.homeIntro" : mode === "decisions" ? "growth.decisionListIntro" : "growth.workIntro";
+  const panelTitleKey = mode === "home" ? "growth.homeTitle" : mode === "decisions" ? "growth.decisionListTitle" : mode === "areas" ? "growth.areasTitle" : "growth.workTitle";
+  const panelNoteKey = mode === "home" ? "growth.homeIntro" : mode === "decisions" ? "growth.decisionListIntro" : mode === "areas" ? "growth.areasIntro" : "growth.workIntro";
   return <section className={"helloada-growth-task-shell" + (mode === "home" ? " is-dashboard" : "")} aria-label={t(panelTitleKey)}>
     <div className="helloada-growth-task-core">
       <header className="helloada-growth-task-header">
@@ -461,42 +473,65 @@ export function GrowthTasks({ mode, serviceModel, decisionOrder, onNavigate, tas
         </details>
       </section> : null}
 
-      {mode === "home" && !selectedTask ? <details className="helloada-growth-areas" aria-label={t("growth.areasTitle")}>
-        <summary>{t("growth.areasTitle")}</summary>
-        <header>
-          <div>
-            <p>{t("growth.areasIntro")}</p>
-          </div>
-          <button type="button" className="helloada-growth-areas-results" onClick={() => onNavigate("results")}>{t("growth.exploreGrowthResults")} →</button>
-        </header>
+      {mode === "areas" && !selectedTask ? <section className="helloada-growth-areas-page" aria-label={t("growth.areasTitle")}>
+        <div className="helloada-growth-areas-heading">
+          <span>{serviceModel.areas.length} {t("growth.areaCountLabel")}</span>
+        </div>
         <div className="helloada-growth-area-grid">
           {serviceModel.areas.map((area) => {
             const areaWork = area.workIds.map((id) => serviceWorkById.get(id)).filter((row): row is GrowthServiceWork => Boolean(row));
-            const linkedWork = areaWork.filter((row) => !canonicalDecisionIds.has(row.id));
-            const task = linkedWork.map((row) => taskById.get(row.id)).find((row): row is GrowthTask => Boolean(row));
-            return <article className={`helloada-growth-area-card is-${area.state}`} key={area.id}>
-              <div className="helloada-growth-area-copy">
-                <h4>{t(AREA_LABELS[area.id])}</h4>
-                <span className={`helloada-growth-state is-${area.state}`}>{t("growth.areaState_" + area.state)}</span>
-                <p>{area.summary || t("growth.areaNoAssessmentSummary")}</p>
+            const { activeWorkCount, blockedWorkCount, deferredWorkCount, decisionCount, pendingRunCount, hasPendingRuns, hasUnknownPendingRuns } = growthAreaCardCounts(area);
+            const hasDetails = Boolean(area.summary || areaWork.length || area.limitations.length || area.evidenceRefs.length || area.unresolvedEvidenceRefs.length);
+            const noLinkedWork = areaWork.length === 0 && !hasPendingRuns;
+            const featured = area.id === featuredAreaId;
+            return <article className={`helloada-growth-area-card is-${area.state}${featured ? " is-featured" : ""}`} key={area.id}>
+              <div className="helloada-growth-area-card-layout">
+                <div className="helloada-growth-area-card-main">
+                  <header className="helloada-growth-area-card-heading">
+                    <span className="helloada-growth-area-icon" aria-hidden="true"><svg viewBox="0 0 24 24" focusable="false"><path d={AREA_GLYPHS[area.id]} /></svg></span>
+                    <div><h3>{t(AREA_LABELS[area.id])}</h3><p>{t("growth.areaPurpose_" + area.id)}</p></div>
+                    <span className={`helloada-growth-state is-${area.state}`}>{t(area.state === "waiting_for_capacity" ? "growth.areaCardState_work_queued" : "growth.areaState_" + area.state)}</span>
+                  </header>
+                </div>
+                <aside className="helloada-growth-area-card-signals">
+                  <div className={`helloada-growth-area-evidence-state${area.evidenceState === "unavailable" || area.evidenceState === "not_assessed" ? " is-unavailable" : ""}`}>
+                    <span>{t("growth.evidenceState")}</span><strong>{t("growth.evidence_" + area.evidenceState)}</strong>
+                  </div>
+                  {(decisionCount > 0 || activeWorkCount > 0 || blockedWorkCount > 0 || deferredWorkCount > 0 || hasPendingRuns)
+                    ? <div className="helloada-growth-area-counts" aria-label={t("growth.areaWorkCounts")}>
+                      {decisionCount > 0 ? <span><strong>{decisionCount}</strong> {t("growth.areaDecisionCountShort")}</span> : null}
+                      {activeWorkCount > 0 ? <span><strong>{activeWorkCount}</strong> {t("growth.areaActiveWorkCount")}</span> : null}
+                      {blockedWorkCount > 0 ? <span><strong>{blockedWorkCount}</strong> {t("growth.areaBlockedCount")}</span> : null}
+                      {deferredWorkCount > 0 ? <span><strong>{deferredWorkCount}</strong> {t("growth.areaDeferredCount")}</span> : null}
+                      {pendingRunCount > 0 ? <span><strong>{pendingRunCount}</strong> {t("growth.areaPendingRunCount")}</span> : null}
+                      {hasUnknownPendingRuns ? <span>{t("growth.areaPendingRunUnknown")}</span> : null}
+                    </div> : noLinkedWork ? <p className="helloada-growth-area-no-work">{t("growth.areaNoLinkedWork")}</p> : null}
+                  <div className="helloada-growth-area-dates">
+                    {area.lastAssessedAt ? <p><span>{t("growth.lastGrowthReview")}</span><strong>{date(area.lastAssessedAt)}</strong></p> : null}
+                    {area.nextAssessment ? <p><span>{t("growth.nextAssessment")}</span><strong>{date(area.nextAssessment.at)}</strong></p> : null}
+                    {!area.lastAssessedAt && !area.nextAssessment ? <p><span>{t("growth.areaAssessmentDatesUnavailable")}</span></p> : null}
+                  </div>
+                </aside>
               </div>
-              <small className="helloada-growth-area-evidence">{t("growth.evidenceState")}: {t("growth.evidence_" + area.evidenceState)}
-                {area.lastAssessedAt ? ` · ${t("growth.lastGrowthReview")}: ${date(area.lastAssessedAt)}` : ""}</small>
-              {area.decisionIds.length ? <small className="helloada-growth-area-decision-count">{area.decisionIds.length} {t("growth.areaDecisionCount")}</small> : null}
-              {task ? <button type="button" className="helloada-growth-area-task" data-growth-task-id={task.id} onClick={() => openTask(task)}>
-                <strong>{title(task)}</strong><small>{serviceWorkById.get(task.id)?.why || taskSummary(task) || stateLabel(task)}</small>
-              </button> : linkedWork[0] ? <div className="helloada-growth-area-work"><strong>{linkedWork[0].title || linkedWork[0].id}</strong><small>{linkedWork[0].why || linkedWork[0].scope || linkedWork[0].state}</small></div>
-                : areaWork.length ? <p className="helloada-growth-area-empty">{t("growth.areaDecisionOnly")}</p>
-                  : <p className="helloada-growth-area-empty">{t("growth.areaNoLinkedWork")}</p>}
-              {linkedWork.length > 1 ? <small className="helloada-growth-area-more">{linkedWork.length - 1} {t("growth.areaMoreLinkedWork")}</small> : null}
-              {area.limitations.length ? <details className="helloada-growth-area-limitations"><summary>{t("growth.limitations")} ({area.limitations.length})</summary><ul>{area.limitations.map((item, index) => <li key={index}>{item}</li>)}</ul></details> : null}
-              {area.evidenceRefs.length || area.unresolvedEvidenceRefs.length ? <details className="helloada-growth-area-limitations">
-                <summary>{t("growth.areaEvidenceRefs")}</summary>
-                {area.evidenceRefs.length ? <p><strong>{t("growth.evidenceRecordedRefs")}</strong> {area.evidenceRefs.join(" · ")}</p> : null}
-                {area.unresolvedEvidenceRefs.length ? <p><strong>{t("growth.evidenceUnresolvedRefs")}</strong> {area.unresolvedEvidenceRefs.join(" · ")}</p> : null}
+              {hasDetails ? <details className="helloada-growth-area-details">
+                <summary>{t("growth.areaDetails")}</summary>
+                {area.summary ? <p className="helloada-growth-area-summary">{area.summary}</p> : null}
+                {areaWork.length ? <div className="helloada-growth-area-linked-work"><strong>{t("growth.areaLinkedWork")}</strong><ul>{areaWork.map((item) => {
+                  const linkedTask = taskById.get(item.id);
+                  const itemTitle = item.title || item.id;
+                  return <li key={item.id}>{linkedTask
+                    ? <button type="button" data-growth-task-id={linkedTask.id} aria-label={`${t("growth.openTask")}: ${title(linkedTask)}`} onClick={() => openTask(linkedTask)}>{title(linkedTask)}</button>
+                    : <span>{itemTitle}</span>}{item.why ? <small>{conciseText(item.why, 180)}</small> : null}</li>;
+                })}</ul></div> : null}
+                {area.limitations.length ? <div><strong>{t("growth.limitations")}</strong><ul>{area.limitations.map((item, index) => <li key={index}>{item}</li>)}</ul></div> : null}
+                {area.evidenceRefs.length || area.unresolvedEvidenceRefs.length ? <div className="helloada-growth-area-ref-details">
+                  {area.evidenceRefs.length ? <p><strong>{t("growth.evidenceRecordedRefs")}</strong> {area.evidenceRefs.join(" · ")}</p> : null}
+                  {area.unresolvedEvidenceRefs.length ? <p><strong>{t("growth.evidenceUnresolvedRefs")}</strong> {area.unresolvedEvidenceRefs.join(" · ")}</p> : null}
+                </div> : null}
               </details> : null}
-              {area.nextAssessment ? <small className="helloada-growth-area-next">{t("growth.nextAssessment")}: {date(area.nextAssessment.at)}</small> : null}
-              <button type="button" className="helloada-growth-area-link" onClick={() => onNavigate("results", AREA_TABS[area.id])}>{t("growth.areaExplore")} <span aria-hidden="true">→</span></button>
+              <button type="button" className="helloada-growth-area-link" onClick={() => onNavigate("results", AREA_TABS[area.id])}>
+                {t(AREA_EXPLORE[area.id])} <span className="helloada-growth-area-link-arrow" aria-hidden="true">→</span>
+              </button>
             </article>;
           })}
         </div>
@@ -511,10 +546,10 @@ export function GrowthTasks({ mode, serviceModel, decisionOrder, onNavigate, tas
               {item.secondaryAreas.length ? <small>{t("growth.secondaryAreaLinks")}: {item.secondaryAreas.map((area) => t(AREA_LABELS[area])).join(" · ")}</small> : null}</li>;
           })}</ul>
         </details> : null}
-      </details> : null}
+      </section> : null}
 
       {error ? <p className="helloada-growth-error" role="alert">{error}</p> : null}
-      {mode !== "home" || selectedTask ? <div className={"helloada-growth-task-columns" + (selectedTask ? " is-review" : "")}>
+      {mode !== "home" && mode !== "areas" || selectedTask ? <div className={"helloada-growth-task-columns" + (selectedTask ? " is-review" : "")}>
         <div id="helloada-growth-task-content" className="helloada-growth-workspace" role="tabpanel">
         {selectedTask ? <div className="helloada-growth-detail-view">
           <button type="button" className="helloada-growth-back" onClick={closeTask}>← {t("growth.backToTasks")}</button>
@@ -662,7 +697,7 @@ export function GrowthTasks({ mode, serviceModel, decisionOrder, onNavigate, tas
         </>}
         </div>
       </div> : null}
-      {mode !== "home" ? <p className="helloada-growth-footnote">{t("growth.approval")}</p> : null}
+      {mode !== "home" && mode !== "areas" ? <p className="helloada-growth-footnote">{t("growth.approval")}</p> : null}
     </div>
   </section>;
 }

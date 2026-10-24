@@ -80,6 +80,15 @@ test('zero is a measurement; missing data is not zero; rates are percentages', (
   assert.equal(growthNumber(undefined, 'en'), '—');
   assert.equal(growthNumber(null, 'fr'), '—');
 });
+
+test('an area is featured only when it has explicitly linked current decisions or active/blocked work', () => {
+  const base = { decisionIds: [], activeWorkIds: [], blockedWorkIds: [], deferredWorkIds: [], pendingRunIds: [],
+    evidenceState: 'recorded', lastAssessedAt: '2026-10-24T12:00:00Z' };
+  const areas = [{ ...base, id: 'content' }, { ...base, id: 'search_visibility', pendingRunIds: [null] },
+    { ...base, id: 'website_health', activeWorkIds: ['task-1'] }];
+  assert.equal(sandbox.exports.growthFeaturedAreaId(areas), 'website_health');
+  assert.equal(sandbox.exports.growthFeaturedAreaId(areas.slice(0, 2)), undefined);
+});
 test('CSV preserves raw measurements and quotes spreadsheet formulas safely', () => {
   assert.equal(growthCSV([{keyword: '=HYPERLINK("bad")', ctr: .2}], [['keyword', 'Keyword'], ['ctr', 'CTR']]), '"Keyword","CTR"\r\n"\'=HYPERLINK(""bad"")","0.2"');
   assert.equal(growthCSV([{delta: -12}], [['delta', 'Change']]), '"Change"\r\n"-12"');

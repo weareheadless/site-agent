@@ -12,6 +12,16 @@ export const growthAreaKeys = [
 
 export type GrowthAreaKey = (typeof growthAreaKeys)[number];
 export type GrowthResultTab = "analytics" | "search" | "competitionTab" | "health" | "content" | "connections";
+export type GrowthPanelLocation = "home" | "decisions" | "work" | "results" | "areas";
+export function growthPanelFromSearch(search: string): GrowthPanelLocation {
+  const value = new URLSearchParams(search).get("growth_panel");
+  return value === "decisions" || value === "work" || value === "results" || value === "areas" ? value : "home";
+}
+export function growthResultTabFromSearch(search: string): GrowthResultTab {
+  const value = new URLSearchParams(search).get("growth_results");
+  return value === "search" || value === "competitionTab" || value === "health" || value === "content" || value === "connections"
+    ? value : "analytics";
+}
 export type GrowthAreaState = "awaiting_activation" | "needs_decision" | "blocked" | "preparing"
   | "waiting_for_capacity" | "deferred" | "stale" | "unavailable" | "assessed" | "not_assessed";
 export type GrowthEvidenceState = "unavailable" | "stale" | "recorded" | "not_assessed";
@@ -58,6 +68,22 @@ export type GrowthServiceArea = {
   lastAssessedAt: string | null;
   nextAssessment: { activityId: string; at: string; scope: string } | null;
 };
+
+export function growthAreaCardCounts(area: Pick<GrowthServiceArea, "decisionIds" | "activeWorkIds" | "blockedWorkIds" | "deferredWorkIds" | "pendingRunIds">) {
+  return {
+    decisionCount: area.decisionIds.length,
+    activeWorkCount: area.activeWorkIds.length,
+    blockedWorkCount: area.blockedWorkIds.length,
+    deferredWorkCount: area.deferredWorkIds.length,
+    pendingRunCount: new Set(area.pendingRunIds.filter((id) => id !== null)).size,
+    hasPendingRuns: area.pendingRunIds.length > 0,
+    hasUnknownPendingRuns: area.pendingRunIds.some((id) => id === null),
+  };
+}
+
+export function growthFeaturedAreaId(areas: GrowthServiceArea[]): GrowthAreaKey | undefined {
+  return areas.find((area) => area.decisionIds.length > 0 || area.activeWorkIds.length > 0 || area.blockedWorkIds.length > 0)?.id;
+}
 
 export type GrowthServiceResult = {
   id: string;
@@ -171,6 +197,10 @@ export function isGrowthServiceModel(value: unknown): value is GrowthServiceMode
     if (!isRecord(area) || !areaKey(area.id) || areaIds.has(area.id)
         || !["awaiting_activation", "needs_decision", "blocked", "preparing", "waiting_for_capacity", "deferred", "stale", "unavailable", "assessed", "not_assessed"].includes(String(area.state))
         || !idsReferToWork(area.workIds) || new Set(area.workIds).size !== area.workIds.length || !idsReferToWork(area.decisionIds)
+        || !idsReferToWork(area.blockedWorkIds) || !idsReferToWork(area.activeWorkIds) || !idsReferToWork(area.deferredWorkIds)
+        || !Array.isArray(area.pendingRunIds) || !area.pendingRunIds.every((id) => id === null || typeof id === "string" || (typeof id === "number" && Number.isFinite(id)))
+        || new Set(area.decisionIds).size !== area.decisionIds.length || new Set(area.blockedWorkIds).size !== area.blockedWorkIds.length
+        || new Set(area.activeWorkIds).size !== area.activeWorkIds.length || new Set(area.deferredWorkIds).size !== area.deferredWorkIds.length
         || !["unavailable", "stale", "recorded", "not_assessed"].includes(String(area.evidenceState))
         || !nullableString(area.summary) || !strings(area.evidenceRefs)
         || !strings(area.unresolvedEvidenceRefs) || !strings(area.limitations)
