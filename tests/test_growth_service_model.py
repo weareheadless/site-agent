@@ -1,5 +1,8 @@
 from datetime import datetime, timezone
 import json
+from pathlib import Path
+import shutil
+import subprocess
 import pytest
 
 from site_agent.application.growth_service_model import AREAS, service_model
@@ -71,6 +74,8 @@ def test_assessment_requires_a_canonical_primary_area_and_distinct_secondary_are
     assert "required for every new coverage row" in contract
     assert "headline to 90 characters or fewer" in contract
     assert "problem and nextStep to 160 characters or fewer" in contract
+    assert "crawlseo:health" in contract
+    assert "never use its missing state to disregard" in contract
 
 
 def test_assessment_accepts_optional_bounded_owner_summary_on_evidenced_coverage():
@@ -268,12 +273,46 @@ def test_findings_preserve_run_index_and_exact_initiative_linkage_without_title_
     assert finding["problem"] == opportunity["why"] and finding["nextStep"] == opportunity["scope"]
     assert finding["status"] == "ready_for_review"
     assert finding["initiativeId"] == 10
-    assert finding["candidateId"] == 10
+    assert finding["candidateId"] == "10"
     assert finding["target"] == {"collection": "pages", "documentId": "1"}
     assert finding["waitingOnWorkIds"] == []
     # It remains cross-area work with the same lineage, rather than a second finding.
     search = next(row for row in model["areas"] if row["id"] == "search_visibility")
     assert search["findings"] == content["findings"]
+
+
+def test_actual_serialized_model_passes_shared_admin_typescript_contract():
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is unavailable for the shared TypeScript contract check")
+    opportunity = {"kind": "code", "title": "Improve the route labels", "why": "Visitors may miss routes.",
+        "scope": "Clarify existing route labels.", "primaryArea": "website_health", "secondaryAreas": [],
+        "evidence": ["inventory"], "requiredSources": ["inventory"]}
+    run = {"run_id": "contract-run", "status": "complete", "detail": {
+        "assessmentCompletedAt": "2026-10-20T00:00:00Z",
+        "material": {"sources": [{"id": "inventory", "state": "ready", "observedAt": "2026-10-20T00:00:00Z"}]},
+        "candidateIds": [10], "assessment": {"opportunities": [opportunity]}}}
+    initiative = {"id": 10, "kind": "code", "state": "ready_for_review", "growth_run_id": "contract-run",
+        "expected": {"opportunity": opportunity}}
+    model = project(tasks=[{"id": "initiative:10", "kind": "code", "focus": "needs_you",
+        "canApprove": True, "ownerActionId": 21}], initiatives=[initiative], runs=[run],
+        sources=[{"id": "inventory", "state": "ready", "observedAt": "2026-10-20T00:00:00Z"}])
+    health = next(area for area in model["areas"] if area["id"] == "website_health")
+    assert health["findings"][0]["candidateId"] == "10"
+
+    root = Path(__file__).resolve().parents[1]
+    script = """
+import { isGrowthServiceModel } from './packages/helloada-payload-admin/src/lib/growth-data.ts';
+let input = '';
+for await (const chunk of process.stdin) input += chunk;
+process.stdout.write(String(isGrowthServiceModel(JSON.parse(input))));
+"""
+    result = subprocess.run([node, "--experimental-strip-types", "--input-type=module", "-e", script],
+        cwd=root, input=json.dumps(model), text=True, capture_output=True, timeout=20)
+    if result.returncode and "bad option" in result.stderr.lower():
+        pytest.skip("Installed Node does not support native TypeScript stripping")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "true"
 
 
 def test_waiting_findings_only_join_unique_titles_and_report_current_external_capacity_work():
@@ -389,6 +428,23 @@ def test_owner_summary_is_optional_and_suppressed_when_coverage_evidence_is_stal
     assert "ownerSummary" not in missing
 
 
+def test_ready_dataset_source_can_support_coverage_when_aggregate_seed_registry_is_missing():
+    coverage = {"area": "website_health", "summary": "A recent completed crawl was reviewed.",
+        "evidence": ["crawlseo:health"], "limitations": [], "ownerSummary": {
+            "headline": "The latest crawl found a few issues.", "problem": "The crawl records technical issues but does not measure visitor impact.",
+            "nextStep": "Review the listed crawl findings."}}
+    run = {"detail": {"assessmentCompletedAt": "2026-10-24T20:10:00Z", "material": {"sources": [
+        {"id": "crawlseo_health", "sourceRef": "crawlseo:health", "state": "ready",
+            "observedAt": "2026-10-23T16:35:36Z", "freshnessHours": 168},
+        {"id": "dataforseo", "state": "missing", "reason": "No approved keyword seeds are recorded yet."}]},
+        "assessment": {"coverage": [coverage]}}}
+    area = next(row for row in project(now=datetime(2026, 10, 24, 21, tzinfo=timezone.utc), runs=[run], sources=[
+        {"id": "crawlseo_health", "sourceRef": "crawlseo:health", "state": "ready"},
+        {"id": "dataforseo", "state": "missing"}])["areas"] if row["id"] == "website_health")
+    assert area["evidenceState"] == "recorded"
+    assert area["ownerSummary"] == coverage["ownerSummary"]
+
+
 def test_current_ready_source_does_not_refresh_an_old_findings_evidence_snapshot():
     opportunity = {"kind": "code", "title": "Old finding", "why": "Historical issue.", "scope": "Review it.",
         "evidence": ["gsc"], "requiredSources": ["gsc"], "primaryArea": "search_visibility"}
@@ -399,6 +455,20 @@ def test_current_ready_source_does_not_refresh_an_old_findings_evidence_snapshot
     finding = next(row for row in project(runs=[run], sources=[{"id": "gsc", "state": "ready"}])["areas"]
         if row["id"] == "search_visibility")["findings"][0]
     assert finding["evidenceState"] == "stale"
+
+
+def test_future_source_observation_cannot_be_projected_as_current_coverage():
+    coverage = {"area": "search_visibility", "summary": "Search data was reviewed.",
+        "evidence": ["crawlseo:research"], "limitations": [], "ownerSummary": {
+            "headline": "Search evidence needs review.", "problem": "The observation time is not trustworthy.",
+            "nextStep": "Reassess after a dated observation is available."}}
+    run = {"detail": {"assessmentCompletedAt": "2026-10-21T00:00:00Z", "material": {"sources": [{
+        "id": "crawlseo_research", "sourceRef": "crawlseo:research", "state": "ready",
+        "observedAt": "2026-10-21T00:06:00Z", "freshnessHours": 744}]}, "assessment": {"coverage": [coverage]}}}
+    area = next(row for row in project(runs=[run], sources=[{"id": "crawlseo_research", "sourceRef": "crawlseo:research",
+        "state": "ready", "observedAt": "2026-10-21T00:06:00Z"}])["areas"] if row["id"] == "search_visibility")
+    assert area["evidenceState"] == "unavailable"
+    assert "ownerSummary" not in area
 
 
 def test_missing_historical_evidence_cannot_imply_current_coverage():
