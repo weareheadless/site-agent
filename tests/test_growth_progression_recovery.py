@@ -12,6 +12,14 @@ from site_agent.core.growth_contracts import GrowthPolicy
 from site_agent.core.memory import Memory
 
 
+def test_ready_source_refs_include_both_identifiers_but_never_unready_records():
+    required = {"crawlseo:health"}
+    ready = workflow._ready_source_refs([{"id": "crawlseo_health", "sourceRef": "crawlseo:health", "state": "ready"}])
+    missing = workflow._ready_source_refs([{"id": "crawlseo_health", "sourceRef": "crawlseo:health", "state": "missing"}])
+    assert required - ready == set()
+    assert required - missing == required
+
+
 @pytest.fixture(autouse=True)
 def journal_provider(monkeypatch):
     """Provider boundary only; the real workflow still requires its checkpoint."""
@@ -177,6 +185,39 @@ def test_capacity_wait_has_runnable_due_time_then_resumes_saved_assessment(tmp_p
         assert "waitingForCapacity" not in final["detail"]
         assert len(memory.list_strategy_initiatives()) == 2
         assert memory.list_strategy_initiatives()[-1]["state"] == "ready_for_review"
+
+
+@pytest.mark.parametrize(("source_state", "expected_run_state", "expected_candidate_state", "prepare_count"), [
+    ("ready", "complete", "ready_for_review", 1),
+    ("missing", "complete", "deferred", 0),
+])
+def test_required_source_ref_alias_is_ready_only_with_its_exact_ready_source_record(
+    tmp_path, monkeypatch, source_state, expected_run_state, expected_candidate_state, prepare_count,
+):
+    with closing(Memory(tmp_path / f"{source_state}.db")) as memory:
+        opportunity_row = {**opportunity("Use the current crawl"), "evidence": ["inventory"],
+            "requiredSources": ["crawlseo:health"]}
+        material = {"inventory": [], "sources": [
+            {"id": "inventory", "sourceRef": "canonical_payload_inventory", "state": "ready",
+                "observedAt": "2026-10-24T19:00:00Z"},
+            {"id": "crawlseo_health", "sourceRef": "crawlseo:health", "state": source_state,
+                "observedAt": "2026-10-24T19:00:00Z"},
+        ], "metrics": {}, "datasets": {}, "ownerResponses": [], "collectionErrors": {}}
+        context, run = saved_run(memory, [opportunity_row], key=f"required-source-{source_state}", material=material)
+        from site_agent.application import growth_candidates
+        preparations = []
+        monkeypatch.setattr(growth_candidates, "prepare_payload_candidate",
+            lambda ctx, row, *args: preparations.append(row["id"]) or ready_candidate(memory, row))
+
+        result = workflow.run_growth_cycle(context, run_id=run["run_id"], trigger="weekly")
+
+        initiative = memory.list_strategy_initiatives()[0]
+        assert result["status"] == expected_run_state
+        assert initiative["state"] == expected_candidate_state
+        assert len(preparations) == prepare_count
+        if source_state == "missing":
+            assert "Required evidence is not ready: crawlseo:health" in initiative["last_error"]
+            assert result["detail"]["assessment"]["unpreparedOpportunities"][0]["errorCode"] == "required_source_not_ready"
 
 
 def test_missing_evidence_binding_resumes_saved_material_and_assessment(tmp_path, monkeypatch):

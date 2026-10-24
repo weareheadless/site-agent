@@ -100,6 +100,17 @@ def _defer_duplicate_owner_information(memory: Any, initiative: Mapping[str, Any
     )
 
 
+def _ready_source_refs(sources: list[Mapping[str, Any]]) -> set[str]:
+    """Return exact IDs and refs belonging to ready source records only."""
+    return {
+        str(ref)
+        for source in sources
+        if source.get("state") == "ready"
+        for ref in (source.get("id"), source.get("sourceRef"))
+        if ref
+    }
+
+
 def _recoverable_saved_assessment_failure(memory: Memory, run: Mapping[str, Any]) -> bool:
     """Resume only exact saved-assessment failures whose shared boundary is fixed.
 
@@ -1346,7 +1357,7 @@ def run_growth_cycle(
             | {str(row["id"]) for row in material["sources"] if row.get("id")}
             | {row.get("sourceRef") for row in material["sources"] if row.get("sourceRef")}
         )
-        ready_sources = {row["id"] for row in material["sources"] if row["state"] == "ready"}
+        ready_sources = _ready_source_refs(material["sources"])
         candidate_ids, blocks, unprepared_opportunities = [], [], []
         queued_initiative_ids: list[int] = []
         waiting_for_capacity: list[str] = []
@@ -1467,6 +1478,17 @@ def run_growth_cycle(
             missing = set(opportunity["requiredSources"]) - ready_sources
             if missing:
                 reason = "Required evidence is not ready: " + ", ".join(sorted(missing))
+                reassess_when = "After a later assessment captures the required sources in a ready state."
+                memory.transition_strategy_initiative(
+                    int(initiative["id"]), "deferred",
+                    validation={"status": "deferred", "errorCode": "required_source_not_ready",
+                        "reason": reason, "reassessWhen": reassess_when},
+                    last_error=reason,
+                )
+                unprepared_opportunities.append({**opportunity, "disposition": "deferred",
+                    "errorCode": "required_source_not_ready", "preparationNote": reason,
+                    "reassessWhen": reassess_when})
+                continue
             elif opportunity["kind"] == "owner_information":
                 from .actions import OwnerActionService
                 from .growth_delivery import journal
