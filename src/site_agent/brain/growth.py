@@ -81,7 +81,6 @@ def assess(context: Mapping[str, Any], material: Mapping[str, Any]) -> dict[str,
     valid_refs = {str(row.get("id")) for row in material.get("sources", []) if row.get("id")}
     valid_refs.update(str(row["sourceRef"]) for row in material.get("sources", []) if row.get("sourceRef"))
     valid_refs.update(str(row["sourceRef"]) for row in material.get("inventory", []) if row.get("sourceRef"))
-    source_states = {str(row.get("id")): row.get("state") for row in material.get("sources", []) if row.get("id")}
     inventory_refs = {str(row.get("sourceRef")) for row in material.get("inventory", []) if row.get("sourceRef")}
     owner_question_count = 0
     coverage = result.get("coverage", [])
@@ -106,16 +105,11 @@ def assess(context: Mapping[str, Any], material: Mapping[str, Any]) -> dict[str,
         if not isinstance(item.get("requiredSources"), list) or not item["requiredSources"]:
             raise ValueError("An opportunity must declare its required evidence")
         bad_evidence = any(not isinstance(ref, str) or ref not in valid_refs for ref in item["evidence"])
-        unknown_required = any(not isinstance(ref, str) or ref not in source_states for ref in item["requiredSources"])
-        unavailable = [ref for ref in item["requiredSources"]
-            if not isinstance(ref, str) or source_states.get(ref) != "ready"]
-        if bad_evidence or unknown_required or unavailable:
+        if bad_evidence:
             item.update(
                 disposition="deferred",
-                errorCode=("evidence_not_bound_to_assessment" if bad_evidence
-                    else "required_evidence_not_supplied" if unknown_required else "required_evidence_not_current"),
-                preparationNote=("This finding cited evidence that was not captured in the current assessment. It is not presented as a current defect or owner decision."
-                    if bad_evidence else "The required evidence was not supplied as a current source or was not ready in this assessment. This finding is not presented as a current defect or owner decision."),
+                errorCode="evidence_not_bound_to_run",
+                preparationNote="This finding cited evidence that was not captured in the current assessment. It is not presented as a current defect or owner decision.",
                 reassessWhen="A later assessment captures and binds the required evidence in a current ready state.",
             )
         if item["kind"] == "owner_information":

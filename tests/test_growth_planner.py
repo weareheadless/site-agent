@@ -52,7 +52,7 @@ def _assessment_response(opportunities):
     return {"summary": "Reviewed this run's site evidence.", "opportunities": opportunities}
 
 
-def test_assessment_defers_stale_finding_without_blocking_current_finding():
+def test_assessment_preserves_required_source_for_canonical_block_handling():
     material = {
         "maxRecommendations": 3,
         "sources": [{"id": "inventory", "state": "ready"}, {"id": "gsc", "state": "stale"}],
@@ -66,8 +66,8 @@ def test_assessment_defers_stale_finding_without_blocking_current_finding():
     result = assess({"llm": AssessmentLLM(_assessment_response([current, finding]))}, material)
 
     assert "disposition" not in result["opportunities"][0]
-    assert result["opportunities"][1]["disposition"] == "deferred"
-    assert result["opportunities"][1]["errorCode"] == "required_evidence_not_current"
+    assert "disposition" not in result["opportunities"][1]
+    assert result["opportunities"][1]["requiredSources"] == ["gsc"]
 
 
 def test_assessment_defers_second_owner_question_instead_of_blocking_assessment():
@@ -87,7 +87,7 @@ def test_assessment_defers_second_owner_question_instead_of_blocking_assessment(
     assert result["opportunities"][1]["errorCode"] == "owner_question_already_open"
 
 
-def test_deferred_owner_question_does_not_consume_the_single_question_slot():
+def test_unavailable_required_source_keeps_canonical_owner_question_handling():
     material = {
         "maxRecommendations": 3,
         "sources": [{"id": "inventory", "state": "ready"}, {"id": "business", "state": "stale"}],
@@ -99,8 +99,9 @@ def test_deferred_owner_question_does_not_consume_the_single_question_slot():
 
     result = assess({"llm": AssessmentLLM(_assessment_response([stale, current]))}, material)
 
-    assert result["opportunities"][0]["errorCode"] == "required_evidence_not_current"
-    assert "disposition" not in result["opportunities"][1]
+    assert "disposition" not in result["opportunities"][0]
+    assert result["opportunities"][1]["disposition"] == "deferred"
+    assert result["opportunities"][1]["errorCode"] == "owner_question_already_open"
 
 
 def test_assessment_defers_bad_citation_per_finding():
@@ -118,4 +119,4 @@ def test_assessment_defers_bad_citation_per_finding():
 
     assert "disposition" not in result["opportunities"][0]
     assert result["opportunities"][1]["disposition"] == "deferred"
-    assert result["opportunities"][1]["errorCode"] == "evidence_not_bound_to_assessment"
+    assert result["opportunities"][1]["errorCode"] == "evidence_not_bound_to_run"
