@@ -1180,6 +1180,45 @@ def _now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
 
 
+def _source_preview_archive_binding(raw_value: str | None, draft_id: int, preview_job_id: Any = None) -> dict[str, Any]:
+    """Bind a merge archive to terminal canonical source-preview receipts."""
+    if raw_value is None:
+        ledger: Any = {}
+    else:
+        try:
+            ledger = json.loads(raw_value)
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise ContractError("source preview job ledger is malformed") from exc
+    if not isinstance(ledger, dict):
+        raise ContractError("source preview job ledger is malformed")
+    active_statuses = {"queued", "running", "ready", "verifying", "building", "deploying"}
+    terminal_statuses = {"failed", "deployed"}
+    referenced = str(preview_job_id or "").strip()
+    related_ids = []
+    for ledger_id, job in ledger.items():
+        if not isinstance(job, dict) or not str(ledger_id).strip() or str(job.get("id") or "") != str(ledger_id):
+            raise ContractError("source preview job ledger contains an invalid row")
+        status = str(job.get("status") or "").strip().lower()
+        mode = str(job.get("mode") or "compiled_preview").strip().lower()
+        if status in active_statuses:
+            raise ContractError("active source preview work prevents local draft archive")
+        if status not in terminal_statuses or mode not in {"compiled_preview", "production"}:
+            raise ContractError("source preview job state is unknown; local draft archive is held")
+        if str(job.get("draft_id") or "") == str(int(draft_id)):
+            if mode != "compiled_preview" or status != "failed":
+                raise ContractError("the linked source preview is not a terminal failed preview")
+            related_ids.append(str(ledger_id))
+    if referenced:
+        if referenced not in related_ids:
+            raise ContractError("the referenced source preview job is missing or not terminal")
+    elif not related_ids:
+        raise ContractError("the blocked merge has no terminal source preview receipt")
+    return {
+        "ledgerHash": "sha256:" + hashlib.sha256((raw_value if raw_value is not None else "<missing>").encode()).hexdigest(),
+        "terminalPreviewJobIds": sorted(related_ids),
+    }
+
+
 def _locked(fn):
     @wraps(fn)
     def wrapper(self, *args, **kwargs):
@@ -2422,11 +2461,20 @@ class Memory:
         return cur.rowcount > 0
 
     @_locked
+    def source_preview_archive_binding(self, draft_id: int, preview_job_id: Any = None) -> dict[str, Any]:
+        """Return hash-only proof that linked source previews are terminal."""
+        row = self.conn.execute("SELECT value FROM kv WHERE key = 'source_preview_jobs'").fetchone()
+        return _source_preview_archive_binding(
+            str(row["value"]) if row is not None else None, int(draft_id), preview_job_id,
+        )
+
+    @_locked
     def archive_local_growth_article_draft(
         self, draft_id: int, *, tenant_id: str, expected_proof_hash: str,
-        archive_receipt: dict[str, Any],
+        archive_receipt: dict[str, Any], expected_source_preview_ledger_hash: str | None = None,
+        expected_terminal_preview_job_ids: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Atomically archive an eligible local article without changing its copy."""
+        """Atomically archive an eligible local draft without changing its copy."""
         self.conn.execute("BEGIN IMMEDIATE")
         try:
             row = self.conn.execute("SELECT * FROM drafts WHERE id = ?", (int(draft_id),)).fetchone()
@@ -2439,8 +2487,64 @@ class Memory:
                 raise ContractError("local article draft metadata is invalid")
             if not isinstance(meta, dict):
                 raise ContractError("local article draft metadata is invalid")
-            if current.get("kind") != "article" or current.get("status") != "pending":
-                raise ContractError("only pending local article drafts can be archived")
+            kind = str(current.get("kind") or "")
+            if current.get("status") != "pending":
+                raise ContractError("only pending local drafts can be archived")
+            if kind not in {"article", "edit", "reflection", "merge"}:
+                raise ContractError("this local draft kind is not eligible for archive")
+            if kind != "article":
+                if self.conn.execute("SELECT 1 FROM chat_jobs WHERE status IN ('queued', 'running') LIMIT 1").fetchone():
+                    raise ContractError("active chat work prevents local draft archive")
+                if kind == "edit":
+                    ops = meta.get("ops")
+                    valid_local_meta = (
+                        set(meta) == {"ops", "summary"} and isinstance(meta.get("summary"), str)
+                        and isinstance(ops, list) and all(
+                            isinstance(op, dict) and set(op) <= {"op", "path", "find", "replace"}
+                            and all(isinstance(value, str) for value in op.values()) for op in ops
+                        )
+                    )
+                elif kind == "reflection":
+                    valid_local_meta = (
+                        set(meta) == {"voice_notes", "avoid"}
+                        and all(isinstance(meta.get(key), list) and all(isinstance(item, str) for item in meta[key])
+                                for key in ("voice_notes", "avoid"))
+                    )
+                else:
+                    preview = meta.get("preview") if isinstance(meta.get("preview"), dict) else {}
+                    preview_fields = {
+                        "mode", "status", "requires_build", "changed_paths", "reason", "job_id",
+                        "head_sha", "runtime_path", "preview_url", "deployment_mode", "error",
+                    }
+                    valid_local_meta = (
+                        set(meta) == {"head", "base", "head_sha", "base_sha", "summary", "changed_paths", "preview"}
+                        and all(isinstance(meta.get(key), str) for key in ("head", "base", "head_sha", "base_sha", "summary"))
+                        and isinstance(meta.get("changed_paths"), list)
+                        and all(isinstance(path, str) for path in meta["changed_paths"])
+                        and set(preview) == preview_fields
+                        and preview.get("mode") == "compiled_preview"
+                        and preview.get("status") in {"blocked", "failed"}
+                        and isinstance(preview.get("requires_build"), bool)
+                        and isinstance(preview.get("changed_paths"), list)
+                        and all(isinstance(path, str) for path in preview["changed_paths"])
+                        and isinstance(preview.get("reason"), str)
+                        and isinstance(preview.get("job_id"), str) and bool(preview.get("job_id").strip())
+                        and isinstance(preview.get("head_sha"), str)
+                        and all(preview.get(key) is None or isinstance(preview.get(key), str)
+                                for key in ("runtime_path", "preview_url", "deployment_mode", "error"))
+                    )
+                if not valid_local_meta:
+                    raise ContractError("local draft metadata is not an eligible obsolete intent")
+            source_preview_binding = None
+            if kind == "merge":
+                preview = meta.get("preview") if isinstance(meta.get("preview"), dict) else {}
+                row = self.conn.execute("SELECT value FROM kv WHERE key = 'source_preview_jobs'").fetchone()
+                source_preview_binding = _source_preview_archive_binding(
+                    str(row["value"]) if row is not None else None, int(draft_id), preview.get("job_id"),
+                )
+                if (source_preview_binding["ledgerHash"] != expected_source_preview_ledger_hash
+                        or source_preview_binding["terminalPreviewJobIds"] != sorted(expected_terminal_preview_job_ids or [])):
+                    raise ContractError("source preview job ledger changed after the local draft archive plan")
             if self.conn.execute("SELECT 1 FROM owner_actions WHERE draft_id = ? LIMIT 1", (int(draft_id),)).fetchone():
                 raise ContractError("article drafts linked to owner actions cannot be archived")
             if self.conn.execute("SELECT 1 FROM strategy_initiatives WHERE draft_id = ? LIMIT 1", (int(draft_id),)).fetchone():
@@ -2456,14 +2560,16 @@ class Memory:
                 "research_cost_micros, keyword_budget_reservation_id, serp_budget_reservation_id "
                 "FROM article_ideas WHERE draft_id = ? ORDER BY id ASC", (int(draft_id),),
             ).fetchall()]
+            if kind != "article" and article_ideas:
+                raise ContractError("non-article local drafts cannot have linked article research")
             if any(idea.get("status") not in {"drafted", "held", "failed", "rejected", "blocked"}
                    for idea in article_ideas):
                 raise ContractError("article drafts with active, recoverable or unknown research cannot be archived")
             if meta.get("operator_archive") or meta.get("growth_package") or meta.get("review_package_hash"):
                 raise ContractError("candidate or previously archived article drafts cannot be archived")
-            if "payload_sync" in meta and not isinstance(meta.get("payload_sync"), dict):
+            if kind == "article" and "payload_sync" in meta and not isinstance(meta.get("payload_sync"), dict):
                 raise ContractError("local article sync metadata is malformed")
-            sync = meta.get("payload_sync") if isinstance(meta.get("payload_sync"), dict) else None
+            sync = meta.get("payload_sync") if kind == "article" and isinstance(meta.get("payload_sync"), dict) else None
             if sync is not None:
                 validation = sync.get("validation") if isinstance(sync.get("validation"), dict) else {}
                 if (set(sync) - {"state", "validation"} or set(validation) - {"status", "reason"}
@@ -2475,6 +2581,7 @@ class Memory:
                 "body": str(current.get("body") or ""), "meta": meta,
                 "updated_ts": str(current.get("updated_ts") or ""),
                 "articleIdeas": [{key: idea.get(key) for key in idea_fields} for idea in article_ideas],
+                "sourcePreview": source_preview_binding,
             }
             proof_hash = "sha256:" + hashlib.sha256(json.dumps(
                 snapshot, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str,
@@ -6878,6 +6985,13 @@ class Memory:
             for row in interrupted:
                 self._record_chat_failure_message(row['id'], failed_ts)
         return cur.rowcount
+
+    @_locked
+    def has_active_chat_jobs(self) -> bool:
+        """Return whether this tenant has queued or running chat work."""
+        return self.conn.execute(
+            "SELECT 1 FROM chat_jobs WHERE status IN ('queued', 'running') LIMIT 1"
+        ).fetchone() is not None
 
     @_locked
     def retry_chat_job(self, job_id: int) -> bool:

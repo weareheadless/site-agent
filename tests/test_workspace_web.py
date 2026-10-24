@@ -1957,6 +1957,173 @@ def test_article_archive_rejects_malformed_sync_and_recoverable_research_state(t
     memory.close()
 
 
+def _local_blocked_merge_meta(preview_job_id):
+    return {
+        "head": "preview branch", "base": "main", "head_sha": "bc89" * 10,
+        "base_sha": "504f" * 10, "summary": "Repair a broken navigation link.",
+        "changed_paths": ["content/journal/index.md"],
+        "preview": {
+            "mode": "compiled_preview", "status": "blocked", "requires_build": True,
+            "changed_paths": ["content/journal/index.md"], "reason": "The saved preview is obsolete.",
+            "job_id": preview_job_id, "head_sha": "bc89" * 10,
+            "runtime_path": None, "preview_url": None, "deployment_mode": "compiled_preview",
+            "error": "Preview failed before owner review.",
+        },
+    }
+
+
+def test_control_plane_archives_only_exact_obsolete_edit_reflection_and_blocked_merge_intents(tmp_path):
+    from site_agent.application.workspace import BridgeError
+
+    memory = Memory(tmp_path / "local-intent-archive.db")
+    records = [
+        ("edit", "Review the journal links", "", {
+            "summary": "Connect related journal articles.",
+            "ops": [{"op": "edit", "path": "content/journal/example.md", "find": "Next.", "replace": "Related guide."}],
+        }),
+        ("reflection", "Ada writing guidance", "", {
+            "voice_notes": ["Use clear explanations"], "avoid": ["generic claims"],
+        }),
+        ("merge", "Fix the Journal link", "", _local_blocked_merge_meta("preview-56")),
+    ]
+    ids = []
+    for kind, title, body, meta in records:
+        ids.append(memory.save_draft(title, body, kind=kind, meta=meta))
+    merge_id = ids[2]
+    memory.kv_set("source_preview_jobs", {"preview-56": {
+        "id": "preview-56", "draft_id": merge_id, "mode": "compiled_preview",
+        "status": "failed", "phase": "building", "branch": "preview",
+        "commit": "504f" * 10, "updated_at": "2026-10-24T12:00:00Z",
+    }})
+    class ExternalCallGuard:
+        def __getattr__(self, name):
+            pytest.fail(f"local draft archive must not call external adapter method {name}")
+
+    tenant = Tenant(tenant_id="generic-local-intents", config={}, memory=memory, runtime=None,
+                    context={"llm": object(), "payload_gateway": ExternalCallGuard(),
+                             "git": ExternalCallGuard()}, api_token="generic-local-intents-token")
+    service = ChatService(registry=TenantRegistry({tenant.tenant_id: tenant}))
+    apply_bodies = []
+    for draft_id in ids:
+        plan = service.archive_local_growth_article(draft_id, {"mode": "plan"}, tenant=tenant)
+        assert plan["status"] == "ready_to_archive"
+        assert plan["draftKind"] == memory.get_draft(draft_id)["kind"]
+        if draft_id == merge_id:
+            assert plan["terminalPreviewJobIds"] == ["preview-56"]
+            assert plan["sourcePreviewLedgerHash"].startswith("sha256:")
+        apply_body = {
+            "mode": "apply", "expected_proof_hash": plan["proofHash"],
+            "reason": "Withdraw this obsolete local intent.",
+            "operator_request_id": f"local-intent-{draft_id}",
+        }
+        apply_bodies.append((draft_id, apply_body))
+        archived = service.archive_local_growth_article(draft_id, apply_body, tenant=tenant)
+        assert archived["status"] == "archived"
+        assert archived["externalEffectStatus"] == "unknown"
+        saved = memory.get_draft(draft_id)
+        original = next(item for item in records if item[0] == saved["kind"])
+        assert saved["status"] == "discarded"
+        assert saved["title"] == original[1]
+        assert saved["body"] == original[2]
+        assert {key: value for key, value in saved["meta"].items() if key != "operator_archive"} == original[3]
+        assert saved["meta"]["operator_archive"]["externalEffectStatus"] == "unknown"
+
+    race_id = memory.save_draft("Racing edit", "", kind="edit", meta=records[0][3])
+    race_plan = service.archive_local_growth_article(race_id, {"mode": "plan"}, tenant=tenant)
+    archive_method = memory.archive_local_growth_article_draft
+
+    def enqueue_then_archive(*args, **kwargs):
+        conversation = memory.create_conversation("job raced with archive")
+        memory.enqueue_chat_job(conversation, "new queued work")
+        return archive_method(*args, **kwargs)
+
+    memory.archive_local_growth_article_draft = enqueue_then_archive
+    with pytest.raises(BridgeError, match="active chat work"):
+        service.archive_local_growth_article(race_id, {
+            "mode": "apply", "expected_proof_hash": race_plan["proofHash"],
+            "reason": "Withdraw this obsolete local intent.", "operator_request_id": "local-intent-race",
+        }, tenant=tenant)
+    memory.archive_local_growth_article_draft = archive_method
+    assert memory.get_draft(race_id)["status"] == "pending"
+
+    active_id = memory.save_draft("Active edit", "", kind="edit", meta=records[0][3])
+    conversation = memory.create_conversation("active unrelated job")
+    memory.enqueue_chat_job(conversation, "active work")
+    with pytest.raises(BridgeError, match="active chat work"):
+        service.archive_local_growth_article(active_id, {"mode": "plan"}, tenant=tenant)
+    memory.close()
+
+
+def test_local_intent_archive_rejects_reviewable_or_unrecognized_shapes(tmp_path):
+    from site_agent.application.workspace import BridgeError
+
+    memory = Memory(tmp_path / "local-intent-archive-guards.db")
+    blocked_merge = _local_blocked_merge_meta("preview-ready-shape")
+    ready_merge = {**blocked_merge, "preview": {"status": "ready"}}
+    unknown_edit = {"summary": "Edit a page.", "ops": [], "approval_id": "linked"}
+    active_id = memory.save_draft("Ready merge", "", kind="merge", meta=ready_merge)
+    unknown_id = memory.save_draft("Unknown edit", "", kind="edit", meta=unknown_edit)
+    linked_id = memory.save_draft("Linked reflection", "", kind="reflection", meta={
+        "voice_notes": ["Keep the reviewed proposal"], "avoid": [],
+    })
+    from site_agent.core.contracts import ActionPriority, ActionRequirement, OwnerAction
+    memory.create_owner_action(OwnerAction(
+        capability_id="growth.candidate.review", provider_id="site-agent", title="Review reflection",
+        summary="An owner decision is linked.", action_label="Review", priority=ActionPriority.NORMAL,
+        requirement=ActionRequirement.OWNER_DECISION, source_ref=f"draft:{linked_id}",
+        dedupe_key="local-intent-linked-reflection", draft_id=linked_id,
+    ))
+    tenant = Tenant(tenant_id="generic-local-guard", config={}, memory=memory, runtime=None,
+                    context={"llm": object()}, api_token="generic-local-guard-token")
+    service = ChatService(registry=TenantRegistry({tenant.tenant_id: tenant}))
+
+    with pytest.raises(BridgeError, match="not an eligible obsolete intent"):
+        service.archive_local_growth_article(active_id, {"mode": "plan"}, tenant=tenant)
+    with pytest.raises(BridgeError, match="not an eligible obsolete intent"):
+        service.archive_local_growth_article(unknown_id, {"mode": "plan"}, tenant=tenant)
+    with pytest.raises(BridgeError, match="owner actions or approvals"):
+        service.archive_local_growth_article(linked_id, {"mode": "plan"}, tenant=tenant)
+    preview_job_id = "preview-race"
+    race_meta = _local_blocked_merge_meta(preview_job_id)
+    race_merge_id = memory.save_draft("Raced merge", "", kind="merge", meta=race_meta)
+    preview_job = {
+        "id": preview_job_id, "draft_id": race_merge_id, "mode": "compiled_preview",
+        "status": "running", "phase": "building", "branch": "preview",
+        "commit": "504f" * 10,
+    }
+    memory.kv_set("source_preview_jobs", {preview_job_id: preview_job})
+    with pytest.raises(BridgeError, match="active source preview work"):
+        service.archive_local_growth_article(race_merge_id, {"mode": "plan"}, tenant=tenant)
+
+    preview_job["status"] = "mystery"
+    memory.kv_set("source_preview_jobs", {preview_job_id: preview_job})
+    with pytest.raises(BridgeError, match="state is unknown"):
+        service.archive_local_growth_article(race_merge_id, {"mode": "plan"}, tenant=tenant)
+
+    preview_job["status"] = "failed"
+    memory.kv_set("source_preview_jobs", {preview_job_id: preview_job})
+    merge_plan = service.archive_local_growth_article(race_merge_id, {"mode": "plan"}, tenant=tenant)
+    archive_method = memory.archive_local_growth_article_draft
+
+    def advance_preview_then_archive(*args, **kwargs):
+        preview_job["status"] = "running"
+        memory.kv_set("source_preview_jobs", {preview_job_id: preview_job})
+        return archive_method(*args, **kwargs)
+
+    memory.archive_local_growth_article_draft = advance_preview_then_archive
+    with pytest.raises(BridgeError, match="active source preview work"):
+        service.archive_local_growth_article(race_merge_id, {
+            "mode": "apply", "expected_proof_hash": merge_plan["proofHash"],
+            "reason": "Withdraw this obsolete local intent.", "operator_request_id": "merge-preview-race",
+        }, tenant=tenant)
+    memory.archive_local_growth_article_draft = archive_method
+    assert memory.get_draft(race_merge_id)["status"] == "pending"
+    assert memory.get_draft(active_id)["status"] == "pending"
+    assert memory.get_draft(unknown_id)["status"] == "pending"
+    assert memory.get_draft(linked_id)["status"] == "pending"
+    memory.close()
+
+
 def _thread_result(callback):
     result = {}
     started = threading.Event()
