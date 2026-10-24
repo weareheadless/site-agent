@@ -104,6 +104,14 @@ export function growthFindingsNewestFirst(area: Pick<GrowthServiceArea, "finding
 
 export type GrowthAreaAssessmentKind = "owner_summary" | "stale" | "unavailable" | "not_assessed" | "saved_finding" | "none";
 
+export function growthAreaOwnerNextStepKey(work?: Pick<GrowthServiceWork, "canApprove" | "executionIssue" | "state" | "executionState"> | null) {
+  if (!work) return null;
+  if (work.canApprove) return "growth.areaOwnerReviewNextStep";
+  if (work.executionIssue || work.state === "paused" || work.state === "blocked") return "growth.areaOwnerStoppedNextStep";
+  if (["preparing", "building", "validating", "publishing", "verifying_live"].includes(work.state)) return "growth.areaOwnerPreparingNextStep";
+  return "growth.areaOwnerStoppedNextStep";
+}
+
 export function growthAreaAssessmentKind(area: Pick<GrowthServiceArea, "evidenceState" | "findings" | "ownerSummary">): GrowthAreaAssessmentKind {
   if (area.evidenceState === "stale") return "stale" as const;
   if (area.evidenceState === "unavailable") return "unavailable" as const;

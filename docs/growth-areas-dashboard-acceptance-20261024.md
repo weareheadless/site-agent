@@ -59,3 +59,9 @@ Newly collected assessments now carry an explicit v3 contract marker. That contr
 ## Explanation bounds correction
 
 API3 is healthy at `244d1ace73d3d0af0ec635064bd6bc2940f93842`. The standard v3 run `growth-181d56948eb34deb84fd6583ebe63f70` failed assessment validation because a generated owner explanation exceeded the new 90/160-character formatting target. Prior valid area context remained intact, as required. The parser correction keeps the existing shared safe bounds (180-character headline, 500-character problem/next action), while prompting concise writing and letting the UI excerpt long text with the full explanation retained in details. Explicit coverage, required owner fields and ready-evidence validation remain mandatory. The existing failed run will resume through its canonical scheduled retry; no new goal, fabricated date, assessment record edit or paid research is used.
+
+## Successful generated explanations and canonical actions
+
+API4 deployed and passed health at `cb8feb5e70116b9d6d5b000cdd2ccd67b820a9e5`. The same v3 run resumed through its canonical idempotent request and saved a valid assessment at `2026-10-24T23:18:35Z`. Actual GET now contains current, evidence-backed owner summaries for Content, Search visibility and Website health; Audience retains its dated unavailable evidence and Speed remains unassessed. Existing decisions 4, 7 and 10 remain canonical, and nothing was published.
+
+Rendered review caught a generated next-step claim that the sitemap was prepared while the canonical task was blocked. The final 0.10.36 presentation derives next-action wording from the exact task’s readiness when linked work exists; Ada’s original next-step text remains preserved in assessment details. This prevents a model summary from creating a false approval/readiness state. Rollout #323 was closed before deployment; its published 0.10.35 artifact remains immutable.
