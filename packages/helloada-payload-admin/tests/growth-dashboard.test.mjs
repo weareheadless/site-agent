@@ -93,6 +93,32 @@ test('selects canonical review or active work before the newest saved finding', 
   assert.deepEqual(Array.from(sandbox.exports.growthFindingsNewestFirst({ findings: newest }), row => row.id), ['newer', 'older']);
 });
 
+test('suppresses historical findings when current evidence is stale or unavailable', () => {
+  const search = serviceModel.areas.find((area) => area.id === 'search_visibility');
+  const savedSummary = { headline: 'Current', problem: 'Observed', nextStep: 'Review' };
+  assert.equal(sandbox.exports.growthAreaAssessmentKind({ evidenceState: 'recorded', findings: [], ownerSummary: savedSummary }), 'owner_summary');
+  assert.equal(sandbox.exports.growthAreaAssessmentKind({ evidenceState: 'unavailable', findings: [{ title: 'Old finding' }] }), 'unavailable');
+  assert.equal(sandbox.exports.growthAreaAssessmentKind({ evidenceState: 'stale', findings: [{ title: 'Old finding' }] }), 'stale');
+  assert.equal(sandbox.exports.growthAreaAssessmentKind({ evidenceState: 'unavailable', findings: [], ownerSummary: savedSummary }), 'unavailable');
+  assert.equal(sandbox.exports.growthAreaAssessmentKind({ evidenceState: 'stale', findings: [], ownerSummary: savedSummary }), 'stale');
+  assert.equal(sandbox.exports.growthAreaAssessmentKind({ evidenceState: 'recorded', findings: [{ id: 'saved' }] }), 'saved_finding');
+  assert.equal(sandbox.exports.growthAreaAssessmentKind({ evidenceState: 'not_assessed', findings: [] }), 'not_assessed');
+  assert.equal(sandbox.exports.growthAreaShowsReadyReview('owner_summary', true, true), false);
+  assert.equal(sandbox.exports.growthAreaNeedsAssessmentMessage('owner_summary', false, false), false);
+  assert.equal(sandbox.exports.growthAreaShowsReadyReview('stale', true, true), true);
+  assert.equal(sandbox.exports.growthAreaNeedsAssessmentMessage('stale', true, false), false);
+  assert.equal(sandbox.exports.growthAreaNeedsAssessmentMessage('stale', false, false), true);
+  assert.equal(sandbox.exports.growthAreaNeedsAssessmentMessage('unavailable', false, false), true);
+  assert.equal(sandbox.exports.growthAreaNeedsAssessmentMessage('saved_finding', false, true), false);
+  const component = source('src/components/GrowthTasks.tsx');
+  assert.match(component, /growthAreaShowsReadyReview\(assessmentKind, Boolean\(leadWork\?\.canApprove\), Boolean\(workTask\)\)/);
+  assert.match(component, /growthAreaNeedsAssessmentMessage\(assessmentKind, showReadyReview, showFinding\)/);
+  assert.match(component, /const ctaTask = showReadyReview \|\| assessmentKind === "owner_summary" \|\| !hasLimitedEvidence/);
+  assert.match(component, /assessmentKind === "unavailable" \? t\("growth\.areaEvidenceUnavailableExplanation"\)/);
+  assert.match(component, /assessmentKind === "stale" \? t\("growth\.areaEvidenceStaleExplanation"\)/);
+  assert.doesNotMatch(component.slice(component.indexOf('{mode === "areas" && !selectedTask ? <section'), component.indexOf('{error ?')), /growth\.unassignedWork\) \(serviceModel\.unassignedWorkIds\.length\)/);
+});
+
 test('validates persisted owner summaries and finding evidence references fail closed', () => {
   const validFinding = {
     id: 'run:0', runId: 'run', opportunityIndex: 0, assessedAt: '2026-10-24T12:00:00Z', kind: 'code', title: 'Recorded finding',
@@ -134,18 +160,20 @@ test('restores Areas from the URL and renders compact findings rather than numer
   assert.match(parent, /growthResultTabFromSearch\(search\)/);
   assert.match(parent, /growth_panel=areas|panel === "areas"/);
   assert.match(component, /mode === "areas" && !selectedTask/);
-  assert.match(component, /area\.evidenceState/);
+  assert.match(component, /const assessmentKind = growthAreaAssessmentKind\(area\)/);
   assert.match(component, /area\.lastAssessedAt/);
   assert.match(component, /area\.nextAssessment/);
   assert.match(component, /const leadWork = growthAreaLeadWork\(area, areaWork\)/);
   assert.match(component, /const findings = growthFindingsNewestFirst\(area\)/);
+  assert.match(component, /const assessmentKind = growthAreaAssessmentKind\(area\)/);
   assert.match(component, /growth\.areaProposedChange/);
   assert.match(component, /date\(finding\.assessedAt\)/);
   assert.match(component, /finding\.evidenceRefs\.join/);
   assert.match(component, /canonicalWorkStatus\(finding\)/);
-  assert.match(component, /area\.ownerSummary \? <div className="helloada-growth-owner-summary"/);
+  assert.match(component, /assessmentKind === "owner_summary" && area\.ownerSummary \? <div className="helloada-growth-owner-summary"/);
   assert.match(component, /helloada-growth-owner-summary-full/);
-  assert.match(component, /!area\.ownerSummary && \(!leadFinding \|\| showFinding\) && leadWork\.why/);
+  assert.match(component, /showReadyReview && leadWork/);
+  assert.match(component, /assessmentKind === "owner_summary" && area\.ownerSummary \? <div className="helloada-growth-owner-summary"[\s\S]*leadWork\.title/);
   assert.doesNotMatch(component, /growthAreaCardCounts\(area\)|AREA_EXPLORE\[area\.id\]/);
   assert.doesNotMatch(component.slice(component.indexOf('{mode === "home" && !selectedTask ? <section className="helloada-growth-owner-agenda"'), component.indexOf('{mode === "areas" && !selectedTask ? <section')), /helloada-growth-area-card/);
 });
@@ -253,7 +281,7 @@ test('rejects absent or incompatible projection instead of falling back to tasks
 
 test('renders preparation, next assessment, verified results and area evidence from the service projection', () => {
   const component = source('src/components/GrowthTasks.tsx');
-  for (const field of ['serviceModel.preparation', 'area.workIds', 'area.state', 'area.evidenceState',
+  for (const field of ['serviceModel.preparation', 'area.workIds', 'area.state', 'assessmentKind',
     'area.summary', 'area.limitations', 'area.lastAssessedAt', 'area.nextAssessment', 'serviceModel.recentResults',
     'serviceModel.unassignedWorkIds']) assert.ok(component.includes(field), `missing binding: ${field}`);
   assert.match(component, /"growth\.resultVerified"/);
@@ -277,11 +305,13 @@ test('area and evidence UI copy exists in English, French and Mexican Spanish', 
     for (const key of ['growth.areasTitle', 'growth.panel_areas', 'growth.areaPurpose_content', 'growth.areaPurpose_search_visibility', 'growth.areaPurpose_website_health', 'growth.areaPurpose_audience_competitors', 'growth.areaPurpose_speed_experience', 'growth.areaFindingsDetails', 'growth.areaFindingDate', 'growth.areaFindingType', 'growth.areaProposedChange', 'growth.areaSavedAssessmentDetails', 'growth.areaContent', 'growth.areaSearchVisibility', 'growth.areaWebsiteHealth',
       'growth.areaAudienceCompetitors', 'growth.areaSpeedExperience', 'growth.areaNoAssessmentSummary', 'growth.areaProposedDetails',
       'growth.areaWorkInProgress', 'growth.areaOpenWork', 'growth.areaQueuedProposal', 'growth.areaWorkPaused', 'growth.areaWorkBlocked',
-      'growth.areaWorkStoppedHelp', 'growth.areasIntro',
+      'growth.areaWorkReady', 'growth.reviewChanges',
+      'growth.areaWorkStoppedHelp', 'growth.areasIntro', 'growth.areaEvidenceUnavailableExplanation', 'growth.areaEvidenceStaleExplanation',
+      'growth.unassignedWork', 'growth.unassignedWorkNote',
       'growth.areaFindingStatusWaiting', 'growth.areaFindingStatusDeferred', 'growth.areaFindingStatusReview', 'growth.areaFindingStatusRecorded',
       'growth.areaFindingKindContent', 'growth.areaFindingKindTechnical', 'growth.areaFindingKindQuestion', 'growth.areaFindingKindAssessment',
       'growth.areaState_needs_decision', 'growth.evidence_recorded', 'growth.preparationTitle', 'growth.resultVerified',
-      'growth.unassignedWork', 'growth.secondaryAreaLinks', 'growth.scopeSharedGrowthReview', 'growth.scopeGenericAssessment',
+      'growth.secondaryAreaLinks', 'growth.scopeSharedGrowthReview', 'growth.scopeGenericAssessment',
       'growth.receiptDetails', 'growth.releaseId', 'growth.sourceSha']) {
       assert.equal(typeof growthCopy[language][key], 'string', `${language}: ${key}`);
       assert.ok(growthCopy[language][key].length > 0);
