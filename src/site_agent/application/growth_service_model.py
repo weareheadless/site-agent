@@ -80,7 +80,9 @@ def _run_source_states(run: Mapping[str, Any], sources: Sequence[Mapping[str, An
 def _opportunity_findings(runs: Sequence[Mapping[str, Any]], initiatives: Sequence[Mapping[str, Any]],
                           sources: Sequence[Mapping[str, Any]], now: datetime,
                           inventory_freshness_hours: int,
-                          max_active_candidates: int) -> dict[str, list[dict[str, Any]]]:
+                          max_active_candidates: int,
+                          visible_work_ids: set[str],
+                          initiative_work_aliases: Mapping[str, str]) -> dict[str, list[dict[str, Any]]]:
     """Project each saved finding with its exact assessment lineage and current evidence/work state."""
     by_area: dict[str, list[dict[str, Any]]] = {area: [] for area in AREAS}
     for run in runs:
@@ -185,9 +187,13 @@ def _opportunity_findings(runs: Sequence[Mapping[str, Any]], initiatives: Sequen
                 full = len(unique_blockers) >= max(1, int(max_active_candidates))
                 finding["capacityState"] = "full" if full else "available"
                 if full:
-                    finding["waitingOnWorkIds"] = [
-                        f"initiative:{work_id}" for work_id in sorted(unique_blockers, key=lambda value: (not value.isdigit(), int(value) if value.isdigit() else value))
-                    ]
+                    represented_blockers = set()
+                    for work_id in sorted(unique_blockers, key=lambda value: (not value.isdigit(), int(value) if value.isdigit() else value)):
+                        raw_id = f"initiative:{work_id}"
+                        canonical_id = raw_id if raw_id in visible_work_ids else initiative_work_aliases.get(str(work_id))
+                        if canonical_id in visible_work_ids:
+                            represented_blockers.add(canonical_id)
+                    finding["waitingOnWorkIds"] = sorted(represented_blockers)
                 else:
                     finding["statusReason"] = "The saved wait marker is pending reconciliation; capacity is currently available."
             for area in dict.fromkeys([primary, *secondary]):
@@ -298,6 +304,18 @@ def service_model(
         })
     unique = {str(row["id"]): row for row in work}
     work = list(unique.values())
+    visible_work_ids = {str(row["id"]) for row in work}
+    initiative_work_aliases: dict[str, str] = {}
+    for task in tasks:
+        task_id = str(task.get("id") or "")
+        if task_id not in visible_work_ids:
+            continue
+        history = task.get("history")
+        if not isinstance(history, list):
+            continue
+        for item in history:
+            if isinstance(item, Mapping) and item.get("initiativeId") is not None:
+                initiative_work_aliases[str(item["initiativeId"])] = task_id
     decision_ids = [row["id"] for row in work if row["state"] == "awaiting_owner"]
     assessments = sorted(
         (row for row in runs if isinstance((row.get("detail") or {}).get("assessment"), Mapping)
@@ -309,6 +327,7 @@ def service_model(
     coverage = {row["area"]: row for row in assessment.get("coverage", []) if isinstance(row, Mapping) and row.get("area") in AREAS}
     findings_by_area = _opportunity_findings(
         runs, initiatives, sources, now, inventory_freshness_hours, max_active_candidates,
+        visible_work_ids, initiative_work_aliases,
     )
     schedules = [row for row in activities if row.get("enabled") and row.get("id") in {"growth_initial", "growth_weekly"} and _date(row.get("nextRun"))]
     schedules.sort(key=lambda row: _date(row["nextRun"]))

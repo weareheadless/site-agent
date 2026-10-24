@@ -3,7 +3,9 @@ import json
 import pytest
 
 from site_agent.application.growth_service_model import AREAS, service_model
+from site_agent.application.growth_tasks import growth_tasks
 from site_agent.brain.growth import assess
+from site_agent.core.memory import Memory
 
 
 def project(**kwargs):
@@ -296,7 +298,7 @@ def test_waiting_findings_only_join_unique_titles_and_report_current_external_ca
         "primaryArea": "content"}
     unique = {**run, "run_id": "run-3", "detail": {**run["detail"], "candidateIds": [3], "queuedInitiativeIds": [5],
         "assessment": {"opportunities": [first, candidate_opportunity]}}}
-    model = project(runs=[unique], initiatives=[
+    model = project(tasks=[{"id": f"initiative:{id}", "kind": "code", "focus": "preparing"} for id in (1, 3, 5)], runs=[unique], initiatives=[
         {"id": 1, "kind": "code", "state": "preparing", "growth_run_id": "other"},
         {"id": 3, "kind": "payload_content", "state": "ready_for_review", "growth_run_id": "run-3",
             "expected": {"opportunity": candidate_opportunity}},
@@ -307,6 +309,50 @@ def test_waiting_findings_only_join_unique_titles_and_report_current_external_ca
     assert finding["status"] == "waiting_for_capacity"
     assert finding["waitingOnWorkIds"] == ["initiative:1", "initiative:3", "initiative:5"]
     assert finding["capacityState"] == "full"
+    assert all(work_id in {row["id"] for row in model["work"]} for work_id in finding["waitingOnWorkIds"])
+
+
+def test_coalesced_same_draft_capacity_blockers_map_to_visible_work_and_dedupe(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    draft_id = memory.save_draft(title="One reviewed candidate", body="One candidate", kind="article")
+    cycle = memory.create_strategy_cycle("old-run", "2026-10", "sha256:old", {})
+    first_id = memory.create_strategy_initiative(cycle["id"], kind="payload_content", title="First", summary="First",
+        state="ready_for_review", draft_id=draft_id, growth_run_id="outside-a",
+        expected={"opportunity": {"primaryArea": "content"}})
+    second_id = memory.create_strategy_initiative(cycle["id"], kind="payload_content", title="Second", summary="Second",
+        state="ready_for_review", draft_id=draft_id, growth_run_id="outside-b",
+        expected={"opportunity": {"primaryArea": "content"}})
+    initiatives = memory.list_strategy_initiatives(limit=None)
+    tasks = growth_tasks(memory, initiatives, memory.list_drafts(limit=None), [], [], runs=[])
+    assert [task["id"] for task in tasks] == [f"initiative:{second_id}"]
+    assert tasks[0]["history"][0]["initiativeId"] == first_id
+
+    opportunity = {"kind": "code", "title": "Waiting idea", "why": "Evidence", "scope": "Action",
+        "primaryArea": "content", "evidence": ["inventory"], "requiredSources": ["inventory"]}
+    run = {"run_id": "waiting", "status": "pending", "detail": {
+        "assessmentCompletedAt": "2026-10-20T00:00:00Z", "waitingForCapacity": [opportunity["title"]],
+        "assessment": {"opportunities": [opportunity]}}}
+    model = project(tasks=tasks, initiatives=initiatives, runs=[run], sources=[{"id": "inventory", "state": "ready"}],
+        max_active_candidates=2)
+    finding = next(row for row in model["areas"] if row["id"] == "content")["findings"][0]
+    assert finding["capacityState"] == "full"  # Count both underlying initiatives.
+    assert finding["waitingOnWorkIds"] == [f"initiative:{second_id}"]  # One visible canonical task.
+    assert finding["waitingOnWorkIds"][0] in {row["id"] for row in model["work"]}
+    memory.close()
+
+
+def test_full_capacity_omits_unrepresented_blocker_ids_without_lowering_raw_count():
+    opportunity = {"kind": "code", "title": "Waiting idea", "why": "Evidence", "scope": "Action",
+        "primaryArea": "content", "evidence": ["inventory"], "requiredSources": ["inventory"]}
+    run = {"run_id": "waiting", "status": "pending", "detail": {
+        "assessmentCompletedAt": "2026-10-20T00:00:00Z", "waitingForCapacity": [opportunity["title"]],
+        "assessment": {"opportunities": [opportunity]}}}
+    model = project(runs=[run], initiatives=[
+        {"id": 12, "kind": "code", "state": "preparing", "growth_run_id": "old-run"}],
+        sources=[{"id": "inventory", "state": "ready"}], max_active_candidates=1)
+    finding = next(row for row in model["areas"] if row["id"] == "content")["findings"][0]
+    assert finding["capacityState"] == "full"
+    assert finding["waitingOnWorkIds"] == []
 
 
 def test_saved_wait_marker_does_not_claim_current_blockage_when_capacity_is_available():
