@@ -7,7 +7,7 @@ import pytest
 
 from site_agent.application.growth_service_model import AREAS, service_model
 from site_agent.application.growth_tasks import growth_tasks
-from site_agent.brain.growth import assess
+from site_agent.brain.growth import ASSESSMENT_CONTRACT_VERSION, assess
 from site_agent.core.memory import Memory
 
 
@@ -71,7 +71,7 @@ def test_assessment_requires_a_canonical_primary_area_and_distinct_secondary_are
     contract = llm.messages[0]["content"]
     assert "Every opportunity must include primaryArea" in contract
     assert "secondaryAreas is optional" in contract
-    assert "required for every new coverage row" in contract
+    assert "Every coverage row requires ownerSummary" in contract
     assert "headline to 90 characters or fewer" in contract
     assert "problem and nextStep to 160 characters or fewer" in contract
     assert "crawlseo:health" in contract
@@ -89,6 +89,70 @@ def test_assessment_accepts_optional_bounded_owner_summary_on_evidenced_coverage
                     "nextStep": "Link each entry to its existing destination."}}]})
     result = assess({"llm": LLM()}, {"sources": [{"id": "inventory"}], "inventory": []})
     assert result["coverage"][0]["ownerSummary"]["nextStep"].startswith("Link each entry")
+
+
+def _strict_assessment_material():
+    return {"assessmentContractVersion": ASSESSMENT_CONTRACT_VERSION,
+        "sources": [{"id": "inventory", "sourceRef": "canonical_payload_inventory", "state": "ready",
+            "observedAt": "2026-10-24T00:00:00Z"}],
+        "inventory": [{"sourceRef": "payload:pages:1", "collection": "pages",
+            "document": {"id": "1"}}], "maxRecommendations": 3}
+
+
+def _strict_assessment_response(*, coverage=None, opportunities=None):
+    return {"summary": "The current evidence supports a focused review.",
+        "coverage": coverage if coverage is not None else [{"area": "content",
+            "summary": "The current canonical inventory was reviewed.", "evidence": ["canonical_payload_inventory"],
+            "limitations": ["The inventory covers page metadata and bounded excerpts."], "ownerSummary": {
+                "headline": "Some page details may need review.",
+                "problem": "The inventory does not show whether every visitor question is answered.",
+                "nextStep": "Review the highest-traffic page against the questions customers ask."}}],
+        "opportunities": opportunities if opportunities is not None else []}
+
+
+def test_strict_assessment_contract_requires_exact_coverage_top_level_key():
+    response = {"summary": "The current evidence supports a focused review.", "opportunities": []}
+    class LLM:
+        def chat(self, *args, **kwargs):
+            return json.dumps(response)
+    with pytest.raises(ValueError, match="exactly summary, coverage and opportunities"):
+        assess({"llm": LLM()}, _strict_assessment_material())
+
+
+def test_strict_assessment_requires_owner_summary_for_each_coverage_row():
+    coverage = [{"area": "content", "summary": "The current inventory was reviewed.",
+        "evidence": ["canonical_payload_inventory"], "limitations": []}]
+    response = _strict_assessment_response(coverage=coverage)
+    class LLM:
+        def chat(self, *args, **kwargs):
+            return json.dumps(response)
+    with pytest.raises(ValueError, match="requires ownerSummary"):
+        assess({"llm": LLM()}, _strict_assessment_material())
+
+
+def test_strict_assessment_rejects_unready_coverage_refs_and_requires_opportunity_areas():
+    response = _strict_assessment_response(coverage=[{"area": "content", "summary": "A review was made.",
+        "evidence": ["dataforseo"], "limitations": [], "ownerSummary": {
+            "headline": "Search evidence is unavailable.", "problem": "There is no ready search observation in this run.",
+            "nextStep": "Reassess when current search evidence is available."}}])
+    material = {**_strict_assessment_material(), "sources": [
+        *_strict_assessment_material()["sources"], {"id": "dataforseo", "state": "missing"}]}
+    class LLM:
+        def chat(self, *args, **kwargs):
+            return json.dumps(response)
+    with pytest.raises(ValueError, match="only ready source IDs or sourceRefs"):
+        assess({"llm": LLM()}, material)
+
+    opportunity = {"kind": "code", "title": "Improve a route label", "why": "Visitors may miss a route.",
+        "scope": "Clarify the existing route label.", "evidence": ["canonical_payload_inventory"],
+        "requiredSources": ["canonical_payload_inventory"], "primaryArea": "website_health",
+        "secondaryAreas": ["search_visibility"]}
+    response = _strict_assessment_response(opportunities=[opportunity])
+    class OpportunityLLM:
+        def chat(self, *args, **kwargs):
+            return json.dumps(response)
+    with pytest.raises(ValueError, match="every opportunity area"):
+        assess({"llm": OpportunityLLM()}, _strict_assessment_material())
 
 
 def test_assessment_keeps_legacy_owner_summary_storage_bounds_compatible():
@@ -206,6 +270,51 @@ def test_later_execution_update_does_not_replace_a_newer_assessment():
         run("2026-10-20T01:00:00Z", "2026-10-20T02:00:00Z", "New assessment"),
     ])
     assert model["areas"][0]["summary"] == "New assessment"
+
+
+def test_new_assessment_omitting_area_coverage_preserves_older_lineage_and_evidence_age():
+    old_coverage = {"area": "website_health", "summary": "The prior crawl found technical issues.",
+        "evidence": ["crawlseo:health"], "limitations": ["This observation is old."],
+        "ownerSummary": {"headline": "Review the older crawl finding.",
+            "problem": "The saved crawl is outside its freshness window.",
+            "nextStep": "Wait for a new completed crawl before treating it as current."}}
+    old_run = {"run_id": "older-explicit", "detail": {"assessmentCompletedAt": "2026-10-01T00:00:00Z",
+        "material": {"sources": [{"id": "crawlseo_health", "sourceRef": "crawlseo:health", "state": "ready",
+            "observedAt": "2026-10-01T00:00:00Z", "freshnessHours": 24}]},
+        "assessment": {"summary": "Older assessment", "coverage": [old_coverage], "opportunities": []}}}
+    newer_run = {"run_id": "newer-omitted", "detail": {"assessmentCompletedAt": "2026-10-20T00:00:00Z",
+        "material": {"sources": [{"id": "crawlseo_health", "sourceRef": "crawlseo:health", "state": "ready",
+            "observedAt": "2026-10-20T00:00:00Z", "freshnessHours": 24}]},
+        "assessment": {"summary": "The latest run had no health coverage.", "opportunities": []}}}
+    area = next(row for row in project(now=datetime(2026, 10, 21, tzinfo=timezone.utc),
+        runs=[newer_run, old_run], sources=[{"id": "crawlseo_health", "sourceRef": "crawlseo:health", "state": "ready"}])["areas"]
+        if row["id"] == "website_health")
+    assert area["summary"] == old_coverage["summary"]
+    assert area["lastAssessedAt"] == "2026-10-01T00:00:00Z"
+    assert area["evidenceState"] == "stale"
+    assert "ownerSummary" not in area
+
+
+def test_assessments_without_run_ids_keep_coverage_bound_to_their_own_material():
+    old_run = {"detail": {"assessmentCompletedAt": "2026-10-01T00:00:00Z",
+        "material": {"sources": [{"id": "crawlseo_health", "sourceRef": "crawlseo:health",
+            "state": "ready", "observedAt": "2026-10-01T00:00:00Z", "freshnessHours": 24}]},
+        "assessment": {"summary": "Old crawl evidence", "coverage": [{"area": "website_health",
+            "summary": "Old crawl evidence", "evidence": ["crawlseo:health"], "limitations": []}], "opportunities": []}}}
+    recent_run = {"detail": {"assessmentCompletedAt": "2026-10-20T00:00:00Z",
+        "material": {"sources": [{"id": "gsc", "sourceRef": "gsc", "state": "ready",
+            "observedAt": "2026-10-20T00:00:00Z", "freshnessHours": 24}]},
+        "assessment": {"summary": "Recent search evidence", "coverage": [{"area": "search_visibility",
+            "summary": "Recent search evidence", "evidence": ["gsc"], "limitations": []}], "opportunities": []}}}
+    areas = {row["id"]: row for row in project(now=datetime(2026, 10, 21, tzinfo=timezone.utc),
+        runs=[old_run, recent_run], sources=[{"id": "crawlseo_health", "sourceRef": "crawlseo:health", "state": "ready"},
+            {"id": "gsc", "sourceRef": "gsc", "state": "ready"}])["areas"]}
+    assert areas["website_health"]["summary"] == "Old crawl evidence"
+    assert areas["website_health"]["lastAssessedAt"] == "2026-10-01T00:00:00Z"
+    assert areas["website_health"]["evidenceState"] == "stale"
+    assert areas["search_visibility"]["summary"] == "Recent search evidence"
+    assert areas["search_visibility"]["lastAssessedAt"] == "2026-10-20T00:00:00Z"
+    assert areas["search_visibility"]["evidenceState"] == "recorded"
 
 
 def test_unavailable_or_stale_evidence_is_not_presented_as_current_coverage():
