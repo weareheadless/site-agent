@@ -1021,7 +1021,7 @@ def test_invalid_opportunity_evidence_does_not_abort_valid_preparation(tmp_path)
     memory.close()
 
 
-def test_missing_required_evidence_blocks_only_that_candidate_not_fabricated_completion(tmp_path):
+def test_missing_required_evidence_defers_only_that_candidate_without_a_fabricated_failure(tmp_path):
     class UnavailableAda(Ada):
         def chat(self, messages, **kwargs):
             response = json.loads(super().chat(messages, **kwargs))
@@ -1031,9 +1031,11 @@ def test_missing_required_evidence_blocks_only_that_candidate_not_fabricated_com
     memory = Memory(tmp_path / "memory.db")
     payload = Payload()
     run = run_growth_cycle({"tenant_id": "test-business", "config": config(), "memory": memory, "payload_gateway": payload, "llm": UnavailableAda()}, trigger="weekly")
-    assert run["status"] == "blocked"
+    assert run["status"] == "complete"
     assert payload.writes == 0
-    assert memory.list_strategy_initiatives()[0]["state"] == "blocked"
+    initiative = memory.list_strategy_initiatives()[0]
+    assert initiative["state"] == "deferred"
+    assert initiative["validation"]["errorCode"] == "required_source_not_ready"
     memory.close()
 
 
