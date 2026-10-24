@@ -37,3 +37,7 @@ Admin `0.10.33` is published from source `dc2fc3770580ed62b8e35293aadbc1bf517822
 - The owner confirmed the Areas tab appears, but rejected its clarity and spacing. Corrective release acceptance remains pending.
 
 No source commit, tenant deployment, or owner action is performed by this acceptance note.
+
+## Corrective admin artifact 0.10.34
+
+The immutable artifact was published from reviewed source `100395c903678f8a9060ce32880479dca4bca6fe`; publication workflow `40126911250` passed. Downloaded release assets and manifest agree on exact source, tag and version. Tarball SHA-256 is `39d52cf6f7fa871a99cd2f28b3d258205ecf6f59213e5e2df38bba3059168749`; SHA-512 integrity is `sha512-ZQhwiEQKYe8OO5sJK1ekhuAWlmUff0id/B+L4jhG8HDLsxNknWB6I0eC8NPQcWTu5ri7bp8qAxli9FbZ6qpFVA==`. Verification proof is `/tmp/growth-admin-0.10.34-verified-artifact.json` (private). This is artifact publication, not live customer acceptance.
