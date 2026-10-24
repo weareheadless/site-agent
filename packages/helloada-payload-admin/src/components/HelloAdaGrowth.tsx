@@ -298,7 +298,8 @@ export function HelloAdaGrowth() {
           role="group"
           aria-label={t("growth.title")}
         >
-          <button type="button" aria-pressed={panel === "home" || panel === "decisions"} onClick={() => navigatePanel("home")}>{t("growth.panel_next")}</button>
+          <button type="button" aria-pressed={panel === "home"} onClick={() => navigatePanel("home")}>{t("growth.panel_next")}</button>
+          <button type="button" aria-pressed={panel === "decisions"} onClick={() => navigatePanel("decisions")}>{t("growth.panel_decisions")}</button>
           <button type="button" aria-pressed={panel === "work"} onClick={() => navigatePanel("work")}>{t("growth.panel_work")}</button>
           <button type="button" aria-pressed={panel === "results"} onClick={() => navigatePanel("results")}>{t("growth.panel_results")}</button>
         </div>

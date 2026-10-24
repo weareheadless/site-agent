@@ -7,7 +7,7 @@ import { fetchHelloAda } from "../api/fetchHelloAda";
 import { useHelloAdaTranslations } from "../api/useHelloAdaTranslations";
 import { HelloAdaMark } from "./HelloAdaLogo";
 import { HelloAdaChatMessage } from "./HelloAdaChatMessage";
-import { getDecisionPresentation } from "../lib/growth-review";
+import { getDecisionPresentation, getReviewChanges, getReviewTarget, groupReviewDecisions } from "../lib/growth-review";
 import { GrowthChangeReview } from "./GrowthChangeReview";
 import { type GrowthAreaKey, type GrowthResultTab, type GrowthServiceArea, type GrowthServiceModel, type GrowthServiceWork } from "../lib/growth-data";
 
@@ -45,6 +45,12 @@ const AREA_TABS: Record<GrowthAreaKey, GrowthResultTab> = {
   audience_competitors: "competitionTab", speed_experience: "health",
 };
 const FILTERS: Focus[] = ["needs_you", "preparing", "planned", "paused", "opportunity", "completed"];
+
+function conciseText(value: string, limit = 180): string {
+  const text = value.replace(/\s+/g, " ").trim();
+  const characters = Array.from(text);
+  return characters.length > limit ? characters.slice(0, limit - 1).join("").trimEnd() + "…" : text;
+}
 
 function writeGrowthLocation(nextFocus: Focus, nextSelected?: string, mode: "pushState" | "replaceState" = "replaceState") {
   const url = new URL(window.location.href);
@@ -147,7 +153,14 @@ export function GrowthTasks({ mode, serviceModel, decisionOrder, onNavigate, tas
   const canonicalDecisionIds = new Set(serviceModel.decisionIds);
   const featuredDecision = decisionRows[0];
   const featuredPresentation = featuredDecision ? getDecisionPresentation(featuredDecision, t) : null;
-  const additionalDecisions = decisionRows.slice(1);
+  const featuredRelatedGroup = featuredDecision
+    ? groupReviewDecisions(decisionRows).find(group => group.tasks.some(task => task.id === featuredDecision.id) && group.tasks.length > 1)
+    : undefined;
+  const featuredRelatedIds = new Set(featuredRelatedGroup?.tasks.map(task => task.id) || []);
+  const additionalDecisions = decisionRows.slice(1).filter(task => !featuredRelatedIds.has(task.id)).slice(0, 3);
+  const featuredRelatedFieldNames = featuredRelatedGroup
+    ? [...new Set(getReviewChanges(featuredRelatedGroup.tasks[0].review).map(change => change.labelKey ? t(change.labelKey) : change.label))].join(" · ")
+    : "";
   const visible = decisionRows;
   const recentWork = serviceModel.recentResults;
   const recentWorkIds = new Set(recentWork.map(row => row.id));
@@ -245,6 +258,24 @@ export function GrowthTasks({ mode, serviceModel, decisionOrder, onNavigate, tas
     <span className={"helloada-growth-task-badge is-" + task.focus}>{stateLabel(task)}</span>
     <span className="helloada-growth-row-open">{t("growth.openTask")} →</span>
   </button>;
+  const renderDecisionGroups = (rows: GrowthTask[], className: string) => <ul className={className}>
+    {groupReviewDecisions(rows).map(group => {
+      const related = Boolean(group.signature && group.tasks.length > 1);
+      const changes = related ? getReviewChanges(group.tasks[0].review) : [];
+      const labels = [...new Set(changes.map(change => change.labelKey ? t(change.labelKey) : change.label))];
+      const fieldText = labels.join(" · ");
+      return <li key={group.key} className={related ? "helloada-growth-related-group" : undefined}>
+        {related ? <h4>{t("growth.clarityRelatedFields").replace("{fields}", fieldText)}</h4> : null}
+        <ul className="helloada-growth-related-items">{group.tasks.map(task => {
+          const target = getReviewTarget(task.review);
+          const location = target ? [target.title, target.path].filter(Boolean).join(" · ") : taskSummary(task) || stateLabel(task);
+          return <li key={task.id}><button type="button" data-growth-task-id={task.id} onClick={() => openTask(task)}>
+            <span><strong>{title(task)}</strong><small>{location}</small></span><span aria-hidden="true">→</span>
+          </button></li>;
+        })}</ul>
+      </li>;
+    })}
+  </ul>;
   const effect = async (task: GrowthTask | undefined, operation: string) => {
     if (busy) return;
     setBusy(task?.id || operation);
@@ -310,21 +341,38 @@ export function GrowthTasks({ mode, serviceModel, decisionOrder, onNavigate, tas
         <div className="helloada-growth-agenda-grid">
           {pending ? <div className="helloada-growth-agenda-empty" role="status">{t("growth.loading")}</div> : featuredDecision ? <article className="helloada-growth-featured-decision">
             <span className="helloada-growth-decision-eyebrow">{t("growth.decisionEyebrow")}</span>
-            <h3>{featuredPresentation?.heading || title(featuredDecision)}</h3>
-            <p>{featuredDecision.requirement === "owner_information"
-              ? featuredDecision.scope || taskSummary(featuredDecision) || title(featuredDecision)
-              : featuredPresentation?.purpose || t("growth.clarityPurposeProposal")}</p>
-            {taskSummary(featuredDecision) ? <details className="helloada-growth-featured-evidence">
-              <summary>{t("growth.clarityEvidenceLabel")}</summary><p>{taskSummary(featuredDecision)}</p>
-            </details> : null}
-            {featuredPresentation?.target ? <small className="helloada-growth-featured-target">
-              {[featuredPresentation.target.title, featuredPresentation.target.path].filter(Boolean).join(" · ")}
-            </small> : null}
-            <button type="button" className="helloada-growth-primary" data-growth-task-id={featuredDecision.id} onClick={() => openTask(featuredDecision)}>
-              {t(featuredDecision.requirement === "owner_information" ? "growth.decisionCtaAnswer"
-                : featuredDecision.kind === "article" ? "growth.decisionCtaArticle"
-                : featuredDecision.canApprove ? "growth.decisionCtaChanges" : "growth.decisionCtaReview")} <span aria-hidden="true">→</span>
-            </button>
+            {featuredRelatedGroup ? <>
+              <h3>{t("growth.clarityRelatedDecisionHeading").replace("{count}", String(featuredRelatedGroup.tasks.length)).replace("{fields}", featuredRelatedFieldNames)}</h3>
+              <p>{t("growth.clarityRelatedDecisionPurpose")}</p>
+              <ul className="helloada-growth-featured-group-items">{featuredRelatedGroup.tasks.map(task => {
+                const target = getReviewTarget(task.review);
+                const presentation = getDecisionPresentation(task, t);
+                return <li key={task.id}><button type="button" data-growth-task-id={task.id}
+                  aria-label={`${title(task)}. ${presentation.heading}${target?.path ? `. ${target.path}` : ""}`} onClick={() => openTask(task)}>
+                  <span><strong>{target?.title || title(task)}</strong><small>{presentation.heading}</small></span>
+                  {target?.path ? <code>{target.path}</code> : null}<span aria-hidden="true">→</span>
+                </button></li>;
+              })}</ul>
+            </> : <>
+              <h3>{featuredPresentation?.heading || title(featuredDecision)}</h3>
+              <p>{featuredDecision.requirement === "owner_information"
+                ? conciseText(featuredDecision.scope || taskSummary(featuredDecision) || title(featuredDecision))
+                : featuredPresentation?.purpose || t("growth.clarityPurposeProposal")}</p>
+              {featuredDecision.requirement === "owner_information" && featuredDecision.scope ? <details className="helloada-growth-featured-evidence">
+                <summary>{t("growth.clarityScopeDetails")}</summary><p>{featuredDecision.scope}</p>
+              </details> : null}
+              {taskSummary(featuredDecision) ? <details className="helloada-growth-featured-evidence">
+                <summary>{t("growth.clarityEvidenceLabel")}</summary><p>{fullTaskSummary(featuredDecision)}</p>
+              </details> : null}
+              {featuredPresentation?.target ? <small className="helloada-growth-featured-target">
+                {[featuredPresentation.target.title, featuredPresentation.target.path].filter(Boolean).join(" · ")}
+              </small> : null}
+              <button type="button" className="helloada-growth-primary" data-growth-task-id={featuredDecision.id} onClick={() => openTask(featuredDecision)}>
+                {t(featuredDecision.requirement === "owner_information" ? "growth.decisionCtaAnswer"
+                  : featuredDecision.kind === "article" ? "growth.decisionCtaArticle"
+                  : featuredDecision.canApprove ? "growth.decisionCtaChanges" : "growth.decisionCtaReview")} <span aria-hidden="true">→</span>
+              </button>
+            </>}
           </article> : serviceModel.preparation.length ? <article className="helloada-growth-featured-decision" role="status">
             <span className="helloada-growth-decision-eyebrow">{t("growth.preparationTitle")}</span>
             <h3>{t("growth.preparationWaiting")}</h3>
@@ -342,19 +390,12 @@ export function GrowthTasks({ mode, serviceModel, decisionOrder, onNavigate, tas
           </article> : <div className="helloada-growth-agenda-empty" role="status">
             <strong>{t("growth.noNextStep")}</strong><span>{t("growth.noNextStepNote")}</span>
           </div>}
-          {additionalDecisions.length ? <ul className="helloada-growth-additional-decisions">
-            {additionalDecisions.map(task => <li key={task.id}>
-              <button type="button" data-growth-task-id={task.id} onClick={() => openTask(task)}>
-                <span><strong>{title(task)}</strong><small>{taskSummary(task) || stateLabel(task)}</small></span><span aria-hidden="true">→</span>
-              </button>
-            </li>)}
-          </ul> : null}
+          {additionalDecisions.length ? renderDecisionGroups(additionalDecisions, "helloada-growth-additional-decisions helloada-growth-related-groups") : null}
         </div>
         {serviceModel.decisionIds.length ? <div className="helloada-growth-agenda-actions">
           <span>{serviceModel.decisionIds.length} {t("growth.decisionsCount")}</span>
           <button type="button" onClick={() => onNavigate("decisions")}>{t("growth.seeAllDecisions")} →</button>
         </div> : null}
-        {activeWork ? <p className="helloada-growth-handling-note">{t("growth.activeLabel")}: <strong>{activeWork.title || activeWork.id}</strong>{activeWork.why ? ` · ${activeWork.why}` : ""}</p> : serviceModel.preparation.length ? <p className="helloada-growth-handling-note">{t("growth.preparationWaiting")}</p> : null}
         <details className="helloada-growth-agenda-details">
           <summary>{t("growth.clarityMoreWork")}</summary>
         <div className="helloada-growth-agenda-status">
@@ -507,8 +548,11 @@ export function GrowthTasks({ mode, serviceModel, decisionOrder, onNavigate, tas
             {ownerInformation ? <section className="helloada-growth-owner-question" aria-label={t("growth.ownerQuestionTitle")}>
               <div className="helloada-growth-owner-evidence is-question">
                 <strong>{t("growth.clarityQuestion")}</strong>
-                <p>{selectedTask.scope || title(selectedTask)}</p>
+                <p>{conciseText(selectedTask.scope || title(selectedTask))}</p>
               </div>
+              {selectedTask.scope ? <details className="helloada-growth-owner-evidence">
+                <summary>{t("growth.clarityScopeDetails")}</summary><p>{selectedTask.scope}</p>
+              </details> : null}
               {fullTaskSummary(selectedTask) ? <details className="helloada-growth-owner-evidence">
                 <summary>{t("growth.ownerQuestionObserved")}</summary><p>{fullTaskSummary(selectedTask)}</p>
               </details> : null}
@@ -592,9 +636,7 @@ export function GrowthTasks({ mode, serviceModel, decisionOrder, onNavigate, tas
             <strong>{pending ? t("growth.loading") : t("growth.workEmptyTitle")}</strong>
             <p>{t("growth.workEmptyBody")}</p>
             <button type="button" className="helloada-growth-secondary" onClick={() => onNavigate("results", "search")}>{t("growth.workResearchLink")} →</button>
-          </div> : visible.length ? <ul className="helloada-growth-task-list">
-            {visible.map(task => <li key={task.id} className={"helloada-growth-task is-" + task.focus}>{workTaskButton(task)}</li>)}
-          </ul> : <div className="helloada-growth-empty" role="status">
+        </div> : visible.length ? renderDecisionGroups(visible, "helloada-growth-task-list helloada-growth-related-groups") : <div className="helloada-growth-empty" role="status">
             <strong>{pending ? t("growth.loading") : t("growth.empty_needs_you_title")}</strong>
             <p>{t("growth.empty_needs_you")}</p>
           </div>}

@@ -15,6 +15,8 @@ export const growthDecisionCopy: Record<string, Record<string, string>> = {
     clarityFieldDescription: 'Description', clarityFieldName: 'Name', clarityFieldCaption: 'Caption', clarityFieldSearchPhrase: 'Search phrase',
     clarityFieldWidth: 'Width', clarityFieldHeight: 'Height',
     clarityRichTextDetails: 'Show exact rich text data', clarityUnderlined: 'underlined', clarityLinkDestination: 'link destination', clarityOpensNewTab: 'opens in a new tab',
+    clarityRelatedFields: 'Changes to: {fields}', clarityScopeDetails: 'Full question and context',
+    clarityRelatedDecisionHeading: '{count} changes to {fields}', clarityRelatedDecisionPurpose: 'Each page is reviewed separately. Open one to compare its exact change.',
   },
   fr: {
     clarityCurrently: 'Actuellement sur votre site', clarityProposed: 'Modification proposée',
@@ -32,6 +34,8 @@ export const growthDecisionCopy: Record<string, Record<string, string>> = {
     clarityFieldDescription: 'Description', clarityFieldName: 'Nom', clarityFieldCaption: 'Légende', clarityFieldSearchPhrase: 'Expression recherchée',
     clarityFieldWidth: 'Largeur', clarityFieldHeight: 'Hauteur',
     clarityRichTextDetails: 'Afficher les données exactes du texte enrichi', clarityUnderlined: 'souligné', clarityLinkDestination: 'destination du lien', clarityOpensNewTab: 's’ouvre dans un nouvel onglet',
+    clarityRelatedFields: 'Modifications des champs : {fields}', clarityScopeDetails: 'Question complète et contexte',
+    clarityRelatedDecisionHeading: '{count} changements : {fields}', clarityRelatedDecisionPurpose: 'Chaque page est examinée séparément. Ouvrez-en une pour comparer la modification exacte.',
   },
   es: {
     clarityCurrently: 'Actualmente en tu sitio web', clarityProposed: 'Cambio propuesto',
@@ -49,5 +53,7 @@ export const growthDecisionCopy: Record<string, Record<string, string>> = {
     clarityFieldDescription: 'Descripción', clarityFieldName: 'Nombre', clarityFieldCaption: 'Pie de foto', clarityFieldSearchPhrase: 'Frase de búsqueda',
     clarityFieldWidth: 'Ancho', clarityFieldHeight: 'Alto',
     clarityRichTextDetails: 'Mostrar los datos exactos del texto enriquecido', clarityUnderlined: 'subrayado', clarityLinkDestination: 'destino del enlace', clarityOpensNewTab: 'se abre en una pestaña nueva',
+    clarityRelatedFields: 'Cambios en: {fields}', clarityScopeDetails: 'Pregunta completa y contexto',
+    clarityRelatedDecisionHeading: '{count} cambios en {fields}', clarityRelatedDecisionPurpose: 'Cada página se revisa por separado. Abre una para comparar el cambio exacto.',
   },
 };

@@ -22,7 +22,7 @@ test('Growth translations load and contain the unified plan for every supported 
     for (const key of ['growth.overview', 'growth.taskTitle', 'growth.task_needs_you', 'growth.growth_weekly',
       'growth.articleNotRunning', 'growth.articleResearchActive', 'growth.articleResearchComplete',
       'growth.articleResolvePrompt', 'growth.taskResolvePrompt', 'growth.taskState_not_running',
-      'growth.panel_next', 'growth.panel_work', 'growth.panel_results', 'growth.homeTitle',
+      'growth.panel_next', 'growth.panel_decisions', 'growth.panel_work', 'growth.panel_results', 'growth.homeTitle',
       'growth.decisionListTitle', 'growth.decisionCtaReview', 'growth.decisionCtaAnswer',
       'growth.ownerQuestionTitle', 'growth.ownerQuestionObserved', 'growth.ownerQuestionDetails',
       'growth.ownerQuestionHint', 'growth.ownerAnswerLabel',
@@ -48,7 +48,8 @@ test('Growth translations load and contain the unified plan for every supported 
       'growth.clarityFieldImageUrl', 'growth.clarityFieldImageFile', 'growth.clarityFieldPageAddress',
       'growth.clarityFieldDescription', 'growth.clarityFieldName', 'growth.clarityFieldCaption',
       'growth.clarityFieldSearchPhrase', 'growth.clarityFieldWidth', 'growth.clarityFieldHeight',
-      'growth.clarityRichTextDetails', 'growth.clarityUnderlined', 'growth.clarityLinkDestination', 'growth.clarityOpensNewTab']) {
+      'growth.clarityRichTextDetails', 'growth.clarityUnderlined', 'growth.clarityLinkDestination', 'growth.clarityOpensNewTab',
+      'growth.clarityRelatedFields', 'growth.clarityScopeDetails', 'growth.clarityRelatedDecisionHeading', 'growth.clarityRelatedDecisionPurpose']) {
       assert.equal(typeof growthCopy[language][key], 'string', `${language}: ${key}`)
       assert.ok(growthCopy[language][key].length > 0)
     }

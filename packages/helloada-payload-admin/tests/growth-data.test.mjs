@@ -46,7 +46,8 @@ test('Growth has one task list, not separate advice, schedule and approval windo
   assert.match(tasks, /growth_task/);
   assert.match(tasks, /lastOpenedTask/);
   assert.match(tasks, /writeGrowthLocation\(task\.focus, task\.id, "pushState"\)/);
-  assert.equal([...tasks.matchAll(/className="helloada-growth-task-list/g)].length, 2);
+  assert.equal([...tasks.matchAll(/className="helloada-growth-task-list/g)].length, 1);
+  assert.match(tasks, /renderDecisionGroups\(visible, "helloada-growth-task-list helloada-growth-related-groups"\)/);
   assert.match(tasks, /review_package_hash: task\?\.reviewPackageHash/);
   assert.match(tasks, /fetchHelloAda\("\/api\/helloada\/growth\/articles\/"/);
   assert.match(tasks, /if \(!articleKey \|\| !selectedTask\?\.draftId\)/);

@@ -59,8 +59,11 @@ def assess(context: Mapping[str, Any], material: Mapping[str, Any]) -> dict[str,
         "Consider any evidence-supported improvement in customer understanding, conversion, accessibility, performance, content, design, local visibility, search or AI discovery, trust, navigation, and site health; this list is illustrative, not exhaustive. "
         "The kind field is an actual available execution route, not a category. payload_content prepares exact field changes to one existing canonical Payload document. code prepares one existing-source website change through the shared Ada builder and immutable preview/owner-review path; use it for evidence-backed frontend behavior, design, accessibility, performance or technical discoverability work, not editable business copy. owner_information asks only for a real missing business fact/access decision. New articles use the separate scheduled article-research workflow. "
         "The available route limits what this workflow can execute, not Ada's broader expertise across the product. Every payload_content opportunity must identify one existing document from the supplied inventory and make only an edit to that document; never propose a new page or link to a route that does not exist. Every code opportunity must describe one concrete, bounded source change and cite the exact evidence supporting it; do not use code as a vague bucket or to bypass Payload's editable content contract. If no exact executable change or genuine owner question is justified by the evidence, omit it rather than creating a suggestion that cannot be prepared. "
+        "Assess this run from its newly captured canonical Payload inventory and evidence source states/timestamps. Historical reports, prior runs and old findings are context only: do not present them as current observations unless this run's evidence re-observes them. For a site/content finding cite the current inventory sourceRef and identify the affected existing route/document; for a technical or measured finding cite the current source observation that proves it. If the current observation is missing, stale, failed or inconclusive, defer the finding for internal reassessment instead of describing it as a current defect. "
+        "Compare every idea with the supplied canonical inventory, priorWork and priorOutcomes. Do not recommend a topic/document already published, an equivalent retained active proposal, or work already completed. Reopen historical/rejected work only when current evidence materially changes the case, and explain that difference. Internal Ada repair, validation, deployment or recovery chores are never owner recommendations; preserve them as internal work/activity. "
+        "Each opportunity must address one specific visitor or business problem. Use a concise, plain-language title naming the affected page/problem, a why that connects the observation to a credible visitor/business consequence, and a bounded scope naming one action and target. Clearly label uncertain causal or business impact as a hypothesis; never phrase it as measured outcome without matching measurement evidence. Avoid generic SEO, speed, accessibility or content checklists. "
         "Separate observed evidence from hypotheses, name missing evidence, and do not invent metrics, access, capabilities or outcomes. "
-        "No changes yet: preparation follows assessment. An empty array is valid only with a grounded explanation. Prefer a few useful improvements, never an article quota. Do not duplicate active or rejected work. "
+        "No changes yet: preparation follows assessment. An empty array is valid only with a grounded explanation. Prefer a few useful improvements, never an article quota. Do not duplicate active or rejected work. At most one owner_information opportunity may be returned, and it must ask one answerable business question or access decision, not bundle unrelated facts. If an owner question is already unanswered in priorWork, defer other information needs until that reply. "
         "Inventory assessmentScope declares metadata and a bounded contentPreview, not full page contents. "
         "Do not conclude that omitted text or fields are absent, fully checked, or defective. "
         "Preparation re-reads the full selected canonical document before creating an exact candidate. "
@@ -78,6 +81,9 @@ def assess(context: Mapping[str, Any], material: Mapping[str, Any]) -> dict[str,
     valid_refs = {str(row.get("id")) for row in material.get("sources", []) if row.get("id")}
     valid_refs.update(str(row["sourceRef"]) for row in material.get("sources", []) if row.get("sourceRef"))
     valid_refs.update(str(row["sourceRef"]) for row in material.get("inventory", []) if row.get("sourceRef"))
+    source_states = {str(row.get("id")): row.get("state") for row in material.get("sources", []) if row.get("id")}
+    inventory_refs = {str(row.get("sourceRef")) for row in material.get("inventory", []) if row.get("sourceRef")}
+    owner_question_count = 0
     coverage = result.get("coverage", [])
     if not isinstance(coverage, list):
         raise ValueError("Growth area coverage must be an array")
@@ -99,6 +105,38 @@ def assess(context: Mapping[str, Any], material: Mapping[str, Any]) -> dict[str,
             raise ValueError("An opportunity must reference real evidence")
         if not isinstance(item.get("requiredSources"), list) or not item["requiredSources"]:
             raise ValueError("An opportunity must declare its required evidence")
+        bad_evidence = any(not isinstance(ref, str) or ref not in valid_refs for ref in item["evidence"])
+        unknown_required = any(not isinstance(ref, str) or ref not in source_states for ref in item["requiredSources"])
+        unavailable = [ref for ref in item["requiredSources"]
+            if not isinstance(ref, str) or source_states.get(ref) != "ready"]
+        if bad_evidence or unknown_required or unavailable:
+            item.update(
+                disposition="deferred",
+                errorCode=("evidence_not_bound_to_assessment" if bad_evidence
+                    else "required_evidence_not_supplied" if unknown_required else "required_evidence_not_current"),
+                preparationNote=("This finding cited evidence that was not captured in the current assessment. It is not presented as a current defect or owner decision."
+                    if bad_evidence else "The required evidence was not supplied as a current source or was not ready in this assessment. This finding is not presented as a current defect or owner decision."),
+                reassessWhen="A later assessment captures and binds the required evidence in a current ready state.",
+            )
+        if item["kind"] == "owner_information":
+            if item.get("disposition") != "deferred":
+                owner_question_count += 1
+            if item.get("disposition") != "deferred" and owner_question_count > 1:
+                item.update(
+                    disposition="deferred",
+                    errorCode="owner_question_already_open",
+                    preparationNote="Ada has another owner question to resolve first. This finding is retained for internal reassessment and is not a current owner decision.",
+                    reassessWhen="After the owner answers the current question and a later assessment confirms this fact is still needed.",
+                )
+        if not bad_evidence and item["kind"] == "payload_content" and item["evidence"] and not any(
+            ref in inventory_refs or ref == "inventory" for ref in item["evidence"]
+        ):
+            item.update(
+                disposition="deferred",
+                errorCode="current_document_observation_missing",
+                preparationNote="This content finding is not bound to the current canonical site inventory, so it cannot be presented as a current page problem.",
+                reassessWhen="A later assessment binds the finding to a current canonical document observation.",
+            )
         primary = item.get("primaryArea")
         if primary not in GROWTH_AREAS:
             raise ValueError("Missing or unknown primary Growth area")
