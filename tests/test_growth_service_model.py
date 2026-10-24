@@ -130,6 +130,33 @@ def test_strict_assessment_requires_owner_summary_for_each_coverage_row():
         assess({"llm": LLM()}, _strict_assessment_material())
 
 
+def test_strict_assessment_accepts_owner_summary_within_shared_projection_bounds():
+    row = _strict_assessment_response()["coverage"][0]
+    row["ownerSummary"] = {"headline": "h" * 180, "problem": "p" * 500, "nextStep": "n" * 500}
+    response = _strict_assessment_response(coverage=[row])
+
+    class LLM:
+        def chat(self, *args, **kwargs):
+            return json.dumps(response)
+
+    result = assess({"llm": LLM()}, _strict_assessment_material())
+    assert result["coverage"][0]["ownerSummary"] == row["ownerSummary"]
+
+
+@pytest.mark.parametrize(("field", "limit"), [("headline", 180), ("problem", 500), ("nextStep", 500)])
+def test_strict_assessment_rejects_owner_summary_over_shared_projection_bounds(field, limit):
+    row = _strict_assessment_response()["coverage"][0]
+    row["ownerSummary"][field] = "x" * (limit + 1)
+    response = _strict_assessment_response(coverage=[row])
+
+    class LLM:
+        def chat(self, *args, **kwargs):
+            return json.dumps(response)
+
+    with pytest.raises(ValueError, match="ownerSummary"):
+        assess({"llm": LLM()}, _strict_assessment_material())
+
+
 def test_strict_assessment_rejects_unready_coverage_refs_and_requires_opportunity_areas():
     response = _strict_assessment_response(coverage=[{"area": "content", "summary": "A review was made.",
         "evidence": ["dataforseo"], "limitations": [], "ownerSummary": {

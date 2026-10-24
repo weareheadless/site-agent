@@ -125,8 +125,7 @@ def assess(context: Mapping[str, Any], material: Mapping[str, Any]) -> dict[str,
         if strict_contract and owner_summary is None:
             raise ValueError("New Growth coverage requires ownerSummary")
         if owner_summary is not None:
-            summary_limits = (("headline", 90), ("problem", 160), ("nextStep", 160)) if strict_contract else (
-                ("headline", 180), ("problem", 500), ("nextStep", 500))
+            summary_limits = (("headline", 180), ("problem", 500), ("nextStep", 500))
             if (not isinstance(owner_summary, Mapping)
                 or set(owner_summary) != {"headline", "problem", "nextStep"}
                 or any(not isinstance(owner_summary.get(key), str)
