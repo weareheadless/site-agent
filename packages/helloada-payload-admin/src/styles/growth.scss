@@ -1220,5 +1220,46 @@
   @media (max-width: 620px) {
     .helloada-growth-change-review__comparison { grid-template-columns: minmax(0, 1fr); }
   }
+  /* Payload's global chat styles use a dark message card and muted light text.
+     Growth review sits on a paper surface, including chat-rendered evidence. */
+  .helloada-growth-task-core .helloada-growth-task-analysis-note,
+  .helloada-growth-task-core .helloada-growth-change-review__target,
+  .helloada-growth-task-core .helloada-growth-owner-evidence,
+  .helloada-growth-task-core .helloada-growth-task-evidence {
+    color: #263548;
+    background: #fff;
+  }
+  .helloada-growth-task-core .helloada-growth-task-analysis-note p,
+  .helloada-growth-task-core .helloada-growth-task-analysis-note strong,
+  .helloada-growth-task-core .helloada-growth-task-analysis-note li,
+  .helloada-growth-task-core .helloada-growth-task-analysis-note small,
+  .helloada-growth-task-core .helloada-growth-task-analysis-note blockquote,
+  .helloada-growth-task-core .helloada-growth-change-review__target,
+  .helloada-growth-task-core .helloada-growth-owner-evidence:not(.is-question) p,
+  .helloada-growth-task-core .helloada-growth-task-evidence > p,
+  .helloada-growth-task-core .helloada-chat-message-body,
+  .helloada-growth-task-core .helloada-chat-message-body p,
+  .helloada-growth-task-core .helloada-chat-message-body li,
+  .helloada-growth-task-core .helloada-chat-message-body blockquote,
+  .helloada-growth-task-core .helloada-chat-message-body h3,
+  .helloada-growth-task-core .helloada-chat-message-body h4,
+  .helloada-growth-task-core .helloada-chat-message-body h5 {
+    color: #263548;
+  }
+  .helloada-growth-task-core .helloada-chat-message-body {
+    border-color: #dbe2e9;
+    background: #fff;
+    color: #263548;
+  }
+  .helloada-growth-task-core .helloada-chat-message-body a { color: #a83b27; }
+  .helloada-growth-task-core .helloada-chat-message-body pre {
+    border: 1px solid #dbe2e9;
+    color: #263548;
+    background: #fff;
+  }
+  .helloada-growth-task-core .helloada-chat-message-body code {
+    color: #263548 !important;
+    background: #fff;
+  }
 }
 
