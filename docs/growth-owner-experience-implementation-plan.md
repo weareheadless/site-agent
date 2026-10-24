@@ -7,6 +7,16 @@ Audience: the coding AI implementing the shared Growth workflow, API projection 
 
 ## 1. Product outcome
 
+### October 23 owner-directed clarity and clean-slate update
+
+Follow `docs/growth-clarity-and-clean-slate-plan.md` for the current cleanup and
+redesign sequence. The owner rejected the text-heavy dashboard and requested a
+current content audit, controlled archival of obsolete unpublished work, and a
+readable decision-first experience. That plan supersedes earlier prominent
+five-area layout prescriptions while preserving the canonical evidence, exact
+approval, publication, budget and release boundaries. Published-content removals
+remain concrete owner decisions; source cleanup is not product acceptance.
+
 ### October 22 candidate read/claim boundary finding
 
 The real scheduler advanced Atelier's owner-review run through inventory and
