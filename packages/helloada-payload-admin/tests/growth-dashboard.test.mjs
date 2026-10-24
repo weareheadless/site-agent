@@ -93,6 +93,24 @@ test('selects canonical review or active work before the newest saved finding', 
   assert.deepEqual(Array.from(sandbox.exports.growthFindingsNewestFirst({ findings: newest }), row => row.id), ['newer', 'older']);
 });
 
+test('derives the compact owner-summary next step from canonical work readiness', () => {
+  const nextStepKey = sandbox.exports.growthAreaOwnerNextStepKey;
+  assert.equal(nextStepKey(work[0]), 'growth.areaOwnerReviewNextStep');
+  assert.equal(nextStepKey({ ...work[2], executionState: 'preparing' }), 'growth.areaOwnerPreparingNextStep');
+  assert.equal(nextStepKey({ ...work[2], executionState: 'validating' }), 'growth.areaOwnerPreparingNextStep');
+  assert.equal(nextStepKey({ ...work[2], state: 'blocked', executionIssue: true }), 'growth.areaOwnerStoppedNextStep');
+  assert.equal(nextStepKey({ ...work[2], state: 'paused' }), 'growth.areaOwnerStoppedNextStep');
+  assert.equal(nextStepKey(null), null);
+  const component = source('src/components/GrowthTasks.tsx');
+  assert.match(component, /leadWork \? t\(growthAreaOwnerNextStepKey\(leadWork\)!\) : summaryExcerpt\(area\.ownerSummary\.nextStep\)/);
+  assert.match(component, /areaOwnerCurrentNextStep/);
+  assert.match(component, /areaSavedAssessment/);
+  const copy = source('src/lib/growth-copy.ts');
+  for (const key of ['areaOwnerCurrentNextStep', 'areaOwnerReviewNextStep', 'areaOwnerPreparingNextStep', 'areaOwnerStoppedNextStep', 'areaSavedAssessment']) {
+    assert.equal((copy.match(new RegExp(`[\"']growth\\.${key}[\"']:` , 'g')) || []).length, 3, `${key} should have English, French and Spanish copy`);
+  }
+});
+
 test('suppresses historical findings when current evidence is stale or unavailable', () => {
   const search = serviceModel.areas.find((area) => area.id === 'search_visibility');
   const savedSummary = { headline: 'Current', problem: 'Observed', nextStep: 'Review' };

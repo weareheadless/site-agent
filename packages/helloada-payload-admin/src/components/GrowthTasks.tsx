@@ -9,7 +9,7 @@ import { HelloAdaMark } from "./HelloAdaLogo";
 import { HelloAdaChatMessage } from "./HelloAdaChatMessage";
 import { getDecisionPresentation, getReviewChanges, getReviewTarget, groupReviewDecisions } from "../lib/growth-review";
 import { GrowthChangeReview } from "./GrowthChangeReview";
-import { growthAreaAssessmentKind, growthAreaLeadWork, growthAreaNeedsAssessmentMessage, growthAreaShowsReadyReview, growthFindingsNewestFirst, type GrowthAreaKey, type GrowthResultTab, type GrowthServiceArea, type GrowthServiceModel, type GrowthServiceWork } from "../lib/growth-data";
+import { growthAreaAssessmentKind, growthAreaLeadWork, growthAreaNeedsAssessmentMessage, growthAreaOwnerNextStepKey, growthAreaShowsReadyReview, growthFindingsNewestFirst, type GrowthAreaKey, type GrowthResultTab, type GrowthServiceArea, type GrowthServiceModel, type GrowthServiceWork } from "../lib/growth-data";
 
 type Focus = "needs_you" | "preparing" | "planned" | "paused" | "opportunity" | "completed";
 type ArticleReviewData = {
@@ -530,7 +530,7 @@ export function GrowthTasks({ mode, serviceModel, decisionOrder, onNavigate, tas
               {assessmentKind === "owner_summary" && area.ownerSummary ? <div className="helloada-growth-owner-summary">
                 <h4>{area.ownerSummary.headline}</h4>
                 <p><strong>{t("growth.areaFindingProblem")}</strong> {summaryExcerpt(area.ownerSummary.problem)}</p>
-                <p><strong>{t("growth.areaFindingNextStep")}</strong> {summaryExcerpt(area.ownerSummary.nextStep)}</p>
+                <p><strong>{t(leadWork ? "growth.areaOwnerCurrentNextStep" : "growth.areaFindingNextStep")}</strong> {leadWork ? t(growthAreaOwnerNextStepKey(leadWork)!) : summaryExcerpt(area.ownerSummary.nextStep)}</p>
                 {area.lastAssessedAt ? <small>{t("growth.lastGrowthReview")}: {date(area.lastAssessedAt)}</small> : null}
               </div> : null}
 
@@ -588,7 +588,7 @@ export function GrowthTasks({ mode, serviceModel, decisionOrder, onNavigate, tas
                 })}</ol> : null}
                 {area.summary ? <p className="helloada-growth-area-summary">{area.summary}</p> : null}
                 {area.ownerSummary ? <div className="helloada-growth-owner-summary-full">
-                  <strong>{area.ownerSummary.headline}</strong>
+                  <strong>{area.ownerSummary.headline} · {t("growth.areaSavedAssessment")}</strong>
                   <p><strong>{t("growth.areaFindingProblem")}</strong> {area.ownerSummary.problem}</p>
                   <p><strong>{t("growth.areaFindingNextStep")}</strong> {area.ownerSummary.nextStep}</p>
                 </div> : null}
