@@ -100,3 +100,9 @@ required before calling Oceanic a clean testing slate.
 Guided owner questions, grouping related independent approvals, fresh
 recommendation quality assessment, published article consolidation and full
 rendered usability acceptance remain later phases of this plan.
+
+The initial complete backend suite passed 1,672 tests (three existing Pillow
+warnings). Final review then tightened malformed-sync rejection and bound all
+linked article-idea states/run/reservation identities into the archival proof;
+40 focused backend tests passed after those changes. Official PR CI validates
+the final immutable source. No live content cleanup has yet been applied.

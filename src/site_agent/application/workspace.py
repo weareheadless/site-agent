@@ -2693,11 +2693,19 @@ class ChatService:
                     "title": str(draft.get("title") or ""), "body": str(draft.get("body") or ""),
                     "meta": {key: value for key, value in meta.items() if key != "operator_archive"},
                 })
+                idea_fields = (
+                    "id", "status", "updated_ts", "research_run_id", "serp_run_id", "provider_task_id",
+                    "research_cost_micros", "keyword_budget_reservation_id", "serp_budget_reservation_id",
+                )
+                article_ideas = memory.list_article_ideas_for_draft(normalized_id)
+                idea_binding = [{key: idea.get(key) for key in idea_fields} for idea in article_ideas]
+                article_ideas_hash = content_hash(idea_binding)
                 if (draft.get("status") == "discarded"
                         and archive.get("operatorRequestId") == operator_request_id
                         and archive.get("reason") == reason
                         and archive.get("proofHash") == expected_proof
-                        and archive.get("contentHash") == content_hash_value):
+                        and archive.get("contentHash") == content_hash_value
+                        and archive.get("articleIdeasHash") == article_ideas_hash):
                     return {**dict(archive), "status": "archived", "draftId": normalized_id, "idempotent": True}
                 if draft.get("kind") != "article" or draft.get("status") != "pending":
                     raise BridgeError("only pending local article drafts can be archived")
@@ -2730,6 +2738,8 @@ class ChatService:
 
                 if has_effect_reference(meta):
                     raise BridgeError("article metadata contains a linked or uncertain external effect")
+                if "payload_sync" in meta and not isinstance(meta.get("payload_sync"), Mapping):
+                    raise BridgeError("article sync metadata is malformed")
                 sync = meta.get("payload_sync") if isinstance(meta.get("payload_sync"), Mapping) else None
                 if sync is not None:
                     validation = sync.get("validation") if isinstance(sync.get("validation"), Mapping) else {}
@@ -2742,22 +2752,22 @@ class ChatService:
                                    if int(row.get("draft_id") or 0) == normalized_id), None)
                 if initiative is not None:
                     raise BridgeError("article drafts linked to Growth initiatives cannot be archived")
-                article_idea = memory.get_article_idea_for_draft(normalized_id)
-                if article_idea and article_idea.get("status") in {
-                    "preparing", "research_requested", "serp_requested", "uncertain",
-                }:
-                    raise BridgeError("article draft has active or uncertain research work")
+                if any(idea.get("status") not in {"drafted", "held", "failed", "rejected", "blocked"}
+                       for idea in article_ideas):
+                    raise BridgeError("article draft has active, recoverable or unknown research work")
                 snapshot = {
                     "tenant": tenant.tenant_id, "id": normalized_id, "kind": draft.get("kind"),
                     "status": draft.get("status"), "title": str(draft.get("title") or ""),
                     "body": str(draft.get("body") or ""), "meta": meta,
                     "updated_ts": str(draft.get("updated_ts") or ""),
+                    "articleIdeas": idea_binding,
                 }
                 proof_hash = content_hash(snapshot)
                 if mode == "plan":
                     return {"status": "ready_to_archive", "draftId": normalized_id,
                             "contentHash": content_hash_value, "proofHash": proof_hash,
-                            "articleIdeaId": int(article_idea["id"]) if article_idea else None,
+                            "articleIdeaId": int(article_ideas[-1]["id"]) if article_ideas else None,
+                            "articleIdeasHash": article_ideas_hash,
                             "externalEffectStatus": "unknown"}
                 if proof_hash != expected_proof:
                     raise BridgeError("article draft changed after its archive plan")
@@ -2766,7 +2776,8 @@ class ChatService:
                     "externalEffectStatus": "unknown", "reason": reason,
                     "operatorRequestId": operator_request_id, "proofHash": proof_hash,
                     "contentHash": content_hash_value, "priorStatus": "pending",
-                    "articleIdeaId": int(article_idea["id"]) if article_idea else None,
+                    "articleIdeaId": int(article_ideas[-1]["id"]) if article_ideas else None,
+                    "articleIdeasHash": article_ideas_hash,
                 }
                 result = memory.archive_local_growth_article_draft(
                     normalized_id, tenant_id=tenant.tenant_id,

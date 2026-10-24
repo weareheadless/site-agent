@@ -2447,13 +2447,22 @@ class Memory:
                 raise ContractError("article drafts linked to Growth initiatives cannot be archived")
             if self.conn.execute("SELECT 1 FROM publishes WHERE draft_id = ? LIMIT 1", (int(draft_id),)).fetchone():
                 raise ContractError("article drafts linked to publications cannot be archived")
-            if self.conn.execute(
-                "SELECT 1 FROM article_ideas WHERE draft_id = ? AND status IN "
-                "('preparing', 'research_requested', 'serp_requested', 'uncertain') LIMIT 1", (int(draft_id),),
-            ).fetchone():
-                raise ContractError("article drafts with active or uncertain research cannot be archived")
+            idea_fields = (
+                "id", "status", "updated_ts", "research_run_id", "serp_run_id", "provider_task_id",
+                "research_cost_micros", "keyword_budget_reservation_id", "serp_budget_reservation_id",
+            )
+            article_ideas = [dict(idea) for idea in self.conn.execute(
+                "SELECT id, status, updated_ts, research_run_id, serp_run_id, provider_task_id, "
+                "research_cost_micros, keyword_budget_reservation_id, serp_budget_reservation_id "
+                "FROM article_ideas WHERE draft_id = ? ORDER BY id ASC", (int(draft_id),),
+            ).fetchall()]
+            if any(idea.get("status") not in {"drafted", "held", "failed", "rejected", "blocked"}
+                   for idea in article_ideas):
+                raise ContractError("article drafts with active, recoverable or unknown research cannot be archived")
             if meta.get("operator_archive") or meta.get("growth_package") or meta.get("review_package_hash"):
                 raise ContractError("candidate or previously archived article drafts cannot be archived")
+            if "payload_sync" in meta and not isinstance(meta.get("payload_sync"), dict):
+                raise ContractError("local article sync metadata is malformed")
             sync = meta.get("payload_sync") if isinstance(meta.get("payload_sync"), dict) else None
             if sync is not None:
                 validation = sync.get("validation") if isinstance(sync.get("validation"), dict) else {}
@@ -2465,6 +2474,7 @@ class Memory:
                 "status": str(current["status"]), "title": str(current.get("title") or ""),
                 "body": str(current.get("body") or ""), "meta": meta,
                 "updated_ts": str(current.get("updated_ts") or ""),
+                "articleIdeas": [{key: idea.get(key) for key in idea_fields} for idea in article_ideas],
             }
             proof_hash = "sha256:" + hashlib.sha256(json.dumps(
                 snapshot, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str,
@@ -2473,6 +2483,12 @@ class Memory:
                 raise ContractError("local article draft changed after its archive plan")
             if archive_receipt.get("proofHash") != proof_hash:
                 raise ContractError("archive receipt is not bound to the exact local draft")
+            ideas_hash = "sha256:" + hashlib.sha256(json.dumps(
+                [{key: idea.get(key) for key in idea_fields} for idea in article_ideas],
+                sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str,
+            ).encode()).hexdigest()
+            if archive_receipt.get("articleIdeasHash") != ideas_hash:
+                raise ContractError("archive receipt is not bound to the exact article research history")
             next_meta = {**meta, "operator_archive": dict(archive_receipt)}
             updated = self.conn.execute(
                 "UPDATE drafts SET status = 'discarded', meta = ?, updated_ts = ? "
@@ -5083,6 +5099,13 @@ class Memory:
             "SELECT * FROM article_ideas WHERE draft_id = ? ORDER BY id DESC LIMIT 1", (draft_id,)
         ).fetchone()
         return self._decode_article_idea(dict(row)) if row else None
+
+    @_locked
+    def list_article_ideas_for_draft(self, draft_id: int) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT * FROM article_ideas WHERE draft_id = ? ORDER BY id ASC", (int(draft_id),)
+        ).fetchall()
+        return [self._decode_article_idea(dict(row)) for row in rows]
 
     @_locked
     def create_article_idea(

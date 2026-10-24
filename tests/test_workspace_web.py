@@ -1918,6 +1918,45 @@ def test_article_archive_waits_for_inflight_payload_preparation(tmp_path):
     memory.close()
 
 
+def test_article_archive_rejects_malformed_sync_and_recoverable_research_state(tmp_path):
+    from site_agent.application.workspace import BridgeError
+
+    memory = Memory(tmp_path / "article-archive-research-guards.db")
+    malformed_id = memory.save_draft("Malformed sync", "Keep this.", kind="article",
+                                     meta={"payload_sync": "unknown"})
+    researched_id = memory.save_draft("Researched article", "Keep this too.", kind="article")
+    researched = memory.create_article_idea("researched-article", "researched-hash", {"topic": "Active"})
+    memory.update_article_idea(researched["id"], draft_id=researched_id, status="researched")
+    draft_id = memory.save_draft("Race research", "Preserve this copy.", kind="article")
+    idea = memory.create_article_idea("drafted-article", "drafted-hash", {"topic": "Drafted"})
+    memory.update_article_idea(idea["id"], draft_id=draft_id, status="drafted")
+    tenant = Tenant(tenant_id="research-cleanup", config={}, memory=memory, runtime=None,
+                    context={"llm": object()}, api_token="research-cleanup-token")
+    service = ChatService(registry=TenantRegistry({tenant.tenant_id: tenant}))
+
+    with pytest.raises(BridgeError, match="sync metadata is malformed"):
+        service.archive_local_growth_article(malformed_id, {"mode": "plan"}, tenant=tenant)
+    with pytest.raises(BridgeError, match="active, recoverable or unknown research"):
+        service.archive_local_growth_article(researched_id, {"mode": "plan"}, tenant=tenant)
+
+    plan = service.archive_local_growth_article(draft_id, {"mode": "plan"}, tenant=tenant)
+    archive_method = memory.archive_local_growth_article_draft
+
+    def change_research_state_then_archive(*args, **kwargs):
+        memory.update_article_idea(idea["id"], status="researched")
+        return archive_method(*args, **kwargs)
+
+    memory.archive_local_growth_article_draft = change_research_state_then_archive
+    with pytest.raises(BridgeError, match="active, recoverable or unknown research"):
+        service.archive_local_growth_article(draft_id, {
+            "mode": "apply", "expected_proof_hash": plan["proofHash"],
+            "reason": "Withdraw this obsolete local article.", "operator_request_id": "archive-research-race",
+        }, tenant=tenant)
+    assert memory.get_draft(draft_id)["status"] == "pending"
+    memory.archive_local_growth_article_draft = archive_method
+    memory.close()
+
+
 def _thread_result(callback):
     result = {}
     started = threading.Event()
