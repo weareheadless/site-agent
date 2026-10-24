@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta, timezone
+import hashlib
+import json
 import re
 from typing import Any
 from ..core.growth_contracts import GROWTH_AREAS as AREAS
@@ -33,6 +35,166 @@ def _refs(task: Mapping[str, Any]) -> dict[str, Any]:
     return {key: task[key] for key in (
         "id", "draftId", "ownerActionId", "approvalId", "reviewPackageHash", "conversationId",
     ) if task.get(key) is not None}
+
+
+_ACTIVE_CAPACITY_STATES = {"preparing", "validating", "ready_for_review", "publishing", "verifying_live"}
+
+
+def _json_hash(value: Any) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _run_source_states(run: Mapping[str, Any], sources: Sequence[Mapping[str, Any]], now: datetime,
+                       inventory_freshness_hours: int) -> dict[str, str]:
+    detail = run.get("detail") or {}
+    material = detail.get("material") or {}
+    states: dict[str, str] = {}
+    for source in material.get("sources", []):
+        observed = _date(source.get("observedAt"))
+        state = source.get("state")
+        if state == "ready":
+            max_age = source.get("freshnessHours", inventory_freshness_hours)
+            state = "unavailable" if observed is None else "stale" if now - observed > timedelta(hours=max_age) else "ready"
+        for ref in (source.get("id"), source.get("sourceRef")):
+            if ref:
+                states[str(ref)] = state
+    for document in material.get("inventory", []):
+        if document.get("sourceRef"):
+            states[str(document["sourceRef"])] = states.get("inventory", "unavailable")
+    # A current provider read can invalidate a saved observation, but a fresh
+    # provider status cannot refresh the timestamp of an older run's evidence.
+    for source in sources:
+        current_state = source.get("state")
+        if current_state in {"stale", "unavailable"}:
+            for ref in (source.get("id"), source.get("sourceRef")):
+                if ref:
+                    states[str(ref)] = current_state
+            if source.get("id") == "inventory":
+                for document in material.get("inventory", []):
+                    if isinstance(document, Mapping) and document.get("sourceRef"):
+                        states[str(document["sourceRef"])] = current_state
+    return states
+
+
+def _opportunity_findings(runs: Sequence[Mapping[str, Any]], initiatives: Sequence[Mapping[str, Any]],
+                          sources: Sequence[Mapping[str, Any]], now: datetime,
+                          inventory_freshness_hours: int,
+                          max_active_candidates: int) -> dict[str, list[dict[str, Any]]]:
+    """Project each saved finding with its exact assessment lineage and current evidence/work state."""
+    by_area: dict[str, list[dict[str, Any]]] = {area: [] for area in AREAS}
+    for run in runs:
+        run_id = str(run.get("run_id") or "")
+        detail = run.get("detail") or {}
+        assessment = detail.get("assessment") or {}
+        completed_at = detail.get("assessmentCompletedAt")
+        opportunities = assessment.get("opportunities")
+        if not run_id or not _date(completed_at) or not isinstance(opportunities, list):
+            continue
+        waiting = detail.get("waitingForCapacity")
+        waiting = waiting if isinstance(waiting, list) and all(isinstance(item, str) for item in waiting) else []
+        title_counts: dict[str, int] = {}
+        for opportunity in opportunities:
+            if isinstance(opportunity, Mapping) and isinstance(opportunity.get("title"), str):
+                title_counts[opportunity["title"]] = title_counts.get(opportunity["title"], 0) + 1
+        candidate_ids = detail.get("candidateIds")
+        candidate_ids = {str(value) for value in candidate_ids} if isinstance(candidate_ids, list) else set()
+        queued_ids = detail.get("queuedInitiativeIds")
+        queued_ids = {str(value) for value in queued_ids} if isinstance(queued_ids, list) else set()
+        source_states = _run_source_states(run, sources, now, inventory_freshness_hours)
+        material = detail.get("material") or {}
+        unprepared = assessment.get("unpreparedOpportunities")
+        unprepared = unprepared if isinstance(unprepared, list) else []
+        for index, opportunity in enumerate(opportunities):
+            if not isinstance(opportunity, Mapping):
+                continue
+            primary = opportunity.get("primaryArea")
+            if primary not in AREAS:
+                continue
+            secondary = [area for area in opportunity.get("secondaryAreas", []) if area in AREAS and area != primary]
+            expected_hash = _json_hash(opportunity)
+            duplicate_opportunity = sum(1 for item in opportunities
+                if isinstance(item, Mapping) and _json_hash(item) == expected_hash) > 1
+            matches = [row for row in initiatives
+                if str(row.get("growth_run_id") or "") == run_id
+                and isinstance(row.get("expected"), Mapping)
+                and isinstance(row["expected"].get("opportunity"), Mapping)
+                and _json_hash(row["expected"]["opportunity"]) == expected_hash]
+            initiative = matches[0] if len(matches) == 1 and not duplicate_opportunity else None
+            status = "unknown" if len(matches) > 1 or duplicate_opportunity else "assessment_pending"
+            status_reason = None
+            initiative_id = None
+            candidate_id = None
+            if initiative is not None:
+                initiative_id = initiative.get("id")
+                state = str(initiative.get("state") or "unknown")
+                status = state
+                if str(initiative_id) in candidate_ids:
+                    candidate_id = initiative_id
+                validation = initiative.get("validation") or {}
+                if isinstance(validation, Mapping):
+                    status_reason = validation.get("reason") or validation.get("reassessWhen")
+            elif opportunity.get("title") in waiting:
+                if title_counts.get(opportunity.get("title"), 0) == 1:
+                    status = "waiting_for_capacity"
+                    status_reason = "Waiting for candidate capacity."
+                else:
+                    status = "unknown"
+                    status_reason = "The saved capacity marker cannot be uniquely linked to this finding."
+            else:
+                for retained in unprepared:
+                    if isinstance(retained, Mapping) and all(retained.get(key) == value for key, value in opportunity.items()):
+                        status = str(retained.get("disposition") or "deferred")
+                        status_reason = retained.get("preparationNote") or retained.get("reassessWhen")
+                        break
+            if not status_reason and status == "assessment_pending" and run.get("status") == "pending":
+                status_reason = "Assessment preparation has not recorded a candidate state yet."
+            evidence_refs = [ref for ref in opportunity.get("evidence", []) if isinstance(ref, str)]
+            states = [source_states.get(ref, "unavailable") for ref in evidence_refs]
+            evidence_state = "unavailable" if not states or any(state not in {"ready", "stale"} for state in states) else "stale" if "stale" in states else "current"
+            finding: dict[str, Any] = {
+                "id": f"{run_id}:{index}", "runId": run_id, "opportunityIndex": index,
+                "assessedAt": completed_at, "kind": opportunity.get("kind"),
+                "title": opportunity.get("title"), "problem": opportunity.get("why"),
+                "hypothesis": opportunity.get("hypothesis"), "nextStep": opportunity.get("scope"),
+                "primaryArea": primary, "secondaryAreas": list(dict.fromkeys(secondary)),
+                "evidenceRefs": evidence_refs, "requiredSources": [ref for ref in opportunity.get("requiredSources", []) if isinstance(ref, str)],
+                "evidenceState": evidence_state, "status": status,
+                "waitingOnWorkIds": [],
+            }
+            if status_reason:
+                finding["statusReason"] = str(status_reason)[:500]
+            if initiative_id is not None:
+                finding["initiativeId"] = initiative_id
+                if candidate_id is not None:
+                    finding["candidateId"] = candidate_id
+            if opportunity.get("collection") is not None and opportunity.get("documentId") is not None:
+                finding["target"] = {"collection": opportunity["collection"], "documentId": opportunity["documentId"]}
+            if status == "waiting_for_capacity":
+                active_blockers = [
+                    row for row in initiatives
+                    if row.get("kind") != "owner_information" and row.get("state") in _ACTIVE_CAPACITY_STATES
+                    and str(row.get("growth_run_id") or "") != run_id and row.get("id") is not None
+                ]
+                same_run_ids = candidate_ids | queued_ids
+                active_blockers.extend(row for row in initiatives
+                    if row.get("kind") != "owner_information" and row.get("state") in _ACTIVE_CAPACITY_STATES
+                    and str(row.get("growth_run_id") or "") == run_id
+                    and str(row.get("id")) in same_run_ids and row.get("id") is not None)
+                unique_blockers = {str(row["id"]): row for row in active_blockers}
+                full = len(unique_blockers) >= max(1, int(max_active_candidates))
+                finding["capacityState"] = "full" if full else "available"
+                if full:
+                    finding["waitingOnWorkIds"] = [
+                        f"initiative:{work_id}" for work_id in sorted(unique_blockers, key=lambda value: (not value.isdigit(), int(value) if value.isdigit() else value))
+                    ]
+                else:
+                    finding["statusReason"] = "The saved wait marker is pending reconciliation; capacity is currently available."
+            for area in dict.fromkeys([primary, *secondary]):
+                by_area[area].append(finding)
+    for findings in by_area.values():
+        findings.sort(key=lambda item: (_date(item.get("assessedAt")) or datetime.min.replace(tzinfo=timezone.utc), item["opportunityIndex"]), reverse=True)
+    return by_area
 
 
 def _results(tasks, by_id, now):
@@ -91,6 +253,7 @@ def service_model(
     activities: Sequence[Mapping[str, Any]], website_present: bool,
     reconciliation: Mapping[str, Any] | None = None,
     inventory_freshness_hours: int = 168,
+    max_active_candidates: int = 2,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """Never collect evidence, start jobs, infer approval, or manufacture coverage."""
@@ -144,6 +307,9 @@ def service_model(
     latest = assessments[0] if assessments else None
     assessment = (latest.get("detail") or {}).get("assessment") if latest else {}
     coverage = {row["area"]: row for row in assessment.get("coverage", []) if isinstance(row, Mapping) and row.get("area") in AREAS}
+    findings_by_area = _opportunity_findings(
+        runs, initiatives, sources, now, inventory_freshness_hours, max_active_candidates,
+    )
     schedules = [row for row in activities if row.get("enabled") and row.get("id") in {"growth_initial", "growth_weekly"} and _date(row.get("nextRun"))]
     schedules.sort(key=lambda row: _date(row["nextRun"]))
     upcoming = next((row for row in schedules if _date(row["nextRun"]) > now), None)
@@ -165,26 +331,7 @@ def service_model(
             "eligibleAt": run.get("next_due_ts"),
             "executor": "growth_pending" if reconciliation and reconciliation.get("enabled") else None,
             "nextReconciliationAt": reconciliation.get("nextRun") if reconciliation and reconciliation.get("enabled") else None})
-    source_states = {}
-    material = (latest.get("detail") or {}).get("material") or {} if latest else {}
-    for source in material.get("sources", []):
-        observed = _date(source.get("observedAt"))
-        state = source.get("state")
-        if state == "ready":
-            max_age = source.get("freshnessHours", inventory_freshness_hours)
-            state = "unavailable" if observed is None else "stale" if now - observed > timedelta(hours=max_age) else "ready"
-        for ref in (source.get("id"), source.get("sourceRef")):
-            if ref:
-                source_states[str(ref)] = state
-    for document in material.get("inventory", []):
-        if document.get("sourceRef"):
-            source_states[str(document["sourceRef"])] = source_states.get("inventory", "unavailable")
-    # Current provider state can invalidate a previously usable source. Exact
-    # historical snapshot references remain bound to their own capture time.
-    source_states.update({
-        str(ref): row.get("state")
-        for row in sources for ref in (row.get("id"), row.get("sourceRef")) if ref
-    })
+    source_states = _run_source_states(latest, sources, now, inventory_freshness_hours) if latest else {}
     areas = []
     for area in AREAS:
         items = [row for row in work if row["primaryArea"] == area or area in row["secondaryAreas"]]
@@ -197,8 +344,9 @@ def service_model(
         unresolved = [ref for ref in recorded.get("evidence", []) if ref not in source_states] if recorded else []
         evidence_states = [source_states.get(ref, "unavailable") for ref in recorded.get("evidence", [])] if recorded else []
         evidence_state = (
-            "unavailable" if any(value not in {"ready", "stale"} for value in evidence_states)
-            else "stale" if "stale" in evidence_states else "recorded" if recorded else "not_assessed"
+            "not_assessed" if not recorded
+            else "unavailable" if not evidence_states or any(value not in {"ready", "stale"} for value in evidence_states)
+            else "stale" if "stale" in evidence_states else "recorded"
         )
         if not website_present:
             state = "awaiting_activation"
@@ -224,6 +372,13 @@ def service_model(
             "deferredWorkIds": deferred,
             "pendingRunIds": pending_runs,
             "summary": recorded.get("summary") if recorded else None,
+            **({"ownerSummary": dict(recorded["ownerSummary"])} if recorded and evidence_state == "recorded"
+                and isinstance(recorded.get("ownerSummary"), Mapping)
+                and set(recorded["ownerSummary"]) == {"headline", "problem", "nextStep"}
+                and all(isinstance(recorded["ownerSummary"].get(key), str)
+                    and 0 < len(recorded["ownerSummary"][key].strip()) <= limit
+                    for key, limit in (("headline", 180), ("problem", 500), ("nextStep", 500))) else {}),
+            "findings": findings_by_area[area],
             "evidenceRefs": recorded.get("evidence") if recorded else [],
             "unresolvedEvidenceRefs": unresolved,
             "limitations": ([*recorded.get("limitations", []), *(["Some assessment evidence can no longer be resolved."] if unresolved else [])]
