@@ -1,5 +1,10 @@
 export const growthTaskCopy: Record<string, Record<string, string>> = {
   en: {
+    clarityMoreWork: "More about Ada’s work and results",
+    clarityQuestion: "What Ada needs to know",
+    clarityPublishPayload: "Publish these changes",
+    clarityPublishPayloadNow: "This updates the reviewed page now.",
+    clarityViewStatus: "See what happened",
     growthProgressReadyForReview: "Ada has a specific improvement ready for your decision.",
     work_decisions: "Needs your decision",
     work_preparing: "Ada is working on",
@@ -66,6 +71,11 @@ export const growthTaskCopy: Record<string, Record<string, string>> = {
     growth_initial: "First website review", growth_daily: "Refresh traffic, search & results", growth_weekly: "Prepare your next improvements", growth_monthly: "Keyword & competitor research", paused: "Paused",
   },
   fr: {
+    clarityMoreWork: "Plus sur le travail et les résultats d’Ada",
+    clarityQuestion: "Ce qu’Ada a besoin de savoir",
+    clarityPublishPayload: "Publier ces modifications",
+    clarityPublishPayloadNow: "La page examinée sera mise à jour maintenant.",
+    clarityViewStatus: "Voir ce qui s’est passé",
     growthProgressReadyForReview: "Ada a préparé une amélioration précise à examiner.",
     work_decisions: "À valider par vous",
     work_preparing: "Ada prépare",
@@ -132,6 +142,11 @@ export const growthTaskCopy: Record<string, Record<string, string>> = {
     growth_initial: "Première analyse du site", growth_daily: "Actualiser les visites, recherches et résultats", growth_weekly: "Préparer les prochaines améliorations", growth_monthly: "Recherche de mots-clés et concurrents", paused: "En pause",
   },
   es: {
+    clarityMoreWork: "Más sobre el trabajo y los resultados de Ada",
+    clarityQuestion: "Lo que Ada necesita saber",
+    clarityPublishPayload: "Publicar estos cambios",
+    clarityPublishPayloadNow: "La página revisada se actualizará ahora.",
+    clarityViewStatus: "Ver qué ocurrió",
     growthProgressReadyForReview: "Ada preparó una mejora concreta para que decidas.",
     work_decisions: "Pendiente de tu decisión",
     work_preparing: "Ada está preparando",

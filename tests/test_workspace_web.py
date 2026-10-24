@@ -1744,6 +1744,180 @@ def test_operator_preparation_retirement_uses_snapshot_proof_and_supersedes_only
     memory.close()
 
 
+def test_control_plane_archives_obsolete_local_article_without_touching_destination(tmp_path):
+    memory = Memory(tmp_path / "local-article-archive.db")
+    draft_id = memory.save_draft(
+        "Old generated article", "Original body stays for history.", kind="article",
+        meta={"research_note": {"providerTaskId": "completed-task"}, "payload_sync": {
+            "state": "blocked", "validation": {"status": "blocked",
+                "reason": "An existing Payload post at this route is not linked to Ada's exact sync record; its content differs and it is neither Ada's exact draft nor an empty schema draft, so it remains unchanged for owner review."},
+        }},
+    )
+    idea = memory.create_article_idea("old-article-cycle", "old-article-hash", {"topic": "Old subject"})
+    memory.update_article_idea(idea["id"], draft_id=draft_id, status="drafted")
+    protected_draft_id = memory.save_draft("Approved lineage", "Keep this review.", kind="article")
+    cycle = memory.create_strategy_cycle("retained-review", "2026-10", "retained-review-hash", {})
+    memory.create_strategy_initiative(
+        cycle["id"], kind="payload_content", title="Linked proposal", summary="Retain review linkage.",
+        state="blocked", draft_id=protected_draft_id, approval_id=51,
+    )
+    from site_agent.core.contracts import ActionPriority, ActionRequirement, OwnerAction
+    action_draft_id = memory.save_draft("Owner task", "Keep this owner task.", kind="article")
+    memory.create_owner_action(OwnerAction(
+        capability_id="growth.publish", provider_id="payload", title="Review article",
+        summary="An owner decision is waiting.", action_label="Review", priority=ActionPriority.NORMAL,
+        requirement=ActionRequirement.OWNER_DECISION, source_ref=f"draft:{action_draft_id}",
+        dedupe_key=f"archive-test:draft:{action_draft_id}", draft_id=action_draft_id,
+    ))
+    tenant = Tenant(tenant_id="generic-cleanup", config={}, memory=memory, runtime=None,
+                    context={"llm": object()}, api_token="generic-cleanup-token")
+    service = ChatService(registry=TenantRegistry({tenant.tenant_id: tenant}))
+    app = FastAPI()
+    register_workspace_routes(app, config={}, env={}, service=service, registry=service.registry,
+                              control_prefix="/control", control_token="control-secret")
+    route = f"/control/{tenant.tenant_id}/growth/drafts/{draft_id}/archive"
+    protected_route = f"/control/{tenant.tenant_id}/growth/drafts/{protected_draft_id}/archive"
+    action_route = f"/control/{tenant.tenant_id}/growth/drafts/{action_draft_id}/archive"
+    with TestClient(app) as client:
+        denied = client.post(route, headers={"Authorization": "Bearer generic-cleanup-token"},
+                             json={"mode": "plan"})
+        plan_response = client.post(route, headers={"Authorization": "Bearer control-secret"},
+                                    json={"mode": "plan"})
+        unknown_tenant = client.post("/control/unregistered/growth/drafts/45/archive",
+                                     headers={"Authorization": "Bearer control-secret"}, json={"mode": "plan"})
+        protected = client.post(protected_route, headers={"Authorization": "Bearer control-secret"},
+                                json={"mode": "plan"})
+        action_protected = client.post(action_route, headers={"Authorization": "Bearer control-secret"},
+                                       json={"mode": "plan"})
+        plan = plan_response.json()
+        memory.update_draft_meta(draft_id, {**memory.get_draft(draft_id)["meta"], "operator_note": "drift"})
+        drift = client.post(route, headers={"Authorization": "Bearer control-secret"}, json={
+            "mode": "apply", "expected_proof_hash": plan["proofHash"],
+            "reason": "Withdraw this obsolete local article.", "operator_request_id": "local-archive-1",
+        })
+        memory.update_draft_meta(draft_id, {
+            key: value for key, value in memory.get_draft(draft_id)["meta"].items() if key != "operator_note"
+        })
+        refreshed = client.post(route, headers={"Authorization": "Bearer control-secret"},
+                                json={"mode": "plan"}).json()
+        apply_body = {"mode": "apply", "expected_proof_hash": refreshed["proofHash"],
+                      "reason": "Withdraw this obsolete local article.", "operator_request_id": "local-archive-1"}
+        applied = client.post(route, headers={"Authorization": "Bearer control-secret"}, json=apply_body)
+        replay = client.post(route, headers={"Authorization": "Bearer control-secret"}, json=apply_body)
+        wrong_reason = client.post(route, headers={"Authorization": "Bearer control-secret"}, json={
+            **apply_body, "reason": "Different operator attribution.",
+        })
+
+    assert denied.status_code == 401
+    assert unknown_tenant.status_code == 404
+    assert plan_response.status_code == 200 and plan["status"] == "ready_to_archive"
+    assert plan["articleIdeaId"] == idea["id"]
+    assert plan["externalEffectStatus"] == "unknown"
+    assert protected.status_code == 409
+    assert "Growth initiatives" in protected.json()["detail"]
+    assert action_protected.status_code == 409
+    assert "owner actions or approvals" in action_protected.json()["detail"]
+    assert drift.status_code == 409
+    assert applied.status_code == 200 and applied.json()["status"] == "archived"
+    assert applied.json()["externalEffectStatus"] == "unknown"
+    assert replay.status_code == 200 and replay.json()["idempotent"] is True
+    assert wrong_reason.status_code == 409
+    archived = memory.get_draft(draft_id)
+    assert archived["status"] == "discarded"
+    assert archived["title"] == "Old generated article"
+    assert archived["body"] == "Original body stays for history."
+    assert archived["meta"]["payload_sync"]["state"] == "blocked"
+    assert archived["meta"]["operator_archive"]["withdrawal"] == "explicit"
+    assert memory.get_article_idea_for_draft(draft_id)["id"] == idea["id"]
+    assert memory.get_draft(protected_draft_id)["status"] == "pending"
+    from site_agent.application.growth import growth_snapshot
+    assert all(item["id"] != draft_id for item in growth_snapshot(memory, {}, {})["articles"])
+    from site_agent.core.jobs import _mirror_article_draft_to_workspace
+    assert _mirror_article_draft_to_workspace({"memory": memory}, draft_id) is False
+
+    # Recheck relationships inside the atomic Memory operation, even if one is
+    # added after the application service has completed its preflight.
+    race_draft_id = memory.save_draft("Concurrent link", "Keep this article.", kind="article")
+    race_plan = service.archive_local_growth_article(race_draft_id, {"mode": "plan"}, tenant=tenant)
+    archive_method = memory.archive_local_growth_article_draft
+
+    def attach_initiative_then_archive(*args, **kwargs):
+        memory.create_strategy_initiative(
+            cycle["id"], kind="payload_content", title="Concurrent review", summary="New link.",
+            state="blocked", draft_id=race_draft_id,
+        )
+        return archive_method(*args, **kwargs)
+
+    memory.archive_local_growth_article_draft = attach_initiative_then_archive
+    with pytest.raises(Exception, match="Growth initiatives"):
+        service.archive_local_growth_article(race_draft_id, {
+            "mode": "apply", "expected_proof_hash": race_plan["proofHash"],
+            "reason": "Withdraw this obsolete local article.", "operator_request_id": "archive-race-1",
+        }, tenant=tenant)
+    assert memory.get_draft(race_draft_id)["status"] == "pending"
+    memory.archive_local_growth_article_draft = archive_method
+    memory.close()
+
+
+def test_article_archive_waits_for_inflight_payload_preparation(tmp_path):
+    memory = Memory(tmp_path / "article-archive-race.db")
+    draft_id = memory.save_draft("Local candidate", "Preserve this copy.", kind="article")
+    tenant = Tenant(tenant_id="race-tenant", config={}, memory=memory, runtime=None,
+                    context={"llm": object()}, api_token="race-token")
+    service = ChatService(registry=TenantRegistry({tenant.tenant_id: tenant}))
+    plan = service.archive_local_growth_article(draft_id, {"mode": "plan"}, tenant=tenant)
+    entered = threading.Event()
+    release = threading.Event()
+
+    class Payload:
+        def require_authoring_contract(self):
+            entered.set()
+            assert release.wait(timeout=5)
+            raise RuntimeError("preparation stopped before destination write")
+
+    context = {"memory": memory, "payload_gateway": Payload(), "config": {"site": {}}}
+    mirror_result = {}
+
+    def mirror():
+        from site_agent.core.jobs import _mirror_article_draft_to_workspace
+        try:
+            mirror_result["value"] = _mirror_article_draft_to_workspace(context, draft_id)
+        except Exception as exc:  # noqa: BLE001 — this path must release the lifecycle lock
+            mirror_result["error"] = exc
+
+    mirror_thread = threading.Thread(target=mirror)
+    mirror_thread.start()
+    assert entered.wait(timeout=5)
+    archive_result = {}
+    archive_started = threading.Event()
+    archive_done = threading.Event()
+
+    def archive():
+        archive_started.set()
+        archive_result["value"] = service.archive_local_growth_article(draft_id, {
+            "mode": "apply", "expected_proof_hash": plan["proofHash"],
+            "reason": "Withdraw this obsolete local article.", "operator_request_id": "archive-race-2",
+        }, tenant=tenant)
+        archive_done.set()
+
+    archive_thread = threading.Thread(target=archive)
+    archive_thread.start()
+    assert archive_started.wait(timeout=5)
+    assert not archive_done.wait(timeout=0.05)
+    release.set()
+    mirror_thread.join(timeout=5)
+    archive_thread.join(timeout=5)
+    assert not mirror_thread.is_alive() and not archive_thread.is_alive()
+    assert isinstance(mirror_result.get("error"), RuntimeError)
+    assert archive_result["value"]["status"] == "archived"
+    archived = memory.get_draft(draft_id)
+    from site_agent.core.jobs import _mark_article_payload_blocked
+    _mark_article_payload_blocked(memory, draft_id, "late scheduler error")
+    assert memory.get_draft(draft_id)["meta"] == archived["meta"]
+    assert memory.get_draft(draft_id)["status"] == "discarded"
+    memory.close()
+
+
 def _thread_result(callback):
     result = {}
     started = threading.Event()

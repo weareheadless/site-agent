@@ -59,7 +59,7 @@ A generated draft is progress. A verified live change is delivery. Later observe
 
 ## Acceptance ledger
 
-- [ ] Current published/draft inventory with exact duplicate/overlap distinctions.
+- [x] Current published/draft inventory with exact duplicate/overlap distinctions.
 - [ ] Canonical audited archival path; reviewed unpublished cleanup applied with receipts.
 - [ ] Published-content decisions prepared for owner review.
 - [ ] Current recommendations are evidence-bound and historical attempts cannot re-enter active work.
@@ -69,3 +69,34 @@ A generated draft is progress. A verified live change is delivery. Later observe
 - [ ] Authenticated rendered owner comprehension and action acceptance observed.
 
 Completion requires those live product checks; an inventory, a prettier screen or a passing test suite alone is insufficient.
+
+## Initial implementation checkpoint
+
+The live read-only inventory is in `oceanic-content-cleanup-inventory-20261023.md`.
+It finds seven public article routes, including two different plateau articles
+with the same title and separate URLs. No exact cross-document body duplicates
+were found. Public articles are retained pending a specific editorial decision.
+Five pending local attempts (#45/#49/#50/#58/#60) are proposed for explicit
+withdrawal; their text and destination records remain intact.
+
+The first UI slice implements changed-field comparison, readable light surfaces,
+localized review labels and approval consequences, and expandable rationale and
+expertise detail. Rich text keeps visible link/format differences plus optional
+exact structured detail. Tests against the saved actual Oceanic proposal shapes
+show only `seo.description` and `summary` in both reviews, omitting the unchanged
+article body. Shared package tests passed 66/66 and typecheck passed. This is
+source validation; the new UI has not been released or browser-accepted.
+
+The protected local-draft archive path is implemented; 39 focused backend tests
+cover authorization, proof drift, repeated requests, linked-record protection,
+projection and preparation interleaving. The full backend suite is running.
+It reuses the existing draft ledger, marks only eligible obsolete local intent
+as discarded with operator attribution, keeps full original copy and sync
+history, and records historical external effect as unknown. It is separate from
+owner decline and cannot decide a current approval or mutate Payload. Final
+backend tests, exact-source API activation and the reviewed live cleanup remain
+required before calling Oceanic a clean testing slate.
+
+Guided owner questions, grouping related independent approvals, fresh
+recommendation quality assessment, published article consolidation and full
+rendered usability acceptance remain later phases of this plan.

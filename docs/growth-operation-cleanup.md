@@ -69,3 +69,31 @@ publication is needed for this contract. Verify current hashes and revisions,
 terminal destination receipts, local work dispositions and remaining active
 operation counts after applying cleanup. Browser and owner-decision acceptance
 remain separate gates.
+
+## Obsolete local article generation attempts
+
+`POST /v1/control-plane/websites/{website_id}/growth/drafts/{draft_id}/archive`
+is a protected operator plan/apply path for obsolete pending local article
+attempts. It does not call the owner-decline service, decide approvals, delete
+content, or mutate Payload. Only unlinked records are eligible: current owner
+actions, initiatives, publication references, destination/candidate receipts,
+and active or uncertain research prevent archival. A saved blocked sync record
+may be retained only in its minimal state/validation shape, with no destination
+operation or effect identity. Retirement explicitly leaves historical external
+effect unknown rather than asserting that an old dispatch never occurred.
+
+Plan returns `proofHash` and `contentHash` without body text. Apply requires
+`expected_proof_hash`, bounded `reason`, and stable `operator_request_id`.
+Changed copy/metadata/state or newly linked work conflicts. Matching retries
+must retain the same request, reason and proof. The original title/body/meta
+are preserved, with `operator_archive` attribution added; local status becomes
+`discarded`. The normal active article projection and preparation loop exclude
+it while the retained draft remains inspectable in history.
+
+Article preparation, failure recording and archival share a tenant Memory
+lifecycle lock in the canonical single API process. Atomic archival also
+rechecks ledger relationships within its SQLite transaction. A preparation
+already running must finish before cleanup can recheck its proof; an archived
+record cannot dispatch a new mirror or be revived by a late failure callback.
+Use the standard exact-source API release before invoking this new path.
+Published article consolidation remains a separate exact owner decision.

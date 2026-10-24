@@ -1,6 +1,7 @@
 import {growthWorkspaceCopy} from './growth-workspace-copy';
 import {competitionCopy} from './competition-copy';
 import {growthTaskCopy} from './growth-task-copy';
+import {growthDecisionCopy} from './growth-decision-copy';
 
 export const growthCopy: Record<string, Record<string, string>> = {
   en: {
@@ -710,5 +711,8 @@ for (const [language, entries] of Object.entries(competitionCopy)) {
   for (const [key, value] of Object.entries(entries)) growthCopy[language][`growth.${key}`] = value;
 }
 for (const [language, entries] of Object.entries(growthTaskCopy)) {
+  for (const [key, value] of Object.entries(entries)) growthCopy[language][`growth.${key}`] = value;
+}
+for (const [language, entries] of Object.entries(growthDecisionCopy)) {
   for (const [key, value] of Object.entries(entries)) growthCopy[language][`growth.${key}`] = value;
 }

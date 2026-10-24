@@ -10,6 +10,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 from functools import wraps
+from contextlib import contextmanager
 import json
 import re
 import sqlite3
@@ -1195,6 +1196,7 @@ class Memory:
         self.conn = sqlite3.connect(self.path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._lock = threading.RLock()
+        self._article_draft_lifecycle_lock = threading.RLock()
         self.conn.execute("PRAGMA journal_mode=WAL")
         self._migrate()
 
@@ -1218,6 +1220,12 @@ class Memory:
     def close(self) -> None:
         with self._lock:
             self.conn.close()
+
+    @contextmanager
+    def article_draft_lifecycle(self):
+        """Serialize one article draft's external preparation with archival."""
+        with self._article_draft_lifecycle_lock:
+            yield
 
     @_locked
     def get_schema_version(self) -> int:
@@ -2412,6 +2420,72 @@ class Memory:
                 (json.dumps(meta), _now(), draft_id),
             )
         return cur.rowcount > 0
+
+    @_locked
+    def archive_local_growth_article_draft(
+        self, draft_id: int, *, tenant_id: str, expected_proof_hash: str,
+        archive_receipt: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Atomically archive an eligible local article without changing its copy."""
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.conn.execute("SELECT * FROM drafts WHERE id = ?", (int(draft_id),)).fetchone()
+            if row is None:
+                raise ContractError("local article draft no longer exists")
+            current = dict(row)
+            try:
+                meta = json.loads(current.get("meta") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                raise ContractError("local article draft metadata is invalid")
+            if not isinstance(meta, dict):
+                raise ContractError("local article draft metadata is invalid")
+            if current.get("kind") != "article" or current.get("status") != "pending":
+                raise ContractError("only pending local article drafts can be archived")
+            if self.conn.execute("SELECT 1 FROM owner_actions WHERE draft_id = ? LIMIT 1", (int(draft_id),)).fetchone():
+                raise ContractError("article drafts linked to owner actions cannot be archived")
+            if self.conn.execute("SELECT 1 FROM strategy_initiatives WHERE draft_id = ? LIMIT 1", (int(draft_id),)).fetchone():
+                raise ContractError("article drafts linked to Growth initiatives cannot be archived")
+            if self.conn.execute("SELECT 1 FROM publishes WHERE draft_id = ? LIMIT 1", (int(draft_id),)).fetchone():
+                raise ContractError("article drafts linked to publications cannot be archived")
+            if self.conn.execute(
+                "SELECT 1 FROM article_ideas WHERE draft_id = ? AND status IN "
+                "('preparing', 'research_requested', 'serp_requested', 'uncertain') LIMIT 1", (int(draft_id),),
+            ).fetchone():
+                raise ContractError("article drafts with active or uncertain research cannot be archived")
+            if meta.get("operator_archive") or meta.get("growth_package") or meta.get("review_package_hash"):
+                raise ContractError("candidate or previously archived article drafts cannot be archived")
+            sync = meta.get("payload_sync") if isinstance(meta.get("payload_sync"), dict) else None
+            if sync is not None:
+                validation = sync.get("validation") if isinstance(sync.get("validation"), dict) else {}
+                if (set(sync) - {"state", "validation"} or set(validation) - {"status", "reason"}
+                        or sync.get("state") != "blocked" or validation.get("status") != "blocked"):
+                    raise ContractError("article sync metadata has active or uncertain destination details")
+            snapshot = {
+                "tenant": str(tenant_id), "id": int(current["id"]), "kind": str(current["kind"]),
+                "status": str(current["status"]), "title": str(current.get("title") or ""),
+                "body": str(current.get("body") or ""), "meta": meta,
+                "updated_ts": str(current.get("updated_ts") or ""),
+            }
+            proof_hash = "sha256:" + hashlib.sha256(json.dumps(
+                snapshot, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str,
+            ).encode()).hexdigest()
+            if proof_hash != expected_proof_hash:
+                raise ContractError("local article draft changed after its archive plan")
+            if archive_receipt.get("proofHash") != proof_hash:
+                raise ContractError("archive receipt is not bound to the exact local draft")
+            next_meta = {**meta, "operator_archive": dict(archive_receipt)}
+            updated = self.conn.execute(
+                "UPDATE drafts SET status = 'discarded', meta = ?, updated_ts = ? "
+                "WHERE id = ? AND status = 'pending' AND updated_ts = ?",
+                (json.dumps(next_meta, ensure_ascii=False), _now(), int(draft_id), str(current.get("updated_ts") or "")),
+            )
+            if updated.rowcount != 1:
+                raise ContractError("local article draft changed during archive")
+            self.conn.commit()
+            return {"status": "archived", "draft_id": int(draft_id), "archive": dict(archive_receipt)}
+        except Exception:
+            self.conn.rollback()
+            raise
 
     @_locked
     def get_draft(self, draft_id: int) -> dict[str, Any] | None:

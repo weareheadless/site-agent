@@ -35,7 +35,20 @@ test('Growth translations load and contain the unified plan for every supported 
       'growth.growthOwnerReviewTask', 'growth.assessmentExecutionFailed', 'growth.assessmentExecutionBlocked',
       'growth.assessmentExecutionUncertain', 'growth.assessmentExecutionStale',
       'growth.articleResearchLocaleNeedsRepair', 'growth.articleResearchRequestNeedsRepair',
-      'growth.assessmentNextRetry', 'growth.lastGrowthReview']) {
+      'growth.assessmentNextRetry', 'growth.lastGrowthReview', 'growth.clarityCurrently', 'growth.clarityProposed',
+      'growth.clarityRemoved', 'growth.clarityNotPresent', 'growth.clarityEmpty', 'growth.clarityNoChanges',
+      'growth.clarityHeadingSearchDescription', 'growth.clarityPurposeSearchDescription',
+      'growth.clarityHeadingArticleSummary', 'growth.clarityPurposeArticleSummary',
+      'growth.clarityHeadingArticleText', 'growth.clarityPurposeArticleText',
+      'growth.clarityHeadingTitle', 'growth.clarityPurposeTitle', 'growth.clarityUntitledReview',
+      'growth.clarityEvidenceLabel', 'growth.clarityPurposeProposal', 'growth.clarityFieldSearchDescription',
+      'growth.clarityFieldSearchTitle', 'growth.clarityFieldArticleSummary', 'growth.clarityFieldArticleText',
+      'growth.clarityFieldContent', 'growth.clarityFieldTitle', 'growth.clarityFieldAuthor',
+      'growth.clarityFieldFeaturedImage', 'growth.clarityFieldImageDescription', 'growth.clarityFieldImage',
+      'growth.clarityFieldImageUrl', 'growth.clarityFieldImageFile', 'growth.clarityFieldPageAddress',
+      'growth.clarityFieldDescription', 'growth.clarityFieldName', 'growth.clarityFieldCaption',
+      'growth.clarityFieldSearchPhrase', 'growth.clarityFieldWidth', 'growth.clarityFieldHeight',
+      'growth.clarityRichTextDetails', 'growth.clarityUnderlined', 'growth.clarityLinkDestination', 'growth.clarityOpensNewTab']) {
       assert.equal(typeof growthCopy[language][key], 'string', `${language}: ${key}`)
       assert.ok(growthCopy[language][key].length > 0)
     }
