@@ -128,6 +128,12 @@ The existing Oceanic question was already opened (action 22 is waiting, with
 conversation 43/job 55). Its answer lineage is intentionally retained rather
 than replacing an in-progress question or inventing business facts. New questions
 follow the one-question rule; the owner can expand the existing full request.
-The release queue targets exact source `34f1c91668483879f7d004ff2a0fd785a9c43f43`
+The release queue targets exact source `0c8d87fe6c24d1bcbc7273b7a5bb7ac0e427ba95`
 for the clarity assessment API. Admin publication/pins and live deployment remain
 separate verified steps.
+
+Full regression review found and corrected two assessment compatibility issues:
+invalid citations keep the established diagnostic code, and unavailable required
+sources use the existing candidate-blocking path rather than completing an
+assessment early. The corrected focused service/planner/workflow/recovery suite
+passes 70 tests. Official CI rechecks the exact queued revision.
