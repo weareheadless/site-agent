@@ -105,6 +105,7 @@ test('derives the compact owner-summary next step from canonical work readiness'
   assert.match(component, /leadWork \? t\(growthAreaOwnerNextStepKey\(leadWork\)!\) : summaryExcerpt\(area\.ownerSummary\.nextStep\)/);
   assert.match(component, /areaOwnerCurrentNextStep/);
   assert.match(component, /areaSavedAssessment/);
+  assert.match(component, /ctaTask\.canApprove \|\| leadWork\?\.canApprove \? <div className="helloada-growth-area-review-target">[\s\S]*growth\.areaWorkReady[\s\S]*title\(ctaTask\)/);
   const copy = source('src/lib/growth-copy.ts');
   for (const key of ['areaOwnerCurrentNextStep', 'areaOwnerReviewNextStep', 'areaOwnerPreparingNextStep', 'areaOwnerStoppedNextStep', 'areaSavedAssessment']) {
     assert.equal((copy.match(new RegExp(`[\"']growth\\.${key}[\"']:` , 'g')) || []).length, 3, `${key} should have English, French and Spanish copy`);

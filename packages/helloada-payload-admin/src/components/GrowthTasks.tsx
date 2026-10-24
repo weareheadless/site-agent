@@ -561,8 +561,14 @@ export function GrowthTasks({ mode, serviceModel, decisionOrder, onNavigate, tas
                 {area.lastAssessedAt ? <small>{t("growth.lastGrowthReview")}: {date(area.lastAssessedAt)}</small> : null}
               </div> : null}
 
-              {ctaTask ? <button type="button" className="helloada-growth-area-review" data-growth-task-id={ctaTask.id}
-                aria-label={`${t(ctaKey)}: ${title(ctaTask)}`} onClick={() => openTask(ctaTask)}>{t(ctaKey)}</button> : null}
+              {ctaTask ? <>
+                {ctaTask.canApprove || leadWork?.canApprove ? <div className="helloada-growth-area-review-target">
+                  <small>{t("growth.areaWorkReady")}</small>
+                  <strong>{title(ctaTask)}</strong>
+                </div> : null}
+                <button type="button" className="helloada-growth-area-review" data-growth-task-id={ctaTask.id}
+                  aria-label={`${t(ctaKey)}: ${title(ctaTask)}`} onClick={() => openTask(ctaTask)}>{t(ctaKey)}</button>
+              </> : null}
 
               {hasDetails ? <details className="helloada-growth-area-details">
                 <summary>{t(findings.length ? "growth.areaProposedDetails" : "growth.areaSavedAssessmentDetails")}</summary>
