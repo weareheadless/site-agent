@@ -2662,7 +2662,7 @@ class ChatService:
     def archive_local_growth_article(
         self, draft_id: Any, body: Mapping[str, Any], *, tenant: Tenant | None = None,
     ) -> dict[str, Any]:
-        """Withdraw one obsolete local article intent without touching Payload."""
+        """Withdraw one eligible obsolete local draft without changing external state."""
         if tenant is None or self.registry is None or tenant.tenant_id not in self.registry.tenants:
             raise BridgeError("tenant is not authorized")
         try:
@@ -2685,8 +2685,9 @@ class ChatService:
 
                 draft = memory.get_draft(normalized_id)
                 if draft is None:
-                    raise BridgeError("article draft was not found")
+                    raise BridgeError("local draft was not found")
                 meta = draft.get("meta") if isinstance(draft.get("meta"), Mapping) else {}
+                draft_kind = str(draft.get("kind") or "")
                 archive = meta.get("operator_archive") if isinstance(meta.get("operator_archive"), Mapping) else {}
                 content_hash_value = content_hash({
                     "tenant": tenant.tenant_id, "id": normalized_id, "kind": draft.get("kind"),
@@ -2698,6 +2699,8 @@ class ChatService:
                     "research_cost_micros", "keyword_budget_reservation_id", "serp_budget_reservation_id",
                 )
                 article_ideas = memory.list_article_ideas_for_draft(normalized_id)
+                if draft_kind != "article" and article_ideas:
+                    raise BridgeError("non-article local drafts cannot have linked article research")
                 idea_binding = [{key: idea.get(key) for key in idea_fields} for idea in article_ideas]
                 article_ideas_hash = content_hash(idea_binding)
                 if (draft.get("status") == "discarded"
@@ -2707,8 +2710,58 @@ class ChatService:
                         and archive.get("contentHash") == content_hash_value
                         and archive.get("articleIdeasHash") == article_ideas_hash):
                     return {**dict(archive), "status": "archived", "draftId": normalized_id, "idempotent": True}
-                if draft.get("kind") != "article" or draft.get("status") != "pending":
-                    raise BridgeError("only pending local article drafts can be archived")
+                if draft.get("status") != "pending":
+                    raise BridgeError("only pending local drafts can be archived")
+                if draft_kind not in {"article", "edit", "reflection", "merge"}:
+                    raise BridgeError("this local draft kind is not eligible for archive")
+                if draft_kind != "article":
+                    if memory.has_active_chat_jobs():
+                        raise BridgeError("active chat work prevents local draft archive")
+                    if draft_kind == "edit":
+                        ops = meta.get("ops")
+                        valid_local_meta = (
+                            set(meta) == {"ops", "summary"} and isinstance(meta.get("summary"), str)
+                            and isinstance(ops, list) and all(
+                                isinstance(op, Mapping) and set(op) <= {"op", "path", "find", "replace"}
+                                and all(isinstance(value, str) for value in op.values()) for op in ops
+                            )
+                        )
+                    elif draft_kind == "reflection":
+                        valid_local_meta = (
+                            set(meta) == {"voice_notes", "avoid"}
+                            and all(isinstance(meta.get(key), list) and all(isinstance(item, str) for item in meta[key])
+                                    for key in ("voice_notes", "avoid"))
+                        )
+                    else:
+                        preview = meta.get("preview") if isinstance(meta.get("preview"), Mapping) else {}
+                        preview_fields = {
+                            "mode", "status", "requires_build", "changed_paths", "reason", "job_id",
+                            "head_sha", "runtime_path", "preview_url", "deployment_mode", "error",
+                        }
+                        valid_local_meta = (
+                            set(meta) == {"head", "base", "head_sha", "base_sha", "summary", "changed_paths", "preview"}
+                            and all(isinstance(meta.get(key), str) for key in ("head", "base", "head_sha", "base_sha", "summary"))
+                            and isinstance(meta.get("changed_paths"), list)
+                            and all(isinstance(path, str) for path in meta["changed_paths"])
+                            and set(preview) == preview_fields
+                            and preview.get("mode") == "compiled_preview"
+                            and preview.get("status") in {"blocked", "failed"}
+                            and isinstance(preview.get("requires_build"), bool)
+                            and isinstance(preview.get("changed_paths"), list)
+                            and all(isinstance(path, str) for path in preview["changed_paths"])
+                            and isinstance(preview.get("reason"), str)
+                            and isinstance(preview.get("job_id"), str) and bool(preview.get("job_id").strip())
+                            and isinstance(preview.get("head_sha"), str)
+                            and all(preview.get(key) is None or isinstance(preview.get(key), str)
+                                    for key in ("runtime_path", "preview_url", "deployment_mode", "error"))
+                        )
+                    if not valid_local_meta:
+                        raise BridgeError("local draft metadata is not an eligible obsolete intent")
+                source_preview_binding = None
+                if draft_kind == "merge":
+                    source_preview_binding = memory.source_preview_archive_binding(
+                        normalized_id, meta["preview"].get("job_id"),
+                    )
                 if any(draft.get(key) for key in ("growth_package", "review_package_hash", "published_revision")):
                     raise BridgeError("reviewed or published article candidates cannot be archived")
                 if any(meta.get(key) for key in (
@@ -2761,11 +2814,15 @@ class ChatService:
                     "body": str(draft.get("body") or ""), "meta": meta,
                     "updated_ts": str(draft.get("updated_ts") or ""),
                     "articleIdeas": idea_binding,
+                    "sourcePreview": source_preview_binding,
                 }
                 proof_hash = content_hash(snapshot)
                 if mode == "plan":
                     return {"status": "ready_to_archive", "draftId": normalized_id,
+                            "draftKind": draft_kind,
                             "contentHash": content_hash_value, "proofHash": proof_hash,
+                            "sourcePreviewLedgerHash": (source_preview_binding or {}).get("ledgerHash"),
+                            "terminalPreviewJobIds": (source_preview_binding or {}).get("terminalPreviewJobIds", []),
                             "articleIdeaId": int(article_ideas[-1]["id"]) if article_ideas else None,
                             "articleIdeasHash": article_ideas_hash,
                             "externalEffectStatus": "unknown"}
@@ -2773,8 +2830,11 @@ class ChatService:
                     raise BridgeError("article draft changed after its archive plan")
                 receipt = {
                     "status": "archived", "scope": "local_draft_only", "withdrawal": "explicit",
+                    "draftKind": draft_kind,
                     "externalEffectStatus": "unknown", "reason": reason,
                     "operatorRequestId": operator_request_id, "proofHash": proof_hash,
+                    "sourcePreviewLedgerHash": (source_preview_binding or {}).get("ledgerHash"),
+                    "terminalPreviewJobIds": (source_preview_binding or {}).get("terminalPreviewJobIds", []),
                     "contentHash": content_hash_value, "priorStatus": "pending",
                     "articleIdeaId": int(article_ideas[-1]["id"]) if article_ideas else None,
                     "articleIdeasHash": article_ideas_hash,
@@ -2782,6 +2842,8 @@ class ChatService:
                 result = memory.archive_local_growth_article_draft(
                     normalized_id, tenant_id=tenant.tenant_id,
                     expected_proof_hash=proof_hash, archive_receipt=receipt,
+                    expected_source_preview_ledger_hash=(source_preview_binding or {}).get("ledgerHash"),
+                    expected_terminal_preview_job_ids=(source_preview_binding or {}).get("terminalPreviewJobIds", []),
                 )
                 return {**receipt, "status": "archived", "draftId": normalized_id,
                         "idempotent": False, "localStatus": result["status"]}

@@ -70,30 +70,55 @@ terminal destination receipts, local work dispositions and remaining active
 operation counts after applying cleanup. Browser and owner-decision acceptance
 remain separate gates.
 
-## Obsolete local article generation attempts
+## Obsolete local article and source-generation attempts
 
 `POST /v1/control-plane/websites/{website_id}/growth/drafts/{draft_id}/archive`
-is a protected operator plan/apply path for obsolete pending local article
-attempts. It does not call the owner-decline service, decide approvals, delete
-content, or mutate Payload. Only unlinked records are eligible: current owner
-actions, initiatives, publication references, destination/candidate receipts,
-and active or uncertain research prevent archival. A saved blocked sync record
-may be retained only in its minimal state/validation shape, with no destination
-operation or effect identity. Retirement explicitly leaves historical external
-effect unknown rather than asserting that an old dispatch never occurred.
+is a protected operator plan/apply path for obsolete pending local article,
+edit, reflection and merge attempts. It does not call the owner-decline service,
+decide approvals, delete content, mutate Payload or reset a Git branch. The
+operator first plans an exact draft, then applies with that proof hash, a bounded
+reason and a stable request ID. The operation changes the existing local draft
+ledger only; original copy and provenance remain inspectable.
 
-Plan returns `proofHash` and `contentHash` without body text. Apply requires
-`expected_proof_hash`, bounded `reason`, and stable `operator_request_id`.
-Changed copy/metadata/state or newly linked work conflicts. Matching retries
-must retain the same request, reason and proof. The original title/body/meta
-are preserved, with `operator_archive` attribution added; local status becomes
-`discarded`. The normal active article projection and preparation loop exclude
-it while the retained draft remains inspectable in history.
+Eligible records have exact kind-specific metadata shapes. Article records may
+retain only the narrow blocked `payload_sync` state/validation shape, with no
+destination operation or effect identity. Edits require metadata containing only `ops` and `summary`; each operation is
+an object whose string fields are limited to `op`, `path`, `find` and `replace`.
+Reflections require exactly the `voice_notes` and `avoid` string arrays. A merge
+requires exactly `head`, `base`, `head_sha`, `base_sha`, `summary`,
+`changed_paths` and `preview`. The preview contains exactly `mode`, `status`,
+`requires_build`, `changed_paths`, `reason`, `job_id`, `head_sha`, `runtime_path`,
+`preview_url`, `deployment_mode` and `error`. Mode is `compiled_preview`, status
+is `blocked` or `failed`, and preview paths are strings.
+
+Unknown metadata, current owner actions, initiatives, publication references,
+candidate receipts, or active or uncertain work prevent archival. Active,
+recoverable or unknown research blocks archival; terminal research history is
+retained and bound into the plan proof, while non-article drafts cannot carry
+linked article research. A merge also needs a matching terminal failed compiled-
+preview job in the canonical source-preview ledger; active, missing or unknown
+ledger entries fail closed. Historical external effect is recorded as unknown,
+never as proof that an attempted dispatch had no effect.
+
+Plan returns `proofHash` and `contentHash` without body text. For merge drafts,
+it also returns `sourcePreviewLedgerHash` for the whole source-preview ledger and
+`terminalPreviewJobIds` for the sorted exact failed preview jobs. Apply requires
+`expected_proof_hash`, bounded `reason`, and stable `operator_request_id`. Changed copy/metadata/state or newly linked work
+conflicts. Matching retries must retain the same request, reason and proof. The
+original title/body/meta are preserved, with `operator_archive` attribution
+added; local status becomes `discarded`. Active projections and preparation
+loops exclude it while it remains inspectable in history.
 
 Article preparation, failure recording and archival share a tenant Memory
-lifecycle lock in the canonical single API process. Atomic archival also
-rechecks ledger relationships within its SQLite transaction. A preparation
-already running must finish before cleanup can recheck its proof; an archived
-record cannot dispatch a new mirror or be revived by a late failure callback.
-Use the standard exact-source API release before invoking this new path.
-Published article consolidation remains a separate exact owner decision.
+lifecycle lock in the canonical single API process. Atomic archival rechecks
+relationships and proof inside `BEGIN IMMEDIATE`: it rereads the pending draft,
+validates its exact kind shape, verifies no owner action, initiative or
+publication reference exists, and binds eligible article-idea states and
+research/run/reservation identities. For merges it rereads and hashes the whole
+canonical source-preview ledger and checks the terminal job IDs still match the
+plan before writing the archive receipt. A preparation already running must
+finish before cleanup can recheck its proof; an archived record cannot dispatch
+a new mirror or be revived by a late failure callback. No `git reset`, branch
+reset or preview reset is part of cleanup. Use the standard exact-source API
+release before invoking this path. Published article consolidation remains a
+separate exact owner decision.
