@@ -137,6 +137,28 @@ export function getReviewChanges(review?: GrowthReview | null): GrowthReviewChan
   return legacy;
 }
 
+/** Exact changed-field signature for grouping related cards without joining their approval identities. */
+export function getReviewFieldSignature(review?: GrowthReview | null): string | null {
+  const paths = [...new Set(getReviewChanges(review).map(change => change.path))].sort();
+  return paths.length ? JSON.stringify(paths) : null;
+}
+
+export function groupReviewDecisions<T extends { id: string; kind?: string; canApprove?: boolean; review?: GrowthReview | null }>(tasks: T[]): { key: string; signature: string | null; tasks: T[] }[] {
+  const groups = new Map<string, { key: string; signature: string | null; tasks: T[] }>();
+  for (const task of tasks) {
+    const signature = getReviewFieldSignature(task.review);
+    // Only exact ready candidates of the same execution kind are grouped. Every
+    // other task retains its own display group and approval/reply identity.
+    const eligible = task.canApprove === true && Boolean(task.kind && signature);
+    const key = eligible ? JSON.stringify([task.kind, signature]) : `task:${task.id}`;
+    const groupedSignature = eligible ? signature : null;
+    const group = groups.get(key) || { key, signature: groupedSignature, tasks: [] };
+    group.tasks.push(task);
+    groups.set(key, group);
+  }
+  return [...groups.values()];
+}
+
 /** Plain text rendering for changed Lexical values; destinations and marks stay visible without active links. */
 export function formatRichTextReview(value: unknown, labels: { underlined?: string; linkDestination?: string; opensInNewTab?: string } = {}): string | null {
   if (!isRecord(value)) return null;

@@ -111,6 +111,27 @@ test('renders owner review through a sparse field comparison instead of full raw
   assert.doesNotMatch(component, /Object\.entries\(selectedTask\.review\.changes\)/);
 });
 
+test('overview, recommendations and activity stay distinct while related fields keep separate review actions', () => {
+  const component = source('src/components/GrowthTasks.tsx');
+  const shell = source('src/components/HelloAdaGrowth.tsx');
+  assert.match(shell, /panel === "home"\} onClick=\{\(\) => navigatePanel\("home"\)\}/);
+  assert.match(shell, /panel === "decisions"\} onClick=\{\(\) => navigatePanel\("decisions"\)\}/);
+  assert.match(shell, /panel === "work"\} onClick=\{\(\) => navigatePanel\("work"\)\}/);
+  assert.match(component, /groupReviewDecisions\(rows\)/);
+  assert.match(component, /getReviewTarget\(task\.review\)/);
+  assert.match(component, /featuredRelatedGroup[\s\S]*groupReviewDecisions\(decisionRows\)/);
+  assert.match(component, /featuredRelatedGroup\.tasks\.map\(task =>/);
+  assert.match(component, /featuredRelatedIds\.has\(task\.id\)/);
+  assert.match(component, /clarityRelatedDecisionHeading/);
+  assert.match(component, /data-growth-task-id=\{task\.id\}[\s\S]*aria-label=\{`\$\{title\(task\)\}\.[\s\S]*onClick=\{\(\) => openTask\(task\)\}/);
+  assert.match(component, /data-growth-task-id=\{task\.id\} onClick=\{\(\) => openTask\(task\)\}/);
+  assert.match(component, /key=\{task\.id\}/);
+  assert.match(component, /growth\.clarityRelatedFields/);
+  assert.match(component, /conciseText\(selectedTask\.scope \|\| title\(selectedTask\)\)/);
+  assert.match(component, /growth\.clarityScopeDetails/);
+  assert.match(component, /<summary>\{t\("growth\.clarityScopeDetails"\)\}<\/summary><p>\{selectedTask\.scope\}<\/p>/);
+});
+
 test('keeps unknown historical work explicitly unassigned and displayable without keyword inference', () => {
   const historical = serviceModel.work.find((row) => row.id === 'initiative:88');
   assert.equal(historical.primaryArea, null);

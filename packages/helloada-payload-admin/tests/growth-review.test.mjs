@@ -138,3 +138,25 @@ test('nested proposed values receive localized field keys', () => {
   assert.equal(change.path, 'seo.metaDescription')
   assert.equal(change.labelKey, 'growth.clarityFieldSearchDescription')
 })
+
+test('related ready payload reviews group by changed fields while keeping target and task identities separate', () => {
+  const review = path => ({ route: path,
+    before: { seo: { description: 'old' }, summary: 'old summary' },
+    after: { seo: { description: 'new' }, summary: 'new summary' },
+  })
+  const rows = [
+    { id: 'draft-a', kind: 'payload_content', canApprove: true, review: review('/services/a') },
+    { id: 'draft-b', kind: 'payload_content', canApprove: true, review: review('/services/b') },
+    { id: 'owner-question', requirement: 'owner_information' },
+    { id: 'source-candidate', kind: 'code', canApprove: true, review: review('/services/c') },
+    { id: 'not-ready', kind: 'payload_content', canApprove: false, review: review('/services/d') },
+  ]
+  const groups = reviewApi.groupReviewDecisions(rows)
+  assert.equal(groups.length, 4)
+  assert.deepEqual(JSON.parse(JSON.stringify(groups[0].tasks.map(task => task.id))), ['draft-a', 'draft-b'])
+  assert.equal(reviewApi.getReviewTarget(groups[0].tasks[0].review).path, '/services/a')
+  assert.equal(reviewApi.getReviewTarget(groups[0].tasks[1].review).path, '/services/b')
+  assert.equal(groups[1].tasks[0].id, 'owner-question')
+  assert.equal(groups[2].tasks[0].id, 'source-candidate')
+  assert.equal(groups[3].tasks[0].id, 'not-ready')
+})

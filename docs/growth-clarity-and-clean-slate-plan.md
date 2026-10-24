@@ -106,3 +106,34 @@ warnings). Final review then tightened malformed-sync rejection and bound all
 linked article-idea states/run/reservation identities into the archival proof;
 40 focused backend tests passed after those changes. Official PR CI validates
 the final immutable source. No live content cleanup has yet been applied.
+
+## Continued release and assessment tranche
+
+The shared admin candidate is version 0.10.29. Overview now groups related exact
+field edits without joining their approvals, bounds secondary decisions, and
+keeps Recommendations, Activity and Results as distinct views. Actual Oceanic
+initiatives 8 and 7 share the description/summary group; initiative 4 remains a
+separate owner question. Long scope/evidence remains available in disclosures.
+The final package suite passes 68 tests plus typecheck.
+
+New assessments require current source observations and canonical document
+binding. Invalid or stale findings and extra owner questions are deferred
+individually, preserving valid recommendations in the same assessment. Ada is
+instructed to identify a concrete visitor/business problem and a bounded action,
+compare retained work and current published inventory, avoid internal repair
+chores as owner recommendations and distinguish hypotheses from measured
+outcomes. Focused planner/workflow/recovery checks pass 36 tests.
+
+The existing Oceanic question was already opened (action 22 is waiting, with
+conversation 43/job 55). Its answer lineage is intentionally retained rather
+than replacing an in-progress question or inventing business facts. New questions
+follow the one-question rule; the owner can expand the existing full request.
+The release queue targets exact source `0c8d87fe6c24d1bcbc7273b7a5bb7ac0e427ba95`
+for the clarity assessment API. Admin publication/pins and live deployment remain
+separate verified steps.
+
+Full regression review found and corrected two assessment compatibility issues:
+invalid citations keep the established diagnostic code, and unavailable required
+sources use the existing candidate-blocking path rather than completing an
+assessment early. The corrected focused service/planner/workflow/recovery suite
+passes 70 tests. Official CI rechecks the exact queued revision.
