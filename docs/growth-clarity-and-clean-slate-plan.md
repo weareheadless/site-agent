@@ -185,3 +185,13 @@ reconciliation retain their guards. Article-sync/service checks pass 52 tests,
 including zero-write apostrophe-variant and incomplete-inventory regressions.
 The final API source is `7cbfaf5752adf129be22cdf0f1f713e90dc0b997`; official CI and
 full backend tests validate that exact source before activation.
+
+Official CI passed the duplicate-prevention/review source. A local full run
+passed 1,680 tests but exposed one pre-existing sub-millisecond clock-rounding
+flake in the recovery test. That test now injects a fixed clock, retaining its
+assertion and production behavior; it passed three consecutive runs, with 57
+Growth task/service checks passing afterward. The exact final API source is
+`02359ea5599e1a89a46bfa816379bb47f8bf8a85` and CI revalidates it. The concrete
+published-article decision is in
+`oceanic-plateau-consolidation-review-20261024.md`; no owner choice or publication
+has been inferred.
