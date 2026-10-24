@@ -19,6 +19,7 @@ export const growthDecisionCopy: Record<string, Record<string, string>> = {
     clarityRelatedDecisionHeading: '{count} changes to {fields}', clarityRelatedDecisionPurpose: 'Each item is reviewed separately. Open one to compare its exact change.',
     clarityShortDescriptionGroupHeading: 'Short descriptions for {count} pages', clarityRelatedGroupHeading: 'Updates ready for {count} pages',
     clarityRelatedGroupFields: 'Show changed fields', clarityReviewChanges: 'Review changes', clarityOwnerQuestionSubtitle: 'Ada needs information only you can provide',
+    clarityReviewIntroduction: 'Compare the current {fields} with the proposed changes below. Publishing applies these changes to this page.',
   },
   fr: {
     clarityCurrently: 'Actuellement sur votre site', clarityProposed: 'Modification proposée',
@@ -40,6 +41,7 @@ export const growthDecisionCopy: Record<string, Record<string, string>> = {
     clarityRelatedDecisionHeading: '{count} changements : {fields}', clarityRelatedDecisionPurpose: 'Chaque élément est examiné séparément. Ouvrez-en un pour comparer la modification exacte.',
     clarityShortDescriptionGroupHeading: 'Descriptions courtes pour {count} pages', clarityRelatedGroupHeading: 'Modifications prêtes pour {count} pages',
     clarityRelatedGroupFields: 'Afficher les champs modifiés', clarityReviewChanges: 'Examiner les modifications', clarityOwnerQuestionSubtitle: 'Ada a besoin d’informations que vous seul pouvez fournir',
+    clarityReviewIntroduction: 'Comparez les valeurs actuelles de {fields} aux changements proposés ci-dessous. La publication applique ces changements à cette page.',
   },
   es: {
     clarityCurrently: 'Actualmente en tu sitio web', clarityProposed: 'Cambio propuesto',
@@ -61,5 +63,6 @@ export const growthDecisionCopy: Record<string, Record<string, string>> = {
     clarityRelatedDecisionHeading: '{count} cambios en {fields}', clarityRelatedDecisionPurpose: 'Cada elemento se revisa por separado. Abre uno para comparar el cambio exacto.',
     clarityShortDescriptionGroupHeading: 'Descripciones breves para {count} páginas', clarityRelatedGroupHeading: 'Cambios listos para {count} páginas',
     clarityRelatedGroupFields: 'Mostrar campos modificados', clarityReviewChanges: 'Revisar cambios', clarityOwnerQuestionSubtitle: 'Ada necesita información que solo tú puedes proporcionar',
+    clarityReviewIntroduction: 'Compara los valores actuales de {fields} con los cambios propuestos. Al publicar, estos cambios se aplican a esta página.',
   },
 };

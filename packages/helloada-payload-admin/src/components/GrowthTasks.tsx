@@ -153,6 +153,11 @@ export function GrowthTasks({ mode, serviceModel, decisionOrder, onNavigate, tas
   const canonicalDecisionIds = new Set(serviceModel.decisionIds);
   const featuredDecision = decisionRows[0];
   const featuredPresentation = featuredDecision ? getDecisionPresentation(featuredDecision, t) : null;
+  const selectedReviewChanges = selectedTask?.kind === "payload_content" ? getReviewChanges(selectedTask.review) : [];
+  const selectedReviewFields = [...new Set(selectedReviewChanges.map(change => change.labelKey ? t(change.labelKey) : change.label))].join(" · ");
+  const selectedReviewIntroduction = selectedReviewChanges.length
+    ? t("growth.clarityReviewIntroduction").replace("{fields}", selectedReviewFields)
+    : null;
   const featuredRelatedGroup = featuredDecision
     ? groupReviewDecisions(decisionRows).find(group => group.tasks.some(task => task.id === featuredDecision.id) && group.tasks.length > 1)
     : undefined;
@@ -521,6 +526,7 @@ export function GrowthTasks({ mode, serviceModel, decisionOrder, onNavigate, tas
             </div>
             {selectedTask.kind === "article" && exactArticleReview ? <span className="helloada-growth-review-state">{t("growth.articleUnpublished")}</span> : null}
           </header>
+          {selectedReviewIntroduction ? <p className="helloada-growth-task-analysis-note helloada-growth-review-intro">{selectedReviewIntroduction}</p> : null}
 
           {selectedTask.kind === "article" ? <>
             {articleLoading ? <p role="status">{t("growth.articleLoading")}</p> : null}
@@ -568,7 +574,9 @@ export function GrowthTasks({ mode, serviceModel, decisionOrder, onNavigate, tas
                 <summary>{t("growth.ownerQuestionObserved")}</summary><p>{fullTaskSummary(selectedTask)}</p>
               </details> : null}
               <p className="helloada-growth-owner-hint">{t("growth.ownerQuestionHint")}</p>
-            </section> : fullTaskSummary(selectedTask) && !selectedTask.executionIssue ? <HelloAdaChatMessage text={fullTaskSummary(selectedTask)} /> : null}
+            </section> : selectedReviewChanges.length && fullTaskSummary(selectedTask) ? <details className="helloada-growth-task-evidence">
+              <summary>{t("growth.clarityEvidenceLabel")}</summary><HelloAdaChatMessage text={fullTaskSummary(selectedTask)} />
+            </details> : fullTaskSummary(selectedTask) && !selectedTask.executionIssue ? <HelloAdaChatMessage text={fullTaskSummary(selectedTask)} /> : null}
             {selectedTask.kind === "article_research" && selectedTask.scope ? <section className="helloada-growth-task-analysis-note">
               <strong>{t("growth.articleOpportunityNeed")}</strong><p>{selectedTask.scope}</p>
             </section> : null}

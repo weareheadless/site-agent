@@ -2522,7 +2522,7 @@ class Memory:
                         and isinstance(meta.get("changed_paths"), list)
                         and all(isinstance(path, str) for path in meta["changed_paths"])
                         and set(preview) == preview_fields
-                        and preview.get("mode") == "compiled_preview"
+                        and preview.get("mode") in {"compile", "compiled_preview"}
                         and preview.get("status") in {"blocked", "failed"}
                         and isinstance(preview.get("requires_build"), bool)
                         and isinstance(preview.get("changed_paths"), list)

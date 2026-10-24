@@ -1957,13 +1957,13 @@ def test_article_archive_rejects_malformed_sync_and_recoverable_research_state(t
     memory.close()
 
 
-def _local_blocked_merge_meta(preview_job_id):
+def _local_blocked_merge_meta(preview_job_id, *, preview_mode="compile"):
     return {
         "head": "preview branch", "base": "main", "head_sha": "bc89" * 10,
         "base_sha": "504f" * 10, "summary": "Repair a broken navigation link.",
         "changed_paths": ["content/journal/index.md"],
         "preview": {
-            "mode": "compiled_preview", "status": "blocked", "requires_build": True,
+            "mode": preview_mode, "status": "blocked", "requires_build": True,
             "changed_paths": ["content/journal/index.md"], "reason": "The saved preview is obsolete.",
             "job_id": preview_job_id, "head_sha": "bc89" * 10,
             "runtime_path": None, "preview_url": None, "deployment_mode": "compiled_preview",
@@ -2051,6 +2051,29 @@ def test_control_plane_archives_only_exact_obsolete_edit_reflection_and_blocked_
     memory.enqueue_chat_job(conversation, "active work")
     with pytest.raises(BridgeError, match="active chat work"):
         service.archive_local_growth_article(active_id, {"mode": "plan"}, tenant=tenant)
+    memory.close()
+
+
+def test_local_merge_archive_accepts_current_compiled_preview_mode(tmp_path):
+    memory = Memory(tmp_path / "local-merge-compiled-preview.db")
+    job_id = "compiled-preview-current-mode"
+    draft_id = memory.save_draft(
+        "Blocked source preview", "", kind="merge",
+        meta=_local_blocked_merge_meta(job_id, preview_mode="compiled_preview"),
+    )
+    memory.kv_set("source_preview_jobs", {job_id: {
+        "id": job_id, "draft_id": draft_id, "mode": "compiled_preview",
+        "status": "failed", "phase": "building", "branch": "preview",
+        "commit": "504f" * 10,
+    }})
+    tenant = Tenant(tenant_id="generic-compiled-preview", config={}, memory=memory, runtime=None,
+                    context={"llm": object()}, api_token="generic-compiled-preview-token")
+    service = ChatService(registry=TenantRegistry({tenant.tenant_id: tenant}))
+
+    plan = service.archive_local_growth_article(draft_id, {"mode": "plan"}, tenant=tenant)
+
+    assert plan["status"] == "ready_to_archive"
+    assert plan["terminalPreviewJobIds"] == [job_id]
     memory.close()
 
 

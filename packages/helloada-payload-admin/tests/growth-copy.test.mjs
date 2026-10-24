@@ -51,10 +51,11 @@ test('Growth translations load and contain the unified plan for every supported 
       'growth.clarityRichTextDetails', 'growth.clarityUnderlined', 'growth.clarityLinkDestination', 'growth.clarityOpensNewTab',
       'growth.clarityRelatedFields', 'growth.clarityScopeDetails', 'growth.clarityRelatedDecisionHeading', 'growth.clarityRelatedDecisionPurpose',
       'growth.clarityShortDescriptionGroupHeading', 'growth.clarityRelatedGroupHeading', 'growth.clarityRelatedGroupFields',
-      'growth.clarityReviewChanges', 'growth.clarityOwnerQuestionSubtitle']) {
+      'growth.clarityReviewChanges', 'growth.clarityOwnerQuestionSubtitle', 'growth.clarityReviewIntroduction']) {
       assert.equal(typeof growthCopy[language][key], 'string', `${language}: ${key}`)
       assert.ok(growthCopy[language][key].length > 0)
     }
+    assert.ok(growthCopy[language]['growth.clarityReviewIntroduction'].includes('{fields}'));
   }
   for (const language of ['en', 'fr', 'es']) {
     assert.match(growthCopy[language]['growth.workIntro'], /Ada/);
