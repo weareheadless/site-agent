@@ -109,7 +109,13 @@ test('renders owner review through a sparse field comparison instead of full raw
   const component = source('src/components/GrowthTasks.tsx');
   assert.match(component, /<GrowthChangeReview review=\{selectedTask\.review\}/);
   assert.match(component, /selectedTask\.kind === "payload_content" && getReviewChanges\(selectedTask\.review\)\.length[\s\S]*getDecisionPresentation\(selectedTask, t\)\.heading : title\(selectedTask\)/);
+  assert.match(component, /selectedReviewChanges\.map\(change => change\.labelKey \? t\(change\.labelKey\) : change\.label\)/);
+  assert.match(component, /clarityReviewIntroduction/);
+  assert.match(component, /selectedReviewChanges\.length && fullTaskSummary\(selectedTask\) \? <details className="helloada-growth-task-evidence">[\s\S]*clarityEvidenceLabel[\s\S]*HelloAdaChatMessage text=\{fullTaskSummary\(selectedTask\)\}/);
+  assert.match(component, /date\(selectedTask\.updatedAt\)/);
   assert.doesNotMatch(component, /Object\.entries\(selectedTask\.review\.changes\)/);
+  const shell = source('src/components/HelloAdaGrowth.tsx');
+  assert.match(shell, /new Intl\.DateTimeFormat\(language, \{[\s\S]*dateStyle: "medium"[\s\S]*timeStyle: "short"[\s\S]*growth\?\.ownerTimezone/);
 });
 
 test('overview, recommendations and activity stay distinct while related fields keep separate review actions', () => {
