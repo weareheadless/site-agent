@@ -102,6 +102,25 @@ export function growthFindingsNewestFirst(area: Pick<GrowthServiceArea, "finding
     (Date.parse(right.assessedAt || "") || 0) - (Date.parse(left.assessedAt || "") || 0));
 }
 
+export type GrowthAreaAssessmentKind = "owner_summary" | "stale" | "unavailable" | "not_assessed" | "saved_finding" | "none";
+
+export function growthAreaAssessmentKind(area: Pick<GrowthServiceArea, "evidenceState" | "findings" | "ownerSummary">): GrowthAreaAssessmentKind {
+  if (area.evidenceState === "stale") return "stale" as const;
+  if (area.evidenceState === "unavailable") return "unavailable" as const;
+  if (area.evidenceState === "not_assessed") return "not_assessed" as const;
+  if (area.ownerSummary && area.evidenceState === "recorded") return "owner_summary" as const;
+  if (area.findings?.length) return "saved_finding" as const;
+  return "none" as const;
+}
+
+export function growthAreaShowsReadyReview(kind: GrowthAreaAssessmentKind, canApprove: boolean, hasReviewTask: boolean) {
+  return kind !== "owner_summary" && canApprove && hasReviewTask;
+}
+
+export function growthAreaNeedsAssessmentMessage(kind: GrowthAreaAssessmentKind, showsReadyReview: boolean, showsFinding: boolean) {
+  return kind !== "owner_summary" && kind !== "saved_finding" && !showsReadyReview && !showsFinding;
+}
+
 export function growthAreaLeadWork(area: Pick<GrowthServiceArea, "workIds" | "activeWorkIds" | "blockedWorkIds" | "findings">,
   work: GrowthServiceWork[]): GrowthServiceWork | undefined {
   const currentIds = new Set([...area.activeWorkIds, ...area.blockedWorkIds, ...(area.findings || []).flatMap((finding) => finding.waitingOnWorkIds)]);

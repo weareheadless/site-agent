@@ -9,7 +9,7 @@ import { HelloAdaMark } from "./HelloAdaLogo";
 import { HelloAdaChatMessage } from "./HelloAdaChatMessage";
 import { getDecisionPresentation, getReviewChanges, getReviewTarget, groupReviewDecisions } from "../lib/growth-review";
 import { GrowthChangeReview } from "./GrowthChangeReview";
-import { growthAreaLeadWork, growthFindingsNewestFirst, type GrowthAreaKey, type GrowthResultTab, type GrowthServiceArea, type GrowthServiceModel, type GrowthServiceWork } from "../lib/growth-data";
+import { growthAreaAssessmentKind, growthAreaLeadWork, growthAreaNeedsAssessmentMessage, growthAreaShowsReadyReview, growthFindingsNewestFirst, type GrowthAreaKey, type GrowthResultTab, type GrowthServiceArea, type GrowthServiceModel, type GrowthServiceWork } from "../lib/growth-data";
 
 type Focus = "needs_you" | "preparing" | "planned" | "paused" | "opportunity" | "completed";
 type ArticleReviewData = {
@@ -468,6 +468,7 @@ export function GrowthTasks({ mode, serviceModel, decisionOrder, onNavigate, tas
           {serviceModel.areas.map((area) => {
             const areaWork = area.workIds.map((id) => serviceWorkById.get(id)).filter((row): row is GrowthServiceWork => Boolean(row));
             const findings = growthFindingsNewestFirst(area);
+            const assessmentKind = growthAreaAssessmentKind(area);
             const leadWork = growthAreaLeadWork(area, areaWork);
             const leadFinding = leadWork
               ? findings.find((finding) => finding.initiativeId !== undefined && finding.initiativeId !== null
@@ -486,8 +487,13 @@ export function GrowthTasks({ mode, serviceModel, decisionOrder, onNavigate, tas
             const linkedTaskForWork = (item: GrowthServiceWork) => taskById.get(item.id);
             const workTask = leadWork ? linkedTaskForWork(leadWork) : undefined;
             const findingTask = leadFinding ? linkedTaskForFinding(leadFinding) : undefined;
-            const showFinding = Boolean(leadFinding && (!leadWork || leadFinding.id !== findings.find((finding) => finding.initiativeId !== undefined
-              && finding.initiativeId !== null && [String(finding.initiativeId), `initiative:${finding.initiativeId}`].includes(leadWork.id))?.id));
+            const showReadyReview = growthAreaShowsReadyReview(assessmentKind, Boolean(leadWork?.canApprove), Boolean(workTask));
+            const showFinding = Boolean(assessmentKind === "saved_finding" && !showReadyReview && leadFinding);
+            const showAssessmentMessage = growthAreaNeedsAssessmentMessage(assessmentKind, showReadyReview, showFinding);
+            const hasLimitedEvidence = assessmentKind === "unavailable" || assessmentKind === "stale" || assessmentKind === "not_assessed";
+            const ctaTask = showReadyReview || assessmentKind === "owner_summary" || !hasLimitedEvidence
+              ? workTask || (showFinding ? findingTask : undefined) : undefined;
+            const ctaKey = leadWork?.canApprove ? "growth.reviewChanges" : "growth.areaOpenWork";
             const summaryExcerpt = (value: string | null | undefined, max = 155) => value ? conciseText(value, max) : "";
             const findingStatus = (status: string) => {
               const key: Record<string, string> = { waiting_for_capacity: "growth.areaFindingStatusWaiting", deferred: "growth.areaFindingStatusDeferred", needs_decision: "growth.areaFindingStatusReview", ready: "growth.areaFindingStatusReview" };
@@ -521,46 +527,42 @@ export function GrowthTasks({ mode, serviceModel, decisionOrder, onNavigate, tas
                 <span className={`helloada-growth-state is-${area.state}`}>{t(statusKey)}</span>
               </header>
 
-              {area.ownerSummary ? <div className="helloada-growth-owner-summary">
+              {assessmentKind === "owner_summary" && area.ownerSummary ? <div className="helloada-growth-owner-summary">
                 <h4>{area.ownerSummary.headline}</h4>
                 <p><strong>{t("growth.areaFindingProblem")}</strong> {summaryExcerpt(area.ownerSummary.problem)}</p>
                 <p><strong>{t("growth.areaFindingNextStep")}</strong> {summaryExcerpt(area.ownerSummary.nextStep)}</p>
+                {area.lastAssessedAt ? <small>{t("growth.lastGrowthReview")}: {date(area.lastAssessedAt)}</small> : null}
               </div> : null}
 
-              {leadWork ? <div className="helloada-growth-area-lead-work">
+              {showReadyReview && leadWork ? <div className="helloada-growth-area-lead-work">
                 <div><span className="helloada-growth-area-eyebrow">{t(workEyebrow)}</span>
                   <strong>{leadWork.title || workTask ? title(workTask || leadWork as unknown as GrowthTask) : leadWork.id}</strong></div>
-                {leadWork.executionIssue && !leadWork.canApprove ? <p>{t("growth.areaWorkStoppedHelp")}</p> : null}
-                {!area.ownerSummary && leadFinding && !showFinding ? <p><strong>{t("growth.areaFindingDate")}</strong> {date(leadFinding.assessedAt)}</p> : null}
-                {!area.ownerSummary && leadFinding && !showFinding && leadFinding.problem ? <p><strong>{t("growth.areaFindingProblem")}</strong> {summaryExcerpt(leadFinding.problem)}</p> : null}
-                {!area.ownerSummary && leadFinding && !showFinding && leadFinding.nextStep ? <p><strong>{t("growth.areaFindingNextStep")}</strong> {summaryExcerpt(leadFinding.nextStep)}</p> : null}
-                {!area.ownerSummary && (!leadFinding || showFinding) && leadWork.why ? <p><strong>{t("growth.areaFindingProblem")}</strong> {summaryExcerpt(leadWork.why)}</p> : null}
-                {!area.ownerSummary && (!leadFinding || showFinding) && leadWork.scope ? <p><strong>{t("growth.areaFindingNextStep")}</strong> {summaryExcerpt(leadWork.scope)}</p> : null}
-                {workTask ? <button type="button" className="helloada-growth-area-review" data-growth-task-id={workTask.id}
-                  aria-label={`${t(leadWork.canApprove ? "growth.reviewChanges" : "growth.areaOpenWork")}: ${title(workTask)}`}
-                  onClick={() => openTask(workTask)}>{t(leadWork.canApprove ? "growth.reviewChanges" : "growth.areaOpenWork")}</button> : null}
+                {leadWork.why ? <p><strong>{t("growth.areaFindingProblem")}</strong> {summaryExcerpt(leadWork.why)}</p> : null}
+                {leadWork.scope ? <p><strong>{t("growth.areaFindingNextStep")}</strong> {summaryExcerpt(leadWork.scope)}</p> : null}
               </div> : null}
 
               {showFinding && leadFinding ? <div className="helloada-growth-area-findings">
                 <div className="helloada-growth-area-finding-heading">
                   <strong>{leadFinding.title}</strong>
-                  {findingTask ? <button type="button" className="helloada-growth-area-review" data-growth-task-id={findingTask.id}
-                    aria-label={`${t("growth.reviewChanges")}: ${title(findingTask)}`} onClick={() => openTask(findingTask)}>{t("growth.reviewChanges")}</button> : null}
                 </div>
-                {!area.ownerSummary && leadFinding.problem ? <p><strong>{t("growth.areaFindingProblem")}</strong> {summaryExcerpt(leadFinding.problem)}</p> : null}
-                {!area.ownerSummary && leadFinding.nextStep ? <p><strong>{t("growth.areaFindingNextStep")}</strong> {summaryExcerpt(leadFinding.nextStep)}</p> : null}
+                {leadFinding.problem ? <p><strong>{t("growth.areaFindingProblem")}</strong> {summaryExcerpt(leadFinding.problem)}</p> : null}
+                {leadFinding.nextStep ? <p><strong>{t("growth.areaFindingNextStep")}</strong> {summaryExcerpt(leadFinding.nextStep)}</p> : null}
+                <small>{t("growth.areaFindingDate")}: {date(leadFinding.assessedAt)}</small>
                 {leadFinding.status === "waiting_for_capacity" && leadFinding.capacityState === "full" && waitingWorkTitles(leadFinding).length
                   ? <p className="helloada-growth-area-waiting"><strong>{t("growth.areaWaitingOnWork")}</strong> {waitingWorkTitles(leadFinding).slice(0, 1).join("")}{waitingWorkTitles(leadFinding).length > 1 ? ` · ${t("growth.areaMoreWork").replace("{count}", String(waitingWorkTitles(leadFinding).length - 1))}` : ""}</p>
                   : null}
-                {leadFinding.candidateId ? <p className="helloada-growth-proposal-disclosure"><strong>{t("growth.areaProposedChange")}</strong> {leadFinding.title}</p> : null}
               </div> : null}
 
-              {!findings.length && !area.ownerSummary && !leadWork ? <p className="helloada-growth-area-no-finding">
-                {area.state === "awaiting_activation" ? t("growth.areaNotConnected")
-                  : area.state === "not_assessed" ? t("growth.areaNotAssessed")
-                    : area.evidenceState === "unavailable" ? t("growth.areaAssessmentUnavailable")
-                      : t("growth.areaNoSavedFinding")}
-              </p> : null}
+              {showAssessmentMessage ? <div className="helloada-growth-area-no-finding">
+                <p>{assessmentKind === "unavailable" ? t("growth.areaEvidenceUnavailableExplanation")
+                  : assessmentKind === "stale" ? t("growth.areaEvidenceStaleExplanation")
+                    : assessmentKind === "not_assessed" ? t("growth.areaNotAssessed")
+                      : area.state === "awaiting_activation" ? t("growth.areaNotConnected") : t("growth.areaNoSavedFinding")}</p>
+                {area.lastAssessedAt ? <small>{t("growth.lastGrowthReview")}: {date(area.lastAssessedAt)}</small> : null}
+              </div> : null}
+
+              {ctaTask ? <button type="button" className="helloada-growth-area-review" data-growth-task-id={ctaTask.id}
+                aria-label={`${t(ctaKey)}: ${title(ctaTask)}`} onClick={() => openTask(ctaTask)}>{t(ctaKey)}</button> : null}
 
               {hasDetails ? <details className="helloada-growth-area-details">
                 <summary>{t(findings.length ? "growth.areaProposedDetails" : "growth.areaSavedAssessmentDetails")}</summary>
@@ -609,7 +611,7 @@ export function GrowthTasks({ mode, serviceModel, decisionOrder, onNavigate, tas
           })}
         </div>
         {serviceModel.unassignedWorkIds.length ? <details className="helloada-growth-unassigned">
-          <summary>{t("growth.unassignedWork")} ({serviceModel.unassignedWorkIds.length})</summary>
+          <summary>{t("growth.unassignedWork")}</summary>
           <p>{t("growth.unassignedWorkNote")}</p>
           <ul>{serviceModel.unassignedWorkIds.map((id) => {
             const item = serviceWorkById.get(id)!;
