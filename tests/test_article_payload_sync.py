@@ -55,9 +55,12 @@ class Payload:
         contract = authoring_contract or self.authoring_contract
         return tuple(field["name"] for field in contract["authoring"]["collections"][slug])
 
-    def list(self, collection, *, draft=True, limit=100):
-        assert collection == "posts" and draft is True
-        return [deepcopy(item) for item in self.documents[:limit]]
+    def list(self, collection, *, draft=True, limit=100, locale=None):
+        assert collection == "posts" and locale == "en"
+        return [
+            deepcopy(item) for item in self.documents[:limit]
+            if bool(item.get("published")) is (not draft)
+        ] if not draft else [deepcopy(item) for item in self.documents[:limit]]
 
     def list_media(self, *, draft=True, limit=100):
         assert draft is True
@@ -155,6 +158,79 @@ def test_article_is_written_to_canonical_payload_posts_schema_as_unpublished_lex
     assert sync["featured_image"]["revision"] == payload.media[0]["_helloadaRevision"]
     assert selection["media_id"] == "media-1"
     assert selection["media_revision"] == payload.media[0]["_helloadaRevision"]
+    memory.close()
+
+
+def test_normalized_title_collision_at_another_route_blocks_create_without_mutation(tmp_path):
+    memory = Memory(tmp_path / "article-title-collision.db")
+    payload = Payload()
+    draft_id = memory.save_draft(
+        title="Why That's Important",
+        body="A distinct article body that still needs review.",
+        kind="article",
+    )
+    payload.documents.append({
+        "id": "existing-public-post",
+        "slug": "why-thats-important-to-your-health",
+        "title": "Why That’s Important",
+        "published": True,
+    })
+
+    with pytest.raises(RuntimeError, match="same normalized title.*another route"):
+        _mirror_article_draft_to_workspace(_context(memory, payload), draft_id)
+
+    assert payload.creates == 0
+    assert payload.updates == 0
+    assert payload.publishes == 0
+    assert len(payload.documents) == 1
+    memory.close()
+
+
+def test_title_inventory_does_not_block_nonmatching_title(tmp_path):
+    memory = Memory(tmp_path / "article-title-not-a-collision.db")
+    payload = Payload()
+    draft_id = memory.save_draft(
+        title="Why That's Important",
+        body="A distinct article body that still needs review.",
+        kind="article",
+    )
+    payload.documents.append({
+        "id": "existing-public-post",
+        "slug": "why-another-topic-matters",
+        "title": "Why That Is Important",
+        "published": True,
+    })
+
+    _mirror_article_draft_to_workspace(_context(memory, payload), draft_id)
+
+    assert payload.creates == 1
+    assert payload.publishes == 0
+    memory.close()
+
+
+def test_incomplete_capped_title_inventory_fails_closed_before_create(tmp_path):
+    memory = Memory(tmp_path / "article-title-inventory-capped.db")
+    payload = Payload()
+    draft_id = memory.save_draft(
+        title="A new article",
+        body="A distinct article body.",
+        kind="article",
+    )
+    payload.documents = [
+        {
+            "id": f"existing-{index}",
+            "slug": f"existing-route-{index}",
+            "title": f"Existing article {index}",
+            "published": False,
+        }
+        for index in range(100)
+    ]
+
+    with pytest.raises(RuntimeError, match="inventory is incomplete"):
+        _mirror_article_draft_to_workspace(_context(memory, payload), draft_id)
+
+    assert payload.creates == 0
+    assert payload.updates == 0
     memory.close()
 
 

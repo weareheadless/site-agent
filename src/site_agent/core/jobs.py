@@ -438,6 +438,12 @@ def _is_exact_unlinked_article_draft(document: Mapping[str, Any], post: Mapping[
     )
 
 
+def _normalized_article_title(value: Any) -> str:
+    normalized = unicodedata.normalize("NFKC", str(value or ""))
+    normalized = normalized.translate(str.maketrans({"’": "'", "‘": "'", "ʼ": "'", "＇": "'"}))
+    return " ".join(normalized.casefold().split())
+
+
 def _read_article_draft_by_slug(payload: Any, slug: str, language: str) -> dict[str, Any] | None:
     try:
         return payload.read(
@@ -663,6 +669,34 @@ def _mirror_article_draft_to_workspace_locked(context: dict[str, Any], draft_id:
     post = {key: value for key, value in candidate.items() if key in contract_fields}
     previous_sync = meta.get("payload_sync") if isinstance(meta.get("payload_sync"), Mapping) else {}
     previous_document_id = str(previous_sync.get("document_id") or "").strip()
+    normalized_title = _normalized_article_title(title)
+    if normalized_title:
+        # A title collision at a different public route needs owner review.
+        # Title equality is only a conflict signal; it does not prove that the
+        # two articles have interchangeable content.
+        listed_drafts = payload.list("posts", draft=True, limit=100, locale=language)
+        listed_published = payload.list("posts", draft=False, limit=100, locale=language)
+        if not isinstance(listed_drafts, list) or not isinstance(listed_published, list):
+            raise RuntimeError("The canonical Payload posts inventory could not be verified before article preparation.")
+        if len(listed_drafts) >= 100 or len(listed_published) >= 100:
+            raise RuntimeError("The canonical Payload posts inventory is incomplete; article preparation is held for owner review.")
+        for document_row in [*listed_drafts, *listed_published]:
+            if not isinstance(document_row, Mapping):
+                raise RuntimeError("The canonical Payload posts inventory contains an invalid row; article preparation is held for review.")
+            row_id = str(document_row.get("id") or "").strip()
+            row_slug = str(document_row.get("slug") or "").strip()
+            row_title = document_row.get("title")
+            if not row_id or not row_slug:
+                raise RuntimeError("The canonical Payload posts inventory lacks a stable ID or route; article preparation is held for review.")
+            if row_id == previous_document_id or row_slug == slug and not previous_document_id:
+                continue
+            if not isinstance(row_title, str) or not row_title.strip():
+                raise RuntimeError("The canonical Payload posts inventory lacks a locale title; article preparation is held for review.")
+            if _normalized_article_title(row_title) != normalized_title:
+                continue
+            raise RuntimeError(
+                "A Payload post with the same normalized title exists at another route; the existing post and this article remain unchanged for owner review."
+            )
     route_document: dict[str, Any] | None = None
     if not previous_document_id:
         route_document = _read_article_draft_by_slug(payload, slug, language)

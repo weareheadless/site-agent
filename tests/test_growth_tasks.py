@@ -405,6 +405,64 @@ def test_payload_revision_job_is_active_and_uncertain_failure_is_reported():
     assert uncertain["executionIssue"] is True
 
 
+def test_retired_revision_error_is_historical_when_exact_candidate_is_review_ready():
+    from types import SimpleNamespace
+
+    class MemoryStub:
+        def list_owner_actions(self, limit=None):
+            return []
+
+        def get_chat_job(self, _job_id):
+            return None
+
+        def get_approval_request(self, _approval_id):
+            return SimpleNamespace(status=SimpleNamespace(value="pending"))
+
+    package_hash = "sha256:reviewed"
+    draft = {
+        "id": 70, "kind": "payload_content", "status": "pending",
+        "title": "Reviewed services page", "body": "Exact reviewed copy",
+        "meta": {"review_package_hash": package_hash, "growth_package": {"fields": {"description": "Exact reviewed copy"}}},
+    }
+    initiative = {
+        "id": 8, "kind": "payload_content", "title": "Revise the services page",
+        "state": "ready_for_review", "draft_id": 70, "approval_id": "approval-70",
+        "review_package_hash": package_hash,
+        "validation": {
+            "status": "passed", "packageHash": package_hash,
+            "checks": {"exactDraft": True, "publicRenderer": True, "approvalBoundary": True},
+            "revisionFailure": "The obsolete revision request was retired after exact prior-candidate verification.",
+            "retiredRevision": {
+                "status": "retired_with_exact_prior_candidate_proof",
+                "reviewPackageHash": package_hash,
+            },
+        },
+    }
+
+    task, = growth_tasks(MemoryStub(), [initiative], [draft], [], [])
+    assert task["canApprove"] is True
+    assert task["focus"] == "needs_you"
+    assert task["lastError"] is None
+    assert task["executionIssue"] is False
+
+    initiative["validation"]["retiredRevision"]["reviewPackageHash"] = "sha256:older-candidate"
+    mismatched, = growth_tasks(MemoryStub(), [initiative], [draft], [], [])
+    assert mismatched["canApprove"] is True
+    assert mismatched["lastError"] == initiative["validation"]["revisionFailure"]
+    assert mismatched["executionIssue"] is True
+    initiative["validation"]["retiredRevision"]["reviewPackageHash"] = package_hash
+
+    # Historical retirement metadata cannot suppress a current uncertain hold.
+    initiative["state"] = "uncertain"
+    initiative["validation"]["revision"] = {
+        "status": "uncertain", "error": "Payload receipt is still missing",
+    }
+    held, = growth_tasks(MemoryStub(), [initiative], [draft], [], [])
+    assert held["canApprove"] is False
+    assert held["executionIssue"] is True
+    assert held["lastError"] == "Payload receipt is still missing"
+
+
 def test_stale_article_research_is_not_shown_as_active_or_as_a_full_brief(tmp_path):
     memory = Memory(tmp_path / 'memory.db')
     audience_need = 'A very long audience need that should be available in task detail but never shown as a list-row summary.'

@@ -1312,7 +1312,12 @@ def test_normal_growth_reconciliation_restores_interrupted_prewrite_payload_revi
         assert content_hash({field: payload.live.get(field) for field in sorted(saved["previous_package"]["fields"])}) == saved["previous_package"]["baseHash"]
         assert has_recoverable_growth_replay(memory)
         assert memory.get_chat_job(saved["job_id"])["error"] == "interrupted by server restart; retry this job"
-        scheduler = Scheduler(memory, lock_path=tmp_path / "scheduler.lock", timezone_name="America/Cancun")
+        scheduler = Scheduler(
+            memory,
+            lock_path=tmp_path / "scheduler.lock",
+            clock=lambda: 1_800_000_000,
+            timezone_name="America/Cancun",
+        )
         memory.kv_set("next_run:growth_pending", scheduler.clock() + 3600)
         register_growth_jobs(scheduler, settings, context)
         assert memory.kv_get("next_run:growth_pending") <= scheduler.clock()

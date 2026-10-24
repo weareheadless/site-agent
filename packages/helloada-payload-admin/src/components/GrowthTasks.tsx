@@ -161,6 +161,11 @@ export function GrowthTasks({ mode, serviceModel, decisionOrder, onNavigate, tas
   const featuredRelatedFieldNames = featuredRelatedGroup
     ? [...new Set(getReviewChanges(featuredRelatedGroup.tasks[0].review).map(change => change.labelKey ? t(change.labelKey) : change.label))].join(" · ")
     : "";
+  const shortDescriptionSignature = JSON.stringify(["seo.description", "summary"]);
+  const relatedGroupHeading = (group: { signature: string | null; tasks: GrowthTask[] }) =>
+    group.signature === shortDescriptionSignature
+      ? t("growth.clarityShortDescriptionGroupHeading").replace("{count}", String(group.tasks.length))
+      : t("growth.clarityRelatedGroupHeading").replace("{count}", String(group.tasks.length));
   const visible = decisionRows;
   const recentWork = serviceModel.recentResults;
   const recentWorkIds = new Set(recentWork.map(row => row.id));
@@ -265,12 +270,15 @@ export function GrowthTasks({ mode, serviceModel, decisionOrder, onNavigate, tas
       const labels = [...new Set(changes.map(change => change.labelKey ? t(change.labelKey) : change.label))];
       const fieldText = labels.join(" · ");
       return <li key={group.key} className={related ? "helloada-growth-related-group" : undefined}>
-        {related ? <h4>{t("growth.clarityRelatedFields").replace("{fields}", fieldText)}</h4> : null}
+        {related ? <><h4>{relatedGroupHeading(group)}</h4><details className="helloada-growth-related-fields">
+          <summary>{t("growth.clarityRelatedGroupFields")}</summary><span>{fieldText}</span>
+        </details></> : null}
         <ul className="helloada-growth-related-items">{group.tasks.map(task => {
           const target = getReviewTarget(task.review);
-          const location = target ? [target.title, target.path].filter(Boolean).join(" · ") : taskSummary(task) || stateLabel(task);
+          const itemTitle = task.requirement === "owner_information" ? title(task) : target?.title || title(task);
+          const action = task.requirement === "owner_information" ? t("growth.decisionCtaAnswer") : t("growth.clarityReviewChanges");
           return <li key={task.id}><button type="button" data-growth-task-id={task.id} onClick={() => openTask(task)}>
-            <span><strong>{title(task)}</strong><small>{location}</small></span><span aria-hidden="true">→</span>
+            <span><strong>{itemTitle}</strong><small>{task.requirement === "owner_information" ? t("growth.clarityOwnerQuestionSubtitle") : action}</small></span><span aria-hidden="true">→</span>
           </button></li>;
         })}</ul>
       </li>;
@@ -342,21 +350,23 @@ export function GrowthTasks({ mode, serviceModel, decisionOrder, onNavigate, tas
           {pending ? <div className="helloada-growth-agenda-empty" role="status">{t("growth.loading")}</div> : featuredDecision ? <article className="helloada-growth-featured-decision">
             <span className="helloada-growth-decision-eyebrow">{t("growth.decisionEyebrow")}</span>
             {featuredRelatedGroup ? <>
-              <h3>{t("growth.clarityRelatedDecisionHeading").replace("{count}", String(featuredRelatedGroup.tasks.length)).replace("{fields}", featuredRelatedFieldNames)}</h3>
+              <h3>{relatedGroupHeading(featuredRelatedGroup)}</h3>
+              <details className="helloada-growth-related-fields">
+                <summary>{t("growth.clarityRelatedGroupFields")}</summary><span>{featuredRelatedFieldNames}</span>
+              </details>
               <p>{t("growth.clarityRelatedDecisionPurpose")}</p>
               <ul className="helloada-growth-featured-group-items">{featuredRelatedGroup.tasks.map(task => {
                 const target = getReviewTarget(task.review);
-                const presentation = getDecisionPresentation(task, t);
                 return <li key={task.id}><button type="button" data-growth-task-id={task.id}
-                  aria-label={`${title(task)}. ${presentation.heading}${target?.path ? `. ${target.path}` : ""}`} onClick={() => openTask(task)}>
-                  <span><strong>{target?.title || title(task)}</strong><small>{presentation.heading}</small></span>
-                  {target?.path ? <code>{target.path}</code> : null}<span aria-hidden="true">→</span>
+                  aria-label={`${target?.title || title(task)}. ${t("growth.clarityReviewChanges")}`} onClick={() => openTask(task)}>
+                  <span><strong>{target?.title || title(task)}</strong><small>{t("growth.clarityReviewChanges")}</small></span>
+                  <span aria-hidden="true">→</span>
                 </button></li>;
               })}</ul>
             </> : <>
               <h3>{featuredPresentation?.heading || title(featuredDecision)}</h3>
               <p>{featuredDecision.requirement === "owner_information"
-                ? conciseText(featuredDecision.scope || taskSummary(featuredDecision) || title(featuredDecision))
+                ? t("growth.clarityOwnerQuestionSubtitle")
                 : featuredPresentation?.purpose || t("growth.clarityPurposeProposal")}</p>
               {featuredDecision.requirement === "owner_information" && featuredDecision.scope ? <details className="helloada-growth-featured-evidence">
                 <summary>{t("growth.clarityScopeDetails")}</summary><p>{featuredDecision.scope}</p>
@@ -505,7 +515,8 @@ export function GrowthTasks({ mode, serviceModel, decisionOrder, onNavigate, tas
           <button type="button" className="helloada-growth-back" onClick={closeTask}>← {t("growth.backToTasks")}</button>
           <header className="helloada-growth-detail-heading">
             <div><span className={"helloada-growth-task-badge is-" + selectedTask.focus}>{stateLabel(selectedTask)}</span>
-              <h3>{title(selectedTask)}</h3>
+              <h3>{selectedTask.kind === "payload_content" && getReviewChanges(selectedTask.review).length
+                ? getDecisionPresentation(selectedTask, t).heading : title(selectedTask)}</h3>
               <small>{selectedTask.updatedAt ? date(selectedTask.updatedAt) : selectedTask.nextRun ? date(selectedTask.nextRun) : t("growth.task_" + selectedTask.focus)}</small>
             </div>
             {selectedTask.kind === "article" && exactArticleReview ? <span className="helloada-growth-review-state">{t("growth.articleUnpublished")}</span> : null}

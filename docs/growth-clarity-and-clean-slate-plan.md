@@ -137,3 +137,61 @@ invalid citations keep the established diagnostic code, and unavailable required
 sources use the existing candidate-blocking path rather than completing an
 assessment early. The corrected focused service/planner/workflow/recovery suite
 passes 70 tests. Official CI rechecks the exact queued revision.
+
+## Verified live cleanup and rendered QA
+
+The archival API `20261023-api-growth-clean-slate-1` is health-passed at exact
+source `2aa9fbbbc93face22d3fe02a56d14e7245c8c16a`. The five audited local drafts
+45/49/50/58/60 were explicitly archived through the protected plan/apply route.
+All eight canonical documents and both their read revisions, both existing
+approvals, and the research reservation ledger are unchanged. Each original
+local title/body/sync metadata hash is preserved; only local disposition and
+operator audit changed. A repeated exact request returned its saved receipt.
+Private immutable plans, five receipts and before/after evidence are retained
+under the registered Oceanic maintenance directory. The active task projection
+fell from 20 to 15 and contains none of those five archived attempts.
+
+The assessment API `20261023-api-growth-clarity-assessment-1` is health-passed at
+`0c8d87fe6c24d1bcbc7273b7a5bb7ac0e427ba95`. Normal POST Growth check queued
+`growth-1a4fc3968eb246108dad2f9bc8aa1e00`; the canonical scheduler collected fresh
+inventory and produced two bounded findings (sitemap/canonical output and real
+home-page link destinations). Both wait behind the two existing prepared
+proposals; no duplicate proposal, new owner question or paid cycle was created.
+This is an observed capacity wait, not a claim of completed preparation.
+
+Local rendered QA uses actual GrowthTasks/SCSS with the saved Oceanic projection
+and blocked network/mutations. At 1440px and 390px: no horizontal overflow,
+keyboard review activation works, both exact candidate targets open separately,
+and review value/label contrast is 15.51:1/7.60:1. Screenshots and report live
+privately under `/tmp/growth-clarity-rendered-qa`. This remains fixture QA, not
+signed-in production acceptance.
+
+The visual review caught a real status contradiction: a retired failed revision
+was displayed as a current service issue alongside a valid Publish action. The
+projection now suppresses that historical error only for a genuinely ready
+proposal whose retirement hash matches both initiative and draft. Uncertain or
+mismatched holds remain visible. Growth task/service/workspace tests pass 104
+checks. A further 0.10.30 admin candidate removes overview slugs and field-name
+headings and uses a concise review heading while retaining exact target details.
+Its package suite passes 68 tests plus typecheck. API activation and immutable
+0.10.30 consumer adoption are the next official release steps.
+
+Automatic article mirroring now also checks current canonical post titles before
+writing. Exact NFKC/case/whitespace/apostrophe-normalized matches at another route
+are a conflict requiring review, not proof that two bodies are interchangeable.
+It leaves both versions untouched. Missing/malformed or capped 100-item
+inventories fail closed; the exact linked document and existing same-route
+reconciliation retain their guards. Article-sync/service checks pass 52 tests,
+including zero-write apostrophe-variant and incomplete-inventory regressions.
+The final API source is `7cbfaf5752adf129be22cdf0f1f713e90dc0b997`; official CI and
+full backend tests validate that exact source before activation.
+
+Official CI passed the duplicate-prevention/review source. A local full run
+passed 1,680 tests but exposed one pre-existing sub-millisecond clock-rounding
+flake in the recovery test. That test now injects a fixed clock, retaining its
+assertion and production behavior; it passed three consecutive runs, with 57
+Growth task/service checks passing afterward. The exact final API source is
+`02359ea5599e1a89a46bfa816379bb47f8bf8a85` and CI revalidates it. The concrete
+published-article decision is in
+`oceanic-plateau-consolidation-review-20261024.md`; no owner choice or publication
+has been inferred.
