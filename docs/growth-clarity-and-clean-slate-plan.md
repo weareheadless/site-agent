@@ -175,3 +175,13 @@ checks. A further 0.10.30 admin candidate removes overview slugs and field-name
 headings and uses a concise review heading while retaining exact target details.
 Its package suite passes 68 tests plus typecheck. API activation and immutable
 0.10.30 consumer adoption are the next official release steps.
+
+Automatic article mirroring now also checks current canonical post titles before
+writing. Exact NFKC/case/whitespace/apostrophe-normalized matches at another route
+are a conflict requiring review, not proof that two bodies are interchangeable.
+It leaves both versions untouched. Missing/malformed or capped 100-item
+inventories fail closed; the exact linked document and existing same-route
+reconciliation retain their guards. Article-sync/service checks pass 52 tests,
+including zero-write apostrophe-variant and incomplete-inventory regressions.
+The final API source is `7cbfaf5752adf129be22cdf0f1f713e90dc0b997`; official CI and
+full backend tests validate that exact source before activation.
