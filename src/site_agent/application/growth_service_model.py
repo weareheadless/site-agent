@@ -322,9 +322,25 @@ def service_model(
          and _date((row.get("detail") or {}).get("assessmentCompletedAt"))),
         key=lambda row: _date(row["detail"]["assessmentCompletedAt"]), reverse=True,
     )
-    latest = assessments[0] if assessments else None
-    assessment = (latest.get("detail") or {}).get("assessment") if latest else {}
-    coverage = {row["area"]: row for row in assessment.get("coverage", []) if isinstance(row, Mapping) and row.get("area") in AREAS}
+    coverage: dict[str, Mapping[str, Any]] = {}
+    coverage_runs: dict[str, Mapping[str, Any]] = {}
+    coverage_source_states: dict[str, dict[str, str]] = {}
+    for assessed_run in assessments:
+        detail = assessed_run.get("detail") or {}
+        assessment = detail.get("assessment") or {}
+        rows = assessment.get("coverage")
+        if not isinstance(rows, list):
+            continue
+        source_states = _run_source_states(
+            assessed_run, sources, now, inventory_freshness_hours,
+        )
+        for row in rows:
+            area_id = row.get("area") if isinstance(row, Mapping) else None
+            if area_id not in AREAS or area_id in coverage:
+                continue
+            coverage[area_id] = row
+            coverage_runs[area_id] = assessed_run
+            coverage_source_states[area_id] = source_states
     findings_by_area = _opportunity_findings(
         runs, initiatives, sources, now, inventory_freshness_hours, max_active_candidates,
         visible_work_ids, initiative_work_aliases,
@@ -350,11 +366,12 @@ def service_model(
             "eligibleAt": run.get("next_due_ts"),
             "executor": "growth_pending" if reconciliation and reconciliation.get("enabled") else None,
             "nextReconciliationAt": reconciliation.get("nextRun") if reconciliation and reconciliation.get("enabled") else None})
-    source_states = _run_source_states(latest, sources, now, inventory_freshness_hours) if latest else {}
     areas = []
     for area in AREAS:
         items = [row for row in work if row["primaryArea"] == area or area in row["secondaryAreas"]]
         recorded = coverage.get(area)
+        coverage_run = coverage_runs.get(area)
+        source_states = coverage_source_states.get(area, {})
         decisions = [row["id"] for row in items if row["state"] == "awaiting_owner"]
         blocked = [row["id"] for row in items if row["executionIssue"]]
         active = [row["id"] for row in items if row["state"] == "preparing"]
@@ -402,7 +419,7 @@ def service_model(
             "unresolvedEvidenceRefs": unresolved,
             "limitations": ([*recorded.get("limitations", []), *(["Some assessment evidence can no longer be resolved."] if unresolved else [])]
                             if recorded else ["No explicit area assessment has been recorded."]),
-            "lastAssessedAt": (latest.get("detail") or {}).get("assessmentCompletedAt") if recorded else None,
+            "lastAssessedAt": (coverage_run.get("detail") or {}).get("assessmentCompletedAt") if recorded and coverage_run else None,
             "nextAssessment": {"activityId": upcoming["id"], "at": upcoming["nextRun"], "scope": "shared_growth_review"} if upcoming and website_present else None,
         })
     return {

@@ -8,6 +8,8 @@ from typing import Any
 from ..core.llm import extract_json
 from ..core.growth_contracts import GROWTH_AREAS
 
+ASSESSMENT_CONTRACT_VERSION = "growth-assessment-v3"
+
 
 class UnsupportedGrowthPreparation(ValueError):
     """The finding needs an execution route this workflow does not own."""
@@ -45,17 +47,22 @@ def _response(context: Mapping[str, Any], contract: str, material: Mapping[str, 
 
 def assess(context: Mapping[str, Any], material: Mapping[str, Any]) -> dict[str, Any]:
     result = _response(context,
-        "summary: nonempty string; opportunities: array (maximum maxRecommendations). "
+        "Return exactly these top-level keys: summary, coverage, opportunities. summary is a nonempty string; opportunities is an array (maximum maxRecommendations). "
         "Every opportunity must include primaryArea, exactly one of content, search_visibility, website_health, "
         "audience_competitors or speed_experience. secondaryAreas is optional and, when present, must contain "
         "only other IDs from that same set; it must exclude primaryArea. These are presentation lenses, not limits "
         "on expertise or execution routes. Include coverage: an array of areas actually assessed, each with "
-        "area, summary, evidence (supplied source IDs), limitations (array of strings), and ownerSummary "
-        "with headline, problem, and nextStep in plain language; this is required for every new coverage row. "
-        "Keep headline to 90 characters or fewer and problem and nextStep to 160 characters or fewer. Each ownerSummary statement "
-        "must be grounded in that coverage row's evidence, distinguish observed facts from qualified hypotheses, "
-        "state a supported next action, make no outcome promises, and say when the evidence does not establish an effect. Omit areas without "
-        "sufficient evidence; never infer clean health or measured speed from missing data. "
+        "area, summary, evidence (exact ready source IDs or sourceRefs supplied in this run), limitations (array of strings), and ownerSummary "
+        "with headline, problem, and nextStep in plain language. Cover every primary and secondary area used by an opportunity. "
+        "When this run has a nonempty ready canonical inventory, include a content coverage row. "
+        "Every coverage row requires ownerSummary. Keep headline to 90 characters or fewer and problem and nextStep to 160 characters or fewer. "
+        "Write for a business owner: state the observed visitor or business problem, explain its possible importance as a qualified hypothesis, "
+        "and give one concrete, understandable next action. Avoid unexplained technical, provider, schema, or platform jargon. "
+        "Ground every statement in that row's ready evidence; distinguish observed facts from qualified hypotheses; make no outcome promises; "
+        "and say when evidence does not establish an effect. Cite only exact ready source IDs or sourceRefs. Put missing, failed, stale, partial, "
+        "or uncertain sources in limitations, never use them as proof. Omit areas without sufficient ready evidence; never infer clean health "
+        "or measured speed from missing data. Do not invent customer facts or provide canned examples. Do not nudge the owner to connect, enable, "
+        "or configure a provider unless an evidence-supported business decision genuinely requires owner input. "
         "Each opportunity has kind (payload_content, code, or owner_information), optional area (a free-form label, not a fixed category), title, why, hypothesis, "
         "scope, evidence (source IDs copied from supplied evidence), requiredSources (source IDs), "
         "collection and documentId when editing an existing canonical document, metric (gsc.clicks or ga4.sessions). "
@@ -80,6 +87,9 @@ def assess(context: Mapping[str, Any], material: Mapping[str, Any]) -> dict[str,
     opportunities = result.get("opportunities")
     if not isinstance(opportunities, list):
         raise ValueError("Ada must return a bounded opportunity list")
+    strict_contract = material.get("assessmentContractVersion") == ASSESSMENT_CONTRACT_VERSION
+    if strict_contract and set(result) != {"summary", "coverage", "opportunities"}:
+        raise ValueError("Growth assessment must contain exactly summary, coverage and opportunities")
     maximum = int(material.get("maxRecommendations", 3))
     if len(opportunities) > maximum:
         raise ValueError("Ada exceeded the recommendation limit")
@@ -87,6 +97,16 @@ def assess(context: Mapping[str, Any], material: Mapping[str, Any]) -> dict[str,
     valid_refs.update(str(row["sourceRef"]) for row in material.get("sources", []) if row.get("sourceRef"))
     valid_refs.update(str(row["sourceRef"]) for row in material.get("inventory", []) if row.get("sourceRef"))
     inventory_refs = {str(row.get("sourceRef")) for row in material.get("inventory", []) if row.get("sourceRef")}
+    ready_refs = {
+        str(ref)
+        for source in material.get("sources", [])
+        if isinstance(source, Mapping) and source.get("state") == "ready"
+        for ref in (source.get("id"), source.get("sourceRef")) if ref
+    }
+    inventory_ready = any(isinstance(source, Mapping) and source.get("id") == "inventory"
+        and source.get("state") == "ready" for source in material.get("sources", []))
+    if strict_contract and inventory_ready and material.get("inventory"):
+        ready_refs.update(inventory_refs)
     owner_question_count = 0
     coverage = result.get("coverage", [])
     if not isinstance(coverage, list):
@@ -99,16 +119,34 @@ def assess(context: Mapping[str, Any], material: Mapping[str, Any]) -> dict[str,
             or any(not isinstance(ref, str) or ref not in valid_refs for ref in row["evidence"])
             or not isinstance(row.get("limitations"), list) or any(not isinstance(limit, str) for limit in row["limitations"])):
             raise ValueError("Growth area coverage needs unique areas and supplied evidence references")
+        if strict_contract and any(ref not in ready_refs for ref in row["evidence"]):
+            raise ValueError("New Growth coverage may cite only ready source IDs or sourceRefs")
         owner_summary = row.get("ownerSummary")
+        if strict_contract and owner_summary is None:
+            raise ValueError("New Growth coverage requires ownerSummary")
         if owner_summary is not None:
+            summary_limits = (("headline", 90), ("problem", 160), ("nextStep", 160)) if strict_contract else (
+                ("headline", 180), ("problem", 500), ("nextStep", 500))
             if (not isinstance(owner_summary, Mapping)
                 or set(owner_summary) != {"headline", "problem", "nextStep"}
                 or any(not isinstance(owner_summary.get(key), str)
                     or not owner_summary[key].strip()
                     or len(owner_summary[key]) > limit
-                    for key, limit in (("headline", 180), ("problem", 500), ("nextStep", 500)))):
+                    for key, limit in summary_limits)):
                 raise ValueError("Growth ownerSummary needs bounded headline, problem and nextStep strings")
         seen_areas.add(row["area"])
+    if strict_contract:
+        opportunity_areas = {
+            area
+            for item in opportunities if isinstance(item, Mapping)
+            for area in ([item.get("primaryArea")] + (item.get("secondaryAreas") if isinstance(item.get("secondaryAreas"), list) else []))
+            if area in GROWTH_AREAS
+        }
+        missing_areas = opportunity_areas - seen_areas
+        if missing_areas:
+            raise ValueError("Growth coverage must include every opportunity area: " + ", ".join(sorted(missing_areas)))
+        if inventory_ready and material.get("inventory") and "content" not in seen_areas:
+            raise ValueError("Growth coverage must include content when current canonical inventory is available")
     for item in opportunities:
         if not isinstance(item, dict) or item.get("kind") not in {"payload_content", "code", "owner_information"}:
             raise ValueError("Ada returned an unsupported opportunity")

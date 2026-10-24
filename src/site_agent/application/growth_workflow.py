@@ -16,7 +16,7 @@ from ..core.growth_contracts import GrowthGoalRevision, GrowthPolicy
 from ..core.memory import Memory
 from .actions import owner_action_summary
 
-_OWNER_REVIEW_ASSESSMENT_CONTRACT = "owner-summary-v2"
+_OWNER_REVIEW_ASSESSMENT_CONTRACT = "owner-summary-v3"
 
 
 def ensure_default_goal(memory: Memory) -> dict[str, Any]:
@@ -996,6 +996,7 @@ def _inventory(context: Mapping[str, Any]) -> list[dict[str, Any]]:
 def _collect_cycle_evidence(context: Mapping[str, Any], trigger: str, run_id: str) -> dict[str, Any]:
     from .growth import growth_metrics
     from .growth_evidence import growth_evidence
+    from ..brain.growth import ASSESSMENT_CONTRACT_VERSION
 
     memory, config = context["memory"], context["config"]
     errors: dict[str, str] = {}
@@ -1032,7 +1033,8 @@ def _collect_cycle_evidence(context: Mapping[str, Any], trigger: str, run_id: st
         sources.append(source)
         if value.get("errors"):
             errors[section] = "; ".join(str(item) for item in value["errors"].values())[:500]
-    return {"sources": sources, "inventory": inventory, "metrics": growth_metrics(memory), "datasets": datasets,
+    return {"assessmentContractVersion": ASSESSMENT_CONTRACT_VERSION,
+            "sources": sources, "inventory": inventory, "metrics": growth_metrics(memory), "datasets": datasets,
             "ownerResponses": owner_responses, "collectionErrors": errors}
 
 
@@ -1302,6 +1304,8 @@ def run_growth_cycle(
     try:
         if "material" not in detail:
             detail["material"] = _collect_cycle_evidence(context, trigger, str(run["run_id"]))
+            if detail["material"].get("assessmentContractVersion"):
+                detail["assessmentContractVersion"] = detail["material"]["assessmentContractVersion"]
             # Collection can be expensive. Persist its exact result before the
             # evidence artifact boundary so a failure there resumes from here.
             run = advance(phase="collecting", detail=detail, next_due_ts=None)

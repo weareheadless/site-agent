@@ -105,6 +105,37 @@ class Payload:
         raise AssertionError("scheduled work must not publish")
 
 
+def _strict_test_assessment(material, response):
+    """Keep test Ada responses aligned with the versioned assessment fixture."""
+    if material.get("assessmentContractVersion") != "growth-assessment-v3":
+        return response
+    ready_refs = {
+        ref for source in material.get("sources", []) if source.get("state") == "ready"
+        for ref in (source.get("id"), source.get("sourceRef")) if ref
+    }
+    inventory_ready = any(source.get("id") == "inventory" and source.get("state") == "ready"
+        for source in material.get("sources", [])) and bool(material.get("inventory"))
+    areas = {
+        area for opportunity in response.get("opportunities", [])
+        for area in ([opportunity.get("primaryArea")] + opportunity.get("secondaryAreas", []))
+        if area
+    }
+    if inventory_ready:
+        areas.add("content")
+    response["coverage"] = [{
+        "area": area,
+        "summary": "The fixture records the supplied evidence for this area.",
+        "evidence": sorted(ready_refs),
+        "limitations": ["The test fixture does not establish outcomes beyond the supplied observations."],
+        "ownerSummary": {
+            "headline": "Review the supplied observations.",
+            "problem": "The available fixture describes evidence but does not establish its effect on visitors.",
+            "nextStep": "Use the recorded observation to decide whether a focused review is needed.",
+        },
+    } for area in sorted(areas)]
+    return response
+
+
 class Ada:
     def __init__(self):
         self.stages = []
@@ -114,7 +145,8 @@ class Ada:
         self.stages.append(material.get("stage"))
         if material.get("stage") == "prepare":
             return json.dumps({"status": "supported", "changes": {"metaDescription": "Local service from Business. Explore the services and contact the team."}})
-        return json.dumps({"summary": "The homepage needs a useful search description.", "opportunities": [{"kind": "payload_content", "primaryArea": "search_visibility", "title": "Make the homepage clearer in search", "why": "The homepage has no description.", "hypothesis": "A clear description explains the service to search visitors.", "collection": "pages", "documentId": "1", "evidence": ["inventory", "ga4"], "requiredSources": ["inventory"], "scope": "Improve the homepage meta description without changing its visible design.", "metric": "gsc.clicks"}]})
+        response = {"summary": "The homepage needs a useful search description.", "opportunities": [{"kind": "payload_content", "primaryArea": "search_visibility", "title": "Make the homepage clearer in search", "why": "The homepage has no description.", "hypothesis": "A clear description explains the service to search visitors.", "collection": "pages", "documentId": "1", "evidence": ["inventory", "ga4"], "requiredSources": ["inventory"], "scope": "Improve the homepage meta description without changing its visible design.", "metric": "gsc.clicks"}]}
+        return json.dumps(_strict_test_assessment(material, response))
 
 
 def test_live_payload_registers_one_growth_service_not_independent_producers(tmp_path):
@@ -362,7 +394,7 @@ def test_payload_assessment_without_an_exact_inventory_target_is_deferred(tmp_pa
                 return super().chat(messages, **kwargs)
             result = json.loads(super().chat(messages, **kwargs))
             result["opportunities"][0]["documentId"] = "missing-document"
-            return json.dumps(result)
+            return json.dumps(_strict_test_assessment(material, result))
 
     memory = Memory(tmp_path / "memory.db")
     payload, planner = Payload(), UnboundTargetAda()
@@ -875,12 +907,13 @@ def test_long_payload_evidence_is_projected_only_in_bounded_review_summaries_and
             if material.get("stage") == "prepare":
                 return super().chat(messages, **kwargs)
             self.stages.append("assess")
-            return json.dumps({"summary": "A long-evidence opportunity.", "opportunities": [{
+            response = {"summary": "A long-evidence opportunity.", "opportunities": [{
                 "kind": "payload_content", "title": "Make the homepage clearer in search",
                 "why": why, "hypothesis": "A clear description helps search visitors.", "primaryArea": "search_visibility",
                 "collection": "pages", "documentId": "1", "evidence": ["inventory", "ga4"],
                 "requiredSources": ["inventory"], "scope": scope, "metric": "gsc.clicks",
-            }]})
+            }]}
+            return json.dumps(_strict_test_assessment(material, response))
 
     memory = Memory(tmp_path / "memory.db")
     payload, planner = Payload(), LongEvidenceAda()
@@ -1006,7 +1039,8 @@ def test_invalid_opportunity_evidence_does_not_abort_valid_preparation(tmp_path)
                 return super().chat(messages, **kwargs)
             good = json.loads(super().chat(messages, **kwargs))["opportunities"][0]
             bad = {**good, "title": "Unbound finding", "evidence": ["outside-this-run"]}
-            return json.dumps({"summary": "One finding needs evidence repair; another can proceed.", "opportunities": [bad, good]})
+            response = {"summary": "One finding needs evidence repair; another can proceed.", "opportunities": [bad, good]}
+            return json.dumps(_strict_test_assessment(material, response))
 
     memory = Memory(tmp_path / "memory.db")
     payload = Payload()
