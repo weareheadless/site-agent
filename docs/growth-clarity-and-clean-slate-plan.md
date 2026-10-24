@@ -173,8 +173,9 @@ proposal whose retirement hash matches both initiative and draft. Uncertain or
 mismatched holds remain visible. Growth task/service/workspace tests pass 104
 checks. A further 0.10.30 admin candidate removes overview slugs and field-name
 headings and uses a concise review heading while retaining exact target details.
-Its package suite passes 68 tests plus typecheck. API activation and immutable
-0.10.30 consumer adoption are the next official release steps.
+Its package suite passes 68 tests plus typecheck. At that checkpoint, API
+activation and immutable 0.10.30 consumer adoption were the next official
+release steps; the current status is recorded below.
 
 Automatic article mirroring now also checks current canonical post titles before
 writing. Exact NFKC/case/whitespace/apostrophe-normalized matches at another route
@@ -195,3 +196,14 @@ Growth task/service checks passing afterward. The exact final API source is
 published-article decision is in
 `oceanic-plateau-consolidation-review-20261024.md`; no owner choice or publication
 has been inferred.
+
+## October 24, 2026 adoption checkpoint
+
+The published admin 0.10.30 artifact is verified against its successful release
+workflow, source commit `c8a44800f1b36fba321613258cce65689ca1a850`, actual
+tarball digest and SHA-512 integrity. The four canonical scaffold pins now name
+that exact asset. API source `02359ea5599e1a89a46bfa816379bb47f8bf8a85` is
+health-passed. Three reviewed local archive targets (drafts 48, 54 and 56) have
+not yet been applied. Signed-in browser acceptance and the owner's published
+article editorial choice remain open; this checkpoint does not mark the cleanup
+or owner experience complete.
