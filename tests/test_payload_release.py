@@ -2363,6 +2363,53 @@ def test_atomic_deployment_waits_for_the_exact_cloudflare_version(monkeypatch):
     assert selected_version == version_id
 
 
+def test_versioned_deployment_waits_for_exact_cloudflare_version_visibility(monkeypatch):
+    version_id = "01234567-89ab-cdef-0123-456789abcdef"
+    deployments = iter([
+        {"id": "deployment-old", "versions": [{"percentage": 100, "version_id": "11111111-1111-1111-1111-111111111111"}]},
+        {"id": "deployment-new", "versions": [{"percentage": 100, "version_id": version_id}]},
+    ])
+    sleeps = []
+    monkeypatch.setattr(release, "cloudflare_deployment", lambda *_args: next(deployments))
+    monkeypatch.setattr(release.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    deployment = release.wait_for_versioned_worker_deployment(
+        CUSTOMER, {}, {"id": "deployment-old"}, version_id,
+    )
+
+    assert deployment["id"] == "deployment-new"
+    assert sleeps == [5]
+
+
+def test_versioned_deployment_wait_is_bounded_when_cloudflare_stays_stale(monkeypatch):
+    old = {"id": "deployment-old", "versions": [{"percentage": 100, "version_id": "11111111-1111-1111-1111-111111111111"}]}
+    checks = []
+    sleeps = []
+    monkeypatch.setattr(release, "cloudflare_deployment", lambda *_args: checks.append(True) or old)
+    monkeypatch.setattr(release.time, "sleep", lambda seconds: sleeps.append(seconds))
+
+    with pytest.raises(RuntimeError, match="after 12 checks"):
+        release.wait_for_versioned_worker_deployment(
+            CUSTOMER, {}, {"id": "deployment-old"}, "01234567-89ab-cdef-0123-456789abcdef",
+        )
+
+    assert len(checks) == 12
+    assert sleeps == [5] * 11
+
+
+def test_versioned_deployment_rejects_a_new_deployment_with_the_wrong_version(monkeypatch):
+    wrong = {"id": "deployment-new", "versions": [{
+        "percentage": 100, "version_id": "11111111-1111-1111-1111-111111111111",
+    }]}
+    monkeypatch.setattr(release, "cloudflare_deployment", lambda *_args: wrong)
+    monkeypatch.setattr(release.time, "sleep", lambda _: pytest.fail("wrong version must fail immediately"))
+
+    with pytest.raises(RuntimeError, match="exact uploaded Worker version"):
+        release.wait_for_versioned_worker_deployment(
+            CUSTOMER, {}, {"id": "deployment-old"}, "01234567-89ab-cdef-0123-456789abcdef",
+        )
+
+
 
 def test_contract_generator_resolves_payload_peer_from_installed_tenant_dependencies():
     source = (ROOT / "scripts/generate-payload-contract.mjs").read_text()
