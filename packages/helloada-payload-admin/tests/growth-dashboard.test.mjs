@@ -108,6 +108,7 @@ test('renders owner review through a sparse field comparison instead of full raw
   assert.deepEqual(Object.keys(after).filter(key => before[key] !== after[key]), ['description']);
   const component = source('src/components/GrowthTasks.tsx');
   assert.match(component, /<GrowthChangeReview review=\{selectedTask\.review\}/);
+  assert.match(component, /selectedTask\.kind === "payload_content" && getReviewChanges\(selectedTask\.review\)\.length[\s\S]*getDecisionPresentation\(selectedTask, t\)\.heading : title\(selectedTask\)/);
   assert.doesNotMatch(component, /Object\.entries\(selectedTask\.review\.changes\)/);
 });
 
@@ -122,11 +123,17 @@ test('overview, recommendations and activity stay distinct while related fields 
   assert.match(component, /featuredRelatedGroup[\s\S]*groupReviewDecisions\(decisionRows\)/);
   assert.match(component, /featuredRelatedGroup\.tasks\.map\(task =>/);
   assert.match(component, /featuredRelatedIds\.has\(task\.id\)/);
-  assert.match(component, /clarityRelatedDecisionHeading/);
-  assert.match(component, /data-growth-task-id=\{task\.id\}[\s\S]*aria-label=\{`\$\{title\(task\)\}\.[\s\S]*onClick=\{\(\) => openTask\(task\)\}/);
+  assert.match(component, /clarityShortDescriptionGroupHeading/);
+  assert.match(component, /JSON\.stringify\(\["seo\.description", "summary"\]\)/);
+  assert.match(component, /clarityRelatedGroupHeading/);
+  assert.match(component, /clarityRelatedGroupFields/);
+  assert.match(component, /clarityReviewChanges/);
+  assert.match(component, /aria-label=\{`\$\{target\?\.title \|\| title\(task\)\}\.[\s\S]*onClick=\{\(\) => openTask\(task\)\}/);
   assert.match(component, /data-growth-task-id=\{task\.id\} onClick=\{\(\) => openTask\(task\)\}/);
+  assert.doesNotMatch(component, /target\?\.path \? <code>/);
+  assert.match(component, /clarityOwnerQuestionSubtitle/);
   assert.match(component, /key=\{task\.id\}/);
-  assert.match(component, /growth\.clarityRelatedFields/);
+  assert.match(component, /growth\.clarityRelatedGroupFields/);
   assert.match(component, /conciseText\(selectedTask\.scope \|\| title\(selectedTask\)\)/);
   assert.match(component, /growth\.clarityScopeDetails/);
   assert.match(component, /<summary>\{t\("growth\.clarityScopeDetails"\)\}<\/summary><p>\{selectedTask\.scope\}<\/p>/);

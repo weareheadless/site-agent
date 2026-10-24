@@ -49,7 +49,9 @@ test('Growth translations load and contain the unified plan for every supported 
       'growth.clarityFieldDescription', 'growth.clarityFieldName', 'growth.clarityFieldCaption',
       'growth.clarityFieldSearchPhrase', 'growth.clarityFieldWidth', 'growth.clarityFieldHeight',
       'growth.clarityRichTextDetails', 'growth.clarityUnderlined', 'growth.clarityLinkDestination', 'growth.clarityOpensNewTab',
-      'growth.clarityRelatedFields', 'growth.clarityScopeDetails', 'growth.clarityRelatedDecisionHeading', 'growth.clarityRelatedDecisionPurpose']) {
+      'growth.clarityRelatedFields', 'growth.clarityScopeDetails', 'growth.clarityRelatedDecisionHeading', 'growth.clarityRelatedDecisionPurpose',
+      'growth.clarityShortDescriptionGroupHeading', 'growth.clarityRelatedGroupHeading', 'growth.clarityRelatedGroupFields',
+      'growth.clarityReviewChanges', 'growth.clarityOwnerQuestionSubtitle']) {
       assert.equal(typeof growthCopy[language][key], 'string', `${language}: ${key}`)
       assert.ok(growthCopy[language][key].length > 0)
     }
@@ -58,4 +60,6 @@ test('Growth translations load and contain the unified plan for every supported 
     assert.match(growthCopy[language]['growth.workIntro'], /Ada/);
     assert.doesNotMatch(growthCopy[language]['growth.workIntro'], /decision|décision/iu);
   }
+  assert.notEqual(growthCopy.fr['growth.clarityShortDescriptionGroupHeading'], growthCopy.en['growth.clarityShortDescriptionGroupHeading']);
+  assert.notEqual(growthCopy.es['growth.clarityShortDescriptionGroupHeading'], growthCopy.en['growth.clarityShortDescriptionGroupHeading']);
 })
