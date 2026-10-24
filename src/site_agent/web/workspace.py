@@ -891,6 +891,20 @@ def register_workspace_routes(
             except BridgeError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+        @app.post(f"{control_prefix}/{{website_id}}/growth/drafts/{{draft_id}}/archive")
+        async def control_plane_archive_growth_article(website_id: str, draft_id: int, request: Request):
+            tenant = require_control_tenant(request, website_id)
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            if not isinstance(body, dict):
+                raise HTTPException(status_code=400, detail="request body must be an object")
+            try:
+                return service.archive_local_growth_article(draft_id, body, tenant=tenant)
+            except BridgeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+
         @app.post(f"{control_prefix}/{{website_id}}/register")
         async def control_plane_register(website_id: str, request: Request):
             require_control_plane(request)

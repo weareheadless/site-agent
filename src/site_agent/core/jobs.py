@@ -198,7 +198,8 @@ def _article(context: dict[str, Any]) -> None:
     draft_id = _with_persona(context, brain_article.draft_article, "editorial")
     if isinstance(draft_id, int):
         try:
-            _mirror_article_draft_to_workspace(context, draft_id)
+            if _mirror_article_draft_to_workspace(context, draft_id) is False:
+                return
             _sync_strategy_initiative_for_draft(context["memory"], draft_id, context=context)
         except Exception as exc:  # noqa: BLE001 - expose the canonical content boundary
             _mark_article_payload_blocked(context["memory"], draft_id, str(exc))
@@ -216,7 +217,8 @@ def _mirror_article_drafts(context: dict[str, Any]) -> None:
         if draft.get("kind") != "article" or draft.get("status") != "pending":
             continue
         try:
-            _mirror_article_draft_to_workspace(context, int(draft["id"]))
+            if _mirror_article_draft_to_workspace(context, int(draft["id"])) is False:
+                continue
             _sync_strategy_initiative_for_draft(memory, int(draft["id"]), context=context)
         except Exception as exc:  # noqa: BLE001 - persist a precise blocked state, never a local ready fallback
             _mark_article_payload_blocked(memory, int(draft["id"]), str(exc))
@@ -225,9 +227,17 @@ def _mirror_article_drafts(context: dict[str, Any]) -> None:
 def _sync_strategy_initiative_for_draft(memory: Memory, draft_id: int, *, context: dict[str, Any]) -> None:
     """Move a strategy candidate only after the canonical Payload check passes."""
 
-    draft = next((row for row in memory.list_drafts(limit=200) if int(row.get("id") or 0) == draft_id), None)
-    if not draft:
-        return
+    with memory.article_draft_lifecycle():
+        draft = memory.get_draft(int(draft_id))
+        if draft is None or draft.get("status") != "pending":
+            return
+        _sync_strategy_initiative_for_draft_locked(memory, draft_id, context=context, draft=draft)
+
+
+def _sync_strategy_initiative_for_draft_locked(
+    memory: Memory, draft_id: int, *, context: dict[str, Any], draft: dict[str, Any],
+) -> None:
+
     meta = draft.get("meta") if isinstance(draft.get("meta"), Mapping) else {}
     sync = meta.get("payload_sync") if isinstance(meta.get("payload_sync"), Mapping) else {}
     validation = sync.get("validation") if isinstance(sync.get("validation"), Mapping) else {}
@@ -300,21 +310,22 @@ def _article_slug(title: str, draft_id: int) -> str:
 
 
 def _mark_article_payload_blocked(memory: Memory, draft_id: int, reason: str) -> None:
-    draft = next((item for item in memory.list_drafts(limit=100) if int(item.get("id") or 0) == int(draft_id)), None)
-    if not draft:
-        return
-    meta = dict(draft.get("meta") or {}) if isinstance(draft.get("meta"), Mapping) else {}
-    previous_sync = meta.get("payload_sync") if isinstance(meta.get("payload_sync"), Mapping) else {}
-    meta["payload_sync"] = {
-        **previous_sync,
-        "state": "blocked",
-        "validation": {"status": "blocked", "reason": str(reason or "Payload article preparation failed")[:500]},
-    }
-    memory.update_draft_meta(int(draft_id), meta)
-    for action in memory.list_owner_actions(states=("open", "started"), limit=500):
-        if action.draft_id == int(draft_id):
-            memory.transition_owner_action(action.id, ActionState.WAITING)
-    memory.record_action("article", f"draft #{draft_id} blocked: {str(reason or 'Payload article preparation failed')[:240]}")
+    with memory.article_draft_lifecycle():
+        draft = memory.get_draft(int(draft_id))
+        if not draft or draft.get("status") != "pending":
+            return
+        meta = dict(draft.get("meta") or {}) if isinstance(draft.get("meta"), Mapping) else {}
+        previous_sync = meta.get("payload_sync") if isinstance(meta.get("payload_sync"), Mapping) else {}
+        meta["payload_sync"] = {
+            **previous_sync,
+            "state": "blocked",
+            "validation": {"status": "blocked", "reason": str(reason or "Payload article preparation failed")[:500]},
+        }
+        memory.update_draft_meta(int(draft_id), meta)
+        for action in memory.list_owner_actions(states=("open", "started"), limit=500):
+            if action.draft_id == int(draft_id):
+                memory.transition_owner_action(action.id, ActionState.WAITING)
+        memory.record_action("article", f"draft #{draft_id} blocked: {str(reason or 'Payload article preparation failed')[:240]}")
 
 
 def _article_image_preview(value: Any) -> dict[str, Any] | None:
@@ -578,7 +589,20 @@ def _article_cover_image(
     }
 
 
-def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -> None:
+def _mirror_article_draft_to_workspace(context: dict[str, Any], draft_id: int) -> bool:
+    """Serialize one external preparation against an operator archive."""
+    memory = context["memory"]
+    with memory.article_draft_lifecycle():
+        draft = memory.get_draft(int(draft_id))
+        if draft is None:
+            raise RuntimeError(f"editorial draft #{draft_id} is missing from the owner review ledger")
+        if draft.get("kind") != "article" or draft.get("status") != "pending":
+            return False
+        _mirror_article_draft_to_workspace_locked(context, int(draft_id))
+    return True
+
+
+def _mirror_article_draft_to_workspace_locked(context: dict[str, Any], draft_id: int) -> None:
     """Put one Ada article into Payload and validate the returned draft."""
     payload = context.get("payload_gateway")
     if payload is None:

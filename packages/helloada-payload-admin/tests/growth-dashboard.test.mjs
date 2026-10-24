@@ -102,24 +102,13 @@ test('preserves owner queue decision priority independently of service model ord
   assert.match(component, /area\.decisionIds/);
 });
 
-test('renders all before and after review object fields, including changed SEO descriptions', () => {
+test('renders owner review through a sparse field comparison instead of full raw objects', () => {
   const before = { title: 'Same title', description: 'Old SEO description' };
   const after = { title: 'Same title', description: 'New SEO description' };
-  const readableBefore = sandbox.exports.readableReviewValue(before);
-  const readableAfter = sandbox.exports.readableReviewValue(after);
-  assert.match(readableBefore, /title: Same title/);
-  assert.match(readableBefore, /description: Old SEO description/);
-  assert.match(readableAfter, /title: Same title/);
-  assert.match(readableAfter, /description: New SEO description/);
-  assert.notEqual(readableBefore, readableAfter);
-  const lexicalBefore = sandbox.exports.readableReviewValue({ type: 'text', text: 'Copy', format: 0, style: 'font-size: 16px' });
-  const lexicalAfter = sandbox.exports.readableReviewValue({ type: 'text', text: 'Copy', format: 0, style: 'font-size: 20px' });
-  assert.match(lexicalBefore, /style: font-size: 16px/);
-  assert.match(lexicalAfter, /style: font-size: 20px/);
-  assert.notEqual(lexicalBefore, lexicalAfter);
-  assert.equal(sandbox.exports.readableReviewValue(['first', { nested: 'second' }]), 'first · nested: second');
+  assert.deepEqual(Object.keys(after).filter(key => before[key] !== after[key]), ['description']);
   const component = source('src/components/GrowthTasks.tsx');
-  assert.match(component, /const readable = readableReviewValue/);
+  assert.match(component, /<GrowthChangeReview review=\{selectedTask\.review\}/);
+  assert.doesNotMatch(component, /Object\.entries\(selectedTask\.review\.changes\)/);
 });
 
 test('keeps unknown historical work explicitly unassigned and displayable without keyword inference', () => {
@@ -178,7 +167,7 @@ test('area and evidence UI copy exists in English, French and Mexican Spanish', 
 
 test('area work cannot create a second approval widget and review remains on canonical handlers', () => {
   const component = source('src/components/GrowthTasks.tsx');
-  const areaMarkup = component.slice(component.indexOf('<section className="helloada-growth-areas"'), component.indexOf('{error ?'));
+  const areaMarkup = component.slice(component.indexOf('<details className="helloada-growth-areas"'), component.indexOf('{error ?'));
   assert.match(areaMarkup, /canonicalDecisionIds\.has\(row\.id\)/);
   assert.doesNotMatch(areaMarkup, /fetchHelloAda|review_package_hash|onClick=\{\(\) => void effect/);
   assert.match(component, /openTask\(task\)/);

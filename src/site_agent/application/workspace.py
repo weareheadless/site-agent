@@ -2659,6 +2659,137 @@ class ChatService:
             except Exception as exc:  # noqa: BLE001 — keep operator bridge errors bounded
                 raise BridgeError(str(exc)[:500]) from exc
 
+    def archive_local_growth_article(
+        self, draft_id: Any, body: Mapping[str, Any], *, tenant: Tenant | None = None,
+    ) -> dict[str, Any]:
+        """Withdraw one obsolete local article intent without touching Payload."""
+        if tenant is None or self.registry is None or tenant.tenant_id not in self.registry.tenants:
+            raise BridgeError("tenant is not authorized")
+        try:
+            normalized_id = int(draft_id)
+        except (TypeError, ValueError) as exc:
+            raise BridgeError("draft_id must be an integer") from exc
+        mode = str(body.get("mode") or "")
+        expected_proof = str(body.get("expected_proof_hash") or "")
+        reason = str(body.get("reason") or "")
+        operator_request_id = str(body.get("operator_request_id") or "")
+        if mode not in {"plan", "apply"}:
+            raise BridgeError("mode must be plan or apply")
+        if mode == "apply" and (not expected_proof or not reason or len(reason) > 500
+                                 or not operator_request_id or len(operator_request_id) > 200):
+            raise BridgeError("apply requires the exact plan proof, bounded reason and operator request ID")
+        memory = tenant.memory
+        with self._approval_lock, memory.article_draft_lifecycle():
+            try:
+                from .growth_candidates import content_hash
+
+                draft = memory.get_draft(normalized_id)
+                if draft is None:
+                    raise BridgeError("article draft was not found")
+                meta = draft.get("meta") if isinstance(draft.get("meta"), Mapping) else {}
+                archive = meta.get("operator_archive") if isinstance(meta.get("operator_archive"), Mapping) else {}
+                content_hash_value = content_hash({
+                    "tenant": tenant.tenant_id, "id": normalized_id, "kind": draft.get("kind"),
+                    "title": str(draft.get("title") or ""), "body": str(draft.get("body") or ""),
+                    "meta": {key: value for key, value in meta.items() if key != "operator_archive"},
+                })
+                idea_fields = (
+                    "id", "status", "updated_ts", "research_run_id", "serp_run_id", "provider_task_id",
+                    "research_cost_micros", "keyword_budget_reservation_id", "serp_budget_reservation_id",
+                )
+                article_ideas = memory.list_article_ideas_for_draft(normalized_id)
+                idea_binding = [{key: idea.get(key) for key in idea_fields} for idea in article_ideas]
+                article_ideas_hash = content_hash(idea_binding)
+                if (draft.get("status") == "discarded"
+                        and archive.get("operatorRequestId") == operator_request_id
+                        and archive.get("reason") == reason
+                        and archive.get("proofHash") == expected_proof
+                        and archive.get("contentHash") == content_hash_value
+                        and archive.get("articleIdeasHash") == article_ideas_hash):
+                    return {**dict(archive), "status": "archived", "draftId": normalized_id, "idempotent": True}
+                if draft.get("kind") != "article" or draft.get("status") != "pending":
+                    raise BridgeError("only pending local article drafts can be archived")
+                if any(draft.get(key) for key in ("growth_package", "review_package_hash", "published_revision")):
+                    raise BridgeError("reviewed or published article candidates cannot be archived")
+                if any(meta.get(key) for key in (
+                    "growth_package", "review_package_hash", "growth_article_publication_receipt",
+                    "payload_post_id", "payload_source_id", "approval_id", "artifact_id", "published_revision",
+                )):
+                    raise BridgeError("article metadata contains a linked review or publication record")
+                effect_keys = {
+                    "approvalid", "artifactid", "receipt", "receiptid", "publication", "publishedrevision",
+                    "operationkey", "operationid", "documentid", "draftid", "payloadpostid", "payloadsourceid",
+                    "writeattempted", "payloadeffect", "growthpackage", "reviewpackagehash",
+                }
+
+                def has_effect_reference(value: Any) -> bool:
+                    if isinstance(value, Mapping):
+                        for key, child in value.items():
+                            normalized_key = "".join(char for char in str(key).lower() if char.isalnum())
+                            if normalized_key in effect_keys:
+                                return True
+                            if normalized_key == "payloadsync":
+                                continue  # checked below using its exact blocked shape
+                            if has_effect_reference(child):
+                                return True
+                    elif isinstance(value, list):
+                        return any(has_effect_reference(child) for child in value)
+                    return False
+
+                if has_effect_reference(meta):
+                    raise BridgeError("article metadata contains a linked or uncertain external effect")
+                if "payload_sync" in meta and not isinstance(meta.get("payload_sync"), Mapping):
+                    raise BridgeError("article sync metadata is malformed")
+                sync = meta.get("payload_sync") if isinstance(meta.get("payload_sync"), Mapping) else None
+                if sync is not None:
+                    validation = sync.get("validation") if isinstance(sync.get("validation"), Mapping) else {}
+                    if (set(sync) - {"state", "validation"} or set(validation) - {"status", "reason"}
+                            or sync.get("state") != "blocked" or validation.get("status") != "blocked"):
+                        raise BridgeError("article sync metadata has active or uncertain destination details")
+                if any(action.draft_id == normalized_id for action in memory.list_owner_actions(limit=None)):
+                    raise BridgeError("article drafts linked to owner actions or approvals cannot be archived")
+                initiative = next((row for row in memory.list_strategy_initiatives(limit=None)
+                                   if int(row.get("draft_id") or 0) == normalized_id), None)
+                if initiative is not None:
+                    raise BridgeError("article drafts linked to Growth initiatives cannot be archived")
+                if any(idea.get("status") not in {"drafted", "held", "failed", "rejected", "blocked"}
+                       for idea in article_ideas):
+                    raise BridgeError("article draft has active, recoverable or unknown research work")
+                snapshot = {
+                    "tenant": tenant.tenant_id, "id": normalized_id, "kind": draft.get("kind"),
+                    "status": draft.get("status"), "title": str(draft.get("title") or ""),
+                    "body": str(draft.get("body") or ""), "meta": meta,
+                    "updated_ts": str(draft.get("updated_ts") or ""),
+                    "articleIdeas": idea_binding,
+                }
+                proof_hash = content_hash(snapshot)
+                if mode == "plan":
+                    return {"status": "ready_to_archive", "draftId": normalized_id,
+                            "contentHash": content_hash_value, "proofHash": proof_hash,
+                            "articleIdeaId": int(article_ideas[-1]["id"]) if article_ideas else None,
+                            "articleIdeasHash": article_ideas_hash,
+                            "externalEffectStatus": "unknown"}
+                if proof_hash != expected_proof:
+                    raise BridgeError("article draft changed after its archive plan")
+                receipt = {
+                    "status": "archived", "scope": "local_draft_only", "withdrawal": "explicit",
+                    "externalEffectStatus": "unknown", "reason": reason,
+                    "operatorRequestId": operator_request_id, "proofHash": proof_hash,
+                    "contentHash": content_hash_value, "priorStatus": "pending",
+                    "articleIdeaId": int(article_ideas[-1]["id"]) if article_ideas else None,
+                    "articleIdeasHash": article_ideas_hash,
+                }
+                result = memory.archive_local_growth_article_draft(
+                    normalized_id, tenant_id=tenant.tenant_id,
+                    expected_proof_hash=proof_hash, archive_receipt=receipt,
+                )
+                return {**receipt, "status": "archived", "draftId": normalized_id,
+                        "idempotent": False, "localStatus": result["status"]}
+            except BridgeError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — keep protected operator errors bounded
+                raise BridgeError(str(exc)[:500]) from exc
+
     def growth_article_review(self, draft_id: Any, *, tenant: Tenant | None = None) -> dict[str, Any]:
         """Return one exact, validated article review only when its owner opens it."""
         try:

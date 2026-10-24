@@ -182,6 +182,8 @@ def growth_snapshot(memory: Memory, config: dict[str, Any], context: dict[str, A
         if row.get("kind") != "article":
             continue
         meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
+        if isinstance(meta.get("operator_archive"), dict):
+            continue  # retained in draft history, excluded from active Growth projection
         articles.append({
             **pick(row, ("id", "title", "status", "created_ts", "updated_ts")),
             "payloadSync": meta.get("payload_sync"),
