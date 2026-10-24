@@ -16,7 +16,7 @@ from ..core.growth_contracts import GrowthGoalRevision, GrowthPolicy
 from ..core.memory import Memory
 from .actions import owner_action_summary
 
-_OWNER_REVIEW_ASSESSMENT_CONTRACT = "owner-summary-v1"
+_OWNER_REVIEW_ASSESSMENT_CONTRACT = "owner-summary-v2"
 
 
 def ensure_default_goal(memory: Memory) -> dict[str, Any]:
@@ -98,6 +98,17 @@ def _defer_duplicate_owner_information(memory: Any, initiative: Mapping[str, Any
             "reassessWhen": "After the owner answers Ada’s current business question.",
         },
     )
+
+
+def _ready_source_refs(sources: list[Mapping[str, Any]]) -> set[str]:
+    """Return exact IDs and refs belonging to ready source records only."""
+    return {
+        str(ref)
+        for source in sources
+        if source.get("state") == "ready"
+        for ref in (source.get("id"), source.get("sourceRef"))
+        if ref
+    }
 
 
 def _recoverable_saved_assessment_failure(memory: Memory, run: Mapping[str, Any]) -> bool:
@@ -1006,17 +1017,114 @@ def _collect_cycle_evidence(context: Mapping[str, Any], trigger: str, run_id: st
     sources.append({"id": "inventory", "state": "ready", "sourceRef": "canonical_payload_inventory", "observedAt": utc_now()})
     datasets: dict[str, Any] = {}
     service = context.get("crawlseo_service")
-    if service is not None:
-        for section in ("health", "research", "competition"):
+    for section in ("health", "research", "competition"):
+        if service is None:
+            value = {"errors": {}, "collectionState": "missing"}
+        else:
             try:
                 value = growth_evidence(service, section)
-                datasets[section] = value
-                if value.get("errors"):
-                    errors[section] = "; ".join(str(item) for item in value["errors"].values())[:500]
             except Exception as exc:
+                value = {"errors": {"collection": str(exc)[:500]}}
                 errors[section] = str(exc)[:500]
+        source = _crawlseo_dataset_source(section, value, config)
+        value = {**value, **{key: source[key] for key in ("sourceRef", "state", "observedAt", "freshnessHours", "reason")}}
+        datasets[section] = value
+        sources.append(source)
+        if value.get("errors"):
+            errors[section] = "; ".join(str(item) for item in value["errors"].values())[:500]
     return {"sources": sources, "inventory": inventory, "metrics": growth_metrics(memory), "datasets": datasets,
             "ownerResponses": owner_responses, "collectionErrors": errors}
+
+
+def _crawlseo_dataset_source(
+    section: str,
+    dataset: Mapping[str, Any],
+    config: Mapping[str, Any],
+    *,
+    now: datetime.datetime | None = None,
+) -> dict[str, Any]:
+    """Bind a saved CrawlSEO dataset to its source lineage and observation time.
+
+    The dataset fetch timestamp is deliberately ignored: only a crawl completion,
+    report completion, keyword observation, or SERP observation can make it current.
+    """
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    if section not in {"health", "research", "competition"}:
+        raise ValueError("unknown CrawlSEO dataset")
+    source_id = f"crawlseo_{section}"
+    source_ref = f"crawlseo:{section}"
+    errors = dataset.get("errors")
+    has_errors = isinstance(errors, Mapping) and bool(errors)
+    timestamps: list[datetime.datetime] = []
+    missing_timestamp = False
+    has_observation = False
+
+    def record(value: Any, *time_fields: str) -> None:
+        nonlocal has_observation, missing_timestamp
+        if not isinstance(value, Mapping):
+            return
+        has_observation = True
+        observed = next((_parsed_timestamp(value.get(key)) for key in time_fields
+            if _parsed_timestamp(value.get(key)) is not None), None)
+        if observed is None:
+            missing_timestamp = True
+        else:
+            timestamps.append(observed)
+
+    if section == "health":
+        summary = dataset.get("summary")
+        if isinstance(summary, Mapping) and summary.get("status") == "completed":
+            record(summary, "finished_at", "finishedAt")
+        elif isinstance(summary, Mapping) and summary:
+            has_observation = True
+            missing_timestamp = True
+    elif section == "research":
+        # Research history is context, not proof: it may contain failed or
+        # pending reports. Only returned metric observations bind readiness.
+        for field in ("keywords", "domains", "backlinks"):
+            rows = dataset.get(field)
+            if isinstance(rows, list):
+                for row in rows:
+                    record(row, "updatedAt", "updated_at", "completedAt", "completed_at")
+    else:
+        report_time = dataset.get("updatedAt")
+        benchmarks = dataset.get("benchmarks")
+        if isinstance(benchmarks, list):
+            for row in benchmarks:
+                record({"updatedAt": row.get("updatedAt") or report_time} if isinstance(row, Mapping) else row, "updatedAt")
+        serps = dataset.get("serps")
+        if isinstance(serps, list):
+            for row in serps:
+                record(row, "updatedAt", "checkedAt")
+    # A dataset ref covers the whole returned section, so its freshness is
+    # bounded by the oldest included observation, never refreshed by a newer row.
+    observed_at = min(timestamps).isoformat(timespec="seconds") if timestamps else None
+    freshness_key = "inventory" if section == "health" else "dataforseo"
+    freshness_hours = _freshness_hours(config, freshness_key)
+    clock_skew = datetime.timedelta(minutes=5)
+    if timestamps and any(timestamp > now.astimezone(datetime.timezone.utc) + clock_skew for timestamp in timestamps):
+        state = "uncertain"
+        reason = "At least one saved dataset observation is dated in the future beyond the allowed clock skew."
+    elif has_errors:
+        state = "partial" if has_observation and timestamps else "failed"
+        reason = "The dataset has collection errors; only its successful saved portions are retained." if state == "partial" else "The dataset collection failed."
+    elif not has_observation:
+        state = "missing"
+        reason = "No saved observation is available for this dataset."
+    elif not timestamps or missing_timestamp:
+        state = "uncertain" if not timestamps else "partial"
+        reason = "The saved dataset lacks a trustworthy observation time for all returned records."
+    else:
+        oldest = min(timestamps)
+        if now.astimezone(datetime.timezone.utc) - oldest > datetime.timedelta(hours=freshness_hours):
+            state = "stale"
+            reason = f"At least one saved dataset observation is older than {freshness_hours} hours."
+        else:
+            state = "ready"
+            reason = "All saved dataset observations are within the freshness window."
+    return {"id": source_id, "provider": "crawlseo", "capability": f"growth.{section}.read",
+        "configured": dataset.get("collectionState") != "missing", "state": state, "reason": reason, "observedAt": observed_at,
+        "freshnessHours": freshness_hours, "sourceRef": source_ref}
 
 
 def _run_monthly_research(context: dict[str, Any], detail: dict[str, Any]) -> dict[str, Any]:
@@ -1249,7 +1357,7 @@ def run_growth_cycle(
             | {str(row["id"]) for row in material["sources"] if row.get("id")}
             | {row.get("sourceRef") for row in material["sources"] if row.get("sourceRef")}
         )
-        ready_sources = {row["id"] for row in material["sources"] if row["state"] == "ready"}
+        ready_sources = _ready_source_refs(material["sources"])
         candidate_ids, blocks, unprepared_opportunities = [], [], []
         queued_initiative_ids: list[int] = []
         waiting_for_capacity: list[str] = []
@@ -1370,6 +1478,17 @@ def run_growth_cycle(
             missing = set(opportunity["requiredSources"]) - ready_sources
             if missing:
                 reason = "Required evidence is not ready: " + ", ".join(sorted(missing))
+                reassess_when = "After a later assessment captures the required sources in a ready state."
+                memory.transition_strategy_initiative(
+                    int(initiative["id"]), "deferred",
+                    validation={"status": "deferred", "errorCode": "required_source_not_ready",
+                        "reason": reason, "reassessWhen": reassess_when},
+                    last_error=reason,
+                )
+                unprepared_opportunities.append({**opportunity, "disposition": "deferred",
+                    "errorCode": "required_source_not_ready", "preparationNote": reason,
+                    "reassessWhen": reassess_when})
+                continue
             elif opportunity["kind"] == "owner_information":
                 from .actions import OwnerActionService
                 from .growth_delivery import journal

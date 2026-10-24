@@ -1,11 +1,12 @@
 import pytest
 
 from site_agent.application.growth import growth_snapshot, owner_queue
-from site_agent.application.growth_workflow import run_growth_reconciler, run_pending_growth
+from site_agent.application.growth_workflow import _crawlseo_dataset_source, run_growth_reconciler, run_pending_growth
 from site_agent.core.contracts import ContractError
 from site_agent.core.jobs import register_builtin
 from site_agent.core.memory import Memory
 from site_agent.core.scheduler import Scheduler
+import datetime
 
 def test_owner_queue_indexes_decisions_and_excludes_opportunities_and_history():
     tasks = [
@@ -78,6 +79,105 @@ def test_new_site_goal_and_reconciliation_are_durable_and_idempotent(tmp_path):
     assert all(row.get("lastError") is None for row in snapshot["tasks"])
     assert snapshot["evidence"]["artifactId"] is not None
     assert snapshot["evidence"]["sources"]
+    memory.close()
+
+
+def test_crawlseo_dataset_sources_use_real_observation_times_not_fetch_times():
+    now = datetime.datetime(2026, 10, 24, 21, 0, tzinfo=datetime.timezone.utc)
+    config = {"growth": {"freshness_hours": {"inventory": 168, "dataforseo": 744}}}
+    datasets = {
+        "health": {"capturedAt": "2026-10-24T20:02:30Z", "errors": {}, "summary": {
+            "status": "completed", "health_score": 91, "page_count": 24, "issue_count": 3,
+            "finished_at": "2026-10-23T16:35:36.259Z"}, "issues": [{"severity": "warning"}]},
+        "research": {"capturedAt": "2026-10-24T20:02:31Z", "errors": {}, "keywords": [
+            {"keyword": "query one", "updatedAt": "2026-10-23T16:07:58.430Z"}]},
+        "competition": {"capturedAt": "2026-10-24T20:02:31Z", "errors": {}, "serps": [
+            {"query": "query one", "updatedAt": "2026-10-13T13:34:18.708Z"}]},
+    }
+    sources = {name: _crawlseo_dataset_source(name, value, config, now=now) for name, value in datasets.items()}
+    assert {name: source["state"] for name, source in sources.items()} == {
+        "health": "ready", "research": "ready", "competition": "ready"}
+    assert sources["health"]["sourceRef"] == "crawlseo:health"
+    assert sources["research"]["observedAt"] == "2026-10-23T16:07:58+00:00"
+    assert sources["competition"]["observedAt"] == "2026-10-13T13:34:18+00:00"
+
+
+def test_crawlseo_dataset_missing_failed_partial_and_stale_states_are_conservative():
+    now = datetime.datetime(2026, 10, 24, 21, 0, tzinfo=datetime.timezone.utc)
+    config = {"growth": {"freshness_hours": {"inventory": 168, "dataforseo": 744}}}
+    missing = _crawlseo_dataset_source("research", {"capturedAt": now.isoformat(), "errors": {}, "keywords": []}, config, now=now)
+    empty_completed = _crawlseo_dataset_source("research", {"capturedAt": now.isoformat(), "errors": {},
+        "status": "completed", "reportId": "report-with-no-results", "updatedAt": now.isoformat(),
+        "keywords": [], "domains": [], "backlinks": []}, config, now=now)
+    failed_history_only = _crawlseo_dataset_source("research", {"capturedAt": now.isoformat(), "errors": {},
+        "reports": [{"status": "failed", "updatedAt": "2026-10-24T20:00:00Z"}]}, config, now=now)
+    completed_history_only = _crawlseo_dataset_source("research", {"capturedAt": now.isoformat(), "errors": {},
+        "reports": [{"status": "completed", "updatedAt": "2026-10-24T20:00:00Z"}]}, config, now=now)
+    failed = _crawlseo_dataset_source("health", {"errors": {"crawl": "offline"}}, config, now=now)
+    partial = _crawlseo_dataset_source("research", {"errors": {"history": "timeout"}, "keywords": [
+        {"keyword": "usable", "updatedAt": "2026-10-23T16:00:00Z"}]}, config, now=now)
+    partial_row_missing_time = _crawlseo_dataset_source("competition", {"errors": {}, "serps": [
+        {"query": "dated", "updatedAt": "2026-10-23T16:00:00Z"}, {"query": "undated"}]}, config, now=now)
+    stale = _crawlseo_dataset_source("health", {"errors": {}, "summary": {
+        "status": "completed", "finished_at": "2026-10-01T00:00:00Z"}}, config, now=now)
+    fetch_time_only = _crawlseo_dataset_source("research", {"capturedAt": now.isoformat(), "errors": {},
+        "keywords": [{"keyword": "no timestamp"}]}, config, now=now)
+    mixed_age = _crawlseo_dataset_source("competition", {"capturedAt": now.isoformat(), "errors": {}, "serps": [
+        {"query": "older row", "updatedAt": "2026-08-29T02:36:11Z"},
+        {"query": "newer row", "updatedAt": "2026-10-23T13:34:18Z"}]}, config, now=now)
+    mixed_research = _crawlseo_dataset_source("research", {"capturedAt": now.isoformat(), "errors": {}, "keywords": [
+        {"keyword": "older result", "updatedAt": "2026-08-29T02:35:52Z"},
+        {"keyword": "newer result", "updatedAt": "2026-10-23T16:07:58Z"}]}, config, now=now)
+    historic_report_without_time = _crawlseo_dataset_source("research", {"errors": {}, "keywords": [
+        {"keyword": "current result", "updatedAt": "2026-10-23T16:07:58Z"}], "reports": [{"id": "historic"}]}, config, now=now)
+    future = _crawlseo_dataset_source("research", {"errors": {}, "keywords": [
+        {"keyword": "future", "updatedAt": "2026-10-24T21:06:00Z"}]}, config, now=now)
+    assert missing["state"] == "missing"
+    assert empty_completed["state"] == "missing"
+    assert failed_history_only["state"] == "missing"
+    assert completed_history_only["state"] == "missing"
+    assert failed["state"] == "failed"
+    assert partial["state"] == "partial"
+    assert partial_row_missing_time["state"] == "partial"
+    assert stale["state"] == "stale"
+    assert fetch_time_only["state"] == "uncertain"
+    assert mixed_age["state"] == "stale"
+    assert mixed_age["observedAt"] == "2026-08-29T02:36:11+00:00"
+    assert mixed_research["state"] == "stale"
+    assert mixed_research["observedAt"] == "2026-08-29T02:35:52+00:00"
+    assert historic_report_without_time["state"] == "ready"
+    assert future["state"] == "uncertain"
+
+
+def test_growth_collection_binds_each_crawlseo_dataset_to_a_separate_source(tmp_path, monkeypatch):
+    import site_agent.application.growth_evidence as evidence_module
+    import site_agent.application.growth_workflow as workflow
+
+    memory = Memory(tmp_path / "memory.db")
+    config = {"growth": {"freshness_hours": {"inventory": 168, "dataforseo": 744}}}
+    datasets = {
+        "health": {"capturedAt": "2026-10-24T20:02:30Z", "errors": {}, "summary": {
+            "status": "completed", "finished_at": "2026-10-24T19:00:00Z"}, "issues": []},
+        "research": {"capturedAt": "2026-10-24T20:02:31Z", "errors": {}, "keywords": [
+            {"keyword": "query one", "updatedAt": "2026-10-24T19:00:00Z"}]},
+        "competition": {"capturedAt": "2026-10-24T20:02:31Z", "errors": {}, "serps": [
+            {"query": "query one", "updatedAt": "2026-10-24T19:00:00Z"}]},
+    }
+    monkeypatch.setattr(workflow, "_inventory", lambda _context: [])
+    monkeypatch.setattr(workflow, "_source_state", lambda *_args: [{"id": "dataforseo", "state": "missing",
+        "reason": "No approved keyword seeds are recorded yet."}])
+    monkeypatch.setattr(evidence_module, "growth_evidence", lambda _service, section: datasets[section])
+    material = workflow._collect_cycle_evidence({"memory": memory, "config": config,
+        "crawlseo_service": object()}, "owner_review", "test-run")
+    source_by_ref = {row.get("sourceRef"): row for row in material["sources"]}
+    for section in ("health", "research", "competition"):
+        source_ref = f"crawlseo:{section}"
+        assert source_ref in source_by_ref
+        assert source_by_ref[source_ref]["state"] == "ready"
+        assert material["datasets"][section]["sourceRef"] == source_ref
+        assert material["datasets"][section]["observedAt"] == source_by_ref[source_ref]["observedAt"]
+    assert source_by_ref["crawlseo:research"]["state"] == "ready"
+    assert source_by_ref[None]["state"] == "missing"
     memory.close()
 
 

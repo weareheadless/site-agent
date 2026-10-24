@@ -55,7 +55,7 @@ def _run_source_states(run: Mapping[str, Any], sources: Sequence[Mapping[str, An
         state = source.get("state")
         if state == "ready":
             max_age = source.get("freshnessHours", inventory_freshness_hours)
-            state = "unavailable" if observed is None else "stale" if now - observed > timedelta(hours=max_age) else "ready"
+            state = "unavailable" if observed is None or observed > now + timedelta(minutes=5) else "stale" if now - observed > timedelta(hours=max_age) else "ready"
         for ref in (source.get("id"), source.get("sourceRef")):
             if ref:
                 states[str(ref)] = state
@@ -169,7 +169,7 @@ def _opportunity_findings(runs: Sequence[Mapping[str, Any]], initiatives: Sequen
             if initiative_id is not None:
                 finding["initiativeId"] = initiative_id
                 if candidate_id is not None:
-                    finding["candidateId"] = candidate_id
+                    finding["candidateId"] = str(candidate_id)
             if opportunity.get("collection") is not None and opportunity.get("documentId") is not None:
                 finding["target"] = {"collection": opportunity["collection"], "documentId": opportunity["documentId"]}
             if status == "waiting_for_capacity":
