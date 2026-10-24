@@ -273,6 +273,13 @@ def growth_tasks(
             and verified_review
             and bool(draft_id and approval and approval.status.value == 'pending')
         )
+        retired_revision = validation.get('retiredRevision') if isinstance(validation.get('retiredRevision'), Mapping) else {}
+        retired_revision_failure = bool(
+            review_ready
+            and retired_revision.get('status') == 'retired_with_exact_prior_candidate_proof'
+            and retired_revision.get('reviewPackageHash') == initiative.get('review_package_hash')
+            and retired_revision.get('reviewPackageHash') == draft_meta.get('review_package_hash')
+        )
         review_hash = meta.get("review_package_hash") if article_ready else initiative.get("review_package_hash")
         article_idea = idea_by_draft.get(str(draft_id))
         if article_idea is None and isinstance(meta.get("article_research"), Mapping):
@@ -289,7 +296,7 @@ def growth_tasks(
             and not payload_revision_uncertain
         ) or (state in {'publishing', 'verifying_live'} and action_job is None)
         summary_key = None
-        if initiative.get('kind') == 'code' and validation.get('revisionFailure'):
+        if initiative.get('kind') == 'code' and validation.get('revisionFailure') and not retired_revision_failure:
             summary_key = 'sourceRevisionFailed'
             initiative_summary = str(validation['revisionFailure'])
         elif payload_revision_uncertain:
@@ -332,8 +339,8 @@ def growth_tasks(
             'requirement': action.get('requirement'),
             'conversationId': action.get('conversation_id'), 'approvalId': approval_id,
             'reviewPackageHash': review_hash,
-            'lastError': validation.get('revisionFailure') or (revision.get('error') if payload_revision_uncertain else None) or source_failure_reason,
-            'executionIssue': state in {'blocked', 'uncertain'} or payload_revision_uncertain or bool(validation.get('revisionFailure')) or stale_work or source_blocked_by_preview,
+            'lastError': (revision.get('error') if payload_revision_uncertain else None) or (None if retired_revision_failure else validation.get('revisionFailure')) or source_failure_reason,
+            'executionIssue': state in {'blocked', 'uncertain'} or payload_revision_uncertain or (bool(validation.get('revisionFailure')) and not retired_revision_failure) or stale_work or source_blocked_by_preview,
             'canApprove': review_ready,
             'previewUrl': ((package.get('source') or {}).get('previewUrl') if isinstance(package.get('source'), Mapping) else None),
             'review': {'before': package.get('before'), 'after': package.get('after'), 'changes': package.get('changes'), 'route': package.get('route'),
