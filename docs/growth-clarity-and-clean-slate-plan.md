@@ -1,7 +1,7 @@
 # Growth clarity and Oceanic clean-slate implementation plan
 
-Status: implementation started; published-content decisions and rendered owner acceptance remain open.
-Owner direction: October 23, 2026. The dashboard must simplify website decisions for a nontechnical owner. Oceanic's historical generated material must be audited before it becomes the foundation for further recommendations.
+Status: cleanup and first Areas dashboard release are verified; the owner's published-content choice, fresh browser confirmation and full-fleet verification remain open.
+Owner direction: October 23–24, 2026. Simplify website decisions for a nontechnical owner, audit Oceanic's historical generated material before using it for recommendations, and give expertise areas a separate dashboard tab with full status cards. Remove detailed footer material from the home overview.
 
 This update supersedes the older requirement to place the five expertise areas prominently on the Growth landing view. It preserves the existing investigation, exact candidate, approval, publication, tenant isolation, budget and official release contracts. No new task store, publisher or scheduler is introduced.
 
@@ -35,7 +35,7 @@ Once cleanup dispositions are applied, request one fresh normal assessment using
 
 ## 4. Redesign the owner workspace
 
-Overview: short truthful status, the most useful next decision, a bounded set of other decisions and verified recent changes. Recommendations: current evidenced improvements with readable review. Activity: progress, provider failures and historical attempts grouped by canonical work. Keep analytics, search/research, expertise detail and reports reachable through progressive disclosure.
+Overview: short truthful status, the most useful next decision, a bounded set of other decisions and verified recent changes, without detailed footer material. Recommendations: current evidenced improvements with readable review. Activity: progress, provider failures and historical attempts grouped by canonical work. Give expertise areas a separate Areas tab with full status cards; keep analytics, search/research and reports reachable through progressive disclosure.
 
 For Oceanic's current examples: a guided business-information request; one related group of two cut-off article-description corrections, each separately reviewable; historical technical findings waiting for current verification. This is a data example, never tenant-specific application logic.
 
@@ -60,13 +60,13 @@ A generated draft is progress. A verified live change is delivery. Later observe
 ## Acceptance ledger
 
 - [x] Current published/draft inventory with exact duplicate/overlap distinctions.
-- [ ] Canonical audited archival path; reviewed unpublished cleanup applied with receipts.
-- [ ] Published-content decisions prepared for owner review.
-- [ ] Current recommendations are evidence-bound and historical attempts cannot re-enter active work.
-- [ ] Readable overview and exact changed-fields review implemented and tested.
-- [ ] Canonical scheduling/reassessment verified against the cleaned backlog.
-- [ ] Official API/package/Worker releases verified.
-- [ ] Authenticated rendered owner comprehension and action acceptance observed.
+- [x] Canonical audited archival path; reviewed unpublished cleanup applied with receipts.
+- [x] Published-content decisions prepared for owner review; the owner's choice remains open.
+- [x] Historical local attempts are absent from active work, with originals and receipts retained.
+- [x] Readable overview and exact changed-fields review implemented and tested.
+- [x] Canonical reassessment ran against the cleaned backlog; its two findings remain behind existing prepared proposals.
+- [ ] Official API/package/Worker releases verified across the full automatic fleet.
+- [ ] Fresh authenticated browser confirmation of the Areas dashboard and owner comprehension observed.
 
 Completion requires those live product checks; an inventory, a prettier screen or a passing test suite alone is insufficient.
 
@@ -197,13 +197,29 @@ published-article decision is in
 `oceanic-plateau-consolidation-review-20261024.md`; no owner choice or publication
 has been inferred.
 
-## October 24, 2026 adoption checkpoint
+## October 24, 2026 clean-slate and Areas dashboard checkpoint
 
-The published admin 0.10.30 artifact is verified against its successful release
-workflow, source commit `c8a44800f1b36fba321613258cce65689ca1a850`, actual
-tarball digest and SHA-512 integrity. The four canonical scaffold pins now name
-that exact asset. API source `02359ea5599e1a89a46bfa816379bb47f8bf8a85` is
-health-passed. Three reviewed local archive targets (drafts 48, 54 and 56) have
-not yet been applied. Signed-in browser acceptance and the owner's published
-article editorial choice remain open; this checkpoint does not mark the cleanup
-or owner experience complete.
+The protected archive path has completed receipts for all eight reviewed local
+drafts (45, 48, 49, 50, 54, 56, 58 and 60). Their copies and metadata remain
+intact, with historical external effects recorded as unknown. Verification
+found the eight Payload documents, two approvals, spend ledger and Git main and
+preview refs unchanged during cleanup; archived IDs are absent from active
+Growth work. A published-content decision list is ready in
+[`oceanic-plateau-consolidation-review-20261024.md`](oceanic-plateau-consolidation-review-20261024.md),
+but the owner has not chosen a published-content action.
+
+The canonical post-cleanup reassessment produced two current findings. Both
+remain behind existing prepared proposals; this is a verified capacity wait,
+not completed preparation. Readability and exact changed-field review passed
+local QA. The newer dashboard gives expertise areas a separate tab with full
+status cards and removes detailed footer material from the home overview.
+
+Admin 0.10.33 is published and verified on Oceanic at 100% traffic under
+receipt `runtime-20261024175911-20e3c437`; API release
+`20261024-api-growth-areas-2` is health-passed. The Areas work passed 72 package
+tests, typecheck, full-stylesheet contrast checks and local route/back/mobile
+checks. See [`growth-areas-dashboard-acceptance-20261024.md`](growth-areas-dashboard-acceptance-20261024.md)
+for source, release and QA evidence. Fleet verification for the remaining
+automatic tenants and a fresh authenticated browser confirmation of the Areas
+dashboard remain pending. The prior readability confirmation does not establish
+broader comprehension or a published-content choice.
