@@ -9,7 +9,7 @@ const source = (path) => readFileSync(new URL(path, root), 'utf8');
 const compiled = ts.transpileModule(source('src/lib/growth-data.ts'), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
 }).outputText;
-const sandbox = { exports: {}, Intl, Date };
+const sandbox = { exports: {}, Intl, Date, URLSearchParams };
 vm.runInNewContext(compiled, sandbox);
 function load(url) {
   const moduleSource = readFileSync(url, 'utf8');
@@ -77,6 +77,53 @@ test('accepts the growth-service-v1 projection shape and all five canonical area
   assert.equal(serviceModel.areas.length, 5);
 });
 
+test('restores Areas from the URL and reports only explicit per-area service counts', () => {
+  assert.equal(sandbox.exports.growthPanelFromSearch('?growth_panel=areas'), 'areas');
+  assert.equal(sandbox.exports.growthPanelFromSearch('?growth_panel=decisions'), 'decisions');
+  assert.equal(sandbox.exports.growthPanelFromSearch('?growth_panel=invalid'), 'home');
+  assert.equal(sandbox.exports.growthPanelFromSearch(''), 'home');
+  assert.equal(sandbox.exports.growthResultTabFromSearch('?growth_results=content'), 'content');
+  assert.equal(sandbox.exports.growthResultTabFromSearch('?growth_results=unknown'), 'analytics');
+  assert.equal(sandbox.exports.growthResultTabFromSearch(''), 'analytics');
+  const search = serviceModel.areas.find((area) => area.id === 'search_visibility');
+  const health = serviceModel.areas.find((area) => area.id === 'website_health');
+  assert.deepEqual({ ...sandbox.exports.growthAreaCardCounts(search) }, {
+    decisionCount: 1, activeWorkCount: 0, blockedWorkCount: 0, deferredWorkCount: 0, pendingRunCount: 0, hasPendingRuns: false, hasUnknownPendingRuns: false,
+  });
+  assert.deepEqual({ ...sandbox.exports.growthAreaCardCounts(serviceModel.areas.find((area) => area.id === 'content')) },
+    { decisionCount: 0, activeWorkCount: 1, blockedWorkCount: 0, deferredWorkCount: 0, pendingRunCount: 1, hasPendingRuns: true, hasUnknownPendingRuns: false });
+  // A cross-area relationship remains visible within both areas; these values are not added into a site-wide total.
+  assert.deepEqual(Array.from([search, health], area => sandbox.exports.growthAreaCardCounts(area).decisionCount), [1, 1]);
+  const parent = source('src/components/HelloAdaGrowth.tsx');
+  const component = source('src/components/GrowthTasks.tsx');
+  assert.match(parent, /growthPanelFromSearch\(search\)/);
+  assert.match(parent, /growthResultTabFromSearch\(search\)/);
+  assert.match(parent, /growth_panel=areas|panel === "areas"/);
+  assert.match(component, /mode === "areas" && !selectedTask/);
+  assert.match(component, /area\.evidenceState/);
+  assert.match(component, /area\.lastAssessedAt/);
+  assert.match(component, /area\.nextAssessment/);
+  assert.match(component, /growthAreaCardCounts\(area\)/);
+  assert.match(component, /pendingRunCount > 0[\s\S]*areaPendingRunUnknown/);
+  assert.match(component, /area\.state === "waiting_for_capacity" \? "growth\.areaCardState_work_queued"/);
+  assert.match(component, /onClick=\{\(\) => onNavigate\("results", AREA_TABS\[area\.id\]\)\}/);
+  assert.match(component, /t\(AREA_EXPLORE\[area\.id\]\)/);
+  assert.doesNotMatch(component.slice(component.indexOf('{mode === "home" && !selectedTask ? <section className="helloada-growth-owner-agenda"'), component.indexOf('{mode === "areas" && !selectedTask ? <section')), /helloada-growth-area-card/);
+});
+
+test('validates per-area work arrays and preserves unknown pending-run presence', () => {
+  const content = serviceModel.areas.find((area) => area.id === 'content');
+  const nullRunCounts = { ...sandbox.exports.growthAreaCardCounts({ ...content, pendingRunIds: [null] }) };
+  assert.deepEqual(nullRunCounts, { decisionCount: 0, activeWorkCount: 1, blockedWorkCount: 0, deferredWorkCount: 0, pendingRunCount: 0, hasPendingRuns: true, hasUnknownPendingRuns: true });
+  const mixedRunCounts = { ...sandbox.exports.growthAreaCardCounts({ ...content, pendingRunIds: [72, null] }) };
+  assert.deepEqual(mixedRunCounts, { decisionCount: 0, activeWorkCount: 1, blockedWorkCount: 0, deferredWorkCount: 0, pendingRunCount: 1, hasPendingRuns: true, hasUnknownPendingRuns: true });
+  assert.equal(sandbox.exports.isGrowthServiceModel({ ...serviceModel, areas: areas.map((area) => area.id === 'content' ? { ...area, pendingRunIds: [{}] } : area) }), false);
+  assert.equal(sandbox.exports.isGrowthServiceModel({ ...serviceModel, areas: areas.map((area) => area.id === 'content' ? { ...area, activeWorkIds: ['missing'] } : area) }), false);
+  const component = source('src/components/GrowthTasks.tsx');
+  assert.match(component, /areaWork\.length === 0 && !hasPendingRuns/);
+  assert.match(component, /growth\.areaPendingRunUnknown/);
+});
+
 test('uses primary/secondary area relations and keeps one canonical decision across areas', () => {
   assert.deepEqual(serviceModel.areas.find((area) => area.id === 'search_visibility').workIds, ['decision-1']);
   assert.deepEqual(serviceModel.areas.find((area) => area.id === 'website_health').workIds, ['decision-1']);
@@ -99,7 +146,8 @@ test('preserves owner queue decision priority independently of service model ord
   assert.match(parent, /growthDecisionOrder\(body\.ownerQueue, body\.serviceModel\.decisionIds\)/);
   assert.match(parent, /Owner queue and Growth service decisions are incompatible/);
   assert.match(component, /decisionOrder\.map\(agendaTask\)/);
-  assert.match(component, /area\.decisionIds/);
+  assert.match(component, /growthAreaCardCounts\(area\)/);
+  assert.match(component, /pendingRunCount > 0[\s\S]*areaPendingRunUnknown/);
 });
 
 test('renders owner review through a sparse field comparison instead of full raw objects', () => {
@@ -124,6 +172,7 @@ test('overview, recommendations and activity stay distinct while related fields 
   assert.match(shell, /panel === "home"\} onClick=\{\(\) => navigatePanel\("home"\)\}/);
   assert.match(shell, /panel === "decisions"\} onClick=\{\(\) => navigatePanel\("decisions"\)\}/);
   assert.match(shell, /panel === "work"\} onClick=\{\(\) => navigatePanel\("work"\)\}/);
+  assert.match(shell, /panel === "areas"\} onClick=\{\(\) => navigatePanel\("areas"\)\}/);
   assert.match(component, /groupReviewDecisions\(rows\)/);
   assert.match(component, /getReviewTarget\(task\.review\)/);
   assert.match(component, /featuredRelatedGroup[\s\S]*groupReviewDecisions\(decisionRows\)/);
@@ -167,7 +216,7 @@ test('rejects absent or incompatible projection instead of falling back to tasks
 
 test('renders preparation, next assessment, verified results and area evidence from the service projection', () => {
   const component = source('src/components/GrowthTasks.tsx');
-  for (const field of ['serviceModel.preparation', 'area.workIds', 'area.decisionIds', 'area.state', 'area.evidenceState',
+  for (const field of ['serviceModel.preparation', 'area.workIds', 'growthAreaCardCounts(area)', 'area.state', 'area.evidenceState',
     'area.summary', 'area.limitations', 'area.lastAssessedAt', 'area.nextAssessment', 'serviceModel.recentResults',
     'serviceModel.unassignedWorkIds']) assert.ok(component.includes(field), `missing binding: ${field}`);
   assert.match(component, /"growth\.resultVerified"/);
@@ -188,7 +237,7 @@ test('renders preparation, next assessment, verified results and area evidence f
 test('area and evidence UI copy exists in English, French and Mexican Spanish', () => {
   const { growthCopy } = load(new URL('../src/lib/growth-copy.ts', import.meta.url));
   for (const language of ['en', 'fr', 'es']) {
-    for (const key of ['growth.areasTitle', 'growth.areaContent', 'growth.areaSearchVisibility', 'growth.areaWebsiteHealth',
+    for (const key of ['growth.areasTitle', 'growth.panel_areas', 'growth.areaPurpose_content', 'growth.areaPurpose_search_visibility', 'growth.areaPurpose_website_health', 'growth.areaPurpose_audience_competitors', 'growth.areaPurpose_speed_experience', 'growth.areaExplore_content', 'growth.areaExplore_search_visibility', 'growth.areaExplore_website_health', 'growth.areaExplore_audience_competitors', 'growth.areaExplore_speed_experience', 'growth.areaActiveWorkCount', 'growth.areaPendingRunCount', 'growth.areaPendingRunUnknown', 'growth.areaBlockedCount', 'growth.areaDeferredCount', 'growth.areaCardState_work_queued', 'growth.areaAssessmentDatesUnavailable', 'growth.areaDetails', 'growth.areaContent', 'growth.areaSearchVisibility', 'growth.areaWebsiteHealth',
       'growth.areaAudienceCompetitors', 'growth.areaSpeedExperience', 'growth.areaNoAssessmentSummary',
       'growth.areaState_needs_decision', 'growth.evidence_recorded', 'growth.preparationTitle', 'growth.resultVerified',
       'growth.unassignedWork', 'growth.secondaryAreaLinks', 'growth.scopeSharedGrowthReview', 'growth.scopeGenericAssessment',
@@ -201,8 +250,8 @@ test('area and evidence UI copy exists in English, French and Mexican Spanish', 
 
 test('area work cannot create a second approval widget and review remains on canonical handlers', () => {
   const component = source('src/components/GrowthTasks.tsx');
-  const areaMarkup = component.slice(component.indexOf('<details className="helloada-growth-areas"'), component.indexOf('{error ?'));
-  assert.match(areaMarkup, /canonicalDecisionIds\.has\(row\.id\)/);
+  const areaMarkup = component.slice(component.indexOf('{mode === "areas" && !selectedTask ? <section'), component.indexOf('{error ?'));
+  assert.match(areaMarkup, /serviceModel\.unassignedWorkIds\.map/);
   assert.doesNotMatch(areaMarkup, /fetchHelloAda|review_package_hash|onClick=\{\(\) => void effect/);
   assert.match(component, /openTask\(task\)/);
   assert.match(component, /loaded\.reviewPackageHash === selectedTask\.reviewPackageHash/);
