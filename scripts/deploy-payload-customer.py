@@ -353,6 +353,37 @@ def wait_for_atomic_worker_version(customer: dict[str, Any], env: dict[str, str]
     raise RuntimeError("Cloudflare did not expose the exact atomic 100% Worker deployment after 12 checks") from last_error
 
 
+def wait_for_versioned_worker_deployment(customer: dict[str, Any], env: dict[str, str],
+                                          previous_deployment: dict[str, Any],
+                                          expected_version: str) -> dict[str, Any]:
+    """Wait for Cloudflare's read API to expose the already-promoted version."""
+    if not isinstance(expected_version, str) or not expected_version:
+        raise RuntimeError("versioned Worker release has no exact uploaded version identity")
+    last_error: Exception = RuntimeError("Cloudflare has not recorded the versioned deployment yet")
+    previous_id = previous_deployment.get("id") if isinstance(previous_deployment, dict) else None
+    for attempt in range(12):
+        try:
+            deployment = cloudflare_deployment(customer, env)
+        except OSError as error:
+            last_error = error
+        else:
+            if deployment and deployment.get("id") != previous_id:
+                versions = deployment.get("versions")
+                if (not isinstance(versions, list) or len(versions) != 1
+                        or not isinstance(versions[0], dict)
+                        or versions[0].get("percentage") != 100
+                        or versions[0].get("version_id") != expected_version):
+                    raise RuntimeError(
+                        "Cloudflare deployment does not route the exact uploaded Worker version at 100%"
+                    )
+                return deployment
+        if attempt < 11:
+            time.sleep(5)
+    raise RuntimeError(
+        "Cloudflare did not expose the exact versioned 100% Worker deployment after 12 checks"
+    ) from last_error
+
+
 def validate_target(customer: dict[str, Any], tenant: str, sha: str, release_id: str) -> None:
     if not SHA_RE.fullmatch(sha) or not ID_RE.fullmatch(release_id):
         raise ValueError("release requires a full commit SHA and a safe release ID")
@@ -2429,9 +2460,14 @@ def main() -> int:
         atomic_json(receipt_path, receipt)
 
         stage("verify-deployment")
-        deployment = cloudflare_deployment(customer, deploy_env)
-        if not deployment or deployment.get("id") == before_deploy.get("id"):
-            raise RuntimeError("Cloudflare did not create a new deployment")
+        if receipt["rolloutMode"] == "versioned":
+            deployment = wait_for_versioned_worker_deployment(
+                customer, deploy_env, before_deploy, receipt["uploadedVersion"],
+            )
+        else:
+            deployment = cloudflare_deployment(customer, deploy_env)
+            if not deployment or deployment.get("id") == before_deploy.get("id"):
+                raise RuntimeError("Cloudflare did not create a new deployment")
         receipt["deployment"] = deployment
         verify_live(receipt, customer, manifest, deploy_env, base, stage)
         stage("trigger-email-provisioning")
