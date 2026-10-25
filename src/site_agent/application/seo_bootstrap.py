@@ -141,6 +141,7 @@ def build_research_profile(
     research = _mapping(seo.get("research"))
     site = _mapping(config.get("site"))
     brand = _mapping(site.get("brand"))
+    persona = _mapping(config.get("persona"))
     languages = research.get("languages") if isinstance(research.get("languages"), list) else []
     primary = next(
         (item for item in languages if isinstance(item, Mapping) and item.get("primary") is True),
@@ -151,7 +152,10 @@ def build_research_profile(
     market = _profile_text(", ".join(str(item) for item in markets if str(item).strip()), 120)
     language = _profile_text(primary.get("code") or research.get("language"), 16) or "en"
     audience = _profile_text(
-        research.get("audience") or site.get("audience") or brand.get("audience"), 300
+        research.get("audience")
+        or persona.get("audience")
+        or site.get("audience")
+        or brand.get("audience"), 300
     )
     topics = _profile_list(
         research.get("anchor_topics") or research.get("topics"), 120, 120, 12
@@ -203,7 +207,11 @@ def build_research_profile(
     if payload["researchPolicy"]["cadence"] not in {"daily", "weekly", "monthly", "manual"}:
         payload["researchPolicy"]["cadence"] = "weekly"
     digest = hashlib.sha256(
-        json.dumps({**payload, "idempotencyKey": None}, sort_keys=True, default=str).encode("utf-8")
+        json.dumps(
+            {key: value for key, value in payload.items() if key not in {"expectedRevision", "idempotencyKey"}},
+            sort_keys=True,
+            default=str,
+        ).encode("utf-8")
     ).hexdigest()
     payload["idempotencyKey"] = f"site-agent:{tenant_id}:research-profile:{digest}"
     return payload
@@ -221,10 +229,10 @@ def sync_research_profile(
     if not site_id:
         return {"state": "skipped", "reason": "crawlseo_site_missing"}
     profile = credential_profile(config, "crawlseo")
-    connector_url = str(profile.get("connector_url") or "").strip()
+    provider = dict(_mapping(_mapping(config.get("providers")).get("crawlseo")))
+    connector_url = str(provider.get("connector_url") or profile.get("connector_url") or "").strip()
     if not connector_url:
         return {"state": "skipped", "reason": "connector_url_not_configured"}
-    provider = dict(_mapping(_mapping(config.get("providers")).get("crawlseo")))
     provider["connector_url"] = connector_url
     provider["connector_token_env"] = "CRAWLSEO_CONNECTOR_TOKEN"
     effective = {
