@@ -7,7 +7,9 @@ from site_agent.hands.repo_changes import source_path_allowed, source_authoring_
 
 def config():
     return {'design_engine': {'build_profile': 'next_react'}, 'site': {
-        'writable_patterns': ['next.config.mjs', 'src/app/(frontend)/**', 'src/components/**', 'public/**']}}
+        'writable_patterns': [
+            'next.config.mjs', 'src/app/(frontend)/**', 'src/components/**', 'public/**',
+        ]}}
 
 
 def test_source_plan_and_validator_share_the_ownership_boundary():
@@ -18,10 +20,73 @@ def test_source_plan_and_validator_share_the_ownership_boundary():
     assert accepted['source_paths'] == plan['source_paths']
     assert source_path_allowed(config(), accepted['source_paths'][0])
     assert source_path_allowed(config(), 'src/app/(frontend)/oceanic.css')
-    for path in ['public/robots.txt', 'src/app/(frontend)/page.tsx', 'src/app/sitemap.ts', 'next.config.mjs']:
+    # Crawl and discovery metadata can be authored through either native Next
+    # metadata routes, explicit route handlers, or the exact root static files.
+    crawl_paths = [
+        'src/app/robots.ts', 'src/app/sitemap.ts',
+        'src/app/robots.txt/route.ts', 'src/app/sitemap.xml/route.ts',
+        'public/robots.txt', 'public/sitemap.xml',
+    ]
+    for path in crawl_paths:
+        assert source_path_allowed(config(), path)
+        assert _validate_website_change_plan(
+            {**plan, 'source_paths': [path]}, None, config()
+        )['source_paths'] == [path]
+
+    for path in [
+        'public/random.txt', 'public/other-sitemap.xml',
+        'src/app/feed.xml/route.ts', 'src/app/(frontend)/page.tsx',
+        'src/app/robots.txt/other.ts', 'src/lib/helloada-auth.ts',
+        'src/lib/site-origin.ts', 'next.config.mjs', 'package.json', 'payload.config.ts',
+    ]:
         assert not source_path_allowed(config(), path)
         with pytest.raises(ValueError, match='outside tenant ownership'):
             _validate_website_change_plan({**plan, 'source_paths': [path]}, None, config())
+
+
+def test_crawl_metadata_ownership_contract_is_visible_to_ada():
+    from site_agent.frontend_ownership import is_frontend_owned_path
+
+    ownership = source_authoring_contract(config())
+    assert 'src/app/robots.txt/route.ts' in ownership['crawl_metadata_patterns']
+    assert 'public/robots.txt' in ownership['crawl_metadata_patterns']
+    assert 'src/lib/site-origin.ts' not in ownership['frontend_patterns']
+    assert 'src/lib/site-origin.ts' not in ownership['configured_patterns']
+    assert 'Keep origin resolution in the selected metadata file' in ownership['crawl_metadata_rule']
+    assert not is_frontend_owned_path('src/app/robots.txt/route.ts')
+    assert not is_frontend_owned_path('public/robots.txt')
+    assert 'exact crawl metadata files listed in crawl_metadata_patterns' in ownership['rule']
+
+
+def test_delegated_edit_permissions_scope_crawl_metadata_and_deny_shell(tmp_path):
+    from site_agent.hands.opencode_runner import RunnerError, _delegated_permissions
+
+    allowed_path = 'src/app/robots.txt/route.ts'
+    task = {
+        'source_paths': [allowed_path],
+        'ownership': source_authoring_contract(config()),
+    }
+    permissions = _delegated_permissions(tmp_path, task)
+    assert permissions['edit']['*'] == 'deny'
+    assert permissions['edit'][allowed_path] == 'allow'
+    assert permissions['edit'][str(tmp_path.resolve() / allowed_path)] == 'allow'
+    assert permissions['edit'].get('src/lib/site-origin.ts') != 'allow'
+    assert permissions['edit'].get('src/app/sitemap.ts') != 'allow'
+    assert permissions['bash'] == permissions['shell'] == 'deny'
+
+    for path in ('src/lib/site-origin.ts', 'src/app/feed.xml/route.ts'):
+        with pytest.raises(RunnerError, match='outside its ownership contract'):
+            _delegated_permissions(tmp_path, {
+                **task, 'source_paths': [path],
+            })
+
+
+def test_non_next_config_does_not_gain_crawl_metadata_capability():
+    standard_site = {
+        'site': {'writable_patterns': ['src/app/(frontend)/**', 'public/**']},
+    }
+    assert not source_path_allowed(standard_site, 'src/app/robots.ts')
+    assert source_authoring_contract(standard_site)['crawl_metadata_patterns'] == []
 
 
 def test_source_plan_requires_an_explicit_scope_before_delegation():

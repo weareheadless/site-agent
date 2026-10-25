@@ -211,9 +211,10 @@ class SourceEditorService:
 
     def _writable(self, path: str) -> None:
         if str(((self.config.get("design_engine") or {}).get("build_profile") or "")).strip().lower() == "next_react":
+            from ..frontend_ownership import is_crawl_metadata_path
             from ..hands.site_build import is_next_react_frontend_path
 
-            if not is_next_react_frontend_path(path):
+            if not is_next_react_frontend_path(path) and not is_crawl_metadata_path(path):
                 raise SourceEditorError("source file belongs to the shared HelloAda platform and is not editable by website work")
             return
         patterns = self.settings.get("writable_patterns") or self.site.get("writable_patterns") or ()
