@@ -58,7 +58,7 @@ def test_sync_research_profile_pushes_the_read_only_configuration(monkeypatch: p
     class FakeClient:
         def connector_policy(self, site_id: str) -> dict[str, Any]:
             calls["policy_site"] = site_id
-            return {"revision": 3}
+            return {"policy": {"revision": 3}}
 
         def connector_update_research_profile(self, payload: dict[str, Any]) -> dict[str, Any]:
             calls["payload"] = payload

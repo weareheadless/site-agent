@@ -244,11 +244,12 @@ def sync_research_profile(
         if client is None:
             return {"state": "skipped", "reason": "crawlseo_disabled"}
         current = client.connector_policy(site_id)
+        policy_view = current.get("policy") if isinstance(current.get("policy"), Mapping) else current
         payload = build_research_profile(
             effective,
             site_id=site_id,
             tenant_id=tenant_id,
-            expected_revision=int(current.get("revision") or 0),
+            expected_revision=int(policy_view.get("revision") or 0),
         )
         result = client.connector_update_research_profile(payload)
         return {
