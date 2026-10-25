@@ -228,9 +228,9 @@ test('coalesces concurrent requests into one complete mailbox import', async () 
 
 test('declares the fields consumed from the durable import lease row', async () => {
   const source = await readFile(new URL('../mailflare-payload-migration.ts', import.meta.url), 'utf8')
-  const leaseRow = source.match(/type PayloadMailboxImportLease = \\{([\\s\\S]*?)\\n\\}/)?.[1] ?? ''
-  assert.match(leaseRow, /source_sha256: string \\| null/)
-  assert.match(leaseRow, /counts_json: string \\| null/)
+  const leaseRow = source.match(/type PayloadMailboxImportLease = \{([\s\S]*?)\n\}/)?.[1] ?? ''
+  assert.match(leaseRow, /source_sha256: string \| null/)
+  assert.match(leaseRow, /counts_json: string \| null/)
 })
 
 test('advances the single tenant ledger from a completed v1 import to v2', async () => {
