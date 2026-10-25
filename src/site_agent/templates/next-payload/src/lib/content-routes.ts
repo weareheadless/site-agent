@@ -1,5 +1,5 @@
 import { createHelloAdaPublicRouteResolver } from '@weareheadless/helloada-payload-core/routes'
-import { helloAdaPublicContentRoutes } from '@/helloada.config'
+import { helloAdaPublicContentRoutes } from '../helloada.config'
 
 const resolver = createHelloAdaPublicRouteResolver(helloAdaPublicContentRoutes)
 

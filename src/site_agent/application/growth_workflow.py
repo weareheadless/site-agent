@@ -16,6 +16,7 @@ from ..config import crawlseo_research_authority_selected
 from ..core.contracts import Artifact, ArtifactKind, ContractError, utc_now
 from ..core.growth_contracts import GrowthGoalRevision, GrowthPolicy
 from ..core.memory import Memory
+from ..core.research_authority import producer_frozen, require_connector_dispatch_enabled
 from .actions import owner_action_summary
 
 _OWNER_REVIEW_ASSESSMENT_CONTRACT = "owner-summary-v3"
@@ -803,6 +804,8 @@ def run_growth_reconciler(context: dict[str, Any]) -> dict[str, Any]:
     """
 
     memory: Memory = context["memory"]
+    if producer_frozen(memory):
+        raise RuntimeError("Local research and recommendation producers are frozen for CrawlSEO migration")
     config = context.get("config") if isinstance(context.get("config"), Mapping) else {}
     policy = GrowthPolicy.from_config(config)
     goal = ensure_default_goal(memory)
@@ -920,6 +923,8 @@ def _cycle_key(policy: GrowthPolicy, goal_revision: int, trigger: str, now: date
 
 def queue_growth_check(context: Mapping[str, Any], *, trigger: str = "owner_review") -> dict[str, Any]:
     memory, config = context["memory"], context["config"]
+    if trigger != "crawlseo_action" and producer_frozen(memory):
+        raise RuntimeError("Local research and recommendation producers are frozen for CrawlSEO migration")
     if _crawlseo_authoritative(config):
         # The manual owner refresh must enter the same CrawlSEO sync path as
         # scheduled reconciliation. A local owner_review run is filtered out
@@ -1010,6 +1015,8 @@ def _collect_cycle_evidence(context: Mapping[str, Any], trigger: str, run_id: st
         return _sync_crawlseo_actions(context)
     if _crawlseo_authoritative(config):
         raise RuntimeError("CrawlSEO is the configured research authority, but its connector is unavailable")
+    if producer_frozen(memory):
+        raise RuntimeError("Local research and recommendation producers are frozen for CrawlSEO migration")
     errors: dict[str, str] = {}
     if trigger in {"daily", "initial"}:
         from ..core.jobs import _ga_snapshot, _seo_snapshot
@@ -1066,6 +1073,123 @@ def _crawlseo_evidence_freshness_valid(age_days: Any, limit_days: Any) -> bool:
     return -(5 / 1440) <= age_days <= limit_days
 
 
+def _technical_crawl_evidence_sources(
+    action: Mapping[str, Any], *, site_id: str, context_snapshot: Mapping[str, Any], target_url: str,
+    source_path: str, required_capabilities: list[Any], now: datetime.datetime,
+) -> list[dict[str, Any]]:
+    """Validate versioned crawl provenance separately from ResearchSource evidence."""
+    technical = action.get("technicalEvidence")
+    if not isinstance(technical, Mapping):
+        raise ValueError("The Action has no typed technical crawl provenance")
+    if action.get("technicalEvidenceComplete") is not True or action.get("invalidTechnicalEvidenceReferences") is not False:
+        raise ValueError("The Action technical crawl references are incomplete or invalid")
+    if action.get("technicalEvidenceStale") is not False:
+        raise ValueError("The Action technical crawl observation is stale")
+    if action.get("unavailableTechnicalEvidenceIds") not in ([], None):
+        raise ValueError("The Action is missing one or more persisted crawl records")
+    if (technical.get("schemaVersion") != "1.0" or technical.get("sourceKind") != "crawl"
+            or technical.get("siteId") != site_id or technical.get("recencyLimitDays") != 7):
+        raise ValueError("The Action technical evidence contract version or identity is unsupported")
+    if set(technical) != {"schemaVersion", "sourceKind", "siteId", "canonicalContextRevision", "canonicalOrigin",
+            "crawlId", "completedAt", "recencyLimitDays", "sourceFingerprint", "issueRefs", "pageRefs"}:
+        raise ValueError("The Action technical evidence contract has unsupported fields")
+    if technical.get("canonicalContextRevision") != context_snapshot.get("revision"):
+        raise ValueError("Canonical connector context changed since the technical evidence was bound")
+    canonical_origin = str(technical.get("canonicalOrigin") or "")
+    snapshot_origin = str(context_snapshot.get("canonicalOrigin") or "")
+    def origin(value: str, *, bare: bool = False) -> tuple[str, str] | None:
+        parsed = __import__("urllib.parse", fromlist=["urlsplit"]).urlsplit(value)
+        if (parsed.scheme.lower() != "https" or not parsed.netloc or parsed.username or parsed.password
+                or (bare and parsed.path not in {"", "/"}) or parsed.query or parsed.fragment):
+            return None
+        return parsed.scheme.lower(), parsed.netloc.lower()
+    if not origin(canonical_origin, bare=True) or origin(canonical_origin, bare=True) != origin(snapshot_origin, bare=True):
+        raise ValueError("Technical evidence does not match the current canonical site origin")
+    crawl_id = technical.get("crawlId")
+    completed_at = technical.get("completedAt")
+    if not isinstance(crawl_id, str) or not crawl_id or not isinstance(completed_at, str):
+        raise ValueError("Technical evidence is missing its exact completed crawl identity")
+    try:
+        observed = datetime.datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
+        if observed.tzinfo is None or observed.utcoffset() is None:
+            raise ValueError("Technical evidence completion time must include a timezone")
+        observed = observed.astimezone(datetime.timezone.utc)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("Technical evidence has an invalid crawl completion time") from exc
+    age = now.astimezone(datetime.timezone.utc) - observed
+    if age < datetime.timedelta(0) or age > datetime.timedelta(days=7):
+        raise ValueError("Technical crawl evidence is outside its explicit 7-day recency limit")
+
+    issue_refs = technical.get("issueRefs")
+    page_refs = technical.get("pageRefs")
+    if not isinstance(issue_refs, list) or not issue_refs or len(issue_refs) > 500 or not isinstance(page_refs, list) or len(page_refs) > 500:
+        raise ValueError("Technical evidence must contain bounded persisted issue and page references")
+    issue_ids: list[str] = []
+    issue_types: set[str] = set()
+    issue_urls: set[str] = set()
+    sources: list[dict[str, Any]] = []
+    allowed_types = {"MISSING_TITLE", "MISSING_DESCRIPTION", "DUPLICATE_TITLE", "DUPLICATE_DESCRIPTION",
+        "MISSING_ROBOTS", "MISSING_SITEMAP"}
+    for ref in issue_refs:
+        if not isinstance(ref, Mapping):
+            raise ValueError("Technical evidence contains a malformed issue reference")
+        if set(ref) != {"id", "url", "type", "severity", "message"}:
+            raise ValueError("Technical issue reference has unsupported fields")
+        identity, url, issue_type, severity, message = (ref.get(key) for key in ("id", "url", "type", "severity", "message"))
+        if (not isinstance(identity, str) or not identity or not isinstance(url, str) or not isinstance(issue_type, str)
+                or issue_type not in allowed_types or severity not in {"CRITICAL", "WARNING", "INFO"}
+                or not isinstance(message, str) or origin(url) != origin(canonical_origin)):
+            raise ValueError("Technical issue reference is malformed or outside the canonical site")
+        issue_ids.append(identity)
+        issue_types.add(issue_type)
+        issue_urls.add(url)
+        sources.append({"id": f"crawl_issue:{crawl_id}:{identity}", "sourceKind": "crawl_issue", "sourceRef": url,
+            "url": url, "title": f"{issue_type}: {message[:240]}", "observedAt": completed_at,
+            "crawlId": crawl_id, "issueType": issue_type, "severity": severity})
+    if len(set(issue_ids)) != len(issue_ids):
+        raise ValueError("Technical evidence contains duplicate issue references")
+    if source_path:
+        basename = "robots.txt" if source_path.endswith("robots.txt") else "sitemap.xml" if source_path.endswith("sitemap.xml") else ""
+        expected_type = "MISSING_ROBOTS" if basename == "robots.txt" else "MISSING_SITEMAP"
+        expected_capability = "site_metadata.robots" if basename == "robots.txt" else "site_metadata.sitemap"
+        if (not basename or expected_type not in issue_types or expected_capability not in required_capabilities
+                or __import__("urllib.parse", fromlist=["urlsplit"]).urlsplit(target_url).path != f"/{basename}"):
+            raise ValueError("Technical crawl evidence does not authorize this exact robots/sitemap target")
+    elif ("content.prepare" not in required_capabilities or target_url not in issue_urls
+            or not any(ref.get("url") == target_url and ref.get("type") in {"MISSING_TITLE", "DUPLICATE_TITLE",
+                "MISSING_DESCRIPTION", "DUPLICATE_DESCRIPTION"} for ref in issue_refs)):
+        raise ValueError("Technical crawl evidence does not cite an exact supported Payload metadata target")
+    page_ids: list[str] = []
+    for ref in page_refs:
+        if not isinstance(ref, Mapping):
+            raise ValueError("Technical evidence contains a malformed audit page reference")
+        if set(ref) != {"id", "url", "statusCode", "title", "description", "canonical", "h1Count", "wordCount",
+                "contentScore", "hasSchema", "indexable"}:
+            raise ValueError("Technical audit page reference has unsupported fields")
+        identity, url = ref.get("id"), ref.get("url")
+        if (not isinstance(identity, str) or not identity or not isinstance(url, str) or origin(url) != origin(canonical_origin)
+                or isinstance(ref.get("statusCode"), bool) or not isinstance(ref.get("statusCode"), int)
+                or isinstance(ref.get("h1Count"), bool) or not isinstance(ref.get("h1Count"), int) or ref["h1Count"] < 0
+                or isinstance(ref.get("wordCount"), bool) or not isinstance(ref.get("wordCount"), int) or ref["wordCount"] < 0
+                or isinstance(ref.get("contentScore"), bool) or not isinstance(ref.get("contentScore"), int)
+                or not 0 <= ref["contentScore"] <= 100 or not isinstance(ref.get("hasSchema"), bool)
+                or not isinstance(ref.get("indexable"), bool)
+                or any(ref.get(key) is not None and not isinstance(ref.get(key), str)
+                    for key in ("title", "description", "canonical"))):
+            raise ValueError("Technical audit page reference is malformed or outside the canonical site")
+        page_ids.append(identity)
+        sources.append({"id": f"crawl_page:{crawl_id}:{identity}", "sourceKind": "crawl_page", "sourceRef": url,
+            "url": url, "title": f"Crawl page observation · HTTP {ref.get('statusCode')}",
+            "observedAt": completed_at, "crawlId": crawl_id})
+    if len(set(page_ids)) != len(page_ids):
+        raise ValueError("Technical evidence contains duplicate audit page references")
+    fingerprint = hashlib.sha256(json.dumps({"siteId": site_id, "crawlId": crawl_id,
+        "issueIds": sorted(issue_ids)}, sort_keys=False, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+    if technical.get("sourceFingerprint") != fingerprint:
+        raise ValueError("Technical evidence source fingerprint does not match its exact issue references")
+    return sources
+
+
 def _execute_crawlseo_preparation(
     context: Mapping[str, Any], remote: Mapping[str, Any], binding: Mapping[str, Any],
     *, site_id: str, generation: int,
@@ -1088,6 +1212,10 @@ def _execute_crawlseo_preparation(
         parsed_target = __import__("urllib.parse", fromlist=["urlsplit"]).urlsplit(target_url)
         identity = target.get("connectorIdentity") if isinstance(target.get("connectorIdentity"), Mapping) else {}
         required = remote.get("requiredCapabilities") if isinstance(remote.get("requiredCapabilities"), list) else []
+        snapshot_result = service.connector_context(site_id)
+        snapshot = snapshot_result.get("snapshot") if isinstance(snapshot_result, Mapping) else None
+        if not isinstance(snapshot, Mapping):
+            raise ValueError("Current canonical connector context is required before preparing this Action")
         source_path = str(identity.get("path") or "") if identity.get("kind") == "source_file" else ""
         if source_path:
             from ..frontend_ownership import is_crawl_metadata_path
@@ -1106,7 +1234,6 @@ def _execute_crawlseo_preparation(
         if (not target_url or parsed_target.username or parsed_target.password or parsed_target.query or parsed_target.fragment
                 or (not source_path and selected is None)):
             raise ValueError("The Action target is no longer an exact current canonical Payload route")
-        snapshot = service.connector_context(site_id).get("snapshot")
         snapshot_origin = str(snapshot.get("canonicalOrigin") or "") if isinstance(snapshot, Mapping) else ""
         parsed_origin = __import__("urllib.parse", fromlist=["urlsplit"]).urlsplit(snapshot_origin)
         if (not snapshot_origin or parsed_target.scheme.lower() != parsed_origin.scheme.lower()
@@ -1125,14 +1252,20 @@ def _execute_crawlseo_preparation(
                 and str(row.get("id") or "") == str(selected.get("document", {}).get("id") or "")), None)
             if not snap_row or snap_row.get("documentHash") != current_hash:
                 raise ValueError("The current Payload document changed since CrawlSEO's inventory snapshot; reassessment is required")
-        sources = remote.get("evidence") if isinstance(remote.get("evidence"), list) else []
-        if not sources:
-            raise ValueError("The Action has no linked evidence sources")
-        for source in sources:
-            if not isinstance(source, Mapping):
-                raise ValueError("The Action contains malformed evidence")
-            if not _crawlseo_evidence_freshness_valid(source.get("freshnessDays"), source.get("recencyLimitDays")):
-                raise ValueError("The Action evidence is stale or has no verifiable freshness limit")
+        technical_mode = isinstance(remote.get("technicalEvidence"), Mapping)
+        if technical_mode:
+            sources = _technical_crawl_evidence_sources(remote, site_id=site_id, context_snapshot=snapshot,
+                target_url=target_url, source_path=source_path, required_capabilities=required,
+                now=datetime.datetime.now(datetime.timezone.utc))
+        else:
+            sources = remote.get("evidence") if isinstance(remote.get("evidence"), list) else []
+            if not sources:
+                raise ValueError("The Action has no linked evidence sources")
+            for source in sources:
+                if not isinstance(source, Mapping):
+                    raise ValueError("The Action contains malformed evidence")
+                if not _crawlseo_evidence_freshness_valid(source.get("freshnessDays"), source.get("recencyLimitDays")):
+                    raise ValueError("The Action evidence is stale or has no verifiable freshness limit")
         source_binding = {"siteId": site_id, "actionId": action_id, "actionRevision": revision,
             "generation": generation, "candidateRef": f"{'source' if source_path else 'payload'}-growth:{action_id}:{revision}:{generation}",
             "reviewUrl": str(context.get("config", {}).get("site", {}).get("payload", {}).get("url") or "").rstrip("/") + "/admin",
@@ -1146,7 +1279,7 @@ def _execute_crawlseo_preparation(
             "requiredSources": [str(source.get("id")) for source in sources if source.get("id")],
             "collection": selected["collection"] if selected else None,
             "documentId": str(selected["document"]["id"]) if selected else None,
-            "metric": "gsc.clicks", "whyAction": action_id,
+            "metric": "technical.crawl_issue_count" if technical_mode else "gsc.clicks", "whyAction": action_id,
             **({"allowedPaths": [source_path]} if source_path else {}),
             "crawlseoBinding": source_binding,
         }
@@ -1167,8 +1300,11 @@ def _execute_crawlseo_preparation(
         material = {"authority": "crawlseo", "action": dict(remote), "inventory": inventory, "sources": sources}
         manifest = {"schemaVersion": 1, "runId": run["run_id"], "runKey": run_key,
             "goalRevision": int(goal["revision"]), "originRevision": policy.origin_revision,
-            "sources": [{"id": source.get("id"), "sourceRef": source.get("url"), "state": "ready",
-                "observedAt": source.get("observedAt"), "retrievedAt": source.get("retrievedAt")} for source in sources],
+            "sources": [{"id": source.get("id"), "sourceRef": source.get("sourceRef") or source.get("url"), "state": "ready",
+                "observedAt": source.get("observedAt"), "retrievedAt": source.get("retrievedAt"),
+                **({"sourceKind": source.get("sourceKind"), "crawlId": source.get("crawlId"),
+                   "issueType": source.get("issueType"), "severity": source.get("severity")} if source.get("sourceKind") else {})}
+                for source in sources],
             "materialHash": "sha256:" + hashlib.sha256(json.dumps(material, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()}
         manifest_hash = "sha256:" + hashlib.sha256(json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
         artifact = next((row for row in memory.list_artifacts(kind=ArtifactKind.GROWTH_EVIDENCE.value, limit=500)
@@ -1561,6 +1697,7 @@ def _persist_action_crawlseo_events(memory: Any, service: Any, events: Any, acti
 
 def _sync_crawlseo_actions(context: Mapping[str, Any]) -> dict[str, Any]:
     """Synchronize remote Actions into HelloAda's one owner task projection."""
+    require_connector_dispatch_enabled(context["memory"])
     service = context.get("crawlseo_service")
     if service is None:
         raise RuntimeError("CrawlSEO is the configured research authority, but its connector is unavailable")
@@ -1828,6 +1965,8 @@ def _run_monthly_research(context: dict[str, Any], detail: dict[str, Any]) -> di
     wrapper never creates a second research request or infers success from a
     saved snapshot.
     """
+    if producer_frozen(context.get("memory")):
+        raise RuntimeError("Local research and recommendation producers are frozen for CrawlSEO migration")
     if _crawlseo_authoritative(context.get("config") or {}):
         raise RuntimeError("Local monthly research is disabled while CrawlSEO is the research authority")
     from ..brain import seo as brain_seo
@@ -1923,6 +2062,8 @@ def run_growth_cycle(
     from .growth_candidates import prepare_payload_candidate, queue_source_candidate
 
     memory, config = context["memory"], context["config"]
+    if trigger != "crawlseo_action" and producer_frozen(memory):
+        raise RuntimeError("Local research and recommendation producers are frozen for CrawlSEO migration")
     if _crawlseo_authoritative(config) and trigger != "crawlseo_action":
         raise RuntimeError("Local Growth discovery is disabled while CrawlSEO is the research authority")
     policy, goal = GrowthPolicy.from_config(config), ensure_default_goal(memory)
@@ -2026,11 +2167,6 @@ def run_growth_cycle(
             detail["articleResearch"] = _queue_article_research(context)
             run = advance(phase="assessing", detail=detail)
         if trigger == "monthly":
-            if material.get("authority") == "crawlseo":
-                detail["remoteActions"] = material.get("actions", [])
-                detail["note"] = "Recommendations and owner decisions are synchronized from CrawlSEO. HelloAda retains execution and publication controls."
-                return advance(phase="complete", status="complete", detail=detail, completed=True,
-                    lease_owner=None, lease_until=None, next_due_ts=None)
             research_detail = _run_monthly_research(context, detail)
             status = str(research_detail.get("status") or "pending")
             if status in {"completed", "partial"}:
@@ -2358,7 +2494,9 @@ def reconcile_historical_noop_initiatives(memory: Memory) -> int:
 def run_pending_growth(context: dict[str, Any], *, recover_interrupted_runs: bool = False) -> None:
     memory = context["memory"]
     crawlseo_authoritative = _crawlseo_authoritative(context.get("config") or {})
+    frozen = producer_frozen(memory)
     if crawlseo_authoritative:
+        require_connector_dispatch_enabled(memory)
         try:
             # The hourly canonical Growth worker also drains connector events
             # and replays durable execution reports after transient failures.
@@ -2370,6 +2508,15 @@ def run_pending_growth(context: dict[str, Any], *, recover_interrupted_runs: boo
                 "error": str(exc)[:500],
             })
     else:
+        if frozen:
+            # Keep recording-only and exact-receipt reconciliation alive, but
+            # do not enqueue or replay local discovery/preparation work.
+            from .growth_candidates import reconcile_payload_growth_revisions
+            from .growth_delivery import reconcile_delivery
+
+            reconcile_delivery(context)
+            reconcile_payload_growth_revisions(context)
+            return
         from .growth_candidates import reconcile_payload_growth_revisions, reconcile_source_candidates
         from .growth_delivery import reconcile_delivery
 

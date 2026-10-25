@@ -18,6 +18,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from ..credentials import cloudflare_env_names, credential_environment, credential_profile
+from ..hands.crawlseo_connector_credentials import load_connector_environment, load_connector_runtime_environment
 from ..hands.cloudflare_worker import CloudflareWorkerError, CloudflareWorkerSecretsClient
 from ..hands.crawlseo_provisioning import CrawlSEOProvisioningError
 from .site_origin import SiteOriginError, normalize_site_origin, origins_equal
@@ -115,6 +116,10 @@ def load_tenant_environment(config: Mapping[str, Any], env: Mapping[str, str] | 
                     resolved[name.strip()] = value.strip()
         except (OSError, UnicodeError):
             pass
+    # Keep the narrowly managed connector credential separate from, and
+    # authoritative over, the legacy CrawlSEO MCP credential file.
+    resolved.update(load_connector_environment(config))
+    resolved.update(load_connector_runtime_environment(config))
     return resolved
 
 

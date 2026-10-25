@@ -18,6 +18,7 @@ from ..application.crawlseo import CrawlSEORequestNotDispatched
 from ..config import crawlseo_research_authority_selected, primary_research_locale
 from ..application.growth_budget import GrowthBudgetBlocked, get_paid_research_reservation, mark_paid_research_uncertain, release_paid_research, reserve_paid_research, settle_paid_research
 from ..core.llm import extract_json
+from ..core.research_authority import producer_frozen, require_research_producers_enabled
 from . import article as brain_article
 
 
@@ -365,6 +366,11 @@ def _request_selected_idea(context: Mapping[str, Any], row: Mapping[str, Any], i
             reservation = reserve_paid_research(context, idempotency_key=idempotency_key, operation="article_keyword_overview", detail={"idea_id": row["id"], "cycle_key": row["cycle_key"]})
             reservation_id = str(reservation["reservation_id"])
             row = memory.update_article_idea(int(row["id"]), keyword_budget_reservation_id=reservation_id) or row
+        if producer_frozen(memory):
+            release_paid_research(context, reservation_id, reason="CrawlSEO migration freeze activated before article keyword request dispatch")
+            memory.update_article_idea(int(row["id"]), status="blocked", error="CrawlSEO migration freeze activated before provider dispatch")
+            memory.record_action("article_research", f"idea #{row['id']}: blocked before provider dispatch by CrawlSEO migration freeze")
+            return
         response = service.request_article_keyword_research(
             idea_key=str(row["cycle_key"]),
             idea_summary=idea_summary,
@@ -440,6 +446,7 @@ def _paid_retry_requires_owner_approval(row: Mapping[str, Any]) -> bool:
 
 
 def select_and_request(context: dict[str, Any]) -> None:
+    require_research_producers_enabled(context.get("memory"))
     config = context["config"]
     memory = context["memory"]
     if crawlseo_research_authority_selected(config):
@@ -629,7 +636,8 @@ def _serp_evidence(result: Any) -> dict[str, Any]:
     }
 
 
-def _poll_run(service: Any, run_id: str) -> tuple[str, Any]:
+def _poll_run(context: Mapping[str, Any], service: Any, run_id: str) -> tuple[str, Any]:
+    require_research_producers_enabled(context.get("memory"))
     status = service.article_keyword_research_status(run_id)
     value = str(status.get("status") or "").lower()
     return value, status
@@ -656,11 +664,15 @@ def _draft_from_idea(context: dict[str, Any], idea: Mapping[str, Any]) -> int:
 
 def _reconcile_overview(context: dict[str, Any], idea: Mapping[str, Any], service: Any, llm: Any) -> None:
     memory = context["memory"]
+    if producer_frozen(memory):
+        return
     run_id = str(idea.get("research_run_id") or "")
     if not run_id:
         memory.update_article_idea(idea["id"], status="failed", error="missing keyword overview run ID")
         return
-    value, status = _poll_run(service, run_id)
+    if producer_frozen(memory):
+        return
+    value, status = _poll_run(context, service, run_id)
     if value in {"requested", "attempting"}:
         return
     if value in {"failed", "uncertain"}:
@@ -677,6 +689,8 @@ def _reconcile_overview(context: dict[str, Any], idea: Mapping[str, Any], servic
         memory.record_action("article_research", f"idea #{idea['id']}: no draft after {value} keyword overview")
         return
     if value != "completed":
+        return
+    if producer_frozen(memory):
         return
     payload = service.article_keyword_research(run_id)
     result = payload.get("result") if isinstance(payload.get("result"), list) else []
@@ -740,6 +754,11 @@ def _reconcile_overview(context: dict[str, Any], idea: Mapping[str, Any], servic
             reservation = reserve_paid_research(context, idempotency_key=serp_key, operation="article_serp_snapshot", detail={"idea_id": idea["id"], "query": selected_query})
             serp_reservation_id = str(reservation["reservation_id"])
             memory.update_article_idea(idea["id"], serp_budget_reservation_id=serp_reservation_id)
+        if producer_frozen(memory):
+            release_paid_research(context, serp_reservation_id, reason="CrawlSEO migration freeze activated before article SERP request dispatch")
+            memory.update_article_idea(idea["id"], status="blocked", error="CrawlSEO migration freeze activated before provider dispatch")
+            memory.record_action("article_research", f"idea #{idea['id']}: SERP blocked before provider dispatch by CrawlSEO migration freeze")
+            return
         response = service.request_article_serp_research(
             parent_run_id=run_id,
             keyword=selected_query,
@@ -779,9 +798,13 @@ def _reconcile_overview(context: dict[str, Any], idea: Mapping[str, Any], servic
 
 def _reconcile_serp(context: dict[str, Any], idea: Mapping[str, Any], service: Any, llm: Any) -> None:
     memory = context["memory"]
+    if producer_frozen(memory):
+        return
     serp_run_id = str(idea.get("serp_run_id") or "")
     if not serp_run_id:
         memory.update_article_idea(idea["id"], status="failed", error="missing SERP run ID")
+        return
+    if producer_frozen(memory):
         return
     status = service.article_serp_research_status(serp_run_id)
     value = str(status.get("status") or "").lower()
@@ -801,6 +824,8 @@ def _reconcile_serp(context: dict[str, Any], idea: Mapping[str, Any], service: A
         memory.record_action("article_research", f"idea #{idea['id']}: no draft after {value} SERP research")
         return
     if value != "completed":
+        return
+    if producer_frozen(memory):
         return
     payload = service.article_serp_research(serp_run_id)
     serp_cost = payload.get("cost_micros") if payload.get("cost_micros") is not None else status.get("cost_micros")
@@ -875,6 +900,7 @@ def _reconcile_local_draft(context: dict[str, Any], idea: Mapping[str, Any], mem
 
 
 def reconcile(context: dict[str, Any]) -> None:
+    require_research_producers_enabled(context.get("memory"))
     config = context["config"]
     memory = context["memory"]
     if crawlseo_research_authority_selected(config):

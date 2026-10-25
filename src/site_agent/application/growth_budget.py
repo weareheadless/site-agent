@@ -72,6 +72,30 @@ def _local_reservation(context: Mapping[str, Any], reservation_id: str) -> dict[
 def reserve_paid_research(context: Mapping[str, Any], *, idempotency_key: str, operation: str, detail: Mapping[str, Any] | None = None) -> dict[str, Any]:
     memory = context["memory"]
     config = context.get("config") if isinstance(context.get("config"), Mapping) else {}
+    # CrawlSEO authority activation currently has no verified legacy-budget
+    # import path. Remote configured allowance alone is not evidence that the
+    # prior policy was reviewed and transferred. The migration coordinator
+    # writes this durable hold only for tenants crossing the guarded cutover;
+    # already-authoritative tenants retain their existing budget behavior.
+    providers = config.get("providers") if isinstance(config.get("providers"), Mapping) else {}
+    crawlseo = providers.get("crawlseo") if isinstance(providers.get("crawlseo"), Mapping) else {}
+    hold_getter = getattr(memory, "kv_get", None)
+    paid_hold = hold_getter("crawlseo_activation:paid_dispatch_hold", None) if callable(hold_getter) else None
+    if crawlseo.get("research_authority") == "crawlseo" and paid_hold is not None:
+        imported = False
+        if isinstance(paid_hold, Mapping) and paid_hold.get("active") is False:
+            receipt_id = paid_hold.get("importReceiptId")
+            receipts = getattr(memory, "crawlseo_migration_receipts", None)
+            if isinstance(receipt_id, str) and receipt_id.startswith("sha256:") and callable(receipts):
+                imported = any(
+                    isinstance(receipt, Mapping)
+                    and receipt.get("type") == "crawlseo_paid_policy_import"
+                    and receipt.get("state") == "imported"
+                    and receipt.get("receiptId") == receipt_id
+                    for receipt in receipts()
+                )
+        if not imported:
+            raise GrowthBudgetBlocked("CrawlSEO paid policy import is not implemented; paid research was not dispatched")
     idempotency_key = str(idempotency_key or "").strip()
     if not idempotency_key:
         raise ContractError("paid research idempotency key is required")

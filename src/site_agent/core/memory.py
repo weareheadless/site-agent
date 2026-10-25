@@ -78,7 +78,7 @@ from .incubation_contracts import (
 
 _OPERATION_FIELD_UNSET = object()
 
-SCHEMA_VERSION = 55
+SCHEMA_VERSION = 59
 
 MIGRATIONS: dict[int, list[str]] = {
     1: [
@@ -1206,6 +1206,40 @@ MIGRATIONS: dict[int, list[str]] = {
         )""",
         "CREATE INDEX IF NOT EXISTS idx_crawlseo_event_inbox_disposition ON crawlseo_event_inbox (disposition, sequence)",
     ],
+    56: [
+        """CREATE TABLE crawlseo_migration_receipts (
+            receipt_id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE, receipt_json TEXT NOT NULL,
+            created_ts TEXT NOT NULL
+        )""",
+        """CREATE TABLE crawlseo_migration_current (
+            resolution_type TEXT PRIMARY KEY, receipt_id TEXT NOT NULL REFERENCES crawlseo_migration_receipts(receipt_id)
+        )""",
+        "CREATE TRIGGER crawlseo_migration_receipts_no_update BEFORE UPDATE ON crawlseo_migration_receipts BEGIN SELECT RAISE(ABORT, 'migration receipts are immutable'); END",
+        "CREATE TRIGGER crawlseo_migration_receipts_no_delete BEFORE DELETE ON crawlseo_migration_receipts BEGIN SELECT RAISE(ABORT, 'migration receipts are immutable'); END",
+    ],
+    57: [
+        """CREATE TABLE crawlseo_migration_freeze_receipts (
+            receipt_id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE, receipt_json TEXT NOT NULL,
+            created_ts TEXT NOT NULL
+        )""",
+        "CREATE TRIGGER crawlseo_migration_freeze_no_update BEFORE UPDATE ON crawlseo_migration_freeze_receipts BEGIN SELECT RAISE(ABORT, 'migration freeze receipts are immutable'); END",
+        "CREATE TRIGGER crawlseo_migration_freeze_no_delete BEFORE DELETE ON crawlseo_migration_freeze_receipts BEGIN SELECT RAISE(ABORT, 'migration freeze receipts are immutable'); END",
+    ],
+    58: [
+        """CREATE TABLE crawlseo_migration_route_receipts (
+            receipt_id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE, receipt_json TEXT NOT NULL,
+            created_ts TEXT NOT NULL
+        )""",
+        "CREATE TRIGGER crawlseo_migration_route_no_update BEFORE UPDATE ON crawlseo_migration_route_receipts BEGIN SELECT RAISE(ABORT, 'route verification receipts are immutable'); END",
+        "CREATE TRIGGER crawlseo_migration_route_no_delete BEFORE DELETE ON crawlseo_migration_route_receipts BEGIN SELECT RAISE(ABORT, 'route verification receipts are immutable'); END",
+    ],
+    59: [
+        """CREATE TABLE crawlseo_migration_freeze_verifications (
+            receipt_id TEXT PRIMARY KEY, request_id TEXT NOT NULL, receipt_json TEXT NOT NULL, created_ts TEXT NOT NULL
+        )""",
+        "CREATE TRIGGER crawlseo_migration_freeze_verifications_no_update BEFORE UPDATE ON crawlseo_migration_freeze_verifications BEGIN SELECT RAISE(ABORT, 'freeze verification receipts are immutable'); END",
+        "CREATE TRIGGER crawlseo_migration_freeze_verifications_no_delete BEFORE DELETE ON crawlseo_migration_freeze_verifications BEGIN SELECT RAISE(ABORT, 'freeze verification receipts are immutable'); END",
+    ],
 }
 
 
@@ -1292,6 +1326,166 @@ class Memory:
     def close(self) -> None:
         with self._lock:
             self.conn.close()
+
+    @_locked
+    def crawlseo_migration_receipts(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute("SELECT receipt_json FROM crawlseo_migration_receipts ORDER BY created_ts, receipt_id").fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    @_locked
+    def crawlseo_migration_current_receipt_ids(self) -> set[str]:
+        return {str(row[0]) for row in self.conn.execute("SELECT receipt_id FROM crawlseo_migration_current").fetchall()}
+
+    @_locked
+    def crawlseo_migration_current_receipts(self) -> dict[str, str]:
+        return {str(row[0]): str(row[1]) for row in self.conn.execute(
+            "SELECT resolution_type,receipt_id FROM crawlseo_migration_current").fetchall()}
+
+    @_locked
+    def persist_crawlseo_migration_receipt(self, receipt: dict[str, Any], *, validate_snapshot: Any = None) -> tuple[dict[str, Any], bool]:
+        """Append an immutable resolution receipt and atomically update its current pointer."""
+        request_id = receipt.get("operatorRequestId")
+        receipt_id = receipt.get("receiptId")
+        resolution_type = receipt.get("type")
+        if not all(isinstance(v, str) and v for v in (request_id, receipt_id, resolution_type)):
+            raise ContractError("migration receipt identity is incomplete")
+        encoded = json.dumps(receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            old = self.conn.execute("SELECT receipt_json FROM crawlseo_migration_receipts WHERE request_id=?", (request_id,)).fetchone()
+            if old:
+                saved = json.loads(old[0])
+                if saved != receipt:
+                    raise ContractError("operator request id already has a conflicting receipt")
+                self.conn.commit()
+                return saved, True
+            if validate_snapshot is not None:
+                # Re-read while holding both the instance lock and SQLite write lock;
+                # this closes the snapshot-to-receipt race for local inventory.
+                if validate_snapshot(self.crawlseo_migration_snapshot()) is not True:
+                    raise ContractError("migration inventory changed after preview; resolution is stale")
+            self.conn.execute("INSERT INTO crawlseo_migration_receipts(receipt_id,request_id,receipt_json,created_ts) VALUES(?,?,?,?)",
+                              (receipt_id, request_id, encoded, _now()))
+            current_keys = receipt.get("currentKeys") or [resolution_type]
+            for current_key in current_keys:
+                self.conn.execute("INSERT INTO crawlseo_migration_current(resolution_type,receipt_id) VALUES(?,?) ON CONFLICT(resolution_type) DO UPDATE SET receipt_id=excluded.receipt_id",
+                                  (str(current_key), receipt_id))
+            self.conn.commit()
+            return dict(receipt), False
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    @_locked
+    def request_crawlseo_producer_freeze(self, receipt: dict[str, Any], *, validate_snapshot: Any) -> tuple[dict[str, Any], bool]:
+        """CAS local migration inventory and persist an irreversible producer freeze request."""
+        request_id = receipt.get("operatorRequestId")
+        receipt_id = receipt.get("receiptId")
+        if not isinstance(request_id, str) or not isinstance(receipt_id, str):
+            raise ContractError("producer freeze receipt identity is incomplete")
+        encoded = json.dumps(receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.conn.execute("SELECT receipt_json FROM crawlseo_migration_freeze_receipts WHERE request_id=?", (request_id,)).fetchone()
+            if row:
+                saved = json.loads(row[0])
+                if saved != receipt:
+                    raise ContractError("operator request id already has a conflicting producer freeze receipt")
+                self.conn.commit()
+                return saved, True
+            if validate_snapshot(self.crawlseo_migration_snapshot()) is not True:
+                raise ContractError("migration inventory changed before producer freeze; refresh the plan")
+            self.conn.execute("INSERT INTO crawlseo_migration_freeze_receipts(receipt_id,request_id,receipt_json,created_ts) VALUES(?,?,?,?)",
+                              (receipt_id, request_id, encoded, _now()))
+            self.conn.execute("INSERT INTO kv(key,value) VALUES('crawlseo_migration:producer_freeze',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                              (json.dumps({"active": True, "receiptId": receipt_id, "operatorRequestId": request_id}, sort_keys=True),))
+            self.conn.commit()
+            return dict(receipt), False
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    @_locked
+    def crawlseo_producer_freeze_status(self) -> dict[str, Any]:
+        value = self.kv_get("crawlseo_migration:producer_freeze", {})
+        return value if isinstance(value, dict) else {}
+
+    @_locked
+    def crawlseo_producer_freeze_receipt(self, request_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT receipt_json FROM crawlseo_migration_freeze_receipts WHERE request_id=?", (request_id,)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    @_locked
+    def record_crawlseo_producer_freeze_verification(self, receipt: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+        request_id, receipt_id = receipt.get("operatorRequestId"), receipt.get("receiptId")
+        if not isinstance(request_id, str) or not isinstance(receipt_id, str):
+            raise ContractError("producer freeze verification identity is incomplete")
+        encoded = json.dumps(receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            prior = self.conn.execute("SELECT receipt_json FROM crawlseo_migration_freeze_verifications WHERE receipt_id=?", (receipt_id,)).fetchone()
+            if prior:
+                saved = json.loads(prior[0])
+                if {k: v for k, v in saved.items() if k != "verifiedAt"} != {k: v for k, v in receipt.items() if k != "verifiedAt"}:
+                    raise ContractError("producer freeze verification id has conflicting evidence")
+                self.conn.commit()
+                return saved, True
+            state = self.crawlseo_producer_freeze_status()
+            if state.get("active") is not True or state.get("operatorRequestId") != request_id:
+                raise ContractError("producer freeze request is no longer current")
+            self.conn.execute("INSERT INTO crawlseo_migration_freeze_verifications(receipt_id,request_id,receipt_json,created_ts) VALUES(?,?,?,?)",
+                              (receipt_id, request_id, encoded, _now()))
+            state.update({"registrationsVerified": True, "verificationReceiptId": receipt_id,
+                          "registeredJobs": receipt.get("registeredJobs", []), "pendingDrain": receipt.get("pendingDrain", True),
+                          "pendingDrainReasons": receipt.get("pendingDrainReasons", [])})
+            self.conn.execute("UPDATE kv SET value=? WHERE key='crawlseo_migration:producer_freeze'",
+                              (json.dumps(state, sort_keys=True),))
+            self.conn.commit()
+            return dict(receipt), False
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    @_locked
+    def crawlseo_producer_freeze_verifications(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute("SELECT receipt_json FROM crawlseo_migration_freeze_verifications ORDER BY created_ts, receipt_id").fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    @_locked
+    def persist_crawlseo_route_verification(self, receipt: dict[str, Any], *, validate_snapshot: Any) -> tuple[dict[str, Any], bool]:
+        """Append a successful observed-route proof after a local-state CAS."""
+        request_id, receipt_id = receipt.get("operatorRequestId"), receipt.get("receiptId")
+        if not isinstance(request_id, str) or not isinstance(receipt_id, str):
+            raise ContractError("route verification receipt identity is incomplete")
+        encoded = json.dumps(receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.conn.execute("SELECT receipt_json FROM crawlseo_migration_route_receipts WHERE request_id=?", (request_id,)).fetchone()
+            if row:
+                saved = json.loads(row[0])
+                if saved != receipt:
+                    raise ContractError("operator request id already has a conflicting route verification receipt")
+                self.conn.commit()
+                return saved, True
+            if validate_snapshot(self.crawlseo_migration_snapshot()) is not True:
+                raise ContractError("local migration inventory changed before route verification was persisted")
+            self.conn.execute("INSERT INTO crawlseo_migration_route_receipts(receipt_id,request_id,receipt_json,created_ts) VALUES(?,?,?,?)",
+                              (receipt_id, request_id, encoded, _now()))
+            self.conn.commit()
+            return dict(receipt), False
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    @_locked
+    def crawlseo_migration_route_receipts(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute("SELECT receipt_json FROM crawlseo_migration_route_receipts ORDER BY rowid").fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    @_locked
+    def crawlseo_migration_route_receipt(self, request_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT receipt_json FROM crawlseo_migration_route_receipts WHERE request_id=?", (request_id,)).fetchone()
+        return json.loads(row[0]) if row else None
 
     @contextmanager
     def article_draft_lifecycle(self):

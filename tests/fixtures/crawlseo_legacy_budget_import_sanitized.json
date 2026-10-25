@@ -1,0 +1,440 @@
+{
+  "plan": {
+    "siteId": "target-site-fixture",
+    "projectId": "target-project-fixture",
+    "crawlseo": {
+      "projectId": "target-project-fixture",
+      "binding": {
+        "siteId": "target-site-fixture",
+        "projectId": "target-project-fixture",
+        "status": "active",
+        "executor": "helloada",
+        "generation": 7
+      }
+    },
+    "legacyPolicy": {
+      "monthlyResearchCapMicros": "700000",
+      "effectiveMonthlyAllowanceMicros": "700000",
+      "timezone": "UTC",
+      "researchAuthority": "local"
+    },
+    "inventory": {
+      "budgetReservations": {
+        "total": 7,
+        "truncated": false,
+        "items": [
+          {
+            "reservation_id": "growth-budget-fixture-01",
+            "period": "2026-10",
+            "amount_micros": "100000",
+            "currency": "USD",
+            "operation": "article_keyword_overview",
+            "status": "settled",
+            "provider_task_id": "cmu-fixture-run-01",
+            "created_ts": "2026-10-06T14:05:15+00:00",
+            "updated_ts": "2026-10-06T14:05:17+00:00",
+            "settled_ts": "2026-10-06T14:05:17+00:00",
+            "recorded_actual_cost_micros": null
+          },
+          {
+            "reservation_id": "growth-budget-fixture-02",
+            "period": "2026-10",
+            "amount_micros": "100000",
+            "currency": "USD",
+            "operation": "article_serp_snapshot",
+            "status": "settled",
+            "provider_task_id": "cmu-fixture-run-02",
+            "created_ts": "2026-10-07T13:35:15+00:00",
+            "updated_ts": "2026-10-07T13:35:16+00:00",
+            "settled_ts": "2026-10-07T13:35:16+00:00",
+            "recorded_actual_cost_micros": null
+          },
+          {
+            "reservation_id": "growth-budget-fixture-03",
+            "period": "2026-10",
+            "amount_micros": "100000",
+            "currency": "USD",
+            "operation": "article_keyword_overview",
+            "status": "settled",
+            "provider_task_id": "cmu-fixture-run-03",
+            "created_ts": "2026-10-13T09:08:04+00:00",
+            "updated_ts": "2026-10-13T09:08:06+00:00",
+            "settled_ts": "2026-10-13T09:08:06+00:00",
+            "recorded_actual_cost_micros": null
+          },
+          {
+            "reservation_id": "growth-budget-fixture-04",
+            "period": "2026-10",
+            "amount_micros": "100000",
+            "currency": "USD",
+            "operation": "article_serp_snapshot",
+            "status": "settled",
+            "provider_task_id": "cmu-fixture-run-04",
+            "created_ts": "2026-10-13T13:34:13+00:00",
+            "updated_ts": "2026-10-13T13:34:14+00:00",
+            "settled_ts": "2026-10-13T13:34:14+00:00",
+            "recorded_actual_cost_micros": null
+          },
+          {
+            "reservation_id": "growth-budget-fixture-05",
+            "period": "2026-10",
+            "amount_micros": "100000",
+            "currency": "USD",
+            "operation": "article_keyword_overview",
+            "status": "settled",
+            "provider_task_id": "cmu-fixture-run-05",
+            "created_ts": "2026-10-17T00:29:56+00:00",
+            "updated_ts": "2026-10-17T00:30:00+00:00",
+            "settled_ts": "2026-10-17T00:30:00+00:00",
+            "recorded_actual_cost_micros": null
+          },
+          {
+            "reservation_id": "growth-budget-fixture-06",
+            "period": "2026-10",
+            "amount_micros": "100000",
+            "currency": "USD",
+            "operation": "article_keyword_overview",
+            "status": "settled",
+            "provider_task_id": "cmu-fixture-run-06",
+            "created_ts": "2026-10-23T16:07:55+00:00",
+            "updated_ts": "2026-10-23T16:07:57+00:00",
+            "settled_ts": "2026-10-23T16:07:57+00:00",
+            "recorded_actual_cost_micros": null
+          },
+          {
+            "reservation_id": "growth-budget-fixture-07",
+            "period": "2026-10",
+            "amount_micros": "100000",
+            "currency": "USD",
+            "operation": "article_serp_snapshot",
+            "status": "settled",
+            "provider_task_id": "cmu-fixture-run-07",
+            "created_ts": "2026-10-23T16:50:23+00:00",
+            "updated_ts": "2026-10-23T16:50:24+00:00",
+            "settled_ts": "2026-10-23T16:50:24+00:00",
+            "recorded_actual_cost_micros": null
+          }
+        ]
+      },
+      "articleIdeas": {
+        "total": 4,
+        "truncated": false,
+        "items": [
+          {
+            "id": 10,
+            "status": "drafted",
+            "research_run_id": "cmu-fixture-run-01",
+            "serp_run_id": "cmu-fixture-run-02",
+            "keyword_budget_reservation_id": "growth-budget-fixture-01",
+            "serp_budget_reservation_id": "growth-budget-fixture-02",
+            "provider_task_id": "10000000-0000-4000-8000-000000000001"
+          },
+          {
+            "id": 11,
+            "status": "drafted",
+            "research_run_id": "cmu-fixture-run-03",
+            "serp_run_id": "cmu-fixture-run-04",
+            "keyword_budget_reservation_id": "growth-budget-fixture-03",
+            "serp_budget_reservation_id": "growth-budget-fixture-04",
+            "provider_task_id": "10000000-0000-4000-8000-000000000003"
+          },
+          {
+            "id": 9,
+            "status": "held",
+            "research_run_id": "cmu-fixture-run-05",
+            "serp_run_id": null,
+            "keyword_budget_reservation_id": "growth-budget-fixture-05",
+            "serp_budget_reservation_id": null,
+            "provider_task_id": "10000000-0000-4000-8000-000000000005"
+          },
+          {
+            "id": 12,
+            "status": "failed",
+            "research_run_id": "cmu-fixture-run-06",
+            "serp_run_id": "cmu-fixture-run-07",
+            "keyword_budget_reservation_id": "growth-budget-fixture-06",
+            "serp_budget_reservation_id": "growth-budget-fixture-07",
+            "provider_task_id": "10000000-0000-4000-8000-000000000006"
+          }
+        ]
+      }
+    }
+  },
+  "receipt": {
+    "id": "fixture-import-receipt-01",
+    "sourceProjectId": "legacy-source-project-fixture",
+    "sourceSiteId": "legacy-source-site-fixture",
+    "targetProjectId": "target-project-fixture",
+    "targetSiteId": "target-site-fixture",
+    "sourceEvidenceHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "snapshot": {
+      "source": {
+        "projectId": "legacy-source-project-fixture",
+        "siteId": "legacy-source-site-fixture",
+        "currency": "USD"
+      },
+      "target": {
+        "projectId": "target-project-fixture",
+        "siteId": "target-site-fixture",
+        "currency": "USD",
+        "bindingExecutor": "helloada",
+        "bindingGeneration": 7,
+        "bindingStatus": "ACTIVE"
+      },
+      "rows": [
+        {
+          "input": {
+            "localReservationId": "growth-budget-fixture-01",
+            "taskId": "cmu-fixture-run-01",
+            "operation": "dataforseo:article_keyword_overview",
+            "legacyStatus": "settled",
+            "period": "2026-10",
+            "timeZone": "UTC",
+            "currency": "USD",
+            "amountMicros": "100000",
+            "createdAt": "2026-10-06T14:05:15+00:00",
+            "updatedAt": "2026-10-06T14:05:17+00:00",
+            "settledAt": "2026-10-06T14:05:17+00:00"
+          },
+          "sourceTask": {
+            "id": "cmu-fixture-run-01",
+            "siteId": "legacy-source-site-fixture",
+            "projectId": "legacy-source-project-fixture",
+            "kind": "KEYWORD_OVERVIEW",
+            "status": "COMPLETED",
+            "providerTaskId": "10000000-0000-4000-8000-000000000001",
+            "costMicros": 12120,
+            "requestedAt": "2026-10-06T14:05:15+00:00",
+            "attemptedAt": "2026-10-06T14:05:15+00:00",
+            "completedAt": "2026-10-06T14:05:17+00:00",
+            "updatedAt": "2026-10-06T14:05:17+00:00"
+          },
+          "effective": {
+            "amountMicros": "100000",
+            "actualCostMicros": "12120",
+            "status": "SETTLED",
+            "createdAt": "2026-10-06T14:05:15+00:00",
+            "updatedAt": "2026-10-06T14:05:17+00:00",
+            "settledAt": "2026-10-06T14:05:17+00:00"
+          }
+        },
+        {
+          "input": {
+            "localReservationId": "growth-budget-fixture-02",
+            "taskId": "cmu-fixture-run-02",
+            "operation": "dataforseo:article_serp_snapshot",
+            "legacyStatus": "settled",
+            "period": "2026-10",
+            "timeZone": "UTC",
+            "currency": "USD",
+            "amountMicros": "100000",
+            "createdAt": "2026-10-07T13:35:15+00:00",
+            "updatedAt": "2026-10-07T13:35:16+00:00",
+            "settledAt": "2026-10-07T13:35:16+00:00"
+          },
+          "sourceTask": {
+            "id": "cmu-fixture-run-02",
+            "siteId": "legacy-source-site-fixture",
+            "projectId": "legacy-source-project-fixture",
+            "kind": "ORGANIC_SERP",
+            "status": "COMPLETED",
+            "providerTaskId": "10000000-0000-4000-8000-000000000002",
+            "costMicros": 12120,
+            "requestedAt": "2026-10-07T13:35:15+00:00",
+            "attemptedAt": "2026-10-07T13:35:15+00:00",
+            "completedAt": "2026-10-07T13:35:16+00:00",
+            "updatedAt": "2026-10-07T13:35:16+00:00"
+          },
+          "effective": {
+            "amountMicros": "100000",
+            "actualCostMicros": "12120",
+            "status": "SETTLED",
+            "createdAt": "2026-10-07T13:35:15+00:00",
+            "updatedAt": "2026-10-07T13:35:16+00:00",
+            "settledAt": "2026-10-07T13:35:16+00:00"
+          }
+        },
+        {
+          "input": {
+            "localReservationId": "growth-budget-fixture-03",
+            "taskId": "cmu-fixture-run-03",
+            "operation": "dataforseo:article_keyword_overview",
+            "legacyStatus": "settled",
+            "period": "2026-10",
+            "timeZone": "UTC",
+            "currency": "USD",
+            "amountMicros": "100000",
+            "createdAt": "2026-10-13T09:08:04+00:00",
+            "updatedAt": "2026-10-13T09:08:06+00:00",
+            "settledAt": "2026-10-13T09:08:06+00:00"
+          },
+          "sourceTask": {
+            "id": "cmu-fixture-run-03",
+            "siteId": "legacy-source-site-fixture",
+            "projectId": "legacy-source-project-fixture",
+            "kind": "KEYWORD_OVERVIEW",
+            "status": "COMPLETED",
+            "providerTaskId": "10000000-0000-4000-8000-000000000003",
+            "costMicros": 12120,
+            "requestedAt": "2026-10-13T09:08:04+00:00",
+            "attemptedAt": "2026-10-13T09:08:04+00:00",
+            "completedAt": "2026-10-13T09:08:06+00:00",
+            "updatedAt": "2026-10-13T09:08:06+00:00"
+          },
+          "effective": {
+            "amountMicros": "100000",
+            "actualCostMicros": "12120",
+            "status": "SETTLED",
+            "createdAt": "2026-10-13T09:08:04+00:00",
+            "updatedAt": "2026-10-13T09:08:06+00:00",
+            "settledAt": "2026-10-13T09:08:06+00:00"
+          }
+        },
+        {
+          "input": {
+            "localReservationId": "growth-budget-fixture-04",
+            "taskId": "cmu-fixture-run-04",
+            "operation": "dataforseo:article_serp_snapshot",
+            "legacyStatus": "settled",
+            "period": "2026-10",
+            "timeZone": "UTC",
+            "currency": "USD",
+            "amountMicros": "100000",
+            "createdAt": "2026-10-13T13:34:13+00:00",
+            "updatedAt": "2026-10-13T13:34:14+00:00",
+            "settledAt": "2026-10-13T13:34:14+00:00"
+          },
+          "sourceTask": {
+            "id": "cmu-fixture-run-04",
+            "siteId": "legacy-source-site-fixture",
+            "projectId": "legacy-source-project-fixture",
+            "kind": "ORGANIC_SERP",
+            "status": "COMPLETED",
+            "providerTaskId": "10000000-0000-4000-8000-000000000004",
+            "costMicros": 12120,
+            "requestedAt": "2026-10-13T13:34:13+00:00",
+            "attemptedAt": "2026-10-13T13:34:13+00:00",
+            "completedAt": "2026-10-13T13:34:14+00:00",
+            "updatedAt": "2026-10-13T13:34:14+00:00"
+          },
+          "effective": {
+            "amountMicros": "100000",
+            "actualCostMicros": "12120",
+            "status": "SETTLED",
+            "createdAt": "2026-10-13T13:34:13+00:00",
+            "updatedAt": "2026-10-13T13:34:14+00:00",
+            "settledAt": "2026-10-13T13:34:14+00:00"
+          }
+        },
+        {
+          "input": {
+            "localReservationId": "growth-budget-fixture-05",
+            "taskId": "cmu-fixture-run-05",
+            "operation": "dataforseo:article_keyword_overview",
+            "legacyStatus": "settled",
+            "period": "2026-10",
+            "timeZone": "UTC",
+            "currency": "USD",
+            "amountMicros": "100000",
+            "createdAt": "2026-10-17T00:29:56+00:00",
+            "updatedAt": "2026-10-17T00:30:00+00:00",
+            "settledAt": "2026-10-17T00:30:00+00:00"
+          },
+          "sourceTask": {
+            "id": "cmu-fixture-run-05",
+            "siteId": "legacy-source-site-fixture",
+            "projectId": "legacy-source-project-fixture",
+            "kind": "KEYWORD_OVERVIEW",
+            "status": "COMPLETED",
+            "providerTaskId": "10000000-0000-4000-8000-000000000005",
+            "costMicros": 12120,
+            "requestedAt": "2026-10-17T00:29:56+00:00",
+            "attemptedAt": "2026-10-17T00:29:56+00:00",
+            "completedAt": "2026-10-17T00:30:00+00:00",
+            "updatedAt": "2026-10-17T00:30:00+00:00"
+          },
+          "effective": {
+            "amountMicros": "100000",
+            "actualCostMicros": "12120",
+            "status": "SETTLED",
+            "createdAt": "2026-10-17T00:29:56+00:00",
+            "updatedAt": "2026-10-17T00:30:00+00:00",
+            "settledAt": "2026-10-17T00:30:00+00:00"
+          }
+        },
+        {
+          "input": {
+            "localReservationId": "growth-budget-fixture-06",
+            "taskId": "cmu-fixture-run-06",
+            "operation": "dataforseo:article_keyword_overview",
+            "legacyStatus": "settled",
+            "period": "2026-10",
+            "timeZone": "UTC",
+            "currency": "USD",
+            "amountMicros": "100000",
+            "createdAt": "2026-10-23T16:07:55+00:00",
+            "updatedAt": "2026-10-23T16:07:57+00:00",
+            "settledAt": "2026-10-23T16:07:57+00:00"
+          },
+          "sourceTask": {
+            "id": "cmu-fixture-run-06",
+            "siteId": "legacy-source-site-fixture",
+            "projectId": "legacy-source-project-fixture",
+            "kind": "KEYWORD_OVERVIEW",
+            "status": "COMPLETED",
+            "providerTaskId": "10000000-0000-4000-8000-000000000006",
+            "costMicros": 12120,
+            "requestedAt": "2026-10-23T16:07:55+00:00",
+            "attemptedAt": "2026-10-23T16:07:55+00:00",
+            "completedAt": "2026-10-23T16:07:57+00:00",
+            "updatedAt": "2026-10-23T16:07:57+00:00"
+          },
+          "effective": {
+            "amountMicros": "100000",
+            "actualCostMicros": "12120",
+            "status": "SETTLED",
+            "createdAt": "2026-10-23T16:07:55+00:00",
+            "updatedAt": "2026-10-23T16:07:57+00:00",
+            "settledAt": "2026-10-23T16:07:57+00:00"
+          }
+        },
+        {
+          "input": {
+            "localReservationId": "growth-budget-fixture-07",
+            "taskId": "cmu-fixture-run-07",
+            "operation": "dataforseo:article_serp_snapshot",
+            "legacyStatus": "settled",
+            "period": "2026-10",
+            "timeZone": "UTC",
+            "currency": "USD",
+            "amountMicros": "100000",
+            "createdAt": "2026-10-23T16:50:23+00:00",
+            "updatedAt": "2026-10-23T16:50:24+00:00",
+            "settledAt": "2026-10-23T16:50:24+00:00"
+          },
+          "sourceTask": {
+            "id": "cmu-fixture-run-07",
+            "siteId": "legacy-source-site-fixture",
+            "projectId": "legacy-source-project-fixture",
+            "kind": "ORGANIC_SERP",
+            "status": "FAILED",
+            "providerTaskId": "10000000-0000-4000-8000-000000000007",
+            "costMicros": null,
+            "requestedAt": "2026-10-23T16:50:23+00:00",
+            "attemptedAt": "2026-10-23T16:50:23+00:00",
+            "completedAt": "2026-10-23T16:50:24+00:00",
+            "updatedAt": "2026-10-23T16:50:24+00:00"
+          },
+          "effective": {
+            "amountMicros": "100000",
+            "actualCostMicros": null,
+            "status": "UNCERTAIN",
+            "createdAt": "2026-10-23T16:50:23+00:00",
+            "updatedAt": "2026-10-23T16:50:24+00:00",
+            "settledAt": null
+          }
+        }
+      ]
+    }
+  }
+}

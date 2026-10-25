@@ -19,8 +19,9 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from ..application.actions import OwnerActionService
-from ..application.growth_budget import GrowthBudgetBlocked, get_paid_research_reservation, mark_paid_research_uncertain, reserve_paid_research, settle_paid_research
+from ..application.growth_budget import GrowthBudgetBlocked, get_paid_research_reservation, mark_paid_research_uncertain, release_paid_research, reserve_paid_research, settle_paid_research
 from ..config import crawlseo_research_authority_selected, validate_research_config
+from ..core.research_authority import producer_frozen, require_research_producers_enabled
 from ..core.contracts import (
     ActionPriority,
     ActionRequirement,
@@ -880,6 +881,7 @@ def _process_report(context: dict[str, Any], request: Mapping[str, Any], payload
 
 
 def run(context: dict[str, Any]) -> None:
+    require_research_producers_enabled(context.get("memory"))
     config = context["config"]
     if crawlseo_research_authority_selected(config):
         context["memory"].record_action("seo_research", "skipped: CrawlSEO owns research for this site")
@@ -942,6 +944,11 @@ def run(context: dict[str, Any]) -> None:
                 reservation = reserve_paid_research(context, idempotency_key=key, operation="seo_monthly_research", detail={"request_id": request["id"], "package_version": PACKAGE_VERSION})
                 reservation_id = str(reservation["reservation_id"])
                 request = memory.update_seo_research_request(request["id"], budget_reservation_id=reservation_id, status="budget_reserved") or request
+            if producer_frozen(memory):
+                release_paid_research(context, reservation_id, reason="CrawlSEO migration freeze activated before monthly research dispatch")
+                memory.update_seo_research_request(request["id"], status="blocked", error="CrawlSEO migration freeze activated before provider dispatch")
+                _context_action(memory, period, "Monthly research is paused by the CrawlSEO migration freeze.")
+                return
             response = service.request_research_report(dict(brief), key)
             report_id = str(response.get("report_id") or "")
             if not report_id:

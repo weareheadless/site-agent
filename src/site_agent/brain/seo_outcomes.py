@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ..config import crawlseo_research_authority_selected
+from ..core.research_authority import require_research_producers_enabled
 
 
 HORIZONS = (30, 90, 180)
@@ -75,6 +76,7 @@ def _assessment(baseline: float | None, observed: float | None) -> tuple[str, st
 
 
 def run(context: dict[str, Any]) -> int:
+    require_research_producers_enabled(context.get("memory"))
     if crawlseo_research_authority_selected(context.get("config")):
         context["memory"].record_action("seo_outcomes", "skipped: CrawlSEO owns SEO outcome analysis for this site")
         return 0

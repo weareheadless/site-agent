@@ -21,6 +21,12 @@ providers:
     research_authority: crawlseo
 ```
 
+`connector_url` may include the application's explicit Next.js mount prefix,
+for example `https://crawlseo.helloada.app/crawlseo/api/connector/v1`. Keep the
+complete versioned endpoint in configuration; Site-Agent does not probe or
+guess alternate endpoint paths. The endpoint URL cannot contain credentials,
+query data or a fragment, and mount path segments must not traverse directories.
+
 The legacy MCP and connector API can use separate environment credentials.
 `connector_token_env` defaults to `token_env`; configure it separately to add
 connector access without replacing a working MCP credential. Authority mode's

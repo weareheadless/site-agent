@@ -22,6 +22,7 @@
     "src/app/api/workspace/content/route.ts",
     "src/lib/cloudflare-context.ts",
     "src/lib/content-routes.ts",
+    "src/lib/public-content-route.ts",
     "src/lib/growth-contract.ts",
     "src/lib/growth-operations.ts",
     "src/lib/helloada-auth.ts",

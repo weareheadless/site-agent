@@ -12,7 +12,9 @@ import json
 from typing import Any
 
 from ..application.actions import OwnerActionService
+from ..config import crawlseo_research_authority_selected
 from ..core.contracts import ActionPriority, ActionRequirement, OwnerAction
+from ..core.research_authority import require_research_producers_enabled
 from .prompts import memory_context
 
 
@@ -165,6 +167,9 @@ def _card_action(card: dict[str, str], action_service: OwnerActionService) -> Ow
 
 def run(context: dict[str, Any]) -> int:
     memory: Any = context["memory"]
+    require_research_producers_enabled(memory)
+    if crawlseo_research_authority_selected(context.get("config")):
+        raise RuntimeError("Strategist recommendations are unsupported while CrawlSEO is the research authority")
     llm = context.get("llm")
     if llm is None:
         raise RuntimeError("llm client missing; cannot strategize")

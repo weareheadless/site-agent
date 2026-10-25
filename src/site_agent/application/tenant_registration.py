@@ -13,6 +13,7 @@ Payload bootstrap after this local identity and token boundary exists.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -179,19 +180,66 @@ class TenantRegistrationService:
         return True
 
     @staticmethod
-    def _replace_config(path: Path, config: Mapping[str, Any]) -> None:
+    def _replace_config(
+        path: Path,
+        config: Mapping[str, Any],
+        *,
+        expected_sha256: str | None = None,
+    ) -> None:
+        descriptor = -1
+        # Registry operations already hold .registration.lock. A separate fixed
+        # lock serializes every writer of this config without reacquiring the
+        # registry lock through a second descriptor and deadlocking ourselves.
+        lock_path = path.with_name(f".{path.name}.lock")
+        if expected_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+            raise TenantRegistrationError("tenant config compare-and-swap request is invalid")
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
+            if not __import__("stat").S_ISREG(os.fstat(descriptor).st_mode):
+                raise OSError("lock is not regular")
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        except OSError as exc:
+            if descriptor >= 0:
+                os.close(descriptor)
+            raise TenantRegistrationError("tenant config lock is unavailable") from exc
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
         try:
-            temporary.write_text(yaml.safe_dump(dict(config), sort_keys=False), encoding="utf-8")
-            os.chmod(temporary, 0o600)
+            if expected_sha256 is not None:
+                if path.is_symlink() or not path.is_file():
+                    raise TenantRegistrationError("tenant config is unavailable for compare-and-swap")
+                try:
+                    current_bytes = path.read_bytes()
+                except OSError as exc:
+                    raise TenantRegistrationError("tenant config is unreadable for compare-and-swap") from exc
+                if not hashlib.sha256(current_bytes).hexdigest() == expected_sha256:
+                    raise TenantRegistrationError("tenant config changed after preview")
+            encoded = yaml.safe_dump(dict(config), sort_keys=False, allow_unicode=True).encode("utf-8")
+            out = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(out, "wb") as stream:
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
             temporary.replace(path)
-        except OSError as exc:
             try:
-                temporary.unlink()
+                dir_fd = os.open(path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
             except OSError:
                 pass
+        except TenantRegistrationError:
+            temporary.unlink(missing_ok=True)
+            raise
+        except OSError as exc:
+            temporary.unlink(missing_ok=True)
             raise TenantRegistrationError("tenant config could not be created") from exc
+        finally:
+            if descriptor >= 0:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+                os.close(descriptor)
 
     @staticmethod
     def _record_index(

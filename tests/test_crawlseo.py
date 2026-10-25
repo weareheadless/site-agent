@@ -139,6 +139,7 @@ def test_crawlseo_hand_adapter_uses_only_fixed_tools_and_auth_header():
     headers = _request_headers(settings)
     assert headers["Authorization"] == "Bearer secret"
     assert headers["X-Request-ID"]
+    assert headers["User-Agent"] == "HelloAda/site-agent-crawlseo"
 
     class FakeRuntime:
         def __init__(self):
@@ -190,10 +191,58 @@ def test_connector_rest_requests_use_the_separate_read_token_when_configured():
         connector_url="https://crawlseo.example/api/connector/v1")
     client = CrawlSEOClient(settings, runtime=object())
     response = io.BytesIO(b'{"schemaVersion":"1.0"}')
-    with mock.patch("site_agent.hands.crawlseo.urlopen", return_value=response) as urlopen:
+    opener = mock.Mock()
+    opener.open.return_value = response
+    with mock.patch("site_agent.hands.crawlseo.build_opener", return_value=opener):
         assert client._connector_request("GET", "/capabilities?siteId=site-1") == {"schemaVersion": "1.0"}
-    request = urlopen.call_args.args[0]
+    request = opener.open.call_args.args[0]
     assert request.get_header("Authorization") == "Bearer connector-read-secret"
+    assert request.get_header("User-agent") == "HelloAda/site-agent-crawlseo"
+
+
+def test_connector_never_follows_redirect_with_its_bearer_credential():
+    from site_agent.hands.crawlseo import _NoConnectorRedirect
+    with pytest.raises(CrawlSEOProtocolError, match="redirects"):
+        _NoConnectorRedirect().redirect_request(None, None, 307, "redirect", {}, "https://other.example")
+
+
+@pytest.mark.parametrize("mount", ["", "/crawlseo", "/customer/sites/crawlseo"])
+def test_crawlseo_connector_accepts_safe_explicit_mount_prefixes(mount):
+    config = {"providers": {"crawlseo": {
+        "enabled": True,
+        "url": "https://crawlseo.example/mcp",
+        "connector_url": f"https://crawlseo.example{mount}/api/connector/v1",
+    }}}
+    settings = CrawlSEOSettings.from_config(config, env={"CRAWLSEO_SERVICE_TOKEN": "secret"})
+    assert settings.connector_url.endswith(f"{mount}/api/connector/v1")
+
+
+@pytest.mark.parametrize("url", [
+    "https://user:pass@crawlseo.example/crawlseo/api/connector/v1",
+    "https://crawlseo.example/crawlseo/api/connector/v1?token=x",
+    "https://crawlseo.example/crawlseo/api/connector/v1#frag",
+    "https://crawlseo.example/crawlseo/../api/connector/v1",
+    "https://crawlseo.example/crawlseo/%2e%2e/api/connector/v1",
+    "https://crawlseo.example/crawlseo/%252e%252e/api/connector/v1",
+    "https://crawlseo.example/crawlseo%5cadmin/api/connector/v1",
+    "https://crawlseo.example/api/connector/v2",
+    "https://crawlseo.example/crawlseo/api/connector/v1/extra",
+    "https://crawlseo.example/crawlseo//api/connector/v1",
+    "https://crawlseo.example/crawlseo mount/api/connector/v1",
+    " https://crawlseo.example/api/connector/v1",
+    "https://crawlseo.example/crawlseo%2fadmin/api/connector/v1",
+    "https://crawlseo.example:99999/crawlseo/api/connector/v1",
+    "https://crawlseo.example:/crawlseo/api/connector/v1",
+    "https://crawlseo.example/crawlseo./api/connector/v1",
+])
+def test_crawlseo_connector_rejects_unsafe_or_unexpected_urls(url):
+    config = {"providers": {"crawlseo": {
+        "enabled": True,
+        "url": "https://crawlseo.example/mcp",
+        "connector_url": url,
+    }}}
+    with pytest.raises(ConfigError, match="connector_url"):
+        CrawlSEOSettings.from_config(config, env={"CRAWLSEO_SERVICE_TOKEN": "secret"})
 
 
 def test_crawlseo_hand_adapter_maps_research_brief_to_explicit_request_tool():
