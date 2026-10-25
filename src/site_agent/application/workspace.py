@@ -3049,7 +3049,7 @@ class ChatService:
                 "unmappedCrawlseoActionIds": sorted(set(remote_actions) - linked_remote_ids),
                 "automaticApply": False,
             }
-            from .crawlseo_migration import resolution_requirements, resolution_status
+            from .crawlseo_migration import current_budget_policy_import, resolution_requirements, resolution_status
             resolution_state = resolution_status({"snapshotHash": snapshot_hash, "inventory": local, "crawlseo": remote,
                 "tenant": tenant.tenant_id, "siteId": site_id}, tenant.memory)
             active_receipts = [{**item["receipt"], "scope": item.get("currentScope", item["receipt"].get("scope", []))}
@@ -3062,6 +3062,7 @@ class ChatService:
                     "effectiveMonthlyAllowanceMicros": legacy_effective_allowance, "timezone": legacy_timezone,
                     "researchAuthority": crawlseo_config.get("research_authority")}}
             budget_import = current_import_receipt(tenant.memory, accounting_plan)
+            policy_import = current_budget_policy_import(tenant.memory, accounting_plan)
             blockers = []
             if local.get("truncated"):
                 blockers.append("Local migration inventory exceeded a category limit; a complete export is required.")
@@ -3208,8 +3209,9 @@ class ChatService:
                     and isinstance(binding.get("generation"), int) and not isinstance(binding.get("generation"), bool)
                     and binding.get("generation") > 0 and binding.get("executionSupported") is not False),
                     "Active HelloAda executor binding and positive generation must be verified."),
-                check("legacy_budget_policy", "paid_research", False,
-                    "CrawlSEO paid policy import is not implemented; review does not grant allowance."),
+                check("legacy_budget_policy", "paid_research", policy_import is not None,
+                    "A current imported paid policy must exactly match the local allowance and the live CrawlSEO budget.",
+                    evidence_state="server_verified" if policy_import else None),
                 check("legacy_producers_frozen", "activation", bool(tenant.memory.crawlseo_producer_freeze_status().get("active")
                     and tenant.memory.crawlseo_producer_freeze_status().get("registrationsVerified")
                     and not legacy_producers["registeredJobs"]), "Freeze request must be followed by scheduler reload and current registration verification."),
@@ -3566,6 +3568,84 @@ class ChatService:
         except BridgeError:
             raise
         except Exception as exc:  # noqa: BLE001 — bounded route bridge error
+            raise BridgeError(str(exc)[:400]) from exc
+
+    def crawlseo_migration_import_budget_policy(
+        self, body: Mapping[str, Any], *, tenant: Tenant | None = None,
+    ) -> dict[str, Any]:
+        """Import the bounded local paid-research policy into CrawlSEO."""
+        if tenant is None or self.registry is None or self.registry.tenants.get(tenant.tenant_id) is not tenant:
+            raise BridgeError("tenant is not authorized")
+        if not isinstance(body, Mapping) or set(body) - {"mode", "expectedSnapshotHash", "operatorRequestId", "maxOperationMicros"}:
+            raise BridgeError("budget policy import request fields are invalid")
+        mode = body.get("mode")
+        expected_hash = str(body.get("expectedSnapshotHash") or "")
+        request_id = str(body.get("operatorRequestId") or "")
+        if mode not in {"plan", "apply"}:
+            raise BridgeError("mode must be plan or apply")
+        if not re.fullmatch(r"sha256:[a-f0-9]{64}", expected_hash):
+            raise BridgeError("expectedSnapshotHash must be a SHA-256 migration snapshot hash")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}", request_id):
+            raise BridgeError("operatorRequestId must contain 8 to 128 stable identifier characters")
+        try:
+            from .crawlseo_migration import evidence_hash
+            with self._approval_lock:
+                plan = self.crawlseo_migration_plan(tenant=tenant)
+                if plan.get("snapshotHash") != expected_hash:
+                    raise BridgeError("migration snapshot changed; refresh before importing the budget policy")
+                local = plan.get("legacyPolicy") if isinstance(plan.get("legacyPolicy"), Mapping) else {}
+                remote = ((plan.get("crawlseo") or {}).get("budget") if isinstance(plan.get("crawlseo"), Mapping) else {}) or {}
+                allowance = str(local.get("effectiveMonthlyAllowanceMicros") or local.get("monthlyResearchCapMicros") or "")
+                max_operation = str(remote.get("maxOperationMicros") or body.get("maxOperationMicros") or "")
+                if not allowance.isdigit() or int(allowance) <= 0:
+                    raise BridgeError("local paid-research allowance is not a positive integer")
+                if not max_operation.isdigit() or int(max_operation) <= 0:
+                    raise BridgeError("a positive per-operation ceiling is required")
+                if not remote.get("configured"):
+                    raise BridgeError("CrawlSEO paid-research budget is not configured")
+                proposed = {
+                    "monthlyAllowanceMicros": allowance,
+                    "maxOperationMicros": max_operation,
+                    "currency": str(remote.get("currency") or "USD"),
+                    "timeZone": str(remote.get("timeZone") or "UTC"),
+                    "expectedRevision": int(remote.get("policyRevision") or 0),
+                }
+                if mode == "plan":
+                    return {"mode": "plan", "status": "ready", "wouldUpdate": proposed,
+                        "localPolicy": local, "remoteBefore": remote}
+                service = tenant.context.get("crawlseo_service") if isinstance(tenant.context, Mapping) else None
+                if service is None:
+                    raise BridgeError("CrawlSEO connector is unavailable")
+                site_id = str(plan.get("siteId") or "")
+                before = service.connector_budget(site_id)
+                service.connector_update_budget_policy({
+                    "siteId": site_id,
+                    "expectedRevision": int(before.get("policyRevision") or 0),
+                    "monthlyAllowanceMicros": allowance,
+                    "maxOperationMicros": max_operation,
+                    "currency": str(before.get("currency") or "USD"),
+                    "timeZone": str(before.get("timeZone") or "UTC"),
+                })
+                after = service.connector_budget(site_id)
+                receipt = {
+                    "type": "budget_policy_import",
+                    "decision": "imported",
+                    "operatorRequestId": request_id,
+                    "snapshotHash": plan.get("snapshotHash"),
+                    "tenant": tenant.tenant_id,
+                    "siteId": site_id,
+                    "projectId": after.get("projectId"),
+                    "localPolicy": local,
+                    "remoteBefore": before,
+                    "remoteAfter": after,
+                    "importedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+                }
+                receipt["receiptId"] = evidence_hash(receipt)
+                stored, idempotent = tenant.memory.persist_crawlseo_migration_receipt(receipt)
+                return {"status": "imported", "idempotent": idempotent, "receipt": stored}
+        except BridgeError:
+            raise
+        except Exception as exc:  # noqa: BLE001 — bounded import error
             raise BridgeError(str(exc)[:400]) from exc
 
     def crawlseo_migration_verify_budget_import(

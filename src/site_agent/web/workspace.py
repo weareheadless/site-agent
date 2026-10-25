@@ -1021,6 +1021,20 @@ def register_workspace_routes(
             except BridgeError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+        @app.post(f"{control_prefix}/{{website_id}}/growth/migration/import-budget-policy")
+        async def control_plane_import_budget_policy(website_id: str, request: Request):
+            tenant = require_control_tenant(request, website_id)
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            if not isinstance(body, dict):
+                raise HTTPException(status_code=400, detail="request body must be an object")
+            try:
+                return service.crawlseo_migration_import_budget_policy(body, tenant=tenant)
+            except BridgeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+
         @app.post(f"{control_prefix}/{{website_id}}/growth/migration/verify-budget-import")
         async def control_plane_crawlseo_migration_verify_budget_import(website_id: str, request: Request):
             tenant = require_control_tenant(request, website_id)

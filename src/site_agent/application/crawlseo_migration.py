@@ -295,3 +295,26 @@ def resolution_status(plan: Mapping[str, Any], memory: Any) -> dict[str, Any]:
     for item in result:
         item["current"] = item["receipt"].get("receiptId") in set(current_receipts.values())
     return {"items": result, "gatePassed": False, "evidenceState": "operator_attested"}
+
+
+def current_budget_policy_import(memory: Any, plan: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Return the current imported paid-research policy when it still matches."""
+    current = memory.crawlseo_migration_current_receipts()
+    receipt_id = current.get("budget_policy_import")
+    if not receipt_id:
+        return None
+    local = plan.get("legacyPolicy") if isinstance(plan.get("legacyPolicy"), Mapping) else {}
+    remote = ((plan.get("crawlseo") or {}).get("budget") if isinstance(plan.get("crawlseo"), Mapping) else {}) or {}
+    for receipt in memory.crawlseo_migration_receipts():
+        if receipt.get("receiptId") != receipt_id or receipt.get("type") != "budget_policy_import":
+            continue
+        if receipt.get("localPolicy") != local:
+            return None
+        after = receipt.get("remoteAfter") if isinstance(receipt.get("remoteAfter"), Mapping) else {}
+        if not all(after.get(key) == remote.get(key) for key in (
+            "allowanceMicros", "maxOperationMicros", "currency", "timeZone",
+            "policyRevision", "siteId", "projectId",
+        )):
+            return None
+        return receipt
+    return None
