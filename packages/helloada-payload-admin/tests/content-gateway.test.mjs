@@ -27,6 +27,7 @@ test('the default content gateway bounds requested lists and requires service au
     '@/helloada.config': { helloAdaSite: { locales: ['en'] } },
     '@/lib/payload-locale': { resolvePayloadLocale: () => undefined },
     '@/lib/payload-field-match': fieldMatchModule.exports,
+    '@/lib/public-content-route': { withPublicRoute: (_collection, document) => ({ ...document, route: '/fixture' }) },
   }
   const sandbox = { exports: {}, URL, require: name => modules[name] }
   vm.runInNewContext(compiled, sandbox)
