@@ -38,6 +38,105 @@ def test_linked_improvement_is_one_task_not_three_cards(tmp_path):
     memory.close()
 
 
+def test_crawlseo_action_with_local_execution_binding_projects_as_one_task(tmp_path):
+    memory = Memory(tmp_path / 'crawlseo-one-task.db')
+    action = memory.create_owner_action(OwnerAction(capability_id='growth.crawlseo_action', provider_id='crawlseo',
+        title='Clarify the service page', summary='Evidence-backed recommendation.', action_label='Review',
+        priority=ActionPriority.NORMAL, source_ref='crawlseo-action:remote-1',
+        requirement=ActionRequirement.OWNER_DECISION, dedupe_key='crawlseo-action:remote-1',
+        payload={'remoteActionId': 'remote-1', 'revision': 4, 'executionStatus': 'preparing'}))
+    cycle = memory.create_strategy_cycle('crawlseo-one-task-cycle', '2026-10', 'crawlseo-one-task-hash', {})
+    memory.create_strategy_initiative(cycle['id'], kind='payload_content', title='Clarify the service page',
+        summary='Evidence-backed recommendation.', state='preparing', owner_action_id=action.id,
+        expected={'crawlseoActionId': 'remote-1', 'crawlseoRevision': 4,
+            'opportunity': {'collection': 'pages', 'documentId': 'page-1'}})
+    tasks = growth_tasks(memory, memory.list_strategy_initiatives(cycle['id']), [], [], [], [])
+    assert len(tasks) == 1
+    assert tasks[0]['kind'] == 'payload_content'
+    assert tasks[0]['providerId'] == 'crawlseo'
+    assert tasks[0]['remoteActionId'] == 'remote-1'
+    assert tasks[0]['actionRevision'] == 4
+    assert tasks[0]['preparationStatus'] == 'preparing'
+    memory.close()
+
+
+def test_stale_local_review_does_not_hide_current_crawlseo_action_revision(tmp_path):
+    memory = Memory(tmp_path / 'crawlseo-revision-projection.db')
+    action = memory.create_owner_action(OwnerAction(
+        capability_id='growth.crawlseo_action', provider_id='crawlseo', title='Current recommendation',
+        summary='The current revision needs its own preparation decision.', action_label='Review recommendation',
+        priority=ActionPriority.NORMAL, requirement=ActionRequirement.OWNER_DECISION,
+        source_ref='crawlseo-action:remote-1', dedupe_key='crawlseo-action:remote-1',
+        payload={'remoteActionId': 'remote-1', 'revision': 3, 'executionStatus': 'none'}))
+    older_review = {'id': 7, 'title': 'Preserved older review', 'summary': 'An exact pending review remains in history.',
+        'state': 'ready_for_review', 'approval_id': 9, 'expected': {
+            'crawlseoActionId': 'remote-1', 'crawlseoRevision': 2}}
+
+    tasks = growth_tasks(memory, [older_review], [], [], [], crawlseo_authoritative=True)
+
+    current, = [row for row in tasks if row.get('remoteActionId') == 'remote-1']
+    assert current['ownerActionId'] == action.id
+    assert current['actionRevision'] == 3
+    memory.close()
+
+
+def test_remote_crawlseo_actions_are_in_the_unified_growth_projection(tmp_path):
+    memory = Memory(tmp_path / 'crawlseo-actions.db')
+    action = memory.create_owner_action(OwnerAction(
+        capability_id='growth.crawlseo_action', provider_id='crawlseo', title='Improve the service page',
+        summary='Evidence supports a clearer explanation.', action_label='Review recommendation',
+        priority=ActionPriority.NORMAL, requirement=ActionRequirement.OWNER_DECISION,
+        source_ref='crawlseo-action:remote-1', dedupe_key='crawlseo-action:remote-1',
+        payload={'remoteActionId': 'remote-1', 'revision': 2, 'executionStatus': 'queued'}))
+    tasks = growth_tasks(memory, [], [], [], [])
+    remote, = [row for row in tasks if row.get('remoteActionId') == 'remote-1']
+    assert remote['ownerActionId'] == action.id
+    assert remote['executionStatus'] == 'queued'
+    assert remote['focus'] == 'preparing'
+    assert not remote['canApprove']
+    memory.close()
+
+
+def test_crawlseo_authority_hides_legacy_seo_recommendations_but_keeps_owner_questions(tmp_path):
+    memory = Memory(tmp_path / 'crawlseo-authority-actions.db')
+    legacy = memory.create_owner_action(OwnerAction(
+        capability_id='review.site_change', provider_id='site-agent', title='Legacy SEO proposal',
+        summary='Old assessment output', action_label='Review', priority=ActionPriority.NORMAL,
+        requirement=ActionRequirement.OWNER_DECISION, source_ref='legacy-seo:1', dedupe_key='legacy-seo:1',
+        payload={'source': 'monthly_seo_strategy'}))
+    owner_question = memory.create_owner_action(OwnerAction(
+        capability_id='growth.owner_information', provider_id='site-agent', title='Confirm a business fact',
+        summary='Ada needs an owner-confirmed detail.', action_label='Answer', priority=ActionPriority.NORMAL,
+        requirement=ActionRequirement.OWNER_INFORMATION, source_ref='growth-question:1', dedupe_key='growth-question:1'))
+    tasks = growth_tasks(memory, [], [], [], [], crawlseo_authoritative=True)
+    assert all(row.get('ownerActionId') != legacy.id for row in tasks)
+    assert any(row.get('ownerActionId') == owner_question.id for row in tasks)
+    memory.close()
+
+
+def test_remote_crawlseo_projection_tracks_candidate_review_and_execution_states(tmp_path):
+    memory = Memory(tmp_path / 'crawlseo-lifecycle.db')
+    states = [
+        ({'status': 'preparation_ready', 'candidateRef': 'candidate:1'}, 'needs_you'),
+        ({'status': 'preparation_blocked'}, 'paused'),
+        ({'status': 'owner_decision', 'ownerDecision': 'approved'}, 'preparing'),
+        ({'status': 'publication_verified'}, 'preparing'),
+        ({'status': 'outcome_measured'}, 'completed'),
+    ]
+    for index, (execution, expected_focus) in enumerate(states, start=1):
+        memory.create_owner_action(OwnerAction(
+            capability_id='growth.crawlseo_action', provider_id='crawlseo', title=f'Recommendation {index}',
+            summary='Evidence supports this improvement.', action_label='Review recommendation',
+            priority=ActionPriority.NORMAL, requirement=ActionRequirement.OWNER_DECISION,
+            source_ref=f'crawlseo-action:remote-{index}', dedupe_key=f'crawlseo-action:remote-{index}',
+            payload={'remoteActionId': f'remote-{index}', 'revision': 2, 'executionStatus': 'ready',
+                'execution': execution}))
+    tasks = growth_tasks(memory, [], [], [], [])
+    projected = {row['remoteActionId']: row for row in tasks if row.get('remoteActionId')}
+    assert [projected[f'remote-{index}']['focus'] for index in range(1, 6)] == [focus for _state, focus in states]
+    memory.close()
+
+
 def test_schedule_and_internal_block_are_not_fake_owner_decisions(tmp_path):
     memory = Memory(tmp_path / 'memory.db')
     tasks = growth_tasks(memory, [{'id': 1, 'title': 'Prepare an article', 'state': 'blocked', 'last_error': 'Search evidence unavailable'}], [],

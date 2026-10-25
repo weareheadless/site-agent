@@ -309,10 +309,15 @@ def verify_source_promotion(context, initiative, package_hash, package, source_s
         trees.append(tree)
     if trees[0] != trees[1]:
         raise GrowthDeliveryError("Merged source differs from the reviewed candidate; revalidation and renewed owner review required")
-    return adapter.checkpoint(initiative, "source_promotion", {
+    refs = {
         "packageHash": package_hash, "candidateSha": candidate_sha, "sourceSha": source_sha,
         "treeSha": trees[0], "draftId": int(initiative["draft_id"]),
-    })
+    }
+    adapter.checkpoint(initiative, "source_promotion", refs)
+    # Return the locally verified proof fields. The journal writer returns a
+    # provider receipt, which deliberately contains identities only and does
+    # not expose the proof payload needed by the upstream publication receipt.
+    return {"refs": refs}
 
 
 def reconcile_source_merge(context, initiative, package_hash, package):

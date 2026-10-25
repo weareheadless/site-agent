@@ -29,7 +29,8 @@ from ..core.article_routes import public_article_path
 from ..core.memory import Memory
 from ..core.reflect import effective_persona
 from ..core.scheduler import Scheduler
-from ..core.growth_contracts import growth_timezone
+from ..core.growth_contracts import GrowthContractError, growth_timezone
+from ..core.contracts import safe_provider_message
 from .growth_workflow import ensure_default_goal
 from ..brain.owner_copy import owner_safe_failure
 from ..runtime import Runtime
@@ -388,6 +389,7 @@ class TenantRegistry:
                     "tenant_config_path": str(config_path),
                     "journey": journey,
                     "seo_provisioning_state": seo_state,
+                    "connector_site_id": str(((seo_state.get("crawlseo") or {}).get("site_id")) if isinstance(seo_state.get("crawlseo"), Mapping) else ""),
                     "google_platform": google_platform,
                 })
                 from .design_operations import DesignOperationService
@@ -2511,6 +2513,413 @@ class ChatService:
         memory, tenant_id = (tenant.memory if tenant else self.memory), scope["tenant"]
         return {"tenant": tenant_id, **growth_snapshot(memory, tenant.config if tenant else {}, tenant.context if tenant else {})}
 
+    def decide_crawlseo_action(self, action_id: int, body: Mapping[str, Any], *, tenant: Tenant | None = None,
+                               owner_actor_id: str | None = None) -> dict[str, Any]:
+        """Forward the owner's preparation choice to CrawlSEO's fenced Action API."""
+        if tenant is None and self.registry is None and self.memory is not None:
+            memory = self.memory
+            context = None
+        elif tenant is not None and self.registry is not None and tenant.tenant_id in self.registry.tenants:
+            memory = tenant.memory
+            context = tenant.context
+        else:
+            raise BridgeError("tenant is not authorized")
+        from .growth_delivery import require_owner_actor
+        try:
+            require_owner_actor(owner_actor_id)
+        except Exception as exc:
+            raise BridgeError(str(exc)) from exc
+        action = memory.get_owner_action(int(action_id))
+        if action is None or action.provider_id != "crawlseo":
+            raise BridgeError("CrawlSEO owner Action was not found")
+        remote_id = str(action.payload.get("remoteActionId") or "")
+        revision = action.payload.get("revision")
+        if not remote_id or isinstance(revision, bool) or not isinstance(revision, int):
+            raise BridgeError("CrawlSEO Action binding is incomplete; refresh the Growth list")
+        operation = str(body.get("operation") or "").strip()
+        if operation not in {"accept_preparation", "decline_preparation", "request_correction", "cancel_preparation"}:
+            raise BridgeError("unsupported CrawlSEO preparation decision")
+        idempotency_key = str(body.get("idempotencyKey") or "").strip()
+        if not idempotency_key or len(idempotency_key) > 240:
+            raise BridgeError("a unique CrawlSEO operation idempotency key is required")
+        service = context.get("crawlseo_service") if context is not None else None
+        if service is None:
+            raise BridgeError("CrawlSEO connector is unavailable")
+        try:
+            result = service.connector_decide(remote_id, operation, rationale=str(body.get("rationale") or ""),
+                idempotency_key=idempotency_key)
+            fresh = service.connector_action(remote_id)
+            envelope = fresh.get("action") if isinstance(fresh.get("action"), Mapping) else fresh
+            if isinstance(envelope, Mapping):
+                updated = dict(action.payload)
+                updated.update({"revision": envelope.get("revision"), "executionStatus": envelope.get("preparationStatus"), "envelope": dict(envelope)})
+                memory.update_owner_action_payload(int(action.id), updated)
+            if operation in {"decline_preparation", "cancel_preparation", "request_correction"} and context is not None:
+                state = context.get("seo_provisioning_state") if isinstance(context.get("seo_provisioning_state"), Mapping) else {}
+                crawlseo_state = state.get("crawlseo") if isinstance(state.get("crawlseo"), Mapping) else {}
+                site_id = str(context.get("connector_site_id") or context.get("site_id") or crawlseo_state.get("site_id") or "").strip()
+                binding = memory.get_crawlseo_execution_binding(site_id, remote_id, revision) if site_id else None
+                if binding and binding.get("state") in {"claimed", "preparing", "blocked", "preparation_unreported", "preparation_blocked_unreported", "ready"}:
+                    detail = dict(binding.get("detail") or {})
+                    detail["preparationDecision"] = {"operation": operation, "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
+                    memory.update_crawlseo_execution_binding(site_id, remote_id, revision, int(binding["generation"]),
+                        expected_state=str(binding["state"]), state="cancelled", detail=detail)
+                    initiative = next((row for row in memory.list_strategy_initiatives(limit=500)
+                        if (row.get("expected") or {}).get("crawlseoActionId") == remote_id
+                        and (row.get("expected") or {}).get("crawlseoRevision") == revision), None)
+                    if initiative is not None:
+                        target_state = "rejected" if initiative.get("state") == "ready_for_review" else "blocked"
+                        if initiative.get("state") in {"preparing", "validating", "ready_for_review"}:
+                            memory.transition_strategy_initiative(int(initiative["id"]), target_state,
+                                expected_state=str(initiative["state"]),
+                                last_error="Preparation was cancelled or changed by the owner; the saved candidate is retained but cannot be published.")
+            return {"ok": True, "result": result}
+        except Exception as exc:  # noqa: BLE001 - remote details stay behind the bridge boundary
+            raise BridgeError(str(exc)[:400]) from exc
+
+    def crawlseo_actions(self, *, tenant: Tenant | None = None) -> dict[str, Any]:
+        if tenant is None and self.registry is None and self.memory is not None:
+            memory, tenant_id, context = self.memory, "legacy", None
+        elif tenant is not None and self.registry is not None and tenant.tenant_id in self.registry.tenants:
+            memory, tenant_id, context = tenant.memory, tenant.tenant_id, tenant.context
+        else:
+            raise BridgeError("tenant is not authorized")
+        if context is not None and context.get("crawlseo_service") is None:
+            raise BridgeError("CrawlSEO connector is unavailable")
+        actions = [row.to_owner_dict() for row in memory.list_owner_actions(limit=500)
+                   if row.provider_id == "crawlseo"]
+        return {"tenant": tenant_id, "actions": actions}
+
+    def crawlseo_research_budget(self, *, tenant: Tenant | None = None) -> dict[str, Any]:
+        if tenant is None or self.registry is None or tenant.tenant_id not in self.registry.tenants:
+            raise BridgeError("tenant is not authorized")
+        service = tenant.context.get("crawlseo_service")
+        state = tenant.context.get("seo_provisioning_state") if isinstance(tenant.context.get("seo_provisioning_state"), Mapping) else {}
+        crawlseo_state = state.get("crawlseo") if isinstance(state.get("crawlseo"), Mapping) else {}
+        site_id = str(tenant.context.get("connector_site_id") or tenant.context.get("site_id") or crawlseo_state.get("site_id") or "").strip()
+        if service is None or not site_id:
+            raise BridgeError("CrawlSEO connector is unavailable")
+        try:
+            return {"budget": service.connector_budget(site_id)}
+        except Exception as exc:  # noqa: BLE001 - keep connector details behind the bridge
+            raise BridgeError(str(exc)[:400]) from exc
+
+    def crawlseo_research_policy(self, *, tenant: Tenant | None = None) -> dict[str, Any]:
+        if tenant is None or self.registry is None or tenant.tenant_id not in self.registry.tenants:
+            raise BridgeError("tenant is not authorized")
+        service = tenant.context.get("crawlseo_service")
+        state = tenant.context.get("seo_provisioning_state") if isinstance(tenant.context.get("seo_provisioning_state"), Mapping) else {}
+        crawlseo_state = state.get("crawlseo") if isinstance(state.get("crawlseo"), Mapping) else {}
+        site_id = str(tenant.context.get("connector_site_id") or tenant.context.get("site_id") or crawlseo_state.get("site_id") or "").strip()
+        if service is None or not site_id:
+            raise BridgeError("CrawlSEO connector is unavailable")
+        try:
+            return {"policy": service.connector_policy(site_id)}
+        except Exception as exc:  # noqa: BLE001
+            raise BridgeError(str(exc)[:400]) from exc
+
+    def update_crawlseo_research_policy(self, body: Mapping[str, Any], *, tenant: Tenant | None = None,
+                                        owner_actor_id: str | None = None) -> dict[str, Any]:
+        if tenant is None or self.registry is None or tenant.tenant_id not in self.registry.tenants:
+            raise BridgeError("tenant is not authorized")
+        from .growth_delivery import require_owner_actor
+        try:
+            require_owner_actor(owner_actor_id)
+        except Exception as exc:
+            raise BridgeError(str(exc)) from exc
+        revision = body.get("expectedRevision")
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+            raise BridgeError("expectedRevision must be a non-negative integer")
+        service = tenant.context.get("crawlseo_service")
+        state = tenant.context.get("seo_provisioning_state") if isinstance(tenant.context.get("seo_provisioning_state"), Mapping) else {}
+        crawlseo_state = state.get("crawlseo") if isinstance(state.get("crawlseo"), Mapping) else {}
+        site_id = str(tenant.context.get("connector_site_id") or tenant.context.get("site_id") or crawlseo_state.get("site_id") or "").strip()
+        if service is None or not site_id:
+            raise BridgeError("CrawlSEO connector is unavailable")
+        try:
+            current = service.connector_policy(site_id)
+            if current.get("revision") != revision:
+                raise BridgeError("Research policy changed; reload before saving")
+            result = service.connector_update_policy({**dict(body), "siteId": site_id})
+            return {"policy": result}
+        except BridgeError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise BridgeError(str(exc)[:400]) from exc
+
+    def update_crawlseo_research_budget(self, body: Mapping[str, Any], *, tenant: Tenant | None = None,
+                                        owner_actor_id: str | None = None) -> dict[str, Any]:
+        if tenant is None or self.registry is None or tenant.tenant_id not in self.registry.tenants:
+            raise BridgeError("tenant is not authorized")
+        from .growth_delivery import require_owner_actor
+        try:
+            require_owner_actor(owner_actor_id)
+        except Exception as exc:
+            raise BridgeError(str(exc)) from exc
+        try:
+            revision = body.get("expectedRevision")
+            amount = body.get("monthlyAllowanceMicros")
+            max_operation = body.get("maxOperationMicros")
+            if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+                raise BridgeError("expectedRevision must be a positive integer")
+            if not isinstance(amount, str) or re.fullmatch(r"[0-9]{1,18}", amount) is None:
+                raise BridgeError("monthlyAllowanceMicros must be a non-negative integer string")
+            if max_operation is not None and (not isinstance(max_operation, str) or re.fullmatch(r"[0-9]{1,18}", max_operation) is None):
+                raise BridgeError("maxOperationMicros must be null or a non-negative integer string")
+            service = tenant.context.get("crawlseo_service")
+            state = tenant.context.get("seo_provisioning_state") if isinstance(tenant.context.get("seo_provisioning_state"), Mapping) else {}
+            crawlseo_state = state.get("crawlseo") if isinstance(state.get("crawlseo"), Mapping) else {}
+            site_id = str(tenant.context.get("connector_site_id") or tenant.context.get("site_id") or crawlseo_state.get("site_id") or "").strip()
+            if service is None or not site_id:
+                raise BridgeError("CrawlSEO connector is unavailable")
+            current = service.connector_budget(site_id)
+            current_revision = current.get("policyRevision")
+            if isinstance(current_revision, bool) or not isinstance(current_revision, int) or current_revision != revision:
+                raise BridgeError("Research budget policy changed; reload the current allowance before saving")
+            requested_timezone = body.get("timeZone", current.get("timeZone") or "UTC")
+            if not isinstance(requested_timezone, str) or len(requested_timezone) > 100:
+                raise BridgeError("timeZone must be a valid IANA timezone")
+            try:
+                time_zone = growth_timezone({"growth": {"timezone": requested_timezone}})
+            except GrowthContractError as exc:
+                raise BridgeError("timeZone must be a valid IANA timezone") from exc
+            policy = {
+                "siteId": site_id, "expectedRevision": revision,
+                "monthlyAllowanceMicros": amount,
+                "currency": str(current.get("currency") or "USD"),
+                "timeZone": time_zone,
+            }
+            if "maxOperationMicros" in body:
+                policy["maxOperationMicros"] = max_operation
+            result = service.connector_update_budget_policy(policy)
+            return {"policy": result, "budget": service.connector_budget(site_id)}
+        except BridgeError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise BridgeError(str(exc)[:400]) from exc
+
+    def crawlseo_migration_plan(self, *, tenant: Tenant | None = None) -> dict[str, Any]:
+        """Build a read-only, content-redacted migration inventory for operator review."""
+        if tenant is None or self.registry is None or tenant.tenant_id not in self.registry.tenants:
+            raise BridgeError("tenant is not authorized")
+        try:
+            local = tenant.memory.crawlseo_migration_snapshot()
+            state = tenant.context.get("seo_provisioning_state") if isinstance(tenant.context.get("seo_provisioning_state"), Mapping) else {}
+            crawlseo_state = state.get("crawlseo") if isinstance(state.get("crawlseo"), Mapping) else {}
+            site_id = str(tenant.context.get("connector_site_id") or tenant.context.get("site_id") or crawlseo_state.get("site_id") or "").strip()
+            connector = tenant.context.get("crawlseo_service")
+            seo_config = tenant.config.get("seo") if isinstance(tenant.config.get("seo"), Mapping) else {}
+            research_config = seo_config.get("research") if isinstance(seo_config.get("research"), Mapping) else {}
+            site_report_config = seo_config.get("site_report") if isinstance(seo_config.get("site_report"), Mapping) else {}
+            article_research_config = seo_config.get("article_research") if isinstance(seo_config.get("article_research"), Mapping) else {}
+            runtime_scheduler = getattr(getattr(tenant, "runtime", None), "scheduler", None)
+            runtime_jobs = getattr(runtime_scheduler, "jobs", [])
+            legacy_job_names = {
+                "growth_initial", "growth_daily", "growth_weekly", "growth_monthly",
+                "article_research", "article_research_cycle", "seo_research_cycle",
+                "seo_site_report_cycle", "seo_insight", "seo_outcomes", "ga_snapshot", "seo_snapshot",
+            }
+            registered_legacy_producers = sorted({
+                str(row[0]) for row in runtime_jobs
+                if isinstance(row, (tuple, list)) and row and str(row[0]) in legacy_job_names
+            })
+            legacy_producers = {
+                "inventoryVersion": 1,
+                "schedulerRegistrationsKnown": runtime_scheduler is not None,
+                "schedulerStarted": tenant.scheduler_thread is not None,
+                "registeredJobs": registered_legacy_producers,
+                "settings": {
+                    "growthEnabled": (tenant.config.get("growth") or {}).get("enabled", True) is not False,
+                    "schedulerEnabled": (tenant.config.get("scheduler") or {}).get("enabled", False) is True,
+                    "seoResearchEnabled": research_config.get("enabled") is True,
+                    "siteReportEnabled": site_report_config.get("enabled") is True,
+                    "articleResearchEnabled": article_research_config.get("enabled") is True,
+                },
+            }
+            remote: dict[str, Any] = {"available": False, "actions": [], "actionsTruncated": False, "budget": None, "errors": []}
+            if connector is None or not site_id:
+                remote["errors"].append("CrawlSEO connector/site binding is unavailable")
+            else:
+                try:
+                    capabilities = connector.connector_capabilities(site_id)
+                    remote["binding"] = capabilities.get("binding") if isinstance(capabilities, Mapping) else None
+                    remote["executionExecutors"] = capabilities.get("executionExecutors", []) if isinstance(capabilities, Mapping) else []
+                except Exception as exc:  # noqa: BLE001
+                    remote["errors"].append(f"Connector binding: {safe_provider_message(str(exc), max_chars=300)}")
+                try:
+                    rows: list[Any] = []
+                    cursor: str | None = None
+                    seen_cursors: set[str] = set()
+                    for _page in range(1000):
+                        action_result = connector.connector_actions(limit=100, cursor=cursor, site_id=site_id)
+                        page = action_result.get("actions", []) if isinstance(action_result, Mapping) else []
+                        if not isinstance(page, list):
+                            raise BridgeError("CrawlSEO returned an invalid Action inventory")
+                        rows.extend(page)
+                        next_cursor = action_result.get("nextCursor") if isinstance(action_result, Mapping) else None
+                        if next_cursor is None:
+                            break
+                        if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen_cursors:
+                            raise BridgeError("CrawlSEO Action pagination cursor is invalid or repeated")
+                        seen_cursors.add(next_cursor)
+                        cursor = next_cursor
+                    else:
+                        raise BridgeError("CrawlSEO Action inventory exceeds the safe pagination limit")
+                    remote["actions"] = [{key: row.get(key) for key in (
+                        "id", "revision", "status", "preparationStatus", "executionStatus",
+                    )} for row in rows if isinstance(row, Mapping)]
+                    remote["actionsTruncated"] = False
+                    remote["available"] = True
+                except Exception as exc:  # noqa: BLE001
+                    remote["errors"].append(f"Action inventory: {safe_provider_message(str(exc), max_chars=300)}")
+                try:
+                    budget = connector.connector_budget(site_id)
+                    if (not isinstance(budget, Mapping) or not isinstance(budget.get("policyRevision"), int)
+                            or not isinstance(budget.get("currency"), str) or not isinstance(budget.get("period"), str)):
+                        raise BridgeError("CrawlSEO returned an invalid budget snapshot")
+                    remote["budget"] = {key: budget.get(key) for key in (
+                        "period", "timeZone", "currency", "allowanceMicros", "committedMicros",
+                        "reservedMicros", "remainingMicros", "policyRevision", "configured", "maxOperationMicros",
+                    )}
+                except Exception as exc:  # noqa: BLE001
+                    remote["errors"].append(f"Monetary ledger: {safe_provider_message(str(exc), max_chars=300)}")
+            growth = tenant.config.get("growth") if isinstance(tenant.config.get("growth"), Mapping) else {}
+            providers = tenant.config.get("providers") if isinstance(tenant.config.get("providers"), Mapping) else {}
+            crawlseo_config = providers.get("crawlseo") if isinstance(providers.get("crawlseo"), Mapping) else {}
+            from .growth_budget import allowance_micros
+            from ..core.growth_contracts import growth_timezone
+            try:
+                legacy_effective_allowance = str(allowance_micros(tenant.config))
+                legacy_timezone = growth_timezone(tenant.config)
+            except Exception as exc:
+                legacy_effective_allowance = None
+                legacy_timezone = None
+                remote["errors"].append(f"Legacy monetary policy: {safe_provider_message(str(exc), max_chars=250)}")
+            state_for_hash = {"tenant": tenant.tenant_id, "siteId": site_id, "local": local, "remote": remote,
+                "legacyProducers": legacy_producers,
+                "legacyPolicy": {"monthlyResearchCapMicros": growth.get("monthly_research_cap_micros"),
+                    "effectiveMonthlyAllowanceMicros": legacy_effective_allowance, "timezone": legacy_timezone,
+                    "authority": crawlseo_config.get("research_authority")}}
+            snapshot_hash = "sha256:" + hashlib.sha256(json.dumps(
+                state_for_hash, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str,
+            ).encode("utf-8")).hexdigest()
+            remote_actions = {str(row.get("id")): row for row in remote.get("actions", [])
+                if isinstance(row, Mapping) and row.get("id") is not None}
+            mapping_rows = []
+
+            def migration_link(source_type: str, source_id: Any, action_id: Any, revision: Any) -> None:
+                if action_id is None:
+                    mapping_rows.append({"sourceType": source_type, "sourceId": source_id, "state": "unlinked"})
+                    return
+                action_key = str(action_id)
+                target = remote_actions.get(action_key)
+                exact_revision = (not isinstance(revision, bool) and isinstance(revision, int)
+                    and target is not None and target.get("revision") == revision)
+                mapping_rows.append({"sourceType": source_type, "sourceId": source_id,
+                    "crawlseoActionId": action_key,
+                    "crawlseoRevision": revision if isinstance(revision, int) and not isinstance(revision, bool) else None,
+                    "state": "exact" if exact_revision else "remote_missing" if target is None else "revision_mismatch"})
+
+            for row in local.get("initiatives", {}).get("items", []):
+                if isinstance(row, Mapping):
+                    migration_link("initiative", row.get("id"), row.get("crawlseoActionId"), row.get("crawlseoRevision"))
+            for row in local.get("ownerActions", {}).get("items", []):
+                if isinstance(row, Mapping) and row.get("provider") == "crawlseo":
+                    migration_link("ownerAction", row.get("id"), row.get("crawlseoActionId"), row.get("crawlseoRevision"))
+            for row in local.get("executionBindings", {}).get("items", []):
+                if isinstance(row, Mapping):
+                    migration_link("executionBinding", f"{row.get('site_id')}:{row.get('action_id')}:{row.get('action_revision')}",
+                        row.get("action_id"), row.get("action_revision"))
+            linked_remote_ids = {row["crawlseoActionId"] for row in mapping_rows if row.get("state") == "exact"}
+            manifest = {
+                "schemaVersion": 1, "state": "review_required", "snapshotHash": snapshot_hash,
+                "mappings": mapping_rows,
+                "unmappedCrawlseoActionIds": sorted(set(remote_actions) - linked_remote_ids),
+                "automaticApply": False,
+            }
+            blockers = []
+            if local.get("truncated"):
+                blockers.append("Local migration inventory exceeded a category limit; a complete export is required.")
+            issue330_refs = local.get("issue330References") if isinstance(local.get("issue330References"), Mapping) else {}
+            protected_initiatives = issue330_refs.get("initiatives") if isinstance(issue330_refs.get("initiatives"), Mapping) else {}
+            owner_fact_conversation = issue330_refs.get("ownerFactConversation")
+            if protected_initiatives.get("4") is None or owner_fact_conversation is None:
+                blockers.append("Issue #330's initiative 4 and owner-fact conversation must be re-identified before migration; a missing referenced record cannot be inferred from other work.")
+            elif owner_fact_conversation.get("deleted") is True:
+                blockers.append("Issue #330's owner-fact conversation is deleted; restore or explicitly disposition it before migration.")
+            elif owner_fact_conversation.get("relationshipState") != "confirmed":
+                blockers.append("Issue #330's initiative 4 to owner-fact conversation relationship is not stored as a verified link; confirm the exact conversation before migration.")
+            initiatives = local.get("initiatives", {}).get("items", [])
+            decision_states = {"ready_for_review", "publishing", "publish_failed"}
+            if any(
+                isinstance(row, Mapping)
+                and row.get("candidateDecisionState") != "exact"
+                and (row.get("approval_id") is not None or row.get("state") in decision_states)
+                for row in initiatives
+            ):
+                blockers.append("An existing owner decision is missing or no longer matches its exact draft and review hash; preserve and reconcile it before cutover.")
+            if not remote.get("available") or remote.get("budget") is None:
+                blockers.append("CrawlSEO Actions and monetary policy must both be read successfully before comparing ledgers.")
+            binding = remote.get("binding") if isinstance(remote.get("binding"), Mapping) else {}
+            if not binding:
+                blockers.append("The active CrawlSEO execution binding could not be verified.")
+            elif binding.get("executionSupported") is False:
+                blockers.append("The active CrawlSEO executor has no implemented platform adapter and cannot be used for cutover.")
+            if remote.get("actionsTruncated"):
+                blockers.append("CrawlSEO returned the maximum Action page; a cursor-complete Action inventory is required.")
+            if any(row.get("state") != "exact" for row in mapping_rows) or manifest["unmappedCrawlseoActionIds"]:
+                blockers.append("Every legacy work item and CrawlSEO Action needs an exact identity and revision mapping before cutover.")
+            local_events = local.get("connectorEvents", {}).get("items", [])
+            if any(isinstance(row, Mapping) and row.get("disposition") in {"unsupported", "quarantined"} for row in local_events):
+                blockers.append("Unsupported or quarantined connector events require operator review before executor transfer.")
+            if local.get("budgetReservations", {}).get("total", 0):
+                blockers.append("Legacy reservation history requires exact comparison and reconciliation before allowance transfer.")
+            research_requests = local.get("seoResearchRequests", {}).get("items", [])
+            pending_research = [row for row in research_requests if isinstance(row, Mapping)
+                and row.get("status") not in {"completed", "partial", "failed", "blocked"}]
+            if local.get("seoResearchRequests", {}).get("truncated") or pending_research:
+                blockers.append("Legacy monthly SEO research requests are outstanding or incomplete; reconcile each request and its provider and budget receipts before cutover.")
+            site_reports = local.get("seoSiteReports", {}).get("items", [])
+            pending_reports = [row for row in site_reports if isinstance(row, Mapping)
+                and row.get("status") not in {"completed", "failed"}]
+            if local.get("seoSiteReports", {}).get("truncated") or pending_reports:
+                blockers.append("Legacy SEO site reports are outstanding or incomplete; reconcile each report before cutover.")
+            article_ideas = local.get("articleIdeas", {}).get("items", [])
+            pending_ideas = [row for row in article_ideas if isinstance(row, Mapping)
+                and row.get("status") not in {"drafted", "failed", "held"}]
+            if local.get("articleIdeas", {}).get("truncated") or pending_ideas:
+                blockers.append("Legacy article research ideas remain unresolved; preserve or explicitly disposition each idea before cutover.")
+            if not crawlseo_config.get("enabled") or crawlseo_config.get("research_authority") != "crawlseo":
+                blockers.append("Tenant is not yet configured for CrawlSEO authority; this plan does not activate cutover.")
+            if legacy_producers["registeredJobs"]:
+                blockers.append("Legacy recommendation or SEO producer jobs are still registered and must be stopped before cutover: "
+                    + ", ".join(legacy_producers["registeredJobs"]) + ".")
+            if not legacy_producers["schedulerRegistrationsKnown"]:
+                blockers.append("Runtime scheduler registrations could not be inspected; verify actual producer jobs before cutover.")
+            enabled_legacy_settings = [key for key, enabled in legacy_producers["settings"].items()
+                if key in {"seoResearchEnabled", "siteReportEnabled", "articleResearchEnabled"} and enabled]
+            if enabled_legacy_settings:
+                blockers.append("Legacy research settings remain enabled and need an explicit retirement disposition: "
+                    + ", ".join(enabled_legacy_settings) + ".")
+            blockers.append("Current robots.txt and sitemap.xml must be checked against the canonical site before cutover.")
+            blockers.append("Issue #3 requires the full cursor-paginated CrawlSEO Action ledger to be compared before cutover.")
+            return {
+                "schemaVersion": "1.0", "readOnly": True, "tenant": tenant.tenant_id,
+                "siteId": site_id, "snapshotHash": snapshot_hash, "inventory": local,
+                "crawlseo": remote,
+                "legacyProducers": legacy_producers,
+                "legacyPolicy": {"monthlyResearchCapMicros": growth.get("monthly_research_cap_micros"),
+                    "effectiveMonthlyAllowanceMicros": legacy_effective_allowance,
+                    "timezone": legacy_timezone, "researchAuthority": crawlseo_config.get("research_authority")},
+                "migrationManifest": manifest,
+                "blockers": blockers, "migrationApplied": False,
+                "notice": "This is a read-only snapshot. It does not change schedules, content, approvals, budget policy or provider work.",
+            }
+        except BridgeError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise BridgeError(f"Read-only migration inventory failed: {str(exc)[:350]}") from exc
+
     def retire_growth_revision(
         self, initiative_id: Any, body: Mapping[str, Any], *, tenant: Tenant | None = None,
     ) -> dict[str, Any]:
@@ -2546,6 +2955,64 @@ class ChatService:
                 )
             except Exception as exc:  # noqa: BLE001 — keep operator bridge errors bounded
                 raise BridgeError(str(exc)[:500]) from exc
+
+    def confirm_crawlseo_migration_reference(
+        self, body: Mapping[str, Any], *, tenant: Tenant | None = None,
+    ) -> dict[str, Any]:
+        """Record explicit operator confirmation of the protected initiative 4 conversation link."""
+        if tenant is None or self.registry is None or tenant.tenant_id not in self.registry.tenants:
+            raise BridgeError("tenant is not authorized")
+        expected_hash = str(body.get("expected_snapshot_hash") or "").strip().lower()
+        operator_request_id = str(body.get("operator_request_id") or "").strip()
+        reason = str(body.get("reason") or "").strip()
+        confirmation = str(body.get("confirmation") or "")
+        try:
+            initiative_id = int(body.get("initiative_id"))
+            conversation_id = int(body.get("conversation_id"))
+        except (TypeError, ValueError) as exc:
+            raise BridgeError("initiative_id and conversation_id must be integers") from exc
+        if initiative_id != 4 or conversation_id != 4:
+            raise BridgeError("this confirmation is limited to the issue #330 initiative 4 and conversation 4 references")
+        if not re.fullmatch(r"sha256:[a-f0-9]{64}", expected_hash):
+            raise BridgeError("expected_snapshot_hash must be a SHA-256 migration snapshot hash")
+        if not 8 <= len(operator_request_id) <= 200:
+            raise BridgeError("operator_request_id must contain 8 to 200 characters")
+        if not 8 <= len(reason) <= 500:
+            raise BridgeError("reason must contain 8 to 500 characters")
+        if confirmation != "I confirmed initiative 4 is linked to owner-fact conversation 4":
+            raise BridgeError("the exact relationship confirmation phrase is required")
+
+        with self._approval_lock:
+            key = "crawlseo_migration_reference:initiative4_owner_fact_conversation"
+            saved = tenant.memory.kv_get(key)
+            saved_current = saved.get("current") if isinstance(saved, Mapping) and isinstance(saved.get("current"), Mapping) else saved
+            expected_record = {"initiativeId": 4, "conversationId": 4,
+                "operatorRequestId": operator_request_id, "reason": reason, "snapshotHash": expected_hash}
+            if isinstance(saved_current, Mapping) and all(saved_current.get(field) == value for field, value in expected_record.items()):
+                return {"status": "confirmed", "idempotent": True, **dict(saved_current)}
+
+            plan = self.crawlseo_migration_plan(tenant=tenant)
+            if plan.get("snapshotHash") != expected_hash:
+                raise BridgeError("migration snapshot changed; refresh the plan before confirming this relationship")
+            references = plan.get("inventory", {}).get("issue330References", {})
+            initiatives = references.get("initiatives", {}) if isinstance(references, Mapping) else {}
+            conversation = references.get("ownerFactConversation") if isinstance(references, Mapping) else None
+            if not isinstance(initiatives, Mapping) or initiatives.get("4") is None:
+                raise BridgeError("the exact protected initiative 4 is not present in the current inventory")
+            if not isinstance(conversation, Mapping) or conversation.get("id") != conversation_id:
+                raise BridgeError("the exact protected owner-fact conversation is not present in the current inventory")
+            if saved_current is not None and conversation.get("relationshipState") != "stale_confirmation":
+                raise BridgeError("the protected relationship already has a current, different confirmation receipt")
+            receipt = {**expected_record,
+                "initiativeUpdatedAt": initiatives["4"].get("updated_ts"),
+                "conversationCreatedAt": conversation.get("created_ts"),
+                "conversationMessageHash": tenant.memory.migration_conversation_signature(conversation_id),
+                "confirmedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")}
+            try:
+                stored, idempotent = tenant.memory.confirm_crawlseo_migration_reference(receipt)
+            except Exception as exc:
+                raise BridgeError(str(exc)[:300]) from exc
+            return {"status": "confirmed", "idempotent": idempotent, **stored}
 
     def retire_growth_preparation(
         self, initiative_id: Any, body: Mapping[str, Any], *, tenant: Tenant | None = None,
@@ -3002,6 +3469,15 @@ class ChatService:
         """Owner-facing SEO synthesis, newest first, scoped to one tenant."""
         memory, _llm, tenant_id = self._scope(tenant)
         bounded = max(1, min(int(limit), 50))
+        settings = tenant.config if tenant is not None else self.config
+        providers = settings.get("providers") if isinstance(settings.get("providers"), Mapping) else {}
+        crawlseo = providers.get("crawlseo") if isinstance(providers.get("crawlseo"), Mapping) else {}
+        if crawlseo.get("research_authority") == "crawlseo":
+            historical = memory.list_seo_insights(limit=bounded)
+            return {
+                "tenant": tenant_id, "authority": "crawlseo", "status": "unsupported",
+                "latest": None, "insights": [], "historical": historical,
+            }
         return {
             "tenant": tenant_id,
             "latest": memory.latest_seo_insight(),
@@ -3259,6 +3735,10 @@ class ChatService:
                     approval = approval_service.decide(approval_id, True)
                 if approval.status.value != "approved":
                     raise BridgeError("Ada's website improvement was not approved")
+                if growth_package.get("crawlseoBinding"):
+                    from .growth_workflow import record_crawlseo_owner_decision
+                    if not record_crawlseo_owner_decision(tenant.context, approval_id, True):
+                        raise BridgeError("CrawlSEO has not recorded the exact source-candidate approval; release is held")
                 from .growth_delivery import decision_checkpoint
                 decision_checkpoint(tenant.context, growth_initiative, package_hash, approval, actor_id=owner_actor_id)
                 if growth_initiative.get("state") == "ready_for_review":
@@ -3346,9 +3826,12 @@ class ChatService:
                     memory.update_draft_status(normalized_id, "publish_failed")
                     block_growth_source("the approved preview merge returned no full production Git SHA")
                     raise BridgeError("preview merged but the production commit could not be identified")
+                source_promotion = None
                 if growth_source:
                     from .growth_delivery import verify_source_promotion
-                    verify_source_promotion(tenant.context, growth_initiative, package_hash, growth_package, commit_sha)
+                    source_promotion = verify_source_promotion(
+                        tenant.context, growth_initiative, package_hash, growth_package, commit_sha,
+                    )
                 try:
                     memory.update_draft_status(normalized_id, "publishing")
                     production_deployment = self._start_approved_release(memory, normalized_id, start, {
@@ -3376,6 +3859,13 @@ class ChatService:
                 if growth_source:
                     from .growth_delivery import release_checkpoint
                     release_checkpoint(tenant.context, growth_initiative, package_hash, production_deployment)
+                    if growth_package.get("crawlseoBinding") and production_deployment.get("status") == "deployed":
+                        from .growth_workflow import record_crawlseo_source_publication
+                        if not record_crawlseo_source_publication(
+                            tenant.context, growth_package, production_deployment, source_promotion,
+                        ):
+                            memory.record_action("crawlseo_publication_receipt_pending",
+                                "The approved source candidate is deployed; CrawlSEO receipt reconciliation will retry.")
             else:
                 memory.update_draft_status(normalized_id, "approved")
             if kind == "rollback":
@@ -3410,18 +3900,58 @@ class ChatService:
             approval_id = int((initiative or {}).get("approval_id") or 0)
             if not approval_id:
                 raise BridgeError("the content candidate has no durable owner approval")
+            connector_binding = package.get("crawlseoBinding") if isinstance(package.get("crawlseoBinding"), Mapping) else None
+            binding = None
+            if connector_binding is not None:
+                site_id = str(connector_binding.get("siteId") or "")
+                remote_id = str(connector_binding.get("actionId") or "")
+                revision = int(connector_binding.get("actionRevision") or 0)
+                generation = int(connector_binding.get("generation") or 0)
+                binding = memory.get_crawlseo_execution_binding(site_id, remote_id, revision)
+                if binding is None or int(binding.get("generation") or 0) != generation:
+                    raise BridgeError("CrawlSEO execution binding is stale; publication is held")
             from .approvals import ApprovalService
             from .actions import OwnerActionService
             approval_service = ApprovalService(memory, actions=OwnerActionService(memory))
             approval = memory.get_approval_request(approval_id)
             if approval is None:
                 raise BridgeError("the content candidate references a missing owner approval")
+            if connector_binding is not None and approval.status.value == "pending" and binding.get("state") != "ready":
+                raise BridgeError("the CrawlSEO Action is no longer ready for this candidate; refresh its current execution status")
+            if connector_binding is not None and approval.status.value == "approved" and binding.get("state") not in {
+                "ready", "decision_unreported", "owner_decision", "publication_unreported", "published",
+            }:
+                raise BridgeError("the CrawlSEO owner decision is no longer current; publication is held")
             if approval.status.value == "pending":
                 approval = approval_service.decide(approval_id, True)
             if approval.status.value != "approved":
                 raise BridgeError(f"the content candidate is not approved ({approval.status.value})")
             from .growth_delivery import decision_checkpoint, publication_checkpoint
             decision_checkpoint(tenant.context, initiative, package_hash, approval, actor_id=owner_actor_id)
+            if connector_binding is not None:
+                crawlseo_service = tenant.context.get("crawlseo_service")
+                if crawlseo_service is None:
+                    raise BridgeError("CrawlSEO is unavailable; the approved candidate is saved and publication is held")
+                site_id = str(connector_binding.get("siteId") or "")
+                remote_id = str(connector_binding.get("actionId") or "")
+                revision = int(connector_binding.get("actionRevision") or 0)
+                generation = int(connector_binding.get("generation") or 0)
+                report = {"status": "owner_decision", "candidateRef": str(connector_binding.get("candidateRef") or ""),
+                    "reviewUrl": str(connector_binding.get("reviewUrl") or ""), "ownerDecision": "approved",
+                    "detail": {"approvalId": approval_id, "reviewPackageHash": package_hash,
+                        "ownerActorId": str(owner_actor_id or "")}}
+                if binding.get("state") != "owner_decision":
+                    memory.update_crawlseo_execution_binding(site_id, remote_id, revision, generation,
+                        expected_state=str(binding.get("state")), state="decision_unreported",
+                        detail={**dict(binding.get("detail") or {}), "report": report})
+                from .growth_workflow import _reconcile_crawlseo_execution_report
+                latest_binding = memory.get_crawlseo_execution_binding(site_id, remote_id, revision)
+                if latest_binding and latest_binding.get("state") == "decision_unreported":
+                    if not _reconcile_crawlseo_execution_report(tenant.context, latest_binding):
+                        raise BridgeError("CrawlSEO has not recorded the exact owner approval; publication is held")
+                latest_binding = memory.get_crawlseo_execution_binding(site_id, remote_id, revision)
+                if latest_binding is None or latest_binding.get("state") != "owner_decision":
+                    raise BridgeError("the exact CrawlSEO owner approval is no longer current; publication is held")
             # Freeze the owner decision before crossing the Payload mutation boundary.
             memory.record_strategy_decision_for_draft(normalized_id, "approved")
             try:
@@ -3448,6 +3978,39 @@ class ChatService:
             memory.record_strategy_publication_for_draft(normalized_id, baseline=baseline, published_revision=published_revision, validation={"status": "passed", "liveVerification": published.get("liveVerification") or {}})
             memory.update_draft_status(normalized_id, "approved")
             publication_checkpoint(tenant.context, initiative, package_hash, published)
+            if connector_binding is not None:
+                from .growth_workflow import _reconcile_crawlseo_execution_report
+                remote_id = str(connector_binding.get("actionId") or "")
+                site_id = str(connector_binding.get("siteId") or "")
+                revision = int(connector_binding.get("actionRevision") or 0)
+                generation = int(connector_binding.get("generation") or 0)
+                binding = memory.get_crawlseo_execution_binding(site_id, remote_id, revision)
+                candidate_hash = str(package.get("candidateHash") or "").removeprefix("sha256:")
+                published_at = str(published_meta.get("updatedAt") or "")
+                try:
+                    published_datetime = datetime.datetime.fromisoformat(published_at.replace("Z", "+00:00"))
+                    if published_datetime.tzinfo is None:
+                        raise ValueError("publication timestamp has no timezone")
+                    published_at = published_datetime.astimezone(datetime.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+                except ValueError:
+                    memory.record_action("crawlseo_publication_receipt_pending",
+                        f"#{normalized_id}: the live Payload candidate is retained, but its exact UTC publication timestamp is unavailable")
+                    published_at = ""
+                if published_at:
+                    receipt = {"candidateRef": str(connector_binding.get("candidateRef") or ""),
+                        "receiptId": str(published.get("packageHash") or package_hash),
+                        "targetUrl": str(connector_binding.get("targetUrl") or ""),
+                        "publishedAt": published_at, "contentHash": candidate_hash}
+                    report = {"status": "publication_verified", "candidateRef": str(connector_binding.get("candidateRef") or ""),
+                        "publicationReceipt": receipt,
+                        "detail": {"helloAdaPublication": dict(published), "reviewPackageHash": package_hash}}
+                    if binding is not None and binding.get("state") != "published":
+                        memory.update_crawlseo_execution_binding(site_id, remote_id, revision, generation,
+                            expected_state=str(binding.get("state")), state="publication_unreported",
+                            detail={**dict(binding.get("detail") or {}), "report": report})
+                        latest_binding = memory.get_crawlseo_execution_binding(site_id, remote_id, revision)
+                        if latest_binding:
+                            _reconcile_crawlseo_execution_report(tenant.context, latest_binding)
             action_service = tenant.context.get("owner_action_service")
             if action_service is not None and hasattr(action_service, "reconcile"):
                 action_service.reconcile(draft_id=normalized_id, succeeded=True)
@@ -3649,6 +4212,9 @@ class ChatService:
                 approval = ApprovalService(memory, actions=OwnerActionService(memory)).decide(approval_id, False)
             if approval.status.value != "declined":
                 raise BridgeError("Ada's website recommendation could not be declined")
+            if growth_package.get("crawlseoBinding"):
+                from .growth_workflow import record_crawlseo_owner_decision
+                record_crawlseo_owner_decision(tenant.context, approval_id, False)
             from .growth_delivery import decision_checkpoint
             decision_checkpoint(tenant.context, initiative, str(meta.get("review_package_hash") or ""), approval, actor_id=owner_actor_id)
             if initiative.get("state") == "ready_for_review":
@@ -3676,6 +4242,29 @@ class ChatService:
             if approval.status.value == "pending":
                 approval = ApprovalService(memory, actions=OwnerActionService(memory)).decide(approval_id, False)
             decision_checkpoint(tenant.context, initiative, str(meta.get("review_package_hash") or ""), approval, actor_id=owner_actor_id)
+            package = meta.get("growth_package") if isinstance(meta.get("growth_package"), Mapping) else {}
+            connector_binding = package.get("crawlseoBinding") if isinstance(package.get("crawlseoBinding"), Mapping) else None
+            if connector_binding is not None:
+                service = tenant.context.get("crawlseo_service")
+                remote_id = str(connector_binding.get("actionId") or "")
+                site_id = str(connector_binding.get("siteId") or "")
+                revision = int(connector_binding.get("actionRevision") or 0)
+                generation = int(connector_binding.get("generation") or 0)
+                binding = memory.get_crawlseo_execution_binding(site_id, remote_id, revision)
+                if service is None or binding is None or int(binding.get("generation") or 0) != generation:
+                    raise BridgeError("CrawlSEO execution binding is unavailable; the decline is saved and will be synchronized")
+                report = {"status": "owner_decision", "candidateRef": str(connector_binding.get("candidateRef") or ""),
+                    "reviewUrl": str(connector_binding.get("reviewUrl") or ""), "ownerDecision": "declined",
+                    "detail": {"approvalId": approval_id, "reviewPackageHash": str(meta.get("review_package_hash") or ""),
+                        "ownerActorId": str(owner_actor_id or "")}}
+                if binding.get("state") != "owner_decision":
+                    memory.update_crawlseo_execution_binding(site_id, remote_id, revision, generation,
+                        expected_state=str(binding.get("state")), state="decision_unreported",
+                        detail={**dict(binding.get("detail") or {}), "report": report})
+                from .growth_workflow import _reconcile_crawlseo_execution_report
+                latest_binding = memory.get_crawlseo_execution_binding(site_id, remote_id, revision)
+                if latest_binding and latest_binding.get("state") == "decision_unreported":
+                    _reconcile_crawlseo_execution_report(tenant.context, latest_binding)
             memory.record_strategy_decision_for_draft(normalized_id, "rejected")
             close_declined(tenant.context, initiative, str(meta.get("review_package_hash") or ""), approval)
         if kind in {"merge", "rollback"}:

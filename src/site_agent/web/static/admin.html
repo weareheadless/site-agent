@@ -1242,6 +1242,15 @@ function renderHomeError(message){
 async function homePrimary(index){
   const action=homeActionItems[index];
   if(!action)return;
+  const remoteActionId=action.details&&action.details.payload&&action.details.payload.remoteActionId;
+  if(remoteActionId){
+    try{
+      const result=await api(`/workspace/growth/actions/${action.id}/decision`,{method:'POST',body:JSON.stringify({operation:'accept_preparation'})});
+      addMsg('ada',result&&result.ok?'Preparation accepted. Ada will prepare the exact candidate for your review.':'Preparation request submitted.');
+      await refresh();
+    }catch(e){addMsg('ada','⚠ '+e.message)}
+    return;
+  }
   if(action.draft_id){enterReview(action.draft_id);return}
   if(action.approval_id){openHomeApproval(action.approval_id);return}
   if(action.id){
@@ -1263,6 +1272,11 @@ async function homePrimary(index){
 async function homeSnooze(index){
   const action=homeActionItems[index];
   if(!action||!action.id)return;
+  if(action.details&&action.details.payload&&action.details.payload.remoteActionId){
+    try{await api(`/workspace/growth/actions/${action.id}/decision`,{method:'POST',body:JSON.stringify({operation:'decline_preparation',rationale:'Owner deferred this recommendation.'})});await refresh()}
+    catch(e){addMsg('ada','⚠ '+e.message)}
+    return;
+  }
   try{await api(`/actions/${action.id}/snooze`,{method:'POST',body:JSON.stringify({days:7})});await refresh()}
   catch(e){addMsg('ada','⚠ '+e.message)}
 }
@@ -1270,6 +1284,11 @@ async function homeSnooze(index){
 async function homeDismiss(index){
   const action=homeActionItems[index];
   if(!action||!action.id)return;
+  if(action.details&&action.details.payload&&action.details.payload.remoteActionId){
+    try{await api(`/workspace/growth/actions/${action.id}/decision`,{method:'POST',body:JSON.stringify({operation:'decline_preparation'})});await refresh()}
+    catch(e){addMsg('ada','⚠ '+e.message)}
+    return;
+  }
   try{await api(`/actions/${action.id}/dismiss`,{method:'POST'});await refresh()}
   catch(e){addMsg('ada','⚠ '+e.message)}
 }

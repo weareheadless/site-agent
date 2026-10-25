@@ -272,6 +272,9 @@ providers:
     enabled: false
     url: ""
     token_env: CRAWLSEO_SERVICE_TOKEN
+    connector_token_env: "" # defaults to token_env; set separately to preserve the legacy MCP credential during migration
+    connector_url: ""
+    research_authority: local
     timeout_seconds: 30
     max_response_bytes: 2097152
 

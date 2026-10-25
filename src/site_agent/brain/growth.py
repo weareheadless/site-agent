@@ -5,6 +5,7 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+from ..config import crawlseo_research_authority_selected
 from ..core.llm import extract_json
 from ..core.growth_contracts import GROWTH_AREAS
 
@@ -46,6 +47,8 @@ def _response(context: Mapping[str, Any], contract: str, material: Mapping[str, 
 
 
 def assess(context: Mapping[str, Any], material: Mapping[str, Any]) -> dict[str, Any]:
+    if crawlseo_research_authority_selected(context.get("config")):
+        raise RuntimeError("Local Growth assessment is disabled while CrawlSEO is the research authority")
     result = _response(context,
         "Return exactly these top-level keys: summary, coverage, opportunities. summary is a nonempty string; opportunities is an array (maximum maxRecommendations). "
         "Every opportunity must include primaryArea, exactly one of content, search_visibility, website_health, "

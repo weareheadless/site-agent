@@ -236,7 +236,9 @@ def test_source_promotion_proves_equal_trees_before_queue(setup, monkeypatch):
         return original(method, url, token, payload)
     monkeypatch.setattr(delivery, "_request", request)
     package = {"tenant": "customer", "initiativeId": 7, "source": {"candidateSha": "a" * 40}}
-    delivery.verify_source_promotion(context, initiative, "exact", package, "b" * 40)
+    proof = delivery.verify_source_promotion(context, initiative, "exact", package, "b" * 40)
+    assert proof["refs"] == {"packageHash": "exact", "candidateSha": "a" * 40,
+        "sourceSha": "b" * 40, "treeSha": "c" * 40, "draftId": 2}
     assert len(github.comments) == 1
     trees["b" * 40] = "d" * 40
     with pytest.raises(delivery.GrowthDeliveryError, match="differs"):

@@ -8,6 +8,7 @@ import { GrowthTable, GrowthTrend } from "./GrowthWidgets";
 
 export type GrowthProvider = {
   available?: boolean;
+  reason?: string;
   overview?: { current?: GrowthRow; deltaPct?: GrowthRow };
   trend?: GrowthRow[];
   pages?: GrowthRow[];
@@ -203,7 +204,7 @@ export function GrowthAnalytics({
         </div>
       ) : null}
       {provider?.available === false ? (
-        <p className="helloada-growth-empty">{t("growth.not_configured")}</p>
+        <p className="helloada-growth-empty">{t(provider.reason ? `growth.${provider.reason}` : "growth.not_configured")}</p>
       ) : null}
       <GrowthMetrics provider={provider} metrics={metrics} pending={pending} />
       {ga ? (

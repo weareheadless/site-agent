@@ -108,7 +108,7 @@ def test_payload_template_has_one_managed_growth_write_and_renderer_boundary():
     assert "path.startsWith('/growth/')" not in source
     assert "path === '/growth/contract' || path === '/growth/candidate'" in source
     assert "path === '/growth/validate' || path === '/growth/apply' || path === '/growth/publish'" in source
-    assert "fetchHelloAdaUpstream(`/api/helloada${path}`, request)" in source
+    assert "fetchHelloAdaUpstream(`/api/helloada${path}`, request, `payload:${tenantId()}:${text(auth.user.id)}`)" in source
     assert "path === '/growth/apply'" in operations
     assert "path === '/growth/publish'" in operations
     assert "claimOperation(operationKey, documentKey, packageHash)" in operations

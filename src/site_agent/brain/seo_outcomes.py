@@ -6,6 +6,8 @@ import datetime
 from collections.abc import Mapping
 from typing import Any
 
+from ..config import crawlseo_research_authority_selected
+
 
 HORIZONS = (30, 90, 180)
 
@@ -73,6 +75,9 @@ def _assessment(baseline: float | None, observed: float | None) -> tuple[str, st
 
 
 def run(context: dict[str, Any]) -> int:
+    if crawlseo_research_authority_selected(context.get("config")):
+        context["memory"].record_action("seo_outcomes", "skipped: CrawlSEO owns SEO outcome analysis for this site")
+        return 0
     memory = context["memory"]
     now = datetime.datetime.now(datetime.timezone.utc)
     measured = 0

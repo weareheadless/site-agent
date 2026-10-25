@@ -15,8 +15,8 @@ from collections.abc import Mapping
 from typing import Any
 
 from ..application.crawlseo import CrawlSEORequestNotDispatched
-from ..config import primary_research_locale
-from ..application.growth_budget import GrowthBudgetBlocked, mark_paid_research_uncertain, release_paid_research, reserve_paid_research, settle_paid_research
+from ..config import crawlseo_research_authority_selected, primary_research_locale
+from ..application.growth_budget import GrowthBudgetBlocked, get_paid_research_reservation, mark_paid_research_uncertain, release_paid_research, reserve_paid_research, settle_paid_research
 from ..core.llm import extract_json
 from . import article as brain_article
 
@@ -356,7 +356,7 @@ def _request_selected_idea(context: Mapping[str, Any], row: Mapping[str, Any], i
             memory.record_action("article_research", f"idea #{row['id']}: rejected before paid request because its research summary was empty")
             return
         if reservation_id:
-            reservation = memory.get_growth_budget_reservation(reservation_id)
+            reservation = get_paid_research_reservation(context, reservation_id)
             if reservation and str(reservation.get("status")) == "released":
                 reservation_id = ""
             elif not reservation or str(reservation.get("status")) != "reserved":
@@ -442,6 +442,9 @@ def _paid_retry_requires_owner_approval(row: Mapping[str, Any]) -> bool:
 def select_and_request(context: dict[str, Any]) -> None:
     config = context["config"]
     memory = context["memory"]
+    if crawlseo_research_authority_selected(config):
+        memory.record_action("article_research", "skipped: CrawlSEO owns article research for this site")
+        return
     settings = _settings(config)
     if not settings.get("enabled", False):
         return
@@ -661,6 +664,10 @@ def _reconcile_overview(context: dict[str, Any], idea: Mapping[str, Any], servic
     if value in {"requested", "attempting"}:
         return
     if value in {"failed", "uncertain"}:
+        reservation_id = str(idea.get("keyword_budget_reservation_id") or "").strip()
+        if reservation_id:
+            settle_paid_research(context, reservation_id, provider_task_id=str(status.get("provider_task_id") or run_id),
+                detail={"provider_status": value, "cost_micros": status.get("cost_micros"), "error": status.get("error_code")})
         memory.update_article_idea(
             idea["id"],
             status="failed",
@@ -685,6 +692,10 @@ def _reconcile_overview(context: dict[str, Any], idea: Mapping[str, Any], servic
         if payload.get("cost_micros") is not None
         else status.get("cost_micros")
     )
+    reservation_id = str(idea.get("keyword_budget_reservation_id") or "").strip()
+    if reservation_id:
+        settle_paid_research(context, reservation_id, provider_task_id=str(provider_task_id or run_id),
+            detail={"provider_status": "completed", "cost_micros": research_cost_micros, "stage": "keyword_overview"})
     if not _has_demand(result) and not _empty_result_allowed(note):
         memory.update_article_idea(
             idea["id"],
@@ -720,7 +731,7 @@ def _reconcile_overview(context: dict[str, Any], idea: Mapping[str, Any], servic
     try:
         serp_key = f"article-serp:{idea['idea_hash']}:{_hash(selected_query)}:v1"
         if serp_reservation_id:
-            reservation = memory.get_growth_budget_reservation(serp_reservation_id)
+            reservation = get_paid_research_reservation(context, serp_reservation_id)
             if reservation and str(reservation.get("status")) == "released":
                 serp_reservation_id = ""
             elif not reservation or str(reservation.get("status")) != "reserved":
@@ -777,6 +788,10 @@ def _reconcile_serp(context: dict[str, Any], idea: Mapping[str, Any], service: A
     if value in {"requested", "attempting"}:
         return
     if value in {"failed", "uncertain"}:
+        reservation_id = str(idea.get("serp_budget_reservation_id") or "").strip()
+        if reservation_id:
+            settle_paid_research(context, reservation_id, provider_task_id=str(status.get("provider_task_id") or serp_run_id),
+                detail={"provider_status": value, "cost_micros": status.get("cost_micros"), "error": status.get("error_code")})
         memory.update_article_idea(
             idea["id"],
             status="failed",
@@ -788,6 +803,12 @@ def _reconcile_serp(context: dict[str, Any], idea: Mapping[str, Any], service: A
     if value != "completed":
         return
     payload = service.article_serp_research(serp_run_id)
+    serp_cost = payload.get("cost_micros") if payload.get("cost_micros") is not None else status.get("cost_micros")
+    reservation_id = str(idea.get("serp_budget_reservation_id") or "").strip()
+    if reservation_id:
+        settle_paid_research(context, reservation_id,
+            provider_task_id=str(payload.get("provider_task_id") or status.get("provider_task_id") or serp_run_id),
+            detail={"provider_status": "completed", "cost_micros": serp_cost, "stage": "serp_snapshot"})
     evidence = _serp_evidence(payload.get("result"))
     note = idea.get("research_note_json") if isinstance(idea.get("research_note_json"), Mapping) else {}
     note = {
@@ -796,9 +817,7 @@ def _reconcile_serp(context: dict[str, Any], idea: Mapping[str, Any], service: A
         "serp_receipt": {
             "run_id": serp_run_id,
             "provider_task_id": payload.get("provider_task_id") or status.get("provider_task_id"),
-            "cost_micros": payload.get("cost_micros")
-            if payload.get("cost_micros") is not None
-            else status.get("cost_micros"),
+            "cost_micros": serp_cost,
             "checked_at": evidence.get("checked_at"),
         },
     }
@@ -858,6 +877,9 @@ def _reconcile_local_draft(context: dict[str, Any], idea: Mapping[str, Any], mem
 def reconcile(context: dict[str, Any]) -> None:
     config = context["config"]
     memory = context["memory"]
+    if crawlseo_research_authority_selected(config):
+        memory.record_action("article_research", "skipped: CrawlSEO owns article research for this site")
+        return
     service = context.get("crawlseo_service")
     if not _settings(config).get("enabled", False) or service is None:
         return

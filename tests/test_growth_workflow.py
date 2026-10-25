@@ -1,12 +1,27 @@
 import pytest
 
 from site_agent.application.growth import growth_snapshot, owner_queue
-from site_agent.application.growth_workflow import _crawlseo_dataset_source, run_growth_reconciler, run_pending_growth
+from site_agent.application.growth_workflow import _crawlseo_dataset_source, queue_growth_check, run_growth_cycle, run_growth_reconciler, run_pending_growth
 from site_agent.core.contracts import ContractError
 from site_agent.core.jobs import register_builtin
 from site_agent.core.memory import Memory
 from site_agent.core.scheduler import Scheduler
 import datetime
+
+
+def test_manual_growth_refresh_uses_crawlseo_authority_run_after_cutover(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    config = {"growth": {"timezone": "UTC"}, "providers": {"crawlseo": {
+        "enabled": True, "connector_url": "https://crawlseo.test/api/connector/v1",
+        "research_authority": "crawlseo",
+    }}}
+    run = queue_growth_check({"memory": memory, "config": config})
+    assert run["trigger"] == "crawlseo_action"
+    assert run["status"] == "pending"
+    assert not [row for row in memory.list_growth_runs(limit=None) if row["trigger"] == "owner_review"]
+    with pytest.raises(RuntimeError, match="Local Growth discovery is disabled"):
+        run_growth_cycle({"memory": memory, "config": config}, trigger="weekly")
+    memory.close()
 
 def test_owner_queue_indexes_decisions_and_excludes_opportunities_and_history():
     tasks = [
@@ -527,6 +542,88 @@ def test_pending_growth_stops_after_one_interrupted_recovery(tmp_path, monkeypat
     memory.close()
 
 
+def test_pending_growth_replays_crawlseo_connector_reports(monkeypatch, tmp_path):
+    import site_agent.application.growth_workflow as workflow
+    from site_agent.core.memory import Memory
+
+    memory = Memory(tmp_path / "crawlseo-hourly-replay.db")
+    monkeypatch.setattr("site_agent.application.growth_candidates.reconcile_payload_growth_revisions", lambda *_args: None)
+    monkeypatch.setattr("site_agent.application.growth_candidates.reconcile_source_candidates", lambda *_args: None)
+    monkeypatch.setattr("site_agent.application.growth_delivery.reconcile_delivery", lambda *_args: None)
+    monkeypatch.setattr(workflow, "reconcile_historical_noop_initiatives", lambda *_args: 0)
+    monkeypatch.setattr(workflow, "_reconcile_orphan_owner_questions", lambda *_args: None)
+    monkeypatch.setattr(workflow, "_reconcile_article_research", lambda *_args: None)
+    monkeypatch.setattr(memory, "due_growth_runs", lambda **_kwargs: [])
+    monkeypatch.setattr(memory, "list_growth_runs", lambda **_kwargs: [])
+    calls = []
+    monkeypatch.setattr(workflow, "_sync_crawlseo_actions", lambda _context: calls.append("sync"))
+    context = {"memory": memory, "config": {"providers": {"crawlseo": {
+        "enabled": True, "connector_url": "https://crawlseo.example/api/connector/v1",
+        "research_authority": "crawlseo"}}}}
+
+    workflow.run_pending_growth(context)
+
+    assert calls == ["sync"]
+    assert memory.kv_get("crawlseo_connector_sync_error") == {}
+    memory.close()
+
+
+def test_pending_growth_skips_legacy_execution_recovery_in_crawlseo_authority(monkeypatch, tmp_path):
+    import site_agent.application.growth_workflow as workflow
+    from site_agent.core.memory import Memory
+
+    memory = Memory(tmp_path / "crawlseo-no-legacy-executors.db")
+    import site_agent.application.growth_candidates as candidates
+    import site_agent.application.growth_delivery as delivery
+    for module, name in (
+        (candidates, "reconcile_payload_growth_revisions"),
+        (candidates, "reconcile_source_candidates"),
+        (delivery, "reconcile_delivery"),
+    ):
+        monkeypatch.setattr(module, name, lambda *_args, _name=name: pytest.fail(f"{_name} must be disabled under CrawlSEO authority"), raising=False)
+    monkeypatch.setattr(workflow, "reconcile_historical_noop_initiatives", lambda *_args: pytest.fail("legacy initiative repair must be disabled"))
+    monkeypatch.setattr(workflow, "_reconcile_orphan_owner_questions", lambda *_args: pytest.fail("legacy owner prompt repair must be disabled"))
+    monkeypatch.setattr(workflow, "_reconcile_article_research", lambda *_args: pytest.fail("legacy paid article work must be disabled"))
+    monkeypatch.setattr(memory, "due_growth_runs", lambda **_kwargs: [])
+    monkeypatch.setattr(memory, "list_growth_runs", lambda **_kwargs: [])
+    monkeypatch.setattr(workflow, "_sync_crawlseo_actions", lambda _context: None)
+    workflow.run_pending_growth({"memory": memory, "config": {"providers": {"crawlseo": {
+        "enabled": True, "connector_url": "https://crawlseo.example/api/connector/v1",
+        "research_authority": "crawlseo"}}}})
+    memory.close()
+
+
+def test_crawlseo_authority_quarantines_discovery_but_preserves_exact_legacy_work(monkeypatch, tmp_path):
+    import site_agent.application.growth_workflow as workflow
+    from site_agent.core.memory import Memory
+
+    memory = Memory(tmp_path / "crawlseo-held-legacy-runs.db")
+    memory.create_growth_run(run_id="legacy-weekly", run_key="legacy-weekly", trigger="weekly",
+        goal_revision=1, timezone="UTC", phase="collecting", status="pending", policy={},
+        origin_revision="origin-1", phase_version=1)
+    memory.update_growth_run("legacy-weekly", next_due_ts="2000-01-01T00:00:00+00:00")
+    memory.create_growth_run(run_id="legacy-candidate", run_key="legacy-candidate", trigger="weekly",
+        goal_revision=1, timezone="UTC", phase="preparing", status="pending", policy={},
+        origin_revision="origin-1", phase_version=1)
+    cycle = memory.create_strategy_cycle("legacy-candidate-cycle", "2026-10", "saved-evidence", {})
+    memory.create_strategy_initiative(cycle["id"], kind="payload_content", title="Exact pending candidate",
+        summary="Preserve its existing owner decision.", state="ready_for_review", growth_run_id="legacy-candidate",
+        approval_id=123, draft_id=456, candidate_hash="sha256:" + "a" * 64,
+        review_package_hash="sha256:" + "b" * 64)
+    monkeypatch.setattr(workflow, "_sync_crawlseo_actions", lambda _context: None)
+    monkeypatch.setattr(workflow, "run_growth_cycle", lambda *_args, **_kwargs: pytest.fail("legacy run must remain history"))
+    workflow.run_pending_growth({"memory": memory, "config": {"providers": {"crawlseo": {
+        "enabled": True, "connector_url": "https://crawlseo.example/api/connector/v1",
+        "research_authority": "crawlseo"}}}})
+    retired = memory.get_growth_run("legacy-weekly")
+    assert retired["status"] == "blocked"
+    assert retired["next_due_ts"] is None
+    assert retired["completed_ts"]
+    assert retired["detail"]["recoveryEvents"][-1]["code"] == "legacy_discovery_quarantined_at_cutover"
+    assert memory.get_growth_run("legacy-candidate")["status"] == "pending"
+    memory.close()
+
+
 def test_growth_scheduler_uses_tenant_timezone_and_registers_outcomes_independently(tmp_path):
     memory = Memory(tmp_path / "memory.db")
     scheduler = Scheduler(
@@ -550,4 +647,44 @@ def test_growth_scheduler_uses_tenant_timezone_and_registers_outcomes_independen
     assert "seo_research_cycle" in names
     assert "seo_outcomes" in names
     assert scheduler.timezone_name == "Europe/Paris"
+    memory.close()
+
+
+def test_growth_scheduler_removes_duplicate_research_producers_under_crawlseo_authority(tmp_path):
+    memory = Memory(tmp_path / "crawlseo-authority-scheduler.db")
+    scheduler = Scheduler(memory, lock_path=tmp_path / "scheduler.lock", timezone_name="UTC")
+    config = {
+        "site": {"website_present": True, "payload": {"enabled": True}},
+        "scheduler": {"enabled": True},
+        "growth": {"enabled": True},
+        "seo": {"enabled": True, "research": {"enabled": True}, "site_report": {"enabled": True},
+            "article_research": {"enabled": True}},
+        "providers": {"crawlseo": {"enabled": True, "connector_url": "https://crawlseo.example/api/connector/v1",
+            "research_authority": "crawlseo"}},
+    }
+    register_builtin(scheduler, config, {"memory": memory, "config": config, "crawlseo_service": object(), "llm": object()})
+    names = {name for name, _spec, _fn in scheduler.jobs}
+    assert "growth_pending" in names
+    assert not names.intersection({"growth_initial", "growth_daily", "growth_weekly", "growth_monthly"})
+    assert "growth_article_sync" not in names
+    assert not names.intersection({"seo_insight", "seo_outcomes", "seo_research_cycle", "seo_site_report_cycle",
+        "article_research_cycle", "seo_provisioning"})
+    assert "growth_reconciler" not in names
+    memory.close()
+
+
+def test_selected_crawlseo_authority_never_falls_back_when_connector_is_unconfigured(tmp_path):
+    memory = Memory(tmp_path / "crawlseo-missing-connector.db")
+    scheduler = Scheduler(memory, lock_path=tmp_path / "scheduler.lock", timezone_name="UTC")
+    config = {
+        "site": {"website_present": True, "payload": {"enabled": True}},
+        "scheduler": {"enabled": True},
+        "growth": {"enabled": True},
+        "providers": {"crawlseo": {"research_authority": "crawlseo", "enabled": False}},
+    }
+    with pytest.raises(RuntimeError, match="authority is selected"):
+        register_builtin(scheduler, config, {"memory": memory, "config": config, "llm": object()})
+    assert not {name for name, _spec, _fn in scheduler.jobs}.intersection({
+        "growth_initial", "growth_daily", "growth_weekly", "growth_monthly", "article_research_cycle",
+    })
     memory.close()

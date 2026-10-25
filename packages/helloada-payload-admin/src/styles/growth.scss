@@ -250,6 +250,22 @@
   .helloada-growth-card header select {
     max-width: 250px;
   }
+  .helloada-growth-budget-form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: end;
+    gap: 10px;
+    margin-top: 20px;
+  }
+  .helloada-growth-budget-form label {
+    width: 100%;
+    color: var(--helloada-muted);
+    font-size: 12px;
+    font-weight: 650;
+  }
+  .helloada-growth-budget-form input {
+    width: min(280px, 100%);
+  }
   .helloada-growth-identity {
     display: flex;
     align-items: center;

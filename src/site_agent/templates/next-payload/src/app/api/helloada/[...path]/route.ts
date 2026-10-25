@@ -311,7 +311,7 @@ export async function GET(request: Request, { params }: RouteProps) {
     const language = request.headers.get('cookie')?.match(/(?:^|;\s*)payload-lng=([^;]+)/i)?.[1] || 'en'
     return NextResponse.json({ language, defaultLanguage: 'en', supportedLanguages: ['en', 'es', 'fr'] })
   }
-  const upstream = await fetchHelloAdaUpstream(`/api/helloada${path}`, request)
+  const upstream = await fetchHelloAdaUpstream(`/api/helloada${path}`, request, `payload:${tenantId()}:${text(auth.user.id)}`)
   return upstream || errorResponse('HelloAda service is unavailable', 503)
 }
 
@@ -530,6 +530,15 @@ export async function POST(request: Request, { params }: RouteProps) {
     const document = await auth.payload.restoreVersion({ collection: collection as CollectionSlug, draft: true, id: versionId, overrideAccess: false, req: auth.req })
     return NextResponse.json({ ok: true, collection, versionId, document })
   }
+  const upstream = await fetchHelloAdaUpstream(`/api/helloada${path}`, request, `payload:${tenantId()}:${text(auth.user.id)}`)
+  return upstream || errorResponse('HelloAda service is unavailable', 503)
+}
+
+export async function PUT(request: Request, { params }: RouteProps) {
+  const path = `/${(await params).path?.join('/') || ''}`.replace(/\/$/, '') || '/'
+  if (path !== '/growth/budget' && path !== '/growth/research-policy') return errorResponse('unsupported HelloAda update route', 404)
+  const auth = await authenticateHelloAdaRequest(request)
+  if (!auth) return errorResponse('authentication_required', 401)
   const upstream = await fetchHelloAdaUpstream(`/api/helloada${path}`, request, `payload:${tenantId()}:${text(auth.user.id)}`)
   return upstream || errorResponse('HelloAda service is unavailable', 503)
 }

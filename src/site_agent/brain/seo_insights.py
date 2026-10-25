@@ -13,6 +13,7 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
+from ..config import crawlseo_research_authority_selected
 from ..core.llm import extract_json
 
 _MAX_OPPORTUNITIES = 5
@@ -161,6 +162,9 @@ def _validate(raw: str) -> dict[str, Any]:
 def generate(context: dict[str, Any]) -> int:
     """Produce and persist one owner-facing SEO insight."""
     memory = context["memory"]
+    if crawlseo_research_authority_selected(context.get("config")):
+        memory.record_action("seo_insight", "skipped: CrawlSEO owns SEO recommendations for this site")
+        return 0
     llm = context.get("llm")
     config = context.get("config") or {}
     if llm is None:

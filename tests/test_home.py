@@ -69,6 +69,30 @@ def test_home_hides_future_snoozed_and_terminal_actions(tmp_path):
     memory.close()
 
 
+def test_crawlseo_authority_hides_stale_local_strategist_cards_and_actions(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    memory.kv_set("strategist_cards", {"cards": [{"title": "Old local idea", "action": "Draft old page"}]})
+    stale = OwnerAction(
+        capability_id="site.change.propose", provider_id="site-agent", title="Old persisted idea",
+        summary="Old local suggestion.", action_label="Review", priority=ActionPriority.NORMAL,
+        requirement=ActionRequirement.OWNER_DECISION, source_ref="local:stale",
+        dedupe_key="local:stale", payload={"source": "strategist_cards"},
+    )
+    memory.create_owner_action(stale)
+    memory.create_owner_action(_action("local:unrelated"))
+    service = HomeService(memory, {"providers": {"crawlseo": {
+        "enabled": True, "connector_url": "https://crawlseo.invalid", "research_authority": "crawlseo"
+    }}})
+
+    result = service.snapshot()
+
+    refs = {action.source_ref for action in result.needs_you + result.suggestions}
+    assert "local:unrelated" in refs
+    assert "strategist:stale" not in refs
+    assert all(action.title != "Old local idea" for action in result.suggestions)
+    memory.close()
+
+
 def test_home_includes_visible_inner_life_and_keeps_private_thoughts_out(tmp_path):
     memory = Memory(tmp_path / "memory.db")
     memory.record_observation("inner_voice", "A visible thought about the tide of the site.", meta={"mood": "quietly alert"})

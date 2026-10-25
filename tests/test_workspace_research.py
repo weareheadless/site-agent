@@ -178,3 +178,116 @@ def test_scheduler_omits_research_cycle_without_provider(tmp_path):
         assert "article_research_cycle" not in names
     finally:
         memory.close()
+
+
+def test_article_job_cannot_start_local_article_research_under_crawlseo_authority(tmp_path):
+    from site_agent.core.jobs import _article
+
+    class RecordingMemory:
+        def __init__(self):
+            self.actions = []
+
+        def record_action(self, kind, text):
+            self.actions.append((kind, text))
+
+    memory = RecordingMemory()
+    config = {
+        "editorial": {"enabled": True},
+        "providers": {"crawlseo": {
+            "enabled": True,
+            "research_authority": "crawlseo",
+            "connector_url": "https://crawlseo.example/api/connector/v2",
+        }},
+        "seo": {"article_research": {"enabled": True}},
+    }
+    _article({"config": config, "memory": memory, "crawlseo_service": object()})
+    assert len(memory.actions) == 1
+    assert memory.actions[0][0] == "article"
+    assert "disabled while CrawlSEO" in memory.actions[0][1]
+
+
+def test_legacy_research_entrypoints_are_fenced_under_crawlseo_authority():
+    from site_agent.application import growth_workflow
+    from site_agent.core import jobs
+    from site_agent.brain import article_research, growth as brain_growth, monthly_seo_report, seo, seo_insights, seo_outcomes
+
+    class RecordingMemory:
+        def __init__(self):
+            self.actions = []
+
+        def record_action(self, kind, text):
+            self.actions.append((kind, text))
+
+    memory = RecordingMemory()
+    config = {
+        "providers": {"crawlseo": {
+            "enabled": True,
+            "research_authority": "crawlseo",
+            "connector_url": "https://crawlseo.example/api/connector/v2",
+        }},
+        "seo": {
+            "research": {"enabled": True},
+            "article_research": {"enabled": True},
+            "site_report": {"enabled": True},
+        },
+    }
+    context = {"config": config, "memory": memory}
+
+    jobs._seo_research_cycle(context)
+    jobs._seo_site_report_cycle(context)
+    jobs._article_research_cycle(context)
+    jobs._seo_outcomes_cycle(context)
+    jobs._seo_insight(context)
+    seo.run(context)
+    article_research.select_and_request(context)
+    article_research.reconcile(context)
+    assert seo_insights.generate(context) == 0
+    monthly_seo_report.run(context)
+    assert seo_outcomes.run(context) == 0
+    try:
+        brain_growth.assess(context, {})
+    except RuntimeError as exc:
+        assert "CrawlSEO" in str(exc)
+    else:
+        raise AssertionError("local Growth assessment must be fenced under CrawlSEO authority")
+    assert [kind for kind, _ in memory.actions] == [
+        "seo_research_cycle", "seo_site_report_cycle", "article_research_cycle", "seo_outcomes",
+        "seo_insight", "seo_research", "article_research", "article_research", "seo_insight",
+        "seo_site_report", "seo_outcomes",
+    ]
+    assert growth_workflow._queue_article_research(context)["state"] == "disabled"
+    growth_workflow._reconcile_article_research(context)
+    try:
+        growth_workflow._run_monthly_research(context, {})
+    except RuntimeError as exc:
+        assert "CrawlSEO" in str(exc)
+    else:
+        raise AssertionError("local monthly research must be fenced under CrawlSEO authority")
+
+
+def test_scheduler_omits_local_article_workflow_when_crawlseo_is_authoritative(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    scheduler = Scheduler(memory, tmp_path / "scheduler.lock")
+    config = {
+        "scheduler": {"enabled": True},
+        "editorial": {"enabled": True},
+        "site": {"website_present": True, "payload": {"enabled": True}},
+        "providers": {"crawlseo": {
+            "enabled": True,
+            "research_authority": "crawlseo",
+            "connector_url": "https://crawlseo.example/api/connector/v2",
+        }},
+        "seo": {"article_research": {"enabled": True}},
+    }
+    try:
+        register_jobs(
+            scheduler,
+            config,
+            {"config": config, "memory": memory, "llm": object(), "crawlseo_service": object()},
+        )
+
+        names = [name for name, _spec, _fn in scheduler.jobs]
+        assert "article" not in names
+        assert "article_research_cycle" not in names
+    finally:
+        memory.close()

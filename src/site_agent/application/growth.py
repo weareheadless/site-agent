@@ -7,7 +7,7 @@ from typing import Any
 from ..core.contracts import ArtifactKind
 from ..core.growth_contracts import GrowthPolicy
 from ..core.memory import Memory
-from .growth_workflow import _freshness_hours, _source_state
+from .growth_workflow import _crawlseo_authoritative, _freshness_hours, _source_state
 from .growth_tasks import growth_tasks
 from .growth_service_model import service_model
 from .growth_delivery import journal_reference
@@ -139,6 +139,43 @@ def owner_queue(tasks: list[dict[str, Any]], runs: list[dict[str, Any]] | None =
     }
 
 
+def _crawlseo_visible_initiatives(memory: Memory, initiatives: list[dict[str, Any]], drafts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep only current CrawlSEO links and exact local decisions already in flight."""
+    remote_revisions: dict[str, int] = {}
+    for action in memory.list_owner_actions(limit=None):
+        record = action.to_record()
+        if record.get("provider_id") != "crawlseo":
+            continue
+        payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+        remote_id, revision = payload.get("remoteActionId"), payload.get("revision")
+        if isinstance(remote_id, str) and isinstance(revision, int) and not isinstance(revision, bool):
+            remote_revisions[remote_id] = revision
+    drafts_by_id = {row.get("id"): row for row in drafts}
+    visible = []
+    for initiative in initiatives:
+        expected = initiative.get("expected") if isinstance(initiative.get("expected"), dict) else {}
+        remote_id = expected.get("crawlseoActionId")
+        revision = expected.get("crawlseoRevision")
+        if (isinstance(remote_id, str) and isinstance(revision, int) and not isinstance(revision, bool)
+                and remote_revisions.get(remote_id) == revision):
+            visible.append(initiative)
+            continue
+        if initiative.get("kind") == "owner_information":
+            visible.append(initiative)
+            continue
+        draft = drafts_by_id.get(initiative.get("draft_id"))
+        approval_id = initiative.get("approval_id")
+        if not draft or not approval_id or draft.get("status") not in {"pending", "publishing", "publish_failed"}:
+            continue
+        approval = memory.get_approval_request(approval_id)
+        approval_status = getattr(getattr(approval, "status", None), "value", getattr(approval, "status", None))
+        draft_meta = draft.get("meta") if isinstance(draft.get("meta"), dict) else {}
+        candidate_hash = str(initiative.get("review_package_hash") or "")
+        if (approval_status in {"pending", "approved"} and candidate_hash
+                and str(approval.artifact_hash or "") == candidate_hash
+                and str(draft_meta.get("review_package_hash") or "") == candidate_hash):
+            visible.append(initiative)
+    return visible
 
 
 def growth_snapshot(memory: Memory, config: dict[str, Any], context: dict[str, Any], *, include_article_content: bool = False) -> dict[str, Any]:
@@ -151,9 +188,14 @@ def growth_snapshot(memory: Memory, config: dict[str, Any], context: dict[str, A
                for key, value in spec.items()}
         for name, spec, _fn in getattr(scheduler, "jobs", [])
     }
+    crawlseo_authoritative = _crawlseo_authoritative(config)
     runs = memory.list_growth_runs(limit=None)
+    if crawlseo_authoritative:
+        # Local discovery and assessment runs remain available in the ledger
+        # for audit, but are no longer owner work after the authority cutover.
+        runs = [row for row in runs if row.get("trigger") == "crawlseo_action"]
     activities = []
-    for name in ("growth_initial", "growth_daily", "growth_weekly", "growth_monthly", "seo_outcomes"):
+    for name in (() if crawlseo_authoritative else ("growth_initial", "growth_daily", "growth_weekly", "growth_monthly", "seo_outcomes")):
         if name == "growth_initial" and any(row.get("trigger") == "initial" and row.get("status") == "complete" for row in runs):
             continue
         stamp = memory.kv_get(f"next_run:{name}")
@@ -162,16 +204,34 @@ def growth_snapshot(memory: Memory, config: dict[str, Any], context: dict[str, A
     drafts = memory.list_drafts(limit=None)
     def pick(row: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
         return {key: row.get(key) for key in keys}
-    evidence_artifact = next(iter(memory.list_artifacts(kind=ArtifactKind.GROWTH_EVIDENCE.value, limit=1)), None)
+    evidence_artifacts = memory.list_artifacts(kind=ArtifactKind.GROWTH_EVIDENCE.value, limit=500)
+    evidence_artifact = next((row for row in evidence_artifacts
+        if not crawlseo_authoritative or row.provider_id == "crawlseo"), None)
     evidence_manifest = (
         evidence_artifact.preview_data.get("manifest")
         if evidence_artifact and isinstance(evidence_artifact.preview_data, dict)
         else None
     )
     sources = _source_state(memory, config, context)
+    if crawlseo_authoritative:
+        manifest_sources = evidence_manifest.get("sources", []) if isinstance(evidence_manifest, dict) else []
+        sources = [{
+            "id": str(row.get("id") or ""), "provider": "crawlseo", "capability": "growth.evidence.read",
+            "state": str(row.get("state") or "unknown"), "sourceRef": row.get("sourceRef"),
+            "observedAt": row.get("observedAt"), "retrievedAt": row.get("retrievedAt"),
+        } for row in manifest_sources if isinstance(row, dict) and row.get("id")]
     goal = memory.latest_growth_goal()
     initiatives = memory.list_strategy_initiatives(limit=None)
     ideas = memory.list_article_ideas(limit=40)
+    outcomes = memory.list_strategy_outcomes(limit=100)
+    if crawlseo_authoritative:
+        initiatives = _crawlseo_visible_initiatives(memory, initiatives, drafts)
+        visible_draft_ids = {row.get("draft_id") for row in initiatives if row.get("draft_id") is not None}
+        drafts = [row for row in drafts if row.get("kind") not in {"article", "edit", "payload_content"}
+            or row.get("id") in visible_draft_ids]
+        ideas = []
+        goal = None
+        outcomes = [row for row in outcomes if row.get("initiative_id") in {item.get("id") for item in initiatives}]
     keyword_metrics = [
         pick(metric, ("keyword", "search_volume", "volume", "competition", "difficulty", "cpc"))
         for idea in ideas for metric in (idea.get("research_result_json") or [])
@@ -197,7 +257,8 @@ def growth_snapshot(memory: Memory, config: dict[str, Any], context: dict[str, A
             "No persisted evidence manifest exists yet.",
         ],
     }
-    tasks = growth_tasks(memory, initiatives, drafts, activities, memory.list_strategy_outcomes(limit=100), runs, ideas, include_article_content=include_article_content)
+    tasks = growth_tasks(memory, initiatives, drafts, activities, outcomes, runs, ideas,
+        include_article_content=include_article_content, crawlseo_authoritative=crawlseo_authoritative)
     pending_stamp = memory.kv_get("next_run:growth_pending")
     reconciliation = {"enabled": "growth_pending" in jobs, "nextRun":
         datetime.datetime.fromtimestamp(pending_stamp, datetime.timezone.utc).isoformat()
@@ -227,12 +288,12 @@ def growth_snapshot(memory: Memory, config: dict[str, Any], context: dict[str, A
         "ownerQueue": owner_queue(tasks, runs),
         "serviceModel": model,
         "goal": goal,
-        "latestInsight": memory.latest_seo_insight(),
-        "keywords": [{"keyword": row.get("seed"), **pick(row, ("id", "language", "market", "research_count", "last_researched_ts"))} for row in memory.list_seo_seeds(limit=40)],
+        "latestInsight": None if crawlseo_authoritative else memory.latest_seo_insight(),
+        "keywords": [] if crawlseo_authoritative else [{"keyword": row.get("seed"), **pick(row, ("id", "language", "market", "research_count", "last_researched_ts"))} for row in memory.list_seo_seeds(limit=40)],
         "keywordMetrics": keyword_metrics,
         "articles": articles[:12],
         "articleIdeas": [pick(row, ("id", "status", "focus_keyword", "language", "market", "idea_json", "draft_id", "created_ts")) for row in ideas[:12]],
-        "approvalRequired": GrowthPolicy.from_config(config).approval_required,
+        "approvalRequired": True if crawlseo_authoritative else GrowthPolicy.from_config(config).approval_required,
     }
 
 

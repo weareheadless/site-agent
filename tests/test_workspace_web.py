@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import threading
+import asyncio
+import json
 from types import SimpleNamespace
 from unittest import mock
 
@@ -1376,7 +1378,8 @@ def test_payload_growth_revision_hold_blocks_old_exact_approval_until_and_after_
     memory.close()
 
 
-def _payload_growth_review_fixture(tmp_path, *, publish_gate=None, reconcile_error=None):
+def _payload_growth_review_fixture(tmp_path, *, publish_gate=None, reconcile_error=None,
+    publish_updated_at="2026-10-25T12:00:00Z"):
     from site_agent.application.approvals import ApprovalService
     from site_agent.application.growth_candidates import content_hash
     from site_agent.core.contracts import Artifact, ArtifactKind, EffectClass
@@ -1424,7 +1427,7 @@ def _payload_growth_review_fixture(tmp_path, *, publish_gate=None, reconcile_err
                 "status": "published",
                 "packageHash": package_hash,
                 "liveVerification": {"status": "passed"},
-                "published": {"collection": "pages", "documentId": "page-1", "updatedAt": "revision-2"},
+                "published": {"collection": "pages", "documentId": "page-1", "updatedAt": publish_updated_at},
             }
 
     memory = Memory(tmp_path / "workspace-growth-review-race.db")
@@ -1483,6 +1486,578 @@ def _payload_growth_review_fixture(tmp_path, *, publish_gate=None, reconcile_err
         "scope": "Update the home page.", "state": "ready_for_review",
     }
     return memory, payload, package_hash, draft_id, initiative_id, approval, tenant, service, task
+
+
+def test_crawlseo_candidate_reports_exact_approval_and_publication_receipt(tmp_path, monkeypatch):
+    memory, payload, package_hash, draft_id, _initiative_id, _approval, tenant, service, _task = (
+        _payload_growth_review_fixture(tmp_path)
+    )
+
+    class CrawlSEO:
+        def __init__(self):
+            self.reports = []
+
+        def connector_record_execution(self, action_id, report):
+            self.reports.append((action_id, dict(report)))
+            return {"recorded": True}
+
+    connector = CrawlSEO()
+    tenant.context["crawlseo_service"] = connector
+    tenant.context["memory"] = memory
+    tenant.context["tenant_id"] = tenant.tenant_id
+    tenant.context["config"] = {"growth": {"timezone": "UTC"}, "site": {"repository": "owner/repo"}}
+    monkeypatch.setattr("site_agent.application.growth_delivery.decision_checkpoint", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("site_agent.application.growth_delivery.publication_checkpoint", lambda *_args, **_kwargs: None)
+    draft = memory.get_draft(draft_id)
+    meta = dict(draft["meta"])
+    package = dict(meta["growth_package"])
+    binding = {"siteId": "crawl-site", "actionId": "action-1", "actionRevision": 4,
+        "generation": 9, "candidateRef": "payload-growth:action-1:4:9",
+        "reviewUrl": "https://payload.example/admin", "targetUrl": "https://example.com/"}
+    package["crawlseoBinding"] = binding
+    meta["growth_package"] = package
+    memory.update_draft_meta(draft_id, meta)
+    memory.claim_crawlseo_execution_binding("crawl-site", "action-1", 4, 9,
+        state="ready", detail={"candidateRef": binding["candidateRef"], "reviewUrl": binding["reviewUrl"]})
+
+    result = service.approve_draft(draft_id, tenant=tenant, review_package_hash=package_hash,
+        owner_actor_id="payload:owner-1")
+
+    assert result["status"] == "published"
+    assert payload.publish_count == 1
+    assert [row[1]["status"] for row in connector.reports] == ["owner_decision", "publication_verified"]
+    assert connector.reports[0][1]["candidateRef"] == binding["candidateRef"]
+    receipt = connector.reports[1][1]["publicationReceipt"]
+    assert receipt["candidateRef"] == binding["candidateRef"]
+    assert receipt["targetUrl"] == binding["targetUrl"]
+    assert receipt["contentHash"] == package["candidateHash"].removeprefix("sha256:")
+    saved = memory.get_crawlseo_execution_binding("crawl-site", "action-1", 4)
+    assert saved["state"] == "published"
+    memory.close()
+
+
+def test_crawlseo_does_not_fabricate_publication_time_when_payload_readback_omits_it(tmp_path, monkeypatch):
+    memory, payload, package_hash, draft_id, _initiative_id, _approval, tenant, service, _task = (
+        _payload_growth_review_fixture(tmp_path, publish_updated_at="revision-2")
+    )
+
+    class CrawlSEO:
+        def __init__(self):
+            self.reports = []
+        def connector_record_execution(self, action_id, report):
+            self.reports.append((action_id, dict(report)))
+            return {"recorded": True}
+
+    connector = CrawlSEO()
+    tenant.context.update({"crawlseo_service": connector, "memory": memory, "tenant_id": tenant.tenant_id,
+        "config": {"growth": {"timezone": "UTC"}, "site": {"repository": "owner/repo"}}})
+    monkeypatch.setattr("site_agent.application.growth_delivery.decision_checkpoint", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("site_agent.application.growth_delivery.publication_checkpoint", lambda *_args, **_kwargs: None)
+    draft = memory.get_draft(draft_id)
+    meta = dict(draft["meta"])
+    package = dict(meta["growth_package"])
+    binding = {"siteId": "crawl-site", "actionId": "action-1", "actionRevision": 4,
+        "generation": 9, "candidateRef": "payload-growth:action-1:4:9",
+        "reviewUrl": "https://payload.example/admin", "targetUrl": "https://example.com/"}
+    package["crawlseoBinding"] = binding
+    meta["growth_package"] = package
+    memory.update_draft_meta(draft_id, meta)
+    memory.claim_crawlseo_execution_binding("crawl-site", "action-1", 4, 9,
+        state="ready", detail={"candidateRef": binding["candidateRef"], "reviewUrl": binding["reviewUrl"]})
+
+    result = service.approve_draft(draft_id, tenant=tenant, review_package_hash=package_hash,
+        owner_actor_id="payload:owner-1")
+
+    assert result["status"] == "published"
+    assert payload.publish_count == 1
+    assert [row[1]["status"] for row in connector.reports] == ["owner_decision"]
+    assert memory.get_crawlseo_execution_binding("crawl-site", "action-1", 4)["state"] == "owner_decision"
+    assert any(row["kind"] == "crawlseo_publication_receipt_pending" for row in memory.recent_actions(limit=20))
+    assert memory.get_draft(draft_id)["meta"]["growth_publication_receipt"]["status"] == "published"
+    memory.close()
+
+
+def test_crawlseo_approval_report_failure_holds_publication_until_retry(tmp_path, monkeypatch):
+    from site_agent.application.workspace import BridgeError
+
+    memory, payload, package_hash, draft_id, _initiative_id, _approval, tenant, service, _task = (
+        _payload_growth_review_fixture(tmp_path)
+    )
+
+    class CrawlSEO:
+        def __init__(self):
+            self.fail = True
+            self.reports = []
+
+        def connector_record_execution(self, action_id, report):
+            self.reports.append((action_id, dict(report)))
+            if self.fail:
+                raise RuntimeError("connector temporarily unavailable")
+            return {"recorded": True}
+
+    connector = CrawlSEO()
+    tenant.context.update({"crawlseo_service": connector, "memory": memory, "tenant_id": tenant.tenant_id,
+        "config": {"growth": {"timezone": "UTC"}, "site": {"repository": "owner/repo"}}})
+    monkeypatch.setattr("site_agent.application.growth_delivery.decision_checkpoint", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("site_agent.application.growth_delivery.publication_checkpoint", lambda *_args, **_kwargs: None)
+    draft = memory.get_draft(draft_id)
+    meta = dict(draft["meta"])
+    package = dict(meta["growth_package"])
+    binding = {"siteId": "crawl-site", "actionId": "action-1", "actionRevision": 4,
+        "generation": 9, "candidateRef": "payload-growth:action-1:4:9",
+        "reviewUrl": "https://payload.example/admin", "targetUrl": "https://example.com/"}
+    package["crawlseoBinding"] = binding
+    meta["growth_package"] = package
+    memory.update_draft_meta(draft_id, meta)
+    memory.claim_crawlseo_execution_binding("crawl-site", "action-1", 4, 9,
+        state="ready", detail={"candidateRef": binding["candidateRef"], "reviewUrl": binding["reviewUrl"]})
+
+    with pytest.raises(BridgeError, match="exact owner approval"):
+        service.approve_draft(draft_id, tenant=tenant, review_package_hash=package_hash,
+            owner_actor_id="payload:owner-1")
+    assert payload.publish_count == 0
+    assert memory.get_crawlseo_execution_binding("crawl-site", "action-1", 4)["state"] == "decision_unreported"
+
+    connector.fail = False
+    result = service.approve_draft(draft_id, tenant=tenant, review_package_hash=package_hash,
+        owner_actor_id="payload:owner-1")
+    assert result["status"] == "published"
+    assert payload.publish_count == 1
+    assert [row[1]["status"] for row in connector.reports] == ["owner_decision", "owner_decision", "publication_verified"]
+    memory.close()
+
+
+def test_crawlseo_budget_policy_requires_authenticated_owner_and_uses_current_revision(tmp_path):
+    from site_agent.application.workspace import BridgeError
+
+    memory, _payload, _package_hash, _draft_id, _initiative_id, _approval, tenant, service, _task = (
+        _payload_growth_review_fixture(tmp_path)
+    )
+
+    class CrawlSEO:
+        def __init__(self):
+            self.policy = {"policyRevision": 4, "currency": "USD", "timeZone": "UTC",
+                           "allowanceMicros": None, "committedMicros": "0", "reservedMicros": "0",
+                           "remainingMicros": None, "configured": False, "period": "2026-10"}
+            self.updates = []
+
+        def connector_budget(self, site_id):
+            assert site_id == "crawl-site"
+            return dict(self.policy)
+
+        def connector_update_budget_policy(self, policy):
+            self.updates.append(dict(policy))
+            self.policy.update({"policyRevision": 5, "allowanceMicros": policy["monthlyAllowanceMicros"], "configured": True})
+            return dict(self.policy)
+
+    connector = CrawlSEO()
+    tenant.context.update({"crawlseo_service": connector, "connector_site_id": "crawl-site"})
+    assert service.crawlseo_research_budget(tenant=tenant)["budget"]["configured"] is False
+    with pytest.raises(BridgeError, match="authenticated owner"):
+        service.update_crawlseo_research_budget({"expectedRevision": 4, "monthlyAllowanceMicros": "2500000"}, tenant=tenant)
+    with pytest.raises(BridgeError, match="valid IANA timezone"):
+        service.update_crawlseo_research_budget(
+            {"expectedRevision": 4, "monthlyAllowanceMicros": "2500000", "timeZone": "Not/AZone"},
+            tenant=tenant, owner_actor_id="payload:owner-1",
+        )
+    result = service.update_crawlseo_research_budget(
+        {"expectedRevision": 4, "monthlyAllowanceMicros": "2500000", "timeZone": "America/Cancun"},
+        tenant=tenant, owner_actor_id="payload:owner-1",
+    )
+    assert result["budget"]["allowanceMicros"] == "2500000"
+    assert connector.updates == [{"siteId": "crawl-site", "expectedRevision": 4,
+                                  "monthlyAllowanceMicros": "2500000", "currency": "USD", "timeZone": "America/Cancun"}]
+    connector.policy["policyRevision"] = 6
+    with pytest.raises(BridgeError, match="policy changed"):
+        service.update_crawlseo_research_budget(
+            {"expectedRevision": 5, "monthlyAllowanceMicros": "3000000"},
+            tenant=tenant, owner_actor_id="payload:owner-1",
+        )
+    assert len(connector.updates) == 1
+    with pytest.raises(BridgeError, match="non-negative integer"):
+        service.update_crawlseo_research_budget(
+            {"expectedRevision": 5, "monthlyAllowanceMicros": "-1"}, tenant=tenant,
+            owner_actor_id="payload:owner-1",
+        )
+    memory.close()
+
+
+def test_crawlseo_authority_never_queries_legacy_google_analytics(monkeypatch, tmp_path):
+    memory = Memory(tmp_path / "crawlseo-analytics.db")
+    config = {"providers": {"crawlseo": {"research_authority": "crawlseo", "enabled": True,
+        "connector_url": "https://crawlseo.test/api/connector/v1"}}}
+    tenant = Tenant("analytics-authority", config, memory, None,
+        {"google_platform": object()}, "analytics-token")
+    registry = TenantRegistry({tenant.tenant_id: tenant})
+    app = FastAPI()
+    register_workspace_routes(app, config={}, env={}, service=ChatService(registry=registry), registry=registry)
+    monkeypatch.setattr("site_agent.web.workspace.GoogleAnalyticsService.report",
+        lambda *_args, **_kwargs: pytest.fail("legacy Google Analytics must not be queried under CrawlSEO authority"))
+
+    from starlette.requests import Request
+    route = next(row for row in app.routes if getattr(row, "path", "") == "/api/workspace/seo/analytics")
+    request = Request({"type": "http", "method": "GET", "path": "/api/workspace/seo/analytics",
+        "headers": [(b"authorization", b"Bearer analytics-token")], "query_string": b""})
+    response = route.endpoint(request)
+
+    assert response == {
+        "authority": "crawlseo", "capability": "analytics.read", "status": "unsupported",
+        "ga4": {"available": False, "reason": "crawlseoAnalyticsUnavailable"},
+        "gsc": {"available": False, "reason": "crawlseoAnalyticsUnavailable"},
+    }
+    memory.close()
+
+
+def test_crawlseo_authority_does_not_expose_local_seo_insights_as_current(tmp_path):
+    memory = Memory(tmp_path / "crawlseo-insights.db")
+    memory.save_seo_insight(period="2026-10", headline="Old local recommendation",
+        summary_md="Historical local analysis")
+    config = {"providers": {"crawlseo": {"research_authority": "crawlseo", "enabled": True,
+        "connector_url": "https://crawlseo.test/api/connector/v1"}}}
+    tenant = Tenant("insights-authority", config, memory, None, {"llm": object()}, "insights-token")
+    service = ChatService(registry=TenantRegistry({tenant.tenant_id: tenant}))
+
+    result = service.seo_insights(tenant=tenant)
+
+    assert result["authority"] == "crawlseo"
+    assert result["status"] == "unsupported"
+    assert result["latest"] is None and result["insights"] == []
+    assert result["historical"][0]["headline"] == "Old local recommendation"
+    memory.close()
+
+
+def test_crawlseo_research_policy_is_tenant_scoped_owner_written_and_revision_checked(tmp_path):
+    from site_agent.application.workspace import BridgeError
+
+    memory, _payload, _package_hash, _draft_id, _initiative_id, _approval, tenant, service, _task = (
+        _payload_growth_review_fixture(tmp_path)
+    )
+
+    class CrawlSEO:
+        def __init__(self):
+            self.policy = {"revision": 2, "topics": ["local search"], "goals": [], "exclusions": [], "recencyDays": 90, "audience": None,
+                           "market": "US", "language": "en", "providers": ["news"],
+                           "cadence": "weekly", "enabled": True, "maxSources": 20,
+                           "monthlyBudget": 10, "autoDraft": False, "autoAgent": False}
+            self.updates = []
+
+        def connector_policy(self, site_id):
+            assert site_id == "crawl-site"
+            return dict(self.policy)
+
+        def connector_update_policy(self, policy):
+            self.updates.append(dict(policy))
+            self.policy = {**policy, "revision": 3}
+            return dict(self.policy)
+
+    connector = CrawlSEO()
+    tenant.context.update({"crawlseo_service": connector, "connector_site_id": "crawl-site"})
+    assert service.crawlseo_research_policy(tenant=tenant)["policy"]["revision"] == 2
+    with pytest.raises(BridgeError, match="authenticated owner"):
+        service.update_crawlseo_research_policy({"expectedRevision": 2}, tenant=tenant)
+    update = {**connector.policy, "expectedRevision": 2, "topics": ["local search", "accessibility"]}
+    result = service.update_crawlseo_research_policy(update, tenant=tenant, owner_actor_id="payload:owner-1")
+    assert result["policy"]["revision"] == 3
+    assert connector.updates[0]["siteId"] == "crawl-site"
+    with pytest.raises(BridgeError, match="policy changed"):
+        service.update_crawlseo_research_policy(update, tenant=tenant, owner_actor_id="payload:owner-1")
+    memory.close()
+
+
+def test_crawlseo_action_decisions_require_owner_and_route_is_registered_once(tmp_path):
+    from site_agent.application.workspace import BridgeError
+
+    memory, _payload, _package_hash, _draft_id, _initiative_id, _approval, tenant, service, _task = (
+        _payload_growth_review_fixture(tmp_path)
+    )
+    with pytest.raises(BridgeError, match="authenticated owner"):
+        service.decide_crawlseo_action(123, {"operation": "accept_preparation"}, tenant=tenant)
+    from fastapi import FastAPI
+    from site_agent.web.workspace import register_workspace_routes
+    app = FastAPI()
+    register_workspace_routes(app, config={}, env={}, service=service, registry=service.registry,
+        control_prefix="/control", control_token="control-secret")
+    assert sum(getattr(route, "path", "") == "/api/workspace/growth/actions/{action_id}/decision"
+        for route in app.routes) == 1
+    memory.close()
+
+
+def test_crawlseo_cancel_invalidates_local_candidate_publication_authority(tmp_path):
+    memory, _payload, _package_hash, _draft_id, _initiative_id, _approval, tenant, service, _task = (
+        _payload_growth_review_fixture(tmp_path)
+    )
+    from site_agent.core.contracts import ActionPriority, ActionRequirement, OwnerAction
+    action = memory.create_owner_action(OwnerAction(capability_id="growth.crawlseo_action", provider_id="crawlseo",
+        title="Remote recommendation", summary="Current evidence", action_label="Review",
+        priority=ActionPriority.NORMAL, source_ref="crawlseo-action:remote-cancel", dedupe_key="remote-cancel",
+        requirement=ActionRequirement.OWNER_DECISION,
+        payload={"remoteActionId": "remote-cancel", "revision": 3, "executionStatus": "ready"}))
+    cycle = memory.create_strategy_cycle("cancel-binding", "2026-10", "cancel-binding-hash", {})
+    initiative_id = memory.create_strategy_initiative(cycle["id"], kind="payload_content", title="Remote recommendation",
+        summary="Current evidence", state="ready_for_review", owner_action_id=action.id,
+        expected={"crawlseoActionId": "remote-cancel", "crawlseoRevision": 3})
+    memory.claim_crawlseo_execution_binding("crawl-site", "remote-cancel", 3, 8,
+        state="ready", detail={"initiativeId": initiative_id, "draftId": 12})
+
+    class Connector:
+        def connector_decide(self, action_id, operation, rationale="", idempotency_key=None):
+            assert (action_id, operation) == ("remote-cancel", "cancel_preparation")
+            assert idempotency_key == "cancel-attempt-1"
+            return {"accepted": True}
+        def connector_action(self, action_id):
+            return {"schemaVersion": "1.0", "id": action_id, "revision": 3, "preparationStatus": "cancelled"}
+
+    tenant.context.update({"crawlseo_service": Connector(), "connector_site_id": "crawl-site"})
+    result = service.decide_crawlseo_action(action.id, {"operation": "cancel_preparation", "idempotencyKey": "cancel-attempt-1"}, tenant=tenant,
+        owner_actor_id="payload:owner-1")
+    assert result["ok"] is True
+    binding = memory.get_crawlseo_execution_binding("crawl-site", "remote-cancel", 3)
+    assert binding["state"] == "cancelled"
+    assert memory.update_strategy_initiative(initiative_id)["state"] == "rejected"
+    memory.close()
+
+
+def test_crawlseo_migration_plan_is_read_only_redacted_and_hash_bound(tmp_path):
+    from site_agent.application.workspace import BridgeError
+
+    memory, _payload, package_hash, _draft_id, protected_candidate_id, approval, tenant, service, _task = (
+        _payload_growth_review_fixture(tmp_path)
+    )
+    memory.reserve_growth_budget(reservation_id="growth-budget-plan", period="2026-10",
+        idempotency_key="migration-plan:legacy-reservation", amount_micros=12000, cap_micros=500000,
+        operation="seo_monthly_research")
+    cycle = memory.create_strategy_cycle("migration-references", "2026-10", "sha256:references", {})
+    for reference_id in range(2, 13):
+        memory.create_strategy_initiative(cycle["id"], kind="content", title=f"initiative {reference_id}",
+            summary="redacted summary", state="archived" if reference_id == 5 else "proposed")
+    for reference_id in range(1, 13):
+        memory.create_article_idea(f"migration-idea-{reference_id}", f"migration-hash-{reference_id}",
+            {"topic": f"idea {reference_id}"})
+    request = memory.create_seo_research_request("2026-10", "standard-v1", "migration-request-key",
+        {"query": "private research brief must be redacted"})
+    memory.update_seo_research_request(request["id"], status="requested", error="private provider error")
+    report = memory.create_seo_site_report("2026-10", "sha256:" + "a" * 64,
+        {"evidence": "private report evidence must be redacted"})
+    memory.conn.execute("UPDATE seo_site_reports SET status='waiting',summary=?,error=? WHERE id=?",
+        ("private report summary", "private site report error", report["id"]))
+    memory.conn.execute("INSERT INTO conversations (id,created_ts,title,archived_ts) VALUES (4,'2026-10-01T00:00:00+00:00','owner facts','2026-10-02T00:00:00+00:00')")
+    memory.conn.execute("INSERT INTO chat_jobs (id,conversation_id,message,status,error,created_ts,updated_ts,operation_kind) VALUES (54,4,'sensitive owner facts','failed','provider secret detail','2026-10-01T00:00:00+00:00','2026-10-02T00:00:00+00:00','owner_chat')")
+    memory.conn.execute("INSERT INTO chat_jobs (id,conversation_id,message,status,error,created_ts,updated_ts,operation_kind) VALUES (71,4,'sensitive keyword work','failed','provider secret detail','2026-10-01T00:00:00+00:00','2026-10-02T00:00:00+00:00','article_research')")
+    memory.conn.execute("INSERT INTO drafts (created_ts,updated_ts,kind,title,body,status,meta) VALUES ('2026-10-01T00:00:00+00:00','2026-10-02T00:00:00+00:00','article','archived article','private article body','archived','{}')")
+    memory.conn.execute("INSERT INTO provider_receipts (provider_id,capability_id,idempotency_key,status,safe_message,created_ts,updated_ts) VALUES ('dataforseo','seo.keyword_research','receipt-1','failed','raw provider error secret','2026-10-01T00:00:00+00:00','2026-10-02T00:00:00+00:00')")
+    mapping_cycle = memory.create_strategy_cycle("migration-map", "2026-10", "sha256:mapping", {})
+    mapped_initiative_id = memory.create_strategy_initiative(mapping_cycle["id"], kind="payload_content",
+        title="Mapped Action", summary="Mapped summary", state="proposed",
+        expected={"crawlseoActionId": "action-1", "crawlseoRevision": 3})
+    stale_initiative_id = memory.create_strategy_initiative(mapping_cycle["id"], kind="payload_content",
+        title="Stale Action", summary="Stale summary", state="proposed",
+        expected={"crawlseoActionId": "action-1", "crawlseoRevision": 2})
+    memory.claim_crawlseo_execution_binding("crawl-site", "action-1", 3, 1, state="ready",
+        detail={"initiativeId": mapped_initiative_id})
+    memory.record_crawlseo_connector_event({"id": "event-unsupported", "sequence": 4,
+        "siteId": "crawl-site", "actionId": None, "actionRevision": None,
+        "type": "future.event", "payload": {"private": "must be redacted"}},
+        disposition="unsupported", reason="Event type has no local execution effect")
+    memory.conn.commit()
+
+    class CrawlSEO:
+        def connector_capabilities(self, site_id=None):
+            return {"binding": {"executor": "webflow", "generation": 2, "status": "active",
+                "executionSupported": False}, "executionExecutors": ["helloada", "crawlseo-agent"]}
+
+        def connector_actions(self, *, limit, cursor=None, site_id=None):
+            assert limit == 100
+            if cursor is None:
+                return {"actions": [{"id": "action-1", "revision": 3, "status": "proposed",
+                "preparationStatus": "eligible", "executionStatus": "not_started",
+                "recommendation": "must not be copied into the migration inventory"}], "nextCursor": "page-2"}
+            assert cursor == "page-2"
+            return {"actions": [{"id": "action-2", "revision": 1, "status": "proposed",
+                "preparationStatus": "eligible", "executionStatus": "not_started"}], "nextCursor": None}
+
+        def connector_budget(self, site_id):
+            assert site_id == "crawl-site"
+            return {"period": "2026-10", "timeZone": "UTC", "currency": "USD",
+                "allowanceMicros": None, "committedMicros": "0", "reservedMicros": "0",
+                "remainingMicros": None, "policyRevision": 1, "configured": False}
+
+    tenant.context.update({"crawlseo_service": CrawlSEO(), "connector_site_id": "crawl-site"})
+    tenant.config.update({"growth": {"monthly_research_cap_micros": 500000, "timezone": "America/Cancun"},
+        "seo": {"research": {"enabled": True}, "article_research": {"enabled": True}},
+        "providers": {"crawlseo": {"enabled": True, "research_authority": "crawlseo"}}})
+    from types import SimpleNamespace
+    tenant.runtime = SimpleNamespace(scheduler=SimpleNamespace(jobs=[
+        ("growth_weekly", {}, lambda: None), ("article_research_cycle", {}, lambda: None),
+    ]))
+    first = service.crawlseo_migration_plan(tenant=tenant)
+    second = service.crawlseo_migration_plan(tenant=tenant)
+    assert first["readOnly"] is True
+    assert first["migrationApplied"] is False
+    assert first["snapshotHash"] == second["snapshotHash"]
+    protected = next(row for row in first["inventory"]["initiatives"]["items"]
+                     if row["id"] == protected_candidate_id)
+    assert protected["approvalStatus"] == "pending"
+    assert protected["approvalArtifactHash"] == package_hash
+    assert protected["draftReviewPackageHash"] == package_hash
+    assert protected["candidateDecisionState"] == "exact"
+    tenant.runtime.scheduler.jobs.append(("seo_outcomes", {}, lambda: None))
+    changed = service.crawlseo_migration_plan(tenant=tenant)
+    assert changed["snapshotHash"] != first["snapshotHash"]
+    assert "seo_outcomes" in changed["legacyProducers"]["registeredJobs"]
+    assert first["crawlseo"]["actions"] == [
+        {"id": "action-1", "revision": 3, "status": "proposed",
+         "preparationStatus": "eligible", "executionStatus": "not_started"},
+        {"id": "action-2", "revision": 1, "status": "proposed",
+         "preparationStatus": "eligible", "executionStatus": "not_started"},
+    ]
+    assert any("reservation history" in item for item in first["blockers"])
+    assert any("robots.txt" in item for item in first["blockers"])
+    refs = first["inventory"]["issue330References"]
+    assert refs["initiatives"]["5"]["state"] == "archived"
+    assert refs["initiatives"]["10"]["id"] == 10
+    assert refs["initiatives"]["4"]["id"] == 4
+    assert refs["ownerFactConversation"] == {"id": 4, "created_ts": refs["ownerFactConversation"]["created_ts"],
+        "archived": True, "deleted": False,
+        "updated_ts": refs["ownerFactConversation"]["updated_ts"], "initiativeId": 4,
+        "relationshipState": "issue_reference_only", "confirmation": None}
+    assert refs["jobs"]["54"]["hasFailureReceipt"] is True
+    assert refs["jobs"]["71"]["hasFailureReceipt"] is True
+    assert refs["articleIdeas"]["2"]["id"] == 2
+    assert refs["articleIdeas"]["12"]["id"] == 12
+    assert first["inventory"]["providerReceipts"]["total"] == 1
+    assert first["inventory"]["providerReceipts"]["items"][0]["status"] == "failed"
+    assert {item["id"] for item in first["crawlseo"]["actions"]} == {"action-1", "action-2"}
+    assert first["crawlseo"]["actionsTruncated"] is False
+    assert first["crawlseo"]["binding"]["executionSupported"] is False
+    assert any("no implemented platform adapter" in item for item in first["blockers"])
+    assert first["legacyProducers"] == {
+        "inventoryVersion": 1, "schedulerRegistrationsKnown": True, "schedulerStarted": False,
+        "registeredJobs": ["article_research_cycle", "growth_weekly"],
+        "settings": {"growthEnabled": True, "schedulerEnabled": False,
+            "seoResearchEnabled": True, "siteReportEnabled": False, "articleResearchEnabled": True},
+    }
+    assert any("still registered" in item for item in first["blockers"])
+    assert any("retirement disposition" in item for item in first["blockers"])
+    mappings = first["migrationManifest"]["mappings"]
+    assert {row["state"] for row in mappings if row.get("sourceId") in {mapped_initiative_id, stale_initiative_id}} == {"exact", "revision_mismatch"}
+    assert first["migrationManifest"]["unmappedCrawlseoActionIds"] == ["action-2"]
+    assert first["migrationManifest"]["automaticApply"] is False
+    assert any("exact identity and revision mapping" in item for item in first["blockers"])
+    assert any("relationship is not stored as a verified link" in item for item in first["blockers"])
+    assert any("Unsupported or quarantined connector events" in item for item in first["blockers"])
+
+    confirmation = {"initiative_id": 4, "conversation_id": 4,
+        "expected_snapshot_hash": changed["snapshotHash"],
+        "confirmation": "I confirmed initiative 4 is linked to owner-fact conversation 4",
+        "operator_request_id": "oceanic-owner-facts-01",
+        "reason": "Owner reviewed the original conversation and confirmed its link."}
+    with pytest.raises(BridgeError, match="snapshot changed"):
+        service.confirm_crawlseo_migration_reference({**confirmation,
+            "expected_snapshot_hash": "sha256:" + "f" * 64}, tenant=tenant)
+    assert memory.kv_get("crawlseo_migration_reference:initiative4_owner_fact_conversation") is None
+    confirmed = service.confirm_crawlseo_migration_reference(confirmation, tenant=tenant)
+    assert confirmed["status"] == "confirmed" and confirmed["idempotent"] is False
+    assert service.confirm_crawlseo_migration_reference(confirmation, tenant=tenant)["idempotent"] is True
+    after_confirmation = service.crawlseo_migration_plan(tenant=tenant)
+    assert after_confirmation["snapshotHash"] != first["snapshotHash"]
+    assert after_confirmation["inventory"]["issue330References"]["ownerFactConversation"]["relationshipState"] == "confirmed"
+    assert not any("relationship is not stored as a verified link" in item for item in after_confirmation["blockers"])
+    memory.conn.execute("INSERT INTO chat_messages (conversation_id,ts,role,text) VALUES (4,'2026-10-03T00:00:00+00:00','assistant','updated owner-fact conversation')")
+    memory.conn.commit()
+    changed_conversation = service.crawlseo_migration_plan(tenant=tenant)
+    assert changed_conversation["inventory"]["issue330References"]["ownerFactConversation"]["relationshipState"] == "stale_confirmation"
+    renewal_request = {**confirmation,
+        "expected_snapshot_hash": changed_conversation["snapshotHash"],
+        "operator_request_id": "oceanic-owner-facts-02",
+        "reason": "Owner re-reviewed the edited conversation and reconfirmed its link."}
+    renewed = service.confirm_crawlseo_migration_reference(renewal_request, tenant=tenant)
+    assert renewed["status"] == "confirmed" and renewed["idempotent"] is False
+    reconfirmed = service.crawlseo_migration_plan(tenant=tenant)
+    assert reconfirmed["inventory"]["issue330References"]["ownerFactConversation"]["relationshipState"] == "confirmed"
+    assert reconfirmed["inventory"]["issue330References"]["ownerFactConversation"]["confirmation"]["priorConfirmations"] == 1
+    memory.conn.execute("UPDATE strategy_initiatives SET updated_ts='2099-01-01T00:00:00+00:00' WHERE id=4")
+    memory.conn.commit()
+    stale_link_plan = service.crawlseo_migration_plan(tenant=tenant)
+    assert stale_link_plan["inventory"]["issue330References"]["ownerFactConversation"]["relationshipState"] == "stale_confirmation"
+    assert any("relationship is not stored as a verified link" in item for item in stale_link_plan["blockers"])
+    assert first["inventory"]["seoResearchRequests"]["items"] == [{
+        "id": request["id"], "period": "2026-10", "package_version": "standard-v1",
+        "report_id": None, "status": "requested", "created_ts": request["created_ts"],
+        "updated_ts": memory.get_seo_research_request("2026-10")["updated_ts"],
+        "requested_ts": None, "completed_ts": None, "budget_reservation_id": None, "hasError": True,
+    }]
+    assert first["inventory"]["seoSiteReports"]["items"][0]["status"] == "waiting"
+    assert first["inventory"]["seoSiteReports"]["items"][0]["evidence_hash"] == "sha256:" + "a" * 64
+    assert first["inventory"]["seoSiteReports"]["items"][0]["hasError"] is True
+    assert any("monthly SEO research requests" in item for item in first["blockers"])
+    assert any("SEO site reports" in item for item in first["blockers"])
+    assert any("article research ideas remain unresolved" in item for item in first["blockers"])
+    serialized = json.dumps(first)
+    assert "must not be copied into the migration inventory" not in serialized
+    assert "Reviewed home page" not in serialized
+    assert "private article body" not in serialized
+    assert "sensitive owner facts" not in serialized
+    assert "provider secret detail" not in serialized
+    assert "raw provider error secret" not in serialized
+    assert "private research brief must be redacted" not in serialized
+    assert "private provider error" not in serialized
+    assert "private report evidence must be redacted" not in serialized
+    assert "private report summary" not in serialized
+    assert "private site report error" not in serialized
+    assert "must be redacted" not in serialized
+    assert memory.get_draft(_draft_id)["status"] == "pending"
+
+    class FailingCrawlSEO:
+        def connector_capabilities(self, site_id=None):
+            raise RuntimeError("Authorization: Bearer private-token api_key=private-key")
+
+        def connector_actions(self, *, limit, cursor=None, site_id=None):
+            raise RuntimeError("Authorization: Bearer private-token api_key=private-key")
+
+        def connector_budget(self, site_id):
+            raise RuntimeError("Authorization: Bearer private-token api_key=private-key")
+
+    tenant.context["crawlseo_service"] = FailingCrawlSEO()
+    failed_read = service.crawlseo_migration_plan(tenant=tenant)
+    failed_serialized = json.dumps(failed_read)
+    assert "private-token" not in failed_serialized
+    assert "private-key" not in failed_serialized
+    assert "[REDACTED]" in failed_serialized
+    assert any("Connector binding:" in item for item in failed_read["crawlseo"]["errors"])
+
+    memory.conn.execute("UPDATE approval_requests SET artifact_hash = ? WHERE id = ?",
+        ("sha256:" + "f" * 64, approval.approval_id))
+    memory.conn.commit()
+    drifted = service.crawlseo_migration_plan(tenant=tenant)
+    assert drifted["snapshotHash"] != first["snapshotHash"]
+    drifted_candidate = next(row for row in drifted["inventory"]["initiatives"]["items"]
+                             if row["id"] == protected_candidate_id)
+    assert drifted_candidate["candidateDecisionState"] == "candidate_mismatch"
+    assert any("existing owner decision" in item for item in drifted["blockers"])
+
+    from site_agent.web.workspace import register_workspace_routes
+    app = FastAPI()
+    register_workspace_routes(app, config={}, env={}, service=service, registry=service.registry,
+        control_prefix="/control", control_token="operator-secret")
+    route = next(row for row in app.routes if getattr(row, "path", "") == "/control/{website_id}/growth/migration-plan")
+    assert route.methods == {"GET"}
+    confirmation_route = next(row for row in app.routes if getattr(row, "path", "") ==
+        "/control/{website_id}/growth/migration/references/initiative-4-owner-fact-conversation")
+    assert confirmation_route.methods == {"POST"}
+    confirm_url = f"/control/{tenant.tenant_id}/growth/migration/references/initiative-4-owner-fact-conversation"
+    async def exercise_control_route():
+        import httpx
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            unauthenticated = await client.post(confirm_url, json=renewal_request)
+            authenticated = await client.post(confirm_url, json=renewal_request,
+                headers={"Authorization": "Bearer operator-secret"})
+            return unauthenticated, authenticated
+    unauthenticated, authenticated_retry = asyncio.run(exercise_control_route())
+    assert unauthenticated.status_code == 401
+    assert authenticated_retry.status_code == 200
+    assert authenticated_retry.json()["idempotent"] is True
+    memory.close()
 
 
 def test_growth_revision_requires_prior_preparation_operation_reconciliation(tmp_path, monkeypatch):

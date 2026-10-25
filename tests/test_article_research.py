@@ -411,6 +411,68 @@ def test_released_budget_reservation_reactivation_rechecks_period_cap(tmp_path):
         memory.close()
 
 
+def test_crawlseo_authority_reserves_and_settles_through_project_ledger():
+    from site_agent.application.growth_budget import reserve_paid_research, settle_paid_research
+
+    class Connector:
+        def __init__(self):
+            self.reservations = []
+            self.settlements = []
+        def connector_budget(self, site_id):
+            assert site_id == "crawl-site-1"
+            return {"configured": True, "policyRevision": 7, "period": "2026-10", "currency": "USD"}
+        def connector_budget_reserve(self, body):
+            self.reservations.append(dict(body))
+            return {"id": "remote-reservation-1", "status": "RESERVED", "amountMicros": "100000"}
+        def connector_budget_settle(self, reservation_id, body):
+            self.settlements.append((reservation_id, dict(body)))
+            return {"id": reservation_id, "status": body["status"], "actualCostMicros": body.get("actualCostMicros")}
+
+    connector = Connector()
+    context = {"memory": object(), "crawlseo_service": connector, "connector_site_id": "crawl-site-1",
+        "config": {"providers": {"crawlseo": {"enabled": True, "connector_url": "https://crawlseo.example/api/connector/v1", "research_authority": "crawlseo"}}}}
+    reservation = reserve_paid_research(context, idempotency_key="seo:2026-10", operation="seo_monthly_research")
+    assert reservation["reservation_id"] == "remote-reservation-1"
+    assert connector.reservations[0]["policyRevision"] == 7
+    assert connector.reservations[0]["amountMicros"] == "100000"
+
+    settle_paid_research(context, "remote-reservation-1", provider_task_id="provider-task-1",
+        detail={"provider_status": "requested"})
+    assert connector.settlements[-1][1]["status"] == "reserved"
+    assert connector.settlements[-1][1]["providerTaskId"] == "provider-task-1"
+    settle_paid_research(context, "remote-reservation-1", provider_task_id="provider-task-1",
+        detail={"provider_status": "completed", "cost_micros": 84000})
+    assert connector.settlements[-1][1]["status"] == "settled"
+    assert connector.settlements[-1][1]["actualCostMicros"] == "84000"
+
+
+def test_authority_migration_keeps_legacy_inflight_reservation_reconcilable(tmp_path):
+    from site_agent.application.growth_budget import get_paid_research_reservation, settle_paid_research
+
+    memory = Memory(tmp_path / "memory.db")
+    memory.reserve_growth_budget(reservation_id="growth-budget-legacy", period="2026-10",
+        idempotency_key="legacy:provider:task", amount_micros=100_000, cap_micros=500_000,
+        operation="seo_monthly_research")
+
+    class Connector:
+        def connector_budget_get_reservation(self, reservation_id):
+            raise RuntimeError("new project ledger has no legacy reservation")
+
+    context = {"memory": memory, "crawlseo_service": Connector(), "connector_site_id": "crawl-site-1",
+        "config": {"providers": {"crawlseo": {"enabled": True,
+            "connector_url": "https://crawlseo.example/api/connector/v1", "research_authority": "crawlseo"}}}}
+    assert get_paid_research_reservation(context, "growth-budget-legacy")["status"] == "reserved"
+    pending = settle_paid_research(context, "growth-budget-legacy", provider_task_id="provider-task-1",
+        detail={"provider_status": "requested"})
+    assert pending["status"] == "reserved"
+    assert pending["provider_task_id"] == "provider-task-1"
+    settled = settle_paid_research(context, "growth-budget-legacy", provider_task_id="provider-task-1",
+        detail={"provider_status": "completed", "cost_micros": 84_000})
+    assert settled["status"] == "settled"
+    assert settled["detail"]["actualCostMicros"] == "84000"
+    memory.close()
+
+
 def test_idempotency_identity_error_is_not_translated_to_budget_block(tmp_path):
     from site_agent.application.growth_budget import GrowthBudgetBlocked, budget_period, reserve_paid_research
     from site_agent.core.contracts import ContractError

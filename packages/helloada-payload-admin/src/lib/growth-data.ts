@@ -12,10 +12,10 @@ export const growthAreaKeys = [
 
 export type GrowthAreaKey = (typeof growthAreaKeys)[number];
 export type GrowthResultTab = "analytics" | "search" | "competitionTab" | "health" | "content" | "connections";
-export type GrowthPanelLocation = "home" | "decisions" | "work" | "results" | "areas";
+export type GrowthPanelLocation = "home" | "decisions" | "work" | "results" | "areas" | "budget";
 export function growthPanelFromSearch(search: string): GrowthPanelLocation {
   const value = new URLSearchParams(search).get("growth_panel");
-  return value === "decisions" || value === "work" || value === "results" || value === "areas" ? value : "home";
+  return value === "decisions" || value === "work" || value === "results" || value === "areas" || value === "budget" ? value : "home";
 }
 export function growthResultTabFromSearch(search: string): GrowthResultTab {
   const value = new URLSearchParams(search).get("growth_results");

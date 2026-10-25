@@ -37,6 +37,45 @@ def test_fresh_db_creates_current_schema(tmp_path):
     mem.close()
 
 
+def test_schema_54_database_migrates_connector_event_inbox(tmp_path):
+    path = tmp_path / "memory-v54.db"
+    mem = Memory(path)
+    mem.close()
+    with sqlite3.connect(path) as conn:
+        conn.execute("DROP TABLE crawlseo_event_inbox")
+        conn.execute("PRAGMA user_version = 54")
+    upgraded = Memory(path)
+    assert upgraded.get_schema_version() == 55
+    assert upgraded.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='crawlseo_event_inbox'").fetchone()
+    upgraded.close()
+
+
+def test_crawlseo_execution_binding_is_unique_generation_fenced_and_cas_updated(tmp_path):
+    memory = Memory(tmp_path / "crawlseo-binding.db")
+    row, created = memory.claim_crawlseo_execution_binding("site-1", "action-1", 3, 7,
+        state="claimed", detail={"eventId": "evt-1"})
+    assert created and row["state"] == "claimed"
+    duplicate, created = memory.claim_crawlseo_execution_binding("site-1", "action-1", 3, 7,
+        state="claimed", detail={"eventId": "evt-1"})
+    assert not created and duplicate["detail"] == {"eventId": "evt-1"}
+    with pytest.raises(Exception, match="generation"):
+        memory.claim_crawlseo_execution_binding("site-1", "action-1", 3, 8)
+    saved = memory.update_crawlseo_execution_binding("site-1", "action-1", 3, 7,
+        expected_state="claimed", state="preparing", detail={"initiativeId": 4})
+    assert saved["state"] == "preparing" and saved["detail"] == {"initiativeId": 4}
+    assert memory.acquire_crawlseo_execution_lease("site-1", "action-1", 3, 7,
+        lease_owner="worker-1") is not None
+    assert memory.acquire_crawlseo_execution_lease("site-1", "action-1", 3, 7,
+        lease_owner="worker-2") is None
+    memory.conn.execute("UPDATE crawlseo_execution_bindings SET lease_until = '2000-01-01T00:00:00+00:00' WHERE site_id = 'site-1'")
+    assert memory.acquire_crawlseo_execution_lease("site-1", "action-1", 3, 7,
+        lease_owner="worker-2") is not None
+    with pytest.raises(Exception, match="changed"):
+        memory.update_crawlseo_execution_binding("site-1", "action-1", 3, 7,
+            expected_state="claimed", state="ready", detail={})
+    memory.close()
+
+
 def test_timing_events_roundtrip_without_exposing_prompt_data(tmp_path):
     memory = Memory(tmp_path / "memory.db")
     memory.record_timing(

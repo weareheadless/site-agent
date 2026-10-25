@@ -29,6 +29,18 @@ def config():
     }
 
 
+def test_crawlseo_authority_cannot_fall_back_when_payload_execution_is_unavailable(tmp_path):
+    memory = Memory(tmp_path / "authority-missing-executor.db")
+    settings = config()
+    settings["site"]["payload"]["enabled"] = False
+    settings["providers"] = {"crawlseo": {"enabled": True, "connector_url": "https://crawlseo.test/api/connector/v1", "research_authority": "crawlseo"}}
+    scheduler = Scheduler(memory, lock_path=tmp_path / "scheduler.lock")
+    with pytest.raises(ValueError, match="execution connector"):
+        register_growth_jobs(scheduler, settings, {"memory": memory, "config": settings})
+    assert not scheduler.jobs
+    memory.close()
+
+
 class Payload:
     def __init__(self):
         self.live = {"id": "1", "sourceId": "page:home", "slug": "home", "title": "Business", "summary": "Local service", "metaDescription": "", "updatedAt": "revision-1"}
