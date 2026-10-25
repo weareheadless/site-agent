@@ -1,6 +1,6 @@
 {
   "name": "@weareheadless/helloada-payload-admin",
-  "version": "0.10.37",
+  "version": "0.10.38",
   "description": "The shared HelloAda owner workspace for Payload-powered customer websites.",
   "type": "module",
   "license": "UNLICENSED",
