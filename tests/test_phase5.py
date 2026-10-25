@@ -96,6 +96,23 @@ def test_strategist_builds_cards_from_signals(env):
     assert "Frenzel guide" in block
 
 
+@pytest.mark.parametrize("fence", ["authority", "freeze"])
+def test_strategist_direct_entry_is_fenced_for_migration(env, fence):
+    memory, config = env
+    llm = FakeLLM([json.dumps({"cards": [{"title": "New idea", "action": "write a page"}]})])
+    if fence == "authority":
+        config["providers"] = {"crawlseo": {"research_authority": "crawlseo"}}
+    else:
+        memory.kv_set("crawlseo_migration:producer_freeze", {"active": True})
+
+    with pytest.raises(RuntimeError, match="Strategist recommendations are unsupported|producers are frozen"):
+        strategist_mod.run({"config": config, "memory": memory, "llm": llm})
+
+    assert llm.calls == []
+    assert memory.kv_get("strategist_cards") is None
+    assert memory.list_owner_actions() == []
+
+
 def test_strategist_deduplicates_and_preserves_dismissed_recommendations(env):
     memory, config = env
     llm = FakeLLM([
@@ -154,6 +171,24 @@ def test_weekly_report_weaves_in_cards(env):
     weekly_report({"config": config, "memory": memory, "llm": llm, "persona_prompt": ""})
     user_content = llm.calls[0][1]["content"]
     assert "Tide tables" in user_content and "strategist cards" in user_content.lower()
+
+
+@pytest.mark.parametrize("fence", ["authority", "freeze"])
+def test_weekly_report_direct_entry_is_fenced_for_migration(env, fence):
+    from site_agent.brain.report import weekly_report
+
+    memory, config = env
+    llm = FakeLLM(["# This week on your site\n\nA new recommendation."])
+    if fence == "authority":
+        config["providers"] = {"crawlseo": {"research_authority": "crawlseo"}}
+    else:
+        memory.kv_set("crawlseo_migration:producer_freeze", {"active": True})
+
+    with pytest.raises(RuntimeError, match="Weekly report synthesis is unsupported|producers are frozen"):
+        weekly_report({"config": config, "memory": memory, "llm": llm})
+
+    assert llm.calls == []
+    assert not [draft for draft in memory.list_drafts() if draft["kind"] == "report"]
 
 
 def test_budget_guard_blocks_when_spent(env):

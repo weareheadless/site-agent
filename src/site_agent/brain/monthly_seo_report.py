@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 from ..config import crawlseo_research_authority_selected
 from ..core.contracts import Artifact, ArtifactKind
 from ..core.llm import extract_json
+from ..core.research_authority import producer_frozen, require_research_producers_enabled
 
 
 REPORT_SCHEMA_VERSION = 1
@@ -149,6 +150,7 @@ def _ready_evidence(response: Mapping[str, Any]) -> Mapping[str, Any] | None:
 
 
 def run(context: dict[str, Any]) -> None:
+    require_research_producers_enabled(context.get("memory"))
     config = context["config"]
     if crawlseo_research_authority_selected(config):
         context["memory"].record_action("seo_site_report", "skipped: CrawlSEO owns SEO reporting for this site")
@@ -174,6 +176,8 @@ def run(context: dict[str, Any]) -> None:
     evidence: Mapping[str, Any] | None = _ready_evidence(stored_site)
     try:
         if evidence is None:
+            if producer_frozen(memory):
+                return
             retry_source_preparation = row.get("status") == "failed" and str(row.get("error") or "").startswith("SOURCE_UNAVAILABLE_")
             if row.get("status") == "waiting" and not retry_source_preparation:
                 response = service.monthly_site_evidence(period)

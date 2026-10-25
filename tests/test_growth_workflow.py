@@ -23,6 +23,25 @@ def test_manual_growth_refresh_uses_crawlseo_authority_run_after_cutover(tmp_pat
         run_growth_cycle({"memory": memory, "config": config}, trigger="weekly")
     memory.close()
 
+
+def test_monthly_crawlseo_material_completes_without_local_paid_research(monkeypatch, tmp_path):
+    import site_agent.application.growth_workflow as workflow
+
+    memory = Memory(tmp_path / "crawlseo-monthly-material.db")
+    context = {"memory": memory, "config": {"growth": {"timezone": "UTC"}}}
+    monkeypatch.setattr(workflow, "_collect_cycle_evidence", lambda *_args: {
+        "authority": "crawlseo", "actions": [{"id": "remote-action-1"}], "sources": [],
+    })
+    monkeypatch.setattr(workflow, "_persist_evidence_artifact", lambda *_args, **_kwargs: ("artifact-1", "sha256:" + "a" * 64, {}))
+    monkeypatch.setattr(workflow, "_run_monthly_research", lambda *_args: pytest.fail("must not start local paid research"))
+
+    result = run_growth_cycle(context, trigger="monthly")
+
+    assert result["status"] == "complete", result
+    assert result["detail"]["remoteActions"] == [{"id": "remote-action-1"}]
+    assert result["detail"]["note"].startswith("Recommendations and owner decisions are synchronized from CrawlSEO")
+    memory.close()
+
 def test_owner_queue_indexes_decisions_and_excludes_opportunities_and_history():
     tasks = [
         {"id": "decision:normal", "focus": "needs_you", "priority": "normal", "updatedAt": "2026-10-15T09:00:00Z"},

@@ -216,7 +216,21 @@ class CrawlSEOApplicationService:
         return self._safe_mapping(result, "article keyword research list", max_bytes=150_000)
 
     def connector_capabilities(self, site_id: str | None = None) -> dict[str, Any]:
-        return self._connector_call("connector_capabilities", "connector capabilities", site_id=site_id)
+        operation = getattr(self.provider, "connector_capabilities", None)
+        if not callable(operation):
+            raise CrawlSEOApplicationError("CrawlSEO connector capabilities is unsupported by this configured connector")
+        raw = self._read("connector capabilities", lambda: operation(site_id=site_id))
+        result = self._safe_mapping(raw, "connector capabilities", max_bytes=200_000)
+        # Scope names are non-secret authorization metadata. The generic payload
+        # redactor treats the word "credential" as sensitive, so preserve only
+        # this bounded allowlist for activation checks.
+        scopes = raw.get("credentialScopes") if isinstance(raw, Mapping) else None
+        if isinstance(scopes, list) and len(scopes) <= 32 and all(
+            isinstance(scope, str) and re.fullmatch(r"[a-z][a-z0-9:_-]{0,63}", scope.lower())
+            for scope in scopes
+        ):
+            result["credentialScopes"] = sorted({scope.lower() for scope in scopes})
+        return result
 
     def connector_policy(self, site_id: str) -> dict[str, Any]:
         result = self._connector_call("connector_policy", "research policy", site_id=self._bounded_text(site_id, "site id", 120))

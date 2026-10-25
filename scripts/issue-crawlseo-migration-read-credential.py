@@ -11,12 +11,30 @@ import urllib.parse
 import urllib.request
 
 
+class _NoCredentialRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise ValueError("credential endpoint redirects are not permitted")
+
+
 def issue_credential(api_url: str, site_id: str, idempotency_key: str, control_token: str,
                      output_path: Path, timeout: float = 30) -> dict[str, str | int]:
     parsed = urllib.parse.urlsplit(api_url)
-    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password \
-            or parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
-        raise ValueError("CrawlSEO API URL must be an HTTPS origin")
+    path = "" if parsed.path == "/" else parsed.path
+    try:
+        port = parsed.port
+    except ValueError:
+        raise ValueError("CrawlSEO API URL must be an HTTPS origin or safe application base path") from None
+    mount_parts = path.split("/")[1:] if path else []
+    reserved_suffixes = ("/api/connector/v1", "/api/internal", "/api/internal/sites")
+    if parsed.scheme != "https" or not parsed.hostname or parsed.username is not None or parsed.password is not None \
+            or parsed.netloc.endswith(":") or (port is not None and not 1 <= port <= 65535) \
+            or parsed.query or parsed.fragment \
+            or any(ord(char) < 33 or ord(char) > 126 for char in api_url) \
+            or "%" in path or "\\" in path or "//" in path or path.endswith("/") \
+            or any(part in {".", ".."} for part in mount_parts) \
+            or any(not re.fullmatch(r"[A-Za-z0-9_-]+", part) for part in mount_parts) \
+            or any(path.endswith(suffix) for suffix in reserved_suffixes):
+        raise ValueError("CrawlSEO API URL must be an HTTPS origin or safe application base path")
     if not site_id.strip() or not idempotency_key.strip() or not control_token:
         raise ValueError("site ID, idempotency key and control credential are required")
 
@@ -24,7 +42,7 @@ def issue_credential(api_url: str, site_id: str, idempotency_key: str, control_t
     fd = os.open(output_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     reserved = True
     try:
-        url = (f"{api_url.rstrip('/')}/api/internal/sites/"
+        url = (f"https://{parsed.netloc}{path}/api/internal/sites/"
                f"{urllib.parse.quote(site_id, safe='')}/connector-credentials")
         body = json.dumps({"idempotencyKey": idempotency_key}, separators=(",", ":")).encode()
         request = urllib.request.Request(url, data=body, method="POST", headers={
@@ -35,7 +53,8 @@ def issue_credential(api_url: str, site_id: str, idempotency_key: str, control_t
             "User-Agent": "HelloAda/migration-credential-issuer",
         })
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            opener = urllib.request.build_opener(_NoCredentialRedirect())
+            with opener.open(request, timeout=timeout) as response:
                 if response.status != 200:
                     raise ValueError(f"credential endpoint returned HTTP {response.status}")
                 encoded = response.read(64 * 1024 + 1)
@@ -73,7 +92,7 @@ def issue_credential(api_url: str, site_id: str, idempotency_key: str, control_t
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--api-url", required=True, help="CrawlSEO API origin; HTTPS required")
+    parser.add_argument("--api-url", required=True, help="CrawlSEO HTTPS origin or application base path, e.g. https://crawlseo.helloada.app/crawlseo")
     parser.add_argument("--site-id", required=True, help="Exact existing CrawlSEO site ID")
     parser.add_argument("--idempotency-key", required=True, help="Unique key for this one-time credential issuance")
     parser.add_argument("--output", required=True, type=Path, help="New private env file; existing files are never overwritten")

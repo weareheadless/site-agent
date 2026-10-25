@@ -56,6 +56,7 @@ from .llm import extract_json
 from .payload_rich_text import lexical_text, markdown_to_lexical
 from .design_contracts import canonical_hash
 from .memory import Memory
+from .research_authority import producer_frozen
 from .reflect import effective_persona
 from .scheduler import Scheduler, compute_next
 
@@ -907,6 +908,8 @@ def _digest(context: dict[str, Any]) -> None:
 
 def _seo_insight(context: dict[str, Any]) -> None:
     """Write one owner-facing synthesis from the tenant's own SEO evidence."""
+    if producer_frozen(context["memory"]):
+        return
     config = context.get("config") or {}
     if crawlseo_research_authority_selected(config):
         context["memory"].record_action("seo_insight", "skipped: CrawlSEO owns SEO recommendations for this site")
@@ -1036,6 +1039,8 @@ def _strategist(context: dict[str, Any]) -> None:
 
 
 def _seo_research_cycle(context: dict[str, Any]) -> None:
+    if producer_frozen(context["memory"]):
+        return
     if _crawlseo_authoritative(context.get("config") or {}):
         context["memory"].record_action("seo_research_cycle", "skipped: CrawlSEO owns research for this site")
         return
@@ -1043,6 +1048,8 @@ def _seo_research_cycle(context: dict[str, Any]) -> None:
 
 
 def _seo_site_report_cycle(context: dict[str, Any]) -> None:
+    if producer_frozen(context["memory"]):
+        return
     if _crawlseo_authoritative(context.get("config") or {}):
         context["memory"].record_action("seo_site_report_cycle", "skipped: CrawlSEO owns research reporting for this site")
         return
@@ -1050,6 +1057,8 @@ def _seo_site_report_cycle(context: dict[str, Any]) -> None:
 
 
 def _article_research_cycle(context: dict[str, Any]) -> None:
+    if producer_frozen(context["memory"]):
+        return
     if _crawlseo_authoritative(context.get("config") or {}):
         context["memory"].record_action("article_research_cycle", "skipped: CrawlSEO owns article research for this site")
         return
@@ -1060,6 +1069,8 @@ def _article_research_cycle(context: dict[str, Any]) -> None:
 
 
 def _seo_outcomes_cycle(context: dict[str, Any]) -> None:
+    if producer_frozen(context["memory"]):
+        return
     if _crawlseo_authoritative(context.get("config") or {}):
         context["memory"].record_action("seo_outcomes", "skipped: CrawlSEO owns SEO outcome analysis for this site")
         return
@@ -1122,6 +1133,28 @@ def register_growth_jobs(scheduler: Scheduler, config: dict[str, Any], context: 
         context,
         overrides.get("email_provisioning", _JOB_DEFAULTS["email_provisioning"]),
     )
+    if producer_frozen(scheduler.memory) and not crawlseo_authoritative:
+        # The frozen pending path only reconciles existing exact delivery and
+        # Payload revision receipts; it never resumes legacy preparation runs.
+        scheduler.job(
+            "growth_pending",
+            overrides.get("growth_pending", {"every": "1h"}),
+            lambda: run_pending_growth(context, recover_interrupted_runs=True),
+        )
+        if scheduler.memory.kv_get("next_run:growth_pending") is None:
+            scheduler.memory.kv_set("next_run:growth_pending", scheduler.clock())
+        if _seo_provisioning_enabled(config):
+            scheduler.job(
+                "seo_provisioning",
+                overrides.get("seo_provisioning", _JOB_DEFAULTS["seo_provisioning"]),
+                lambda: _seo_provisioning(context),
+            )
+            if scheduler.memory.kv_get("next_run:seo_provisioning") is None:
+                scheduler.memory.kv_set(
+                    "next_run:seo_provisioning",
+                    compute_next(scheduler.jobs[-1][1], scheduler.clock(), timezone_name=scheduler.timezone_name),
+                )
+        return True
     growth_policy = config.get("growth") or {}
     if growth_policy.get("enabled", True) is False:
         return True  # Email bootstrap remains operational when Growth is explicitly paused.
@@ -1181,6 +1214,7 @@ def register_jobs(scheduler: Scheduler, config: dict[str, Any], context: dict[st
     """
     if register_growth_jobs(scheduler, config, context):
         return
+    frozen = producer_frozen(scheduler.memory)
     settings = config.get("scheduler") or {}
     if not isinstance(settings, dict):
         settings = {}
@@ -1190,11 +1224,12 @@ def register_jobs(scheduler: Scheduler, config: dict[str, Any], context: dict[st
     )
     if not bool(settings.get("enabled", False)):
         return
-    scheduler.job(
-        "growth_reconciler",
-        schedule.get("growth_reconciler", _JOB_DEFAULTS["growth_reconciler"]),
-        lambda: run_growth_reconciler(context),
-    )
+    if not frozen:
+        scheduler.job(
+            "growth_reconciler",
+            schedule.get("growth_reconciler", _JOB_DEFAULTS["growth_reconciler"]),
+            lambda: run_growth_reconciler(context),
+        )
     sources = (_effective_source_config(context).get("sources") or {})
     has_sources = bool(sources.get("subreddits") or sources.get("rss_feeds") or sources.get("community_feeds"))
     if has_sources:
@@ -1229,13 +1264,13 @@ def register_jobs(scheduler: Scheduler, config: dict[str, Any], context: dict[st
         bool((config.get("editorial") or {}).get("enabled", False)) or article_research_enabled
     ):
         scheduler.job("article", schedule.get("article", {"every": "weekly", "weekday": "tuesday", "at": "09:00"}), lambda: _article(context))
-    if context.get("llm") and seo_enabled and not crawlseo_authoritative:
+    if context.get("llm") and seo_enabled and not crawlseo_authoritative and not frozen:
         scheduler.job(
             "seo_insight",
             schedule.get("seo_insight", {"every": 7}),
             lambda: _seo_insight(context),
         )
-    if context.get("llm") and article_research_enabled and context.get("crawlseo_service"):
+    if context.get("llm") and not frozen and article_research_enabled and context.get("crawlseo_service"):
         # Selection and reconciliation are two stages of one paid flow: the
         # weekly article job requests the overview, this daily job adopts the
         # result, requests one SERP, and drafts.
@@ -1244,7 +1279,7 @@ def register_jobs(scheduler: Scheduler, config: dict[str, Any], context: dict[st
             schedule.get("article_research_cycle", {"every": "daily", "at": "13:30"}),
             lambda: _article_research_cycle(context),
         )
-    if seo_enabled and not crawlseo_authoritative:
+    if seo_enabled and not crawlseo_authoritative and not frozen:
         scheduler.job(
             "seo_outcomes",
             schedule.get("seo_outcomes", _JOB_DEFAULTS["seo_outcomes"]),
@@ -1301,8 +1336,9 @@ def register_builtin(scheduler: Scheduler, config: dict[str, Any], context: dict
         # it must not remain a second scheduled source of current growth data.
         return
     register_email_provisioning_job(scheduler, config, context, _spec(config, "email_provisioning"))
+    frozen = producer_frozen(scheduler.memory)
     scheduler.job("heartbeat", _spec(config, "heartbeat"), lambda: _heartbeat(context))
-    if not _crawlseo_authoritative(config):
+    if not _crawlseo_authoritative(config) and not frozen:
         scheduler.job("growth_reconciler", _spec(config, "growth_reconciler"), lambda: run_growth_reconciler(context))
     scheduler.job("health_check", _spec(config, "health_check"), lambda: maintenance.health_check(context))
     sources = (_effective_source_config(context).get("sources") or {})
@@ -1331,18 +1367,18 @@ def register_builtin(scheduler: Scheduler, config: dict[str, Any], context: dict
     scheduler.job("seo_snapshot", _spec(config, "seo_snapshot"), lambda: _seo_snapshot(context))
     crawlseo_settings = (config.get("providers") or {}).get("crawlseo") or {}
     crawlseo_authoritative = _crawlseo_authoritative(config)
-    if context.get("llm") and not crawlseo_authoritative:
+    if context.get("llm") and not crawlseo_authoritative and not frozen:
         scheduler.job("seo_insight", _spec(config, "seo_insight"), lambda: _seo_insight(context))
     research_config = ((config.get("seo") or {}).get("research") or {})
     site_report_config = ((config.get("seo") or {}).get("site_report") or {})
     article_research_config = ((config.get("seo") or {}).get("article_research") or {})
-    if not crawlseo_authoritative and site_report_config.get("enabled") and context.get("crawlseo_service"):
+    if not frozen and not crawlseo_authoritative and site_report_config.get("enabled") and context.get("crawlseo_service"):
         scheduler.job("seo_site_report_cycle", _spec(config, "seo_site_report_cycle"), lambda: _seo_site_report_cycle(context))
-    if not crawlseo_authoritative and article_research_config.get("enabled") and context.get("crawlseo_service"):
+    if not frozen and not crawlseo_authoritative and article_research_config.get("enabled") and context.get("crawlseo_service"):
         scheduler.job("article_research_cycle", _spec(config, "article_research_cycle"), lambda: _article_research_cycle(context))
-    if not crawlseo_authoritative and research_config.get("enabled") and context.get("crawlseo_service"):
+    if not frozen and not crawlseo_authoritative and research_config.get("enabled") and context.get("crawlseo_service"):
         scheduler.job("seo_research_cycle", _spec(config, "seo_research_cycle"), lambda: _seo_research_cycle(context))
-    if not crawlseo_authoritative and (research_config.get("enabled") or site_report_config.get("enabled") or article_research_config.get("enabled") or bool((config.get("seo") or {}).get("enabled") or (config.get("ga") or {}).get("enabled"))):
+    if not frozen and not crawlseo_authoritative and (research_config.get("enabled") or site_report_config.get("enabled") or article_research_config.get("enabled") or bool((config.get("seo") or {}).get("enabled") or (config.get("ga") or {}).get("enabled"))):
         scheduler.job("seo_outcomes", _spec(config, "seo_outcomes"), lambda: _seo_outcomes_cycle(context))
     if _seo_provisioning_enabled(config) and not crawlseo_authoritative:
         scheduler.job("seo_provisioning", _spec(config, "seo_provisioning"), lambda: _seo_provisioning(context))

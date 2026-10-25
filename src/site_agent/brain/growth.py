@@ -8,6 +8,7 @@ from typing import Any
 from ..config import crawlseo_research_authority_selected
 from ..core.llm import extract_json
 from ..core.growth_contracts import GROWTH_AREAS
+from ..core.research_authority import require_research_producers_enabled
 
 ASSESSMENT_CONTRACT_VERSION = "growth-assessment-v3"
 
@@ -47,6 +48,7 @@ def _response(context: Mapping[str, Any], contract: str, material: Mapping[str, 
 
 
 def assess(context: Mapping[str, Any], material: Mapping[str, Any]) -> dict[str, Any]:
+    require_research_producers_enabled(context.get("memory"))
     if crawlseo_research_authority_selected(context.get("config")):
         raise RuntimeError("Local Growth assessment is disabled while CrawlSEO is the research authority")
     result = _response(context,

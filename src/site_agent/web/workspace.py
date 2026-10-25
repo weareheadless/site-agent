@@ -951,6 +951,90 @@ def register_workspace_routes(
             except BridgeError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+        @app.post(f"{control_prefix}/{{website_id}}/growth/migration/resolutions")
+        async def control_plane_crawlseo_migration_resolution(website_id: str, request: Request):
+            tenant = require_control_tenant(request, website_id)
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            if not isinstance(body, dict):
+                raise HTTPException(status_code=400, detail="request body must be an object")
+            try:
+                return service.crawlseo_migration_resolution(body, tenant=tenant)
+            except BridgeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        @app.post(f"{control_prefix}/{{website_id}}/growth/migration/configuration")
+        async def control_plane_crawlseo_migration_configuration(website_id: str, request: Request):
+            tenant = require_control_tenant(request, website_id)
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            if not isinstance(body, dict):
+                raise HTTPException(status_code=400, detail="request body must be an object")
+            try:
+                return service.crawlseo_migration_configuration(body, tenant=tenant)
+            except BridgeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        @app.post(f"{control_prefix}/{{website_id}}/growth/migration/activation")
+        async def control_plane_crawlseo_migration_activation(website_id: str, request: Request):
+            tenant = require_control_tenant(request, website_id)
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            if not isinstance(body, dict):
+                raise HTTPException(status_code=400, detail="request body must be an object")
+            try:
+                return service.crawlseo_migration_activation(body, tenant=tenant)
+            except BridgeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        @app.post(f"{control_prefix}/{{website_id}}/growth/migration/freeze")
+        async def control_plane_crawlseo_migration_freeze(website_id: str, request: Request):
+            tenant = require_control_tenant(request, website_id)
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            if not isinstance(body, dict):
+                raise HTTPException(status_code=400, detail="request body must be an object")
+            try:
+                return service.crawlseo_migration_producer_freeze(body, tenant=tenant)
+            except BridgeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        @app.post(f"{control_prefix}/{{website_id}}/growth/migration/verify-routes")
+        async def control_plane_crawlseo_migration_verify_routes(website_id: str, request: Request):
+            tenant = require_control_tenant(request, website_id)
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            if not isinstance(body, dict):
+                raise HTTPException(status_code=400, detail="request body must be an object")
+            try:
+                return service.crawlseo_migration_verify_routes(body, tenant=tenant)
+            except BridgeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        @app.post(f"{control_prefix}/{{website_id}}/growth/migration/verify-budget-import")
+        async def control_plane_crawlseo_migration_verify_budget_import(website_id: str, request: Request):
+            tenant = require_control_tenant(request, website_id)
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            if not isinstance(body, dict):
+                raise HTTPException(status_code=400, detail="request body must be an object")
+            try:
+                return service.crawlseo_migration_verify_budget_import(body, tenant=tenant)
+            except BridgeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+
         @app.post(f"{control_prefix}/{{website_id}}/growth/migration/references/initiative-4-owner-fact-conversation")
         async def control_plane_confirm_crawlseo_migration_reference(website_id: str, request: Request):
             tenant = require_control_tenant(request, website_id)

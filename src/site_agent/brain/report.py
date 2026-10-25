@@ -10,6 +10,8 @@ from __future__ import annotations
 import datetime
 from typing import Any
 
+from ..config import crawlseo_research_authority_selected
+from ..core.research_authority import require_research_producers_enabled
 from .prompts import memory_context, report_date_range
 
 
@@ -41,6 +43,9 @@ def _prompt(persona: str, start: str, end: str, context_block: str, strategist_c
 
 def weekly_report(context: dict[str, Any]) -> int:
     memory = context["memory"]
+    require_research_producers_enabled(memory)
+    if crawlseo_research_authority_selected(context.get("config")):
+        raise RuntimeError("Weekly report synthesis is unsupported while CrawlSEO is the research authority")
     llm = context.get("llm")
     if llm is None:
         raise RuntimeError("llm client missing; cannot write report")

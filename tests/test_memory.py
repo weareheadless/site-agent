@@ -39,13 +39,13 @@ def test_fresh_db_creates_current_schema(tmp_path):
 
 def test_schema_54_database_migrates_connector_event_inbox(tmp_path):
     path = tmp_path / "memory-v54.db"
-    mem = Memory(path)
-    mem.close()
     with sqlite3.connect(path) as conn:
-        conn.execute("DROP TABLE crawlseo_event_inbox")
+        for version in range(1, 55):
+            for statement in MIGRATIONS.get(version, []):
+                conn.execute(statement)
         conn.execute("PRAGMA user_version = 54")
     upgraded = Memory(path)
-    assert upgraded.get_schema_version() == 55
+    assert upgraded.get_schema_version() == SCHEMA_VERSION
     assert upgraded.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='crawlseo_event_inbox'").fetchone()
     upgraded.close()
 

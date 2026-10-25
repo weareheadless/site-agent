@@ -191,7 +191,8 @@ class CrawlSEOSettings:
         ):
             raise ConfigError("providers.crawlseo.url must be an HTTP(S) URL without credentials or query data")
 
-        connector_url = str(provider.get("connector_url") or "").strip().rstrip("/")
+        raw_connector_url = str(provider.get("connector_url") or "")
+        connector_url = raw_connector_url.strip()
         configured_connector_token_env = str(provider.get("connector_token_env") or "").strip()
         connector_token_env = configured_connector_token_env or token_env
         research_authority = str(provider.get("research_authority") or "local").strip().lower()
@@ -201,10 +202,24 @@ class CrawlSEOSettings:
             raise ConfigError("CrawlSEO research authority requires providers.crawlseo.connector_url")
         if connector_url:
             connector = urlsplit(connector_url)
-            if (connector.scheme not in {"http", "https"} or not connector.netloc or connector.username is not None
-                or connector.password is not None or connector.query or connector.fragment
-                or connector.path.rstrip("/") != "/api/connector/v1"):
-                raise ConfigError("providers.crawlseo.connector_url must be the versioned /api/connector/v1 HTTP(S) endpoint")
+            try:
+                hostname, port = connector.hostname, connector.port
+            except ValueError:
+                hostname, port = None, None
+            path_parts = connector.path.split("/")
+            prefix_parts = path_parts[1:-3] if len(path_parts) >= 4 else []
+            if (raw_connector_url != connector_url
+                or connector.scheme not in {"http", "https"} or not hostname or connector.netloc.endswith(":")
+                or (port is not None and not 1 <= port <= 65535)
+                or connector.username is not None or connector.password is not None
+                or connector.query or connector.fragment
+                or any(ord(char) < 33 or ord(char) > 126 for char in connector_url)
+                or "%" in connector.path or "\\" in connector.path or "//" in connector.path
+                or any(part in {".", ".."} for part in path_parts)
+                or any(not re.fullmatch(r"[A-Za-z0-9_-]+", part) for part in prefix_parts)
+                or path_parts[-3:] != ["api", "connector", "v1"]
+                or not connector.path.startswith("/") or connector.path.endswith("/")):
+                raise ConfigError("providers.crawlseo.connector_url must be the versioned /api/connector/v1 HTTP(S) endpoint, optionally under a safe mount prefix")
 
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token_env):
             raise ConfigError("providers.crawlseo.token_env must be a valid environment variable name")

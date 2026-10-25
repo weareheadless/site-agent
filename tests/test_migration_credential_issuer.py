@@ -4,6 +4,7 @@ import io
 import json
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -42,7 +43,7 @@ def test_issues_exact_read_scope_and_stores_token_privately(monkeypatch, tmp_pat
         assert timeout == 30
         return Response(json.dumps(result_body).encode())
 
-    monkeypatch.setattr(issuer.urllib.request, "urlopen", open_request)
+    monkeypatch.setattr(issuer.urllib.request, "build_opener", lambda *_: SimpleNamespace(open=open_request))
     output = tmp_path / "private" / "connector.env"
     result = issuer.issue_credential("https://crawlseo.example", "site/1", "inventory-run-1",
                                      "provisioning-secret", output)
@@ -58,7 +59,8 @@ def test_issues_exact_read_scope_and_stores_token_privately(monkeypatch, tmp_pat
 def test_rejects_write_capabilities_and_cleans_reserved_output(monkeypatch, tmp_path):
     response = {"credentialId": "credential-1", "token": "cseo_" + "b" * 43,
                 "scopes": ["connector:read", "connector:write"], "reused": False, "expiresInDays": 30}
-    monkeypatch.setattr(issuer.urllib.request, "urlopen", lambda *args, **kwargs: Response(json.dumps(response).encode()))
+    monkeypatch.setattr(issuer.urllib.request, "build_opener", lambda *_: SimpleNamespace(
+        open=lambda *args, **kwargs: Response(json.dumps(response).encode())))
     output = tmp_path / "connector.env"
     with pytest.raises(ValueError, match="read-only scope"):
         issuer.issue_credential("https://crawlseo.example", "site-1", "inventory-run-2", "control", output)
@@ -71,7 +73,8 @@ def test_requires_https_and_valid_generated_token(monkeypatch, tmp_path):
 
     response = {"credentialId": "credential-1", "token": "cseo_good\nINJECTED=value",
                 "scopes": ["connector:read"], "reused": False, "expiresInDays": 30}
-    monkeypatch.setattr(issuer.urllib.request, "urlopen", lambda *args, **kwargs: Response(json.dumps(response).encode()))
+    monkeypatch.setattr(issuer.urllib.request, "build_opener", lambda *_: SimpleNamespace(
+        open=lambda *args, **kwargs: Response(json.dumps(response).encode())))
     with pytest.raises(ValueError, match="credential was not newly issued"):
         issuer.issue_credential("https://crawlseo.example", "site-1", "key", "control", tmp_path / "x.env")
     assert not (tmp_path / "x.env").exists()

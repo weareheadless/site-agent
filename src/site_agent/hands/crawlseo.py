@@ -14,7 +14,7 @@ import threading
 import uuid
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, quote
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 from collections.abc import Mapping
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import AsyncExitStack
@@ -54,6 +54,11 @@ class CrawlSEOResponseTooLargeError(CrawlSEOError):
 
 class CrawlSEOProtocolError(CrawlSEOError):
     """The provider returned a result outside the fixed MCP contract."""
+
+
+class _NoConnectorRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise CrawlSEOProtocolError("CrawlSEO connector endpoint redirects are not permitted")
 
 
 _KNOWN_TOOLS = frozenset({
@@ -164,6 +169,7 @@ def _request_headers(settings: CrawlSEOSettings) -> dict[str, str]:
     return {
         "Authorization": f"Bearer {settings.token}",
         "X-Request-ID": uuid.uuid4().hex,
+        "User-Agent": "HelloAda/site-agent-crawlseo",
     }
 
 
@@ -703,10 +709,12 @@ class CrawlSEOClient:
         request = Request(f"{base}{path}", data=data, method=method, headers={
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
+            "User-Agent": "HelloAda/site-agent-crawlseo",
             **({"Content-Type": "application/json"} if data is not None else {}),
         })
         try:
-            with urlopen(request, timeout=self.settings.timeout_seconds) as response:
+            opener = build_opener(_NoConnectorRedirect())
+            with opener.open(request, timeout=self.settings.timeout_seconds) as response:
                 payload = response.read(self.settings.max_response_bytes + 1)
                 if len(payload) > self.settings.max_response_bytes:
                     raise CrawlSEOResponseTooLargeError("CrawlSEO connector response exceeded the configured size limit")

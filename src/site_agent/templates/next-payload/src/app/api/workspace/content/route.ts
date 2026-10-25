@@ -5,6 +5,7 @@ import { getPayload } from 'payload'
 import config from '@payload-config'
 import { helloAdaSite } from '@/helloada.config'
 import { hashJson, withoutPayloadMetadata } from '@/lib/payload-hash'
+import { withPublicRoute } from '@/lib/public-content-route'
 import { fieldMismatchDiagnostic, fieldMismatchKeys, fieldValueMatches } from '@/lib/payload-field-match'
 import { resolvePayloadLocale, type HelloAdaPayloadLocale } from '@/lib/payload-locale'
 import { serviceAuthorized } from '@/lib/service-auth'
@@ -102,16 +103,28 @@ export async function GET(request: Request) {
     const requestedLimit = Number(params.get('limit') || '100')
     const limit = Number.isFinite(requestedLimit) ? Math.max(1, Math.min(Math.trunc(requestedLimit), 100)) : 100
     const result = await payload.find({ collection, draft, locale, limit, depth: 1, pagination: false, overrideAccess: true, sort: '-updatedAt' })
-    return NextResponse.json({ collection, documents: result.docs }, { headers: { 'Cache-Control': 'no-store' } })
+    try {
+      const documents = result.docs.map(document => withPublicRoute(collection, document as unknown as Record<string, unknown>))
+      return NextResponse.json({ collection, documents }, { headers: { 'Cache-Control': 'no-store' } })
+    } catch (error) {
+      return errorResponse(error instanceof Error ? error.message : 'canonical public route is unavailable', 409)
+    }
   }
   const result = params.get('id')
     ? await payload.findByID({ collection, id: identifier, draft, locale, overrideAccess: true })
     : (await payload.find({ collection, where: { [params.has('sourceId') ? 'sourceId' : 'slug']: { equals: identifier } }, draft, locale, limit: 1, overrideAccess: true })).docs[0]
   if (!result) return errorResponse('document not found', 404)
+  const documentHash = await hashJson(withoutPayloadMetadata(result as unknown as Record<string, unknown>))
+  let document: Record<string, unknown>
+  try {
+    document = withPublicRoute(collection, result as unknown as Record<string, unknown>)
+  } catch (error) {
+    return errorResponse(error instanceof Error ? error.message : 'canonical public route is unavailable', 409)
+  }
   return NextResponse.json({
     collection,
-    document: result,
-    documentHash: await hashJson(withoutPayloadMetadata(result as unknown as Record<string, unknown>)),
+    document,
+    documentHash,
   }, { headers: { 'Cache-Control': 'no-store' } })
 }
 

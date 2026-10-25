@@ -411,8 +411,8 @@ def test_released_budget_reservation_reactivation_rechecks_period_cap(tmp_path):
         memory.close()
 
 
-def test_crawlseo_authority_reserves_and_settles_through_project_ledger():
-    from site_agent.application.growth_budget import reserve_paid_research, settle_paid_research
+def test_crawlseo_authority_holds_new_paid_work_until_policy_import():
+    from site_agent.application.growth_budget import GrowthBudgetBlocked, reserve_paid_research
 
     class Connector:
         def __init__(self):
@@ -429,21 +429,13 @@ def test_crawlseo_authority_reserves_and_settles_through_project_ledger():
             return {"id": reservation_id, "status": body["status"], "actualCostMicros": body.get("actualCostMicros")}
 
     connector = Connector()
-    context = {"memory": object(), "crawlseo_service": connector, "connector_site_id": "crawl-site-1",
+    context = {"memory": type("HeldMemory", (), {"kv_get": lambda self, _key, _default=None: {"active": True}})(),
+        "crawlseo_service": connector, "connector_site_id": "crawl-site-1",
         "config": {"providers": {"crawlseo": {"enabled": True, "connector_url": "https://crawlseo.example/api/connector/v1", "research_authority": "crawlseo"}}}}
-    reservation = reserve_paid_research(context, idempotency_key="seo:2026-10", operation="seo_monthly_research")
-    assert reservation["reservation_id"] == "remote-reservation-1"
-    assert connector.reservations[0]["policyRevision"] == 7
-    assert connector.reservations[0]["amountMicros"] == "100000"
-
-    settle_paid_research(context, "remote-reservation-1", provider_task_id="provider-task-1",
-        detail={"provider_status": "requested"})
-    assert connector.settlements[-1][1]["status"] == "reserved"
-    assert connector.settlements[-1][1]["providerTaskId"] == "provider-task-1"
-    settle_paid_research(context, "remote-reservation-1", provider_task_id="provider-task-1",
-        detail={"provider_status": "completed", "cost_micros": 84000})
-    assert connector.settlements[-1][1]["status"] == "settled"
-    assert connector.settlements[-1][1]["actualCostMicros"] == "84000"
+    with pytest.raises(GrowthBudgetBlocked, match="policy import is not implemented"):
+        reserve_paid_research(context, idempotency_key="seo:2026-10", operation="seo_monthly_research")
+    assert connector.reservations == []
+    assert connector.settlements == []
 
 
 def test_authority_migration_keeps_legacy_inflight_reservation_reconcilable(tmp_path):

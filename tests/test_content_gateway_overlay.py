@@ -9,6 +9,7 @@ def test_content_gateway_platform_dependencies_are_in_the_shared_overlay():
         'src/app/api/workspace/content/route.ts',
         'src/lib/payload-field-match.ts',
         'src/lib/payload-locale.ts',
+        'src/lib/public-content-route.ts',
         'mailflare-booking-service.ts',
     }
     assert dependencies <= copied
