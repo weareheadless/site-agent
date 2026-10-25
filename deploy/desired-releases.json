@@ -1,24 +1,24 @@
 {
   "releases": {
     "atelier-harmonie": {
-      "id": "runtime-20261024234455-5f3e8c2b",
+      "id": "runtime-20261025123322-10f2fece",
       "sha": "391673c2383163748d1c98a5c56ae9778e0722be",
-      "sharedRuntimeFingerprint": "01ab85761dd2a5e99f73d663e050bff1cee2ff7931a2c750c9ffe2cd6c4218dc"
+      "sharedRuntimeFingerprint": "ee370fe960003578d290fa4b9ff29d3beea2da2655ff2516f479750ab386b456"
     },
     "helloada-handoff-validation-20261021-39b6663e141ff33c": {
-      "id": "runtime-20261024234455-7354a7df",
+      "id": "runtime-20261025123323-df7ca64e",
       "sha": "c177a7992fe0243f0b7fddb2efe9629da418e072",
-      "sharedRuntimeFingerprint": "01ab85761dd2a5e99f73d663e050bff1cee2ff7931a2c750c9ffe2cd6c4218dc"
+      "sharedRuntimeFingerprint": "ee370fe960003578d290fa4b9ff29d3beea2da2655ff2516f479750ab386b456"
     },
     "inmersion-freediving-bb2a4e404a7fcea4": {
-      "id": "runtime-20261024234455-c691d165",
+      "id": "runtime-20261025123323-4f6cff1e",
       "sha": "b8d4614b07336aadfe312925d1c4f5705522accd",
-      "sharedRuntimeFingerprint": "01ab85761dd2a5e99f73d663e050bff1cee2ff7931a2c750c9ffe2cd6c4218dc"
+      "sharedRuntimeFingerprint": "ee370fe960003578d290fa4b9ff29d3beea2da2655ff2516f479750ab386b456"
     },
     "northstar-coffee-full-intake-validation-5a8564dae07494ec": {
-      "id": "runtime-20261024234455-07ac2ee4",
+      "id": "runtime-20261025123323-c4b930b2",
       "sha": "05155958e7eecefbed4482ae0880d30a0afdebb4",
-      "sharedRuntimeFingerprint": "01ab85761dd2a5e99f73d663e050bff1cee2ff7931a2c750c9ffe2cd6c4218dc"
+      "sharedRuntimeFingerprint": "ee370fe960003578d290fa4b9ff29d3beea2da2655ff2516f479750ab386b456"
     },
     "oceanicvibes": {
       "id": "runtime-20261025122601-ba5b92c5",
