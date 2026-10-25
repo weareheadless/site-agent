@@ -16,12 +16,13 @@ import { GrowthCompetition } from "./GrowthCompetition";
 type GrowthPanel = "home" | "decisions" | "work" | "results" | "areas" | "budget";
 type ResearchBudget = { policyRevision: number; period: string; timeZone: string; currency: string; allowanceMicros: string | null; maxOperationMicros: string | null; committedMicros: string; reservedMicros: string; remainingMicros: string | null; configured: boolean };
 type ResearchPolicy = { revision: number; topics: string[]; goals: string[]; exclusions: string[]; recencyDays: number; audience: string | null; market: string | null; language: string; providers: Array<"reddit" | "news" | "web" | "competitor">; cadence: "daily" | "weekly" | "monthly" | "manual"; enabled: boolean; maxSources: number; monthlyBudget: number; autoDraft: boolean; autoAgent: boolean };
+const MICROS_PER_UNIT = BigInt(1_000_000);
 const microsToAmount = (value: string | null) => {
   if (value === null) return "";
   const micros = BigInt(value);
   const magnitude = micros < 0 ? -micros : micros;
-  const fraction = (magnitude % 1_000_000n).toString().padStart(6, "0").replace(/0+$/, "");
-  return `${micros < 0 ? "-" : ""}${magnitude / 1_000_000n}.${fraction.padEnd(2, "0")}`;
+  const fraction = (magnitude % MICROS_PER_UNIT).toString().padStart(6, "0").replace(/0+$/, "");
+  return `${micros < 0 ? "-" : ""}${magnitude / MICROS_PER_UNIT}.${fraction.padEnd(2, "0")}`;
 };
 type OwnerQueue = {
   featuredDecisionId: string | null;
@@ -281,12 +282,12 @@ export function HelloAdaGrowth() {
     const value = budgetAmount.trim();
     if (!/^\d+(?:\.\d{1,6})?$/.test(value)) { setBudgetError(t("growth.budgetAmountInvalid")); return; }
     const [whole, fraction = ""] = value.split(".");
-    const micros = (BigInt(whole) * 1_000_000n + BigInt((fraction + "000000").slice(0, 6))).toString();
+    const micros = (BigInt(whole) * MICROS_PER_UNIT + BigInt((fraction + "000000").slice(0, 6))).toString();
     const operationValue = budgetOperationAmount.trim();
     if (operationValue && !/^\d+(?:\.\d{1,6})?$/.test(operationValue)) { setBudgetError(t("growth.budgetAmountInvalid")); return; }
     const [operationWhole = "0", operationFraction = ""] = operationValue ? operationValue.split(".") : [];
     const maxOperationMicros = operationValue
-      ? (BigInt(operationWhole) * 1_000_000n + BigInt((operationFraction + "000000").slice(0, 6))).toString()
+      ? (BigInt(operationWhole) * MICROS_PER_UNIT + BigInt((operationFraction + "000000").slice(0, 6))).toString()
       : null;
     setBudgetBusy(true);
     setBudgetError("");
