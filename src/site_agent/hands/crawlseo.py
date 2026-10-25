@@ -538,6 +538,9 @@ class CrawlSEOClient:
     def connector_update_policy(self, policy: Mapping[str, Any]) -> Mapping[str, Any]:
         return self._connector_request("PUT", "/policy", dict(policy))
 
+    def connector_update_research_profile(self, profile: Mapping[str, Any]) -> Mapping[str, Any]:
+        return self._connector_request("PUT", "/research-profile", dict(profile))
+
     def connector_actions(self, since: str | None = None, limit: int = 50, cursor: str | None = None,
                           site_id: str | None = None) -> Mapping[str, Any]:
         query: dict[str, Any] = {"limit": limit}

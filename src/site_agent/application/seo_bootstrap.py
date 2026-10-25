@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import datetime
 import hashlib
+import json
 import os
 import re
 from collections.abc import Mapping
@@ -18,11 +19,18 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from ..credentials import cloudflare_env_names, credential_environment, credential_profile
+from ..hands.crawlseo import CrawlSEOClient
 from ..hands.crawlseo_connector_credentials import load_connector_environment, load_connector_runtime_environment
 from ..hands.cloudflare_worker import CloudflareWorkerError, CloudflareWorkerSecretsClient
 from ..hands.crawlseo_provisioning import CrawlSEOProvisioningError
 from .site_origin import SiteOriginError, normalize_site_origin, origins_equal
-from .seo_provisioning import SeoProvisioningError, SeoProvisioningService, tenant_token_env, write_token_env
+from .seo_provisioning import (
+    SeoProvisioningError,
+    SeoProvisioningService,
+    tenant_token_env,
+    write_connector_runtime_token,
+    write_token_env,
+)
 
 
 def _now() -> str:
@@ -65,6 +73,7 @@ def _safe_receipt(receipt: Mapping[str, Any]) -> dict[str, Any]:
     """Remove the one-time CrawlSEO credential before durable diagnostics."""
     value = copy.deepcopy(dict(receipt))
     value.pop("credential_token", None)
+    value.pop("connector_credential_token", None)
     return value
 
 
@@ -100,6 +109,149 @@ def _worker_client(config: Mapping[str, Any], env: Mapping[str, str]) -> Cloudfl
 def _credential_directory(config: Mapping[str, Any]) -> Path:
     data_dir = Path(str(config.get("data_dir") or ".")).expanduser().resolve()
     return data_dir.parent
+
+
+def _profile_text(value: Any, limit: int) -> str | None:
+    text_value = str(value or "").strip()
+    return text_value[:limit] if text_value else None
+
+
+def _profile_list(value: Any, limit: int, item_limit: int, max_items: int = 12) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    for item in value:
+        text_value = str(item or "").strip()
+        if text_value and text_value[:item_limit] not in out:
+            out.append(text_value[:item_limit])
+        if len(out) >= max_items:
+            break
+    return out
+
+
+def build_research_profile(
+    config: Mapping[str, Any],
+    *,
+    site_id: str,
+    tenant_id: str,
+    expected_revision: int,
+) -> dict[str, Any]:
+    """Build the single research profile Ada owns from the confirmed tenant context."""
+    seo = _mapping(config.get("seo"))
+    research = _mapping(seo.get("research"))
+    site = _mapping(config.get("site"))
+    brand = _mapping(site.get("brand"))
+    languages = research.get("languages") if isinstance(research.get("languages"), list) else []
+    primary = next(
+        (item for item in languages if isinstance(item, Mapping) and item.get("primary") is True),
+        languages[0] if languages else {},
+    )
+    primary = primary if isinstance(primary, Mapping) else {}
+    markets = primary.get("markets") if isinstance(primary.get("markets"), list) else []
+    market = _profile_text(", ".join(str(item) for item in markets if str(item).strip()), 120)
+    language = _profile_text(primary.get("code") or research.get("language"), 16) or "en"
+    audience = _profile_text(
+        research.get("audience") or site.get("audience") or brand.get("audience"), 300
+    )
+    topics = _profile_list(
+        research.get("anchor_topics") or research.get("topics"), 120, 120, 12
+    )
+    goals = _profile_list(research.get("business_goals") or research.get("goals"), 300, 300, 12)
+    exclusions = _profile_list(research.get("exclusions"), 200, 200, 30)
+    sources = _mapping(config.get("sources"))
+    providers: list[str] = []
+    if sources.get("subreddits"):
+        providers.append("reddit")
+    if sources.get("rss_feeds"):
+        providers.append("news")
+    if not providers:
+        providers = ["reddit", "news"]
+    article = _mapping(seo.get("article_research"))
+    seo_research = _mapping(seo.get("seo_research"))
+    payload = {
+        "siteId": site_id,
+        "expectedRevision": max(0, int(expected_revision)),
+        "profile": {
+            "topics": topics,
+            "audience": audience,
+            "market": market,
+            "language": language,
+            "goals": goals,
+            "exclusions": exclusions,
+        },
+        "researchPolicy": {
+            "enabled": research.get("enabled") is not False,
+            "cadence": str(research.get("cadence") or "weekly"),
+            "providers": providers,
+            "maxSources": int(research.get("max_sources") or 30),
+            "monthlyBudget": int(research.get("monthly_budget") or 9),
+            "recencyDays": int(research.get("recency_days") or 90),
+            "autoDraft": bool(research.get("auto_draft") is True),
+            "autoAgent": bool(research.get("auto_agent") is True),
+        },
+        "seoResearch": {
+            "enabled": seo_research.get("enabled") is not False,
+            "monthlyTaskLimit": int(seo_research.get("monthly_task_limit") or 9),
+            "keywordSeedLimit": int(seo_research.get("keyword_seed_limit") or 5),
+            "competitorLimit": int(seo_research.get("competitor_limit") or 1),
+            "packageVersion": str(seo_research.get("package_version") or "standard-v1"),
+            "articleResearchEnabled": article.get("enabled") is not False,
+            "articleTaskLimitPerMonth": int(article.get("article_task_limit_per_month") or 5),
+            "articleMinIntervalDays": int(article.get("min_interval_days") or 7),
+        },
+    }
+    if payload["researchPolicy"]["cadence"] not in {"daily", "weekly", "monthly", "manual"}:
+        payload["researchPolicy"]["cadence"] = "weekly"
+    digest = hashlib.sha256(
+        json.dumps({**payload, "idempotencyKey": None}, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+    payload["idempotencyKey"] = f"site-agent:{tenant_id}:research-profile:{digest}"
+    return payload
+
+
+def sync_research_profile(
+    config: Mapping[str, Any],
+    env: Mapping[str, str],
+    receipt: Mapping[str, Any],
+    tenant_id: str,
+) -> dict[str, Any]:
+    """Push the confirmed research profile to CrawlSEO without changing authority."""
+    crawlseo = _mapping(receipt.get("crawlseo"))
+    site_id = str(crawlseo.get("site_id") or "").strip()
+    if not site_id:
+        return {"state": "skipped", "reason": "crawlseo_site_missing"}
+    profile = credential_profile(config, "crawlseo")
+    connector_url = str(profile.get("connector_url") or "").strip()
+    if not connector_url:
+        return {"state": "skipped", "reason": "connector_url_not_configured"}
+    provider = dict(_mapping(_mapping(config.get("providers")).get("crawlseo")))
+    provider["connector_url"] = connector_url
+    provider["connector_token_env"] = "CRAWLSEO_CONNECTOR_TOKEN"
+    effective = {
+        **dict(config),
+        "providers": {**_mapping(config.get("providers")), "crawlseo": provider},
+    }
+    try:
+        client = CrawlSEOClient.from_config(effective, dict(env))
+        if client is None:
+            return {"state": "skipped", "reason": "crawlseo_disabled"}
+        current = client.connector_policy(site_id)
+        payload = build_research_profile(
+            effective,
+            site_id=site_id,
+            tenant_id=tenant_id,
+            expected_revision=int(current.get("revision") or 0),
+        )
+        result = client.connector_update_research_profile(payload)
+        return {
+            "state": "configured",
+            "siteId": site_id,
+            "revision": result.get("revision"),
+            "topics": len(payload["profile"]["topics"]),
+            "providers": payload["researchPolicy"]["providers"],
+        }
+    except Exception as exc:  # noqa: BLE001 - provisioning records a named retryable state
+        return {"state": "error", "error": str(exc)[:300]}
 
 
 def load_tenant_environment(config: Mapping[str, Any], env: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -317,11 +469,22 @@ def auto_provision_seo(
             write_token_env(_credential_directory(config), token_env, token)
             resolved_env[token_env] = token
 
+        connector_token = str(receipt.get("connector_credential_token") or "").strip()
+        if connector_token:
+            try:
+                write_connector_runtime_token(_credential_directory(config), connector_token)
+                resolved_env["CRAWLSEO_CONNECTOR_TOKEN"] = connector_token
+                attempt["research_profile"] = sync_research_profile(config, resolved_env, receipt, tenant_id)
+            except (SeoProvisioningError, OSError) as exc:
+                attempt["research_profile"] = {"state": "error", "error": str(exc)[:300]}
+
         sanitized = _safe_receipt(receipt)
         if gsc_secret_fingerprint:
             sanitized["gsc_secret_fingerprint"] = gsc_secret_fingerprint
         if measurement_id:
             sanitized["ga4_secret_measurement_id"] = measurement_id
+        if attempt.get("research_profile"):
+            sanitized["research_profile"] = attempt["research_profile"]
         sanitized.update({
             "site_url": site_url,
             "origin_changed": origin_changed,

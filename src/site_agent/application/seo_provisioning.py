@@ -58,6 +58,25 @@ def tenant_token_env(tenant_id: str) -> str:
     return "CRAWLSEO_TOKEN_" + name.replace("-", "_").upper()
 
 
+def write_connector_runtime_token(directory: str | Path, token: str) -> Path:
+    """Persist the separate read/write connector credential for this tenant."""
+    if not re.fullmatch(r"cseo_[A-Za-z0-9_-]{20,}", str(token or "").strip()):
+        raise SeoProvisioningError("CrawlSEO returned an invalid connector credential")
+    target = Path(directory).expanduser().resolve()
+    target.mkdir(parents=True, exist_ok=True)
+    path = target / "crawlseo-connector-runtime.env"
+    body = (
+        "# Written by Ada SEO provisioning. Separate read/write connector credential;\n"
+        "# never the MCP token and never exposed to the browser.\n"
+        f"CRAWLSEO_CONNECTOR_TOKEN={str(token).strip()}\n"
+    )
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(body, encoding="utf-8")
+    os.chmod(temporary, 0o600)
+    temporary.replace(path)
+    return path
+
+
 def write_token_env(directory: str | Path, token_env: str, token: str) -> Path:
     """Persist one tenant credential in a 0600 env file next to its config."""
     target = Path(directory).expanduser().resolve()
@@ -336,6 +355,10 @@ class SeoProvisioningService:
         token = response.get("credential_token")
         receipt["credential_token"] = str(token) if token else ""
         receipt["credential_issued"] = bool(token)
+        connector_token = response.get("connector_credential_token")
+        receipt["connector_credential_id"] = response.get("connector_credential_id")
+        receipt["connector_credential_token"] = str(connector_token) if connector_token else ""
+        receipt["connector_credential_reused"] = response.get("connector_credential_reused")
         receipt["provisioning_state"] = "ready"
         return receipt
 
@@ -344,5 +367,6 @@ __all__ = [
     "SeoProvisioningError",
     "SeoProvisioningService",
     "tenant_token_env",
+    "write_connector_runtime_token",
     "write_token_env",
 ]

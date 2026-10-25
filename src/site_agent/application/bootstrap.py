@@ -33,6 +33,7 @@ from ..credentials import (
     github_api_token,
     github_ssh_command,
 )
+from ..credentials import credential_profile
 from ..config import deep_merge
 from .. import __version__
 from ..hands.cloudflare_resources import CloudflareResourceError, CloudflareResourceProvisioner
@@ -1397,6 +1398,13 @@ class WebsiteBootstrapService:
                 "gsc_property": public_origin,
             },
         }
+        providers = _mapping(raw.get("providers"))
+        crawlseo_provider = dict(_mapping(providers.get("crawlseo")))
+        connector_url = str(credential_profile(raw, "crawlseo").get("connector_url") or "").strip()
+        if connector_url:
+            crawlseo_provider["connector_url"] = connector_url
+        crawlseo_provider["connector_token_env"] = "CRAWLSEO_CONNECTOR_TOKEN"
+        raw["providers"] = {**providers, "crawlseo": crawlseo_provider}
         TenantRegistrationService._replace_config(config_path, raw)
 
         env_path = tenant_dir / "tenant.env"
