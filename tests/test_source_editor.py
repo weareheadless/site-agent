@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from site_agent.application.workspace import ChatService, SourceConflict
-from site_agent.application.source_editor import SourceConflictError, SourceEditorService
+from site_agent.application.source_editor import SourceConflictError, SourceEditorError, SourceEditorService
 from site_agent.web.workspace import register_workspace_routes
 
 
@@ -121,6 +121,29 @@ def test_inventory_materializes_github_source_and_passes_root_to_tool(tmp_path):
     assert command[-2] == "--root"
     assert calls[0][1]["cwd"]
     assert adapter.commits == []
+
+
+def test_next_source_editor_allows_only_exact_crawl_metadata_files(tmp_path):
+    service, _calls = _service(tmp_path, GithubDouble(SOURCE), {"version": 1, "fields": []})
+    service.config['design_engine'] = {'build_profile': 'next_react'}
+
+    for path in (
+        'src/app/robots.ts', 'src/app/sitemap.ts',
+        'src/app/robots.txt/route.ts', 'src/app/sitemap.xml/route.ts',
+        'public/robots.txt', 'public/sitemap.xml',
+    ):
+        service._writable(path)
+    service._writable('src/components/site/presentation/Hero.tsx')
+
+    for path in ('src/lib/site-origin.ts', 'src/app/feed.xml/route.ts', 'public/other.txt'):
+        with pytest.raises(SourceEditorError, match='shared HelloAda platform'):
+            service._writable(path)
+
+
+def test_non_next_source_editor_does_not_gain_crawl_capability(tmp_path):
+    service, _calls = _service(tmp_path, GithubDouble(SOURCE), {"version": 1, "fields": []})
+    with pytest.raises(SourceEditorError, match='not editable by tenant policy'):
+        service._writable('src/app/robots.ts')
 
 
 def test_edit_patches_string_literal_and_commits_only_to_preview(tmp_path):

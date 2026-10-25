@@ -4406,6 +4406,16 @@ def _prepare_builder_context(context: dict[str, Any], progress=None,
         task_contract['ownership'] = source_authoring_contract(config)
         task_contract['payload_receipts'] = context.get('_completed_payload_effects') or []
     site_digest = '' if task_contract else _site_digest(context, clone)
+    if not task_contract:
+        # Generic builds, including Growth source candidates, bypass the
+        # delegated change-plan contract. Still give Ada the same authoritative
+        # source boundary so she chooses an allowed metadata implementation.
+        from .repo_changes import source_authoring_contract
+        site_digest = (
+            (site_digest + '\n\n') if site_digest else ''
+        ) + 'AUTHORITATIVE SOURCE OWNERSHIP CONTRACT:\n' + json.dumps(
+            source_authoring_contract(config), ensure_ascii=False, sort_keys=True,
+        )
     if progress and (config.get("vision") or {}).get("enabled"):
         progress("checking the site's imagery")
     vision_context = '' if task_contract else _vision_context(config, clone, memory=context.get("memory"))

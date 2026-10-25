@@ -476,6 +476,15 @@ Reuse existing scheduled analysis and evidence collection. Ada may investigate t
 
 Keep room for useful expert judgment. Do not reduce Ada to a fixed checklist of article templates or a hard-coded set of SEO rules. She can pursue a promising investigation, decide that content is not the best response, identify insufficient evidence or ask for a business fact. Her recommendations must still reference real evidence and use supported effect services.
 
+When a supported website-improvement candidate needs crawl metadata, Ada may
+prepare changes only in the exact Next.js robots/sitemap metadata routes
+(`src/app/robots.ts`, `src/app/sitemap.ts`, `src/app/robots.txt/route.ts`,
+`src/app/sitemap.xml/route.ts`) or root `public/robots.txt` and
+`public/sitemap.xml`. These files remain ordinary source candidates: show the
+exact preview and use the existing owner review, approval and release flow.
+Shared origin helpers, other routes, runtime configuration and production
+publication remain outside that permission.
+
 No canned conversational examples or sample business recommendations belong in model prompts. Prompts define responsibilities, typed outputs, evidence expectations, supported capabilities and limits. Presentation labels belong in localized UI copy.
 
 ### 6.2 Prioritize before presenting

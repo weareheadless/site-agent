@@ -790,6 +790,7 @@ def _tools_spec(
             "Declare the exact work before any Payload or source mutation. Use response_only for an answer without changes. "
             "Payload effects must identify exact shared-schema fields and targets; source_brief describes only presentation/code work. "
             "For source work, declare the exact source_paths allowed by the source ownership contract before delegation. "
+            "For crawl/discovery work on a Next site, the contract permits only the exact robots and sitemap route/static files; keep origin resolution inside the selected metadata file. "
             "Include acceptance_criteria and only business_facts relevant to this task. Choose maintenance for focused engineering or presentation for visual composition requiring the design skills. "
             "The host validates this plan and requires Payload drafts to be saved before source work.",
             {
