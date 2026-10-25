@@ -65,11 +65,8 @@ def write_connector_runtime_token(directory: str | Path, token: str) -> Path:
     target = Path(directory).expanduser().resolve()
     target.mkdir(parents=True, exist_ok=True)
     path = target / "crawlseo-connector-runtime.env"
-    body = (
-        "# Written by Ada SEO provisioning. Separate read/write connector credential;\n"
-        "# never the MCP token and never exposed to the browser.\n"
-        f"CRAWLSEO_CONNECTOR_TOKEN={str(token).strip()}\n"
-    )
+    # The managed-file loader requires exactly one key and no comments.
+    body = f"CRAWLSEO_CONNECTOR_TOKEN={str(token).strip()}\n"
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     temporary.write_text(body, encoding="utf-8")
     os.chmod(temporary, 0o600)

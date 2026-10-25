@@ -94,8 +94,9 @@ def test_connector_runtime_token_is_written_to_a_protected_file(tmp_path) -> Non
 
     path = write_connector_runtime_token(tmp_path, "cseo_" + "a" * 32)
     assert path.name == "crawlseo-connector-runtime.env"
-    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line and not line.startswith("#")]
-    assert lines == ["CRAWLSEO_CONNECTOR_TOKEN=cseo_" + "a" * 32]
+    assert path.read_text(encoding="utf-8").splitlines() == [
+        "CRAWLSEO_CONNECTOR_TOKEN=cseo_" + "a" * 32
+    ]
     assert path.stat().st_mode & 0o777 == 0o600
 
 
