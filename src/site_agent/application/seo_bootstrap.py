@@ -233,6 +233,7 @@ def auto_provision_seo(
         # creation is not safely repeatable if the process dies while the
         # Worker secret or the one-time CrawlSEO credential is being written.
         attempt.update(_safe_receipt(receipt))
+        attempt["crawlseo"] = _safe_receipt(receipt.get("crawlseo") or {})
         attempt["site_url"] = site_url
         attempt["origin_changed"] = origin_changed
         attempt["origin_history"] = history
@@ -279,6 +280,7 @@ def auto_provision_seo(
                 recover_service_credential=recover_service_credential,
             )
             attempt.update(_safe_receipt(receipt))
+            attempt["crawlseo"] = _safe_receipt(receipt.get("crawlseo") or {})
             attempt["site_url"] = site_url
             attempt["origin_changed"] = origin_changed
             attempt["origin_history"] = history

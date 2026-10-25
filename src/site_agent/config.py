@@ -23,6 +23,19 @@ class ConfigError(ValueError):
     """A configuration file or value cannot be used safely."""
 
 
+def crawlseo_research_authority_selected(config: Mapping[str, Any] | None) -> bool:
+    """Return true whenever CrawlSEO was selected, even if its connector is broken.
+
+    Producer code uses this as a no-fallback fence. Connector readiness is
+    validated separately; a malformed CrawlSEO configuration must never revive
+    the local research engine.
+    """
+    root = config if isinstance(config, Mapping) else {}
+    providers = root.get("providers") if isinstance(root.get("providers"), Mapping) else {}
+    crawlseo = providers.get("crawlseo") if isinstance(providers.get("crawlseo"), Mapping) else {}
+    return str(crawlseo.get("research_authority") or "local").strip().lower() == "crawlseo"
+
+
 @dataclass(frozen=True)
 class IntakeAdaSettings:
     """Validated host-owned settings for the persistent Intake Ada process."""
@@ -135,9 +148,13 @@ class CrawlSEOSettings:
     enabled: bool
     url: str
     token_env: str
+    connector_token_env: str = ""
+    connector_url: str = ""
+    research_authority: str = "local"
     timeout_seconds: float = CRAWLSEO_DEFAULT_TIMEOUT_SECONDS
     max_response_bytes: int = CRAWLSEO_DEFAULT_MAX_RESPONSE_BYTES
     token: str = field(default="", repr=False)
+    connector_token: str = field(default="", repr=False)
 
     @classmethod
     def from_config(
@@ -154,6 +171,9 @@ class CrawlSEOSettings:
                 enabled=False,
                 url=str(provider.get("url") or ""),
                 token_env=token_env,
+                connector_token_env="",
+                connector_url="",
+                research_authority="local",
                 timeout_seconds=CRAWLSEO_DEFAULT_TIMEOUT_SECONDS,
                 max_response_bytes=CRAWLSEO_DEFAULT_MAX_RESPONSE_BYTES,
             )
@@ -171,8 +191,25 @@ class CrawlSEOSettings:
         ):
             raise ConfigError("providers.crawlseo.url must be an HTTP(S) URL without credentials or query data")
 
+        connector_url = str(provider.get("connector_url") or "").strip().rstrip("/")
+        configured_connector_token_env = str(provider.get("connector_token_env") or "").strip()
+        connector_token_env = configured_connector_token_env or token_env
+        research_authority = str(provider.get("research_authority") or "local").strip().lower()
+        if research_authority not in {"local", "crawlseo"}:
+            raise ConfigError("providers.crawlseo.research_authority must be local or crawlseo")
+        if research_authority == "crawlseo" and not connector_url:
+            raise ConfigError("CrawlSEO research authority requires providers.crawlseo.connector_url")
+        if connector_url:
+            connector = urlsplit(connector_url)
+            if (connector.scheme not in {"http", "https"} or not connector.netloc or connector.username is not None
+                or connector.password is not None or connector.query or connector.fragment
+                or connector.path.rstrip("/") != "/api/connector/v1"):
+                raise ConfigError("providers.crawlseo.connector_url must be the versioned /api/connector/v1 HTTP(S) endpoint")
+
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token_env):
             raise ConfigError("providers.crawlseo.token_env must be a valid environment variable name")
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", connector_token_env):
+            raise ConfigError("providers.crawlseo.connector_token_env must be a valid environment variable name")
 
         raw_timeout = provider.get("timeout_seconds", CRAWLSEO_DEFAULT_TIMEOUT_SECONDS)
         if isinstance(raw_timeout, bool):
@@ -197,19 +234,30 @@ class CrawlSEOSettings:
         mapped_env = str((config.get("env") or {}).get("crawlseo_service_token") or "").strip()
         if mapped_env and token_env == CRAWLSEO_DEFAULT_TOKEN_ENV:
             token_env = mapped_env
+            if not configured_connector_token_env:
+                connector_token_env = token_env
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token_env):
             raise ConfigError("providers.crawlseo.token_env must be a valid environment variable name")
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", connector_token_env):
+            raise ConfigError("providers.crawlseo.connector_token_env must be a valid environment variable name")
         token = str(env.get(token_env, "") or "")
         if not token:
             raise ConfigError(f"CrawlSEO provider is enabled but {token_env} is not set")
+        connector_token = str(env.get(connector_token_env, "") or "")
+        if connector_url and not connector_token:
+            raise ConfigError(f"CrawlSEO connector is configured but {connector_token_env} is not set")
 
         return cls(
             enabled=True,
             url=url,
             token_env=token_env,
+            connector_token_env=connector_token_env,
+            connector_url=connector_url,
+            research_authority=research_authority,
             timeout_seconds=timeout_seconds,
             max_response_bytes=raw_limit,
             token=token,
+            connector_token=connector_token or token,
         )
 
 

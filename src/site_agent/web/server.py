@@ -228,7 +228,7 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
     config = context["config"]
     env = credential_environment(config, os.environ if env is None else env)
     memory: Any = context["memory"]
-    home_service = context.get("home_service") or HomeService(memory)
+    home_service = context.get("home_service") or HomeService(memory, config)
     owner_action_service = context.get("owner_action_service") or OwnerActionService(memory)
     approval_service = context.get("approval_service") or ApprovalService(
         memory,
@@ -378,6 +378,7 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
             config=config,
             env=env,
         ),
+        prefix="/api/workspace",
     )
 
     @app.post("/api/login")
@@ -831,6 +832,13 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
             if current and artifact and artifact.capability_id == "knowledge.import" and knowledge_service is not None:
                 return {"ok": True, "knowledge": knowledge_service.confirm(approval_id)}
             approval = approval_service.decide(approval_id, True)
+            try:
+                from ..application.growth_workflow import record_crawlseo_owner_decision
+                record_crawlseo_owner_decision(context, approval_id, True)
+            except Exception:
+                # Approval is already durable locally; the connector report is
+                # replayed from its own persisted execution receipt.
+                pass
             if artifact and media_service is not None:
                 for asset_id in (artifact.preview_data.get("media_asset_ids") or []):
                     try:
@@ -857,6 +865,11 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
             if current and artifact and artifact.capability_id == "knowledge.import" and knowledge_service is not None:
                 return {"ok": True, "knowledge": knowledge_service.decline(approval_id)}
             approval = approval_service.decide(approval_id, False, feedback)
+            try:
+                from ..application.growth_workflow import record_crawlseo_owner_decision
+                record_crawlseo_owner_decision(context, approval_id, False)
+            except Exception:
+                pass
             return {"ok": True, "approval": approval.to_owner_dict()}
         except StaleApproval as exc:
             raise HTTPException(status_code=409, detail=str(exc))
@@ -870,9 +883,17 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
         require_auth(request)
         snap = memory.latest_snapshot("ga4") or {}
         data = snap.get("data") or {}
+        provider_settings = config.get("providers", {}) if isinstance(config, dict) else {}
+        crawlseo_settings = provider_settings.get("crawlseo", {}) if isinstance(provider_settings, dict) else {}
+        crawlseo_authoritative = bool(
+            isinstance(crawlseo_settings, dict)
+            and crawlseo_settings.get("enabled")
+            and crawlseo_settings.get("connector_url")
+            and crawlseo_settings.get("research_authority") == "crawlseo"
+        )
         return {
             "traffic": data,
-            "cards": (memory.kv_get("strategist_cards") or {}).get("cards") or [],
+            "cards": [] if crawlseo_authoritative else (memory.kv_get("strategist_cards") or {}).get("cards") or [],
             "pending": [
                 {"id": d["id"], "kind": d["kind"], "title": d["title"], "created_ts": d["created_ts"]}
                 for d in memory.list_drafts(status="pending")
@@ -922,6 +943,9 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
             except (TypeError, ValueError):
                 raise HTTPException(status_code=400, detail="conversation_id must be an integer")
         try:
+            existing_action = owner_action_service.get(action_id)
+            if existing_action is not None and existing_action.provider_id == "crawlseo":
+                raise HTTPException(status_code=409, detail="CrawlSEO recommendations must be accepted through the Growth preparation decision.")
             action = owner_action_service.start(action_id, conversation_id=conversation_id)
             return {"ok": True, "action": action.to_owner_dict()}
         except (ActionServiceError, KeyError, ValueError) as exc:
@@ -949,6 +973,9 @@ def create_app(context: dict[str, Any], env: dict[str, str] | None = None) -> Fa
     def dismiss_action(action_id: int, request: Request):
         require_auth(request)
         try:
+            existing_action = owner_action_service.get(action_id)
+            if existing_action is not None and existing_action.provider_id == "crawlseo":
+                raise HTTPException(status_code=409, detail="CrawlSEO recommendations must be declined through the Growth preparation decision.")
             action = owner_action_service.dismiss(action_id)
             return {"ok": True, "action": action.to_owner_dict()}
         except (ActionServiceError, KeyError, ValueError) as exc:

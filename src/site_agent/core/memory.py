@@ -78,7 +78,7 @@ from .incubation_contracts import (
 
 _OPERATION_FIELD_UNSET = object()
 
-SCHEMA_VERSION = 52
+SCHEMA_VERSION = 55
 
 MIGRATIONS: dict[int, list[str]] = {
     1: [
@@ -1173,6 +1173,39 @@ MIGRATIONS: dict[int, list[str]] = {
         "ALTER TABLE strategy_decisions ADD COLUMN source_revision TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE strategy_decisions ADD COLUMN review_package_hash TEXT NOT NULL DEFAULT ''",
     ],
+    53: [
+        """CREATE TABLE IF NOT EXISTS crawlseo_execution_bindings (
+            site_id TEXT NOT NULL,
+            action_id TEXT NOT NULL,
+            action_revision INTEGER NOT NULL,
+            generation INTEGER NOT NULL,
+            state TEXT NOT NULL,
+            detail_json TEXT NOT NULL DEFAULT '{}',
+            created_ts TEXT NOT NULL,
+            updated_ts TEXT NOT NULL,
+            PRIMARY KEY (site_id, action_id, action_revision)
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_crawlseo_execution_state ON crawlseo_execution_bindings (state, updated_ts)",
+    ],
+    54: [
+        "ALTER TABLE crawlseo_execution_bindings ADD COLUMN lease_owner TEXT",
+        "ALTER TABLE crawlseo_execution_bindings ADD COLUMN lease_until TEXT",
+    ],
+    55: [
+        """CREATE TABLE IF NOT EXISTS crawlseo_event_inbox (
+            event_id TEXT PRIMARY KEY,
+            sequence INTEGER NOT NULL,
+            site_id TEXT NOT NULL,
+            action_id TEXT,
+            action_revision INTEGER,
+            event_type TEXT NOT NULL,
+            payload_hash TEXT NOT NULL,
+            disposition TEXT NOT NULL,
+            reason TEXT NOT NULL DEFAULT '',
+            received_ts TEXT NOT NULL
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_crawlseo_event_inbox_disposition ON crawlseo_event_inbox (disposition, sequence)",
+    ],
 }
 
 
@@ -1291,6 +1324,72 @@ class Memory:
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
                 (key, encoded),
             )
+
+    def _conversation_migration_signature(self, conversation_id: int) -> str:
+        rows = self.conn.execute(
+            "SELECT id,ts,role,text FROM chat_messages WHERE conversation_id = ? ORDER BY id",
+            (int(conversation_id),),
+        ).fetchall()
+        payload = [{"id": row["id"], "ts": row["ts"], "role": row["role"], "text": row["text"]} for row in rows]
+        return "sha256:" + hashlib.sha256(json.dumps(
+            payload, sort_keys=True, ensure_ascii=False, separators=(",", ":"),
+        ).encode("utf-8")).hexdigest()
+
+    @_locked
+    def migration_conversation_signature(self, conversation_id: int) -> str:
+        return self._conversation_migration_signature(conversation_id)
+
+    @_locked
+    def confirm_crawlseo_migration_reference(self, receipt: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+        """Atomically bind the operator receipt to the exact local record versions."""
+        key = "crawlseo_migration_reference:initiative4_owner_fact_conversation"
+        if (receipt.get("initiativeId") != 4 or receipt.get("conversationId") != 4
+                or not receipt.get("operatorRequestId") or not receipt.get("snapshotHash")
+                or not receipt.get("initiativeUpdatedAt") or not receipt.get("conversationCreatedAt")
+                or not receipt.get("conversationMessageHash")):
+            raise ContractError("protected migration reference confirmation is incomplete")
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            initiative = self.conn.execute(
+                "SELECT id,updated_ts FROM strategy_initiatives WHERE id = 4"
+            ).fetchone()
+            conversation = self.conn.execute(
+                "SELECT id,created_ts,deleted_ts FROM conversations WHERE id = 4"
+            ).fetchone()
+            if initiative is None or conversation is None or conversation["deleted_ts"] is not None:
+                raise ContractError("protected initiative or owner-fact conversation is missing or deleted")
+            if (initiative["updated_ts"] != receipt["initiativeUpdatedAt"]
+                    or conversation["created_ts"] != receipt["conversationCreatedAt"]
+                    or self._conversation_migration_signature(4) != receipt["conversationMessageHash"]):
+                raise ContractError("protected initiative or conversation changed after the migration snapshot")
+            existing = self.conn.execute("SELECT value FROM kv WHERE key = ?", (key,)).fetchone()
+            history: list[Any] = []
+            if existing is not None:
+                try:
+                    saved = json.loads(existing["value"])
+                except (json.JSONDecodeError, TypeError):
+                    raise ContractError("stored migration reference confirmation is invalid")
+                saved_current = saved.get("current") if isinstance(saved, dict) and isinstance(saved.get("current"), dict) else saved
+                history = list(saved.get("history", [])) if isinstance(saved, dict) and isinstance(saved.get("history"), list) else []
+                if isinstance(saved_current, dict) and all(saved_current.get(field) == value for field, value in receipt.items()):
+                    self.conn.commit()
+                    return saved_current, True
+                if (not isinstance(saved_current, dict)
+                        or (saved_current.get("initiativeUpdatedAt") == initiative["updated_ts"]
+                            and saved_current.get("conversationCreatedAt") == conversation["created_ts"]
+                            and saved_current.get("conversationMessageHash") == self._conversation_migration_signature(4))):
+                    raise ContractError("the protected relationship already has a current, different confirmation receipt")
+                history.append(saved_current)
+            record = {"current": dict(receipt), "history": history[-20:]}
+            self.conn.execute(
+                "INSERT INTO kv (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, json.dumps(record, sort_keys=True)),
+            )
+            self.conn.commit()
+            return dict(receipt), False
+        except Exception:
+            self.conn.rollback()
+            raise
 
     @_locked
     def create_growth_goal(self, goal: dict[str, Any]) -> dict[str, Any]:
@@ -1453,6 +1552,331 @@ class Memory:
         return [self._decode_growth_run(dict(row)) for row in rows]
 
     @_locked
+    def get_crawlseo_execution_binding(self, site_id: str, action_id: str, action_revision: int) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT * FROM crawlseo_execution_bindings WHERE site_id = ? AND action_id = ? AND action_revision = ?",
+            (str(site_id), str(action_id), int(action_revision)),
+        ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        try:
+            result["detail"] = json.loads(result.pop("detail_json") or "{}")
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ContractError("stored CrawlSEO execution binding is invalid") from exc
+        return result
+
+    @_locked
+    def claim_crawlseo_execution_binding(
+        self, site_id: str, action_id: str, action_revision: int, generation: int,
+        *, state: str = "claimed", detail: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], bool]:
+        if not str(site_id).strip() or not str(action_id).strip() or action_revision < 1 or generation < 1:
+            raise ContractError("CrawlSEO execution binding identity is invalid")
+        now = _now()
+        encoded = json.dumps(detail or {}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        with self.conn:
+            cursor = self.conn.execute(
+                "INSERT OR IGNORE INTO crawlseo_execution_bindings "
+                "(site_id, action_id, action_revision, generation, state, detail_json, created_ts, updated_ts) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (str(site_id), str(action_id), int(action_revision), int(generation), str(state), encoded, now, now),
+            )
+        row = self.get_crawlseo_execution_binding(site_id, action_id, action_revision)
+        if row is None:
+            raise ContractError("CrawlSEO execution binding could not be persisted")
+        if int(row["generation"]) != int(generation):
+            raise ContractError("CrawlSEO execution binding belongs to a stale connector generation")
+        return row, cursor.rowcount == 1
+
+    @_locked
+    def update_crawlseo_execution_binding(
+        self, site_id: str, action_id: str, action_revision: int, generation: int,
+        *, expected_state: str, state: str, detail: dict[str, Any], release_lease: bool = True,
+    ) -> dict[str, Any]:
+        now = _now()
+        encoded = json.dumps(detail, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        lease_updates = ", lease_owner = NULL, lease_until = NULL" if release_lease else ""
+        with self.conn:
+            cursor = self.conn.execute(
+                "UPDATE crawlseo_execution_bindings SET state = ?, detail_json = ?, updated_ts = ?" + lease_updates + " "
+                "WHERE site_id = ? AND action_id = ? AND action_revision = ? AND generation = ? AND state = ?",
+                (str(state), encoded, now, str(site_id), str(action_id), int(action_revision), int(generation), str(expected_state)),
+            )
+        row = self.get_crawlseo_execution_binding(site_id, action_id, action_revision)
+        if row is None or cursor.rowcount != 1:
+            raise ContractError("CrawlSEO execution binding changed while it was being updated")
+        return row
+
+    @_locked
+    def acquire_crawlseo_execution_lease(
+        self, site_id: str, action_id: str, action_revision: int, generation: int,
+        *, lease_owner: str, lease_seconds: int = 3600,
+    ) -> dict[str, Any] | None:
+        if not str(lease_owner).strip() or not 30 <= int(lease_seconds) <= 7200:
+            raise ContractError("CrawlSEO execution lease is invalid")
+        now_dt = datetime.datetime.now(datetime.timezone.utc)
+        now = now_dt.isoformat(timespec="seconds")
+        until = (now_dt + datetime.timedelta(seconds=int(lease_seconds))).isoformat(timespec="seconds")
+        with self.conn:
+            cursor = self.conn.execute(
+                "UPDATE crawlseo_execution_bindings SET state = 'preparing', lease_owner = ?, lease_until = ?, updated_ts = ? "
+                "WHERE site_id = ? AND action_id = ? AND action_revision = ? AND generation = ? "
+                "AND state IN ('claimed', 'preparing') AND (lease_until IS NULL OR lease_until <= ? OR lease_owner = ?)",
+                (str(lease_owner), until, now, str(site_id), str(action_id), int(action_revision), int(generation), now, str(lease_owner)),
+            )
+        if cursor.rowcount != 1:
+            return None
+        return self.get_crawlseo_execution_binding(site_id, action_id, action_revision)
+
+    @_locked
+    def list_crawlseo_execution_bindings(
+        self, *, states: tuple[str, ...] = ("claimed", "blocked", "preparing", "preparation_unreported"), limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        if not states:
+            return []
+        query = "SELECT site_id, action_id, action_revision FROM crawlseo_execution_bindings WHERE state IN (" + ",".join("?" for _ in states) + ") ORDER BY updated_ts, action_id LIMIT ?"
+        rows = self.conn.execute(query, (*states, max(1, min(int(limit), 500)))).fetchall()
+        return [self.get_crawlseo_execution_binding(row["site_id"], row["action_id"], row["action_revision"]) for row in rows]
+
+    @_locked
+    def record_crawlseo_connector_event(
+        self, event: dict[str, Any], *, disposition: str, reason: str = "",
+    ) -> dict[str, Any]:
+        """Persist a payload-redacted connector event receipt before it is acknowledged."""
+        event_id = str(event.get("id") or "").strip()
+        site_id = str(event.get("siteId") or "").strip()
+        event_type = str(event.get("type") or "").strip()
+        sequence = event.get("sequence")
+        action_revision = event.get("actionRevision")
+        if (not event_id or len(event_id) > 120 or not site_id or len(site_id) > 120 or not event_type
+                or len(event_type) > 120 or isinstance(sequence, bool) or not isinstance(sequence, int) or sequence < 0
+                or (action_revision is not None and (isinstance(action_revision, bool) or not isinstance(action_revision, int) or action_revision < 1))):
+            raise ContractError("CrawlSEO connector event identity is invalid")
+        disposition = str(disposition or "").strip().lower()
+        if disposition not in {"reconciled", "unsupported", "quarantined"}:
+            raise ContractError("CrawlSEO connector event disposition is invalid")
+        reason = str(reason or "").strip()[:240]
+        payload_hash = "sha256:" + hashlib.sha256(json.dumps(
+            event.get("payload"), sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str,
+        ).encode("utf-8")).hexdigest()
+        now = _now()
+        existing = self.conn.execute("SELECT * FROM crawlseo_event_inbox WHERE event_id = ?", (event_id,)).fetchone()
+        if existing:
+            if (int(existing["sequence"]) != sequence or existing["site_id"] != site_id
+                    or existing["action_id"] != event.get("actionId") or existing["action_revision"] != action_revision
+                    or existing["event_type"] != event_type or existing["payload_hash"] != payload_hash):
+                raise ContractError("CrawlSEO connector event identity was reused with different data")
+            return dict(existing)
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO crawlseo_event_inbox (event_id,sequence,site_id,action_id,action_revision,event_type,payload_hash,disposition,reason,received_ts) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (event_id, sequence, site_id, event.get("actionId"), action_revision, event_type,
+                 payload_hash, disposition, reason, now),
+            )
+        return dict(self.conn.execute("SELECT * FROM crawlseo_event_inbox WHERE event_id = ?", (event_id,)).fetchone())
+
+    @_locked
+    def crawlseo_migration_snapshot(self) -> dict[str, Any]:
+        """Read-only, content-redacted inventory for a protected migration plan."""
+        limits = {"initiatives": 500, "articleIdeas": 200, "seoResearchRequests": 500,
+                  "seoSiteReports": 500, "drafts": 1000,
+                  "growthRuns": 100, "ownerActions": 500, "executionBindings": 500,
+                  "budgetReservations": 1000, "activeJobs": 500, "providerReceipts": 1000, "connectorEvents": 500}
+        totals = {
+            "initiatives": int(self.conn.execute("SELECT COUNT(*) FROM strategy_initiatives").fetchone()[0]),
+            "articleIdeas": int(self.conn.execute("SELECT COUNT(*) FROM article_ideas").fetchone()[0]),
+            "seoResearchRequests": int(self.conn.execute("SELECT COUNT(*) FROM seo_research_requests").fetchone()[0]),
+            "seoSiteReports": int(self.conn.execute("SELECT COUNT(*) FROM seo_site_reports").fetchone()[0]),
+            "drafts": int(self.conn.execute("SELECT COUNT(*) FROM drafts").fetchone()[0]),
+            "growthRuns": int(self.conn.execute("SELECT COUNT(*) FROM growth_runs").fetchone()[0]),
+            "ownerActions": int(self.conn.execute("SELECT COUNT(*) FROM owner_actions").fetchone()[0]),
+            "executionBindings": int(self.conn.execute(
+                "SELECT COUNT(*) FROM crawlseo_execution_bindings WHERE state IN ('claimed','blocked','preparing','preparation_unreported','preparation_blocked_unreported','decision_unreported','publication_unreported')"
+            ).fetchone()[0]),
+            "budgetReservations": int(self.conn.execute("SELECT COUNT(*) FROM growth_budget_reservations").fetchone()[0]),
+            "activeJobs": int(self.conn.execute("SELECT COUNT(*) FROM chat_jobs WHERE status IN ('queued','running')").fetchone()[0]),
+            "providerReceipts": int(self.conn.execute("SELECT COUNT(*) FROM provider_receipts WHERE provider_id IN ('crawlseo', 'dataforseo')").fetchone()[0]),
+            "connectorEvents": int(self.conn.execute("SELECT COUNT(*) FROM crawlseo_event_inbox").fetchone()[0]),
+        }
+        initiatives = self.list_strategy_initiatives(limit=limits["initiatives"])
+        ideas = self.list_article_ideas(limit=limits["articleIdeas"])
+        research_requests = self.conn.execute(
+            "SELECT id,period,package_version,report_id,status,error,created_ts,updated_ts,requested_ts,completed_ts,budget_reservation_id "
+            "FROM seo_research_requests ORDER BY created_ts,id LIMIT ?", (limits["seoResearchRequests"],)
+        ).fetchall()
+        site_reports = self.conn.execute(
+            "SELECT id,period,status,evidence_hash,artifact_id,created_ts,updated_ts,completed_ts,error "
+            "FROM seo_site_reports ORDER BY period,id LIMIT ?", (limits["seoSiteReports"],)
+        ).fetchall()
+        drafts = self.list_drafts(limit=limits["drafts"])
+        runs = self.list_growth_runs(limit=limits["growthRuns"])
+        actions = self.list_owner_actions(limit=limits["ownerActions"])
+        bindings = self.list_crawlseo_execution_bindings(
+            states=("claimed", "blocked", "preparing", "preparation_unreported", "preparation_blocked_unreported", "decision_unreported", "publication_unreported"),
+            limit=limits["executionBindings"],
+        )
+        active_jobs = self.list_active_chat_jobs(limit=limits["activeJobs"])
+        receipts = self.conn.execute(
+            "SELECT id,capability_id,action_id,approval_id,external_object_id,external_url,status,created_ts,updated_ts "
+            "FROM provider_receipts WHERE provider_id IN ('crawlseo', 'dataforseo') ORDER BY created_ts,id LIMIT ?",
+            (limits["providerReceipts"],),
+        ).fetchall()
+        reservation_rows = self.conn.execute(
+            "SELECT reservation_id,period,amount_micros,currency,operation,status,provider_task_id,created_ts,updated_ts,settled_ts,detail_json "
+            "FROM growth_budget_reservations ORDER BY created_ts,idempotency_key LIMIT ?", (limits["budgetReservations"],)
+        ).fetchall()
+        connector_event_rows = self.conn.execute(
+            "SELECT event_id,sequence,site_id,action_id,action_revision,event_type,payload_hash,disposition,reason,received_ts "
+            "FROM crawlseo_event_inbox ORDER BY sequence,event_id LIMIT ?", (limits["connectorEvents"],)
+        ).fetchall()
+
+        def category(items: list[Any], name: str) -> dict[str, Any]:
+            return {"total": totals[name], "truncated": totals[name] > limits[name], "items": items}
+
+        drafts_by_id = {row.get("id"): row for row in drafts}
+        initiative_items = []
+        for row in initiatives:
+            approval = self.get_approval_request(int(row["approval_id"])) if row.get("approval_id") else None
+            draft = drafts_by_id.get(row.get("draft_id"))
+            draft_meta = draft.get("meta") if isinstance(draft, dict) and isinstance(draft.get("meta"), dict) else {}
+            review_hash = str(row.get("review_package_hash") or "")
+            approval_status = getattr(getattr(approval, "status", None), "value", getattr(approval, "status", None))
+            approval_exact = bool(
+                approval is not None and review_hash
+                and approval.artifact_id == row.get("artifact_id")
+                and approval.artifact_hash == review_hash
+                and draft is not None and str(draft_meta.get("review_package_hash") or "") == review_hash
+            )
+            candidate_state = (
+                "no_owner_decision" if not row.get("approval_id") and not review_hash
+                else "exact" if approval_exact
+                else "approval_missing" if approval is None
+                else "candidate_mismatch"
+            )
+            initiative_items.append({key: row.get(key) for key in (
+                "id", "state", "kind", "draft_id", "artifact_id", "approval_id", "candidate_hash",
+                "review_package_hash", "growth_run_id", "updated_ts",
+            )} | {
+                "approvalStatus": approval_status,
+                "approvalArtifactId": approval.artifact_id if approval else None,
+                "approvalArtifactHash": approval.artifact_hash if approval else None,
+                "candidateDecisionState": candidate_state,
+                "draftStatus": draft.get("status") if draft else None,
+                "draftReviewPackageHash": draft_meta.get("review_package_hash"),
+                "hasError": bool(row.get("last_error")),
+                "crawlseoActionId": (row.get("expected") or {}).get("crawlseoActionId") if isinstance(row.get("expected"), dict) else None,
+                "crawlseoRevision": (row.get("expected") or {}).get("crawlseoRevision") if isinstance(row.get("expected"), dict) else None,
+            })
+        idea_items = [{key: row.get(key) for key in (
+            "id", "status", "research_run_id", "serp_run_id", "provider_task_id", "research_cost_micros",
+            "keyword_budget_reservation_id", "serp_budget_reservation_id", "draft_id", "created_ts", "updated_ts",
+        )} | {"hasFailureReceipt": bool(row.get("error"))} for row in ideas]
+        research_request_items = [{key: row[key] for key in (
+            "id", "period", "package_version", "report_id", "status", "created_ts", "updated_ts",
+            "requested_ts", "completed_ts", "budget_reservation_id",
+        )} | {"hasError": bool(row["error"])} for row in research_requests]
+        site_report_items = [{key: row[key] for key in (
+            "id", "period", "status", "evidence_hash", "artifact_id", "created_ts", "updated_ts", "completed_ts",
+        )} | {"hasError": bool(row["error"])} for row in site_reports]
+        draft_items = []
+        for row in drafts:
+            meta = row.get("meta") if isinstance(row.get("meta"), dict) else {}
+            sync = meta.get("payload_sync") if isinstance(meta.get("payload_sync"), dict) else {}
+            draft_items.append({key: row.get(key) for key in ("id", "kind", "status", "created_ts", "updated_ts")} | {
+                "payloadSyncState": sync.get("state"), "payloadDocumentId": sync.get("document_id"),
+                "payloadRevision": sync.get("revision"),
+            })
+        run_items = [{key: row.get(key) for key in (
+            "run_id", "trigger", "phase", "status", "attempt", "created_ts", "updated_ts", "completed_ts",
+        )} for row in runs]
+        action_items = [{"id": row.id, "state": row.state.value, "provider": row.provider_id,
+            "job_id": row.job_id, "updated_ts": row.updated_ts,
+            "crawlseoActionId": (row.payload or {}).get("remoteActionId") if isinstance(row.payload, dict) else None,
+            "crawlseoRevision": (row.payload or {}).get("revision") if isinstance(row.payload, dict) else None,
+        } for row in actions]
+        binding_items = [{key: row.get(key) for key in (
+            "site_id", "action_id", "action_revision", "generation", "state", "updated_ts",
+        )} | {
+            "initiativeId": (row.get("detail") or {}).get("initiativeId") if isinstance(row.get("detail"), dict) else None,
+            "ownerActionId": (row.get("detail") or {}).get("ownerActionId") if isinstance(row.get("detail"), dict) else None,
+        } for row in bindings if row]
+        job_items = [{key: row.get(key) for key in (
+            "id", "conversation_id", "operation_kind", "status", "created_ts", "updated_ts",
+        )} for row in active_jobs]
+        budget_items = []
+        for raw in reservation_rows:
+            row = dict(raw)
+            try:
+                detail = json.loads(row.pop("detail_json") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                detail = {}
+            actual = detail.get("actualCostMicros", detail.get("actual_cost_micros", detail.get("cost_micros"))) if isinstance(detail, dict) else None
+            budget_items.append({**row, "amount_micros": str(row["amount_micros"]),
+                "recorded_actual_cost_micros": str(actual) if actual is not None else None})
+        connector_event_items = [dict(row) for row in connector_event_rows]
+        receipt_items = [{key: row[key] for key in (
+            "id", "capability_id", "action_id", "approval_id", "external_object_id", "external_url", "status", "created_ts", "updated_ts",
+        )} for row in receipts]
+        reference_conversation = self.get_conversation(4)
+        reference_initiative = next((row for row in initiative_items if row.get("id") == 4), None)
+        saved_owner_fact_link = self.kv_get("crawlseo_migration_reference:initiative4_owner_fact_conversation")
+        owner_fact_history = saved_owner_fact_link.get("history", []) if isinstance(saved_owner_fact_link, dict) else []
+        owner_fact_link = (saved_owner_fact_link.get("current") if isinstance(saved_owner_fact_link, dict)
+            and isinstance(saved_owner_fact_link.get("current"), dict) else saved_owner_fact_link)
+        conversation_message_hash = self._conversation_migration_signature(4) if reference_conversation is not None else None
+        link_matches = (isinstance(owner_fact_link, dict)
+            and owner_fact_link.get("initiativeId") == 4
+            and owner_fact_link.get("conversationId") == 4
+            and reference_initiative is not None
+            and owner_fact_link.get("initiativeUpdatedAt") == reference_initiative.get("updated_ts")
+            and reference_conversation is not None
+            and owner_fact_link.get("conversationCreatedAt") == reference_conversation.get("created_ts")
+            and owner_fact_link.get("conversationMessageHash") == conversation_message_hash)
+        reference_jobs = {str(job_id): self.get_chat_job(job_id) for job_id in (54, 71)}
+        reference_jobs = {key: (None if value is None else {name: value.get(name) for name in (
+            "id", "conversation_id", "operation_kind", "status", "created_ts", "updated_ts",
+        )} | {"hasFailureReceipt": bool(value.get("error"))}) for key, value in reference_jobs.items()}
+        return {
+            "schemaVersion": 1,
+            "limits": limits,
+            "truncated": any(totals[key] > limits[key] for key in limits),
+            "initiatives": category(initiative_items, "initiatives"),
+            "articleIdeas": category(idea_items, "articleIdeas"),
+            "seoResearchRequests": category(research_request_items, "seoResearchRequests"),
+            "seoSiteReports": category(site_report_items, "seoSiteReports"),
+            "drafts": category(draft_items, "drafts"),
+            "growthRuns": category(run_items, "growthRuns"),
+            "ownerActions": category(action_items, "ownerActions"),
+            "executionBindings": category(binding_items, "executionBindings"),
+            "budgetReservations": category(budget_items, "budgetReservations"),
+            "activeJobs": category(job_items, "activeJobs"),
+            "providerReceipts": category(receipt_items, "providerReceipts"),
+            "connectorEvents": category(connector_event_items, "connectorEvents"),
+            "issue330References": {
+                "initiatives": {str(row_id): next((item for item in initiative_items if str(item["id"]) == str(row_id)), None)
+                                for row_id in (10, 7, 4, 5, 9)},
+                "ownerFactConversation": None if reference_conversation is None else {
+                    "id": reference_conversation.get("id"), "created_ts": reference_conversation.get("created_ts"),
+                    "archived": bool(reference_conversation.get("archived_ts")),
+                    "deleted": bool(reference_conversation.get("deleted_ts")),
+                    "updated_ts": reference_conversation.get("updated_ts"),
+                    "initiativeId": 4,
+                    "relationshipState": "confirmed" if link_matches else "stale_confirmation" if owner_fact_link else "issue_reference_only",
+                    "confirmation": {key: owner_fact_link.get(key) for key in (
+                        "operatorRequestId", "reason", "confirmedAt", "snapshotHash",
+                        "initiativeUpdatedAt", "conversationCreatedAt", "conversationMessageHash",
+                    )} | {"priorConfirmations": len(owner_fact_history)} if link_matches else None,
+                },
+                "jobs": reference_jobs,
+                "articleIdeas": {str(row_id): next((item for item in idea_items if str(item["id"]) == str(row_id)), None)
+                                 for row_id in (2, 12)},
+                "archivedDrafts": [item for item in draft_items if item.get("status") == "archived"],
+            },
+        }
+
+    @_locked
     def due_growth_runs(self, limit: int = 20) -> list[dict[str, Any]]:
         """Filter before limiting so repeatedly blocked work cannot starve work."""
         now = _now()
@@ -1592,9 +2016,9 @@ class Memory:
         provider_task_id: str | None = None,
         detail: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        if status not in {"settled", "released", "uncertain"}:
+        if status not in {"reserved", "settled", "released", "uncertain"}:
             raise ContractError("invalid growth budget settlement status")
-        updates = {"status": status, "updated_ts": _now(), "settled_ts": _now() if status != "uncertain" else None}
+        updates = {"status": status, "updated_ts": _now(), "settled_ts": _now() if status in {"settled", "released"} else None}
         if provider_task_id is not None:
             updates["provider_task_id"] = str(provider_task_id)[:240]
         if detail is not None:
@@ -1773,6 +2197,18 @@ class Memory:
                 (target.value, next_snoozed_until, updated_ts, action_id),
             )
         return replace(current, state=target, snoozed_until=next_snoozed_until, updated_ts=updated_ts)
+
+    @_locked
+    def update_owner_action_payload(self, action_id: int, payload: dict[str, Any]) -> OwnerAction:
+        current = self.get_owner_action(action_id)
+        if current is None:
+            raise KeyError(f"no such owner action: {action_id}")
+        cleaned = safe_payload(payload)
+        updated_ts = _now()
+        with self.conn:
+            self.conn.execute("UPDATE owner_actions SET payload = ?, updated_ts = ? WHERE id = ?",
+                (json.dumps(cleaned, ensure_ascii=False, separators=(",", ":")), updated_ts, action_id))
+        return replace(current, payload=cleaned, updated_ts=updated_ts)
 
     @_locked
     def link_owner_action(

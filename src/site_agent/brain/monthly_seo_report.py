@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from ..config import crawlseo_research_authority_selected
 from ..core.contracts import Artifact, ArtifactKind
 from ..core.llm import extract_json
 
@@ -149,6 +150,9 @@ def _ready_evidence(response: Mapping[str, Any]) -> Mapping[str, Any] | None:
 
 def run(context: dict[str, Any]) -> None:
     config = context["config"]
+    if crawlseo_research_authority_selected(config):
+        context["memory"].record_action("seo_site_report", "skipped: CrawlSEO owns SEO reporting for this site")
+        return
     memory = context["memory"]
     settings = _report_config(config)
     if not (config.get("seo") or {}).get("enabled") or not settings.get("enabled", False):

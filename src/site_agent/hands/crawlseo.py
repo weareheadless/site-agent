@@ -9,8 +9,12 @@ the provider is enabled.
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 import uuid
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode, quote
+from urllib.request import Request, urlopen
 from collections.abc import Mapping
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from contextlib import AsyncExitStack
@@ -513,6 +517,214 @@ class CrawlSEOClient:
         if period:
             arguments["period"] = period
         return self._invoke("seo_list_article_keyword_research", arguments)
+
+    def connector_capabilities(self, site_id: str | None = None) -> Mapping[str, Any]:
+        path = f"/capabilities?{urlencode({'siteId': site_id})}" if site_id else "/capabilities"
+        result = self._connector_request("GET", path)
+        version = result.get("schemaVersion")
+        if not isinstance(version, str) or not version.startswith("1."):
+            raise CrawlSEOProtocolError("CrawlSEO connector contract version is unsupported")
+        return result
+
+    def connector_policy(self, site_id: str) -> Mapping[str, Any]:
+        return self._connector_request("GET", f"/policy?{urlencode({'siteId': site_id})}")
+
+    def connector_update_policy(self, policy: Mapping[str, Any]) -> Mapping[str, Any]:
+        return self._connector_request("PUT", "/policy", dict(policy))
+
+    def connector_actions(self, since: str | None = None, limit: int = 50, cursor: str | None = None,
+                          site_id: str | None = None) -> Mapping[str, Any]:
+        query: dict[str, Any] = {"limit": limit}
+        if site_id:
+            query["siteId"] = site_id
+        if since:
+            query["since"] = since
+        if cursor:
+            query["cursor"] = cursor
+        return self._connector_request("GET", f"/actions?{urlencode(query)}")
+
+    def connector_findings(self, *, site_id: str, run_id: str | None = None, since: str | None = None,
+                           limit: int = 50, cursor: str | None = None) -> Mapping[str, Any]:
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise CrawlSEOProtocolError("CrawlSEO finding limit is invalid")
+        query: dict[str, Any] = {"siteId": site_id, "limit": limit}
+        if run_id:
+            query["runId"] = run_id
+        if since:
+            query["since"] = since
+        if cursor:
+            query["cursor"] = cursor
+        return self._connector_request("GET", f"/findings?{urlencode(query)}")
+
+    def connector_action(self, action_id: str, site_id: str | None = None) -> Mapping[str, Any]:
+        suffix = f"?{urlencode({'siteId': site_id})}" if site_id else ""
+        result = self._connector_request("GET", f"/actions/{quote(action_id, safe='')}{suffix}")
+        action = result.get("action") if isinstance(result.get("action"), Mapping) else result
+        if not isinstance(action, Mapping):
+            raise CrawlSEOProtocolError("CrawlSEO connector returned an invalid Action")
+        return action
+
+    def connector_context(self, site_id: str | None = None) -> Mapping[str, Any]:
+        suffix = f"?{urlencode({'siteId': site_id})}" if site_id else ""
+        return self._connector_request("GET", f"/context{suffix}")
+
+    def connector_update_context(self, snapshot: Mapping[str, Any]) -> Mapping[str, Any]:
+        return self._connector_request("PUT", "/context", dict(snapshot))
+
+    def connector_operation(self, action_id: str, operation: Mapping[str, Any]) -> Mapping[str, Any]:
+        return self._connector_request("POST", f"/actions/{quote(action_id, safe='')}/operations", dict(operation))
+
+    def connector_decide(self, action_id: str, operation: str, *, rationale: str = "",
+                         idempotency_key: str | None = None) -> Mapping[str, Any]:
+        response = self.connector_action(action_id)
+        action = response.get("action")
+        if not isinstance(action, Mapping):
+            raise CrawlSEOProtocolError("CrawlSEO connector returned an invalid Action")
+        action_site = action.get("site") if isinstance(action.get("site"), Mapping) else {}
+        capabilities = self.connector_capabilities(str(action_site.get("id") or "") or None)
+        binding = capabilities.get("binding") if isinstance(capabilities.get("binding"), Mapping) else {}
+        generation, revision = binding.get("generation"), action.get("revision")
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 1 for value in (generation, revision)):
+            raise CrawlSEOProtocolError("CrawlSEO connector binding or Action revision is invalid")
+        key = str(idempotency_key or uuid.uuid4().hex).strip()
+        if not key or len(key) > 240:
+            raise CrawlSEOProtocolError("CrawlSEO idempotency key is invalid")
+        body = {"operation": operation, "expectedRevision": revision, "generation": generation,
+                "idempotencyKey": key, **({"rationale": rationale[:2000]} if rationale else {})}
+        return self.connector_operation(action_id, body)
+
+    def connector_execution_status(self, action_id: str, status: Mapping[str, Any]) -> Mapping[str, Any]:
+        return self._connector_request("POST", f"/actions/{quote(action_id, safe='')}/execution", dict(status))
+
+    def connector_record_execution(self, action_id: str, status: Mapping[str, Any]) -> Mapping[str, Any]:
+        response = self.connector_action(action_id)
+        action = response.get("action")
+        if not isinstance(action, Mapping):
+            raise CrawlSEOProtocolError("CrawlSEO connector returned an invalid Action")
+        action_site = action.get("site") if isinstance(action.get("site"), Mapping) else {}
+        capabilities = self.connector_capabilities(str(action_site.get("id") or "") or None)
+        binding = capabilities.get("binding") if isinstance(capabilities.get("binding"), Mapping) else {}
+        generation, revision = binding.get("generation"), action.get("revision")
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 1 for value in (generation, revision)):
+            raise CrawlSEOProtocolError("CrawlSEO connector binding or Action revision is invalid")
+        key = hashlib.sha256(f"{action_id}:{revision}:{status.get('status')}".encode()).hexdigest()
+        body = {**dict(status), "actionRevision": revision, "generation": generation, "idempotencyKey": key}
+        return self.connector_execution_status(action_id, body)
+
+    def connector_events(self, after: int = 0, limit: int = 100, site_id: str | None = None) -> Mapping[str, Any]:
+        query: dict[str, Any] = {"after": after, "limit": limit}
+        if site_id:
+            query["siteId"] = site_id
+        return self._connector_request("GET", f"/events?{urlencode(query)}")
+
+    def connector_sync(self, *, snapshot: Mapping[str, Any]) -> Mapping[str, Any]:
+        site_id = str(snapshot.get("siteId") or "").strip()
+        if not site_id:
+            raise CrawlSEOProtocolError("Connector context snapshot must identify its site")
+        capabilities = self.connector_capabilities(site_id)
+        if capabilities.get("schemaVersion") != "1.0":
+            raise CrawlSEOProtocolError("CrawlSEO connector contract version is unsupported")
+        if capabilities.get("siteId") != site_id:
+            raise CrawlSEOProtocolError("CrawlSEO connector binding does not match the requested site")
+        context = self.connector_context(site_id)
+        previous = context.get("snapshot") if isinstance(context.get("snapshot"), Mapping) else context
+        previous_revision = str(previous.get("revision") or "")
+        expected = int(previous_revision) if previous_revision.isdigit() else 0
+        candidate = dict(snapshot)
+        candidate.update({"revision": str(expected + 1), "expectedRevision": previous_revision or None,
+                          "observedAt": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(timespec="seconds")})
+        self.connector_update_context(candidate)
+        events = self.connector_events(after=0, limit=100, site_id=site_id)
+        actions: dict[str, Mapping[str, Any]] = {}
+        failed: list[dict[str, str]] = []
+        for event in events.get("events", []):
+            if not isinstance(event, Mapping):
+                continue
+            if isinstance(event.get("actionId"), str):
+                action_id = str(event["actionId"])
+                try:
+                    actions[action_id] = self.connector_action(action_id, site_id)
+                except Exception as exc:
+                    event_id = str(event.get("id") or "")
+                    if event_id:
+                        failed.append({"id": event_id, "message": str(exc)[:500] or "Action reconciliation failed"})
+        # Polling is not a durable local execution receipt. Leave successful
+        # events pending for the coordinator to acknowledge only after it has
+        # persisted the corresponding binding or terminally classified the event.
+        if failed:
+            self.connector_ack_events([], failed, site_id=site_id)
+        cursor = None
+        seen_cursors: set[str] = set()
+        for _page in range(1000):
+            listed = self.connector_actions(limit=100, cursor=cursor, site_id=site_id)
+            for action in listed.get("actions", []):
+                if isinstance(action, Mapping) and isinstance(action.get("id"), str):
+                    actions[str(action["id"])] = action
+            cursor = listed.get("nextCursor")
+            if cursor is None:
+                break
+            if not isinstance(cursor, str) or not cursor or cursor in seen_cursors:
+                raise CrawlSEOProtocolError("CrawlSEO Action pagination cursor is invalid")
+            seen_cursors.add(cursor)
+        else:
+            raise CrawlSEOProtocolError("CrawlSEO Action inventory exceeds the safe pagination limit")
+        return {"schemaVersion": "1.0", "contextRevision": str(expected + 1),
+                "actions": list(actions.values()), "events": list(events.get("events", [])),
+                "capabilities": capabilities}
+
+    def connector_ack_events(self, acknowledged: list[str], failed: list[Mapping[str, str]] | None = None,
+                             site_id: str | None = None) -> Mapping[str, Any]:
+        body: dict[str, Any] = {"acknowledged": acknowledged, "failed": failed or []}
+        if site_id:
+            body["siteId"] = site_id
+        return self._connector_request("POST", "/events", body)
+
+    def connector_budget(self, site_id: str) -> Mapping[str, Any]:
+        return self._connector_request("GET", f"/budget?{urlencode({'siteId': site_id})}")
+
+    def connector_update_budget_policy(self, policy: Mapping[str, Any]) -> Mapping[str, Any]:
+        return self._connector_request("PUT", "/budget", dict(policy))
+
+    def connector_budget_reserve(self, reservation: Mapping[str, Any]) -> Mapping[str, Any]:
+        return self._connector_request("POST", "/budget/reservations", dict(reservation))
+
+    def connector_budget_settle(self, reservation_id: str, settlement: Mapping[str, Any]) -> Mapping[str, Any]:
+        return self._connector_request("POST", f"/budget/reservations/{quote(reservation_id, safe='')}", dict(settlement))
+
+    def connector_budget_get_reservation(self, reservation_id: str) -> Mapping[str, Any]:
+        return self._connector_request("GET", f"/budget/reservations/{quote(reservation_id, safe='')}")
+
+    def _connector_request(self, method: str, path: str, body: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
+        base = self.settings.connector_url
+        if not base:
+            raise CrawlSEOConfigurationError("CrawlSEO connector API is not configured; set providers.crawlseo.connector_url")
+        token = self.settings.connector_token or self.settings.token
+        data = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8") if body is not None else None
+        request = Request(f"{base}{path}", data=data, method=method, headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+            **({"Content-Type": "application/json"} if data is not None else {}),
+        })
+        try:
+            with urlopen(request, timeout=self.settings.timeout_seconds) as response:
+                payload = response.read(self.settings.max_response_bytes + 1)
+                if len(payload) > self.settings.max_response_bytes:
+                    raise CrawlSEOResponseTooLargeError("CrawlSEO connector response exceeded the configured size limit")
+        except HTTPError as exc:
+            if exc.code in {401, 403}:
+                raise CrawlSEOUnavailableError(f"CrawlSEO connector rejected the service credential (HTTP {exc.code})") from None
+            if exc.code == 409:
+                raise CrawlSEOProtocolError("CrawlSEO connector rejected a stale or conflicting operation") from None
+            raise CrawlSEOUnavailableError(f"CrawlSEO connector request failed (HTTP {exc.code})") from None
+        except (TimeoutError, URLError, OSError) as exc:
+            raise CrawlSEOUnavailableError(_safe_exception(exc, token)) from None
+        try:
+            result = json.loads(payload.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise CrawlSEOProtocolError("CrawlSEO connector returned invalid JSON") from exc
+        if not isinstance(result, Mapping):
+            raise CrawlSEOProtocolError("CrawlSEO connector returned a non-object response")
+        return result
 
     def _invoke(self, tool_name: str, arguments: dict[str, Any]) -> Mapping[str, Any]:
         if tool_name not in _KNOWN_TOOLS:

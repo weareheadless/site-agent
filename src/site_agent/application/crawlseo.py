@@ -215,6 +215,255 @@ class CrawlSEOApplicationService:
         result = self._read("article keyword research list", lambda: self.provider.list_article_keyword_research(period, limit))
         return self._safe_mapping(result, "article keyword research list", max_bytes=150_000)
 
+    def connector_capabilities(self, site_id: str | None = None) -> dict[str, Any]:
+        return self._connector_call("connector_capabilities", "connector capabilities", site_id=site_id)
+
+    def connector_policy(self, site_id: str) -> dict[str, Any]:
+        result = self._connector_call("connector_policy", "research policy", site_id=self._bounded_text(site_id, "site id", 120))
+        value = result.get("policy") if isinstance(result.get("policy"), Mapping) else result
+        return self._safe_mapping(value, "research policy")
+
+    def connector_update_policy(self, policy: Mapping[str, Any]) -> dict[str, Any]:
+        if not isinstance(policy, Mapping):
+            raise CrawlSEOApplicationError("CrawlSEO research policy must be an object")
+        result = self._connector_call("connector_update_policy", "research policy update", policy=dict(policy))
+        value = result.get("policy") if isinstance(result.get("policy"), Mapping) else result
+        return self._safe_mapping(value, "research policy")
+
+    def connector_actions(self, since: str | None = None, limit: int = 50, cursor: str | None = None,
+                          site_id: str | None = None) -> dict[str, Any]:
+        limit = _bounded_int(limit, "action limit", 100)
+        if since is not None:
+            self._bounded_text(since, "action cursor", 40)
+        if cursor is not None:
+            self._bounded_text(cursor, "action page cursor", 300)
+        return self._connector_call("connector_actions", "connector actions", since=since, limit=limit, cursor=cursor, site_id=site_id)
+
+    def connector_findings(self, site_id: str, *, run_id: str | None = None, since: str | None = None,
+                           limit: int = 50, cursor: str | None = None) -> dict[str, Any]:
+        site_id = self._bounded_text(site_id, "site id", 120)
+        limit = _bounded_int(limit, "finding limit", 100)
+        if run_id is not None:
+            run_id = self._bounded_text(run_id, "run id", 120)
+        if since is not None:
+            since = self._bounded_text(since, "finding timestamp", 40)
+        if cursor is not None:
+            cursor = self._bounded_text(cursor, "finding page cursor", 500)
+        capabilities = self.connector_capabilities(site_id)
+        if capabilities.get("schemaVersion") != "1.0" or capabilities.get("siteId") != site_id:
+            raise CrawlSEOApplicationError("CrawlSEO connector binding does not match the requested site")
+        capability_list = capabilities.get("capabilities") if isinstance(capabilities.get("capabilities"), list) else []
+        if "findings.read" not in capability_list:
+            raise CrawlSEOApplicationError("CrawlSEO findings are unsupported by this connector")
+        operation = getattr(self.provider, "connector_findings", None)
+        if not callable(operation):
+            raise CrawlSEOApplicationError("CrawlSEO connector findings are unsupported by this client")
+        result = self._read("connector findings", lambda: operation(site_id=site_id, run_id=run_id,
+            since=since, limit=limit, cursor=cursor))
+        response = self._safe_mapping(result, "connector findings", max_bytes=2_000_000)
+        if response.get("schemaVersion") != "1.0" or response.get("siteId") != site_id or response.get("projectId") != capabilities.get("projectId"):
+            raise CrawlSEOApplicationError("CrawlSEO findings project/site identity does not match the selected binding")
+        if (not isinstance(response.get("findings"), list)
+                or (response.get("nextCursor") is not None and not isinstance(response.get("nextCursor"), str))):
+            raise CrawlSEOApplicationError("CrawlSEO connector returned an invalid findings inventory")
+        return response
+
+    def connector_action(self, action_id: str, site_id: str | None = None) -> dict[str, Any]:
+        result = self._connector_call("connector_action", "connector action", action_id=self._bounded_text(action_id, "action id", 120), site_id=site_id)
+        action = result.get("action") if isinstance(result.get("action"), Mapping) else result
+        if not isinstance(action, Mapping):
+            raise CrawlSEOApplicationError("CrawlSEO connector returned an invalid Action")
+        return self._safe_mapping(action, "connector Action")
+
+    def connector_context(self, site_id: str | None = None) -> dict[str, Any]:
+        return self._connector_call("connector_context", "connector context", site_id=site_id)
+
+    def connector_update_context(self, snapshot: Mapping[str, Any]) -> dict[str, Any]:
+        if not isinstance(snapshot, Mapping):
+            raise CrawlSEOApplicationError("CrawlSEO context snapshot must be an object")
+        return self._connector_call("connector_update_context", "connector context update", snapshot=snapshot)
+
+    def connector_operation(self, action_id: str, operation: Mapping[str, Any]) -> dict[str, Any]:
+        if not isinstance(operation, Mapping):
+            raise CrawlSEOApplicationError("CrawlSEO operation must be an object")
+        return self._connector_call("connector_operation", "connector operation", action_id=self._bounded_text(action_id, "action id", 120), operation=operation)
+
+    def connector_decide(self, action_id: str, operation: str, *, rationale: str = "",
+                         idempotency_key: str | None = None) -> dict[str, Any]:
+        action_id = self._bounded_text(action_id, "action id", 120)
+        if operation not in {"accept_preparation", "decline_preparation", "request_correction", "cancel_preparation"}:
+            raise CrawlSEOApplicationError("CrawlSEO preparation operation is invalid")
+        action_response = self.connector_action(action_id)
+        action = action_response.get("action") if isinstance(action_response.get("action"), Mapping) else action_response
+        if not isinstance(action, Mapping):
+            raise CrawlSEOApplicationError("CrawlSEO connector returned an invalid Action")
+        action_site = action.get("site") if isinstance(action.get("site"), Mapping) else {}
+        capabilities = self.connector_capabilities(str(action_site.get("id") or "") or None)
+        binding = capabilities.get("binding") if isinstance(capabilities.get("binding"), Mapping) else {}
+        generation, revision = binding.get("generation"), action.get("revision")
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 1 for value in (generation, revision)):
+            raise CrawlSEOApplicationError("CrawlSEO connector binding or Action revision is invalid")
+        import uuid
+        key = self._bounded_text(idempotency_key, "idempotency key", 240) if idempotency_key is not None else uuid.uuid4().hex
+        return self.connector_operation(action_id, {"operation": operation, "expectedRevision": revision,
+            "generation": generation, "idempotencyKey": key, **({"rationale": rationale[:2000]} if rationale else {})})
+
+    def connector_execution_status(self, action_id: str, status: Mapping[str, Any]) -> dict[str, Any]:
+        if not isinstance(status, Mapping):
+            raise CrawlSEOApplicationError("CrawlSEO execution status must be an object")
+        return self._connector_call("connector_execution_status", "connector execution status", action_id=self._bounded_text(action_id, "action id", 120), status=status)
+
+    def connector_record_execution(self, action_id: str, status: Mapping[str, Any]) -> dict[str, Any]:
+        if not isinstance(status, Mapping):
+            raise CrawlSEOApplicationError("CrawlSEO execution status must be an object")
+        response = self.connector_action(action_id)
+        action = response.get("action") if isinstance(response.get("action"), Mapping) else response
+        if not isinstance(action, Mapping):
+            raise CrawlSEOApplicationError("CrawlSEO connector returned an invalid Action")
+        action_site = action.get("site") if isinstance(action.get("site"), Mapping) else {}
+        capabilities = self.connector_capabilities(str(action_site.get("id") or "") or None)
+        binding = capabilities.get("binding") if isinstance(capabilities.get("binding"), Mapping) else {}
+        generation, revision = binding.get("generation"), action.get("revision")
+        if any(isinstance(value, bool) or not isinstance(value, int) or value < 1 for value in (generation, revision)):
+            raise CrawlSEOApplicationError("CrawlSEO connector binding or Action revision is invalid")
+        import hashlib
+        import json
+        operation = dict(status)
+        operation.update({"actionRevision": revision, "generation": generation,
+            "idempotencyKey": hashlib.sha256(
+                f"{action_id}:{revision}:{json.dumps(dict(status), sort_keys=True, separators=(',', ':'), ensure_ascii=False, default=str)}".encode()
+            ).hexdigest()})
+        return self.connector_execution_status(action_id, operation)
+
+    def connector_events(self, after: int = 0, limit: int = 100, site_id: str | None = None) -> dict[str, Any]:
+        if isinstance(after, bool) or not isinstance(after, int) or after < 0:
+            raise CrawlSEOApplicationError("CrawlSEO event cursor is invalid")
+        limit = _bounded_int(limit, "event limit", 100)
+        return self._connector_call("connector_events", "connector events", after=after, limit=limit, site_id=site_id)
+
+    def connector_sync(self, *, snapshot: Mapping[str, Any]) -> dict[str, Any]:
+        """Refresh the site snapshot, drain durable events, and read Actions."""
+        expected_site = str(snapshot.get("siteId") or "")
+        if not expected_site:
+            raise CrawlSEOApplicationError("CrawlSEO connector snapshot omitted its site identity")
+        capabilities = self.connector_capabilities(expected_site)
+        if capabilities.get("schemaVersion") != "1.0":
+            raise CrawlSEOApplicationError("CrawlSEO connector schema version is unsupported")
+        if capabilities.get("siteId") != expected_site:
+            raise CrawlSEOApplicationError("CrawlSEO connector binding does not match the requested site")
+        expected_project = str(capabilities.get("projectId") or "")
+        if not expected_project or not expected_site:
+            raise CrawlSEOApplicationError("CrawlSEO connector omitted its project or site identity")
+
+        def validate_action(value: Mapping[str, Any]) -> dict[str, Any]:
+            project = value.get("project") if isinstance(value.get("project"), Mapping) else {}
+            site = value.get("site") if isinstance(value.get("site"), Mapping) else {}
+            if (value.get("schemaVersion") != "1.0" or str(project.get("id") or "") != expected_project
+                    or str(site.get("id") or "") != expected_site):
+                raise CrawlSEOApplicationError("CrawlSEO Action identity or schema does not match the active connector")
+            if not isinstance(value.get("id"), str) or not value["id"].strip():
+                raise CrawlSEOApplicationError("CrawlSEO Action omitted its stable identity")
+            if "evidenceComplete" in value and not isinstance(value.get("evidenceComplete"), bool):
+                raise CrawlSEOApplicationError("CrawlSEO Action evidence completeness marker is invalid")
+            unavailable = value.get("unavailableEvidenceSourceIds", [])
+            if (not isinstance(unavailable, list)
+                    or any(not isinstance(source_id, str) or not source_id.strip() for source_id in unavailable)):
+                raise CrawlSEOApplicationError("CrawlSEO Action unavailable evidence references are invalid")
+            if value.get("evidenceComplete") is False or unavailable:
+                raise CrawlSEOApplicationError("CrawlSEO Action has missing evidence sources and cannot enter owner work")
+            return dict(value)
+
+        current = self.connector_context(expected_site)
+        candidate = dict(snapshot)
+        previous = current.get("snapshot") if isinstance(current.get("snapshot"), Mapping) else current
+        previous_revision = str(previous.get("revision") or "")
+        candidate.update({"siteId": snapshot.get("siteId"),
+                          "revision": str(int(previous_revision) + 1) if previous_revision.isdigit() else "1",
+                          "expectedRevision": previous_revision or None,
+                          "observedAt": __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat(timespec="seconds")})
+        self.connector_update_context(candidate)
+        events = self.connector_events(after=0, limit=100, site_id=expected_site)
+        actions_by_id: dict[str, dict[str, Any]] = {}
+        failed: list[dict[str, str]] = []
+        for event in events.get("events", []):
+            if not isinstance(event, Mapping):
+                continue
+            action_id = event.get("actionId")
+            if isinstance(action_id, str):
+                try:
+                    action = self.connector_action(action_id, expected_site)
+                    actions_by_id[action_id] = validate_action(action)
+                except Exception as exc:
+                    event_id = str(event.get("id") or "")
+                    if event_id:
+                        failed.append({"id": event_id, "message": str(exc)[:500] or "Action reconciliation failed"})
+        # A connector poll is not a durable local execution receipt. The
+        # coordinator acknowledges only after persisting the local binding.
+        if failed:
+            self.connector_ack_events([], failed, site_id=expected_site)
+        cursor = None
+        seen_cursors: set[str] = set()
+        for _page in range(1000):
+            listed = self.connector_actions(limit=100, cursor=cursor, site_id=expected_site)
+            for row in listed.get("actions", []):
+                if isinstance(row, Mapping) and isinstance(row.get("id"), str):
+                    action = validate_action(row)
+                    actions_by_id[str(action["id"])] = action
+            cursor = listed.get("nextCursor")
+            if cursor is None:
+                break
+            if not isinstance(cursor, str) or not cursor or cursor in seen_cursors:
+                raise CrawlSEOApplicationError("CrawlSEO Action pagination cursor is invalid")
+            seen_cursors.add(cursor)
+        else:
+            raise CrawlSEOApplicationError("CrawlSEO Action inventory exceeds the safe pagination limit")
+        result_context = self.connector_context(expected_site)
+        saved = result_context.get("snapshot") if isinstance(result_context.get("snapshot"), Mapping) else {}
+        return {"schemaVersion": "1.0", "contextRevision": saved.get("revision"),
+                "actions": list(actions_by_id.values()), "events": list(events.get("events", [])),
+                "capabilities": capabilities}
+
+    def connector_ack_events(self, acknowledged: list[str], failed: list[Mapping[str, str]] | None = None,
+                             site_id: str | None = None) -> dict[str, Any]:
+        if not isinstance(acknowledged, list) or len(acknowledged) > 100:
+            raise CrawlSEOApplicationError("CrawlSEO event acknowledgements are invalid")
+        return self._connector_call("connector_ack_events", "connector event acknowledgement", acknowledged=acknowledged, failed=failed or [], site_id=site_id)
+
+    def connector_budget(self, site_id: str) -> dict[str, Any]:
+        site_id = self._bounded_text(site_id, "site_id", 120)
+        result = self._connector_call("connector_budget", "budget", site_id=site_id)
+        budget = result.get("budget") if isinstance(result.get("budget"), Mapping) else result
+        return self._safe_mapping(budget, "budget")
+
+    def connector_update_budget_policy(self, policy: Mapping[str, Any]) -> dict[str, Any]:
+        result = self._connector_call("connector_update_budget_policy", "budget policy", policy=policy)
+        value = result.get("policy") if isinstance(result.get("policy"), Mapping) else result
+        return self._safe_mapping(value, "budget policy")
+
+    def connector_budget_reserve(self, reservation: Mapping[str, Any]) -> dict[str, Any]:
+        result = self._connector_call("connector_budget_reserve", "budget reservation", reservation=reservation)
+        value = result.get("reservation") if isinstance(result.get("reservation"), Mapping) else result
+        return self._safe_mapping(value, "budget reservation")
+
+    def connector_budget_settle(self, reservation_id: str, settlement: Mapping[str, Any]) -> dict[str, Any]:
+        reservation_id = self._bounded_text(reservation_id, "reservation_id", 120)
+        result = self._connector_call("connector_budget_settle", "budget settlement", reservation_id=reservation_id, settlement=settlement)
+        value = result.get("reservation") if isinstance(result.get("reservation"), Mapping) else result
+        return self._safe_mapping(value, "budget settlement")
+
+    def connector_budget_get_reservation(self, reservation_id: str) -> dict[str, Any]:
+        reservation_id = self._bounded_text(reservation_id, "reservation_id", 120)
+        result = self._connector_call("connector_budget_get_reservation", "budget reservation", reservation_id=reservation_id)
+        value = result.get("reservation") if isinstance(result.get("reservation"), Mapping) else result
+        return self._safe_mapping(value, "budget reservation")
+
+    def _connector_call(self, method: str, label: str, **kwargs: Any) -> dict[str, Any]:
+        operation = getattr(self.provider, method, None)
+        if not callable(operation):
+            raise CrawlSEOApplicationError(f"CrawlSEO {label} is unsupported by this configured connector")
+        result = self._read(label, lambda: operation(**kwargs))
+        return self._safe_mapping(result, label, max_bytes=200_000)
+
     @staticmethod
     def _bounded_text(value: str, field_name: str, maximum: int) -> str:
         if not isinstance(value, str) or not value.strip() or len(value.strip()) > maximum:

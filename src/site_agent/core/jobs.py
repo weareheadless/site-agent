@@ -39,8 +39,10 @@ from ..brain import seo as brain_seo
 from ..brain import seo_insights as brain_seo_insights
 from ..brain import seo_outcomes as brain_seo_outcomes
 from ..brain import monthly_seo_report as brain_monthly_seo_report
+from ..config import crawlseo_research_authority_selected
 from .article_routes import public_article_path
 from ..application.growth_workflow import (
+    _crawlseo_authoritative,
     has_recoverable_growth_replay,
     has_recoverable_historical_noop,
     run_growth_reconciler,
@@ -179,6 +181,12 @@ def _editorial_enabled(context: dict[str, Any]) -> bool:
 
 
 def _article(context: dict[str, Any]) -> None:
+    if _crawlseo_authoritative(context.get("config") or {}):
+        context["memory"].record_action(
+            "article",
+            "local article workflow is disabled while CrawlSEO is the research authority",
+        )
+        return
     if not _editorial_enabled(context):
         context["memory"].record_action("article", "editorial publishing is not enabled")
         return
@@ -900,6 +908,9 @@ def _digest(context: dict[str, Any]) -> None:
 def _seo_insight(context: dict[str, Any]) -> None:
     """Write one owner-facing synthesis from the tenant's own SEO evidence."""
     config = context.get("config") or {}
+    if crawlseo_research_authority_selected(config):
+        context["memory"].record_action("seo_insight", "skipped: CrawlSEO owns SEO recommendations for this site")
+        return
     enabled = bool((config.get("seo") or {}).get("enabled") or (config.get("ga") or {}).get("enabled"))
     if not enabled:
         return
@@ -1025,18 +1036,34 @@ def _strategist(context: dict[str, Any]) -> None:
 
 
 def _seo_research_cycle(context: dict[str, Any]) -> None:
+    if _crawlseo_authoritative(context.get("config") or {}):
+        context["memory"].record_action("seo_research_cycle", "skipped: CrawlSEO owns research for this site")
+        return
     brain_seo.run(context)
 
 
 def _seo_site_report_cycle(context: dict[str, Any]) -> None:
+    if _crawlseo_authoritative(context.get("config") or {}):
+        context["memory"].record_action("seo_site_report_cycle", "skipped: CrawlSEO owns research reporting for this site")
+        return
     brain_monthly_seo_report.run(context)
 
 
 def _article_research_cycle(context: dict[str, Any]) -> None:
+    if _crawlseo_authoritative(context.get("config") or {}):
+        context["memory"].record_action("article_research_cycle", "skipped: CrawlSEO owns article research for this site")
+        return
     # Reconciliation culminates in a reader-facing article, so it needs the
     # complete editorial/business context as well as the research evidence.
     _with_persona(context, brain_article_research.reconcile, "article_research")
     _mirror_article_drafts(context)
+
+
+def _seo_outcomes_cycle(context: dict[str, Any]) -> None:
+    if _crawlseo_authoritative(context.get("config") or {}):
+        context["memory"].record_action("seo_outcomes", "skipped: CrawlSEO owns SEO outcome analysis for this site")
+        return
+    brain_seo_outcomes.run(context)
 
 
 def _has_recoverable_article_sync(memory: Memory) -> bool:
@@ -1081,7 +1108,11 @@ def _wake_persisted_job(scheduler: Scheduler, name: str) -> None:
 def register_growth_jobs(scheduler: Scheduler, config: dict[str, Any], context: dict[str, Any]) -> bool:
     """Both runtime entry points consume this one production growth contract."""
     site = config.get("site") or {}
+    crawlseo_settings = (config.get("providers") or {}).get("crawlseo") or {}
+    crawlseo_authoritative = _crawlseo_authoritative(config)
     if not (site.get("website_present") and (site.get("payload") or {}).get("enabled")):
+        if crawlseo_authoritative:
+            raise ValueError("CrawlSEO research authority requires a provisioned HelloAda Payload execution connector")
         return False
     settings = config.get("scheduler") or {}
     overrides = settings.get("schedule") or {}
@@ -1094,14 +1125,15 @@ def register_growth_jobs(scheduler: Scheduler, config: dict[str, Any], context: 
     growth_policy = config.get("growth") or {}
     if growth_policy.get("enabled", True) is False:
         return True  # Email bootstrap remains operational when Growth is explicitly paused.
-    schedules = {
+    schedules = {"growth_pending": {"every": "1h"}} if crawlseo_authoritative else {
         "growth_initial": {"every": "daily", "at": "07:00"},
         "growth_daily": {"every": "daily", "at": "07:30"},
         "growth_weekly": {"every": "weekly", "weekday": "monday", "at": "08:30"},
         "growth_monthly": {"every": "monthly", "day": 1, "at": "09:00"},
         "growth_pending": {"every": "1h"},
-        "growth_article_sync": {"every": "1h"},
     }
+    if not crawlseo_authoritative:
+        schedules["growth_article_sync"] = {"every": "1h"}
     for name, spec in schedules.items():
         if name == "growth_pending":
             # Scheduled tenant execution owns scheduler.lock; only this
@@ -1128,10 +1160,10 @@ def register_growth_jobs(scheduler: Scheduler, config: dict[str, Any], context: 
     # These are independent maintenance/measurement operations, not competing
     # recommendation producers. Inventory failure must not stop either one.
     maintenance = []
-    if _seo_provisioning_enabled(config):
+    if _seo_provisioning_enabled(config) and not crawlseo_authoritative:
         maintenance.append(("seo_provisioning", {"every": "6h"}, lambda: _seo_provisioning(context)))
-    if context.get("llm") is not None:
-        maintenance.append(("seo_outcomes", {"every": "daily", "at": "13:00"}, lambda: _with_persona(context, brain_seo_outcomes.run, "seo_outcomes")))
+    if context.get("llm") is not None and not crawlseo_authoritative:
+        maintenance.append(("seo_outcomes", {"every": "daily", "at": "13:00"}, lambda: _with_persona(context, _seo_outcomes_cycle, "seo_outcomes")))
     for name, spec, operation in maintenance:
         scheduler.job(name, overrides.get(name, spec), operation)
         if scheduler.memory.kv_get(f"next_run:{name}") is None:
@@ -1169,18 +1201,20 @@ def register_jobs(scheduler: Scheduler, config: dict[str, Any], context: dict[st
         scheduler.job("digest", schedule.get("digest", {"every": "weekly", "weekday": "monday", "at": "08:00"}), lambda: _digest(context))
     if context.get("llm") and (has_sources or bool(settings.get("learning_enabled", False))):
         scheduler.job("learn", schedule.get("learn", {"every": "weekly", "weekday": "monday", "at": "08:20"}), lambda: _with_persona(context, brain_digest.learn, "research"))
-    article_research_enabled = bool(((config.get("seo") or {}).get("article_research") or {}).get("enabled", False))
+    crawlseo_settings = (config.get("providers") or {}).get("crawlseo") or {}
+    crawlseo_authoritative = _crawlseo_authoritative(config)
+    article_research_enabled = bool(((config.get("seo") or {}).get("article_research") or {}).get("enabled", False)) and not crawlseo_authoritative
     seo_config = config.get("seo") if isinstance(config.get("seo"), dict) else {}
     seo_enabled = bool(seo_config.get("enabled") or (config.get("ga") or {}).get("enabled"))
-    if _seo_provisioning_enabled(config):
+    if _seo_provisioning_enabled(config) and not crawlseo_authoritative:
         scheduler.job(
             "seo_provisioning",
             schedule.get("seo_provisioning", {"every": "6h"}),
             lambda: _seo_provisioning(context),
         )
-    if context.get("payload_gateway") is not None:
+    if context.get("payload_gateway") is not None and not crawlseo_authoritative:
         _mirror_article_drafts(context)
-    if seo_enabled:
+    if seo_enabled and not crawlseo_authoritative:
         scheduler.job(
             "ga_snapshot",
             schedule.get("ga_snapshot", {"every": "daily", "at": "11:00"}),
@@ -1191,9 +1225,11 @@ def register_jobs(scheduler: Scheduler, config: dict[str, Any], context: dict[st
             schedule.get("seo_snapshot", {"every": "daily", "at": "11:30"}),
             lambda: _seo_snapshot(context),
         )
-    if context.get("llm") and (bool((config.get("editorial") or {}).get("enabled", False)) or article_research_enabled):
+    if context.get("llm") and not crawlseo_authoritative and (
+        bool((config.get("editorial") or {}).get("enabled", False)) or article_research_enabled
+    ):
         scheduler.job("article", schedule.get("article", {"every": "weekly", "weekday": "tuesday", "at": "09:00"}), lambda: _article(context))
-    if context.get("llm") and seo_enabled:
+    if context.get("llm") and seo_enabled and not crawlseo_authoritative:
         scheduler.job(
             "seo_insight",
             schedule.get("seo_insight", {"every": 7}),
@@ -1208,11 +1244,11 @@ def register_jobs(scheduler: Scheduler, config: dict[str, Any], context: dict[st
             schedule.get("article_research_cycle", {"every": "daily", "at": "13:30"}),
             lambda: _article_research_cycle(context),
         )
-    if seo_enabled:
+    if seo_enabled and not crawlseo_authoritative:
         scheduler.job(
             "seo_outcomes",
             schedule.get("seo_outcomes", _JOB_DEFAULTS["seo_outcomes"]),
-            lambda: brain_seo_outcomes.run(context),
+            lambda: _seo_outcomes_cycle(context),
         )
     intake = context.get("intake_coordinator")
     if intake is not None and bool(getattr(intake, "research_enabled", False)):
@@ -1261,10 +1297,13 @@ def register_builtin(scheduler: Scheduler, config: dict[str, Any], context: dict
     if register_growth_jobs(scheduler, config, context):
         scheduler.job("health_check", _spec(config, "health_check"), lambda: maintenance.health_check(context))
         scheduler.job("backup", _spec(config, "backup"), lambda: maintenance.backup_data(context))
+        # Historical local reconciliation may still be invoked manually, but
+        # it must not remain a second scheduled source of current growth data.
         return
     register_email_provisioning_job(scheduler, config, context, _spec(config, "email_provisioning"))
     scheduler.job("heartbeat", _spec(config, "heartbeat"), lambda: _heartbeat(context))
-    scheduler.job("growth_reconciler", _spec(config, "growth_reconciler"), lambda: run_growth_reconciler(context))
+    if not _crawlseo_authoritative(config):
+        scheduler.job("growth_reconciler", _spec(config, "growth_reconciler"), lambda: run_growth_reconciler(context))
     scheduler.job("health_check", _spec(config, "health_check"), lambda: maintenance.health_check(context))
     sources = (_effective_source_config(context).get("sources") or {})
     if sources.get("subreddits") or sources.get("rss_feeds") or sources.get("community_feeds"):
@@ -1290,20 +1329,22 @@ def register_builtin(scheduler: Scheduler, config: dict[str, Any], context: dict
         scheduler.job("compact", _spec(config, "compact"), lambda: maintenance.compact_memory(context))
     scheduler.job("ga_snapshot", _spec(config, "ga_snapshot"), lambda: _ga_snapshot(context))
     scheduler.job("seo_snapshot", _spec(config, "seo_snapshot"), lambda: _seo_snapshot(context))
-    if context.get("llm"):
+    crawlseo_settings = (config.get("providers") or {}).get("crawlseo") or {}
+    crawlseo_authoritative = _crawlseo_authoritative(config)
+    if context.get("llm") and not crawlseo_authoritative:
         scheduler.job("seo_insight", _spec(config, "seo_insight"), lambda: _seo_insight(context))
     research_config = ((config.get("seo") or {}).get("research") or {})
     site_report_config = ((config.get("seo") or {}).get("site_report") or {})
     article_research_config = ((config.get("seo") or {}).get("article_research") or {})
-    if site_report_config.get("enabled") and context.get("crawlseo_service"):
+    if not crawlseo_authoritative and site_report_config.get("enabled") and context.get("crawlseo_service"):
         scheduler.job("seo_site_report_cycle", _spec(config, "seo_site_report_cycle"), lambda: _seo_site_report_cycle(context))
-    if article_research_config.get("enabled") and context.get("crawlseo_service"):
+    if not crawlseo_authoritative and article_research_config.get("enabled") and context.get("crawlseo_service"):
         scheduler.job("article_research_cycle", _spec(config, "article_research_cycle"), lambda: _article_research_cycle(context))
-    if research_config.get("enabled") and context.get("crawlseo_service"):
+    if not crawlseo_authoritative and research_config.get("enabled") and context.get("crawlseo_service"):
         scheduler.job("seo_research_cycle", _spec(config, "seo_research_cycle"), lambda: _seo_research_cycle(context))
-    if research_config.get("enabled") or site_report_config.get("enabled") or article_research_config.get("enabled") or bool((config.get("seo") or {}).get("enabled") or (config.get("ga") or {}).get("enabled")):
-        scheduler.job("seo_outcomes", _spec(config, "seo_outcomes"), lambda: brain_seo_outcomes.run(context))
-    if _seo_provisioning_enabled(config):
+    if not crawlseo_authoritative and (research_config.get("enabled") or site_report_config.get("enabled") or article_research_config.get("enabled") or bool((config.get("seo") or {}).get("enabled") or (config.get("ga") or {}).get("enabled"))):
+        scheduler.job("seo_outcomes", _spec(config, "seo_outcomes"), lambda: _seo_outcomes_cycle(context))
+    if _seo_provisioning_enabled(config) and not crawlseo_authoritative:
         scheduler.job("seo_provisioning", _spec(config, "seo_provisioning"), lambda: _seo_provisioning(context))
     scheduler.job("reindex_memory", _spec(config, "reindex_memory"), lambda: _reindex_memory(context))
     scheduler.job("backup", _spec(config, "backup"), lambda: maintenance.backup_data(context))

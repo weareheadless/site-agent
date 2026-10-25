@@ -24,6 +24,7 @@ export type GrowthTask = {
   focus: Focus; state: string; nextRun?: string | null; draftId?: number | null;
   ownerActionId?: number | null; canApprove?: boolean; reviewPackageHash?: string | null;
   priority?: string; requirement?: string;
+  providerId?: string; remoteActionId?: string; actionRevision?: number; preparationStatus?: string;
   lastError?: string; executionIssue?: boolean; needsPreparation?: boolean; updatedAt?: string; conversationId?: number | null;
   evidence?: string[]; measurementHorizon?: number; measurementMetric?: string;
   outcomes?: { id: number; horizon_days: number; assessment: string; confidence: string; notes?: string; measured_ts?: string }[];
@@ -313,6 +314,23 @@ export function GrowthTasks({ mode, serviceModel, decisionOrder, onNavigate, tas
     } finally {
       setBusy(undefined);
     }
+  };
+  const crawlseoPreparation = async (task: GrowthTask, operation: "accept_preparation" | "decline_preparation") => {
+    if (busy || !task.ownerActionId) return;
+    setBusy(task.id); setError(undefined);
+    try {
+      const response = await fetchHelloAda(`/api/helloada/growth/actions/${task.ownerActionId}/decision`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ operation,
+          idempotencyKey: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}` }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || body.ok === false) throw new Error(String(body.detail || body.message || t("growth.crawlseoPreparationFailed")));
+      lastOpenedTask.current = undefined; setSelected(undefined); writeGrowthLocation(focus); refresh();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : t("growth.crawlseoPreparationFailed"));
+      refresh();
+    }
+    finally { setBusy(undefined); }
   };
   const openTask = (task: GrowthTask) => {
     lastOpenedTask.current = task.id;
@@ -719,6 +737,13 @@ export function GrowthTasks({ mode, serviceModel, decisionOrder, onNavigate, tas
             {selectedTask.kind === "assessment" && selectedTask.nextRun ? <p className="helloada-growth-task-block">
               {t("growth.assessmentNextRetry")}: {date(selectedTask.nextRun)}
             </p> : null}
+            {selectedTask.providerId === "crawlseo" && selectedTask.ownerActionId
+              && ["none", "blocked", "cancelled", "failed"].includes(String(selectedTask.preparationStatus || "none")) ? <div className="helloada-growth-task-actions">
+                <button type="button" disabled={Boolean(busy)} onClick={() => void crawlseoPreparation(selectedTask, "accept_preparation")}>
+                  {busy === selectedTask.id ? t("growth.taskWorking") : selectedTask.preparationStatus === "blocked" ? t("growth.crawlseoRetryPreparation") : t("growth.crawlseoPrepare")}
+                </button>
+                {selectedTask.preparationStatus === "none" ? <button type="button" disabled={Boolean(busy)} onClick={() => void crawlseoPreparation(selectedTask, "decline_preparation")}>{t("growth.crawlseoDeclinePreparation")}</button> : null}
+              </div> : null}
             {selectedTask.review ? <GrowthChangeReview review={selectedTask.review} /> : null}
             {selectedTask.kind === "code" && selectedTask.review?.source ? <section className="helloada-growth-task-analysis-note">
               <strong>{t("growth.codePreview")}</strong>

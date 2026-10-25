@@ -5,9 +5,14 @@ import vm from 'node:vm';
 import ts from 'typescript';
 const source = readFileSync(new URL('../src/lib/growth-data.ts', import.meta.url), 'utf8');
 const compiled = ts.transpileModule(source, {compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022}}).outputText;
-const sandbox = {exports: {}, Intl};
+const sandbox = {exports: {}, Intl, URLSearchParams};
 vm.runInNewContext(compiled, sandbox);
 const {growthDate, growthNumber, growthSeries, growthCSV} = sandbox.exports;
+
+test('the owner research budget panel is addressable and restored from navigation state', () => {
+  assert.equal(sandbox.exports.growthPanelFromSearch('?growth_panel=budget'), 'budget');
+  assert.equal(sandbox.exports.growthPanelFromSearch('?growth_panel=unknown'), 'home');
+});
 
 test('the owner plan exposes upcoming work, not stale dates on disabled tasks', () => {
   const plan = sandbox.exports.growthPlan([
@@ -23,6 +28,14 @@ test('the owner plan exposes upcoming work, not stale dates on disabled tasks', 
 
 test('Growth has one task list, not separate advice, schedule and approval windows', () => {
   const component = readFileSync(new URL('../src/components/HelloAdaGrowth.tsx', import.meta.url), 'utf8');
+  assert.match(component, /\(growth\?\.sources \|\| \[\]\)\.map\(\(source\) =>/);
+  assert.match(component, /source\.provider \|\| id/);
+  assert.match(component, /source\.sourceRef/);
+  assert.match(component, /source\.retrievedAt/);
+  assert.match(component, /timeZone: budget\.timeZone/);
+  assert.match(component, /helloada-research-budget-timezone/);
+  const analytics = readFileSync(new URL('../src/components/GrowthAnalytics.tsx', import.meta.url), 'utf8');
+  assert.match(analytics, /provider\.reason \? `growth\.\$\{provider\.reason\}`/);
   assert.doesNotMatch(component, /helloada-growth-work-strip|backgroundIdle/);
   assert.ok(component.includes('<GrowthTasks'));
   assert.ok(component.includes('tasks={growth?.tasks}'));

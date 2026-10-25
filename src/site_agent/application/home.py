@@ -114,29 +114,38 @@ class HomeService:
         ActionPriority.OPTIONAL: 2,
     }
 
-    def __init__(self, memory):
+    def __init__(self, memory, config=None):
         self.memory = memory
+        self.config = config if isinstance(config, dict) else {}
 
     def snapshot(self, needs_limit: int = 4, suggestion_limit: int = 3) -> HomeResult:
         needs_limit = max(0, min(int(needs_limit), 20))
         suggestion_limit = max(0, min(int(suggestion_limit), 20))
         now = datetime.datetime.now(datetime.timezone.utc)
+        connector_mode = self._connector_mode()
         persisted = self.memory.list_owner_actions(limit=200)
-        visible = [action for action in persisted if self._visible(action, now)]
+        visible = [
+            action for action in persisted
+            if self._visible(action, now)
+            and not (connector_mode and self._legacy_strategist_action(action))
+        ]
         known_refs = {action.source_ref for action in persisted}
         visible.extend(self._pending_approval_actions(known_refs))
         visible.extend(self._pending_draft_actions(known_refs))
-        visible.extend(self._legacy_suggestion_actions(known_refs))
+        if not connector_mode:
+            visible.extend(self._legacy_suggestion_actions(known_refs))
 
         needs = [
             action for action in visible
             if action.requirement != ActionRequirement.SUGGESTION
             and action.state != ActionState.STARTED
+            and not (action.provider_id == "crawlseo" and not self._connector_mode())
         ]
         suggestions = [
             action for action in visible
             if action.requirement == ActionRequirement.SUGGESTION
             and action.state != ActionState.STARTED
+            and not (action.provider_id == "crawlseo" and not self._connector_mode())
         ]
         needs = self._sort(needs)[:needs_limit]
         suggestions = self._sort(suggestions)[:suggestion_limit]
@@ -156,6 +165,16 @@ class HomeService:
             inner_life=self._inner_life(),
             generated_ts=generated_ts,
         )
+
+    def _connector_mode(self) -> bool:
+        provider = self.config.get("providers") if isinstance(self.config.get("providers"), dict) else {}
+        crawlseo = provider.get("crawlseo") if isinstance(provider.get("crawlseo"), dict) else {}
+        return bool(crawlseo.get("enabled") and crawlseo.get("connector_url")
+                    and crawlseo.get("research_authority") == "crawlseo")
+
+    @staticmethod
+    def _legacy_strategist_action(action: OwnerAction) -> bool:
+        return action.source_ref.startswith("strategist:") or action.payload.get("source") == "strategist_cards"
 
     def _inner_life(self) -> InnerLifeSummary:
         """Return the owner-requested inner-life view without private notes."""
@@ -320,6 +339,8 @@ class HomeService:
         return result
 
     def _legacy_suggestion_actions(self, known_refs: set[str]) -> list[OwnerAction]:
+        if self._connector_mode():
+            return []
         stored = self.memory.kv_get("strategist_cards") or {}
         cards = stored.get("cards") if isinstance(stored, dict) else []
         result: list[OwnerAction] = []

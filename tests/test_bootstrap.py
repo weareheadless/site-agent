@@ -232,20 +232,27 @@ def test_cloudflare_worker_route_does_not_change_an_enabled_subdomain(monkeypatc
 
 
 def test_bootstrap_control_route_is_explicit_when_external_bootstrap_is_not_wired(tmp_path):
+    import asyncio
+    import httpx
+
     config, _unused, env = _host(tmp_path)
     registry = TenantRegistry.from_config(config, env)
     registration = TenantRegistrationService(config, env, registry=registry)
     app = create_workspace_api_app(registry, control_token="control", registration=registration)
 
     try:
-        with TestClient(app) as client:
-            response = client.post(
-                "/v1/control-plane/websites/demo/bootstrap",
-                headers={"Authorization": "Bearer control"},
-                json={"display_name": "Demo"},
-            )
-            assert response.status_code == 503
-            assert "unavailable" in response.text
+        async def request_without_host_lifespan():
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+                return await client.post(
+                    "/v1/control-plane/websites/demo/bootstrap",
+                    headers={"Authorization": "Bearer control"},
+                    json={"display_name": "Demo"},
+                )
+
+        response = asyncio.run(request_without_host_lifespan())
+        assert response.status_code == 503
+        assert "unavailable" in response.text
     finally:
         registry.close()
 
@@ -267,6 +274,9 @@ def test_bootstrap_status_is_durable_before_worker_starts(tmp_path):
 
 
 def test_pending_bootstrap_status_is_visible_before_runtime_activation(tmp_path):
+    from starlette.requests import Request
+    from fastapi import HTTPException
+
     config, _unused, env = _host(tmp_path)
     registry = TenantRegistry.from_config(config, env)
     registration = TenantRegistrationService(config, env, registry=registry)
@@ -280,20 +290,20 @@ def test_pending_bootstrap_status_is_visible_before_runtime_activation(tmp_path)
     try:
         registration.register("demo", display_name="Demo")
         assert registry.for_tenant_id("demo") is None
-        with TestClient(app) as client:
-            response = client.get(
-                "/v1/control-plane/websites/demo/bootstrap",
-                headers={"Authorization": "Bearer control"},
-            )
-            assert response.status_code == 200
-            assert response.json()["status"] == "queued"
-            assert response.json()["step"] == "requested"
+        route = next(route for route in app.routes if getattr(route, "path", None) == "/v1/control-plane/websites/{website_id}/bootstrap"
+            and "GET" in getattr(route, "methods", set()))
+        def request_for(path):
+            return Request({"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
+                "method": "GET", "scheme": "http", "path": path, "raw_path": path.encode(),
+                "query_string": b"", "root_path": "", "headers": [(b"authorization", b"Bearer control")],
+                "server": ("test", 80), "client": ("test", 1)})
 
-            missing = client.get(
-                "/v1/control-plane/websites/unknown/bootstrap",
-                headers={"Authorization": "Bearer control"},
-            )
-            assert missing.status_code == 404
+        response = route.endpoint("demo", request_for("/v1/control-plane/websites/demo/bootstrap"))
+        assert response["status"] == "queued"
+        assert response["step"] == "requested"
+        with pytest.raises(HTTPException) as missing:
+            route.endpoint("unknown", request_for("/v1/control-plane/websites/unknown/bootstrap"))
+        assert missing.value.status_code == 404
     finally:
         service.close()
         registry.close()
@@ -714,6 +724,10 @@ def test_regular_release_activation_syncs_contract_without_bootstrap_state(
 
 
 def test_control_plane_activates_pending_tenant_only_with_authenticated_health_handoff(tmp_path):
+    import asyncio
+    from fastapi import HTTPException
+    from starlette.requests import Request
+
     tenant_id = "demo"
     release_id = "rel-20261006123456-aabbccdd"
     source_sha = "a" * 40
@@ -771,51 +785,60 @@ def test_control_plane_activates_pending_tenant_only_with_authenticated_health_h
         bootstrap=service,
     )
     try:
-        with TestClient(app) as client:
-            path = f"/v1/control-plane/websites/{tenant_id}/activate-runtime"
+        route = next(route for route in app.routes if getattr(route, "path", None) == "/v1/control-plane/websites/{website_id}/activate-runtime"
+            and "POST" in getattr(route, "methods", set()))
+        async def invoke(authorization=None, verification_marker=...):
             body = {"release_id": release_id, "source_sha": source_sha}
-            assert client.post(path, json=body).status_code == 401
-            response = client.post(
-                path,
-                headers={"Authorization": "Bearer control"},
-                json=body,
-            )
-            assert response.status_code == 200
-            assert response.json()["runtime_active"] is True
-            assert response.json()["release_id"] == release_id
-            assert activated == [tenant_id]
+            if verification_marker is not ...:
+                body["verification"] = verification_marker
+            payload = json.dumps(body).encode()
+            sent = False
+            async def receive():
+                nonlocal sent
+                if sent:
+                    return {"type": "http.disconnect"}
+                sent = True
+                return {"type": "http.request", "body": payload, "more_body": False}
+            headers = [(b"content-type", b"application/json")]
+            if authorization:
+                headers.append((b"authorization", authorization.encode()))
+            request = Request({"type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1",
+                "method": "POST", "scheme": "http", "path": f"/v1/control-plane/websites/{tenant_id}/activate-runtime",
+                "raw_path": f"/v1/control-plane/websites/{tenant_id}/activate-runtime".encode(), "query_string": b"",
+                "root_path": "", "headers": headers, "server": ("test", 80), "client": ("test", 1)}, receive)
+            return await route.endpoint(tenant_id, request)
 
-            receipt.update(status="failed", stage="verify-deployment")
-            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
-            proof = {
-                "releaseId": release_id,
-                "sourceSha": source_sha,
-                "uploadedVersion": "version-demo",
-                "workerVersion": "version-demo",
-                "deploymentId": "deployment-demo",
-                "trafficPercentage": 100,
-                "uploadedScriptEtag": "d" * 64,
-                "activeScriptEtag": "d" * 64,
-                "uploadedBindingIdentity": "e" * 64,
-                "activeBindingIdentity": "e" * 64,
-                "mode": "exact",
-                "verifiedAt": "2026-10-08T18:00:00Z",
-            }
-            proof_response = client.post(
-                path,
-                headers={"Authorization": "Bearer control"},
-                json={**body, "verification": proof},
-            )
-            assert proof_response.status_code == 200
-            assert proof_response.json()["runtime_active"] is True
-            assert activated == [tenant_id, tenant_id]
+        with pytest.raises(HTTPException) as unauthorized:
+            asyncio.run(invoke())
+        assert unauthorized.value.status_code == 401
+        response = asyncio.run(invoke("Bearer control"))
+        assert response["runtime_active"] is True
+        assert response["release_id"] == release_id
+        assert activated == [tenant_id]
 
-            malformed = client.post(
-                path,
-                headers={"Authorization": "Bearer control"},
-                json={**body, "verification": []},
-            )
-            assert malformed.status_code == 400
+        receipt.update(status="failed", stage="verify-deployment")
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+        proof = {
+            "releaseId": release_id,
+            "sourceSha": source_sha,
+            "uploadedVersion": "version-demo",
+            "workerVersion": "version-demo",
+            "deploymentId": "deployment-demo",
+            "trafficPercentage": 100,
+            "uploadedScriptEtag": "d" * 64,
+            "activeScriptEtag": "d" * 64,
+            "uploadedBindingIdentity": "e" * 64,
+            "activeBindingIdentity": "e" * 64,
+            "mode": "exact",
+            "verifiedAt": "2026-10-08T18:00:00Z",
+        }
+        proof_response = asyncio.run(invoke("Bearer control", proof))
+        assert proof_response["runtime_active"] is True
+        assert activated == [tenant_id, tenant_id]
+
+        with pytest.raises(HTTPException) as malformed:
+            asyncio.run(invoke("Bearer control", []))
+        assert malformed.value.status_code == 400
     finally:
         service.close()
         registry.close()

@@ -53,7 +53,7 @@ class Runtime:
 
     def __post_init__(self) -> None:
         if self.home_service is None:
-            object.__setattr__(self, "home_service", HomeService(self.memory))
+            object.__setattr__(self, "home_service", HomeService(self.memory, self.config))
         if self.owner_action_service is None:
             object.__setattr__(self, "owner_action_service", OwnerActionService(self.memory))
         if self.crawlseo_client is None and self.crawlseo_service is None and crawlseo_configured(self.config):

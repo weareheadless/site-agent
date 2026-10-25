@@ -1,6 +1,8 @@
 """One read-only queue joins existing work; it is not another task store."""
 from __future__ import annotations
 
+import json
+
 from collections.abc import Mapping
 from datetime import datetime, timezone
 import re
@@ -139,8 +141,78 @@ def growth_tasks(
     article_ideas=(),
     *,
     include_article_content: bool = False,
+    crawlseo_authoritative: bool = False,
 ) -> list[dict[str, Any]]:
-    actions = {row.id: row.to_record() for row in memory.list_owner_actions(limit=None)}
+    action_records = [row.to_record() for row in memory.list_owner_actions(limit=None)]
+    if crawlseo_authoritative:
+        retained_action_ids = {row.get("owner_action_id") for row in initiatives if row.get("owner_action_id") is not None}
+        legacy_sources = {"monthly_seo_strategy", "monthly_seo_research"}
+        filtered_records = []
+        for record in action_records:
+            payload = record.get("payload")
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except (TypeError, ValueError):
+                    payload = {}
+            is_legacy_seo = isinstance(payload, Mapping) and payload.get("source") in legacy_sources
+            if (record.get("provider_id") != "site-agent" or record.get("requirement") == "owner_information"
+                    or record.get("id") in retained_action_ids or not is_legacy_seo):
+                filtered_records.append(record)
+        action_records = filtered_records
+    actions = {row["id"]: row for row in action_records}
+    crawlseo_initiative_revisions: dict[str, set[int]] = {}
+    for row in initiatives:
+        expected = row.get("expected") if isinstance(row.get("expected"), Mapping) else {}
+        remote_id, revision = expected.get("crawlseoActionId"), expected.get("crawlseoRevision")
+        if (isinstance(remote_id, str) and remote_id
+                and isinstance(revision, int) and not isinstance(revision, bool)):
+            crawlseo_initiative_revisions.setdefault(remote_id, set()).add(revision)
+    remote_tasks = []
+    for action in actions.values():
+        if action.get("provider_id") != "crawlseo":
+            continue
+        payload = action.get("payload")
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except (TypeError, ValueError):
+                payload = {}
+        if not isinstance(payload, Mapping):
+            payload = {}
+        remote_id = str(payload.get("remoteActionId") or "")
+        revision = payload.get("revision")
+        if (isinstance(revision, int) and not isinstance(revision, bool)
+                and revision in crawlseo_initiative_revisions.get(remote_id, set())):
+            continue
+        execution = payload.get("execution") if isinstance(payload.get("execution"), Mapping) else {}
+        if action.get("state") in {"completed", "dismissed", "stale"}:
+            focus = "completed"
+        elif execution.get("status") == "preparation_ready":
+            focus = "needs_you"
+        elif execution.get("status") == "preparation_blocked":
+            focus = "paused"
+        elif execution.get("ownerDecision") == "approved" or execution.get("status") == "publication_verified":
+            focus = "preparing"
+        elif execution.get("status") == "outcome_measured":
+            focus = "completed"
+        elif execution.get("ownerDecision") == "declined" or payload.get("executionStatus") == "cancelled":
+            focus = "completed"
+        elif payload.get("executionStatus") in {"queued", "preparing"}:
+            focus = "preparing"
+        else:
+            focus = "needs_you"
+        remote_tasks.append({
+            "id": f"crawlseo-action:{remote_id}", "kind": "recommendation",
+            "title": action.get("title"), "summary": action.get("summary"),
+            "focus": focus,
+            "state": action.get("state"), "canApprove": False, "ownerActionId": action.get("id"),
+            "priority": action.get("priority") or "normal",
+            "executionStatus": payload.get("executionStatus"), "execution": dict(execution),
+            "remoteActionId": remote_id, "actionRevision": payload.get("revision"),
+            "preparationStatus": payload.get("executionStatus"), "providerId": "crawlseo",
+            "updatedAt": action.get("updated_ts"),
+        })
     active_runs = _active_run_ids(runs)
     draft_by_id = {row['id']: row for row in drafts}
     pending_website_changes = [
@@ -165,7 +237,8 @@ def growth_tasks(
     ), None)
     idea_by_draft = {str(row.get("draft_id")): row for row in article_ideas if row.get("draft_id") is not None}
     idea_by_id = {str(row.get("id")): row for row in article_ideas if row.get("id") is not None}
-    linked_actions, linked_drafts, linked_approvals, tasks = set(), set(), set(), []
+    linked_actions = {row.get("id") for row in actions.values() if row.get("provider_id") == "crawlseo"}
+    linked_drafts, linked_approvals, tasks = set(), set(), remote_tasks
     terminal = {'reviewed', 'rejected', 'superseded', 'cancelled', 'completed'}
     for initiative in sorted(initiatives, key=lambda row: row['id'], reverse=True):
         if initiative.get('state') == 'deferred':
@@ -179,6 +252,13 @@ def growth_tasks(
             primary.setdefault('history', []).append({'initiativeId': initiative['id'], 'state': initiative.get('state'), 'title': initiative.get('title')})
             continue
         action = actions.get(action_id) or next((row for row in actions.values() if draft_id and row.get('draft_id') == draft_id), {})
+        action_payload = action.get('payload') if isinstance(action.get('payload'), Mapping) else {}
+        if isinstance(action.get('payload'), str):
+            try:
+                parsed_payload = json.loads(action['payload'])
+                action_payload = parsed_payload if isinstance(parsed_payload, Mapping) else {}
+            except (TypeError, ValueError):
+                action_payload = {}
         draft = draft_by_id.get(draft_id, {})
         action_job = _action_chat_job(memory, action)
         validation = initiative.get('validation') if isinstance(initiative.get('validation'), Mapping) else {}
@@ -320,6 +400,7 @@ def growth_tasks(
         elif article_related:
             initiative_summary = initiative_summary or "Ada prepared this article for your review."
         initiative_scope = str(initiative.get('summary') or '').strip()
+        expected = initiative.get('expected') if isinstance(initiative.get('expected'), dict) else {}
         if review_ready:
             focus = 'needs_you'
         elif stale_work:
@@ -336,6 +417,10 @@ def growth_tasks(
             'summary': _compact_summary(initiative_summary), 'summaryKey': summary_key, 'scope': initiative_scope,
             'focus': 'needs_you' if review_ready else focus, 'state': task_state, 'draftId': draft_id, 'ownerActionId': action.get('id'),
             'priority': action.get('priority') or initiative.get('priority') or 'normal',
+            **({'providerId': 'crawlseo', 'remoteActionId': str(expected.get('crawlseoActionId')),
+                'actionRevision': expected.get('crawlseoRevision'),
+                'preparationStatus': action_payload.get('executionStatus')}
+               if expected.get('crawlseoActionId') and action and action.get('provider_id') == 'crawlseo' else {}),
             'requirement': action.get('requirement'),
             'conversationId': action.get('conversation_id'), 'approvalId': approval_id,
             'reviewPackageHash': review_hash,
@@ -348,7 +433,6 @@ def growth_tasks(
                 **({'article': article_data} if article_data else {})},
             'outcomes': [row for row in outcomes if row.get('initiative_id') == initiative['id']],
             'updatedAt': initiative.get('updated_ts'), 'nextRun': next_run})
-        expected = initiative.get('expected') if isinstance(initiative.get('expected'), dict) else {}
         baseline = expected.get('implementation_baseline') if isinstance(expected.get('implementation_baseline'), dict) else None
         if baseline:
             measured_horizons = {
@@ -379,6 +463,10 @@ def growth_tasks(
         # Suggestions are internal ideas, not owner tasks. Only exact review
         # candidates and genuine owner-information requests belong in Growth.
         if action.get('requirement') == 'suggestion':
+            continue
+        if action.get('provider_id') == 'crawlseo':
+            # CrawlSEO recommendations have their own remote owner-decision
+            # lifecycle; keep them out of the generic chat/action projection.
             continue
         if action.get('draft_id'):
             linked_drafts.add(action['draft_id'])

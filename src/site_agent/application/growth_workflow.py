@@ -6,11 +6,13 @@ import datetime
 import hashlib
 import json
 import os
+import re
 import uuid
 from collections.abc import Mapping
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from ..config import crawlseo_research_authority_selected
 from ..core.contracts import Artifact, ArtifactKind, ContractError, utc_now
 from ..core.growth_contracts import GrowthGoalRevision, GrowthPolicy
 from ..core.memory import Memory
@@ -918,6 +920,11 @@ def _cycle_key(policy: GrowthPolicy, goal_revision: int, trigger: str, now: date
 
 def queue_growth_check(context: Mapping[str, Any], *, trigger: str = "owner_review") -> dict[str, Any]:
     memory, config = context["memory"], context["config"]
+    if _crawlseo_authoritative(config):
+        # The manual owner refresh must enter the same CrawlSEO sync path as
+        # scheduled reconciliation. A local owner_review run is filtered out
+        # after cutover and would otherwise remain stranded forever.
+        trigger = "crawlseo_action"
     policy, goal = GrowthPolicy.from_config(config), ensure_default_goal(memory)
     now = datetime.datetime.now(datetime.timezone.utc)
     # Coalesce an explicit owner review for this day/goal/origin and the
@@ -999,6 +1006,10 @@ def _collect_cycle_evidence(context: Mapping[str, Any], trigger: str, run_id: st
     from ..brain.growth import ASSESSMENT_CONTRACT_VERSION
 
     memory, config = context["memory"], context["config"]
+    if _crawlseo_authoritative(config) and context.get("crawlseo_service") is not None:
+        return _sync_crawlseo_actions(context)
+    if _crawlseo_authoritative(config):
+        raise RuntimeError("CrawlSEO is the configured research authority, but its connector is unavailable")
     errors: dict[str, str] = {}
     if trigger in {"daily", "initial"}:
         from ..core.jobs import _ga_snapshot, _seo_snapshot
@@ -1036,6 +1047,685 @@ def _collect_cycle_evidence(context: Mapping[str, Any], trigger: str, run_id: st
     return {"assessmentContractVersion": ASSESSMENT_CONTRACT_VERSION,
             "sources": sources, "inventory": inventory, "metrics": growth_metrics(memory), "datasets": datasets,
             "ownerResponses": owner_responses, "collectionErrors": errors}
+
+
+def _crawlseo_authoritative(config: Mapping[str, Any]) -> bool:
+    if not crawlseo_research_authority_selected(config):
+        return False
+    provider = config.get("providers") if isinstance(config.get("providers"), Mapping) else {}
+    crawlseo = provider.get("crawlseo") if isinstance(provider.get("crawlseo"), Mapping) else {}
+    if not crawlseo.get("enabled") or not crawlseo.get("connector_url"):
+        raise RuntimeError("CrawlSEO research authority is selected but its connector is not fully configured")
+    return True
+
+
+def _crawlseo_evidence_freshness_valid(age_days: Any, limit_days: Any) -> bool:
+    if (isinstance(age_days, bool) or not isinstance(age_days, (int, float))
+            or isinstance(limit_days, bool) or not isinstance(limit_days, (int, float))):
+        return False
+    return -(5 / 1440) <= age_days <= limit_days
+
+
+def _execute_crawlseo_preparation(
+    context: Mapping[str, Any], remote: Mapping[str, Any], binding: Mapping[str, Any],
+    *, site_id: str, generation: int,
+) -> dict[str, Any]:
+    """Prepare one accepted CrawlSEO Action through Ada's existing candidate path."""
+    from .growth_candidates import prepare_payload_candidate, queue_source_candidate
+
+    service = context["crawlseo_service"]
+    memory = context["memory"]
+    action_id = str(remote.get("id") or "")
+    revision = int(remote.get("revision") or 0)
+    preparation_request_id = str(remote.get("preparationRequestId") or "").strip()
+    detail = dict(binding.get("detail") or {})
+    try:
+        if not preparation_request_id or len(preparation_request_id) > 240:
+            raise ValueError("The accepted CrawlSEO preparation attempt is missing its request identity")
+        detail["preparationRequestId"] = preparation_request_id
+        target = remote.get("target") if isinstance(remote.get("target"), Mapping) else {}
+        target_url = str(target.get("canonicalUrl") or "").strip()
+        parsed_target = __import__("urllib.parse", fromlist=["urlsplit"]).urlsplit(target_url)
+        identity = target.get("connectorIdentity") if isinstance(target.get("connectorIdentity"), Mapping) else {}
+        required = remote.get("requiredCapabilities") if isinstance(remote.get("requiredCapabilities"), list) else []
+        source_path = str(identity.get("path") or "") if identity.get("kind") == "source_file" else ""
+        if source_path:
+            from ..frontend_ownership import is_crawl_metadata_path
+            expected_name = "robots.txt" if source_path.endswith("robots.ts") or source_path.endswith("robots.txt/route.ts") or source_path.endswith("/robots.txt") else "sitemap.xml"
+            expected_route = "/" + expected_name
+            expected_capability = "site_metadata.robots" if expected_name == "robots.txt" else "site_metadata.sitemap"
+            if (not is_crawl_metadata_path(source_path) or expected_capability not in required
+                    or parsed_target.path != expected_route or parsed_target.query or parsed_target.fragment):
+                raise ValueError("This Action does not match an exact supported robots/sitemap source capability")
+        elif "content.prepare" not in required:
+            raise ValueError("This Action does not declare a HelloAda preparation capability")
+        inventory = _inventory(context)
+        selected = next((row for row in inventory if not source_path and row.get("route") and
+            str(row.get("route")).rstrip("/") == (parsed_target.path.rstrip("/") or "/") and
+            parsed_target.scheme in {"http", "https"}), None)
+        if (not target_url or parsed_target.username or parsed_target.password or parsed_target.query or parsed_target.fragment
+                or (not source_path and selected is None)):
+            raise ValueError("The Action target is no longer an exact current canonical Payload route")
+        snapshot = service.connector_context(site_id).get("snapshot")
+        snapshot_origin = str(snapshot.get("canonicalOrigin") or "") if isinstance(snapshot, Mapping) else ""
+        parsed_origin = __import__("urllib.parse", fromlist=["urlsplit"]).urlsplit(snapshot_origin)
+        if (not snapshot_origin or parsed_target.scheme.lower() != parsed_origin.scheme.lower()
+                or parsed_target.netloc.lower() != parsed_origin.netloc.lower()):
+            raise ValueError("The Action target is outside the current canonical site origin")
+        if source_path:
+            capabilities = snapshot.get("capabilities") if isinstance(snapshot, Mapping) and isinstance(snapshot.get("capabilities"), Mapping) else {}
+            source_files = capabilities.get("sourceFiles") if isinstance(capabilities.get("sourceFiles"), list) else []
+            if source_path not in source_files:
+                raise ValueError("HelloAda did not declare this exact crawl metadata source file")
+        else:
+            current_hash = str(selected.get("assessmentScope", {}).get("documentHash") or "")
+            snapshot_inventory = snapshot.get("websiteInventory") if isinstance(snapshot, Mapping) else None
+            snap_row = next((row for row in snapshot_inventory or [] if isinstance(row, Mapping)
+                and str(row.get("collection") or "") == str(selected.get("collection") or "")
+                and str(row.get("id") or "") == str(selected.get("document", {}).get("id") or "")), None)
+            if not snap_row or snap_row.get("documentHash") != current_hash:
+                raise ValueError("The current Payload document changed since CrawlSEO's inventory snapshot; reassessment is required")
+        sources = remote.get("evidence") if isinstance(remote.get("evidence"), list) else []
+        if not sources:
+            raise ValueError("The Action has no linked evidence sources")
+        for source in sources:
+            if not isinstance(source, Mapping):
+                raise ValueError("The Action contains malformed evidence")
+            if not _crawlseo_evidence_freshness_valid(source.get("freshnessDays"), source.get("recencyLimitDays")):
+                raise ValueError("The Action evidence is stale or has no verifiable freshness limit")
+        source_binding = {"siteId": site_id, "actionId": action_id, "actionRevision": revision,
+            "generation": generation, "candidateRef": f"{'source' if source_path else 'payload'}-growth:{action_id}:{revision}:{generation}",
+            "reviewUrl": str(context.get("config", {}).get("site", {}).get("payload", {}).get("url") or "").rstrip("/") + "/admin",
+            "targetUrl": target_url}
+        opportunity = {
+            "kind": "code" if source_path else "payload_content", "title": str(remote.get("problem") or remote.get("recommendation") or "CrawlSEO improvement")[:300],
+            "why": str(remote.get("problem") or "CrawlSEO identified an evidence-backed website opportunity")[:2000],
+            "hypothesis": str(remote.get("expectedOutcome") or "")[:2000],
+            "scope": str(remote.get("recommendation") or "")[:2000],
+            "evidence": [str(source.get("id")) for source in sources if source.get("id")],
+            "requiredSources": [str(source.get("id")) for source in sources if source.get("id")],
+            "collection": selected["collection"] if selected else None,
+            "documentId": str(selected["document"]["id"]) if selected else None,
+            "metric": "gsc.clicks", "whyAction": action_id,
+            **({"allowedPaths": [source_path]} if source_path else {}),
+            "crawlseoBinding": source_binding,
+        }
+        if not opportunity["scope"].strip() or not opportunity["evidence"]:
+            raise ValueError("The Action lacks a bounded recommendation or stable evidence identities")
+        policy = GrowthPolicy.from_config(context.get("config") or {})
+        goal = ensure_default_goal(memory)
+        run_key = f"crawlseo-action:{site_id}:{action_id}:revision-{revision}"
+        run = memory.get_growth_run_by_key(run_key)
+        if run is None:
+            run = memory.create_growth_run(
+                run_id=f"growth-{hashlib.sha256(run_key.encode()).hexdigest()[:32]}", run_key=run_key,
+                trigger="crawlseo_action", goal_revision=int(goal["revision"]), timezone=policy.timezone,
+                phase="preparing", status="pending", policy=policy.to_dict(),
+                origin_revision=policy.origin_revision, phase_version=2,
+                source_refs=[str(source.get("id")) for source in sources if source.get("id")],
+            )
+        material = {"authority": "crawlseo", "action": dict(remote), "inventory": inventory, "sources": sources}
+        manifest = {"schemaVersion": 1, "runId": run["run_id"], "runKey": run_key,
+            "goalRevision": int(goal["revision"]), "originRevision": policy.origin_revision,
+            "sources": [{"id": source.get("id"), "sourceRef": source.get("url"), "state": "ready",
+                "observedAt": source.get("observedAt"), "retrievedAt": source.get("retrievedAt")} for source in sources],
+            "materialHash": "sha256:" + hashlib.sha256(json.dumps(material, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()}
+        manifest_hash = "sha256:" + hashlib.sha256(json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+        artifact = next((row for row in memory.list_artifacts(kind=ArtifactKind.GROWTH_EVIDENCE.value, limit=500)
+            if row.content_hash == manifest_hash), None)
+        if artifact is None:
+            artifact = memory.create_artifact(Artifact(
+                kind=ArtifactKind.GROWTH_EVIDENCE, title=f"CrawlSEO Action evidence · {action_id[:60]}",
+                summary="Immutable evidence snapshot used for this accepted CrawlSEO Action.", renderer="growth_evidence",
+                capability_id="growth.evidence.read", provider_id="crawlseo", content_hash=manifest_hash,
+                preview_data={"manifest": manifest, "action": dict(remote)},
+            ))
+        cycle = memory.growth_strategy_cycle(run["run_id"], int(artifact.artifact_id or 0))
+        initiative_id = int(detail.get("initiativeId") or 0)
+        initiative = memory.update_strategy_initiative(initiative_id) if initiative_id else None
+        if initiative is None:
+            initiative = next((row for row in memory.list_strategy_initiatives(limit=500)
+                if row.get("growth_run_id") == run["run_id"]
+                and (row.get("expected") or {}).get("crawlseoActionId") == action_id
+                and (row.get("expected") or {}).get("crawlseoRevision") == revision), None)
+            if initiative is not None:
+                initiative_id = int(initiative["id"])
+        if initiative is None:
+            initiative_id = memory.create_strategy_initiative(
+                int(cycle["id"]), kind="code" if source_path else "payload_content", title=opportunity["title"],
+                summary=opportunity["scope"], hypothesis=opportunity["hypothesis"], rationale=opportunity["why"],
+                evidence=opportunity["evidence"], expected={"opportunity": opportunity, "crawlseoActionId": action_id,
+                    "crawlseoRevision": revision, "crawlseoGeneration": generation},
+                priority="normal", state="preparing", growth_run_id=run["run_id"],
+                goal_revision=int(goal["revision"]), origin_revision=policy.origin_revision,
+            )
+            detail["initiativeId"] = initiative_id
+            memory.update_crawlseo_execution_binding(site_id, action_id, revision, generation,
+                expected_state="preparing", state="preparing", detail=detail, release_lease=False)
+            initiative = memory.update_strategy_initiative(initiative_id)
+        if source_path:
+            validation = initiative.get("validation") if isinstance(initiative.get("validation"), Mapping) else {}
+            preparation = validation.get("preparation") if isinstance(validation.get("preparation"), Mapping) else {}
+            if preparation.get("jobId"):
+                job = memory.get_chat_job(int(preparation["jobId"]))
+                if initiative.get("state") == "blocked" or (job and job.get("status") in {"failed", "cancelled"}):
+                    job_result = job.get("result") if isinstance(job, Mapping) and isinstance(job.get("result"), Mapping) else {}
+                    error = str(job.get("error") or job_result.get("error") or initiative.get("last_error")
+                        or "The exact source candidate could not be prepared")[:500] if job else str(initiative.get("last_error") or "The exact source candidate could not be prepared")[:500]
+                    report = {"status": "preparation_blocked", "preparationRequestId": preparation_request_id,
+                        "detail": {"error": error, "sourcePath": source_path}}
+                    detail.update({"initiativeId": initiative_id, "candidateRef": source_binding["candidateRef"],
+                        "reviewUrl": source_binding["reviewUrl"], "sourcePath": source_path, "report": report})
+                    memory.update_crawlseo_execution_binding(site_id, action_id, revision, generation,
+                        expected_state="preparing", state="preparation_blocked_unreported", detail=detail)
+                    pending = memory.get_crawlseo_execution_binding(site_id, action_id, revision)
+                    if pending:
+                        _reconcile_crawlseo_execution_report(context, pending)
+                    return {"status": "blocked", "error": error}
+                detail.update({"initiativeId": initiative_id, "candidateRef": source_binding["candidateRef"],
+                    "reviewUrl": source_binding["reviewUrl"], "sourcePath": source_path, "sourceJobId": preparation["jobId"]})
+                memory.update_crawlseo_execution_binding(site_id, action_id, revision, generation,
+                    expected_state="preparing", state="preparing", detail=detail)
+                return {"status": "preparing", "sourceJobId": preparation["jobId"]}
+            job_id = queue_source_candidate(context, initiative, opportunity, {"evidenceHash": manifest_hash})
+            validation = memory.update_strategy_initiative(initiative_id)
+            detail.update({"initiativeId": initiative_id, "candidateRef": source_binding["candidateRef"],
+                "reviewUrl": source_binding["reviewUrl"], "sourcePath": source_path,
+                "sourceJobId": (validation.get("validation") or {}).get("preparation", {}).get("jobId") if isinstance(validation, Mapping) else job_id})
+            memory.update_crawlseo_execution_binding(site_id, action_id, revision, generation,
+                expected_state="preparing", state="preparing", detail=detail)
+            return {"status": "preparing", "sourceJobId": job_id}
+        candidate = prepare_payload_candidate(context, initiative, opportunity, inventory, {
+            "evidenceHash": manifest_hash, "policy": {"policy_version": policy.policy_version},
+            "action": dict(remote), "sources": sources,
+            "businessFacts": (context.get("customer_context_service").task_view("strategy")
+                if context.get("customer_context_service") is not None else {}),
+        })
+        review_origin = str(context.get("config", {}).get("site", {}).get("payload", {}).get("url") or "").rstrip("/")
+        if not review_origin:
+            raise ValueError("The authenticated HelloAda owner workspace URL is not configured")
+        review_url = review_origin + "/admin"
+        candidate_ref = str(opportunity["crawlseoBinding"]["candidateRef"])
+        current_action = service.connector_action(action_id)
+        current_envelope = current_action.get("action") if isinstance(current_action.get("action"), Mapping) else current_action
+        if (not isinstance(current_envelope, Mapping) or current_envelope.get("revision") != revision
+                or str(current_envelope.get("preparationStatus") or "").lower() != "queued"
+                or current_envelope.get("preparationRequestId") != preparation_request_id):
+            raise ValueError("The CrawlSEO preparation request was cancelled or changed while Ada was preparing the candidate")
+        current_binding = memory.get_crawlseo_execution_binding(site_id, action_id, revision)
+        if (current_binding is None or int(current_binding.get("generation") or 0) != generation
+                or str((current_binding.get("detail") or {}).get("preparationRequestId") or "") != preparation_request_id):
+            return {"status": "stale_attempt", "error": "A newer CrawlSEO preparation attempt owns this Action revision"}
+        ready_report = {"status": "preparation_ready", "preparationRequestId": preparation_request_id, "candidateRef": candidate_ref,
+            "reviewUrl": review_url,
+            "detail": {"initiativeId": initiative_id, "draftId": candidate.get("draft_id"),
+                "candidateHash": candidate.get("candidate_hash"), "reviewPackageHash": candidate.get("review_package_hash")}}
+        detail.update({"initiativeId": initiative_id, "candidateRef": candidate_ref,
+            "reviewUrl": review_url, "reviewPackageHash": candidate.get("review_package_hash"),
+            "candidateHash": candidate.get("candidate_hash"), "draftId": candidate.get("draft_id"),
+            "preparationStatus": "ready", "report": ready_report})
+        memory.update_crawlseo_execution_binding(site_id, action_id, revision, generation,
+            expected_state="preparing", state="preparation_unreported", detail=detail)
+        pending = memory.get_crawlseo_execution_binding(site_id, action_id, revision)
+        reported = bool(pending and _reconcile_crawlseo_execution_report(context, pending))
+        return {"status": "ready" if reported else "ready_unreported", "candidateRef": candidate_ref, "reviewUrl": review_url}
+    except Exception as exc:
+        message = str(exc)[:500] or "CrawlSEO Action preparation failed"
+        current = memory.get_crawlseo_execution_binding(site_id, action_id, revision)
+        if (current is not None
+                and str((current.get("detail") or {}).get("preparationRequestId") or "") not in {"", preparation_request_id}):
+            return {"status": "stale_attempt", "error": "A newer CrawlSEO preparation attempt owns this Action revision"}
+        try:
+            fresh_action = service.connector_action(action_id)
+            fresh_envelope = fresh_action.get("action") if isinstance(fresh_action.get("action"), Mapping) else fresh_action
+        except Exception:
+            fresh_envelope = {}
+        if isinstance(fresh_envelope, Mapping) and str(fresh_envelope.get("preparationStatus") or "").lower() == "cancelled":
+            if current is not None and current.get("state") in {"claimed", "preparing", "blocked", "preparation_unreported", "preparation_blocked_unreported"}:
+                try:
+                    current = memory.update_crawlseo_execution_binding(site_id, action_id, revision, generation,
+                        expected_state=str(current["state"]), state="cancelled",
+                        detail={**dict(current.get("detail") or {}), "error": "Owner cancelled preparation; any saved candidate remains private and cannot be published."})
+                except Exception:
+                    pass
+            initiative = next((row for row in memory.list_strategy_initiatives(limit=500)
+                if (row.get("expected") or {}).get("crawlseoActionId") == action_id
+                and (row.get("expected") or {}).get("crawlseoRevision") == revision), None)
+            if initiative is not None and initiative.get("state") in {"preparing", "validating", "ready_for_review"}:
+                try:
+                    target = "rejected" if initiative.get("state") == "ready_for_review" else "blocked"
+                    memory.transition_strategy_initiative(int(initiative["id"]), target,
+                        expected_state=str(initiative["state"]), last_error="Owner cancelled preparation; the private candidate is retained without publication authority.")
+                except Exception:
+                    pass
+            return {"status": "cancelled", "error": message}
+        if (isinstance(fresh_envelope, Mapping)
+                and fresh_envelope.get("preparationRequestId") != preparation_request_id):
+            return {"status": "stale_attempt", "error": "A newer CrawlSEO preparation attempt owns this Action revision"}
+        if current is not None and current.get("state") in {"claimed", "preparing"}:
+            try:
+                existing_detail = dict(current.get("detail") or {})
+                if existing_detail.get("preparationRequestId") not in {None, preparation_request_id}:
+                    return {"status": "stale_attempt", "error": "A newer CrawlSEO preparation attempt owns this Action revision"}
+                report = {"status": "preparation_blocked", "preparationRequestId": preparation_request_id,
+                    "detail": {"error": message}}
+                memory.update_crawlseo_execution_binding(site_id, action_id, revision, generation,
+                    expected_state=str(current["state"]), state="preparation_blocked_unreported",
+                    detail={**existing_detail, "preparationRequestId": preparation_request_id,
+                        "error": message, "report": report})
+                pending = memory.get_crawlseo_execution_binding(site_id, action_id, revision)
+                if pending:
+                    _reconcile_crawlseo_execution_report(context, pending)
+            except Exception:
+                pass
+        return {"status": "blocked", "error": message}
+
+
+def _reconcile_crawlseo_execution_report(context: Mapping[str, Any], row: Mapping[str, Any]) -> bool:
+    """Replay a locally durable owner/publication status until CrawlSEO receipts it."""
+    service = context.get("crawlseo_service")
+    if service is None:
+        return False
+    state = str(row.get("state") or "")
+    if state not in {"preparation_unreported", "preparation_blocked_unreported", "decision_unreported", "publication_unreported"}:
+        return False
+    detail = dict(row.get("detail") or {})
+    try:
+        report = dict(detail.get("report") or {})
+        service.connector_record_execution(str(row["action_id"]), report)
+        final_state = ("ready" if state == "preparation_unreported" else "blocked" if state == "preparation_blocked_unreported"
+            else "owner_decision" if state == "decision_unreported" else "published")
+        context["memory"].update_crawlseo_execution_binding(
+            str(row["site_id"]), str(row["action_id"]), int(row["action_revision"]), int(row["generation"]),
+            expected_state=state, state=final_state, detail=detail,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _record_crawlseo_source_candidate_ready(
+    context: Mapping[str, Any], initiative: Mapping[str, Any], package: Mapping[str, Any], draft: Mapping[str, Any],
+) -> bool:
+    """Return Ada's exact, preview-verified source candidate to CrawlSEO."""
+    memory = context["memory"]
+    service = context.get("crawlseo_service")
+    connector = package.get("crawlseoBinding") if isinstance(package.get("crawlseoBinding"), Mapping) else {}
+    site_id, action_id = str(connector.get("siteId") or ""), str(connector.get("actionId") or "")
+    revision, generation = connector.get("actionRevision"), connector.get("generation")
+    if (service is None or not site_id or not action_id or isinstance(revision, bool) or not isinstance(revision, int)
+            or isinstance(generation, bool) or not isinstance(generation, int)):
+        return False
+    binding = memory.get_crawlseo_execution_binding(site_id, action_id, revision)
+    if binding is None or int(binding.get("generation") or 0) != generation:
+        return False
+    detail = dict(binding.get("detail") or {})
+    candidate_ref = str(connector.get("candidateRef") or detail.get("candidateRef") or "")
+    review_url = str(connector.get("reviewUrl") or detail.get("reviewUrl") or "")
+    preparation_request_id = str(detail.get("preparationRequestId") or "")
+    if not candidate_ref or not review_url or not preparation_request_id or not package.get("source", {}).get("candidateSha"):
+        return False
+    report = {"status": "preparation_ready", "preparationRequestId": preparation_request_id,
+        "candidateRef": candidate_ref, "reviewUrl": review_url,
+        "detail": {"initiativeId": int(initiative["id"]), "draftId": int(draft["id"]),
+            "candidateSha": str(package["source"]["candidateSha"]),
+            "reviewPackageHash": str(initiative.get("review_package_hash") or ""),
+            "changedPaths": list(package["source"].get("changedPaths") or [])}}
+    state = str(binding.get("state") or "")
+    try:
+        if state == "preparation_unreported":
+            if dict(detail.get("report") or {}) != report:
+                return False
+        elif state == "preparing":
+            detail.update({"candidateRef": candidate_ref, "reviewUrl": review_url, "report": report,
+                "initiativeId": int(initiative["id"]), "draftId": int(draft["id"])})
+            binding = memory.update_crawlseo_execution_binding(site_id, action_id, revision, generation,
+                expected_state="preparing", state="preparation_unreported", detail=detail)
+        elif state == "ready":
+            return True
+        else:
+            return False
+        pending = memory.get_crawlseo_execution_binding(site_id, action_id, revision)
+        return bool(pending and _reconcile_crawlseo_execution_report(context, pending))
+    except Exception:
+        return False
+
+
+def record_crawlseo_source_publication(
+    context: Mapping[str, Any], package: Mapping[str, Any], deployment: Mapping[str, Any],
+    promotion: Mapping[str, Any] | None = None,
+) -> bool:
+    """Report only a deployed, exact source candidate with a verified release receipt."""
+    connector = package.get("crawlseoBinding") if isinstance(package.get("crawlseoBinding"), Mapping) else {}
+    source = package.get("source") if isinstance(package.get("source"), Mapping) else {}
+    release = deployment.get("release_receipt") if isinstance(deployment.get("release_receipt"), Mapping) else {}
+    commit = str(deployment.get("verified_commit") or "").lower()
+    release_id = str(deployment.get("release_id") or "")
+    verified_at = str(release.get("connectionVerifiedAt") or "")
+    target_url = str(connector.get("targetUrl") or "")
+    candidate_sha = str(source.get("candidateSha") or "").lower()
+    promotion_refs = promotion.get("refs") if isinstance(promotion, Mapping) else None
+    promotion_refs = promotion_refs if isinstance(promotion_refs, Mapping) else {}
+    promotion_candidate = str(promotion_refs.get("candidateSha") or "").lower()
+    promotion_source = str(promotion_refs.get("sourceSha") or "").lower()
+    promotion_tree = str(promotion_refs.get("treeSha") or "").lower()
+    if (deployment.get("status") != "deployed" or deployment.get("live") is not True
+            or not release_id or not re.fullmatch(r"[a-f0-9]{40}", commit)
+            or str(deployment.get("commit") or "").lower() != commit
+            or not str(release.get("uploadedVersion") or "")
+            or not re.fullmatch(r"[a-f0-9]{40}", candidate_sha)
+            or promotion_candidate != candidate_sha or promotion_source != commit
+            or not re.fullmatch(r"[a-f0-9]{40}", promotion_tree)
+            or not verified_at or not target_url):
+        return False
+    try:
+        verified_datetime = datetime.datetime.fromisoformat(verified_at.replace("Z", "+00:00"))
+        if verified_datetime.tzinfo is None:
+            return False
+        verified_at = verified_datetime.astimezone(datetime.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    except ValueError:
+        return False
+    memory = context["memory"]
+    site_id, action_id = str(connector.get("siteId") or ""), str(connector.get("actionId") or "")
+    revision, generation = connector.get("actionRevision"), connector.get("generation")
+    if (not site_id or not action_id or isinstance(revision, bool) or not isinstance(revision, int)
+            or isinstance(generation, bool) or not isinstance(generation, int)):
+        return False
+    binding = memory.get_crawlseo_execution_binding(site_id, action_id, revision)
+    if binding is None or int(binding.get("generation") or 0) != generation:
+        return False
+    detail = dict(binding.get("detail") or {})
+    candidate_ref = str(connector.get("candidateRef") or detail.get("candidateRef") or "")
+    review_package_hash = str(detail.get("reviewPackageHash") or "")
+    if not candidate_ref or not re.fullmatch(r"[a-f0-9]{64}", review_package_hash):
+        return False
+    receipt = {"candidateRef": candidate_ref, "receiptId": release_id,
+        "targetUrl": target_url, "publishedAt": verified_at, "contentHash": candidate_sha}
+    report = {"status": "publication_verified", "candidateRef": candidate_ref,
+        "publicationReceipt": receipt,
+        "detail": {"releaseId": release_id, "verifiedCommit": commit,
+            "reviewPackageHash": review_package_hash}}
+    state = str(binding.get("state") or "")
+    try:
+        if state == "publication_unreported":
+            if dict(detail.get("report") or {}) != report:
+                return False
+        elif state == "owner_decision":
+            detail["report"] = report
+            binding = memory.update_crawlseo_execution_binding(site_id, action_id, revision, generation,
+                expected_state=state, state="publication_unreported", detail=detail)
+        elif state == "published":
+            return True
+        else:
+            return False
+        pending = memory.get_crawlseo_execution_binding(site_id, action_id, revision)
+        return bool(pending and _reconcile_crawlseo_execution_report(context, pending))
+    except Exception:
+        return False
+
+
+def record_crawlseo_owner_decision(context: Mapping[str, Any], approval_id: int, approved: bool) -> bool:
+    """Persist and report the exact local candidate decision to its CrawlSEO Action."""
+    if not _crawlseo_authoritative(context.get("config") or {}):
+        return False
+    memory = context["memory"]
+    initiative = next((row for row in memory.list_strategy_initiatives(limit=None)
+        if int(row.get("approval_id") or 0) == int(approval_id)), None)
+    if initiative is None:
+        return False
+    expected = initiative.get("expected") if isinstance(initiative.get("expected"), Mapping) else {}
+    action_id = str(expected.get("crawlseoActionId") or "")
+    revision, generation = expected.get("crawlseoRevision"), expected.get("crawlseoGeneration")
+    if (not action_id or isinstance(revision, bool) or not isinstance(revision, int)
+            or isinstance(generation, bool) or not isinstance(generation, int)):
+        return False
+    binding = memory.get_crawlseo_execution_binding(str(context.get("connector_site_id") or
+        context.get("site_id") or ""), action_id, revision)
+    if binding is None or int(binding.get("generation") or 0) != generation:
+        return False
+    detail = dict(binding.get("detail") or {})
+    candidate_ref = str(detail.get("candidateRef") or "")
+    review_url = str(detail.get("reviewUrl") or "")
+    if not candidate_ref or not review_url:
+        return False
+    if str(binding.get("state") or "") == "preparation_unreported":
+        if not _reconcile_crawlseo_execution_report(context, binding):
+            return False
+        binding = memory.get_crawlseo_execution_binding(str(binding["site_id"]), action_id, revision)
+        if binding is None:
+            return False
+        detail = dict(binding.get("detail") or {})
+    report = {"status": "owner_decision", "candidateRef": candidate_ref,
+        "reviewUrl": review_url, "ownerDecision": "approved" if approved else "declined",
+        "detail": {"approvalId": int(approval_id), "initiativeId": int(initiative["id"]),
+            "reviewPackageHash": str(initiative.get("review_package_hash") or "")}}
+    try:
+        state = str(binding.get("state") or "")
+        if state == "decision_unreported":
+            prior = dict(detail.get("report") or {})
+            if prior != report:
+                return False
+        else:
+            if state != "ready":
+                return False
+            detail["report"] = report
+            binding = memory.update_crawlseo_execution_binding(str(binding["site_id"]), action_id, revision,
+                generation, expected_state=state, state="decision_unreported", detail=detail)
+        return _reconcile_crawlseo_execution_report(context, binding)
+    except Exception:
+        return False
+
+
+def _persist_unbound_crawlseo_events(memory: Any, service: Any, events: Any) -> list[str]:
+    """Record no-Action events locally before acknowledging them upstream."""
+    if not isinstance(events, list):
+        return []
+    acknowledged: list[str] = []
+    for event in events:
+        if not isinstance(event, Mapping) or event.get("actionId"):
+            continue
+        event_id = str(event.get("id") or "").strip()
+        if not event_id:
+            continue
+        if str(event.get("type") or "") == "context.updated":
+            disposition, reason = "reconciled", ""
+        else:
+            disposition, reason = "unsupported", "Event type has no local execution effect"
+        # Store identity and a payload hash only. Remote event text is untrusted
+        # and must not become a local instruction or diagnostic string.
+        memory.record_crawlseo_connector_event(dict(event), disposition=disposition, reason=reason)
+        acknowledged.append(event_id)
+    if acknowledged:
+        site_id = str(next((event.get("siteId") for event in events if isinstance(event, Mapping) and event.get("siteId")), "")) or None
+        service.connector_ack_events(acknowledged[:100], site_id=site_id)
+    return acknowledged
+
+
+def _persist_action_crawlseo_events(memory: Any, service: Any, events: Any, action_id: str) -> list[str]:
+    """Persist reconciled Action event identities before upstream acknowledgement."""
+    if not isinstance(events, list):
+        return []
+    matching = [event for event in events if isinstance(event, Mapping)
+        and str(event.get("actionId") or "") == action_id and str(event.get("id") or "")]
+    for event in matching:
+        memory.record_crawlseo_connector_event(
+            dict(event), disposition="reconciled",
+            reason="Action projection and execution state reconciled",
+        )
+    acknowledged = [str(event["id"]) for event in matching]
+    site_id = str(matching[0].get("siteId") or "") or None
+    for offset in range(0, len(acknowledged), 100):
+        service.connector_ack_events(acknowledged[offset:offset + 100], site_id=site_id)
+    return acknowledged
+
+
+def _sync_crawlseo_actions(context: Mapping[str, Any]) -> dict[str, Any]:
+    """Synchronize remote Actions into HelloAda's one owner task projection."""
+    service = context.get("crawlseo_service")
+    if service is None:
+        raise RuntimeError("CrawlSEO is the configured research authority, but its connector is unavailable")
+    state = context.get("seo_provisioning_state") if isinstance(context.get("seo_provisioning_state"), Mapping) else context["memory"].kv_get("seo_provisioning_state", {})
+    crawlseo_state = state.get("crawlseo") if isinstance(state, Mapping) and isinstance(state.get("crawlseo"), Mapping) else {}
+    site_id = str(context.get("connector_site_id") or context.get("site_id") or crawlseo_state.get("site_id") or "").strip()
+    if not site_id:
+        raise RuntimeError("CrawlSEO authority requires the provisioned connector site id")
+    payload = context.get("payload_gateway")
+    if payload is None:
+        raise RuntimeError("CrawlSEO authority requires the canonical Payload gateway")
+    inventory = _inventory(context)
+    site = context["config"].get("site") if isinstance(context["config"].get("site"), Mapping) else {}
+    origin = str(site.get("public_url") or site.get("custom_domain") or
+                 ((context["config"].get("seo") or {}).get("site_url") if isinstance(context["config"].get("seo"), Mapping) else "") or
+                 ((context["config"].get("seo") or {}).get("preview_url") if isinstance(context["config"].get("seo"), Mapping) else "") or "").strip()
+    if origin and "://" not in origin:
+        origin = "https://" + origin
+    context_result = service.connector_context(site_id)
+    customer_context = context.get("customer_context_service")
+    owner_facts = customer_context.task_view("strategy") if customer_context is not None and customer_context.current() is not None else {}
+    payload_origin = __import__("urllib.parse", fromlist=["urlsplit"]).urlsplit(str(payload.base_url))
+    source_files: list[str] = []
+    source_capabilities: list[str] = []
+    if str((context["config"].get("design_engine") or {}).get("build_profile") or "").strip().lower() == "next_react":
+        from ..frontend_ownership import CRAWL_METADATA_PATTERNS
+        from ..hands.opencode_runner import builder_available
+        if builder_available(context["config"]):
+            source_files = list(CRAWL_METADATA_PATTERNS)
+            source_capabilities = ["site_metadata.robots", "site_metadata.sitemap"]
+    context_payload = {
+        "siteId": site_id,
+        "canonicalOrigin": origin,
+        "websiteInventory": [{"collection": row["collection"], "id": str(row["document"]["id"]),
+                       "route": row.get("route"), "documentHash": row["assessmentScope"]["documentHash"]}
+                      for row in inventory],
+        "businessFacts": owner_facts,
+        "capabilities": {"supported": ["content.prepare", *source_capabilities],
+            "sourceFiles": source_files,
+            "reviewOrigin": payload_origin.scheme + "://" + payload_origin.netloc,
+            "reviewPath": "/admin"},
+    }
+    synced = service.connector_sync(snapshot=context_payload)
+    generation_data = synced.get("capabilities") if isinstance(synced.get("capabilities"), Mapping) else {}
+    binding_data = generation_data.get("binding") if isinstance(generation_data.get("binding"), Mapping) else {}
+    generation = binding_data.get("generation")
+    if binding_data.get("executionSupported") is False:
+        raise RuntimeError("The active CrawlSEO execution adapter is not implemented and cannot receive owner work")
+    if isinstance(generation, bool) or not isinstance(generation, int) or generation < 1:
+        raise RuntimeError("CrawlSEO connector is not bound to an active execution generation")
+    actions = synced.get("actions") if isinstance(synced.get("actions"), list) else []
+    from .actions import OwnerActionService, owner_action_summary
+    from ..core.contracts import ActionPriority, ActionRequirement, ActionState, OwnerAction
+    owner_actions = OwnerActionService(context["memory"])
+    normalized = []
+    for remote in actions:
+        if not isinstance(remote, Mapping) or not isinstance(remote.get("id"), str):
+            continue
+        action_id = str(remote["id"])
+        revision = remote.get("revision")
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision < 1:
+            continue
+        status = str(remote.get("status") or "PROPOSED").lower()
+        execution = remote.get("execution") if isinstance(remote.get("execution"), Mapping) else {}
+        preparation_status = str(remote.get("preparationStatus") or "none").lower()
+        execution_status = str(execution.get("status") or "").lower()
+        if execution.get("ownerDecision") == "declined" or preparation_status == "cancelled":
+            status = "dismissed"
+        elif execution.get("ownerDecision") == "approved":
+            status = "completed" if execution_status in {"publication_verified", "outcome_measured"} else "started"
+        elif preparation_status in {"queued", "preparing", "ready"}:
+            status = "started"
+        elif preparation_status == "blocked":
+            status = "waiting"
+        state_map = {"proposed": ActionState.OPEN, "open": ActionState.OPEN, "started": ActionState.STARTED,
+                     "in_progress": ActionState.STARTED, "drafting": ActionState.STARTED,
+                     "draft_ready": ActionState.WAITING, "delivery_approved": ActionState.WAITING,
+                     "delivering": ActionState.STARTED, "delivered": ActionState.WAITING,
+                     "verified": ActionState.COMPLETED, "waiting": ActionState.WAITING,
+                     "completed": ActionState.COMPLETED, "snoozed": ActionState.SNOOZED,
+                     "dismissed": ActionState.DISMISSED, "failed": ActionState.WAITING,
+                     "stale": ActionState.STALE}
+        requirement = str(remote.get("requirement") or "OWNER_DECISION").lower()
+        req_map = {"owner_decision": ActionRequirement.OWNER_DECISION,
+                   "owner_information": ActionRequirement.OWNER_INFORMATION,
+                   "suggestion": ActionRequirement.SUGGESTION}
+        priority = str(remote.get("priority") or "NORMAL").lower()
+        priority_map = {"urgent": ActionPriority.URGENT, "normal": ActionPriority.NORMAL, "optional": ActionPriority.OPTIONAL}
+        title = str(remote.get("title") or "CrawlSEO recommendation")[:500]
+        summary = owner_action_summary(remote.get("summary") or remote.get("scope") or "Review the shared research recommendation.")
+        local = owner_actions.create(OwnerAction(
+            capability_id="growth.crawlseo_action", provider_id="crawlseo", title=title, summary=summary,
+            action_label="Review recommendation", priority=priority_map.get(priority, ActionPriority.NORMAL),
+            requirement=req_map.get(requirement, ActionRequirement.OWNER_DECISION),
+            state=state_map.get(status, ActionState.OPEN), source_ref=f"crawlseo-action:{action_id}",
+            dedupe_key=f"crawlseo-action:{action_id}", payload={"remoteActionId": action_id,
+                "revision": remote.get("revision"), "executionStatus": remote.get("preparationStatus"),
+                "execution": dict(execution),
+                "envelope": dict(remote)},), reuse_terminal=True)
+        remote_state = state_map.get(status, ActionState.OPEN)
+        if local.state != remote_state and local.state not in {ActionState.COMPLETED, ActionState.DISMISSED, ActionState.STALE}:
+            try:
+                local = context["memory"].transition_owner_action(int(local.id), remote_state)
+            except Exception:
+                # A remote cancellation/failure may be newer than a terminal
+                # local projection. Keep the durable connector state visible
+                # without resurrecting the local owner action.
+                pass
+        context["memory"].update_owner_action_payload(int(local.id), {
+            **local.payload, "remoteActionId": action_id, "revision": remote.get("revision"),
+            "executionStatus": remote.get("preparationStatus"), "execution": dict(execution), "envelope": dict(remote),
+        })
+        normalized.append({**local.to_owner_dict(), "remote_action_id": action_id})
+        pending_report = context["memory"].get_crawlseo_execution_binding(site_id, action_id, revision)
+        if pending_report is not None:
+            _reconcile_crawlseo_execution_report(context, pending_report)
+        preparation = str(remote.get("preparationStatus") or "none").lower()
+        if preparation in {"queued", "preparing", "blocked", "ready"}:
+            state_name = "claimed" if preparation == "queued" else "blocked" if preparation == "blocked" else "preparing" if preparation == "preparing" else "ready"
+            memory = context["memory"]
+            binding_row, created = memory.claim_crawlseo_execution_binding(
+                site_id, action_id, revision, generation,
+                state=state_name,
+                detail={"remoteAction": dict(remote), "ownerActionId": local.id, "preparationStatus": preparation,
+                    "preparationRequestId": remote.get("preparationRequestId")},
+            )
+            # Bind events only after the local Action projection and execution
+            # record are durable. Replayed events hit the uniqueness key.
+            if preparation == "queued" and binding_row.get("state") in {"blocked", "preparation_blocked_unreported"}:
+                binding_row = memory.update_crawlseo_execution_binding(site_id, action_id, revision, generation,
+                    expected_state=str(binding_row["state"]), state="claimed",
+                    detail={**dict(binding_row.get("detail") or {}), "remoteAction": dict(remote),
+                        "ownerActionId": local.id, "preparationRequestId": remote.get("preparationRequestId"),
+                        "retryRequestedAt": datetime.datetime.now(datetime.timezone.utc).isoformat()})
+            if preparation == "queued" and binding_row.get("state") in {"claimed", "preparing"}:
+                lease = memory.acquire_crawlseo_execution_lease(
+                    site_id, action_id, revision, generation,
+                    lease_owner=f"crawlseo:{os.getpid()}:{uuid.uuid4().hex}",
+                )
+                if lease is not None:
+                    try:
+                        _execute_crawlseo_preparation(context, remote, lease, site_id=site_id, generation=generation)
+                        binding_row = memory.get_crawlseo_execution_binding(site_id, action_id, revision) or lease
+                    except Exception as exc:
+                        try:
+                            memory.update_crawlseo_execution_binding(site_id, action_id, revision, generation,
+                                expected_state="preparing", state="blocked", detail={**dict(lease.get("detail") or {}), "error": str(exc)[:500]})
+                            service.connector_record_execution(action_id, {"status": "preparation_blocked",
+                                "preparationRequestId": str(remote.get("preparationRequestId") or ""),
+                                "detail": {"error": str(exc)[:500]}})
+                        except Exception:
+                            pass
+            # Projection plus the unique binding (or explicit unsupported
+            # classification) is the local durable receipt for at-least-once
+            # delivery. Acknowledge only these event IDs.
+        # Keep page-sized acknowledgements while persisting every receipt first.
+        _persist_action_crawlseo_events(context["memory"], service, synced.get("events", []), action_id)
+    _persist_unbound_crawlseo_events(context["memory"], service, synced.get("events", []))
+    # CrawlSEO Actions may use Ada's existing source-candidate worker. Reconcile
+    # only those explicitly bound initiatives; legacy local Growth work stays
+    # excluded while the shared authority is active.
+    from .growth_candidates import reconcile_source_candidates
+    reconcile_source_candidates(context, crawlseo_only=True)
+    return {"authority": "crawlseo", "actions": normalized, "inventory": inventory,
+            "contextRevision": synced.get("contextRevision"), "collectionErrors": {}}
 
 
 def _crawlseo_dataset_source(
@@ -1138,6 +1828,8 @@ def _run_monthly_research(context: dict[str, Any], detail: dict[str, Any]) -> di
     wrapper never creates a second research request or infers success from a
     saved snapshot.
     """
+    if _crawlseo_authoritative(context.get("config") or {}):
+        raise RuntimeError("Local monthly research is disabled while CrawlSEO is the research authority")
     from ..brain import seo as brain_seo
 
     service = context.get("crawlseo_service")
@@ -1175,6 +1867,8 @@ def _run_monthly_research(context: dict[str, Any], detail: dict[str, Any]) -> di
 
 def _queue_article_research(context: dict[str, Any]) -> dict[str, Any]:
     """Start the optional reader-led article flow from the weekly Growth run."""
+    if _crawlseo_authoritative(context.get("config") or {}):
+        return {"state": "disabled", "reason": "CrawlSEO owns article research for this site."}
     from ..brain import article_research as brain_article_research
 
     config = context["config"]
@@ -1199,6 +1893,8 @@ def _queue_article_research(context: dict[str, Any]) -> dict[str, Any]:
 
 def _reconcile_article_research(context: dict[str, Any]) -> None:
     """Reconcile article provider work from the same durable pending tick."""
+    if _crawlseo_authoritative(context.get("config") or {}):
+        return
     config = context["config"]
     seo = config.get("seo") if isinstance(config.get("seo"), Mapping) else {}
     settings = seo.get("article_research") if isinstance(seo, Mapping) else {}
@@ -1227,6 +1923,8 @@ def run_growth_cycle(
     from .growth_candidates import prepare_payload_candidate, queue_source_candidate
 
     memory, config = context["memory"], context["config"]
+    if _crawlseo_authoritative(config) and trigger != "crawlseo_action":
+        raise RuntimeError("Local Growth discovery is disabled while CrawlSEO is the research authority")
     policy, goal = GrowthPolicy.from_config(config), ensure_default_goal(memory)
     _invalidate_incompatible_candidates(memory, goal, policy)
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -1319,10 +2017,20 @@ def run_growth_cycle(
             consume_owner_responses(memory, str(run["run_id"]), material["ownerResponses"])
         if trigger == "daily":
             return advance(phase="complete", status="complete", detail=detail, completed=True)
+        if material.get("authority") == "crawlseo":
+            detail["remoteActions"] = material.get("actions", [])
+            detail["note"] = "Recommendations and owner decisions are synchronized from CrawlSEO. HelloAda retains execution and publication controls."
+            return advance(phase="complete", status="complete", detail=detail, completed=True,
+                lease_owner=None, lease_until=None, next_due_ts=None)
         if trigger == "weekly" and "articleResearch" not in detail and not recover_saved_run:
             detail["articleResearch"] = _queue_article_research(context)
             run = advance(phase="assessing", detail=detail)
         if trigger == "monthly":
+            if material.get("authority") == "crawlseo":
+                detail["remoteActions"] = material.get("actions", [])
+                detail["note"] = "Recommendations and owner decisions are synchronized from CrawlSEO. HelloAda retains execution and publication controls."
+                return advance(phase="complete", status="complete", detail=detail, completed=True,
+                    lease_owner=None, lease_until=None, next_due_ts=None)
             research_detail = _run_monthly_research(context, detail)
             status = str(research_detail.get("status") or "pending")
             if status in {"completed", "partial"}:
@@ -1649,22 +2357,80 @@ def reconcile_historical_noop_initiatives(memory: Memory) -> int:
 
 def run_pending_growth(context: dict[str, Any], *, recover_interrupted_runs: bool = False) -> None:
     memory = context["memory"]
-    from .growth_candidates import reconcile_payload_growth_revisions, reconcile_source_candidates
-    from .growth_delivery import reconcile_delivery
+    crawlseo_authoritative = _crawlseo_authoritative(context.get("config") or {})
+    if crawlseo_authoritative:
+        try:
+            # The hourly canonical Growth worker also drains connector events
+            # and replays durable execution reports after transient failures.
+            _sync_crawlseo_actions(context)
+            memory.kv_set("crawlseo_connector_sync_error", {})
+        except Exception as exc:  # noqa: BLE001 - leave durable connector work for the next tick
+            memory.kv_set("crawlseo_connector_sync_error", {
+                "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+                "error": str(exc)[:500],
+            })
+    else:
+        from .growth_candidates import reconcile_payload_growth_revisions, reconcile_source_candidates
+        from .growth_delivery import reconcile_delivery
 
-    # Recording is independently resumable; the receipt remains execution truth.
-    # This existing scheduled boundary, never GET, owns external journal work.
-    reconcile_delivery(context)
-    reconcile_payload_growth_revisions(context)
-    reconcile_source_candidates(context)
-    reconcile_historical_noop_initiatives(memory)
-    _reconcile_orphan_owner_questions(memory)
+        # Recording is independently resumable; the receipt remains execution truth.
+        # The local execution journal remains active only for local research authority.
+        reconcile_delivery(context)
+        reconcile_payload_growth_revisions(context)
+        reconcile_source_candidates(context)
+        reconcile_historical_noop_initiatives(memory)
+        _reconcile_orphan_owner_questions(memory)
+    due_runs = memory.due_growth_runs(limit=20)
+    historical_runs = memory.list_growth_runs(limit=None)
+    if crawlseo_authoritative:
+        # The old local discovery ledger is history after cutover. Only
+        # CrawlSEO Action runs may resume; never replay a legacy assessment,
+        # topic-selection or paid research phase from a saved local run.
+        legacy_runs = [run for run in historical_runs if run.get("trigger") != "crawlseo_action"]
+        legacy_initiatives: dict[str, list[Mapping[str, Any]]] = {}
+        for initiative in memory.list_strategy_initiatives(limit=None):
+            run_id = str(initiative.get("growth_run_id") or "")
+            if run_id:
+                legacy_initiatives.setdefault(run_id, []).append(initiative)
+        for run in legacy_runs:
+            if run.get("status") not in {"complete", "cancelled", "blocked"}:
+                detail = run.get("detail") if isinstance(run.get("detail"), Mapping) else {}
+                linked_initiatives = legacy_initiatives.get(str(run.get("run_id") or ""), [])
+                exact_work_exists = bool(detail.get("candidateIds") or detail.get("queuedInitiativeIds")) or any(
+                    row.get("state") in {"preparing", "validating", "ready_for_review", "publishing", "verifying_live", "published", "verified"}
+                    or any(row.get(key) is not None for key in (
+                        "owner_action_id", "artifact_id", "approval_id", "draft_id", "receipt_id",
+                        "candidate_hash", "review_package_hash",
+                    ))
+                    or bool((row.get("validation") if isinstance(row.get("validation"), Mapping) else {}).get("preparation"))
+                    for row in linked_initiatives
+                )
+                if exact_work_exists:
+                    # Existing exact candidates, owner decisions and receipts
+                    # remain on their guarded execution/reconciliation path.
+                    continue
+                detail = dict(run.get("detail") or {}) if isinstance(run.get("detail"), Mapping) else {}
+                events = detail.get("recoveryEvents") if isinstance(detail.get("recoveryEvents"), list) else []
+                if not any(isinstance(event, Mapping) and event.get("code") == "legacy_discovery_quarantined_at_cutover" for event in events):
+                    events.append({
+                        "code": "legacy_discovery_quarantined_at_cutover",
+                        "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+                        "reason": "CrawlSEO owns research after cutover; this local discovery/research run is retained as history and will not be replayed.",
+                    })
+                    detail["recoveryEvents"] = events[-20:]
+                    memory.update_growth_run(
+                        str(run.get("run_id") or ""), completed=True, status="blocked", phase=str(run.get("phase") or "collecting"),
+                        detail=detail, lease_owner=None, lease_until=None, next_due_ts=None,
+                    )
+        # Keep only current CrawlSEO Action work in this executor's recovery set.
+        due_runs = [run for run in due_runs if run.get("trigger") == "crawlseo_action"]
+        historical_runs = [run for run in historical_runs if run.get("trigger") == "crawlseo_action"]
     due_by_id = {
         str(run.get("run_id")): run
-        for run in memory.due_growth_runs(limit=20)
+        for run in due_runs
         if run.get("run_id")
     }
-    runs = memory.list_growth_runs(limit=None)
+    runs = historical_runs
     interrupted_run_ids: set[str] = set()
     reclaim_lease_owners: dict[str, str] = {}
     if recover_interrupted_runs:
@@ -1753,7 +2519,7 @@ def run_pending_growth(context: dict[str, Any], *, recover_interrupted_runs: boo
             )
     # Recovery must not pull forward unrelated article research (which may
     # dispatch paid provider calls) when there is saved work to resume.
-    if not interrupted_run_ids and (
+    if not crawlseo_authoritative and not interrupted_run_ids and (
         due or not (recoverable_assessments or recoverable_contracts or recoverable_growth_json or recoverable_growth_schema)
     ):
         _reconcile_article_research(context)

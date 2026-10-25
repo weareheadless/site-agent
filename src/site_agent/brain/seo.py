@@ -19,8 +19,8 @@ from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from ..application.actions import OwnerActionService
-from ..application.growth_budget import GrowthBudgetBlocked, mark_paid_research_uncertain, reserve_paid_research, settle_paid_research
-from ..config import validate_research_config
+from ..application.growth_budget import GrowthBudgetBlocked, get_paid_research_reservation, mark_paid_research_uncertain, reserve_paid_research, settle_paid_research
+from ..config import crawlseo_research_authority_selected, validate_research_config
 from ..core.contracts import (
     ActionPriority,
     ActionRequirement,
@@ -881,6 +881,9 @@ def _process_report(context: dict[str, Any], request: Mapping[str, Any], payload
 
 def run(context: dict[str, Any]) -> None:
     config = context["config"]
+    if crawlseo_research_authority_selected(config):
+        context["memory"].record_action("seo_research", "skipped: CrawlSEO owns research for this site")
+        return
     research = _research_config(config)
     memory = context["memory"]
     if not research.get("enabled", False):
@@ -932,7 +935,7 @@ def run(context: dict[str, Any]) -> None:
         reservation_id = str(request.get("budget_reservation_id") or "").strip()
         try:
             if reservation_id:
-                reservation = memory.get_growth_budget_reservation(reservation_id)
+                reservation = get_paid_research_reservation(context, reservation_id)
                 if not reservation or str(reservation.get("status")) != "reserved":
                     raise GrowthBudgetBlocked(f"SEO research reservation {reservation_id} is not safely dispatchable; reconcile it first")
             else:
@@ -977,12 +980,15 @@ def run(context: dict[str, Any]) -> None:
     if status_value not in {"completed", "partial"}:
         if status_value in TERMINAL_REPORT_STATUSES:
             if request.get("budget_reservation_id"):
-                settle_paid_research(context, str(request["budget_reservation_id"]), provider_task_id=report_id, detail={"provider_status": status_value, "error": status.get("error_code")})
+                settle_paid_research(context, str(request["budget_reservation_id"]), provider_task_id=report_id,
+                    detail={"provider_status": status_value, "cost_micros": status.get("cost_micros"), "error": status.get("error_code")})
             memory.update_seo_research_request(request["id"], status=status_value, error=str(status.get("error_code") or "research failed"))
         return
-    if request.get("budget_reservation_id"):
-        settle_paid_research(context, str(request["budget_reservation_id"]), provider_task_id=report_id, detail={"provider_status": status_value})
     payload = service.research_report(report_id)
+    if request.get("budget_reservation_id"):
+        cost = payload.get("cost_micros") if payload.get("cost_micros") is not None else status.get("cost_micros")
+        settle_paid_research(context, str(request["budget_reservation_id"]), provider_task_id=report_id,
+            detail={"provider_status": status_value, "cost_micros": cost})
     _process_report(context, request, payload)
 
 

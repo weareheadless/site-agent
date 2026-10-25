@@ -588,6 +588,75 @@ def register_workspace_routes(
         except BridgeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    @app.post(f"{prefix}/growth/actions/{{action_id}}/decision")
+    async def workspace_crawlseo_action_decision(action_id: int, request: Request):
+        tenant = require_service(request)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="request body must be an object")
+        actor = authenticated_owner_actor(request, tenant)
+        try:
+            return service.decide_crawlseo_action(action_id, body, tenant=tenant, owner_actor_id=actor)
+        except BridgeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get(f"{prefix}/growth/actions")
+    def workspace_crawlseo_actions(request: Request):
+        tenant = require_service(request)
+        try:
+            return service.crawlseo_actions(tenant=tenant)
+        except BridgeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.get(f"{prefix}/growth/budget")
+    def workspace_crawlseo_research_budget(request: Request):
+        tenant = require_service(request)
+        try:
+            return service.crawlseo_research_budget(tenant=tenant)
+        except BridgeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.get(f"{prefix}/growth/research-policy")
+    def workspace_crawlseo_research_policy(request: Request):
+        tenant = require_service(request)
+        try:
+            return service.crawlseo_research_policy(tenant=tenant)
+        except BridgeError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.put(f"{prefix}/growth/research-policy")
+    async def workspace_update_crawlseo_research_policy(request: Request):
+        tenant = require_service(request)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="request body must be an object")
+        actor = authenticated_owner_actor(request, tenant)
+        try:
+            return service.update_crawlseo_research_policy(body, tenant=tenant, owner_actor_id=actor)
+        except BridgeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.put(f"{prefix}/growth/budget")
+    async def workspace_update_crawlseo_research_budget(request: Request):
+        tenant = require_service(request)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="request body must be an object")
+        actor = authenticated_owner_actor(request, tenant)
+        try:
+            return service.update_crawlseo_research_budget(body, tenant=tenant, owner_actor_id=actor)
+        except BridgeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.get(f"{prefix}/seo/insights")
     def workspace_seo_insights(request: Request, limit: int = 12):
         tenant = require_service(request)
@@ -599,6 +668,17 @@ def register_workspace_routes(
     @app.get(f"{prefix}/seo/analytics")
     def workspace_seo_analytics(request: Request, days: int = 28):
         tenant = require_service(request)
+        providers = tenant.config.get("providers") if tenant is not None and isinstance(tenant.config.get("providers"), dict) else {}
+        crawlseo = providers.get("crawlseo") if isinstance(providers.get("crawlseo"), dict) else {}
+        if crawlseo.get("research_authority") == "crawlseo":
+            # GA4/GSC measurements belong to CrawlSEO after cutover. The v1
+            # connector does not expose analytics reports, so never query the
+            # old HelloAda Google client as a hidden fallback.
+            return {
+                "authority": "crawlseo", "capability": "analytics.read", "status": "unsupported",
+                "ga4": {"available": False, "reason": "crawlseoAnalyticsUnavailable"},
+                "gsc": {"available": False, "reason": "crawlseoAnalyticsUnavailable"},
+            }
         try:
             return analytics_for(tenant).report(days=days)
         except AnalyticsError as exc:
@@ -862,6 +942,28 @@ def register_workspace_routes(
 
     if control_prefix:
         control_prefix = "/" + control_prefix.strip("/")
+
+        @app.get(f"{control_prefix}/{{website_id}}/growth/migration-plan")
+        def control_plane_crawlseo_migration_plan(website_id: str, request: Request):
+            tenant = require_control_tenant(request, website_id)
+            try:
+                return service.crawlseo_migration_plan(tenant=tenant)
+            except BridgeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+        @app.post(f"{control_prefix}/{{website_id}}/growth/migration/references/initiative-4-owner-fact-conversation")
+        async def control_plane_confirm_crawlseo_migration_reference(website_id: str, request: Request):
+            tenant = require_control_tenant(request, website_id)
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            if not isinstance(body, dict):
+                raise HTTPException(status_code=400, detail="request body must be an object")
+            try:
+                return service.confirm_crawlseo_migration_reference(body, tenant=tenant)
+            except BridgeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
 
         @app.post(f"{control_prefix}/{{website_id}}/growth/initiatives/{{initiative_id}}/retire-revision")
         async def control_plane_retire_growth_revision(website_id: str, initiative_id: int, request: Request):

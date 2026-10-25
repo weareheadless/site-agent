@@ -26,3 +26,18 @@ test('the bridge uses server-authenticated actor, never browser headers or JSON'
   const javascript = stripTypeScriptTypes(harness + source + checks)
   await assert.doesNotReject(import('data:text/javascript;base64,' + Buffer.from(javascript).toString('base64')))
 })
+
+test('owner research-budget updates forward the authenticated Payload actor through the PUT bridge', () => {
+  const source = readFileSync(new URL('../src/app/api/helloada/[...path]/route.ts', import.meta.url), 'utf8')
+  const handler = source.slice(source.indexOf('export async function PUT('))
+  assert.match(handler, /path !== '\/growth\/budget'/)
+  assert.match(handler, /authenticateHelloAdaRequest\(request\)/)
+  assert.match(handler, /fetchHelloAdaUpstream\(`\/api\/helloada\$\{path\}`, request, `payload:\$\{tenantId\(\)\}:\$\{text\(auth\.user\.id\)\}`\)/)
+})
+
+test('owner CrawlSEO preparation decisions forward the authenticated Payload actor through the POST bridge', () => {
+  const source = readFileSync(new URL('../src/app/api/helloada/[...path]/route.ts', import.meta.url), 'utf8')
+  const handler = source.slice(source.indexOf('export async function POST('), source.indexOf('export async function PUT('))
+  assert.match(handler, /authenticateHelloAdaRequest\(request\)/)
+  assert.match(handler, /fetchHelloAdaUpstream\(`\/api\/helloada\$\{path\}`, request, `payload:\$\{tenantId\(\)\}:\$\{text\(auth\.user\.id\)\}`\)/)
+})

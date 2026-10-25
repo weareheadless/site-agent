@@ -7,6 +7,7 @@ from site_agent.application.growth_candidates import (
     queue_source_candidate,
     reconcile_source_candidates,
     restore_growth_source_revision,
+    validate_crawlseo_source_candidate_paths,
 )
 from site_agent.application.growth_tasks import growth_tasks
 from site_agent.core.chat_jobs import run_job
@@ -25,6 +26,16 @@ def _initiative(memory, *, state="preparing", validation=None, last_error="", ki
         validation=validation or {}, last_error=last_error,
     )
     return memory.update_strategy_initiative(initiative_id)
+
+
+def test_crawlseo_source_candidate_scope_is_exactly_one_robots_or_sitemap_file():
+    assert validate_crawlseo_source_candidate_paths(
+        ["public/robots.txt"], ["public/robots.txt"],
+    ) == ["public/robots.txt"]
+    with pytest.raises(ValueError, match="outside the exact CrawlSEO"):
+        validate_crawlseo_source_candidate_paths(["public/robots.txt"], ["public/robots.txt", "src/app/page.tsx"])
+    with pytest.raises(ValueError, match="outside the exact CrawlSEO"):
+        validate_crawlseo_source_candidate_paths(["src/app/api/route.ts"], ["src/app/api/route.ts"])
 
 
 def test_internal_growth_source_job_is_durable_without_a_synthetic_chat_turn(tmp_path):
@@ -57,7 +68,8 @@ def test_source_candidate_waits_for_owner_and_resumes_from_its_saved_brief(tmp_p
             {"memory": memory, "config": {}, "tenant_id": "oceanicvibes"},
             initiative,
             {"title": initiative["title"], "why": initiative["rationale"],
-             "scope": initiative["summary"], "evidence": ["source:crawl"]},
+             "scope": initiative["summary"], "evidence": ["source:crawl"],
+             "allowedPaths": ["public/robots.txt"]},
             {"evidenceHash": "sha256:evidence"},
         )
         assert job_id is None
@@ -75,6 +87,8 @@ def test_source_candidate_waits_for_owner_and_resumes_from_its_saved_brief(tmp_p
         job = memory.get_chat_job(preparation["jobId"])
         assert job["status"] == "queued"
         assert job["conversation_id"] is None
+        assert job["payload"]["allowed_paths"] == ["public/robots.txt"]
+        assert "public/robots.txt" in job["payload"]["brief"]
     finally:
         memory.close()
 
