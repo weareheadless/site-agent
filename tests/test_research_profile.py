@@ -87,3 +87,18 @@ def test_sync_research_profile_skips_without_a_connector_url(monkeypatch: pytest
         CONFIG, {"CRAWLSEO_SERVICE_TOKEN": "cseo_mcp"}, {"crawlseo": {"site_id": "site-1"}}, "oceanicvibes"
     )
     assert result == {"state": "skipped", "reason": "connector_url_not_configured"}
+
+
+def test_connector_runtime_token_is_written_to_a_protected_file(tmp_path) -> None:
+    from site_agent.application.seo_provisioning import write_connector_runtime_token
+
+    path = write_connector_runtime_token(tmp_path, "cseo_" + "a" * 32)
+    assert path.name == "crawlseo-connector-runtime.env"
+    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line and not line.startswith("#")]
+    assert lines == ["CRAWLSEO_CONNECTOR_TOKEN=cseo_" + "a" * 32]
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_safe_receipt_removes_both_one_time_credentials() -> None:
+    receipt = {"credential_token": "mcp-secret", "connector_credential_token": "connector-secret", "site_id": "site-1"}
+    assert seo_bootstrap._safe_receipt(receipt) == {"site_id": "site-1"}
