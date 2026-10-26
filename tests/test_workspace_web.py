@@ -2486,6 +2486,8 @@ def test_migration_plan_projects_only_current_durable_activation_receipt(tmp_pat
     service.registry._env["CRAWLSEO_SERVICE_TOKEN"] = "mcp-token"
     monkeypatch.setattr("site_agent.hands.crawlseo_connector_credentials.load_connector_runtime_environment",
         lambda _config: {CONNECTOR_RUNTIME_TOKEN_ENV: "runtime-token"})
+    monkeypatch.setattr("site_agent.application.seo_bootstrap.load_connector_runtime_environment",
+        lambda _config: {CONNECTOR_RUNTIME_TOKEN_ENV: "runtime-token"})
 
     freeze_request = {"receiptId": "sha256:" + "1" * 64, "operatorRequestId": "freeze-projection-0001"}
     memory.request_crawlseo_producer_freeze(freeze_request, validate_snapshot=lambda _inventory: True)
