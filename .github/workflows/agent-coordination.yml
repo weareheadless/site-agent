@@ -1,0 +1,17 @@
+name: Agent task coordination
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, edited, ready_for_review, converted_to_draft]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+  statuses: write
+
+jobs:
+  task-format:
+    uses: weareheadless/site-agent/.github/workflows/agent-task-check.yml@21f1bc35e1fd9ebb537667489ce41d5370cdc13a
+    with:
+      coordination-ref: 21f1bc35e1fd9ebb537667489ce41d5370cdc13a
