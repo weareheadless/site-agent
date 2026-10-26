@@ -559,6 +559,14 @@ Never print, paste, commit, or pass credential values to Ada/model prompts.
 The first Worker version that introduces an unapplied Durable Object migration for a tenant must use the explicit atomic lifecycle path in `scripts/deploy-payload-customer.py`. Do not upload that candidate as a version and do not add an automatic deploy fallback. The runner applies the exact Payload migration/verifier gates before atomic deployment, supplies the same secrets/vars/SHA/tag as an ordinary release, persists the lifecycle identity/state in the tenant receipt, and verifies a new Cloudflare deployment at 100% before continuing. Receipts proving the same migration identity was applied select version upload plus verified promotion for all later releases. A changed lifecycle identity is a new atomic boundary.
 
 An `applying` or `outcome-unknown` receipt is a hard stop until the exact Cloudflare state is reconciled; never retry its release ID or infer lifecycle state. The atomic lifecycle migration is not reversible by reverting the Worker code. Canary validation still gates the automatic tenant batches, and every tenant uses the one central queue/timer without tenant-repository edits.
+# Centralized intelligence work
+
+For the UI-001–UI-018 shared intelligence initiative, read
+`docs/centralized-intelligence-reference.md`, the linked canonical specification,
+and the owning issue/dependencies before implementation. Preserve this repository's
+existing CMS, approval, target and release contracts. The shared design is a reviewed implementation baseline;
+do not treat documentation as tenant activation or publication authorization.
+
 ## Agent task coordination
 
 For UI/OPS implementation work, follow `docs/agent-coordination.md`: claim one
@@ -566,3 +574,8 @@ Ready issue with the actual run ID and bounded plan, keep an early draft PR,
 record real tests and hand off for latest-diff manager review. Scope changes
 require explicit replanning; agents stop before merge or deployment. Reuse the
 shared key and existing Project, issues and CI; do not add a bot-management system.
+
+On this shared coding host, load `GITHUB_PROJECTS_TOKEN` from
+`/SOCIAL/configs/github.env` as `GH_TOKEN`; do not print or commit the key.
+The existing key includes repository and Projects access. Its loading commands
+are in the canonical coding-agent workflow linked by the architecture reference.
