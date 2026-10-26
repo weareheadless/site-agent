@@ -87,7 +87,7 @@ def _validate(body: Mapping[str, Any], plan: Mapping[str, Any]) -> dict[str, Any
     # Decisions are constrained to the narrow operations whose semantics are safe.
     decision = body.get("decision")
     allowed = {
-        "work_disposition": {"retain_history", "quarantine", "preserve_execution", "defer"},
+        "work_disposition": {"retain_history", "quarantine", "preserve_execution", "defer", "retire_legacy"},
         "budget_reconciliation": {"reconciled_evidence"},
         "canonical_routes_verification": {"verified"},
         "action_ledger_comparison": {"compared"},
@@ -111,6 +111,10 @@ def _validate(body: Mapping[str, Any], plan: Mapping[str, Any]) -> dict[str, Any
             has_owner_decision = bool(row.get("approval_id") or row.get("review_package_hash") or row.get("candidateDecisionState") == "exact")
             if has_owner_decision and decision != "preserve_execution":
                 raise ContractError("work with an owner decision or exact review must preserve its approval")
+            if decision == "retire_legacy":
+                # CrawlSEO is the sole work source after migration. Retire the
+                # remaining local legacy item without inventing a new approval.
+                continue
             state = row.get("status", row.get("state", ""))
             if decision == "retain_history" and state not in {"completed", "partial", "failed", "drafted", "held", "rejected", "superseded", "archived", "cancelled"}:
                 raise ContractError("only terminal work can be retained as history")
