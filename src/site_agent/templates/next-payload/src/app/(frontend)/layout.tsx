@@ -12,7 +12,7 @@ import './site.css'
 export const dynamic = 'force-dynamic'
 
 export async function generateMetadata(): Promise<Metadata> {
-  const settings = await getSiteSettings()
+  const settings = await getSiteSettings().catch(() => ({}))
   const seo = seoFor(undefined, settings)
   const googleVerification = runtimeValue('GOOGLE_SITE_VERIFICATION')
   return {

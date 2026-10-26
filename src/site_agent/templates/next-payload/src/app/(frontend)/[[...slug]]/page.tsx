@@ -32,7 +32,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     try {
       const home = await getPageBySlug('home')
       if (!home) {
-        const fallback = await getSiteSettings().catch(() => ({}))
+        const fallback = await getSiteSettings().catch(() => ({} as Record<string, unknown>))
         return routeMetadata(
           String(fallback.defaultSeoTitle || fallback.siteName || 'HelloAda site').trim(),
           String(fallback.defaultSeoDescription || fallback.description || '').trim(),
@@ -71,7 +71,7 @@ export default async function PublicRoute({ params }: Props) {
   const path = await routePath(params)
   const postRoute = postSlugForPath(path)
   if (!postRoute && path === '/') {
-    let home
+    let home: Awaited<ReturnType<typeof getPageBySlug>>
     try {
       home = await getPageBySlug('home')
     } catch {
