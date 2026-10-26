@@ -4,6 +4,13 @@
       "id": "rel-20261026020340-b37a74ad",
       "sha": "e95c5e8e30e69700f5587b3fdd349764c2e14755"
     },
+    "ada-provision-test-20261026": {
+      "id": "rel-20261026022858-0d11a832",
+      "initializeSchema": {
+        "migrationHead": "63a934836e0868ac7cdea4716bb9a0935708399567e219bac6346950325deb9a"
+      },
+      "sha": "4063bc9f0444c5199b36f44f8f778e19e50ba3aa"
+    },
     "atelier-harmonie": {
       "id": "runtime-20261025173241-f97cc2a5",
       "sha": "391673c2383163748d1c98a5c56ae9778e0722be",
