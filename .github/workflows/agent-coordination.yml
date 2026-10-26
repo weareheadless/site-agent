@@ -12,6 +12,6 @@ permissions:
 
 jobs:
   task-format:
-    uses: weareheadless/site-agent/.github/workflows/agent-task-check.yml@ecf778d74123ee643ff9bf4a827bd50eb1a0f6b7
+    uses: weareheadless/site-agent/.github/workflows/agent-task-check.yml@21f1bc35e1fd9ebb537667489ce41d5370cdc13a
     with:
-      coordination-ref: ecf778d74123ee643ff9bf4a827bd50eb1a0f6b7
+      coordination-ref: 21f1bc35e1fd9ebb537667489ce41d5370cdc13a
