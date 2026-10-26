@@ -204,8 +204,8 @@ def _prepare(tenant: Any, plan: Mapping[str, Any], request: Mapping[str, str], e
     runtime_env = load_connector_runtime_environment(config)
     if not runtime_env.get(CONNECTOR_RUNTIME_TOKEN_ENV):
         raise CrawlSEOActivationError("separate read/write CrawlSEO runtime credential is missing")
-    merged = dict(env)
-    merged.update(runtime_env)
+    from .seo_bootstrap import load_tenant_environment
+    merged = load_tenant_environment(config, env, require_connector=False)
     try:
         settings = CrawlSEOSettings.from_config(updated, merged)
     except ConfigError as exc:

@@ -263,7 +263,12 @@ def sync_research_profile(
         return {"state": "error", "error": str(exc)[:300]}
 
 
-def load_tenant_environment(config: Mapping[str, Any], env: Mapping[str, str] | None = None) -> dict[str, str]:
+def load_tenant_environment(
+    config: Mapping[str, Any],
+    env: Mapping[str, str] | None = None,
+    *,
+    require_connector: bool = True,
+) -> dict[str, str]:
     """Load host credentials and a previously issued tenant token."""
     resolved = credential_environment(config, os.environ if env is None else env)
     token_file = _credential_directory(config) / "crawlseo.env"
@@ -279,7 +284,8 @@ def load_tenant_environment(config: Mapping[str, Any], env: Mapping[str, str] | 
             pass
     # Keep the narrowly managed connector credential separate from, and
     # authoritative over, the legacy CrawlSEO MCP credential file.
-    resolved.update(load_connector_environment(config))
+    if require_connector:
+        resolved.update(load_connector_environment(config))
     resolved.update(load_connector_runtime_environment(config))
     return resolved
 
