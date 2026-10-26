@@ -11,6 +11,7 @@ from typing import Any
 import yaml
 
 from ..config import ConfigError, CrawlSEOSettings
+from .seo_bootstrap import load_tenant_environment
 from ..core.research_authority import CONNECTOR_DISPATCH_HOLD_KEY
 from ..hands.crawlseo_connector_credentials import CONNECTOR_RUNTIME_TOKEN_ENV, load_connector_runtime_environment
 from ..hands.crawlseo import CrawlSEOClient
@@ -360,11 +361,14 @@ def apply_crawlseo_activation(registry: Any, tenant: Any, preflight: Mapping[str
         runtime_tenant = registry.reload_tenant(
             tenant_id, str(path), api_token=str(getattr(tenant, "api_token", "") or ""),
             api_token_env=str(getattr(tenant, "api_token_env", "") or "") or None,
-            env={**dict(env or {}), **load_connector_runtime_environment(updated)},
+            env=load_tenant_environment(updated, env, require_connector=False),
         )
         memory = runtime_tenant.memory
         _require_frozen_runtime(runtime_tenant)
-        settings = CrawlSEOSettings.from_config(runtime_tenant.config, {**dict(env or {}), **load_connector_runtime_environment(runtime_tenant.config)})
+        settings = CrawlSEOSettings.from_config(
+            runtime_tenant.config,
+            load_tenant_environment(runtime_tenant.config, env, require_connector=False),
+        )
         if settings.research_authority != "crawlseo" or settings.connector_token_env != CONNECTOR_RUNTIME_TOKEN_ENV:
             raise CrawlSEOActivationError("reloaded tenant did not adopt managed CrawlSEO authority")
         service = runtime_tenant.context.get("crawlseo_service")
@@ -417,7 +421,7 @@ def _verify_saved_runtime(registry: Any, tenant: Any, path: Any, config: Mapping
         runtime_tenant = registry.reload_tenant(
             tenant_id, str(path), api_token=str(getattr(tenant, "api_token", "") or ""),
             api_token_env=str(getattr(tenant, "api_token_env", "") or "") or None,
-            env={**dict(env), **load_connector_runtime_environment(config)},
+            env=load_tenant_environment(config, env, require_connector=False),
         )
         memory = runtime_tenant.memory
         _verify_active_runtime(runtime_tenant, begin, env)
@@ -444,7 +448,8 @@ def _verify_active_runtime(tenant: Any, checkpoint: Mapping[str, Any], env: Mapp
     hold = tenant.memory.kv_get("crawlseo_activation:paid_dispatch_hold", None)
     if not isinstance(hold, Mapping) or hold.get("active") is not True:
         raise CrawlSEOActivationError("CrawlSEO paid dispatch hold is missing")
-    runtime_env = {**dict(env), **load_connector_runtime_environment(tenant.config)}
+    from .seo_bootstrap import load_tenant_environment
+    runtime_env = load_tenant_environment(tenant.config, env, require_connector=False)
     settings = CrawlSEOSettings.from_config(tenant.config, runtime_env)
     if settings.research_authority != "crawlseo" or settings.connector_token_env != CONNECTOR_RUNTIME_TOKEN_ENV:
         raise CrawlSEOActivationError("active tenant config does not select the managed CrawlSEO authority")
