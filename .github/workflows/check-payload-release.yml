@@ -4,6 +4,8 @@ on:
   pull_request:
     paths:
       - '.github/workflows/**'
+      - 'tools/agent-coordination/**'
+      - 'contracts/**'
       - 'AGENTS.md'
       - 'docs/helloada-project-selector-to-payload-intake-contract.md'
       - 'packages/**'
@@ -17,6 +19,8 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/**'
+      - 'tools/agent-coordination/**'
+      - 'contracts/**'
       - 'AGENTS.md'
       - 'docs/helloada-project-selector-to-payload-intake-contract.md'
       - 'packages/**'
@@ -32,10 +36,13 @@ permissions:
 
 jobs:
   validate:
+    name: Agent code checks
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - name: Test lightweight agent coordination rules
+        run: node tools/agent-coordination/core.test.mjs
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
