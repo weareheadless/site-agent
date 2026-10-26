@@ -5,11 +5,8 @@
       "sha": "e95c5e8e30e69700f5587b3fdd349764c2e14755"
     },
     "ada-provision-test-20261026": {
-      "id": "rel-20261026023157-ca7db6a7",
-      "initializeSchema": {
-        "migrationHead": "63a934836e0868ac7cdea4716bb9a0935708399567e219bac6346950325deb9a"
-      },
-      "sha": "4722be6f90fcfc3ddfd8d740e1a1df37e2a91f5e"
+      "id": "rel-20261026024450-4020c9dc",
+      "sha": "ab1519a2d50e30b896f7ad8e1c5232f61e4e5688"
     },
     "atelier-harmonie": {
       "id": "runtime-20261025173241-f97cc2a5",
