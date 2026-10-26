@@ -574,3 +574,8 @@ Ready issue with the actual run ID and bounded plan, keep an early draft PR,
 record real tests and hand off for latest-diff manager review. Scope changes
 require explicit replanning; agents stop before merge or deployment. Reuse the
 shared key and existing Project, issues and CI; do not add a bot-management system.
+
+On this shared coding host, load `GITHUB_PROJECTS_TOKEN` from
+`/SOCIAL/configs/github.env` as `GH_TOKEN`; do not print or commit the key.
+The existing key includes repository and Projects access. Its loading commands
+are in the canonical coding-agent workflow linked by the architecture reference.

@@ -2,9 +2,9 @@
 
 Status: reviewed design baseline v0.2, 2026-10-25. This pointer contains no independent copy of the specification.
 
-- [Canonical architecture at reviewed baseline](https://github.com/weareheadless/crawlseo/blob/c286d677793cb8035249561c5d10dd5d46db7f41/docs/architecture/centralized-intelligence/spec.md)
-- [Implementation plan](https://github.com/weareheadless/crawlseo/blob/c286d677793cb8035249561c5d10dd5d46db7f41/docs/architecture/centralized-intelligence/implementation-plan.md)
-- [Coding-agent workflow](https://github.com/weareheadless/crawlseo/blob/c286d677793cb8035249561c5d10dd5d46db7f41/docs/architecture/centralized-intelligence/agent-workflow.md)
+- [Canonical architecture at reviewed baseline](https://github.com/weareheadless/crawlseo/blob/a3c4d58c8ae7fd40e7c17341fd15b9c41d72042c/docs/architecture/centralized-intelligence/spec.md)
+- [Implementation plan](https://github.com/weareheadless/crawlseo/blob/a3c4d58c8ae7fd40e7c17341fd15b9c41d72042c/docs/architecture/centralized-intelligence/implementation-plan.md)
+- [Coding-agent workflow](https://github.com/weareheadless/crawlseo/blob/a3c4d58c8ae7fd40e7c17341fd15b9c41d72042c/docs/architecture/centralized-intelligence/agent-workflow.md)
 - [Architecture review PR](https://github.com/weareheadless/crawlseo/pull/27)
 - [Cross-repository Project](https://github.com/users/weareheadless/projects/3)
 - [Parent initiative](https://github.com/weareheadless/crawlseo/issues/3)
