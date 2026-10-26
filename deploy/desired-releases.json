@@ -1,13 +1,5 @@
 {
   "releases": {
-    "ada-provision-test-20261025": {
-      "id": "rel-20261026020340-b37a74ad",
-      "sha": "e95c5e8e30e69700f5587b3fdd349764c2e14755"
-    },
-    "ada-provision-test-20261026": {
-      "id": "rel-20261026025232-342bd853",
-      "sha": "a332f7a23b8f9f9392adc4a7f1e133db5dd2f211"
-    },
     "atelier-harmonie": {
       "id": "runtime-20261025173241-f97cc2a5",
       "sha": "391673c2383163748d1c98a5c56ae9778e0722be",
