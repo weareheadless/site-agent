@@ -24,6 +24,7 @@ from ..core.incubation_contracts import (
     SubscriptionState,
 )
 from ..core.memory import Memory
+from ..core.research_authority import require_research_producers_enabled
 from ..hands.feed_discovery import (
     BoundedFeedReader,
     FeedDiscoveryError,
@@ -58,6 +59,7 @@ class IncubationResearchService:
         now: Callable[[], str] = utc_now,
         max_sources_per_pass: int = 8,
         max_items_per_source: int = 15,
+        local_producers_enabled: bool = True,
     ) -> None:
         self.memory = memory
         self.max_sources_per_pass = max(1, min(int(max_sources_per_pass), 50))
@@ -68,6 +70,7 @@ class IncubationResearchService:
         self.activity_service = activity_service
         self.synthesizer = synthesizer
         self.fallback_reader = fallback_reader
+        self.local_producers_enabled = bool(local_producers_enabled)
         self.now = now
 
     def projection(self) -> dict[str, Any]:
@@ -721,6 +724,12 @@ class IncubationResearchService:
     def request(self, body: Mapping[str, Any], *, enqueue: bool = False) -> dict[str, Any]:
         if not isinstance(body, Mapping):
             raise IncubationResearchError("research request must be an object")
+        if not self.local_producers_enabled:
+            raise IncubationResearchError("local research producer is disabled by CrawlSEO authority")
+        try:
+            require_research_producers_enabled(self.memory)
+        except RuntimeError as exc:
+            raise IncubationResearchError(str(exc)) from exc
         try:
             request = self._request(body)
         except (ContractError, TypeError, ValueError) as exc:
@@ -889,6 +898,7 @@ class IncubationResearchExecutor:
         self.memory = service.memory
         self.interval = max(0.1, float(interval))
         self.on_finished = on_finished
+        self.authority_memory: Memory = service.memory
         self.worker = f"research-{time.time_ns()}"
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -913,6 +923,12 @@ class IncubationResearchExecutor:
             self._thread.join(timeout)
 
     def process_one(self) -> bool:
+        try:
+            if not self.service.local_producers_enabled:
+                return False
+            require_research_producers_enabled(self.authority_memory)
+        except RuntimeError:
+            return False
         job = self.memory.claim_research_job(self.worker)
         if job is None:
             return False
