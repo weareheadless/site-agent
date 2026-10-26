@@ -130,6 +130,12 @@ class IntakeCoordinator:
             draft = DesignIntakeDraft.from_dict(session.get("draft") or {})
         except (ContractError, TypeError, ValueError):
             return
+        # Knowledge synchronization is independent of research readiness and
+        # design runs; re-drive the exact durable intake revision after restart.
+        latest_revision = int(session.get("revision") or 0)
+        revision_row = next((item for item in self.memory.list_design_intake_revisions(session_id, limit=500)
+                             if int(item.get("revision") or 0) == latest_revision), {})
+        self._sync_business_knowledge(session_id, draft, revision_row or {"revision": latest_revision})
         if not self._research_context_ready(draft):
             return
         revision = int(session.get("revision") or 0)
@@ -351,7 +357,26 @@ class IntakeCoordinator:
             )
         except Exception as exc:  # noqa: BLE001 — normalize application errors at the bridge boundary
             raise ValueError(str(exc)[:500]) from exc
-        return self.status(conversation_id)
+        confirmed = result.get("session") if isinstance(result, Mapping) else None
+        if isinstance(confirmed, Mapping):
+            try:
+                confirmed_draft = DesignIntakeDraft.from_dict(confirmed.get("draft") or {})
+                confirmed_revision = int(confirmed.get("confirmed_revision") or confirmed.get("revision") or revision)
+                revision_row = next((item for item in self.memory.list_design_intake_revisions(
+                    str(confirmed.get("session_id") or session.get("session_id") or ""), limit=500)
+                    if int(item.get("revision") or 0) == confirmed_revision), {})
+                knowledge_sync = self._sync_business_knowledge(
+                    str(confirmed.get("session_id") or session.get("session_id") or ""),
+                    confirmed_draft,
+                    revision_row or {"revision": confirmed_revision},
+                )
+            except (ContractError, TypeError, ValueError):
+                knowledge_sync = {"status": "pending", "reason": "intake_revision_unavailable"}
+            result = {**dict(result), "business_knowledge": knowledge_sync}
+        status = self.status(conversation_id)
+        if isinstance(result, Mapping) and isinstance(result.get("business_knowledge"), Mapping):
+            status["business_knowledge"] = dict(result["business_knowledge"])
+        return status
 
     def send_message(
         self,
@@ -493,8 +518,9 @@ class IntakeCoordinator:
         draft: DesignIntakeDraft,
         revision: Mapping[str, Any],
     ) -> Mapping[str, Any] | None:
+        knowledge_sync = self._sync_business_knowledge(session_id, draft, revision)
         if not self.research_enabled or not self._research_context_ready(draft):
-            return {"status": "not_ready"}
+            return {"status": "not_ready", "business_knowledge": knowledge_sync}
         current_revision = int(revision.get("revision") or 0)
         existing = [
             item
@@ -503,19 +529,116 @@ class IntakeCoordinator:
             and int(item.get("intake_revision") or 0) == current_revision
         ]
         if len(existing) >= self.max_passes_per_revision:
-            return {"status": "owner_turn_required", "count": len(existing)}
+            return {"status": "owner_turn_required", "count": len(existing), "business_knowledge": knowledge_sync}
 
         owner_language = str(
             revision.get("owner_language")
             or draft.value("site.language")
             or "en"
         ).strip().lower().replace("_", "-")
-        return self._schedule_research(
+        result = self._schedule_research(
             draft,
             current_revision,
             owner_language=owner_language,
             trigger=ResearchTrigger.INTAKE_THRESHOLD.value,
         )
+        result["business_knowledge"] = knowledge_sync
+        return result
+
+    def _sync_business_knowledge(self, session_id: str, draft: DesignIntakeDraft,
+                                 revision: Mapping[str, Any]) -> dict[str, Any]:
+        """Mirror working intake facts to the canonical project document, fail-closed."""
+        provisioning = self.config.get("seo_provisioning_state")
+        if not isinstance(provisioning, Mapping):
+            provisioning = self.memory.kv_get("seo_provisioning_state", {}) or {}
+        crawlseo = provisioning.get("crawlseo") if isinstance(provisioning, Mapping) else {}
+        crawlseo = crawlseo if isinstance(crawlseo, Mapping) else {}
+        workspace_id = str(crawlseo.get("workspace_id") or crawlseo.get("workspaceId") or "").strip()
+        project_id = str(crawlseo.get("project_id") or crawlseo.get("projectId") or "").strip()
+        intake_revision = int(revision.get("revision") or 0)
+        if not workspace_id or not project_id or intake_revision < 1:
+            return {"status": "pending", "reason": "crawlseo_project_unavailable"}
+        document_id = "business-profile"
+        key = f"site-agent:{workspace_id}:{project_id}:{document_id}:intake:{session_id}:{intake_revision}"[:240]
+        if len(key) < 8:
+            return {"status": "pending", "reason": "invalid_idempotency_key"}
+        import hashlib
+        receipt_key = "business_knowledge_sync:" + hashlib.sha256(key.encode()).hexdigest()
+        previous_receipt = self.memory.kv_get(receipt_key)
+        if isinstance(previous_receipt, Mapping) and previous_receipt.get("status") == "error":
+            return {"status": "error", "reason": str(previous_receipt.get("reason") or "sync_conflict")}
+        origin_system = "site-agent"
+        recorded_at = str(revision.get("created_ts") or revision.get("created_at") or "").strip()
+        if not recorded_at:
+            return {"status": "pending", "reason": "intake_revision_timestamp_unavailable"}
+        if recorded_at.endswith("Z"):
+            recorded_at = recorded_at[:-1] + "+00:00"
+        source_record = f"{session_id}:{intake_revision}"
+        fields: dict[str, Any] = {}
+        mapping = {
+            "business.name": ("businessName", "text"),
+            "business.primary_services": ("services", "list"),
+            "business.location": ("location", "text"),
+            "business.service_area": ("serviceArea", "list"),
+            "business.differentiators": ("differentiators", "list"),
+            "business.verified_trust_evidence": ("verifiedTrustEvidence", "list"),
+            "audience.motivations": ("audienceMotivations", "list"),
+            "audience.concerns": ("concerns", "list"),
+            "conversion.primary_action": ("conversionGoals", "list"),
+            "brand.voice": ("voice", "text"),
+            "brand.prohibited_claims": ("prohibitedClaims", "list"),
+            "constraints.prohibited_claims": ("prohibitedClaims", "list"),
+        }
+        for path, (field_name, shape) in mapping.items():
+            value = draft.value(path)
+            provenance = draft.provenance.get(path)
+            disposition = next((item for item in (*draft.assumptions, *draft.deferred) if item.path == path), None)
+            if value is None and disposition is not None:
+                value = disposition.value
+            if value is None or (isinstance(value, str) and not value.strip()) or (isinstance(value, list) and not value):
+                continue
+            if provenance is None:
+                origin = "deferred" if disposition in draft.deferred else "assumed"
+                source_message_id = disposition.source_message_id if disposition else None
+                note = disposition.note if disposition else ""
+            else:
+                origin = provenance.origin
+                source_message_id = provenance.source_message_id
+                note = provenance.note
+            status = {"confirmed": "owner_confirmed", "advised": "advised", "assumed": "assumed", "deferred": "deferred"}.get(origin, "unknown")
+            fact_value = value if shape == "text" else ([value] if isinstance(value, str) else list(value))
+            evidence_uri = f"site-agent://intake/{session_id}/revision/{intake_revision}/field/{path}"
+            fact_provenance = {
+                "kind": "intake", "sourceId": f"{session_id}:{source_message_id or intake_revision}",
+                "originSystem": origin_system, "originRecordId": source_record, "originRevision": intake_revision,
+                "actor": {"type": "owner" if status in {"owner_confirmed", "advised"} else "model", "id": "intake"},
+                "status": status, "recordedAt": recorded_at, "observedAt": recorded_at,
+                "evidenceUri": evidence_uri,
+            }
+            if note:
+                fact_provenance["quote"] = note[:2000]
+            fields[field_name] = {"value": fact_value, "provenance": fact_provenance,
+                                  "publicationUse": "approved" if status == "owner_confirmed" else "internal_only"}
+        if not fields:
+            return {"status": "pending", "reason": "no_business_facts"}
+        try:
+            from ..hands.crawlseo import CrawlSEOClient
+            from .crawlseo import CrawlSEOApplicationService
+            client = CrawlSEOClient.from_config(self.config)
+            if client is None:
+                return {"status": "pending", "reason": "crawlseo_unavailable"}
+            result = CrawlSEOApplicationService(client).sync_business_knowledge(
+                workspace_id=workspace_id, project_id=project_id, document_id=document_id,
+                fields=fields, idempotency_key=key, reason=f"Intake revision {intake_revision}")
+            if isinstance(result, Mapping):
+                self.memory.kv_set(receipt_key,
+                                   {"status": "synced", "revision": result.get("revision"), "idempotency_key": key})
+            return {"status": "synced", "revision": result.get("revision") if isinstance(result, Mapping) else None}
+        except Exception as exc:  # noqa: BLE001 - remote failures remain explicitly retryable
+            if "IDEMPOTENCY_CONFLICT" in str(exc):
+                self.memory.kv_set(receipt_key, {"status": "error", "reason": "idempotency_conflict", "idempotency_key": key})
+                return {"status": "error", "reason": "idempotency_conflict"}
+            return {"status": "pending", "reason": type(exc).__name__}
 
     def _schedule_research(
         self,

@@ -428,6 +428,16 @@ class CrawlSEOClient:
         }
         return self._invoke("seo_request_research_report", arguments)
 
+    def business_knowledge_document(self, workspace_id: str, project_id: str, document_id: str = "business-profile") -> Mapping[str, Any]:
+        """Read the current working revision of a canonical business document."""
+        query = urlencode({"workspaceId": workspace_id, "projectId": project_id,
+                          "documentId": document_id, "view": "working"})
+        return self._connector_request("GET", f"/api/projects/knowledge?{query}")
+
+    def write_business_knowledge_document(self, body: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Append a compare-and-swap business knowledge revision."""
+        return self._connector_request("POST", "/api/projects/knowledge", body)
+
     def research_report_status(self, report_id: str) -> Mapping[str, Any]:
         return self._invoke("seo_get_research_report_status", {"report_id": report_id})
 
@@ -709,7 +719,14 @@ class CrawlSEOClient:
             raise CrawlSEOConfigurationError("CrawlSEO connector API is not configured; set providers.crawlseo.connector_url")
         token = self.settings.connector_token or self.settings.token
         data = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8") if body is not None else None
-        request = Request(f"{base}{path}", data=data, method=method, headers={
+        if path.startswith("/api/projects/knowledge"):
+            from urllib.parse import urlsplit
+            parsed = urlsplit(base)
+            prefix = parsed.path[:-len("/api/connector/v1")]
+            url = f"{parsed.scheme}://{parsed.netloc}{prefix}{path}"
+        else:
+            url = f"{base}{path}"
+        request = Request(url, data=data, method=method, headers={
             "Authorization": f"Bearer {token}",
             "Accept": "application/json",
             "User-Agent": "HelloAda/site-agent-crawlseo",
@@ -725,6 +742,15 @@ class CrawlSEOClient:
             if exc.code in {401, 403}:
                 raise CrawlSEOUnavailableError(f"CrawlSEO connector rejected the service credential (HTTP {exc.code})") from None
             if exc.code == 409:
+                try:
+                    error = json.loads(exc.read(25_001).decode("utf-8"))
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                    error = {}
+                code = error.get("code") if isinstance(error, Mapping) else None
+                if code == "IDEMPOTENCY_CONFLICT":
+                    raise CrawlSEOProtocolError("CrawlSEO business knowledge IDEMPOTENCY_CONFLICT") from None
+                if code == "REVISION_CONFLICT":
+                    raise CrawlSEOProtocolError("CrawlSEO business knowledge REVISION_CONFLICT") from None
                 raise CrawlSEOProtocolError("CrawlSEO connector rejected a stale or conflicting operation") from None
             raise CrawlSEOUnavailableError(f"CrawlSEO connector request failed (HTTP {exc.code})") from None
         except (TimeoutError, URLError, OSError) as exc:
