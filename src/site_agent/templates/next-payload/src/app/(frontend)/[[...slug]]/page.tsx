@@ -28,6 +28,20 @@ const routeMetadata = (title: string, description: string, image?: string, canon
 export async function generateMetadata({ params }: Props): Promise<Metadata> {
   const path = await routePath(params)
   const postRoute = postSlugForPath(path)
+  if (!postRoute && path === '/') {
+    try {
+      const home = await getPageBySlug('home')
+      if (!home) {
+        const fallback = await getSiteSettings().catch(() => ({}))
+        return routeMetadata(
+          String(fallback.defaultSeoTitle || fallback.siteName || 'HelloAda site').trim(),
+          String(fallback.defaultSeoDescription || fallback.description || '').trim(),
+        )
+      }
+    } catch {
+      return routeMetadata('HelloAda site', '')
+    }
+  }
   const settings = await getSiteSettings()
   if (postRoute?.kind === 'index') {
     const title = String(settings.journalTitle || settings.defaultSeoTitle || settings.siteName || '').trim()
@@ -56,6 +70,24 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 export default async function PublicRoute({ params }: Props) {
   const path = await routePath(params)
   const postRoute = postSlugForPath(path)
+  if (!postRoute && path === '/') {
+    let home
+    try {
+      home = await getPageBySlug('home')
+    } catch {
+      home = undefined
+    }
+    if (!home) {
+      return (
+        <main style={{ minHeight: '70vh', display: 'grid', placeItems: 'center', padding: '4rem 1.5rem', textAlign: 'center' }}>
+          <div>
+            <h1 style={{ fontFamily: 'Georgia, serif', fontSize: 'clamp(2rem, 6vw, 4rem)', margin: 0 }}>HelloAda site</h1>
+            <p style={{ marginTop: '1rem', opacity: 0.7 }}>This site is being prepared.</p>
+          </div>
+        </main>
+      )
+    }
+  }
   if (postRoute?.kind === 'index') {
     const [posts, settings] = await Promise.all([getPublishedPosts(), getSiteSettings()])
     if (path !== articleIndexPath()) throw new Error('Articles listing route configuration is inconsistent.')
