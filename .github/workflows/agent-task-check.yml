@@ -1,0 +1,37 @@
+name: Shared agent task format
+
+on:
+  workflow_call:
+    inputs:
+      coordination-ref:
+        description: Immutable site-agent commit containing this shared checker
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+  statuses: write
+
+jobs:
+  task-format:
+    name: Agent task format
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out the pinned shared checker, never task-branch code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: weareheadless/site-agent
+          ref: ${{ inputs.coordination-ref }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: Check task metadata and invalidate stale manager feedback
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          TARGET_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: node tools/agent-coordination/run-check.mjs

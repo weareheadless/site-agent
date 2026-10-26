@@ -34,8 +34,7 @@ export default function TenantChrome({ children, navigation, settings }: {
   navigation: RecordValue
   settings: RecordValue
 }) {
-  const siteName = String(settings.siteName || '').trim()
-  if (!siteName) throw new Error('Payload site settings are not initialized.')
+  const siteName = String(settings.siteName || '').trim() || 'HelloAda site'
   const logo = mediaUrl(settings.logo)
   const primary = navList(navigation.items)
   const footer = navList(navigation.footer)
