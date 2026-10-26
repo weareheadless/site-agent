@@ -579,3 +579,15 @@ On this shared coding host, load `GITHUB_PROJECTS_TOKEN` from
 `/SOCIAL/configs/github.env` as `GH_TOKEN`; do not print or commit the key.
 The existing key includes repository and Projects access. Its loading commands
 are in the canonical coding-agent workflow linked by the architecture reference.
+Each bash call is a fresh shell, so export the key in the same command that uses
+it. The `github_*` MCP tools use a different credential and return 404 for these
+repositories; use `curl` with `$GH_TOKEN` or the pinned checker instead.
+
+Selection is dependency-driven and parallel by default. The manager reads every
+issue's Readiness, Status and native `blockedBy` links, and runs one worker per
+independently scoped Ready issue rather than working through the board serially.
+Parallelism is bounded by review capacity and by artefact overlap, not by
+repository identity: separate checkouts and branches, one migration directory
+per worker, sequential merges in dependency order with a rebase between them.
+See "Parallel work and dependency-driven selection" in
+`docs/agent-coordination.md`.
