@@ -79,6 +79,44 @@ Reconcile any open PR before another run reclaims the issue. Do not steal stale
 work automatically. If a work package genuinely needs parallel branches, split
 independently owned work first; otherwise keep coherent follow-up PRs sequential.
 
+## Parallel work and dependency-driven selection
+
+The Project is the scheduler. The manager does not work through issues one at a
+time: it reads every issue's **Readiness**, **Status** and native `blockedBy`
+links, and dispatches **one Luna worker per issue whose blocking links are all
+closed and whose Readiness is `Ready`**. Dependency data already exists, so
+serialising work that is provably independent only wastes elapsed time.
+
+Standing rules:
+
+1. **Parallel by default, bounded by review capacity.** Up to three workers run
+   concurrently. Go higher only when the scopes do not overlap. Every worker
+   gets its own checkout, its own branch, its own claim and its own run label.
+2. **Do not serialise on repository identity.** Several ready issues in one
+   repository are normal. Serialise only on *artefact* overlap: the same file,
+   the same module, the same migration chain, or the same shared fixture.
+3. **Migrations stay independent.** Each worker creates only its own
+   `prisma/migrations/<timestamp>_<name>/` directory. Never edit, rename or
+   delete another migration directory and never rebuild migration history. The
+   manager generates migrations only from the worker's already-clean chain.
+4. **Shared modules stay localised.** When two in-flight issues both touch a
+   shared module, keep each edit minimal and merge sequentially.
+5. **Merge in dependency order, rebase between merges.** The manager merges the
+   reviews that are green, then rebases the next branch onto the new `main`
+   before merging it. A real conflict is resolved by the branch owner, not by
+   the manager editing another worker's files.
+6. **Shared disposable fixtures are reconciled deliberately.** If a fixture's
+   `prisma migrate status` is not clean, the worker stops and reports. Only the
+   manager resets a fixture, only with `npx prisma migrate reset --force` on the
+   explicitly disposable database, and never as a silent repair.
+7. **Block on questions, not on time.** A worker that hits an unresolved
+   contract, credential or scope question returns immediately with the exact
+   decision needed. It never idles waiting, and never invents a decision.
+
+The manager still owns assignment, review and merge. Parallelism does not
+weaken the checks in the next section, and it never authorises a merge that was
+not reviewed at its exact head.
+
 ## Checks and the manager's decision
 
 - **Agent task format** runs on PR events using the pinned checker, not task-
