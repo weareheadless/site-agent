@@ -104,7 +104,8 @@ class CrawlSEOApplicationService:
         if not callable(reader) or not callable(writer):
             raise CrawlSEOApplicationError("CrawlSEO business knowledge is unsupported by this connector")
         identity = {"workspaceId": workspace_id, "projectId": project_id, "documentId": document_id}
-        current = self._read("business knowledge read", lambda: reader(**identity))
+        current = self._read("business knowledge read", lambda: reader(
+            workspace_id=workspace_id, project_id=project_id, document_id=document_id))
         revision = int(current.get("revision") or 0) if isinstance(current, Mapping) else 0
         body = {"schemaVersion": "business-knowledge/1", "kind": "document_write", **identity,
                 "expectedRevision": revision, "idempotencyKey": idempotency_key,

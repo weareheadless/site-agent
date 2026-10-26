@@ -1,6 +1,13 @@
+import io
+import json
+from urllib.error import HTTPError
+
+from site_agent.application.crawlseo import CrawlSEOApplicationService
 from site_agent.application.intake_coordinator import IntakeCoordinator
+from site_agent.config import CrawlSEOSettings
 from site_agent.core.design_intake_contracts import DesignIntakeDraft
 from site_agent.core.memory import Memory
+from site_agent.hands.crawlseo import CrawlSEOClient
 
 
 class _KnowledgeClient:
@@ -97,3 +104,64 @@ def test_missing_project_is_pending_without_fabricating_identity(tmp_path):
         }
     finally:
         memory.close()
+
+
+def test_knowledge_read_404_uses_project_token_and_writes_revision_zero(monkeypatch):
+    requests = []
+
+    class Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+    class Opener:
+        def open(self, request, timeout=None):
+            requests.append(request)
+            if request.method == "GET":
+                raise HTTPError(request.full_url, 404, "not found", {}, io.BytesIO(b'{"code":"NOT_FOUND"}'))
+            return Response(b'{"revision":1}')
+
+    monkeypatch.setattr("site_agent.hands.crawlseo.build_opener", lambda *_args: Opener())
+    settings = CrawlSEOSettings(
+        enabled=True, url="https://crawl.example", token_env="SERVICE_TOKEN",
+        connector_url="https://crawl.example/api/connector/v1", connector_token_env="CONNECTOR_TOKEN",
+        token="project-service-token", connector_token="runtime-connector-token",
+    )
+    client = CrawlSEOClient(settings, runtime=object())
+    result = CrawlSEOApplicationService(client).sync_business_knowledge(
+        workspace_id="workspace-1", project_id="project-1", document_id="business-profile",
+        fields={"businessName": {"value": "Acme", "provenance": {}, "publicationUse": "internal_only"}},
+        idempotency_key="site-agent:workspace-1:project-1:business-profile:intake:session-1:1",
+        reason="Intake revision 1",
+    )
+    assert result["revision"] == 1
+    assert requests[0].get_header("Authorization") == "Bearer project-service-token"
+    assert requests[1].get_header("Authorization") == "Bearer project-service-token"
+    assert json.loads(requests[1].data)["expectedRevision"] == 0
+
+
+def test_connector_routes_keep_connector_credential(monkeypatch):
+    requests = []
+
+    class Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+    class Opener:
+        def open(self, request, timeout=None):
+            requests.append(request)
+            return Response(b'{"ok":true}')
+
+    monkeypatch.setattr("site_agent.hands.crawlseo.build_opener", lambda *_args: Opener())
+    settings = CrawlSEOSettings(
+        enabled=True, url="https://crawl.example", token_env="SERVICE_TOKEN",
+        connector_url="https://crawl.example/api/connector/v1", connector_token_env="CONNECTOR_TOKEN",
+        token="project-service-token", connector_token="runtime-connector-token",
+    )
+    CrawlSEOClient(settings, runtime=object())._connector_request("GET", "/capabilities")
+    assert requests[0].get_header("Authorization") == "Bearer runtime-connector-token"

@@ -432,11 +432,11 @@ class CrawlSEOClient:
         """Read the current working revision of a canonical business document."""
         query = urlencode({"workspaceId": workspace_id, "projectId": project_id,
                           "documentId": document_id, "view": "working"})
-        return self._connector_request("GET", f"/api/projects/knowledge?{query}")
+        return self._connector_request("GET", f"/api/projects/knowledge?{query}", project_credential=True)
 
     def write_business_knowledge_document(self, body: Mapping[str, Any]) -> Mapping[str, Any]:
         """Append a compare-and-swap business knowledge revision."""
-        return self._connector_request("POST", "/api/projects/knowledge", body)
+        return self._connector_request("POST", "/api/projects/knowledge", body, project_credential=True)
 
     def research_report_status(self, report_id: str) -> Mapping[str, Any]:
         return self._invoke("seo_get_research_report_status", {"report_id": report_id})
@@ -713,11 +713,12 @@ class CrawlSEOClient:
     def connector_budget_get_reservation(self, reservation_id: str) -> Mapping[str, Any]:
         return self._connector_request("GET", f"/budget/reservations/{quote(reservation_id, safe='')}")
 
-    def _connector_request(self, method: str, path: str, body: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
+    def _connector_request(self, method: str, path: str, body: Mapping[str, Any] | None = None,
+                           *, project_credential: bool = False) -> Mapping[str, Any]:
         base = self.settings.connector_url
         if not base:
             raise CrawlSEOConfigurationError("CrawlSEO connector API is not configured; set providers.crawlseo.connector_url")
-        token = self.settings.connector_token or self.settings.token
+        token = self.settings.token if project_credential else (self.settings.connector_token or self.settings.token)
         data = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8") if body is not None else None
         if path.startswith("/api/projects/knowledge"):
             from urllib.parse import urlsplit
@@ -739,6 +740,8 @@ class CrawlSEOClient:
                 if len(payload) > self.settings.max_response_bytes:
                     raise CrawlSEOResponseTooLargeError("CrawlSEO connector response exceeded the configured size limit")
         except HTTPError as exc:
+            if exc.code == 404 and method == "GET" and path.startswith("/api/projects/knowledge"):
+                return {"revision": 0, "state": "working", "fields": {}}
             if exc.code in {401, 403}:
                 raise CrawlSEOUnavailableError(f"CrawlSEO connector rejected the service credential (HTTP {exc.code})") from None
             if exc.code == 409:
