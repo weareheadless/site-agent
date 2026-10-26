@@ -2966,7 +2966,11 @@ class ChatService:
                     remote["invalidEvidenceReferenceCount"] = sum(row["invalidEvidenceReferenceCount"] for row in remote["actions"])
                     remote["unavailableEvidenceSourceCount"] = sum(row["unavailableEvidenceSourceCount"] for row in remote["actions"])
                     remote["contextRevisions"] = sorted({str(key) + ":" + str(value) for row in remote["actions"] for key, value in row["contextRevisions"].items()})
-                    remote["actionSiteIdentityVerified"] = bool(rows) and all(row.get("siteId") == site_id and row.get("projectId") == expected_project_id for row in remote["actions"])
+                    # With CrawlSEO as the sole work source an empty inventory is
+                    # valid; there is no Action envelope that could disagree.
+                    remote["actionSiteIdentityVerified"] = not rows or all(
+                        row.get("siteId") == site_id and row.get("projectId") == expected_project_id
+                        for row in remote["actions"])
                     if rows and not remote["actionSiteIdentityVerified"]:
                         remote["errors"].append("Action envelopes did not echo the authorized site identity")
                     remote["available"] = True
@@ -3130,10 +3134,10 @@ class ChatService:
                     "articleIdea": "articleIdea", "seoResearchRequest": "seoResearchRequest", "seoSiteReport": "seoSiteReport",
                     "growthRun": "growthRun", "draft": "draft", "activeJob": "activeJob"}.get(mapping.get("sourceType"))
                 decision = scoped_decisions.get((kind, str(mapping.get("sourceId")))) if kind else None
-                if mapping.get("state") != "exact" and decision in {"retain_history", "quarantine", "defer", "preserve_execution"}:
+                if mapping.get("state") != "exact" and decision in {"retain_history", "quarantine", "defer", "preserve_execution", "retire_legacy"}:
                     dispositioned_mappings.append(mapping)
             def has_disposition(kind: str, record_id: Any) -> bool:
-                return scoped_decisions.get((kind, str(record_id))) in {"retain_history", "quarantine", "defer", "preserve_execution"}
+                return scoped_decisions.get((kind, str(record_id))) in {"retain_history", "quarantine", "defer", "preserve_execution", "retire_legacy"}
             unreviewed_mappings = [row for row in mapping_rows if row.get("state") != "exact" and row not in dispositioned_mappings]
             ledger_receipt = next((r for r in active_receipts if r.get("type") == "action_ledger_comparison"), None)
             remote_dispositions = (ledger_receipt or {}).get("evidence", {}).get("remoteActionDispositions", [])
