@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from ..config import IntakeAdaSettings
+from ..config import IntakeAdaSettings, crawlseo_research_authority_selected
 from ..brain.incubation_infusion import (
     IncubationInfusionError,
     IncubationInfusionExecutor,
@@ -40,6 +40,7 @@ from ..core.incubation_contracts import (
 )
 from ..core.intake_ada_store import IntakeAdaStore
 from ..core.memory import Memory
+from ..core.research_authority import producer_frozen
 from ..brain.design_guidance import DesignSkillSet, load_design_skills
 from .incubation_research import IncubationResearchError, IncubationResearchExecutor, IncubationResearchService
 from .incubation_activity import IncubationActivityService
@@ -251,9 +252,13 @@ class IncubationApplicationService:
     def _runtime_components(runtime: IncubationRuntime) -> tuple[Any, ...]:
         return runtime.chat_executor, runtime.executor, runtime.research_executor, runtime.media_worker, runtime.infusion_executor
 
-    @classmethod
-    def _start_runtime(cls, runtime: IncubationRuntime) -> None:
-        for component in cls._runtime_components(runtime):
+    def _start_runtime(self, runtime: IncubationRuntime) -> None:
+        components = self._runtime_components(runtime)
+        research_service = runtime.research_service
+        memory = getattr(research_service, "memory", None)
+        if crawlseo_research_authority_selected(self.config) or (memory is not None and producer_frozen(memory)):
+            components = tuple(item for item in components if item not in {runtime.research_executor, runtime.infusion_executor})
+        for component in components:
             starter = getattr(component, "start", None)
             if callable(starter):
                 starter()
@@ -274,6 +279,8 @@ class IncubationApplicationService:
         pending: list[str] = []
         for record in self.intake_store.list_incubations(limit=500):
             memory = self.open_store(record.incubation_id).memory
+            if self._local_research_producers_paused(record.incubation_id):
+                continue
             jobs = memory.list_research_jobs(limit=500)
             runs = memory.list_infusion_runs(limit=500)
             if any(job.get("status") in {
@@ -349,10 +356,16 @@ class IncubationApplicationService:
                 draft=draft,
                 revision=revision,
             )
-            self.schedule_infusion(incubation_id, "intake_revision", session_id=session_id)
+            if not self._local_research_producers_paused(incubation_id):
+                self.schedule_infusion(incubation_id, "intake_revision", session_id=session_id)
             return research
 
         return callback
+
+    def _local_research_producers_paused(self, incubation_id: str) -> bool:
+        """Return true whenever cutover or a migration freeze forbids local producers."""
+        memory = self.open_store(incubation_id).memory
+        return crawlseo_research_authority_selected(self.config) or producer_frozen(memory)
 
     def research_service(self, incubation_id: str) -> IncubationResearchService:
         runtime = self.runtime(incubation_id)
@@ -364,6 +377,7 @@ class IncubationApplicationService:
             max_sources_per_pass=self.settings.max_sources_per_pass,
             max_items_per_source=self.settings.max_items_per_source,
             fallback_reader=self._pipeworx_fallback_reader(incubation_id),
+            local_producers_enabled=not crawlseo_research_authority_selected(self.config),
         )
         runtime.research_service = service
         with self._lock:
@@ -441,6 +455,9 @@ class IncubationApplicationService:
         """Queue one bounded pass after a useful intake revision is durable."""
         if not self.settings.research_enabled:
             return {"status": "disabled"}
+        if self._local_research_producers_paused(incubation_id):
+            memory = self.open_store(incubation_id).memory
+            return self._blocked_prelaunch_receipt(memory, session_id, revision, "intake_threshold")
         if not self._research_context_ready(draft):
             return {"status": "not_ready"}
         memory = self.open_store(incubation_id).memory
@@ -520,6 +537,30 @@ class IncubationApplicationService:
             "job_id": result.get("job", {}).get("job_id"),
             **({"planner_error": planning_error} if planning_error else {}),
         }
+
+    @staticmethod
+    def _blocked_prelaunch_receipt(memory: Memory, session_id: str, revision: Mapping[str, Any], purpose: str) -> dict[str, Any]:
+        """Persist the prelaunch transport seam without pretending to dispatch."""
+        import hashlib
+        intake_revision = int(revision.get("revision") or 0)
+        crawlseo_state = memory.kv_get("seo_provisioning_state", {}) or {}
+        crawlseo = crawlseo_state.get("crawlseo") if isinstance(crawlseo_state, Mapping) else {}
+        project_id = str((crawlseo or {}).get("project_id") or (crawlseo or {}).get("projectId") or "")
+        key = hashlib.sha256(f"{project_id}{session_id}{intake_revision}{purpose}".encode()).hexdigest()
+        receipt_key = f"prelaunch_research:{key}"
+        receipt = memory.kv_get(receipt_key)
+        if not isinstance(receipt, Mapping):
+            receipt = {
+                "remote_run_id": None,
+                "request_id": None,
+                "intake_revision": intake_revision,
+                "purpose": purpose,
+                "dispatched_at": utc_now(),
+                "status": "blocked",
+                "reason": "unsupported_until_crawlseo_34_domainless_research_contract",
+            }
+            memory.kv_set(receipt_key, dict(receipt))
+        return {"status": str(receipt.get("status") or "blocked"), "reason": str(receipt.get("reason") or "unsupported_until_crawlseo_34"), "receipt_key": receipt_key}
 
     def research_executor(self, incubation_id: str) -> IncubationResearchExecutor:
         runtime = self.runtime(incubation_id)
@@ -638,6 +679,8 @@ class IncubationApplicationService:
         calling turn. Returns queued/skipped/disabled status."""
         if not self.infusion_settings.enabled:
             return {"status": "disabled", "trigger": trigger}
+        if self._local_research_producers_paused(incubation_id):
+            return {"status": "disabled", "trigger": trigger, "reason": "crawlseo_research_authority"}
         try:
             service = self.infusion_service(incubation_id)
             run = service.enqueue(trigger=trigger, session_id=session_id, snapshot=snapshot)
@@ -864,7 +907,22 @@ class IncubationApplicationService:
 
     def research_projection(self, incubation_id: str) -> dict[str, Any]:
         self.get_record(incubation_id)
-        return self.research_service(incubation_id).projection()
+        projection = self.research_service(incubation_id).projection()
+        sessions = self.open_store(incubation_id).memory.list_design_intake_sessions(limit=1)
+        if sessions:
+            session_id = str(sessions[0].get("session_id") or "")
+            revision = int(sessions[0].get("revision") or 0)
+            memory = self.open_store(incubation_id).memory
+            crawlseo = memory.kv_get("seo_provisioning_state", {}) or {}
+            crawlseo = crawlseo.get("crawlseo") if isinstance(crawlseo, Mapping) else {}
+            project_id = str((crawlseo or {}).get("project_id") or (crawlseo or {}).get("projectId") or "")
+            key = hashlib.sha256(f"{project_id}{session_id}{revision}intake_threshold".encode()).hexdigest()
+            receipt = memory.kv_get(f"prelaunch_research:{key}")
+            if isinstance(receipt, Mapping):
+                projection["prelaunch_request"] = dict(receipt)
+                projection["status"] = str(receipt.get("status") or "blocked")
+                projection["error"] = str(receipt.get("reason") or "")
+        return projection
 
     def update_research_source(self, incubation_id: str, source_id: str, changes: Mapping[str, Any]) -> dict[str, Any]:
         self.get_record(incubation_id)

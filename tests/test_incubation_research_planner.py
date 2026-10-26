@@ -1,3 +1,5 @@
+import pytest
+
 from site_agent.application.incubation_research import IncubationResearchExecutor, IncubationResearchService
 from site_agent.application.incubations import IncubationApplicationService, IncubationRuntime
 from site_agent.brain.incubation_research import IncubationResearchPlan, LLMIncubationResearchPlanner, base_plan
@@ -314,3 +316,80 @@ def test_threshold_schedules_one_pass_per_revision(tmp_path):
     finally:
         service.close()
         intake_store.close()
+
+
+def test_cutover_blocks_local_threshold_direct_call_and_revision_infusion(tmp_path):
+    config, _ = load_intake_config(env={})
+    config["data_dir"] = str(tmp_path / "intake-data")
+    config["incubation"]["root"] = str(tmp_path / "incubations")
+    config["incubation"]["scaffold"] = str(tmp_path / "scaffold")
+    config["providers"] = {"crawlseo": {"research_authority": "crawlseo"}}
+    store = IntakeAdaStore(tmp_path / "intake-data" / "intake-ada.db")
+    service = IncubationApplicationService(store, root=config["incubation"]["root"], config=config)
+    record = service.create_incubation()
+    calls = []
+    service.schedule_infusion = lambda *args, **kwargs: calls.append((args, kwargs))
+    try:
+        result = service.schedule_threshold_research(record.incubation_id,
+            session_id="intake-" + "a" * 32, draft=_draft(), revision={"revision": 4})
+        assert result["status"] == "blocked"
+        assert service.on_intake_revision(record.incubation_id)("intake-" + "a" * 32, _draft(), {"revision": 4})["status"] == "blocked"
+        assert calls == []
+        assert service._pending_research_incubations() == ()
+        scoped_memory = service.open_store(record.incubation_id).memory
+        local_service = IncubationResearchService(scoped_memory, local_producers_enabled=False)
+        with pytest.raises(Exception, match="disabled by CrawlSEO authority"):
+            local_service.request({"trigger": "owner_request", "query": "owner supplied"}, enqueue=True)
+        assert local_service.projection()["jobs"] == []
+    finally:
+        service.close()
+        store.close()
+
+
+def test_unsupported_prelaunch_seam_persists_blocked_receipt_and_projection(tmp_path):
+    config, _ = load_intake_config(env={})
+    config["data_dir"] = str(tmp_path / "intake-data")
+    config["incubation"]["root"] = str(tmp_path / "incubations")
+    config["incubation"]["scaffold"] = str(tmp_path / "scaffold")
+    config["providers"] = {"crawlseo": {"research_authority": "crawlseo"}}
+    store = IntakeAdaStore(tmp_path / "intake-data" / "intake-ada.db")
+    service = IncubationApplicationService(store, root=config["incubation"]["root"], config=config)
+    record = service.create_incubation()
+    memory = service.open_store(record.incubation_id).memory
+    try:
+        session = service.intake_service(record.incubation_id).create_session()
+        intake = service.intake_service(record.incubation_id)
+        session = intake.get_session(session["session_id"])
+        saved = memory.save_design_intake_revision(session["session_id"], _draft(), source_kind="owner_message", expected_revision=session["revision"])
+        result = service.schedule_threshold_research(record.incubation_id,
+            session_id=session["session_id"], draft=_draft(), revision={"revision": saved["revision"]})
+        receipt = memory.kv_get(result["receipt_key"])
+        assert receipt["status"] == "blocked"
+        assert receipt["remote_run_id"] is None
+        assert receipt["intake_revision"] == saved["revision"]
+        assert "crawlseo_34" in receipt["reason"]
+        assert service.research_projection(record.incubation_id)["prelaunch_request"] == receipt
+        assert receipt["remote_run_id"] is None  # Explicitly blocked; no paid report API call.
+    finally:
+        service.close()
+        store.close()
+
+
+def test_research_completion_does_not_start_design_or_publication(tmp_path):
+    config, _ = load_intake_config(env={})
+    config["data_dir"] = str(tmp_path / "intake-data")
+    config["incubation"]["root"] = str(tmp_path / "incubations")
+    config["incubation"]["scaffold"] = str(tmp_path / "scaffold")
+    store = IntakeAdaStore(tmp_path / "intake-data" / "intake-ada.db")
+    service = IncubationApplicationService(store, root=config["incubation"]["root"], config=config)
+    record = service.create_incubation()
+    infusion = []
+    service.schedule_infusion = lambda *args, **kwargs: infusion.append(args)
+    try:
+        service._research_finished(record.incubation_id, "remote-report", None)
+        assert service.open_store(record.incubation_id).memory.list_design_runs(limit=20) == []
+        assert service.open_store(record.incubation_id).memory.list_design_runs(mode="local_experiment", limit=20) == []
+        assert infusion == []
+    finally:
+        service.close()
+        store.close()
