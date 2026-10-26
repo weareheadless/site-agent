@@ -96,6 +96,23 @@ class CrawlSEOApplicationService:
         )
         return self._safe_mapping(result, "research request")
 
+    def sync_business_knowledge(self, *, workspace_id: str, project_id: str, document_id: str,
+                                fields: Mapping[str, Any], idempotency_key: str, reason: str) -> dict[str, Any]:
+        """Read then CAS-write a canonical business document; failures remain retryable."""
+        reader = getattr(self.provider, "business_knowledge_document", None)
+        writer = getattr(self.provider, "write_business_knowledge_document", None)
+        if not callable(reader) or not callable(writer):
+            raise CrawlSEOApplicationError("CrawlSEO business knowledge is unsupported by this connector")
+        identity = {"workspaceId": workspace_id, "projectId": project_id, "documentId": document_id}
+        current = self._read("business knowledge read", lambda: reader(
+            workspace_id=workspace_id, project_id=project_id, document_id=document_id))
+        revision = int(current.get("revision") or 0) if isinstance(current, Mapping) else 0
+        body = {"schemaVersion": "business-knowledge/1", "kind": "document_write", **identity,
+                "expectedRevision": revision, "idempotencyKey": idempotency_key,
+                "reason": reason[:1000], "changes": dict(fields)}
+        result = self._read("business knowledge write", lambda: writer(body))
+        return self._safe_mapping(result, "business knowledge write")
+
     def research_report_status(self, report_id: str) -> dict[str, Any]:
         report_id = self._bounded_text(report_id, "report_id", 120)
         result = self._read("research status", lambda: self.provider.research_report_status(report_id))
@@ -509,6 +526,8 @@ class CrawlSEOApplicationService:
         except CrawlSEOApplicationError:
             raise
         except Exception as exc:  # noqa: BLE001 — provider details never cross this boundary
+            if "IDEMPOTENCY_CONFLICT" in str(exc):
+                raise CrawlSEOApplicationError("CrawlSEO business knowledge IDEMPOTENCY_CONFLICT") from exc
             raise CrawlSEOApplicationError(f"CrawlSEO {label} is unavailable") from exc
 
     @staticmethod
