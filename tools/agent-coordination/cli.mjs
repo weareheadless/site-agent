@@ -8,7 +8,9 @@ function options(args) {
   for (let i = 0; i < args.length; i++) {
     demand(args[i].startsWith('--'), 'Expected --option value.');
     const key = args[i].slice(2);
+    demand(['plan', 'repository', 'pr', 'publish', 'sync', 'dry-run'].includes(key), `Unknown option --${key}.`);
     result[key] = ['publish', 'sync', 'dry-run'].includes(key) ? true : args[++i];
+    demand(result[key] !== undefined && (typeof result[key] !== 'string' || !result[key].startsWith('--')), `Missing value for --${key}.`);
   }
   return result;
 }
@@ -73,7 +75,7 @@ export async function run(args, api) {
     state = ciState(checks, combined.statuses, needsCodeChecks(snapshot.files));
     reason = state === 'success' ? 'Task, dependencies, scope, pins and current CI passed; review still required.' : state === 'pending' ? 'Waiting for current-head code checks.' : 'A current-head check failed.';
     await api.unchanged(repository, number, snapshot.pr);
-    if (opt.sync && state === 'success') await setStatus(api, context, snapshot.pr.draft ? 'In progress' : 'In review');
+    if (opt.sync && !opt['dry-run'] && state === 'success') await setStatus(api, context, snapshot.pr.draft ? 'In progress' : 'In review');
   } catch (e) { reason = e.message; }
   if (opt.publish && !opt['dry-run']) {
     await api.unchanged(repository, number, snapshot.pr);
