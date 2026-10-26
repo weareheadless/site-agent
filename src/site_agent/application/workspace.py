@@ -3248,8 +3248,12 @@ class ChatService:
                     from .crawlseo_activation import _receipt_id as activation_receipt_id
                     from ..hands.crawlseo_connector_credentials import CONNECTOR_RUNTIME_TOKEN_ENV, load_connector_runtime_environment
                     _path, disk_config, disk_bytes = _read_config(tenant)
-                    runtime_env = dict(getattr(self.registry, "_env", {}) or {})
-                    runtime_env.update(load_connector_runtime_environment(disk_config))
+                    from .seo_bootstrap import load_tenant_environment
+                    runtime_env = load_tenant_environment(
+                        disk_config,
+                        dict(getattr(self.registry, "_env", {}) or {}),
+                        require_connector=False,
+                    )
                     runtime_settings = CrawlSEOSettings.from_config(disk_config, runtime_env)
                     frozen = freeze_status
                     saved_binding = activation_receipt.get("binding") if isinstance(activation_receipt.get("binding"), Mapping) else {}
