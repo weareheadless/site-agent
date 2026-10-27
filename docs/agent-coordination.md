@@ -79,6 +79,34 @@ Reconcile any open PR before another run reclaims the issue. Do not steal stale
 work automatically. If a work package genuinely needs parallel branches, split
 independently owned work first; otherwise keep coherent follow-up PRs sequential.
 
+## Decision authority
+
+The manager owns the project: task definition, acceptance criteria, ordering,
+architecture and the trade-offs between them. Workers do not consult the owner
+and the owner is not a decision queue.
+
+When a worker raises a question, the manager answers it by reading the
+repository and the constraints, then records the decision where it belongs:
+
+1. **Revise the design first.** Re-read the issue, the affected modules and the
+   existing contracts before answering. If the question reveals a real gap, fix
+   the task definition or the architecture rather than pushing the ambiguity
+   back to the worker.
+2. **Decide once, in writing.** The answer goes into the issue, the PR, or the
+   relevant plan document — not only into a chat reply — so the next worker
+   inherits it instead of rediscovering it.
+3. **Keep the codebase lean.** Prefer extending an existing contract over adding
+   a module, table, route or field. No duplicate stores, no parallel models, no
+   second workflow for the same effect, no copy of data that already has an
+   owner. If two paths would compute the same thing, delete one.
+4. **Escalate to the owner only for** spending, customer-facing promises,
+   production mutation, credentials, or a genuine product-direction choice.
+   Everything else — naming, boundaries, storage, sequencing, test strategy —
+   is the manager's call and must be made without waiting.
+5. **Never leave a worker idle on a question.** Answer, re-scope, or re-dispatch;
+   a blocked worker that returns a question costs a round trip that the manager
+   should have pre-empted with a precise brief.
+
 ## Parallel work and dependency-driven selection
 
 The Project is the scheduler. The manager does not work through issues one at a
