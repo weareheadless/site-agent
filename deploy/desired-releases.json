@@ -24,6 +24,13 @@
       "id": "runtime-20261025-sitemap-robots-4",
       "sha": "8f8b98b0ef7e960159807d1667125fb103e40632",
       "sharedRuntimeFingerprint": "bae45e702d30ad2689ccd541532a5f1adaf32363debdf3f47910abf242b4c172"
+    },
+    "site-5fe73d3d38ff6f77": {
+      "id": "rel-20261027200820-c81ffd0a",
+      "initializeSchema": {
+        "migrationHead": "63a934836e0868ac7cdea4716bb9a0935708399567e219bac6346950325deb9a"
+      },
+      "sha": "69d5000ea2d37face630a9dcf608cc3b8a1077c4"
     }
   },
   "schema": 1
