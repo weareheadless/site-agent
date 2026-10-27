@@ -3671,6 +3671,46 @@ def _isolated_env(
     return env
 
 
+def _ensure_service_port(env: Mapping[str, str]) -> None:
+    """Give this run its own opencode service port.
+
+    opencode starts a managed background server on a fixed default port. The
+    builder isolates HOME per worktree, so it cannot see the user's running
+    service and collides with it ("port already in use"), failing the build
+    before any work happens. Writing the isolated config's service port keeps
+    builds independent of whatever else runs on the host.
+    """
+    import json
+    import secrets
+    import socket
+
+    config_home = str(env.get("XDG_CONFIG_HOME") or "").strip()
+    if not config_home:
+        return
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+    except OSError:
+        return
+    path = Path(config_home) / "opencode" / "service.json"
+    existing: dict[str, Any] = {}
+    try:
+        if path.exists():
+            loaded = json.loads(path.read_text())
+            if isinstance(loaded, dict):
+                existing = loaded
+    except (OSError, ValueError):
+        existing = {}
+    existing["port"] = port
+    existing.setdefault("password", secrets.token_hex(32))
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(existing))
+    except OSError:
+        return
+
+
 def _opencode_bin(config: dict[str, Any]) -> str:
     """Find the opencode CLI without relying on $PATH (systemd units have a
     minimal PATH that misses ~/.opencode/bin)."""
@@ -3973,17 +4013,19 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
             cmd.extend(["-f", str(image_path)])
     if progress:
         progress("opencode is at work on the repository")
+    builder_env = _isolated_env(
+        clone,
+        api_key if api_key is not None else resolve_secret(config, "llm_api_key"),
+        provider=_model_provider(builder_model),
+        source_env=env,
+        api_key_env=api_key_env,
+    )
+    _ensure_service_port(builder_env)
     try:
         proc = subprocess.Popen(
             cmd, cwd=clone, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, bufsize=1, stdin=subprocess.DEVNULL,
-            env=_isolated_env(
-                clone,
-                api_key if api_key is not None else resolve_secret(config, "llm_api_key"),
-                provider=_model_provider(builder_model),
-                source_env=env,
-                api_key_env=api_key_env,
-            ),
+            env=builder_env,
             start_new_session=True,
         )
     except BaseException:
