@@ -46,6 +46,21 @@ release `20261027-api-intelligence-chain` (health-passed).
    release time. There is no rollback rehearsal and no seeded test tenant, so
    every verification run improvises its own fixture.
 
+
+## Genuine gaps found in production (2026-10-27)
+
+Found while exercising the deployed system, not from reading code. Each one blocks
+owner-visible value and is now owned.
+
+1. **No canonical business knowledge exists in production.** `BusinessKnowledgeDocument` count is 0. The whole AEO loop — audit, coverage, gap Actions — depends on it, so nothing downstream can produce anything. Owner: OPS-014.
+2. **Prelaunch research results are invisible.** A paid run completes and stores task results, then stops: no findings, no Actions, no report view. Owner: UI-028.
+3. **The worker runs from the mutable source checkout.** After the nullable-`siteId` schema change its generated Prisma client was stale, so every site-less job crashed and burned all attempts; the web process was unaffected because it runs from a release slot. Fixed in production by regenerating and requeueing; the class of failure is OPS-013.
+4. **Nothing detects a schema/client mismatch before it reaches a job.** Same owner as OPS-013: a post-deploy smoke job must prove the worker can process a site-less job.
+5. **The production build breaks when the runtime env is sourced.** Same clone, same versions: builds without it, fails with it. Owner: OPS-012.
+6. **Coverage and visibility have never had data.** Coverage needs a draft approval or an explicit call; visibility needs an imported export. Both read as empty rather than as "not yet produced". Owner: UI-023's empty states plus OPS-007.
+
+Rule that follows from these: a merged capability is not a delivered one until it has produced something an owner can see in production. Verification issues exist for exactly this and must exercise the real path.
+
 ## Workstreams
 
 ### W1 — Surface (highest priority)
