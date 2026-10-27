@@ -172,13 +172,9 @@ def _knowledge_entries(shared: "DesignSharedIntelligence | None") -> list[dict[s
     if shared is None or not isinstance(shared.knowledge, Mapping):
         return []
     document = shared.knowledge.get("document", shared.knowledge)
-    if isinstance(document, Mapping):
-        rows = document.get("entries", document.get("items", document.get("knowledge", [])))
-        if not rows and ("body" in document or "fields" in document):
-            rows = [document]
-    else:
-        rows = document if isinstance(document, list) else []
-    return [dict(row) for row in rows if isinstance(row, Mapping)]
+    if not isinstance(document, Mapping) or "fields" not in document:
+        return []
+    return [{key: document[key] for key in ("documentId", "revision", "state", "fields") if key in document}]
 
 
 class DesignService:
