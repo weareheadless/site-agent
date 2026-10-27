@@ -79,6 +79,36 @@ Reconcile any open PR before another run reclaims the issue. Do not steal stale
 work automatically. If a work package genuinely needs parallel branches, split
 independently owned work first; otherwise keep coherent follow-up PRs sequential.
 
+## Host disk hygiene
+
+The coding host runs the production release pipeline, so filling `/` breaks
+deployments, not just builds. It happened on 2026-10-27: per-release checkouts
+with their own `node_modules` consumed the last free bytes, and a HelloAda release
+died at `npm ci` with `ENOSPC`.
+
+Rules:
+
+1. **One reusable workspace per repository.** Keep at most one checkout per
+   repository per purpose and reuse it (`git fetch` + `git checkout`), instead of
+   cloning per task or per release. Each `node_modules` is ~1.3 GB.
+2. **Delete what you create.** A verification or build checkout is temporary:
+   remove it when the task ends, or state why it stays. Never leave a dozen
+   checkouts of the same repo behind.
+3. **Check before you build.** `df -h /` before a release or a large install. Below
+   roughly 10 GB free, stop and prune first.
+4. **Prune release slots.** Keep the current slot plus at most one previous for
+   rollback; remove older ones after a release is verified.
+5. **Never prune blind.** Only delete paths this work created, or slots and
+   checkouts whose identity is known stale. Someone else's checkout, tenant data
+   or a release receipt is not yours to remove.
+6. **Report disk incidents.** If a build fails with `ENOSPC`, record it in the
+   task evidence with the path that grew, and fix the cause rather than deleting
+   whatever is largest.
+
+The deploy path should reuse one build directory and prune old slots
+automatically; until it does, this discipline is manual and belongs to whoever
+runs the release.
+
 ## Tests must be green, deterministically
 
 A failing test is a defect in the change or in the test, never a rerun. The

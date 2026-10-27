@@ -605,3 +605,10 @@ retries, no sleeps, no skips, no "passed on rerun" — and concurrency, database
 queue or filesystem changes are run twice before handoff. A flaky test blocks a
 merge like any other defect. See "Tests must be green, deterministically" in
 `docs/agent-coordination.md`.
+
+Host disk hygiene: keep one reusable checkout per repository instead of cloning per
+task or release (each `node_modules` is ~1.3 GB), delete temporary checkouts when
+done, check `df -h /` before a release or large install, keep only the current and
+one previous release slot, and never prune paths you did not create. A full `/`
+breaks the production release pipeline, not just builds. See "Host disk hygiene" in
+`docs/agent-coordination.md`.
