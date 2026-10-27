@@ -33,7 +33,8 @@ def test_intake_lab_exposes_the_main_thinking_window_and_one_provision_handoff()
     assert "AUDIENCE" in html
     assert "DESIGN" in html
     assert 'aria-live="polite"' in html
-    assert 'id="confirm-brief"' in html
+    # acceptance happens in the conversation, not through a second button
+    assert 'id="confirm-brief"' not in html
     assert '>Provision website<' in html
     assert 'id="provision"' in html
     assert 'id="activate"' not in html

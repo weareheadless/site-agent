@@ -8,7 +8,8 @@ def test_owner_workspace_has_phase_preview_trace_and_decision_surfaces():
     assert 'id="phase-pill"' in HTML
     assert 'id="preview-frame"' in HTML
     assert 'id="trace-list"' in HTML
-    assert 'id="confirm-brief"' in HTML
+    # the brief is accepted in the conversation; no separate confirm control
+    assert 'id="confirm-brief"' not in HTML
     assert 'id="provision"' in HTML
     assert 'aria-live="polite"' in HTML
 
