@@ -612,3 +612,9 @@ done, check `df -h /` before a release or large install, keep only the current a
 one previous release slot, and never prune paths you did not create. A full `/`
 breaks the production release pipeline, not just builds. See "Host disk hygiene" in
 `docs/agent-coordination.md`.
+
+The board is the status. A merge or deploy is not finished until its board item
+reflects it — Status moved, issue closed with the merge SHA and what remains, or
+kept open with the specific next step named. Never leave "In progress" on delivered
+work, and reconcile the board before reporting status. See "The board is the status"
+in `docs/agent-coordination.md`.

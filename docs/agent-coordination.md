@@ -79,6 +79,25 @@ Reconcile any open PR before another run reclaims the issue. Do not steal stale
 work automatically. If a work package genuinely needs parallel branches, split
 independently owned work first; otherwise keep coherent follow-up PRs sequential.
 
+## The board is the status
+
+A status report is only true if the board says the same thing. Reconciling the
+board is part of the work, not a wrap-up step.
+
+1. **Update the item in the same action as the merge.** A merge or a deploy is not
+   finished until its board item reflects it: `Status` moved, issue closed with a
+   comment naming the merge SHA and what remains.
+2. **Never leave "In progress" on delivered work.** Stale in-progress items make
+   every later report untrustworthy and hide what is genuinely blocked.
+3. **Keep an item open only for real remaining work,** and say what it is in the
+   item: live verification not executed, a credential missing, a defect filed
+   elsewhere. "In progress" with no named next step is a lie.
+4. **Closing is not completion.** An item closes when its acceptance is met; a
+   merge that delivers part of it stays open, or is closed with the remainder
+   moved to a named follow-up.
+5. **Before reporting status, read the board.** If the report and the board
+   disagree, the board is right and the report is wrong.
+
 ## Host disk hygiene
 
 The coding host runs the production release pipeline, so filling `/` breaks
