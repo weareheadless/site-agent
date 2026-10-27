@@ -3671,6 +3671,33 @@ def _isolated_env(
     return env
 
 
+def _ensure_service_port(binary: str, env: Mapping[str, str]) -> None:
+    """Give this run its own opencode service port.
+
+    opencode starts a managed background server on a fixed default port. The
+    builder isolates HOME per worktree, so it cannot see the user's running
+    service and collides with it ("port already in use"), failing the build
+    before any work happens. Pointing the isolated HOME at a free port keeps
+    builds independent of whatever else runs on the host.
+    """
+    import socket
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+    except OSError:
+        return
+    try:
+        subprocess.run(
+            [binary, "service", "set", "port", str(port)],
+            env=dict(env), cwd=None, check=False,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+
+
 def _opencode_bin(config: dict[str, Any]) -> str:
     """Find the opencode CLI without relying on $PATH (systemd units have a
     minimal PATH that misses ~/.opencode/bin)."""
@@ -3973,17 +4000,19 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
             cmd.extend(["-f", str(image_path)])
     if progress:
         progress("opencode is at work on the repository")
+    builder_env = _isolated_env(
+        clone,
+        api_key if api_key is not None else resolve_secret(config, "llm_api_key"),
+        provider=_model_provider(builder_model),
+        source_env=env,
+        api_key_env=api_key_env,
+    )
+    _ensure_service_port(_opencode_bin(config), builder_env)
     try:
         proc = subprocess.Popen(
             cmd, cwd=clone, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, bufsize=1, stdin=subprocess.DEVNULL,
-            env=_isolated_env(
-                clone,
-                api_key if api_key is not None else resolve_secret(config, "llm_api_key"),
-                provider=_model_provider(builder_model),
-                source_env=env,
-                api_key_env=api_key_env,
-            ),
+            env=builder_env,
             start_new_session=True,
         )
     except BaseException:
