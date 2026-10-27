@@ -961,6 +961,16 @@ def register_workspace_routes(
             except BridgeError as exc:
                 raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+        @app.get(f"{control_prefix}/{{website_id}}/intelligence")
+        def control_plane_intelligence(website_id: str, request: Request):
+            tenant = require_control_tenant(request, website_id)
+            try:
+                result = service.intelligence_summary(tenant=tenant)
+            except BridgeError as exc:
+                raise HTTPException(status_code=403, detail=str(exc)) from exc
+            return JSONResponse(result, status_code=503 if result.get("state") == "unavailable" else 200,
+                                headers={"Cache-Control": "no-store"})
+
         @app.post(f"{control_prefix}/{{website_id}}/growth/migration/resolutions")
         async def control_plane_crawlseo_migration_resolution(website_id: str, request: Request):
             tenant = require_control_tenant(request, website_id)
