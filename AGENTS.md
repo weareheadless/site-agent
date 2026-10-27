@@ -591,3 +591,11 @@ repository identity: separate checkouts and branches, one migration directory
 per worker, sequential merges in dependency order with a rebase between them.
 See "Parallel work and dependency-driven selection" in
 `docs/agent-coordination.md`.
+
+The manager owns task definition, acceptance and architecture: worker questions are
+resolved by the manager from the repository and constraints, recorded in the issue,
+PR or plan document, and never bounced to the owner. Escalate only spending,
+customer-facing promises, production mutation, credentials or product direction.
+Keep the codebase lean: extend existing contracts, never duplicate a store, model,
+route, workflow or copy of data that already has an owner. See "Decision authority"
+in `docs/agent-coordination.md`.
