@@ -971,6 +971,26 @@ class DesignIntakeService:
                     if isinstance(item, Mapping):
                         allowed.add(str(item.get("run_id") or ""))
         if action_name == "start_build":
+            # The owner's own confirmation in the conversation is the acceptance.
+            # The advisor only proposes start_build when the owner has asked to
+            # build, so a ready brief is confirmed here with its frozen draft
+            # hash instead of requiring a second, separate button.
+            if session.get("status") == IntakeSessionState.READY_TO_BUILD.value:
+                revision = int(session.get("revision") or 0)
+                draft_hash = str(session.get("draft_hash") or "").strip().lower()
+                if revision < 1 or not draft_hash:
+                    return None
+                try:
+                    self.confirm(
+                        str(session.get("session_id") or ""),
+                        revision=revision,
+                        draft_hash=draft_hash,
+                        confirmation_text="Owner confirmed the brief in conversation",
+                        idempotency_key=f"conversational-confirm-{session.get('session_id')}-{revision}",
+                    )
+                except DesignIntakeServiceError:
+                    return None
+                session = self._row(str(session.get("session_id") or ""))
             if session.get("status") != IntakeSessionState.CONFIRMED.value:
                 return None
             return {"action": "start_build", "fresh": True}

@@ -200,7 +200,7 @@
     <aside class="ada-rail" aria-label="Ada workspace">
       <header class="rail-header"><div class="rail-header-row"><div><p class="eyebrow">Conversation</p><h2>Ada</h2></div><span id="chat-state" class="preview-state">Ready</span></div><p id="phase-detail">Tell Ada what the business needs to make clear. She will carry the work through the build.</p></header>
       <section class="conversation" aria-labelledby="conversation-heading"><h2 id="conversation-heading" class="visually-hidden">Conversation with Ada</h2><div id="messages" class="messages" aria-live="polite"></div><form id="composer" class="composer"><label class="visually-hidden" for="message">Message Ada</label><div class="composer-line"><textarea id="message" name="message" maxlength="20000" autocomplete="off" placeholder="Message Ada" required></textarea><button id="send" class="send" type="submit">Send</button></div><div class="composer-tools"><label class="attach"><span aria-hidden="true">＋</span> Attach reference<input id="upload" type="file" accept="image/*" multiple></label><span id="composer-hint" class="preview-caption">Enter to send</span></div><div id="attachment-list" class="attachment-list" aria-live="polite"></div><p id="composer-note" class="composer-note" aria-live="polite"></p></form></section>
-      <section id="confirm-panel" class="decision" hidden aria-labelledby="confirm-heading"><p class="eyebrow">One owner confirmation</p><h3 id="confirm-heading">Ready to build?</h3><p>Ada has enough of the brief to begin. Confirm it and she will create the staged website.</p><button id="confirm-brief" type="button">Confirm brief and build</button><p id="confirm-note" class="decision-note"></p></section>
+      <section id="confirm-panel" class="decision" hidden aria-labelledby="confirm-heading"><p class="eyebrow">Brief is ready</p><h3 id="confirm-heading">Ready to build</h3><p>Ada has enough of the brief. Answer her in the conversation to accept it and she will create the staged website — there is no separate confirmation step.</p><p id="confirm-note" class="decision-note"></p></section>
       <section id="provision-panel" class="decision" hidden aria-labelledby="provision-heading"><p class="eyebrow">Website ready</p><h3 id="provision-heading">This candidate is yours to decide on.</h3><p>Ada will keep it unchanged until you ask for a change or provision it.</p><button id="provision" type="button">Provision website</button><p id="provision-note" class="decision-note"></p></section>
     </aside>
   </main>
@@ -415,14 +415,14 @@
       async function confirmBrief() {
         const confirmation = state.workspace && state.workspace.confirmation;
         if (!confirmation || !confirmation.session_id) return;
-        $("#confirm-brief").disabled = true; note("#confirm-note", "Ada is starting the staged build...");
+        note("#confirm-note", "Ada is starting the staged build...");
         try {
           const result = await api(idPath("/confirm-intake"), { method: "POST", ...json({ session_id: confirmation.session_id, revision: confirmation.revision, draft_hash: confirmation.draft_hash, confirmation_text: "Build this brief", idempotency_key: `confirm-${confirmation.session_id}-${confirmation.revision}` }) });
           if (!result.build && result.incubation && result.incubation.status === "ready_to_build") {
             await api(idPath("/builds"), { method: "POST", ...json({ confirmed_revision: confirmation.revision, idempotency_key: `confirmed-build-${confirmation.session_id}-${confirmation.revision}` }) });
           }
           await refresh();
-        } catch (error) { note("#confirm-note", error.message, true); $("#confirm-brief").disabled = false; }
+        } catch (error) { note("#confirm-note", error.message, true); }
       }
 
       async function provision() {
@@ -441,7 +441,6 @@
 
       function bind() {
         $("#composer").addEventListener("submit", sendMessage);
-        $("#confirm-brief").addEventListener("click", confirmBrief);
         $("#provision").addEventListener("click", provision);
         $("#new-chat").addEventListener("click", newConversation);
         $("#upload").addEventListener("change", (event) => { uploadFiles(Array.from(event.target.files || [])); event.target.value = ""; });
