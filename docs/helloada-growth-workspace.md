@@ -48,6 +48,13 @@ they do not send it, approve a change, run a paid task, or publish content.
 
 ## Evidence boundary
 
+The server-only intelligence summary has three lifecycle states: `available`
+when canonical business knowledge or research is present, `not_started` when
+the tenant is not registered yet or has no recorded intelligence, and
+`unavailable` only when an attempted CrawlSEO read fails or its workspace is
+invalid. The control-plane route returns HTTP 200 for the first two states and
+503 for the last; authentication errors retain their existing status.
+
 `Payload authenticated owner -> server-only tenant proxy -> authenticated
 /workspace/seo/evidence -> CrawlSEOApplicationService -> project provider`
 

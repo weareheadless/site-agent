@@ -963,7 +963,18 @@ def register_workspace_routes(
 
         @app.get(f"{control_prefix}/{{website_id}}/intelligence")
         def control_plane_intelligence(website_id: str, request: Request):
-            tenant = require_control_tenant(request, website_id)
+            """Return available intelligence, not_started before records exist, or unavailable on failure.
+
+            An unregistered website and a registered tenant with no canonical
+            knowledge/research are lifecycle states, not service failures.
+            """
+            require_control_plane(request)
+            if registry is None:
+                raise HTTPException(status_code=503, detail="tenant registry is unavailable")
+            tenant = registry.for_tenant_id(website_id)
+            if tenant is None:
+                result = {"state": "not_started", "reason": "tenant is not registered yet"}
+                return JSONResponse(result, status_code=200, headers={"Cache-Control": "no-store"})
             try:
                 result = service.intelligence_summary(tenant=tenant)
             except BridgeError as exc:
