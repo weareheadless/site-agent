@@ -1,0 +1,41 @@
+{
+  "name": "helloada-site-template",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prebuild": "payload generate:importmap",
+    "build": "cross-env PAYLOAD_LOCAL_BUILD=1 next build --webpack",
+    "dev": "next dev",
+    "lint": "eslint src",
+    "payload": "payload",
+    "typecheck": "tsc --noEmit",
+    "verify:payload": "cross-env NODE_ENV=production PAYLOAD_CLI=1 PAYLOAD_SECRET=ignore tsx scripts/verify-payload-contract.ts"
+  },
+  "dependencies": {
+    "@weareheadless/helloada-payload-admin": "https://github.com/weareheadless/site-agent/releases/download/payload-admin-v0.8.6/weareheadless-helloada-payload-admin-0.8.6.tgz",
+    "@weareheadless/helloada-payload-core": "https://github.com/weareheadless/site-agent/releases/download/helloada-payload-core-v0.1.0/weareheadless-helloada-payload-core-0.1.0.tgz",
+    "@opennextjs/cloudflare": "1.20.6",
+    "@payloadcms/db-d1-sqlite": "3.88.0",
+    "@payloadcms/next": "3.88.0",
+    "@payloadcms/richtext-lexical": "3.88.0",
+    "@payloadcms/storage-r2": "3.88.0",
+    "@payloadcms/ui": "3.88.0",
+    "cli-color": "2.0.4",
+    "cross-env": "7.0.3",
+    "next": "16.3.4",
+    "payload": "3.88.0",
+    "react": "19.2.6",
+    "react-dom": "19.2.6"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.9",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "eslint": "9.16.0",
+    "eslint-config-next": "16.3.4",
+    "tsx": "4.22.4",
+    "typescript": "5.7.3",
+    "wrangler": "4.130.0"
+  },
+  "engines": { "node": ">=20.9.0", "npm": ">=10" }
+}

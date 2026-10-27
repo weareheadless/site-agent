@@ -1,0 +1,1 @@
+{"/api/helloada/[...path]/route": "helloada.js", "/api/content/route": "content.js", "/api/health/route": "health.js", "/api/atelier/ada/route": "old.js"}

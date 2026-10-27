@@ -1,0 +1,1 @@
+{"run_id": "design-lab-test", "pages": [{"path": "index.html", "baseline": "/artifacts/design-lab-test/baseline/index.html", "candidate": "/artifacts/design-lab-test/candidate/index.html"}], "quality": {"state": "passed"}}

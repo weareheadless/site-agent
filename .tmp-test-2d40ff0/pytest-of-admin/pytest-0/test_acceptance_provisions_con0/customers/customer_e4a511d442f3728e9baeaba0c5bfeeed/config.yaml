@@ -1,0 +1,114 @@
+instance_name: customer_e4a511d442f3728e9baeaba0c5bfeeed
+customer_instance_id: customer_e4a511d442f3728e9baeaba0c5bfeeed
+data_dir: /SOCIAL/site-agent/.tmp-test-2d40ff0/pytest-of-admin/pytest-0/test_acceptance_provisions_con0/customers/customer_e4a511d442f3728e9baeaba0c5bfeeed/data
+poll_seconds: 300
+activation:
+  enabled: false
+persona:
+  name: Ada
+  spirit: ''
+  voice: Clear and warm
+  audience: People evaluating the service
+  directions:
+  - Clear and warm
+  taboo: []
+  lures: []
+owner_interaction:
+  communication_preferences: []
+  boundaries: []
+schedule: {}
+sources:
+  subreddits: []
+  rss_feeds: []
+  keywords:
+  - People evaluating the service
+  min_score: 0.0
+  max_per_run: 25
+ga:
+  enabled: false
+  property_id: ''
+  key_path: ''
+seo:
+  enabled: false
+  site_url: ''
+  key_path: ''
+providers:
+  cicero:
+    enabled: false
+  crawlseo:
+    enabled: false
+site:
+  adapter: neutral_scaffold
+  repository: ''
+  branch: main
+  clone_path: ''
+  preview_branch: ''
+  writable_patterns:
+  - src/app/(frontend)/site.css
+  - src/components/site/**
+  - public/site/**
+  - public/fonts/**
+  media:
+    enabled: false
+  cloudflare:
+    account_id: ''
+    project_name: ''
+    mode: none
+  prohibited_claims: []
+customer_context:
+  schema_version: 1
+  context_id: ctx_165776695fccbad5f7cc1faae108281a
+  revision: 1
+  content_hash: 86a5d55791a068844c94c1e1f70ed092e33e20bb9ea60c3725167811d3cb3dbe
+  acceptance_manifest_id: accept_85fff7bd9a9cf6e3ffc4c92b26b9b3e5
+  acceptance_manifest_hash: 7251d4dafcba22fc8827af13c0417efc9ecddd0b32ef3b82fa434213a41613e5
+design_engine:
+  enabled: false
+  build_profile: next_react
+  intake_schema_version: 1
+  manifest_path: design/ada-design-manifest.json
+  provider: openrouter
+  model: deepseek/deepseek-v4-flash-vision-exp
+  base_url: https://openrouter.ai/api/v1
+  api_key_env: SITE_AGENT_LLM_API_KEY
+  repair_attempts: 0
+  push_mode: none
+  required_viewports:
+  - name: desktop
+    width: 1440
+    height: 1000
+  - name: tablet
+    width: 768
+    height: 1024
+  - name: mobile
+    width: 390
+    height: 844
+  libraries: {}
+  quality:
+    browser: true
+    accessibility: true
+    visual_critic: false
+llm:
+  base_url: https://openrouter.ai/api/v1
+  model: deepseek/deepseek-v4-flash-vision-exp
+  timeout_seconds: 300
+  max_retries: 2
+  daily_budget_usd: 2.0
+builder:
+  enabled: false
+  model: openrouter/deepseek/deepseek-v4-flash-vision-exp
+  timeout_seconds: 1800
+  provider_timeout_seconds: 2100
+  provider_chunk_timeout_seconds: 180
+  output_tokens: 32768
+  reasoning_effort: low
+  validation_repair_attempts: 0
+vision:
+  enabled: false
+publish_mode: ask_first
+display_name: New customer site
+env:
+  llm_api_key: SITE_AGENT_LLM_API_KEY
+  vision_api_key: SITE_AGENT_LLM_API_KEY
+  design_api_key: SITE_AGENT_LLM_API_KEY
+  visual_review_api_key: SITE_AGENT_LLM_API_KEY

@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Ada's journal · {{ SITENAME }}{% endblock %}
+{% block content %}
+<main>
+  <h1>Ada's journal</h1>
+  {% if articles %}
+    {% for article in articles %}<article><h2><a href="{{ SITEURL }}/{{ article.url }}">{{ article.title }}</a></h2>{{ article.summary }}</article>{% endfor %}
+  {% else %}<article><h2>Ada is ready to write.</h2><p>The blog is ready for the first customer-specific article.</p></article>{% endif %}
+</main>
+{% endblock %}

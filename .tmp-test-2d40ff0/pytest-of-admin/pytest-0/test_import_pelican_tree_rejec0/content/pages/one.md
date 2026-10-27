@@ -1,0 +1,4 @@
+---
+Slug: same
+---
+content

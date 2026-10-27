@@ -1,0 +1,36 @@
+instance_name: new-site
+data_dir: /SOCIAL/site-agent/.tmp-test-2d40ff0/pytest-of-admin/pytest-0/test_registration_creates_an_i0/websites/new-site/data
+display_name: New Site
+intake:
+  enabled: true
+  database_only: false
+  research:
+    enabled: false
+site:
+  adapter: neutral_scaffold
+  repository: ''
+  clone_path: /SOCIAL/site-agent/.tmp-test-2d40ff0/pytest-of-admin/pytest-0/test_registration_creates_an_i0/websites/new-site/site
+  branch: main
+  preview_branch: ''
+  writable_patterns:
+  - src/app/(frontend)/site.css
+  - src/components/site/**
+  - public/site/**
+  - public/fonts/**
+  website_present: false
+blog:
+  engine: payload
+  journal_enabled: true
+design_engine:
+  enabled: true
+  build_profile: next_react
+  orchestration: creative
+  production_candidate: true
+  quality:
+    browser: false
+    accessibility: true
+    visual_critic: false
+builder:
+  enabled: true
+  output_tokens: 32768
+publish_mode: ask_first

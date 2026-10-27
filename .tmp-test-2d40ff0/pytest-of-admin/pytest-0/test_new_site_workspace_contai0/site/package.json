@@ -1,0 +1,42 @@
+{
+  "name": "ada-north-star-studio-site",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "build": "next build",
+    "dev": "next dev",
+    "start": "next start"
+  },
+  "dependencies": {
+    "@gsap/react": "2.1.2",
+    "@opennextjs/cloudflare": "1.20.6",
+    "@payloadcms/db-d1-sqlite": "3.88.0",
+    "@payloadcms/next": "3.88.0",
+    "@payloadcms/richtext-lexical": "3.88.0",
+    "@payloadcms/storage-r2": "3.88.0",
+    "@payloadcms/translations": "3.88.0",
+    "@payloadcms/ui": "3.88.0",
+    "cross-env": "7.0.3",
+    "dotenv": "16.6.1",
+    "graphql": "16.11.0",
+    "gsap": "3.12.5",
+    "next": "16.3.4",
+    "payload": "3.88.0",
+    "react": "19.2.6",
+    "react-dom": "19.2.6"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.9",
+    "@types/react": "19.2.14",
+    "@types/react-dom": "19.2.3",
+    "@eslint/eslintrc": "3.3.1",
+    "eslint": "9.16.0",
+    "eslint-config-next": "16.3.4",
+    "prettier": "3.6.2",
+    "tsx": "4.22.4",
+    "typescript": "5.7.3",
+    "wrangler": "4.130.0"
+  }
+}

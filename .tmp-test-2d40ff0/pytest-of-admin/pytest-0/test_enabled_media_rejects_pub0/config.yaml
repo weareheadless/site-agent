@@ -1,0 +1,6 @@
+site:
+  media:
+    account_id: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    bucket: hello-media
+    enabled: true
+    private: false

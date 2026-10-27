@@ -1,0 +1,4 @@
+role: intake
+sources:
+  rss_feeds:
+  - https://example.test/feed.xml

@@ -1,0 +1,7 @@
+instance_name: demo
+data_dir: /SOCIAL/site-agent/.tmp-test-2d40ff0/pytest-of-admin/pytest-0/test_shared_registry_rejects_p0/data
+site:
+  payload:
+    enabled: true
+    url: https://demo.example.test
+    token_env: LEGACY_DEMO_TOKEN

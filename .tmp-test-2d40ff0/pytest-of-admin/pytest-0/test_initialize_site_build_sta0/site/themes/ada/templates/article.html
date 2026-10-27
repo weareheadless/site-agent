@@ -1,0 +1,3 @@
+{% extends "base.html" %}
+{% block title %}{{ article.title }} · {{ SITENAME }}{% endblock %}
+{% block content %}<main><article><h1>{{ article.title }}</h1><p class="byline">Written by Ada</p>{{ article.content }}</article></main>{% endblock %}

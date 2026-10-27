@@ -1,0 +1,7 @@
+{
+  "status": "interrupted",
+  "sourceSha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "stage": "build",
+  "error": "systemd job ended before a terminal receipt",
+  "finishedAt": "2026-10-03T23:20:38.824630+00:00"
+}

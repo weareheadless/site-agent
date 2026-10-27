@@ -1,0 +1,1 @@
+{"commands":[{"command":["bash","build.sh"],"status":"passed"}],"ok":true,"output_dir":"output","profile":"pelican_baseline","route_inventory":["index.html","articles.html"]}

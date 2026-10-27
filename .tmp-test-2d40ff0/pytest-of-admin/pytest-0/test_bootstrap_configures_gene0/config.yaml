@@ -1,0 +1,116 @@
+site:
+  adapter: github_static
+  repository: weareheadless/helloada-demo
+  clone_path: /SOCIAL/site-agent/.tmp-test-2d40ff0/pytest-of-admin/pytest-0/test_bootstrap_configures_gene0/site
+  branch: main
+  preview_branch: preview
+  url: https://helloada-demo.workers.dev
+  preview_url: https://helloada-demo.workers.dev
+  public_url: https://helloada-demo.workers.dev/
+  custom_domain: ''
+  website_present: true
+  payload:
+    enabled: true
+    url: https://helloada-demo.workers.dev
+    token_env: PROVISIONED_DEMO_TOKEN
+    api_prefix: /api
+    contract:
+      version: helloada-content-v1
+      collections:
+        pages:
+        - sourceId
+        - title
+        - slug
+        - summary
+        - body
+        - sections
+        - featuredImage
+        - canonicalUrl
+        - seo
+        - published
+        posts:
+        - sourceId
+        - title
+        - slug
+        - summary
+        - body
+        - featuredImage
+        - gallery
+        - author
+        - publishedAt
+        - modifiedAt
+        - category
+        - canonicalUrl
+        - seo
+        - published
+        products:
+        - sourceId
+        - title
+        - slug
+        - summary
+        - body
+        - featuredImage
+        - price
+        - category
+        - published
+        productCategories:
+        - sourceId
+        - title
+        - slug
+        - description
+        - featuredImage
+        - published
+      globals:
+        navigation:
+        - items
+        - groups
+        - footer
+        - footerGroups
+        siteSettings:
+        - siteName
+        - description
+        - tagline
+        - logo
+        - email
+        - telephone
+        - facebookUrl
+        - instagramUrl
+        - defaultSeoTitle
+        - defaultSeoDescription
+        - defaultSocialImage
+        - journalTitle
+        - journalDescription
+        - address
+      media_fields:
+      - alt
+      - description
+      - tags
+      - dominantColors
+      - suggestedUses
+      - qualityNotes
+      - analysisStatus
+      - analysis
+      - sourceId
+  source_deployment:
+    clone_path: /SOCIAL/site-agent/.tmp-test-2d40ff0/pytest-of-admin/pytest-0/test_bootstrap_configures_gene0/site
+    worker_name: helloada-demo
+    verification_timeout_seconds: 180
+    verification_request_timeout_seconds: 10
+display_name: Demo
+scheduler:
+  enabled: true
+blog:
+  engine: payload
+  journal_enabled: true
+ga:
+  enabled: true
+  source: crawlseo
+seo:
+  enabled: true
+  source: crawlseo
+  site_url: https://helloada-demo.workers.dev/
+  gsc_property: https://helloada-demo.workers.dev/
+  provisioning:
+    auto: true
+    verification_method: meta
+    gsc_property: https://helloada-demo.workers.dev/

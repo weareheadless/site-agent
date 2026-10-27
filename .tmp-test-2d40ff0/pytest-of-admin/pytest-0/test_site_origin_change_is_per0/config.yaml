@@ -1,0 +1,17 @@
+ga:
+  enabled: true
+  source: crawlseo
+seo:
+  enabled: true
+  gsc_property: https://www.demo.example/
+  provisioning:
+    auto: true
+    gsc_property: https://www.demo.example/
+    verification_method: meta
+  site_url: https://www.demo.example/
+  source: crawlseo
+site:
+  preview_url: https://demo.workers.dev/
+  public_url: https://www.demo.example/
+  url: https://www.demo.example/
+  custom_domain: www.demo.example

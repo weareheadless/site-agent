@@ -1,0 +1,6 @@
+{
+  "new-site": {
+    "api_token_env": "PROVISIONED_NEW_SITE_TOKEN",
+    "config_path": "/SOCIAL/site-agent/.tmp-test-2d40ff0/pytest-of-admin/pytest-0/test_control_plane_registers_a0/websites/new-site/config.yaml"
+  }
+}

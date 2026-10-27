@@ -1,0 +1,6 @@
+{
+  "demo": {
+    "api_token_env": "PROVISIONED_DEMO_TOKEN",
+    "config_path": "/SOCIAL/site-agent/.tmp-test-2d40ff0/pytest-of-admin/pytest-0/test_bootstrap_status_is_durab0/websites/demo/config.yaml"
+  }
+}

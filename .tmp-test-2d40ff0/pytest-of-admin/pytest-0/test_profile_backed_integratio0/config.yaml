@@ -1,0 +1,8 @@
+credentials:
+  profile_file: /SOCIAL/site-agent/.tmp-test-2d40ff0/pytest-of-admin/pytest-0/test_profile_backed_integratio0/host-credentials.yaml
+site:
+  media:
+    account_id: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    bucket: hello-media
+    enabled: true
+    private: true

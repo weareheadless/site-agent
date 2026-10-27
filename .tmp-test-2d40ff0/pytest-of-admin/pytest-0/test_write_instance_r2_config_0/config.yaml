@@ -1,0 +1,7 @@
+instance_name: cafe
+site:
+  media:
+    enabled: true
+    account_id: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    bucket: hello-media
+    private: true

@@ -1,0 +1,6 @@
+{
+  "first-site": {
+    "api_token_env": "PROVISIONED_FIRST_SITE_TOKEN",
+    "config_path": "/SOCIAL/site-agent/.tmp-test-2d40ff0/pytest-of-admin/pytest-0/test_control_plane_can_start_w0/websites/first-site/config.yaml"
+  }
+}

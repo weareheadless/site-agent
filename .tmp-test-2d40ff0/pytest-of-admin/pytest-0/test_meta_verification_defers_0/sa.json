@@ -1,0 +1,1 @@
+{"type": "service_account", "client_email": "provisioner@example.iam.gserviceaccount.com", "private_key": "-----BEGIN PRIVATE KEY-----\nnot-a-real-key\n-----END PRIVATE KEY-----\n", "project_id": "example-project"}

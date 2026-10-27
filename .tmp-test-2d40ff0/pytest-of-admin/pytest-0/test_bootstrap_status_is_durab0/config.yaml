@@ -1,0 +1,5 @@
+data_dir: /SOCIAL/site-agent/.tmp-test-2d40ff0/pytest-of-admin/pytest-0/test_bootstrap_status_is_durab0/root
+workspace_api:
+  enabled: true
+  provisioned_root: /SOCIAL/site-agent/.tmp-test-2d40ff0/pytest-of-admin/pytest-0/test_bootstrap_status_is_durab0/websites
+  tenants: {}
