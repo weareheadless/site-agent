@@ -94,7 +94,7 @@ def test_design_review_is_sha_bound_and_approval_is_explicit(tmp_path, monkeypat
     output_artifacts = SiteOutputArtifactStore(tmp_path / "design-output-artifacts")
     service = DesignService(
         memory,
-        config={"site": {"clone_path": str(repo)}},
+        config={"site": {"clone_path": str(repo)}, "llm": {"model": "openrouter/test"}},
         builder=FakeBuilder(),
         output_artifact_store=output_artifacts,
     )

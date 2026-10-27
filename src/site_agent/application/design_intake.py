@@ -1155,7 +1155,7 @@ class DesignIntakeService:
     def confirmed_intake(self, session_id: str, *, revision: int | None = None) -> SiteIntake:
         """Return the immutable, owner-confirmed intake used by gated tools."""
         session = self._row(session_id)
-        if session.get("status") != IntakeSessionState.CONFIRMED.value:
+        if session.get("status") not in {IntakeSessionState.CONFIRMED.value, IntakeSessionState.FAILED.value} or not session.get("confirmed_revision"):
             raise DesignIntakeServiceError("intake must be confirmed before this operation")
         confirmed_revision = int(session.get("confirmed_revision") or 0)
         if revision is not None and int(revision) != confirmed_revision:
@@ -1176,7 +1176,7 @@ class DesignIntakeService:
         session = self._row(session_id)
         if self.lab_service is None:
             raise DesignIntakeServiceError("design build service is unavailable")
-        if session.get("status") != IntakeSessionState.CONFIRMED.value:
+        if session.get("status") not in {IntakeSessionState.CONFIRMED.value, IntakeSessionState.FAILED.value} or not session.get("confirmed_revision"):
             raise DesignIntakeServiceError("intake must be confirmed before building")
         token = self._operation_token(idempotency_key, "build")
         if isinstance(confirmed_revision, bool) or not isinstance(confirmed_revision, int) or confirmed_revision < 1:
@@ -1204,6 +1204,10 @@ class DesignIntakeService:
             "owner_request": request,
             "force_new": bool(force_new),
         }
+        if session.get("status") == IntakeSessionState.FAILED.value:
+            force_new = True
+            request_identity["retry_nonce"] = token
+            request_identity["force_new"] = True
         if context_extra:
             request_identity["context_hash"] = canonical_hash(context_extra)
         if shared_intelligence is not None:
@@ -1282,6 +1286,7 @@ class DesignIntakeService:
                 raise DesignIntakeServiceError("design build did not return a run ID")
             self.memory.update_design_intake_session(
                 session_id,
+                status=IntakeSessionState.CONFIRMED.value,
                 design_run_id=run_id,
                 build_started_ts=utc_now(),
                 build_error="",
@@ -1289,7 +1294,10 @@ class DesignIntakeService:
             self.memory.complete_design_intake_build(session_id, token, request_hash, run_id=run_id)
         except Exception as exc:
             self.memory.fail_design_intake_build(session_id, token, request_hash, str(exc)[:500])
-            self.memory.update_design_intake_session(session_id, build_error=str(exc)[:500])
+            self.memory.update_design_intake_session(
+                session_id, status=IntakeSessionState.FAILED.value,
+                build_error=str(exc)[:500], error=str(exc)[:500],
+            )
             if isinstance(exc, DesignIntakeServiceError):
                 raise
             raise DesignIntakeServiceError(str(exc)[:500]) from exc

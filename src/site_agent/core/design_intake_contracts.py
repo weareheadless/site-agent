@@ -41,6 +41,7 @@ class IntakeSessionState(str, Enum):
     COLLECTING = "collecting"
     READY_TO_BUILD = "ready_to_build"
     CONFIRMED = "confirmed"
+    FAILED = "failed"
 
 
 class IntakeAssetUsage(str, Enum):

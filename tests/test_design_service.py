@@ -190,7 +190,7 @@ def test_customer_chat_candidate_is_publishable_only_through_review(tmp_path):
 
 def test_prepare_initial_request_persists_assessment_without_selecting_visual_direction(tmp_path):
     memory = Memory(tmp_path / "service.db")
-    service = DesignService(memory)
+    service = DesignService(memory, config={"llm": {"model": "openrouter/test"}})
     run = service.create_run(_intake(), run_id="design-plan", base_sha="a" * 40)
 
     request = service.prepare_initial_request(run["run_id"])
@@ -221,6 +221,7 @@ def test_local_initial_build_uses_next_target_and_quality_profile(tmp_path):
         memory,
         config={
             "data_dir": str(tmp_path / "data"),
+            "llm": {"model": "openrouter/test"},
             "site": {"clone_path": str(tmp_path / "live" / "clone")},
         },
     )
@@ -264,6 +265,7 @@ def test_local_next_quality_policy_preserves_frontend_capability_details(tmp_pat
         memory,
         config={
             "data_dir": str(tmp_path / "data"),
+            "llm": {"model": "openrouter/test"},
             "site": {"clone_path": str(tmp_path / "live" / "clone")},
             "design_engine": {
                 "libraries": {"gsap": {"enabled": True, "required": True}},
@@ -294,6 +296,7 @@ def test_local_technical_repair_quality_policy_covers_all_frozen_routes(tmp_path
         memory,
         config={
             "data_dir": str(tmp_path / "data"),
+            "llm": {"model": "openrouter/test"},
             "site": {"clone_path": str(tmp_path / "live" / "clone")},
         },
     )
@@ -346,6 +349,7 @@ def test_local_visual_refinement_of_technical_repair_covers_all_frozen_routes(tm
         memory,
         config={
             "data_dir": str(tmp_path / "data"),
+            "llm": {"model": "openrouter/test"},
             "site": {"clone_path": str(tmp_path / "live" / "clone")},
         },
     )
@@ -396,6 +400,7 @@ def test_technical_repair_child_preserves_parent_candidate_and_workspace(tmp_pat
         memory,
         config={
             "data_dir": str(tmp_path / "data"),
+            "llm": {"model": "openrouter/test"},
             "site": {"clone_path": str(tmp_path / "live" / "clone")},
         },
     )
@@ -449,6 +454,7 @@ def test_repair_quality_reuses_parent_experience_plan(tmp_path):
         memory,
         config={
             "data_dir": str(tmp_path / "data"),
+            "llm": {"model": "openrouter/test"},
             "site": {"clone_path": str(tmp_path / "live" / "clone")},
         },
     )
@@ -504,7 +510,7 @@ def test_creative_run_reads_the_persisted_plan_from_planning_state(tmp_path):
     memory = Memory(tmp_path / "service.db")
     service = DesignService(
         memory,
-        config={"design_engine": {"orchestration": "creative"}},
+        config={"llm": {"model": "openrouter/test"}, "design_engine": {"orchestration": "creative"}},
     )
     run = service.create_run(_intake(), run_id="creative-plan-state", base_sha="a" * 40)
     raw_plan = _experience_plan(
@@ -526,7 +532,7 @@ def test_creative_quality_validation_never_skips_a_missing_experience_plan(tmp_p
     memory = Memory(tmp_path / "service.db")
     service = DesignService(
         memory,
-        config={"design_engine": {"orchestration": "creative"}},
+        config={"llm": {"model": "openrouter/test"}, "design_engine": {"orchestration": "creative"}},
     )
     run = service.create_run(_intake(), run_id="creative-plan-required", base_sha="a" * 40)
     memory.update_design_run(run["run_id"], candidate_sha="b" * 40)
@@ -578,7 +584,7 @@ def test_creative_execute_build_rejects_a_receipt_without_the_locked_plan(tmp_pa
     service = DesignService(
         memory,
         builder=PlanlessBuilder(),
-        config={"design_engine": {"orchestration": "creative"}},
+        config={"llm": {"model": "openrouter/test"}, "design_engine": {"orchestration": "creative"}},
     )
     run = service.create_run(
         _intake(),
@@ -615,7 +621,7 @@ def test_creative_execute_build_rejects_a_receipt_without_the_locked_plan(tmp_pa
 
 def test_quality_validation_rejects_evidence_bound_to_a_different_plan_hash(tmp_path, monkeypatch):
     memory = Memory(tmp_path / "service.db")
-    service = DesignService(memory, config={"design_engine": {"orchestration": "creative"}})
+    service = DesignService(memory, config={"llm": {"model": "openrouter/test"}, "design_engine": {"orchestration": "creative"}})
     run = service.create_run(_intake(), run_id="creative-plan-hash", base_sha="a" * 40)
     raw_plan = _experience_plan(
         run_id=run["run_id"],
@@ -656,6 +662,7 @@ def test_local_visual_refinement_reuses_next_target_and_quality_profile(tmp_path
         memory,
         config={
             "data_dir": str(tmp_path / "data"),
+            "llm": {"model": "openrouter/test"},
             "site": {"clone_path": str(tmp_path / "live" / "clone")},
         },
     )
@@ -758,7 +765,7 @@ def test_execute_build_persists_candidate_and_stops_before_quality_ready(tmp_pat
                 "publishable": True,
             })
 
-    service = DesignService(memory, builder=FakeBuilder())
+    service = DesignService(memory, builder=FakeBuilder(), config={"llm": {"model": "openrouter/test"}})
     run = service.create_run(_intake(), run_id="design-run-1", base_sha="a" * 40)
     request = PageBuildRequest.from_dict({
         "schema_version": 1,
@@ -815,7 +822,7 @@ def test_partial_build_receipt_retains_candidate_but_cannot_be_reviewed(tmp_path
                 "build_error": "opencode exited 1: provider stopped",
             })
 
-    service = DesignService(memory, builder=FakeBuilder())
+    service = DesignService(memory, builder=FakeBuilder(), config={"llm": {"model": "openrouter/test"}})
     run = service.create_run(_intake(), run_id="design-partial", base_sha="a" * 40)
     request = PageBuildRequest.from_dict({
         "schema_version": 1,
@@ -861,7 +868,7 @@ def test_noop_builder_failure_retains_transcript_without_candidate(tmp_path):
                 },
             )
 
-    service = DesignService(memory, config={"data_dir": str(tmp_path / "data")}, builder=FailingBuilder())
+    service = DesignService(memory, config={"data_dir": str(tmp_path / "data"), "llm": {"model": "openrouter/test"}}, builder=FailingBuilder())
     run = service.create_run(_intake(), run_id="design-noop", base_sha="a" * 40)
     request = PageBuildRequest.from_dict({
         "schema_version": 1,
@@ -953,7 +960,7 @@ def test_validate_run_persists_report_and_makes_passing_candidate_reviewable(tmp
                 "publishable": True,
             })
 
-    service = DesignService(memory, builder=FakeBuilder())
+    service = DesignService(memory, builder=FakeBuilder(), config={"llm": {"model": "openrouter/test"}})
 
     def fake_build(root, profile, **_kwargs):
         output = root / profile.output_dir
@@ -1112,7 +1119,7 @@ def test_review_draft_requires_react_gsap_build_and_browser_evidence(tmp_path):
 
 def test_first_site_review_draft_carries_exact_payload_revision_set(tmp_path):
     memory = Memory(tmp_path / "service.db")
-    service = DesignService(memory)
+    service = DesignService(memory, config={"llm": {"model": "openrouter/test"}})
     run = service.create_run(_intake(), run_id="design-review-payload-bound", base_sha="a" * 40)
     effects = [{
         "kind": "collection",
@@ -1149,7 +1156,7 @@ def test_first_site_review_draft_carries_exact_payload_revision_set(tmp_path):
 
 def test_first_site_without_verified_payload_draft_cannot_enter_review(tmp_path):
     memory = Memory(tmp_path / "service.db")
-    service = DesignService(memory)
+    service = DesignService(memory, config={"llm": {"model": "openrouter/test"}})
     run = service.create_run(_intake(), run_id="design-review-no-payload", base_sha="a" * 40)
     memory.update_design_run(
         run["run_id"],
@@ -1219,7 +1226,7 @@ def test_validate_run_retains_large_quality_report_with_bounded_artifact_preview
 
 def test_visual_review_persists_critique_and_marks_run_needs_repair(tmp_path):
     memory = Memory(tmp_path / "service.db")
-    service = DesignService(memory)
+    service = DesignService(memory, config={"llm": {"model": "openrouter/test"}})
     run = service.create_run(_intake(), run_id="design-visual-review", base_sha="a" * 40)
     memory.update_design_run(run["run_id"], candidate_sha="c" * 40, candidate_ref=run["candidate_ref"])
     for status in ("assessing_intake", "planning", "building", "candidate_ready", "validating"):
@@ -1250,7 +1257,7 @@ def test_visual_review_persists_critique_and_marks_run_needs_repair(tmp_path):
 
 def test_final_visual_refinement_stays_blocked_after_visual_repair(tmp_path):
     memory = Memory(tmp_path / "service.db")
-    service = DesignService(memory)
+    service = DesignService(memory, config={"llm": {"model": "openrouter/test"}})
     run = service.create_run(
         _intake(),
         run_id="design-final-visual-review",
@@ -1286,7 +1293,7 @@ def test_final_visual_refinement_stays_blocked_after_visual_repair(tmp_path):
 
 def test_incomplete_visual_review_can_be_retried_explicitly(tmp_path):
     memory = Memory(tmp_path / "service.db")
-    service = DesignService(memory)
+    service = DesignService(memory, config={"llm": {"model": "openrouter/test"}})
     run = service.create_run(_intake(), run_id="design-visual-retry", base_sha="a" * 40)
     memory.update_design_run(run["run_id"], candidate_sha="c" * 40, candidate_ref=run["candidate_ref"])
     for status in ("assessing_intake", "planning", "building", "candidate_ready", "validating"):
@@ -1320,7 +1327,7 @@ def test_incomplete_visual_review_can_be_retried_explicitly(tmp_path):
 
 def test_deterministically_ready_run_can_start_explicit_visual_review(tmp_path):
     memory = Memory(tmp_path / "service.db")
-    service = DesignService(memory)
+    service = DesignService(memory, config={"llm": {"model": "openrouter/test"}})
     run = service.create_run(_intake(), run_id="design-ready-visual-review", base_sha="a" * 40)
     memory.update_design_run(run["run_id"], candidate_sha="c" * 40, candidate_ref=run["candidate_ref"])
     for status in ("assessing_intake", "planning", "building", "candidate_ready", "validating", "ready_for_review"):
@@ -1351,7 +1358,7 @@ def test_quality_failure_keeps_candidate_and_marks_run_needs_repair(tmp_path, mo
     from site_agent.application import designs as designs_module
 
     memory = Memory(tmp_path / "service.db")
-    service = DesignService(memory)
+    service = DesignService(memory, config={"llm": {"model": "openrouter/test"}})
     run = service.create_run(_intake(), run_id="design-needs-repair", base_sha="a" * 40)
     memory.update_design_run(run["run_id"], candidate_sha="c" * 40, candidate_ref=run["candidate_ref"])
     _freeze_target(memory, run)
@@ -1384,7 +1391,7 @@ def test_visual_refinement_requires_parent_screenshot_coverage(tmp_path, monkeyp
     from site_agent.application import designs as designs_module
 
     memory = Memory(tmp_path / "service.db")
-    service = DesignService(memory)
+    service = DesignService(memory, config={"llm": {"model": "openrouter/test"}})
     parent = service.create_run(_intake(), run_id="visual-parent-coverage", base_sha="a" * 40)
     memory.update_design_run(
         parent["run_id"],
@@ -1440,7 +1447,7 @@ def test_visual_refinement_records_parent_screenshot_delta_when_coverage_matches
     from site_agent.application import designs as designs_module
 
     memory = Memory(tmp_path / "service.db")
-    service = DesignService(memory)
+    service = DesignService(memory, config={"llm": {"model": "openrouter/test"}})
     parent = service.create_run(_intake(), run_id="visual-parent-delta", base_sha="a" * 40)
     memory.update_design_run(
         parent["run_id"],
@@ -1647,7 +1654,7 @@ def test_sighted_self_review_creates_bound_refinement_child(tmp_path):
 
 def test_sighted_self_review_guards_non_refinable_states(tmp_path):
     memory = Memory(tmp_path / "service.db")
-    service = DesignService(memory)
+    service = DesignService(memory, config={"llm": {"model": "openrouter/test"}})
     parent = service.create_run(_intake(), run_id="design-parent", base_sha="a" * 40)
 
     result = service.create_sighted_refinement_run(parent["run_id"])
@@ -1668,7 +1675,7 @@ def test_sighted_self_review_guards_non_refinable_states(tmp_path):
 
 def test_derived_page_run_pins_approved_manifest_source(tmp_path):
     memory = Memory(tmp_path / "service.db")
-    service = DesignService(memory)
+    service = DesignService(memory, config={"llm": {"model": "openrouter/test"}})
     intake = _intake()
     source = service.create_run(intake, run_id="homepage", base_sha="a" * 40)
     manifest = DesignManifest.from_dict({
