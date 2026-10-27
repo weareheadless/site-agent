@@ -109,6 +109,8 @@ def test_connection_and_growth_are_authenticated_and_tenant_isolated(tmp_path):
         for path in ('connection', 'growth'):
             assert client.get(f'/api/workspace/{path}').status_code == 401
             assert client.get(f'/api/workspace/{path}', headers={'Authorization': 'Bearer wrong'}).status_code == 401
+        assert client.get('/api/workspace/intelligence').status_code == 401
+        assert client.get('/api/workspace/intelligence', headers={'Authorization': 'Bearer wrong'}).status_code == 401
         for name in tenants:
             headers = {'Authorization': f'Bearer {name}-token'}
             connection = client.get('/api/workspace/connection', headers=headers).json()
@@ -118,6 +120,24 @@ def test_connection_and_growth_are_authenticated_and_tenant_isolated(tmp_path):
             assert growth['tenant'] == name
             assert [article['title'] for article in growth['articles']] == [f'{name} article']
             assert 'token' not in json.dumps(connection)
+
+
+def test_intelligence_requires_registry_authorized_tenant_and_reports_unavailable(tmp_path):
+    tenants = {}
+    for name in ('alpha', 'beta'):
+        memory = Memory(tmp_path / f'{name}.db')
+        tenants[name] = Tenant(name, {}, memory, None,
+            {'crawlseo_service': object(), 'connector_site_id': name,
+             'seo_provisioning_state': {'crawlseo': {'site_id': name}}}, f'{name}-token')
+    registry = TenantRegistry(tenants)
+    service = ChatService(registry=registry)
+    app = FastAPI()
+    register_workspace_routes(app, config={}, env={}, service=service, registry=registry)
+    with TestClient(app) as client:
+        response = client.get('/api/workspace/intelligence', headers={'Authorization': 'Bearer alpha-token'})
+        assert response.status_code == 503
+        assert response.json()['state'] == 'unavailable'
+        assert 'businessProfile' not in response.json()
 
 
 def test_migrated_tenant_keeps_its_existing_provider_credential_file(tmp_path):

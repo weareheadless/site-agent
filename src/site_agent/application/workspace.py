@@ -2721,6 +2721,26 @@ class ChatService:
                    if row.provider_id == "crawlseo"]
         return {"tenant": tenant_id, "actions": actions}
 
+    def intelligence_summary(self, *, tenant: Tenant | None = None) -> dict[str, Any]:
+        if tenant is None or self.registry is None or self.registry.tenants.get(tenant.tenant_id) is not tenant:
+            raise BridgeError("tenant is not authorized")
+        service = tenant.context.get("crawlseo_service")
+        state = tenant.context.get("seo_provisioning_state") if isinstance(tenant.context.get("seo_provisioning_state"), Mapping) else {}
+        binding = state.get("crawlseo") if isinstance(state.get("crawlseo"), Mapping) else {}
+        site_id = str(tenant.context.get("connector_site_id") or tenant.context.get("site_id") or binding.get("site_id") or "").strip()
+        if service is None or not site_id:
+            return {"state": "unavailable", "reason": "CrawlSEO is not configured"}
+        try:
+            project = service.project()
+            workspace_id = str(project.get("workspaceId") or project.get("workspace_id") or "")
+            project_id = str(project.get("id") or project.get("projectId") or "")
+            snapshot = service.intelligence_snapshot(site_id=site_id, workspace_id=workspace_id, project_id=project_id)
+            return {"state": "available", "businessProfile": snapshot["businessProfile"],
+                    "research": snapshot["research"], "coverage": snapshot["coverage"],
+                    "visibility": {"state": "unknown", "surfaces": []}, "actions": snapshot["actions"]}
+        except Exception as exc:  # noqa: BLE001 - unavailable is explicit; never synthesize an empty success
+            return {"state": "unavailable", "reason": str(exc)[:240] or "CrawlSEO read failed"}
+
     def crawlseo_research_budget(self, *, tenant: Tenant | None = None) -> dict[str, Any]:
         if tenant is None or self.registry is None or self.registry.tenants.get(tenant.tenant_id) is not tenant:
             raise BridgeError("tenant is not authorized")

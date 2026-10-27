@@ -572,6 +572,16 @@ def register_workspace_routes(
         tenant = require_service(request)
         return service.growth(tenant=tenant)
 
+    @app.get(f"{prefix}/intelligence")
+    def workspace_intelligence(request: Request):
+        tenant = require_service(request)
+        try:
+            result = service.intelligence_summary(tenant=tenant)
+        except BridgeError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        return JSONResponse(result, status_code=503 if result.get("state") == "unavailable" else 200,
+                            headers={"Cache-Control": "no-store"})
+
     @app.get(f"{prefix}/growth/articles/{{draft_id}}")
     def workspace_growth_article_review(draft_id: int, request: Request):
         tenant = require_service(request)

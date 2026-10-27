@@ -154,6 +154,19 @@ class CrawlSEOApplicationService:
         result = self._read("latest research report", self.provider.latest_research_report)
         return self._safe_mapping(result, "latest research report", max_bytes=150_000)
 
+    def intelligence_snapshot(self, *, site_id: str, workspace_id: str, project_id: str) -> dict[str, Any]:
+        """Read canonical intelligence inputs as one validated, non-persisted summary."""
+        site_id = self._bounded_text(site_id, "site_id", 120)
+        workspace_id = self._bounded_text(workspace_id, "workspace_id", 120)
+        project_id = self._bounded_text(project_id, "project_id", 120)
+        profile = self._read("business profile", lambda: self.provider.business_knowledge_document(
+            workspace_id, project_id, "business-profile"))
+        research = self.latest_research_report()
+        findings = self.connector_findings(site_id, limit=100)
+        actions = self.connector_actions(limit=100, site_id=site_id)
+        return {"businessProfile": self._safe_mapping(profile, "business profile"),
+                "research": research, "coverage": findings, "actions": actions}
+
     def list_research_reports(self, limit: int = 12) -> dict[str, Any]:
         limit = _bounded_int(limit, "limit", 50)
         result = self._read("research report list", lambda: self.provider.list_research_reports(limit))
