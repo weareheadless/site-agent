@@ -49,7 +49,8 @@ from .incubation_research import IncubationResearchError, IncubationResearchExec
 from .incubation_activity import IncubationActivityService
 from .customer_genesis import CustomerGenesisService
 from .customer_context import CustomerContextService
-from .designs import owner_review_requirements_met
+from .designs import DesignSharedIntelligence, owner_review_requirements_met
+from .design_intake import DesignIntakeService
 from .novelty import NoveltyService, NoveltyServiceError
 from .provisioning import (
     CustomerActivationService,
@@ -337,8 +338,6 @@ class IncubationApplicationService:
         runtime = self.runtime(incubation_id)
         if runtime.intake_service is not None:
             return runtime.intake_service
-        from .design_intake import DesignIntakeService
-
         scoped = self.open_store(incubation_id)
         runtime.intake_service = DesignIntakeService(
             scoped.memory,
@@ -1050,6 +1049,7 @@ class IncubationApplicationService:
                             if workspace_id:
                                 knowledge = client.business_knowledge_document(workspace_id, str(prelaunch.get("project_id") or project_id))
                                 prelaunch["knowledge_revision"] = knowledge.get("revision")
+                                prelaunch["business_knowledge"] = dict(knowledge)
                             if report_view.get("report") is not None:
                                 prelaunch["report"] = report_view.get("report")
                                 prelaunch["source_manifest"] = report_view.get("source_manifest")
@@ -2054,12 +2054,38 @@ class IncubationApplicationService:
                 intake=intake,
                 novelty=novelty,
             )
+            prelaunch = self.research_projection(incubation_id)
+            prelaunch_request = prelaunch.get("prelaunch_request") if isinstance(prelaunch.get("prelaunch_request"), Mapping) else {}
+            prelaunch_findings = prelaunch.get("prelaunch_findings") if isinstance(prelaunch.get("prelaunch_findings"), Mapping) else {}
+            shared_intelligence = DesignSharedIntelligence(
+                knowledge={
+                    "status": "complete" if isinstance(prelaunch_request.get("business_knowledge"), Mapping) and prelaunch_request.get("knowledge_revision") is not None else ("blocked" if prelaunch_request.get("status") == "blocked" else "pending"),
+                    "revision": prelaunch_request.get("knowledge_revision"),
+                    "document": prelaunch_request.get("business_knowledge"),
+                    "project_id": prelaunch_request.get("project_id"),
+                    "reference": {"project_id": prelaunch_request.get("project_id"), "document_id": prelaunch_request.get("document_id")},
+                    "reason": str(prelaunch_request.get("reason") or "") if prelaunch_request.get("knowledge_revision") is None else "",
+                },
+                research={
+                    "status": "complete" if prelaunch_findings else str(prelaunch_request.get("status") or "pending"),
+                    "revision": prelaunch_findings.get("source_revision") or prelaunch_request.get("source_revision"),
+                    "findings": prelaunch_findings.get("report") if prelaunch_findings else None,
+                    "sources": prelaunch_findings.get("sources") if prelaunch_findings else None,
+                    "knowledge_revision": prelaunch_findings.get("knowledge_revision", prelaunch_request.get("knowledge_revision")),
+                    "intake_revision": prelaunch_findings.get("intake_revision", prelaunch_request.get("intake_revision")),
+                    "project_id": prelaunch_request.get("project_id"),
+                    "report_id": prelaunch_request.get("remote_run_id"),
+                    "reference": {"project_id": prelaunch_request.get("project_id"), "report_id": prelaunch_request.get("remote_run_id")},
+                    "reason": str(prelaunch_request.get("reason") or "") if not prelaunch_findings else "",
+                },
+            )
             result = self.intake_service(incubation_id).build(
                 session["session_id"],
                 confirmed_revision=confirmed_revision,
                 owner_request=str(body.get("owner_request") or ""),
                 idempotency_key=body.get("idempotency_key"),
                 force_new=bool(body.get("force_new")),
+                shared_intelligence=shared_intelligence,
                 context_extra={
                     "novelty_context": novelty.to_dict(),
                     "incubated_creative_context": creative_context.to_dict(),

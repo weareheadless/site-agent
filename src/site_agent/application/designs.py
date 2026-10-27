@@ -150,6 +150,24 @@ def _public_page_path(value: Any) -> str:
     return path
 
 
+class DesignSharedIntelligence:
+    """Explicit immutable CrawlSEO evidence resolved by orchestration."""
+
+    def __init__(self, knowledge: Mapping[str, Any], research: Mapping[str, Any]) -> None:
+        self.knowledge = dict(knowledge)
+        self.research = dict(research)
+
+    @classmethod
+    def unavailable(cls) -> "DesignSharedIntelligence":
+        return cls(
+            {"status": "pending", "revision": None, "reason": "not_resolved_by_orchestration"},
+            {"status": "pending", "revision": None, "reason": "not_resolved_by_orchestration"},
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return safe_payload({"knowledge": self.knowledge, "research": self.research}, max_bytes=250_000)
+
+
 class DesignService:
     def __init__(
         self,
@@ -527,6 +545,7 @@ class DesignService:
         source_message_id: int | None = None,
         chat_job_id: int | None = None,
         context_extra: Mapping[str, Any] | None = None,
+        shared_intelligence: "DesignSharedIntelligence | None" = None,
     ) -> DesignContextSnapshot:
         """Freeze all mutable owner and site context before planning or building."""
         run = self.get_run(run_id)
@@ -743,6 +762,7 @@ class DesignService:
             "memories": memories,
             "research": research,
             "business_knowledge": knowledge,
+            "shared_intelligence": (shared_intelligence or DesignSharedIntelligence.unavailable()).to_dict(),
             "attachments": attachments,
             "site_facts": {
                 "business": intake.business,

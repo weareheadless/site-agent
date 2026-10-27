@@ -34,6 +34,7 @@ from ..hands.design_experiment import (
     initialize_neutral_repository,
     resolve_commit_sha,
 )
+from .designs import DesignSharedIntelligence
 
 
 class IntakeLabError(ValueError):
@@ -822,6 +823,7 @@ class IntakeLabService:
         intake_session_id: str | None = None,
         intake_revision_id: int | None = None,
         context_extra: Mapping[str, Any] | None = None,
+        shared_intelligence: DesignSharedIntelligence | None = None,
     ) -> dict[str, Any]:
         request_prompt = _prompt(prompt)
         if not isinstance(raw_intake, Mapping):
@@ -863,6 +865,7 @@ class IntakeLabService:
                     source_message_id=source_message_id,
                     chat_job_id=chat_job_id,
                     context_extra=context_extra,
+                    shared_intelligence=shared_intelligence,
                 )
             self.design_service.memory.add_design_run_event(
                 run_id,

@@ -34,6 +34,7 @@ from ..core.design_intake_contracts import (
 )
 from .customer_genesis import CustomerGenesisService, CustomerGenesisServiceError
 from .incubation_activity import IncubationActivityError, IncubationActivityService
+from .designs import DesignSharedIntelligence
 
 
 class DesignIntakeServiceError(ValueError):
@@ -1169,6 +1170,7 @@ class DesignIntakeService:
         owner_request: str = "",
         idempotency_key: str | None = None,
         context_extra: Mapping[str, Any] | None = None,
+        shared_intelligence: DesignSharedIntelligence | None = None,
         force_new: bool = False,
     ) -> dict[str, Any]:
         session = self._row(session_id)
@@ -1204,6 +1206,8 @@ class DesignIntakeService:
         }
         if context_extra:
             request_identity["context_hash"] = canonical_hash(context_extra)
+        if shared_intelligence is not None:
+            request_identity["shared_intelligence_hash"] = canonical_hash(shared_intelligence.to_dict())
         request_hash = canonical_hash(request_identity)
         proposed_run_id = f"intake-lab-{uuid.uuid4().hex}"
         try:
@@ -1271,6 +1275,7 @@ class DesignIntakeService:
                 intake_session_id=session_id,
                 intake_revision_id=int(revision_row["id"]),
                 context_extra=context_extra,
+                shared_intelligence=shared_intelligence,
             )
             run_id = str(run.get("run_id") or "").strip()
             if not run_id:
