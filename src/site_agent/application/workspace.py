@@ -2729,12 +2729,18 @@ class ChatService:
         binding = state.get("crawlseo") if isinstance(state.get("crawlseo"), Mapping) else {}
         site_id = str(tenant.context.get("connector_site_id") or tenant.context.get("site_id") or binding.get("site_id") or "").strip()
         if service is None or not site_id:
-            return {"state": "unavailable", "reason": "CrawlSEO is not configured"}
+            return {"state": "not_started", "reason": "no intelligence has been recorded for this tenant yet"}
         try:
             project = service.project()
+            if not isinstance(project, Mapping):
+                raise ValueError("CrawlSEO workspace is invalid")
             workspace_id = str(project.get("workspaceId") or project.get("workspace_id") or "")
             project_id = str(project.get("id") or project.get("projectId") or "")
+            if not workspace_id:
+                raise ValueError("CrawlSEO workspace id is invalid")
             snapshot = service.intelligence_snapshot(site_id=site_id, workspace_id=workspace_id, project_id=project_id)
+            if not snapshot.get("businessProfile") and not snapshot.get("research"):
+                return {"state": "not_started", "reason": "no intelligence has been recorded for this tenant yet"}
             return {"state": "available", "businessProfile": snapshot["businessProfile"],
                     "research": snapshot["research"], "coverage": snapshot["coverage"],
                     "visibility": {"state": "unknown", "surfaces": []}, "actions": snapshot["actions"]}
