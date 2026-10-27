@@ -3955,7 +3955,7 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
         raise RunnerError("opencode agent name is invalid")
     cmd = [
         _opencode_bin(config), "run", "--auto", "--format", "json",
-        "--print-logs", "--log-level", "ERROR",
+        "--print-logs", "--log-level", "error",
         "--agent", agent_name,
     ]
     builder_model = str(b.get("model") or (config.get("llm") or {}).get("model") or "").strip()
