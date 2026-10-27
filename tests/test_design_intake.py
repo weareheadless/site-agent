@@ -344,6 +344,38 @@ def test_build_composes_creative_direction_from_confirmed_intake(tmp_path):
     memory.close()
 
 
+def test_failed_build_is_visible_and_retry_reuses_confirmed_revision(tmp_path):
+    memory = Memory(tmp_path / "failed-build.db")
+
+    class _Lab:
+        calls = []
+
+        def submit(self, prompt, raw_intake, **kwargs):
+            self.calls.append(kwargs["intake_revision_id"])
+            if len(self.calls) == 1:
+                raise RuntimeError("builder model is not configured; set builder.model or llm.model")
+            return {"run_id": "intake-lab-recovered", "status": "building", "publishable": False}
+
+        def get_run(self, run_id):
+            return None
+
+    lab = _Lab()
+    service = DesignIntakeService(memory, default_intake=_intake(), lab_service=lab)
+    session = service.create_session()
+    confirmed = service.confirm(session["session_id"], revision=session["revision"], draft_hash=session["draft_hash"])
+    revision_id = confirmed["session"]["confirmed_revision_id"]
+
+    with pytest.raises(DesignIntakeServiceError, match="builder model is not configured"):
+        service.build(session["session_id"], confirmed_revision=revision_id, idempotency_key="failed-attempt")
+    failed = service.get_session(session["session_id"])
+    assert failed["status"] == "failed"
+    assert failed["error"] and failed["build_error"]
+    result = service.build(session["session_id"], confirmed_revision=revision_id, idempotency_key="retry-attempt")
+    assert result["session"]["status"] == "confirmed"
+    assert lab.calls == [revision_id, revision_id]
+    memory.close()
+
+
 def test_build_uses_explicit_owner_design_request_when_provided(tmp_path):
     memory = Memory(tmp_path / "intake.db")
 

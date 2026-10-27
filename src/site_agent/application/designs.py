@@ -62,8 +62,6 @@ class DesignRunNotFound(DesignServiceError):
     pass
 
 
-DEEPSEEK_DESIGN_MODEL = "deepseek/deepseek-v4-flash-vision-exp"
-
 _OWNER_REVIEW_STATUSES = frozenset({
     DesignRunStatus.READY_FOR_REVIEW.value,
 })
@@ -621,7 +619,11 @@ class DesignService:
             except Exception:  # noqa: BLE001 - capability discovery is best effort at capture time
                 raw_capabilities = ()
         raw_viewports = design_engine.get("required_viewports") or ((self.config.get("design_engine") or {}).get("quality") or {}).get("viewports") or ()
-        model = str(design_engine.get("model") or llm.get("model") or DEEPSEEK_DESIGN_MODEL)
+        model = str(design_engine.get("model") or llm.get("model") or "").strip()
+        if not model:
+            raise DesignServiceError(
+                "Design model is not configured; set design_engine.model or llm.model before starting a design build."
+            )
         provider = str(design_engine.get("provider") or llm.get("provider") or "openrouter")
         provider_base_url = str(design_engine.get("base_url") or llm.get("base_url") or "").strip()
         provider_env_name = str(

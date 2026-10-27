@@ -120,7 +120,7 @@ def test_context_snapshot_hash_mismatch_is_rejected():
 def test_context_capture_redacts_secret_shaped_memory_text(tmp_path):
     memory = Memory(tmp_path / "memory.db")
     memory.record_observation("learning", "OPENAI_API_KEY=do-not-persist-this-value")
-    service = DesignService(memory, config={"site": {"repository": "owner/site"}})
+    service = DesignService(memory, config={"site": {"repository": "owner/site"}, "llm": {"model": "openrouter/test"}})
     run = service.create_run(_intake(), run_id="secret-run", base_sha="a" * 40)
 
     snapshot = service.capture_context_snapshot(run["run_id"], owner_request="Make the homepage safer.")
@@ -131,9 +131,19 @@ def test_context_capture_redacts_secret_shaped_memory_text(tmp_path):
     memory.close()
 
 
+def test_context_capture_rejects_missing_model_before_builder(tmp_path):
+    memory = Memory(tmp_path / "missing-model.db")
+    service = DesignService(memory, config={"site": {"repository": "owner/site"}})
+    run = service.create_run(_intake(), run_id="missing-model-run", base_sha="a" * 40)
+    service.builder = pytest.fail
+    with pytest.raises(Exception, match="design_engine.model or llm.model"):
+        service.capture_context_snapshot(run["run_id"])
+    memory.close()
+
+
 def test_design_context_carries_typed_shared_intelligence_without_fetching(tmp_path):
     memory = Memory(tmp_path / "shared-intelligence.db")
-    service = DesignService(memory, config={"site": {"repository": "owner/site"}})
+    service = DesignService(memory, config={"site": {"repository": "owner/site"}, "llm": {"model": "openrouter/test"}})
     run = service.create_run(_intake(), run_id="shared-intelligence-run", base_sha="a" * 40)
     evidence = {
         "knowledge": {"status": "complete", "revision": 7, "document": {"schemaVersion": 1, "kind": "business_knowledge", "workspaceId": "ws1", "projectId": "project-1", "documentId": "k1", "revision": 2, "state": "accepted", "acceptedRevision": 2, "fields": {"offer": "Owner-confirmed"}}, "project_id": "project-1"},
@@ -155,6 +165,7 @@ def test_context_capture_preserves_non_secret_builder_settings(tmp_path):
     memory = Memory(tmp_path / "memory.db")
     service = DesignService(memory, config={
         "site": {"repository": "owner/site"},
+        "llm": {"model": "openrouter/test"},
         "builder": {"output_tokens": 8192},
         "design_engine": {"build_profile": "next_react", "max_tokens": 4096},
     })
@@ -170,7 +181,7 @@ def test_context_capture_preserves_non_secret_builder_settings(tmp_path):
 
 def test_context_capture_freezes_brief_content_in_quality_policy(tmp_path):
     memory = Memory(tmp_path / "memory.db")
-    service = DesignService(memory, config={"site": {"repository": "owner/site"}})
+    service = DesignService(memory, config={"site": {"repository": "owner/site"}, "llm": {"model": "openrouter/test"}})
     run = service.create_run(_intake(), run_id="content-policy-run", base_sha="a" * 40)
 
     snapshot = service.capture_context_snapshot(run["run_id"], owner_request="Make the facts legible.")
@@ -210,7 +221,7 @@ def test_oversized_context_fails_before_it_can_be_persisted(tmp_path):
     memory = Memory(tmp_path / "memory.db")
     for index in range(80):
         memory.record_observation("learning", f"record-{index} " + ("x" * 4_000))
-    service = DesignService(memory, config={"site": {"repository": "owner/site"}})
+    service = DesignService(memory, config={"site": {"repository": "owner/site"}, "llm": {"model": "openrouter/test"}})
     run = service.create_run(_intake(), run_id="large-run", base_sha="a" * 40)
 
     with pytest.raises((ContractError, ValueError), match="exceeds"):

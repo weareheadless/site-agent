@@ -137,6 +137,7 @@ def test_design_lab_retains_artifacts_without_live_or_remote_mutation(tmp_path, 
     config = {
         "site": {"repository": str(remote), "branch": "main"},
         "data_dir": str(live),
+        "llm": {"model": "openrouter/test"},
         "env": {"llm_api_key": "SITE_AGENT_LLM_API_KEY"},
         "design_engine": {"repair_attempts": 0},
     }

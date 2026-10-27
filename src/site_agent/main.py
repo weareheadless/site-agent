@@ -33,7 +33,7 @@ from .core.reflect import effective_persona
 from .core.scheduler import Scheduler
 from .core.growth_contracts import growth_timezone
 from .application.growth_workflow import ensure_default_goal
-from .application.designs import DEEPSEEK_DESIGN_MODEL, DesignServiceError
+from .application.designs import DesignServiceError
 from .application.design_lab import DesignLabError, DesignLabService
 from .hands.builder import BuilderError, OperationRoutingBuilder
 from .hands.crawlseo import CrawlSEOError
@@ -437,7 +437,11 @@ def _cmd_design_experiment(args: argparse.Namespace) -> int:
     config["data_dir"] = str(lab_root / "data")
     llm = dict(config.get("llm") or {})
     engine = dict(config.get("design_engine") or {})
-    design_model = str(engine.get("model") or llm.get("model") or DEEPSEEK_DESIGN_MODEL).strip()
+    design_model = str(engine.get("model") or llm.get("model") or "").strip()
+    if not design_model:
+        raise DesignExperimentError(
+            "Design model is not configured; set design_engine.model or llm.model before running the experiment."
+        )
     design_provider = str(engine.get("provider") or llm.get("provider") or "openrouter").strip()
     config["llm"] = {**llm, "model": design_model}
     engine["enabled"] = True
