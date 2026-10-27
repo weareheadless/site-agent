@@ -52,6 +52,11 @@ release `20261027-api-intelligence-chain` (health-passed).
 
 The owner-visible layer, in the order that makes the intelligence legible.
 
+- **UI-026** Turn every detected gap into a verifiable improvement Action: audit
+  mismatches, AI-access problems, absent machine-readable summary, unconfirmed
+  facts that block an answer — each with the exact check that proves it worked,
+  re-run on the next crawl so the Action closes itself. This is the improvement
+  half of AEO/GEO and it does not depend on measurement.
 - **UI-023** CrawlSEO *Intelligence* area: AI access readiness, observed
   visibility (unknown stays unknown), question coverage, sources.
 - **UI-024** Dimension taxonomy (`seo`/`aeo`/`geo`/`content`/`technical`),
