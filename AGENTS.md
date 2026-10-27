@@ -599,3 +599,9 @@ customer-facing promises, production mutation, credentials or product direction.
 Keep the codebase lean: extend existing contracts, never duplicate a store, model,
 route, workflow or copy of data that already has an owner. See "Decision authority"
 in `docs/agent-coordination.md`.
+
+Tests must be green deterministically. A failure is fixed at its cause — no
+retries, no sleeps, no skips, no "passed on rerun" — and concurrency, database,
+queue or filesystem changes are run twice before handoff. A flaky test blocks a
+merge like any other defect. See "Tests must be green, deterministically" in
+`docs/agent-coordination.md`.

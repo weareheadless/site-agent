@@ -79,6 +79,25 @@ Reconcile any open PR before another run reclaims the issue. Do not steal stale
 work automatically. If a work package genuinely needs parallel branches, split
 independently owned work first; otherwise keep coherent follow-up PRs sequential.
 
+## Tests must be green, deterministically
+
+A failing test is a defect in the change or in the test, never a rerun. The
+manager does not merge on "passed on the second attempt", and a worker may not
+report a suite as passing when it failed earlier in the same run.
+
+1. **Fix the cause.** Reproduce the failure, find why it is nondeterministic
+   (timing, shared fixture, port, database state, ordering, parallelism) and make
+   it deterministic. Do not add retries, sleeps or skips to hide it.
+2. **A flake is a bug with an owner.** If the failure is in a test this change
+   does not touch, it still blocks the merge: file it, fix it, or state
+   explicitly which check was red and why the merge is safe — and expect the
+   manager to refuse.
+3. **Run the suite twice** for anything touching concurrency, the database, the
+   queue or the filesystem. Both runs must pass.
+4. **CI is the gate when it can run.** Local green does not override a red
+   current-head check; a red check that cannot start (billing, runner outage) is
+   recorded as unavailable, not as passing.
+
 ## Decision authority
 
 The manager owns the project: task definition, acceptance criteria, ordering,
