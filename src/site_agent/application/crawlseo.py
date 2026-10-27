@@ -16,6 +16,7 @@ from ..core.contracts import (
     CrawlSEOSearchSummary,
     safe_payload,
 )
+from ..hands.crawlseo import CrawlSEORequestRejectedError
 
 
 class CrawlSEOApplicationError(RuntimeError):
@@ -95,6 +96,32 @@ class CrawlSEOApplicationService:
             lambda: self.provider.request_research_report(brief, idempotency_key.strip()),
         )
         return self._safe_mapping(result, "research request")
+
+    def request_prelaunch_research(self, project_id: str, brief: Mapping[str, Any], idempotency_key: str) -> dict[str, Any]:
+        if not isinstance(project_id, str) or not project_id.strip() or len(project_id) > 120:
+            raise CrawlSEOApplicationError("CrawlSEO prelaunch project id is invalid")
+        if not isinstance(brief, Mapping):
+            raise CrawlSEOApplicationError("CrawlSEO prelaunch brief must be an object")
+        if not isinstance(idempotency_key, str) or not idempotency_key.strip() or len(idempotency_key) > 240:
+            raise CrawlSEOApplicationError("CrawlSEO prelaunch idempotency key is invalid")
+        operation = getattr(self.provider, "request_prelaunch_research", None)
+        if not callable(operation):
+            raise CrawlSEOApplicationError("CrawlSEO prelaunch research is unsupported by this connector")
+        result = self._read("prelaunch research request", lambda: operation(project_id.strip(), brief, idempotency_key.strip()))
+        data = self._safe_mapping(result, "prelaunch research request")
+        required = ("report_id", "project_id", "period", "status", "task_limit", "task_count", "existing")
+        if any(key not in data for key in required) or data.get("project_id") != project_id.strip():
+            raise CrawlSEOApplicationError("invalid CrawlSEO prelaunch research response")
+        if type(data.get("existing")) is not bool:
+            raise CrawlSEOApplicationError("invalid CrawlSEO prelaunch existing flag")
+        return data
+
+    def prelaunch_research_report(self, project_id: str, report_id: str) -> dict[str, Any]:
+        operation = getattr(self.provider, "prelaunch_research_report", None)
+        if not callable(operation):
+            raise CrawlSEOApplicationError("CrawlSEO prelaunch report reads are unsupported by this connector")
+        result = self._read("prelaunch research report", lambda: operation(project_id, report_id))
+        return self._safe_mapping(result, "prelaunch research report")
 
     def sync_business_knowledge(self, *, workspace_id: str, project_id: str, document_id: str,
                                 fields: Mapping[str, Any], idempotency_key: str, reason: str) -> dict[str, Any]:
@@ -526,6 +553,8 @@ class CrawlSEOApplicationService:
         except CrawlSEOApplicationError:
             raise
         except Exception as exc:  # noqa: BLE001 — provider details never cross this boundary
+            if isinstance(exc, CrawlSEORequestRejectedError):
+                raise CrawlSEOApplicationError(f"CrawlSEO {label} was rejected: {str(exc)[:200]}") from exc
             if "IDEMPOTENCY_CONFLICT" in str(exc):
                 raise CrawlSEOApplicationError("CrawlSEO business knowledge IDEMPOTENCY_CONFLICT") from exc
             raise CrawlSEOApplicationError(f"CrawlSEO {label} is unavailable") from exc

@@ -12,7 +12,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from ..config import IntakeAdaSettings, crawlseo_research_authority_selected
+from ..config import CrawlSEOSettings, IntakeAdaSettings, crawlseo_research_authority_selected, load_env_file
+from ..credentials import credential_profile
+from ..application.crawlseo import CrawlSEOApplicationError, CrawlSEOApplicationService
+from ..hands.crawlseo import CrawlSEOClient
 from ..brain.incubation_infusion import (
     IncubationInfusionError,
     IncubationInfusionExecutor,
@@ -456,8 +459,9 @@ class IncubationApplicationService:
         if not self.settings.research_enabled:
             return {"status": "disabled"}
         if self._local_research_producers_paused(incubation_id):
-            memory = self.open_store(incubation_id).memory
-            return self._blocked_prelaunch_receipt(memory, session_id, revision, "intake_threshold")
+            if crawlseo_research_authority_selected(self.config):
+                return {"status": "awaiting_confirmation", "reason": "prelaunch_dispatch_requires_confirmed_intake"}
+            return {"status": "blocked", "reason": "local_research_producers_frozen"}
         if not self._research_context_ready(draft):
             return {"status": "not_ready"}
         memory = self.open_store(incubation_id).memory
@@ -538,29 +542,141 @@ class IncubationApplicationService:
             **({"planner_error": planning_error} if planning_error else {}),
         }
 
-    @staticmethod
-    def _blocked_prelaunch_receipt(memory: Memory, session_id: str, revision: Mapping[str, Any], purpose: str) -> dict[str, Any]:
-        """Persist the prelaunch transport seam without pretending to dispatch."""
-        import hashlib
-        intake_revision = int(revision.get("revision") or 0)
-        crawlseo_state = memory.kv_get("seo_provisioning_state", {}) or {}
-        crawlseo = crawlseo_state.get("crawlseo") if isinstance(crawlseo_state, Mapping) else {}
-        project_id = str((crawlseo or {}).get("project_id") or (crawlseo or {}).get("projectId") or "")
-        key = hashlib.sha256(f"{project_id}{session_id}{intake_revision}{purpose}".encode()).hexdigest()
+    def _prelaunch_brief(self, draft: DesignIntakeDraft) -> dict[str, Any] | None:
+        """Build only from owner-confirmed intake plus the configured research market."""
+        import calendar
+        now = datetime.now(timezone.utc)
+        period_date = now.date().replace(day=1) - timedelta(days=1)
+        research = ((self.config.get("seo") or {}).get("research") or {})
+        languages = research.get("languages") if isinstance(research, Mapping) else None
+        market_row = next((row for row in languages or [] if isinstance(row, Mapping) and row.get("primary") and row.get("markets")), None)
+        if market_row is None:
+            market_row = next((row for row in languages or [] if isinstance(row, Mapping) and row.get("markets")), None)
+        if not isinstance(market_row, Mapping):
+            return None
+        language = str(market_row.get("code") or "").strip().lower()
+        country = str((market_row.get("markets") or [""])[0]).strip().upper()
+        services = draft.owner_confirmed_value("business.primary_services")
+        services = [str(item).strip() for item in services] if isinstance(services, (list, tuple)) else []
+        audience = draft.owner_confirmed_value("audience.primary")
+        audience = str(audience or "").strip()
+        goal_values = draft.owner_confirmed_value("conversion.primary_action")
+        if isinstance(goal_values, str):
+            goal = goal_values.strip()
+        elif isinstance(goal_values, (list, tuple)):
+            goal = ", ".join(str(value).strip() for value in goal_values if str(value).strip())
+        else:
+            goal = ""
+        confirmed_inputs = (
+            draft.owner_confirmed_value("business.offer_summary"),
+            draft.owner_confirmed_value("business.primary_services"),
+            draft.owner_confirmed_value("audience.primary"),
+            draft.owner_confirmed_value("conversion.primary_action"),
+        )
+        plan = base_plan(draft, owner_language=language)
+        planned_terms = (plan.query_terms_by_language or {}).get(language, ())
+        seeds = list(dict.fromkeys(str(term).strip().lower() for term in planned_terms if str(term).strip()))[:5]
+        if not language or not re.fullmatch(r"[a-z]{2,3}(?:-[a-z]{2,4})?", language) or not re.fullmatch(r"[A-Z]{2}", country):
+            return None
+        if not audience or not services or not goal or any(value is None for value in confirmed_inputs) or len(seeds) != 5:
+            return None
+        seeds_rationale = [f"Owner-confirmed intake term: {seed}" for seed in seeds]
+        return {
+            "period": period_date.strftime("%Y-%m"),
+            "focus_market": {"language": language, "country": country},
+            "business_goal": goal,
+            "audience": [audience],
+            "priority_services": services[:12],
+            "keyword_seeds": seeds,
+            "competitor": None,
+            "research_questions": [
+                f"What search demand relates to {service} for {audience}?" for service in services[:3]
+            ],
+            "selection_rationale": {
+                "market": "Owner-configured primary SEO market.",
+                "seeds": seeds_rationale,
+                "competitor": "No owner-confirmed competitor was provided; competitor research is skipped.",
+            },
+            "package": "standard-v1",
+        }
+
+    def dispatch_confirmed_prelaunch_research(
+        self, incubation_id: str, *, session_id: str, revision: int, draft: DesignIntakeDraft,
+    ) -> dict[str, Any]:
+        """Persist idempotency receipt before the one bounded remote request."""
+        memory = self.open_store(incubation_id).memory
+        state = memory.kv_get("seo_provisioning_state", {}) or {}
+        crawlseo = state.get("crawlseo") if isinstance(state, Mapping) else None
+        project_id = str((crawlseo or {}).get("project_id") or (crawlseo or {}).get("projectId") or "").strip()
+        if not crawlseo_research_authority_selected(self.config) or not project_id:
+            return {"status": "blocked", "reason": "crawlseo_project_or_authority_unavailable"}
+        purpose = "prelaunch_research"
+        key = hashlib.sha256(f"{project_id}{session_id}{revision}{purpose}".encode()).hexdigest()
         receipt_key = f"prelaunch_research:{key}"
-        receipt = memory.kv_get(receipt_key)
-        if not isinstance(receipt, Mapping):
-            receipt = {
-                "remote_run_id": None,
-                "request_id": None,
-                "intake_revision": intake_revision,
-                "purpose": purpose,
-                "dispatched_at": utc_now(),
-                "status": "blocked",
-                "reason": "unsupported_until_crawlseo_34_domainless_research_contract",
-            }
-            memory.kv_set(receipt_key, dict(receipt))
-        return {"status": str(receipt.get("status") or "blocked"), "reason": str(receipt.get("reason") or "unsupported_until_crawlseo_34"), "receipt_key": receipt_key}
+        existing = memory.kv_get(receipt_key)
+        if isinstance(existing, Mapping):
+            reused_receipt = dict(existing)
+            if reused_receipt.get("status") == "dispatching":
+                reused_receipt.update(status="pending", reason="dispatch_outcome_unknown_no_replay")
+                memory.kv_set(receipt_key, reused_receipt)
+            return reused_receipt
+        brief = self._prelaunch_brief(draft)
+        receipt: dict[str, Any] = {
+            "remote_run_id": None, "intake_revision": revision, "purpose": purpose,
+            "dispatched_at": utc_now(), "status": "dispatching", "project_id": project_id,
+            "idempotency_key": key,
+        }
+        memory.kv_set(receipt_key, receipt)
+        if brief is None:
+            receipt.update(status="blocked", reason="confirmed_intake_brief_insufficient")
+            memory.kv_set(receipt_key, receipt)
+            return receipt
+        try:
+            client = self._prelaunch_client(incubation_id, crawlseo)
+            response = CrawlSEOApplicationService(client).request_prelaunch_research(project_id, brief, key)
+            receipt.update(
+                remote_run_id=response["report_id"], status="reused" if response["existing"] else "pending",
+                period=response["period"], task_limit=response["task_limit"], task_count=response["task_count"],
+                existing=response["existing"], brief=brief,
+            )
+        except CrawlSEOApplicationError as exc:
+            message = str(exc)
+            receipt.update(status="blocked" if "rejected" in message else "pending", reason=message[:240])
+        except Exception as exc:  # noqa: BLE001 - durable receipt makes uncertain dispatch non-replayable
+            receipt.update(status="pending", reason=f"CrawlSEO prelaunch request unavailable ({type(exc).__name__})")
+        memory.kv_set(receipt_key, receipt)
+        return receipt
+
+    def _prelaunch_client(self, incubation_id: str, crawlseo: Mapping[str, Any]) -> CrawlSEOClient:
+        """Resolve only this incubation's project token from its protected credential file."""
+        workspace = self.open_store(incubation_id).path.parent.resolve()
+        expected = (workspace / "crawlseo.env").resolve()
+        declared = Path(str(crawlseo.get("credential_file") or "")).expanduser()
+        if not declared.is_absolute() or declared.resolve() != expected or declared.is_symlink():
+            raise CrawlSEOApplicationError("project-scoped CrawlSEO credential file is unavailable")
+        try:
+            mode = expected.stat().st_mode & 0o777
+        except OSError as exc:
+            raise CrawlSEOApplicationError("project-scoped CrawlSEO credential file is unavailable") from exc
+        if mode != 0o600:
+            raise CrawlSEOApplicationError("project-scoped CrawlSEO credential file permissions are invalid")
+        token_env = str(crawlseo.get("token_env") or "").strip()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", token_env):
+            raise CrawlSEOApplicationError("project-scoped CrawlSEO credential name is unavailable")
+        token = str(load_env_file(expected, {}).get(token_env) or "")
+        if not token:
+            raise CrawlSEOApplicationError("project-scoped CrawlSEO credential is unavailable")
+        profile = credential_profile(self.config, "crawlseo")
+        connector_url = str(profile.get("connector_url") or "").strip()
+        mcp_url = str(profile.get("mcp_url") or "").strip()
+        if not connector_url or not mcp_url:
+            raise CrawlSEOApplicationError("CrawlSEO connector endpoint is unavailable")
+        config = {**self.config, "providers": {**dict(self.config.get("providers") or {}), "crawlseo": {
+            "enabled": True, "url": mcp_url, "connector_url": connector_url,
+            "token_env": token_env, "connector_token_env": token_env,
+            "research_authority": "crawlseo",
+        }}}
+        return CrawlSEOClient(CrawlSEOSettings.from_config(config, env={token_env: token}))
 
     def research_executor(self, incubation_id: str) -> IncubationResearchExecutor:
         runtime = self.runtime(incubation_id)
@@ -916,12 +1032,49 @@ class IncubationApplicationService:
             crawlseo = memory.kv_get("seo_provisioning_state", {}) or {}
             crawlseo = crawlseo.get("crawlseo") if isinstance(crawlseo, Mapping) else {}
             project_id = str((crawlseo or {}).get("project_id") or (crawlseo or {}).get("projectId") or "")
-            key = hashlib.sha256(f"{project_id}{session_id}{revision}intake_threshold".encode()).hexdigest()
+            key = hashlib.sha256(f"{project_id}{session_id}{revision}prelaunch_research".encode()).hexdigest()
             receipt = memory.kv_get(f"prelaunch_research:{key}")
+            if not isinstance(receipt, Mapping):
+                legacy_key = hashlib.sha256(f"{project_id}{session_id}{revision}intake_threshold".encode()).hexdigest()
+                receipt = memory.kv_get(f"prelaunch_research:{legacy_key}")
             if isinstance(receipt, Mapping):
-                projection["prelaunch_request"] = dict(receipt)
-                projection["status"] = str(receipt.get("status") or "blocked")
-                projection["error"] = str(receipt.get("reason") or "")
+                prelaunch = dict(receipt)
+                if prelaunch.get("remote_run_id") and prelaunch.get("status") in {"pending", "reused"}:
+                    try:
+                        client = self._prelaunch_client(incubation_id, crawlseo or {})
+                        if client is not None:
+                            service = CrawlSEOApplicationService(client)
+                            report_view = service.prelaunch_research_report(str(prelaunch.get("project_id") or project_id), str(prelaunch["remote_run_id"]))
+                            prelaunch["remote_status"] = report_view.get("status")
+                            workspace_id = str((crawlseo or {}).get("workspace_id") or (crawlseo or {}).get("workspaceId") or "")
+                            if workspace_id:
+                                knowledge = client.business_knowledge_document(workspace_id, str(prelaunch.get("project_id") or project_id))
+                                prelaunch["knowledge_revision"] = knowledge.get("revision")
+                            if report_view.get("report") is not None:
+                                prelaunch["report"] = report_view.get("report")
+                                prelaunch["source_manifest"] = report_view.get("source_manifest")
+                                prelaunch["status"] = "complete" if report_view.get("status") in {"completed", "partial"} else "pending"
+                            elif report_view.get("status") == "failed":
+                                prelaunch["status"] = "blocked"
+                                prelaunch["reason"] = "remote_research_failed"
+                            memory.kv_set(f"prelaunch_research:{key}", prelaunch)
+                    except Exception:  # noqa: BLE001 - projection remains honestly pending
+                        prelaunch["status"] = "pending"
+                report_source = prelaunch.get("source_manifest")
+                prelaunch["source_revision"] = (report_source.get("generated_at") if isinstance(report_source, Mapping) else None)
+                prelaunch.setdefault("knowledge_revision", None)
+                prelaunch["intake_revision"] = int(prelaunch.get("intake_revision") or revision)
+                projection["prelaunch_request"] = prelaunch
+                projection["status"] = str(prelaunch.get("status") or "pending")
+                projection["error"] = str(prelaunch.get("reason") or "")
+                if prelaunch.get("report") is not None:
+                    projection["prelaunch_findings"] = {
+                        "report": prelaunch["report"],
+                        "sources": prelaunch.get("source_manifest"),
+                        "source_revision": prelaunch.get("source_revision"),
+                        "knowledge_revision": prelaunch.get("knowledge_revision"),
+                        "intake_revision": prelaunch.get("intake_revision"),
+                    }
         return projection
 
     def update_research_source(self, incubation_id: str, source_id: str, changes: Mapping[str, Any]) -> dict[str, Any]:
@@ -1823,6 +1976,10 @@ class IncubationApplicationService:
                 genesis_revision=genesis.revision,
             )
             confirmed_session = result["session"]
+            prelaunch = self.dispatch_confirmed_prelaunch_research(
+                incubation_id, session_id=session_id, revision=revision,
+                draft=DesignIntakeDraft.from_dict(confirmed_session.get("draft") or {}),
+            )
             self.intake_store.update_incubation_revisions(incubation_id, current_intake_revision=int(confirmed_session.get("revision") or revision), current_genesis_revision=genesis.revision)
             record = self.get_record(incubation_id)
             if record.status == IncubationStatus.COLLECTING.value:
@@ -1843,7 +2000,7 @@ class IncubationApplicationService:
             if isinstance(exc, IncubationServiceError):
                 raise
             raise IncubationServiceError(str(exc)[:500]) from exc
-        response = {"session": result["session"], "genesis": genesis.to_dict(), "incubation": record.to_dict()}
+        response = {"session": result["session"], "genesis": genesis.to_dict(), "incubation": record.to_dict(), "prelaunch_research": prelaunch}
         if build_result is not None:
             response["build"] = build_result
         return response
