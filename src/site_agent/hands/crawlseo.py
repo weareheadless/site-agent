@@ -56,6 +56,10 @@ class CrawlSEOProtocolError(CrawlSEOError):
     """The provider returned a result outside the fixed MCP contract."""
 
 
+class CrawlSEORequestRejectedError(CrawlSEOError):
+    """The connector refused a transported request, such as for missing budget."""
+
+
 class _NoConnectorRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         raise CrawlSEOProtocolError("CrawlSEO connector endpoint redirects are not permitted")
@@ -428,6 +432,22 @@ class CrawlSEOClient:
         }
         return self._invoke("seo_request_research_report", arguments)
 
+    def request_prelaunch_research(self, project_id: str, brief: Mapping[str, Any], idempotency_key: str) -> Mapping[str, Any]:
+        """Request bounded domainless research using the project-scoped connector credential."""
+        project = str(project_id or "").strip()
+        if not project or len(project) > 120:
+            raise CrawlSEOProtocolError("CrawlSEO prelaunch project id is invalid")
+        path = f"/api/projects/{quote(project, safe='')}/prelaunch-research"
+        return self._connector_request("POST", path, {"brief": dict(brief), "idempotency_key": idempotency_key}, project_credential=True)
+
+    def prelaunch_research_report(self, project_id: str, report_id: str) -> Mapping[str, Any]:
+        project = str(project_id or "").strip()
+        report = str(report_id or "").strip()
+        if not project or len(project) > 120 or not report or len(report) > 160:
+            raise CrawlSEOProtocolError("CrawlSEO prelaunch report identity is invalid")
+        path = f"/api/projects/{quote(project, safe='')}/prelaunch-research?{urlencode({'report_id': report})}"
+        return self._connector_request("GET", path, project_credential=True)
+
     def business_knowledge_document(self, workspace_id: str, project_id: str, document_id: str = "business-profile") -> Mapping[str, Any]:
         """Read the current working revision of a canonical business document."""
         query = urlencode({"workspaceId": workspace_id, "projectId": project_id,
@@ -720,7 +740,7 @@ class CrawlSEOClient:
             raise CrawlSEOConfigurationError("CrawlSEO connector API is not configured; set providers.crawlseo.connector_url")
         token = self.settings.token if project_credential else (self.settings.connector_token or self.settings.token)
         data = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8") if body is not None else None
-        if path.startswith("/api/projects/knowledge"):
+        if path.startswith("/api/projects/knowledge") or path.startswith("/api/projects/") and "/prelaunch-research" in path:
             from urllib.parse import urlsplit
             parsed = urlsplit(base)
             prefix = parsed.path[:-len("/api/connector/v1")]
@@ -744,6 +764,13 @@ class CrawlSEOClient:
                 return {"revision": 0, "state": "working", "fields": {}}
             if exc.code in {401, 403}:
                 raise CrawlSEOUnavailableError(f"CrawlSEO connector rejected the service credential (HTTP {exc.code})") from None
+            if exc.code == 400 and "/prelaunch-research" in path:
+                try:
+                    rejection = json.loads(exc.read(25_001).decode("utf-8"))
+                    reason = str(rejection.get("error") or "request rejected")[:200] if isinstance(rejection, Mapping) else "request rejected"
+                except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+                    reason = "request rejected"
+                raise CrawlSEORequestRejectedError(reason) from None
             if exc.code == 409:
                 try:
                     error = json.loads(exc.read(25_001).decode("utf-8"))
@@ -791,6 +818,7 @@ __all__ = [
     "CrawlSEOConfigurationError",
     "CrawlSEOError",
     "CrawlSEOProtocolError",
+    "CrawlSEORequestRejectedError",
     "CrawlSEOResponseTooLargeError",
     "CrawlSEOTimeoutError",
     "CrawlSEOUnavailableError",

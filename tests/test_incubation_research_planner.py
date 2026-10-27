@@ -1,4 +1,5 @@
 import pytest
+from copy import deepcopy
 
 from site_agent.application.incubation_research import IncubationResearchExecutor, IncubationResearchService
 from site_agent.application.incubations import IncubationApplicationService, IncubationRuntime
@@ -332,8 +333,8 @@ def test_cutover_blocks_local_threshold_direct_call_and_revision_infusion(tmp_pa
     try:
         result = service.schedule_threshold_research(record.incubation_id,
             session_id="intake-" + "a" * 32, draft=_draft(), revision={"revision": 4})
-        assert result["status"] == "blocked"
-        assert service.on_intake_revision(record.incubation_id)("intake-" + "a" * 32, _draft(), {"revision": 4})["status"] == "blocked"
+        assert result["status"] == "awaiting_confirmation"
+        assert service.on_intake_revision(record.incubation_id)("intake-" + "a" * 32, _draft(), {"revision": 4})["status"] == "awaiting_confirmation"
         assert calls == []
         assert service._pending_research_incubations() == ()
         scoped_memory = service.open_store(record.incubation_id).memory
@@ -346,7 +347,7 @@ def test_cutover_blocks_local_threshold_direct_call_and_revision_infusion(tmp_pa
         store.close()
 
 
-def test_unsupported_prelaunch_seam_persists_blocked_receipt_and_projection(tmp_path):
+def test_intake_revision_waits_for_confirmation_without_local_or_fake_research(tmp_path):
     config, _ = load_intake_config(env={})
     config["data_dir"] = str(tmp_path / "intake-data")
     config["incubation"]["root"] = str(tmp_path / "incubations")
@@ -363,13 +364,9 @@ def test_unsupported_prelaunch_seam_persists_blocked_receipt_and_projection(tmp_
         saved = memory.save_design_intake_revision(session["session_id"], _draft(), source_kind="owner_message", expected_revision=session["revision"])
         result = service.schedule_threshold_research(record.incubation_id,
             session_id=session["session_id"], draft=_draft(), revision={"revision": saved["revision"]})
-        receipt = memory.kv_get(result["receipt_key"])
-        assert receipt["status"] == "blocked"
-        assert receipt["remote_run_id"] is None
-        assert receipt["intake_revision"] == saved["revision"]
-        assert "crawlseo_34" in receipt["reason"]
-        assert service.research_projection(record.incubation_id)["prelaunch_request"] == receipt
-        assert receipt["remote_run_id"] is None  # Explicitly blocked; no paid report API call.
+        assert result["status"] == "awaiting_confirmation"
+        assert memory.list_research_requests(limit=20) == []
+        assert service.research_projection(record.incubation_id).get("prelaunch_request") is None
     finally:
         service.close()
         store.close()
@@ -390,6 +387,160 @@ def test_research_completion_does_not_start_design_or_publication(tmp_path):
         assert service.open_store(record.incubation_id).memory.list_design_runs(limit=20) == []
         assert service.open_store(record.incubation_id).memory.list_design_runs(mode="local_experiment", limit=20) == []
         assert infusion == []
+    finally:
+        service.close()
+        store.close()
+
+
+class _PrelaunchProvider:
+    def __init__(self, *, existing=False, error=None, memory=None):
+        self.calls = 0
+        self.existing = existing
+        self.error = error
+        self.memory = memory
+
+    def request_prelaunch_research(self, project_id, brief, idempotency_key):
+        self.calls += 1
+        assert self.memory is not None
+        receipt = self.memory.kv_get(f"prelaunch_research:{idempotency_key}")
+        assert isinstance(receipt, dict) and receipt.get("status") == "dispatching"
+        if self.error:
+            raise self.error
+        return {"report_id": "report-1", "project_id": project_id, "period": brief["period"],
+                "status": "requested", "task_limit": 9, "task_count": 5, "existing": self.existing}
+
+    def prelaunch_research_report(self, project_id, report_id):
+        return {"report_id": report_id, "status": "completed", "source_manifest": {"generated_at": "2026-10-01T00:00:00Z"},
+                "report": {"dataforseo": [{"kind": "keyword_seed", "result": [{"keyword": "consultation"}]}]}}
+
+    def business_knowledge_document(self, workspace_id, project_id):
+        return {"revision": 7, "fields": {}}
+
+
+def _prelaunch_setup(tmp_path):
+    config, _ = load_intake_config(env={})
+    config["data_dir"] = str(tmp_path / "intake-data")
+    config["incubation"]["root"] = str(tmp_path / "incubations")
+    config["incubation"]["scaffold"] = str(tmp_path / "scaffold")
+    config.setdefault("seo", {})["research"] = {"languages": [{"code": "en", "primary": True, "markets": ["US"]}]}
+    store = IntakeAdaStore(tmp_path / "intake-data" / "intake-ada.db")
+    service = IncubationApplicationService(store, root=config["incubation"]["root"], config=config)
+    service.config = deepcopy(config)
+    service.config["providers"] = {"crawlseo": {"enabled": False, "research_authority": "crawlseo"}}
+    record = service.create_incubation()
+    memory = service.open_store(record.incubation_id).memory
+    memory.kv_set("seo_provisioning_state", {"crawlseo": {"project_id": "proj-1", "workspace_id": "workspace-1", "credential_file": str(service.open_store(record.incubation_id).path.parent / "crawlseo.env"), "token_env": "PROJECT_TOKEN"}})
+    return config, store, service, record, memory
+
+
+def test_prelaunch_first_request_replay_existing_and_restart_reuse(tmp_path, monkeypatch):
+    from site_agent.hands.crawlseo import CrawlSEOClient
+
+    config, store, service, record, memory = _prelaunch_setup(tmp_path)
+    provider = _PrelaunchProvider(memory=memory)
+    monkeypatch.setattr(service, "_prelaunch_client", lambda incubation_id, crawlseo: provider)
+    try:
+        first = service.dispatch_confirmed_prelaunch_research(record.incubation_id, session_id="session-1", revision=3, draft=_draft())
+        replay = service.dispatch_confirmed_prelaunch_research(record.incubation_id, session_id="session-1", revision=3, draft=_draft())
+        assert first["status"] == "pending" and replay["remote_run_id"] == "report-1"
+        assert provider.calls == 1
+        # A remote response marked existing is successful reuse, not an error.
+        provider2 = _PrelaunchProvider(existing=True, memory=memory)
+        monkeypatch.setattr(service, "_prelaunch_client", lambda incubation_id, crawlseo: provider2)
+        reused = service.dispatch_confirmed_prelaunch_research(record.incubation_id, session_id="session-2", revision=3, draft=_draft())
+        assert reused["status"] == "reused" and reused["existing"] is True
+        assert provider2.calls == 1
+        # A fresh service instance sees the durable receipt and makes no call.
+        service.close()
+        service = IncubationApplicationService(store, root=config["incubation"]["root"], config=config)
+        service.config = deepcopy(config)
+        service.config["providers"] = {"crawlseo": {"enabled": False, "research_authority": "crawlseo"}}
+        monkeypatch.setattr(service, "_prelaunch_client", lambda incubation_id, crawlseo: provider2)
+        memory = service.open_store(record.incubation_id).memory
+        restarted = service.dispatch_confirmed_prelaunch_research(record.incubation_id, session_id="session-1", revision=3, draft=_draft())
+        assert restarted["remote_run_id"] == "report-1" and provider2.calls == 1
+        import hashlib
+        interrupted_key = hashlib.sha256(b"proj-1interrupted3prelaunch_research").hexdigest()
+        memory.kv_set(f"prelaunch_research:{interrupted_key}", {
+            "remote_run_id": None, "intake_revision": 3, "purpose": "prelaunch_research",
+            "dispatched_at": "2026-10-01T00:00:00Z", "status": "dispatching",
+            "project_id": "proj-1", "idempotency_key": interrupted_key,
+        })
+        interrupted = service.dispatch_confirmed_prelaunch_research(record.incubation_id,
+            session_id="interrupted", revision=3, draft=_draft())
+        assert interrupted["status"] == "pending" and provider2.calls == 1
+    finally:
+        service.close()
+        store.close()
+
+
+def test_confirmed_intake_revision_dispatches_prelaunch_once(tmp_path, monkeypatch):
+    config, store, service, record, memory = _prelaunch_setup(tmp_path)
+    provider = _PrelaunchProvider(memory=memory)
+    monkeypatch.setattr(service, "_prelaunch_client", lambda incubation_id, crawlseo: provider)
+    try:
+        intake = service.intake_service(record.incubation_id)
+        session = intake.create_session()
+        session = intake.get_session(session["session_id"])
+        saved = memory.save_design_intake_revision(session["session_id"], _draft(), source_kind="owner_message", expected_revision=session["revision"])
+        session = intake.get_session(session["session_id"])
+        confirmation = service.confirm_intake(record.incubation_id, {
+            "session_id": session["session_id"], "revision": saved["revision"],
+            "draft_hash": session["draft_hash"], "confirmation_text": "Confirmed",
+        })
+        assert confirmation["prelaunch_research"]["status"] == "pending"
+        assert provider.calls == 1
+        replay = service.dispatch_confirmed_prelaunch_research(record.incubation_id,
+            session_id=session["session_id"], revision=saved["revision"], draft=_draft())
+        assert replay["remote_run_id"] == "report-1"
+        assert provider.calls == 1
+    finally:
+        service.close()
+        store.close()
+
+
+def test_prelaunch_insufficient_budget_and_outage_are_honest_without_fallback(tmp_path, monkeypatch):
+    from site_agent.hands.crawlseo import CrawlSEOClient, CrawlSEORequestRejectedError
+
+    config, store, service, record, memory = _prelaunch_setup(tmp_path)
+    try:
+        service.config["seo"]["research"]["languages"] = []
+        insufficient = service.dispatch_confirmed_prelaunch_research(record.incubation_id, session_id="insufficient", revision=1, draft=_draft())
+        assert insufficient["status"] == "blocked" and "insufficient" in insufficient["reason"]
+        service.config["seo"]["research"]["languages"] = [{"code": "en", "primary": True, "markets": ["US"]}]
+        rejected = _PrelaunchProvider(error=CrawlSEORequestRejectedError("USD allowance is not configured"), memory=memory)
+        monkeypatch.setattr(service, "_prelaunch_client", lambda incubation_id, crawlseo: rejected)
+        blocked = service.dispatch_confirmed_prelaunch_research(record.incubation_id, session_id="budget", revision=1, draft=_draft())
+        assert blocked["status"] == "blocked" and "rejected" in blocked["reason"]
+        outage = _PrelaunchProvider(error=OSError("offline"), memory=memory)
+        monkeypatch.setattr(service, "_prelaunch_client", lambda incubation_id, crawlseo: outage)
+        pending = service.dispatch_confirmed_prelaunch_research(record.incubation_id, session_id="outage", revision=1, draft=_draft())
+        assert pending["status"] == "pending"
+        assert outage.calls == 1
+        with pytest.raises(Exception, match="disabled by CrawlSEO authority"):
+            service.research_service(record.incubation_id).request({"query": "fallback forbidden"}, enqueue=True)
+        assert memory.list_research_requests(limit=20) == []
+    finally:
+        service.close()
+        store.close()
+
+
+def test_prelaunch_completed_report_is_projected_with_source_and_knowledge_revision(tmp_path, monkeypatch):
+    from site_agent.hands.crawlseo import CrawlSEOClient
+
+    config, store, service, record, memory = _prelaunch_setup(tmp_path)
+    provider = _PrelaunchProvider(memory=memory)
+    monkeypatch.setattr(service, "_prelaunch_client", lambda incubation_id, crawlseo: provider)
+    try:
+        session = service.intake_service(record.incubation_id).create_session()
+        intake = service.intake_service(record.incubation_id)
+        session = intake.get_session(session["session_id"])
+        saved = memory.save_design_intake_revision(session["session_id"], _draft(), source_kind="owner_message", expected_revision=session["revision"])
+        service.dispatch_confirmed_prelaunch_research(record.incubation_id, session_id=session["session_id"], revision=saved["revision"], draft=_draft())
+        projection = service.research_projection(record.incubation_id)
+        assert projection["prelaunch_findings"]["report"]["dataforseo"]
+        assert projection["prelaunch_findings"]["source_revision"] == "2026-10-01T00:00:00Z"
+        assert projection["prelaunch_findings"]["knowledge_revision"] == 7
     finally:
         service.close()
         store.close()
