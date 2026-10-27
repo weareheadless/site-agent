@@ -100,7 +100,8 @@ header .spend{margin-right:auto;color:var(--dim);font-size:12.5px}
 #chatrow #chatAttachmentHint{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #chatrow button.primary{display:flex;align-items:center;gap:8px;padding:7px 8px 7px 12px;border-radius:999px;margin-left:auto}
 #chatrow .send-glyph{display:grid;place-items:center;width:23px;height:23px;border-radius:50%;background:color-mix(in srgb,#fff 22%,transparent);font-size:16px;line-height:1}
-#chatMediaPanel{flex:none;padding:10px 16px 12px;border-top:1px solid var(--line);background:color-mix(in srgb,var(--panel) 28%,var(--card));max-height:232px;overflow:auto}
+#chatMediaPanel{flex:none;padding:0 16px 12px;border-top:1px solid var(--line);background:color-mix(in srgb,var(--panel) 28%,var(--card));max-height:min(232px,42vh);overflow:auto}
+#chatMediaPanel .chat-media-head{position:sticky;top:0;z-index:2;padding:10px 0 8px;background:color-mix(in srgb,var(--panel) 28%,var(--card))}
 #chatMediaPanel[hidden]{display:none}
 #chatMediaPanel .chat-media-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
 #chatMediaPanel .chat-media-head strong{display:block;font-size:12px}
@@ -786,7 +787,8 @@ button.primary{box-shadow:0 7px 16px color-mix(in srgb,var(--brand) 22%,transpar
          <div id="chatlog"></div>
         <div id="thinking"><div class="dots"><span></span><span></span><span></span></div><div class="steplist"></div></div>
          <section id="chatMediaPanel" aria-label="Library image picker" hidden>
-           <div class="chat-media-head"><div><strong>Library images</strong><span class="muted small">Select in the order Ada should use them.</span></div><button type="button" class="quiet" onclick="closeMediaPicker()">Close</button></div>
+           <div class="chat-media-head"><div><strong>Library images</strong><span class="muted small">Select in the order Ada should use them.</span></div><span class="chat-media-actions"><button type="button" class="quiet" id="pickerUpload" onclick="pickerUploadFiles()">Upload</button><button type="button" class="quiet" onclick="closeMediaPicker()">Close</button></span></div>
+           <input id="pickerFile" type="file" accept="image/*,.pdf,application/pdf" multiple hidden>
            <div id="pickerStatus" class="muted small" aria-live="polite"></div>
            <div id="pickerGrid"></div>
          </section>
@@ -2085,6 +2087,39 @@ async function openMediaPicker(){
     rows.forEach(asset=>{const b=document.createElement('button');b.type='button';b.className='picker-card';b.dataset.id=asset.id;b.setAttribute('aria-pressed','false');b.innerHTML=`<img src="${esc(mediaUrl(asset.thumbnail_url||asset.preview_url||`/api/media/${asset.id}/thumbnail`))}" alt="${esc(asset.name)}" loading="lazy"><span class="picker-order" aria-hidden="true"></span><span class="picker-name">${esc(asset.name)}</span>`;b.onclick=()=>{const index=selectedMedia.indexOf(Number(asset.id));if(index>=0)selectedMedia=selectedMedia.filter(id=>id!==Number(asset.id));else if(selectedMedia.length<12)selectedMedia.push(Number(asset.id));else{status.textContent='Choose up to 12 images.';return}renderMediaTray();refreshPickerSelection()};grid.appendChild(b)});renderMediaTray();refreshPickerSelection()
   }catch(e){status.textContent='Could not load Library images.'}
   finally{mediaPickerLoading=false}
+}
+async function pickerUploadFiles(){
+  const input=document.getElementById('pickerFile');if(!input)return;
+  input.onchange=async()=>{
+    const files=[...(input.files||[])];input.value='';
+    if(!files.length)return;
+    const status=document.getElementById('pickerStatus');
+    status.textContent=`Uploading ${files.length} file${files.length===1?'':'s'}…`;
+    const accepted=[];
+    for(const file of files){
+      const isImage=String(file.type||'').startsWith('image/');
+      if(!isImage){status.textContent=`${file.name} was skipped: only images can be attached to a chat message.`;continue}
+      try{
+        const result=await uploadFileDirect(file);if(result&&result.asset)accepted.push(Number(result.asset.id));
+      }catch(e){status.textContent=`${file.name} could not be uploaded.`;}
+    }
+    await openMediaPickerRefresh();
+    accepted.filter(id=>!selectedMedia.includes(id)&&selectedMedia.length<12).forEach(id=>selectedMedia.push(id));
+    renderMediaTray();refreshPickerSelection();
+    if(accepted.length)status.textContent=`${accepted.length} image${accepted.length===1?'':'s'} uploaded and selected.`;
+  };
+  input.click();
+}
+async function uploadFileDirect(file){
+  const form=new FormData();form.append('file',file,file.name);
+  const response=await fetch(BASE+'/api/media/upload',{method:'POST',body:form,credentials:'include'});
+  if(response.status===401){showLogin();throw new Error('auth');}
+  if(!response.ok){const body=await response.json().catch(()=>({}));throw new Error(body.detail||`Upload failed (${response.status})`);}
+  return await response.json().catch(()=>({}));
+}
+async function openMediaPickerRefresh(){
+  const panel=document.getElementById('chatMediaPanel');
+  if(panel&&!panel.hidden){panel.hidden=true;mediaPickerLoading=false;await openMediaPicker();}
 }
 function useMedia(id){if(!selectedMedia.includes(Number(id))&&selectedMedia.length<12)selectedMedia.push(Number(id));switchChatTab('chat');renderMediaTray();document.getElementById('chatinput').focus()}
 
