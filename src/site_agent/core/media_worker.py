@@ -31,7 +31,6 @@ class MediaWorker:
         self.store = context["media_store"]
         self.analyzer = context.get("media_analyzer")
         self.media = context["media_service"]
-        self.knowledge = context.get("business_knowledge_service")
         self.worker = _worker_id()
         self.interval = max(0.1, interval)
         self.on_analysis = on_analysis
@@ -180,8 +179,6 @@ class MediaWorker:
                     analysis_status=MediaAnalysisStatus.SKIPPED.value,
                     analysis_updated_ts=utc_now(),
                 )
-            if analysis is not None and analysis.knowledge_relevant and self.knowledge:
-                self.knowledge.propose(self.memory.get_media_asset(asset.asset_id), analysis.proposed_knowledge_markdown)
             if self.on_analysis is not None:
                 try:
                     self.on_analysis(asset.asset_id, analysis.to_dict() if analysis is not None else {})
