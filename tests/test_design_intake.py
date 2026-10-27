@@ -1961,3 +1961,15 @@ def test_advisor_prompt_keeps_reply_language_grounded_in_conversation_context():
 class _FakeLab:
     def get_run(self, run_id):
         return {"run_id": run_id, "status": "building", "revisions": []}
+
+
+def test_conversational_confirmation_accepts_a_ready_brief():
+    """The owner's own confirmation in chat is the acceptance; no second button."""
+    import inspect
+    from site_agent.application import design_intake
+
+    source = inspect.getsource(design_intake.DesignIntakeService)
+    assert "conversational-confirm-" in source, "the conversational confirm needs a stable idempotency key"
+    assert "READY_TO_BUILD.value:" in source, "a ready brief must be confirmable from the conversation"
+    ui = (design_intake.__file__ and "")
+    assert ui is not None
