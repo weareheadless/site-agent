@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from site_agent.application.designs import DesignService
+from site_agent.application.designs import DesignService, DesignSharedIntelligence
 from site_agent.application.design_jobs import DesignJobExecutor
 from site_agent.core.contracts import ContractError
 from site_agent.core.design_contracts import (
@@ -128,6 +128,24 @@ def test_context_capture_redacts_secret_shaped_memory_text(tmp_path):
     serialized = json.dumps(snapshot.to_dict())
     assert "do-not-persist-this-value" not in serialized
     assert "[REDACTED]" in serialized
+    memory.close()
+
+
+def test_design_context_carries_typed_shared_intelligence_without_fetching(tmp_path):
+    memory = Memory(tmp_path / "shared-intelligence.db")
+    service = DesignService(memory, config={"site": {"repository": "owner/site"}})
+    run = service.create_run(_intake(), run_id="shared-intelligence-run", base_sha="a" * 40)
+    evidence = {
+        "knowledge": {"status": "complete", "revision": 7, "document": {"offer": "Owner-confirmed"}, "project_id": "project-1"},
+        "research": {"status": "complete", "revision": "2026-10-01T00:00:00Z", "findings": {"dataforseo": ["finding"]}, "knowledge_revision": 7, "intake_revision": 3},
+    }
+    snapshot = service.capture_context_snapshot(run["run_id"], shared_intelligence=DesignSharedIntelligence(**evidence))
+    assert snapshot.to_dict()["shared_intelligence"] == evidence
+    replay = service.capture_context_snapshot(run["run_id"], shared_intelligence=DesignSharedIntelligence(**evidence))
+    assert replay.to_dict()["shared_intelligence"] == evidence
+    unavailable = service.capture_context_snapshot(run["run_id"])
+    assert unavailable.to_dict()["shared_intelligence"]["knowledge"]["status"] == "pending"
+    assert unavailable.to_dict()["shared_intelligence"]["research"]["status"] == "pending"
     memory.close()
 
 
