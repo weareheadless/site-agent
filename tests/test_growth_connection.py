@@ -140,6 +140,34 @@ def test_intelligence_requires_registry_authorized_tenant_and_reports_unavailabl
         assert 'businessProfile' not in response.json()
 
 
+def test_control_plane_intelligence_is_tenant_scoped_and_keeps_unavailable_contract(tmp_path):
+    tenants = {}
+    for name in ('alpha', 'beta'):
+        memory = Memory(tmp_path / f'{name}.db')
+        tenants[name] = Tenant(name, {}, memory, None,
+            {'crawlseo_service': object(), 'connector_site_id': name,
+             'seo_provisioning_state': {'crawlseo': {'site_id': name}}}, f'{name}-token')
+    registry = TenantRegistry(tenants)
+    app = FastAPI()
+    register_workspace_routes(app, config={}, env={}, service=ChatService(registry=registry),
+        registry=registry, control_prefix='/v1/control-plane/websites', control_token='control-secret')
+    with TestClient(app) as client:
+        url = '/v1/control-plane/websites/alpha/intelligence'
+        assert client.get(url).status_code == 401
+        assert client.get(url, headers={'Authorization': 'Bearer invalid'}).status_code == 401
+        assert client.get('/v1/control-plane/websites/missing/intelligence',
+            headers={'Authorization': 'Bearer control-secret'}).status_code == 404
+        response = client.get(url, headers={'Authorization': 'Bearer control-secret'})
+        assert response.status_code == 503
+        assert response.json()['state'] == 'unavailable'
+        assert response.json().get('reason')
+        assert response.headers['Cache-Control'] == 'no-store'
+        assert client.get('/api/workspace/intelligence',
+            headers={'Authorization': 'Bearer alpha-token'}).status_code == 503
+        assert client.get('/api/workspace/intelligence',
+            headers={'Authorization': 'Bearer control-secret'}).status_code == 401
+
+
 def test_migrated_tenant_keeps_its_existing_provider_credential_file(tmp_path):
     credential_file = tmp_path / 'tenant.env'
     credential_file.write_text('CRAWLSEO_SERVICE_TOKEN=tenant-research-fixture\nPROVISIONED_DEMO_TOKEN=old-fixture\n')
