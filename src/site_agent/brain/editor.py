@@ -716,8 +716,6 @@ def _tools_spec(
             {"query": {"type": "string", "description": "what you want to remember"}}, ["query"]),
         fn("search_media", "Find ready Library images by description, tags, OCR, name, or suggested use. Returns IDs only, never URLs.",
            {"query": {"type": "string"}, "limit": {"type": "integer"}}, ["query"]),
-        fn("search_business_knowledge", "Find owner-approved business information from the Library.",
-           {"query": {"type": "string"}, "limit": {"type": "integer"}}, ["query"]),
     ]
     if not source_builder_available or canonical_design_handoff:
         tools.extend([
@@ -998,7 +996,6 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
         "list_drafts": lambda: "checking pending drafts",
         "recall_memory": lambda: "searching my memory",
         "search_media": lambda: "searching the Library",
-        "search_business_knowledge": lambda: "searching approved business knowledge",
         "spawn_build": lambda: "briefing the builder agent",
         "design_request": lambda: "preparing the typed design handoff",
          "read_payload_content": lambda: "reading the selected Payload document",
@@ -1092,11 +1089,6 @@ def _execute_tool(context: dict[str, Any], adapter: SiteAdapter, name: str, args
                                      "description": asset.description[:400], "width": asset.width,
                                      "height": asset.height, "media_kind": asset.media_kind.value}))
         return json.dumps([item for _, item in sorted(rows, key=lambda x: -x[0])[:int(args.get("limit", 8))]])
-    if name == "search_business_knowledge":
-        service = context.get("business_knowledge_service")
-        if service is None:
-            return "Approved business knowledge is not available."
-        return json.dumps(service.search(str(args.get("query") or ""), int(args.get("limit", 8))))
     booking_tool_names = {
         "read_booking_configuration", "read_booking_availability", "create_booking_type",
         "update_booking_type", "deactivate_booking_type", "update_booking_settings",

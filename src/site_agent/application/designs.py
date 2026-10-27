@@ -168,6 +168,15 @@ class DesignSharedIntelligence:
         return safe_payload({"knowledge": self.knowledge, "research": self.research}, max_bytes=250_000)
 
 
+def _knowledge_entries(shared: "DesignSharedIntelligence | None") -> list[dict[str, Any]]:
+    if shared is None or not isinstance(shared.knowledge, Mapping):
+        return []
+    document = shared.knowledge.get("document", shared.knowledge)
+    if not isinstance(document, Mapping) or "fields" not in document:
+        return []
+    return [{key: document[key] for key in ("documentId", "revision", "state", "fields") if key in document}]
+
+
 class DesignService:
     def __init__(
         self,
@@ -585,11 +594,6 @@ class DesignService:
                     if row.get("source") not in private_sources and row.get("source") not in research_sources]
         research = [safe_payload(row, max_bytes=30_000) for row in observations
                     if row.get("source") in research_sources]
-        knowledge = []
-        list_knowledge = getattr(self.memory, "list_business_knowledge", None)
-        if callable(list_knowledge):
-            knowledge = [safe_payload(row, max_bytes=30_000) for row in list_knowledge(status="approved", limit=40)]
-
         site = self.config.get("site") or {}
         design_engine = self.config.get("design_engine") or {}
         llm = self.config.get("llm") or {}
@@ -761,7 +765,7 @@ class DesignService:
             "approved_persona_notes": approved_notes(self.memory),
             "memories": memories,
             "research": research,
-            "business_knowledge": knowledge,
+            "business_knowledge": _knowledge_entries(shared_intelligence),
             "shared_intelligence": (shared_intelligence or DesignSharedIntelligence.unavailable()).to_dict(),
             "attachments": attachments,
             "site_facts": {

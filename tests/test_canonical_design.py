@@ -136,11 +136,13 @@ def test_design_context_carries_typed_shared_intelligence_without_fetching(tmp_p
     service = DesignService(memory, config={"site": {"repository": "owner/site"}})
     run = service.create_run(_intake(), run_id="shared-intelligence-run", base_sha="a" * 40)
     evidence = {
-        "knowledge": {"status": "complete", "revision": 7, "document": {"offer": "Owner-confirmed"}, "project_id": "project-1"},
+        "knowledge": {"status": "complete", "revision": 7, "document": {"schemaVersion": 1, "kind": "business_knowledge", "workspaceId": "ws1", "projectId": "project-1", "documentId": "k1", "revision": 2, "state": "accepted", "acceptedRevision": 2, "fields": {"offer": "Owner-confirmed"}}, "project_id": "project-1"},
         "research": {"status": "complete", "revision": "2026-10-01T00:00:00Z", "findings": {"dataforseo": ["finding"]}, "knowledge_revision": 7, "intake_revision": 3},
     }
+    memory.list_business_knowledge = lambda **_kwargs: pytest.fail("local knowledge reader called")
     snapshot = service.capture_context_snapshot(run["run_id"], shared_intelligence=DesignSharedIntelligence(**evidence))
     assert snapshot.to_dict()["shared_intelligence"] == evidence
+    assert snapshot.to_dict()["business_knowledge"] == [{"documentId": "k1", "revision": 2, "state": "accepted", "fields": {"offer": "Owner-confirmed"}}]
     replay = service.capture_context_snapshot(run["run_id"], shared_intelligence=DesignSharedIntelligence(**evidence))
     assert replay.to_dict()["shared_intelligence"] == evidence
     unavailable = service.capture_context_snapshot(run["run_id"])

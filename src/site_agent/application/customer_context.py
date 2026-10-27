@@ -129,10 +129,9 @@ class CustomerContextService:
         requests = [dict(item) for item in self.memory.list_research_requests(limit=500)]
         insights = [dict(item) for item in self.memory.list_incubation_insights(limit=500)]
         deductions = [dict(item) for item in self.memory.list_incubation_deductions(limit=500)]
-        approved_knowledge = [
-            dict(item)
-            for item in self.memory.list_business_knowledge(status="approved", limit=500)
-        ]
+        # Canonical business knowledge is supplied by the CrawlSEO-backed
+        # shared-intelligence projection; the local table is history only.
+        approved_knowledge = []
         design = {
             "run": copy.deepcopy(dict(run)),
             "run_hash": run_hash,

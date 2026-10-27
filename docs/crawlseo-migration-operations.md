@@ -1,5 +1,16 @@
 # CrawlSEO tenant migration operations
 
+## Business-knowledge disposition
+
+CrawlSEO is the sole authority for canonical business knowledge and research.
+The legacy site-agent `business_knowledge` table remains readable for historical
+traceability, but is retired from live paths: its application producer is
+fenced, design snapshots project `business_knowledge` from the CrawlSEO-backed
+`shared_intelligence.knowledge` document, and the editor's
+`search_business_knowledge` tool is removed. No live reader or writer should use
+the local table. Existing history is not deleted. The canonical projection is
+the replacement; it is not a second local store.
+
 These operations use the existing protected HelloAda control plane and the
 canonical registered tenant. They never approve a candidate, publish customer
 content, restore deleted owner facts, grant an allowance, or launch research.

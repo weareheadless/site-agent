@@ -144,30 +144,12 @@ class CustomerGenesisImporter:
                 target.save_provisioning_id_map(import_id, "media_asset", str(source_asset_id), str(imported.asset_id))
             counts["assets"] += 1
             checkpoint("media_transferred", media_assets_imported=counts["assets"])
-        for knowledge in (bundle.customer_context.get("knowledge") or []) if bundle.customer_context else []:
-            source_asset_id = knowledge.get("asset_id")
-            if source_asset_id is None or int(source_asset_id) not in asset_ids:
-                raise ProvisioningServiceError("approved business knowledge references an unimported asset")
-            source_knowledge_id = str(knowledge.get("id") or "")
-            if not source_knowledge_id:
-                source_knowledge_id = "content_" + hashlib.sha256(
-                    canonical_json({"asset_id": source_asset_id, "body": knowledge.get("body") or ""}).encode("utf-8")
-                ).hexdigest()[:32]
-            knowledge_maps = {
-                item["source_id"]: int(item["destination_id"])
-                for item in target.list_provisioning_id_maps(import_id, "business_knowledge")
-            }
-            imported_knowledge = target.get_business_knowledge(knowledge_maps[source_knowledge_id]) if source_knowledge_id in knowledge_maps else None
-            if imported_knowledge is None:
-                created = target.create_business_knowledge(asset_ids[int(source_asset_id)], str(knowledge.get("body") or ""))
-                imported_knowledge = target.update_business_knowledge(
-                    int(created["id"]),
-                    status="approved",
-                    decided_ts=str(knowledge.get("decided_ts") or utc_now()),
-                ) or created
-                target.save_provisioning_id_map(import_id, "business_knowledge", source_knowledge_id, str(imported_knowledge["id"]))
-            counts["business_knowledge"] = counts.get("business_knowledge", 0) + 1
-            checkpoint("knowledge_imported", knowledge_imported=counts["business_knowledge"])
+        # Legacy local knowledge import is explicitly retired. CrawlSEO is the
+        # authority; importing these rows would create a second live store.
+        retired_knowledge_count = len((bundle.customer_context.get("knowledge") or []) if bundle.customer_context else [])
+        if retired_knowledge_count:
+            checkpoint("knowledge_retired", knowledge_disposition="retired",
+                       knowledge_retired=retired_knowledge_count)
         conversation_id = progress_detail.get("conversation_id")
         if conversation_id is None:
             conversation_id = target.create_conversation("Imported incubation", timestamp=_first_timestamp(bundle.conversation))
