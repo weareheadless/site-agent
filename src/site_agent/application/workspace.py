@@ -1842,6 +1842,36 @@ class ChatService:
         incubation_needed = journey.incubation_needed if journey is not None else intake_enabled
         active_jobs = memory.list_active_chat_jobs(conversation_id=normalized_id, limit=1)
         active_job = active_jobs[0] if active_jobs else None
+        build = None
+        if tenant is not None and intake_status.get("confirmed"):
+            revision = intake_status.get("confirmed_revision_id") or intake_status.get("confirmed_revision")
+            session_id = str(intake_status.get("session_id") or "")
+            run = next((item for item in memory.list_design_runs(mode="production_candidate", limit=500)
+                        if (not session_id or str(item.get("intake_session_id") or "") == session_id)
+                        and (revision is None or item.get("intake_revision_id") == revision)), None)
+            if run is not None:
+                events = memory.list_design_run_events(str(run["run_id"]), limit=500)
+                order = ("queued", "planning", "generating", "building", "validating", "rendering")
+                by_stage = {e["stage"]: e for e in events if e.get("stage") in order}
+                terminal = run.get("status") in {"ready_for_review", "failed", "cancelled", "incomplete", "needs_repair", "interrupted"}
+                if not terminal or run.get("status") in {"ready_for_review", "failed"}:
+                    failed = run.get("status") == "failed"
+                    ready = run.get("status") == "ready_for_review"
+                    stage = "ready" if ready else max(by_stage, key=order.index) if by_stage else "queued"
+                    stopped_at = max(by_stage, key=order.index) if by_stage else "queued"
+                    labels = {"queued":"Queued", "planning":"Planning", "generating":"Creating", "building":"Building", "validating":"Reviewing", "rendering":"Rendering"}
+                    current_i = order.index(stopped_at)
+                    stages = [{"key": key, "label": labels[key], "state": "done" if ready else "failed" if failed and key == stopped_at else "current" if key == stopped_at and not terminal else "done" if order.index(key) < current_i or key == stopped_at else "pending", "ts": by_stage[key].get("created_ts") if key in by_stage else None} for key in order]
+                    started_ts = str(run.get("created_ts") or "")
+                    try:
+                        started = datetime.datetime.fromisoformat(started_ts.replace("Z", "+00:00"))
+                        elapsed = max(0, int((datetime.datetime.now(datetime.timezone.utc) - started).total_seconds()))
+                    except (ValueError, TypeError):
+                        elapsed = 0
+                    state = "failed" if failed else "ready" if run.get("status") == "ready_for_review" else "queued" if stage == "queued" else "running"
+                    build = {"state": state, "run_id": str(run["run_id"]), "stage": stage, "stages": stages, "started_ts": started_ts, "elapsed_seconds": elapsed, "draft_available": bool(run.get("draft_id") and run.get("status") == "ready_for_review")}
+                    if failed:
+                        build["error"] = str(run.get("error") or "The design build needs attention.")
         onboarding = self._new_site_onboarding(memory, intake_status, tenant) if not website_present else None
         return {
             "tenant": tenant_id,
@@ -1862,6 +1892,7 @@ class ChatService:
                 "created_ts": active_job.get("created_ts"),
                 "updated_ts": active_job.get("updated_ts"),
             } if active_job else None,
+            "build": build,
         }
 
     @staticmethod

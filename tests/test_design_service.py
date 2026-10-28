@@ -794,7 +794,7 @@ def test_execute_build_persists_candidate_and_stops_before_quality_ready(tmp_pat
     assert stored["candidate_sha"] == "c" * 40
     assert [event["stage"] for event in stored["events"]] == [
         "created", "assessing_intake", "intake_assessment", "planning", "plan_output",
-        "building", "candidate_ready", "candidate_ready",
+        "generating", "building", "candidate_ready", "candidate_ready",
     ]
     memory.close()
 
