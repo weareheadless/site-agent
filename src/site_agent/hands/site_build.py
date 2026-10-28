@@ -536,7 +536,17 @@ def _validate_next_manifest(root: Path, *, require_lockfile: bool = False) -> tu
         for name, expected in declared.items():
             entry = packages.get(f"node_modules/{name}")
             locked = entry.get("version") if isinstance(entry, Mapping) else None
-            if locked != expected:
+            if name in shared_packages and _is_shared_artifact(name, expected):
+                artifact = _SHARED_ARTIFACT_RE.fullmatch(expected)
+                version = artifact.group("file_version") if artifact else None
+                valid_lock = (
+                    isinstance(entry, Mapping)
+                    and entry.get("resolved") == expected
+                    and locked == version
+                )
+            else:
+                valid_lock = locked == expected
+            if not valid_lock:
                 raise SiteBuildError(f"Next/React lockfile does not pin {name}@{expected}")
     return tuple(sorted(declared))
 
