@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,3 +39,10 @@ def test_no_tracked_symlink_resolves_outside_repository():
     root = ROOT.resolve()
     escapes = [raw.decode() for raw in tracked if raw and (ROOT / raw.decode()).is_symlink() and not (ROOT / raw.decode()).resolve().is_relative_to(root)]
     assert not escapes, f"Tracked symlinks escape repository root: {escapes}"
+
+def test_unresolvable_base_fails_readably(monkeypatch, capsys):
+    monkeypatch.setattr(sys, "argv", ["check_shared_package_version.py", "--base", "definitely-not-a-real-base-ref"])
+    assert GUARD.main() == 1
+    captured = capsys.readouterr()
+    assert "could not be resolved to a commit" in captured.err
+    assert "Traceback" not in captured.err

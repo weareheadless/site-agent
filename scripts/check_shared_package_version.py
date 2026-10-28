@@ -12,6 +12,9 @@ PACKAGES = {
 TEMPLATE_PIN = "src/site_agent/templates/next-payload/package.json"
 
 def changed_files(base: str) -> list[str]:
+    resolved = subprocess.run(["git", "rev-parse", "--verify", f"{base}^{{commit}}"], cwd=ROOT, capture_output=True, text=True)
+    if resolved.returncode:
+        raise ValueError(f"Base ref `{base}` could not be resolved to a commit.")
     result = subprocess.run(["git", "diff", "--name-only", "--diff-filter=ACMR", f"{base}...HEAD"], cwd=ROOT, check=True, capture_output=True, text=True)
     return result.stdout.splitlines()
 
@@ -43,7 +46,11 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", required=True)
     args = parser.parse_args()
-    errors = validate(changed_files(args.base), args.base)
+    try:
+        errors = validate(changed_files(args.base), args.base)
+    except (ValueError, subprocess.CalledProcessError) as exc:
+        print(f"Shared Payload package release guard: {exc}", file=sys.stderr)
+        return 1
     if errors:
         print("\n".join(errors), file=sys.stderr)
         return 1
