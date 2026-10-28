@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261028-api-shared-pins",
-    "sha": "704d1b6fb4fd139a5255f099c845dd0953707b13"
+    "id": "20261028-api-allowlist",
+    "sha": "fa0b1a195a75230951ec1c3622bbe08d6c492230"
   }
 }
