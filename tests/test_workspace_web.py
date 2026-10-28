@@ -582,6 +582,7 @@ def test_intake_requires_explicit_owner_acceptance(tmp_path):
     })
     session = intake.intake_service.create_session(draft=DesignIntakeDraft.from_site_intake(site_intake))
     before = intake.status(session["conversation_id"])
+    assert intake.needs_intake(session["conversation_id"]) is True
     accepted = intake.confirm(
         session["conversation_id"],
         revision=session["revision"],
