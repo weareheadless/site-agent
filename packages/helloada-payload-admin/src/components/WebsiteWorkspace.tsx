@@ -1614,40 +1614,6 @@ function ReviewWorkspace() {
     void sendMessage(correction)
   }
 
-  const acceptIntake = async () => {
-    if (accepting || !intakeStatus?.session_id || !intakeStatus.revision || !intakeStatus.draft_hash) return
-    setAccepting(true)
-    setError('')
-    try {
-      const response = await fetchHelloAda('/api/helloada/intake/confirm', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          conversation_id: conversationId || intakeStatus.conversation_id,
-          revision: intakeStatus.revision,
-          draft_hash: intakeStatus.draft_hash,
-          confirmation_text: 'I accept this working brief and want to continue with website work.',
-          idempotency_key: `helloada-intake-confirm-${intakeStatus.session_id}-${intakeStatus.revision}`,
-        }),
-      })
-      const body = (await response.json()) as IntakeStatus & { message?: string }
-      if (!response.ok) throw new Error(body.message || t('error.briefAccept'))
-      setIntakeStatus(body)
-      setAdaPhase('workspace')
-      if (body.conversation_id) setConversationId(body.conversation_id)
-      setMessages((current) => [...current, {
-        role: 'system',
-        text: websitePresent
-           ? t('workspace.briefAcceptedWebsite')
-           : t('workspace.briefAcceptedFirst'),
-      }])
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t('error.briefAccept'))
-    } finally {
-      setAccepting(false)
-    }
-  }
-
   const startFirstPage = async () => {
     if (!intakeStatus?.session_id || !intakeStatus.confirmed || accepting) return
     setAccepting(true)
@@ -2131,9 +2097,6 @@ function ReviewWorkspace() {
         [t('owner.writeUpdate'), t('workspace.shortDraftPrompt')],
         [t('owner.newPage'), t('workspace.shortStartPagePrompt')],
       ]
-  const canAcceptIntake = (adaPhase === 'intake' || adaPhase === 'incubation')
-    && intakeStatus?.readiness?.state === 'ready_to_build'
-    && Boolean(intakeStatus.draft_hash && intakeStatus.revision)
   const canStartFirstPage = !websitePresent
     && adaPhase === 'workspace'
     && Boolean(intakeStatus?.confirmed && intakeStatus.session_id)
@@ -2357,11 +2320,8 @@ function ReviewWorkspace() {
                    {briefOpen ? t('workspace.closeBrief') : t('workspace.viewBrief')}
                  </button>
                ) : null}
-               {canAcceptIntake ? (
-                 <button className="helloada-phase-action is-primary" type="button" onClick={() => void acceptIntake()} disabled={accepting}>
-                   {accepting ? t('workspace.accepting') : t('workspace.acceptBrief')}
-                 </button>
-               ) : null}
+               {/* Acceptance happens in the conversation: answering Ada is the
+                   confirmation, so there is no separate accept control here. */}
                {canStartFirstPage ? (
                  <button className="helloada-phase-action is-primary" type="button" onClick={() => void startFirstPage()} disabled={accepting}>
                    {accepting ? t('workspace.starting') : t('workspace.startFirstPage')}
