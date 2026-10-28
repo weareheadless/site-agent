@@ -242,6 +242,14 @@ def _contact(value: Any, path: str) -> str:
     return result
 
 
+def _destination_url(value: Any, path: str, hosts: set[str]) -> str:
+    result = _text(value, path, maximum=2_000)
+    parsed = urlsplit(result)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.hostname.lower() not in hosts or parsed.username or parsed.password:
+        raise ContractError(f"{path} must be an absolute https URL on an allowed host")
+    return result
+
+
 def _hash(value: Any, path: str, pattern: re.Pattern[str]) -> str:
     result = _text(value, path, maximum=128).lower()
     if not pattern.fullmatch(result):
@@ -1461,14 +1469,14 @@ class SiteIntake:
         _text(audience.get("primary"), "audience.primary", maximum=1_000)
         conversion = _object(value.get("conversion"), "conversion")
         _text(conversion.get("primary_action"), "conversion.primary_action", maximum=500)
-        destination = conversion.get("contact_destination")
-        if destination is None:
-            if conversion.get("not_available") is not True:
-                raise ContractError(
-                    "conversion.contact_destination is required or conversion.not_available must be true"
-                )
-        else:
-            _contact(destination, "conversion.contact_destination")
+        if "contact_destination" in conversion:
+            raise ContractError("conversion.contact_destination is retired; use typed destination URLs")
+        whatsapp = conversion.get("whatsapp_url")
+        instagram = conversion.get("instagram_url")
+        if whatsapp is not None:
+            _destination_url(whatsapp, "conversion.whatsapp_url", {"wa.me", "api.whatsapp.com"})
+        if instagram is not None:
+            _destination_url(instagram, "conversion.instagram_url", {"instagram.com"})
 
         brand = _object(value.get("brand"), "brand")
         _text(brand.get("voice"), "brand.voice", maximum=2_000)

@@ -12,7 +12,7 @@ def _intake() -> SiteIntake:
             "primary_services": ["Brand strategy"],
         },
         "audience": {"primary": "Founders building their first serious brand."},
-        "conversion": {"primary_action": "Start a conversation", "contact_destination": "mailto:hello@example.test"},
+        "conversion": {"primary_action": "Start a conversation", "whatsapp_url": "https://wa.me/15551234567"},
         "site": {"required_pages": ["index.html", "about.html"]},
         "brand": {"voice": "clear and considered"},
     })

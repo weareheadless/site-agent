@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
+from urllib.parse import urlsplit
 
 from .contracts import ContractError
 from .design_contracts import SiteIntake, canonical_hash, canonical_json
@@ -75,7 +76,8 @@ _ALLOWED_FIELD_PATHS = frozenset({
     "audience.desired_impression",
     "conversion.primary_action",
     "conversion.secondary_action",
-    "conversion.contact_destination",
+    "conversion.whatsapp_url",
+    "conversion.instagram_url",
     "conversion.not_available",
     "conversion.success_outcome",
     "brand.voice",
@@ -271,7 +273,7 @@ def _model_field_value_is_compatible(path: str, value: Any) -> bool:
     """Keep malformed model values out of fields with strict final shapes."""
     if path in _STRICT_TEXT_FIELD_PATHS:
         return isinstance(value, str)
-    if path == "conversion.contact_destination":
+    if path in {"conversion.whatsapp_url", "conversion.instagram_url"}:
         return value is None or isinstance(value, str)
     if path in _STRICT_BOOLEAN_FIELD_PATHS:
         return isinstance(value, bool)
@@ -293,7 +295,8 @@ def _drop_incompatible_model_values(fields: dict[str, Any]) -> set[str]:
     checked_paths = (
         *_STRICT_TEXT_FIELD_PATHS,
         *_STRICT_LIST_FIELD_PATHS,
-        "conversion.contact_destination",
+        "conversion.whatsapp_url",
+        "conversion.instagram_url",
         *_STRICT_BOOLEAN_FIELD_PATHS,
         "notes.owner_facts",
     )
@@ -313,6 +316,36 @@ def _drop_incompatible_model_values(fields: dict[str, Any]) -> set[str]:
         if isinstance(current, dict):
             current.pop(parts[-1], None)
     return invalid_paths
+
+
+def _normalize_destination(path: str, value: Any) -> Any:
+    """Canonicalize owner-stated contact details before persisting intake."""
+    if value is None or not isinstance(value, str):
+        return value
+    text = value.strip()
+    if path not in {"conversion.whatsapp_url", "conversion.instagram_url"}:
+        return value
+    if path == "conversion.whatsapp_url":
+        if text.lower().startswith(("http://", "https://")):
+            parsed = urlsplit(text)
+            if parsed.scheme != "https" or parsed.hostname not in {"wa.me", "api.whatsapp.com"}:
+                raise ContractError("conversion.whatsapp_url must be an absolute https URL on an allowed host")
+            return text
+        digits = "".join(char for char in text if char.isdigit())
+        if len(digits) >= 7 and all(char.isdigit() or char in "+()-. \t" for char in text):
+            return f"https://wa.me/{digits}"
+        raise ContractError("conversion.whatsapp_url must be a phone number or allowed https URL")
+    if path == "conversion.instagram_url":
+        if text.lower().startswith(("http://", "https://")):
+            parsed = urlsplit(text)
+            if parsed.scheme == "https" and parsed.hostname and parsed.hostname.lower() in {"instagram.com", "www.instagram.com"}:
+                handle = parsed.path.strip("/").split("/")[0]
+                return f"https://instagram.com/{handle.lower()}" if handle else text
+            raise ContractError("conversion.instagram_url must be an absolute https URL on instagram.com")
+        handle = text.lstrip("@").strip("/")
+        if re.fullmatch(r"[A-Za-z0-9._]{1,30}", handle):
+            return f"https://instagram.com/{handle.lower()}"
+    raise ContractError("conversion.instagram_url must be a handle or allowed https URL")
 
 
 @dataclass(frozen=True)
@@ -725,8 +758,7 @@ class DesignIntakeDraft:
         if not isinstance(conversion, dict):
             conversion = {}
             fields["conversion"] = conversion
-        if not _value_present(conversion.get("contact_destination")):
-            conversion["contact_destination"] = None
+        if not _value_present(conversion.get("whatsapp_url")) and not _value_present(conversion.get("instagram_url")):
             conversion["not_available"] = True
         design = fields.setdefault("design", {})
         if not isinstance(design, dict):
@@ -1089,9 +1121,10 @@ def merge_intake_turn(
             origin = IntakeOrigin.DEFERRED.value
         else:
             origin = IntakeOrigin.ASSUMED.value
+        value = _normalize_destination(update.path, update.value)
         current = current.with_value(
             update.path,
-            update.value,
+            value,
             IntakeFieldProvenance(path=update.path, origin=origin, source_message_id=source_message_id, note=update.note),
         )
         assumptions.pop(update.path, None)

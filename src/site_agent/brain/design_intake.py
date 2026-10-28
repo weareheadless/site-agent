@@ -388,9 +388,10 @@ Customer view + ui_action (only when the owner is asking about a build):
 - When the conversion action is a messaging channel (WhatsApp, Instagram, email),
   the destination is part of the fact, not an optional extra: record the exact
   number with country code, or the exact profile URL/handle, in
-  "conversion.contact_destination". Never leave it null while a messaging action
-  is chosen, and never ask again for a destination the conversation already
-  contains — read the conversation first. A brief whose primary action cannot
+  "conversion.whatsapp_url" and/or "conversion.instagram_url". Record each
+  destination separately; the host canonicalizes a supplied phone number or
+  handle. Never compose URLs or combine destinations, and never ask again for a
+  destination the conversation already contains — read the conversation first. A brief whose primary action cannot
   reach the owner is not ready_to_build.
 
 
