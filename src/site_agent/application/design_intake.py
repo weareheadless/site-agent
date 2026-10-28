@@ -520,7 +520,6 @@ class DesignIntakeService:
         session = self._row(session_id)
         message = _message(message)
         idempotency_key = self._operation_token(idempotency_key, "message")
-        starts_new_revision = session.get("status") == IntakeSessionState.CONFIRMED.value
         asset_ids = self._normalize_asset_ids(attachments)
         if asset_ids:
             if self.media_service is None:
@@ -545,16 +544,6 @@ class DesignIntakeService:
                 latest_message_id=job.get("message_id"),
                 latest_advice_job_id=job_id,
             )
-            if starts_new_revision:
-                # A post-confirmation owner turn starts a new draft revision
-                # while retaining the frozen revision and its run as history.
-                self.memory.update_design_intake_session(
-                    session["session_id"],
-                    status=IntakeSessionState.COLLECTING.value,
-                    design_run_id=None,
-                    build_started_ts=None,
-                    build_error="",
-                )
         except (ContractError, ValueError, KeyError) as exc:
             raise DesignIntakeServiceError(str(exc)[:500]) from exc
         return {
@@ -641,13 +630,21 @@ class DesignIntakeService:
         updated = merge_intake_turn(draft, turn, source_message_id=source_message_id)
         if progress:
             progress("intake / validating the proposed intake turn")
-        saved = self.memory.save_design_intake_revision(
-            session_id,
-            updated,
-            source_kind="advisor_turn",
-            source_message_id=source_message_id,
-            expected_revision=int(session.get("revision") or 0),
-        )
+        if session.get("status") == IntakeSessionState.CONFIRMED.value and updated.to_dict() == draft.to_dict():
+            saved = dict(session)
+        else:
+            if session.get("status") == IntakeSessionState.CONFIRMED.value:
+                self.memory.update_design_intake_session(
+                    session_id, status=IntakeSessionState.COLLECTING.value,
+                    design_run_id=None, build_started_ts=None, build_error="",
+                )
+            saved = self.memory.save_design_intake_revision(
+                session_id,
+                updated,
+                source_kind="advisor_turn",
+                source_message_id=source_message_id,
+                expected_revision=int(session.get("revision") or 0),
+            )
         saved = {**saved, "owner_language": owner_language}
         # Customer-Ada genesis is downstream of the first build-critical fact;
         # incomplete owner turns must still persist as ordinary intake turns.
@@ -1011,11 +1008,12 @@ class DesignIntakeService:
             if revision < 1:
                 return {"action": "start_build", "fresh": True, "error": "confirmed intake revision was not found"}
             try:
+                token = f"conversational-build-{session.get('session_id')}-{revision}"
                 build = self.build(
                     str(session.get("session_id") or ""),
                     confirmed_revision=revision,
                     owner_request=str(session.get("owner_request") or ""),
-                    idempotency_key=f"conversational-build-{session.get('session_id')}-{revision}",
+                    idempotency_key=token,
                 )
             except DesignIntakeServiceError as exc:
                 return {"action": "start_build", "fresh": True, "error": str(exc)[:500]}
@@ -1239,6 +1237,13 @@ class DesignIntakeService:
         )
         if revision_row is None or int(revision_row.get("revision") or 0) != int(session.get("confirmed_revision") or 0):
             raise DesignIntakeServiceError("confirmed intake revision was not found")
+        previous = next((item for item in self.memory.list_design_runs(mode="production_candidate", limit=500)
+                         if str(item.get("intake_session_id") or "") == session_id
+                         and item.get("intake_revision_id") == int(revision_row["id"])
+                         and str(item.get("status") or "") == "failed"), None)
+        if previous is not None:
+            token = self._operation_token(f"{token}:{str(previous.get('run_id') or '')[-32:]}", "build")
+            force_new = True
         intake = SiteIntake.from_dict(revision_row["site_intake"])
         if str(owner_request or "").strip() not in _PLACEHOLDER_REQUESTS:
             request = _message(owner_request)

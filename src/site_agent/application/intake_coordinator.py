@@ -61,6 +61,15 @@ class IntakeCoordinator:
     ) -> None:
         self.memory = memory
         self.config = dict(config)
+        journey_config = self.config.get("ada_journey") if isinstance(self.config.get("ada_journey"), Mapping) else {}
+        site_config = self.config.get("site") if isinstance(self.config.get("site"), Mapping) else {}
+        # The general helper treats missing website evidence as false; routing
+        # here requires an explicit false so legacy/unconfigured tenants retain
+        # their existing confirmed-session behavior.
+        self.first_candidate_journey = (
+            journey_config.get("website_present") is False
+            or site_config.get("website_present") is False
+        )
         self.payload_client = payload_client
         settings = intake_settings(self.config)
         self.settings = dict(settings) if isinstance(settings, Mapping) else {}
@@ -217,7 +226,15 @@ class IntakeCoordinator:
     def needs_intake(self, conversation_id: int | None = None) -> bool:
         session = self._session(conversation_id)
         if str(session.get("status") or "") == IntakeSessionState.CONFIRMED.value:
-            return False
+            if not self.first_candidate_journey:
+                return False
+            session_id = str(session.get("session_id") or "")
+            revision_id = session.get("confirmed_revision_id")
+            runs = self.memory.list_design_runs(mode="production_candidate", limit=500)
+            candidate = next((item for item in runs
+                              if str(item.get("intake_session_id") or "") == session_id
+                              and item.get("intake_revision_id") == revision_id), None)
+            return candidate is None or str(candidate.get("status") or "") != "ready_for_review"
         # Intake remains the conversational owner surface until explicitly
         # confirmed, including when all required fields are ready to build.
         return True
