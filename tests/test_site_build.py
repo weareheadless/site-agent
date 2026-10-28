@@ -16,6 +16,20 @@ from site_agent.frontend_ownership import is_frontend_owned_path
 from site_agent.site_scaffold import initialize_toolchain_workspace
 
 
+def _lockfile_package_entries(declared):
+    entries = {}
+    for name, value in declared.items():
+        artifact = site_build._SHARED_ARTIFACT_RE.fullmatch(value) if name in {
+            "@weareheadless/helloada-payload-admin",
+            "@weareheadless/helloada-payload-core",
+        } else None
+        entries[f"node_modules/{name}"] = (
+            {"version": artifact.group("file_version"), "resolved": value}
+            if artifact else {"version": value}
+        )
+    return entries
+
+
 def test_next_react_build_profile_is_explicit_and_safe():
     assert NEXT_REACT_PROFILE.name == "next_react"
     assert NEXT_REACT_PROFILE.output_dir == "out"
@@ -85,6 +99,54 @@ def test_next_manifest_still_rejects_unknown_and_non_exact_third_party_dependenc
         (tmp_path / "package.json").write_text(json.dumps(package))
         with pytest.raises(SiteBuildError):
             site_build._validate_next_manifest(tmp_path)
+
+
+def test_next_manifest_lockfile_validates_shared_artifact_url_and_version(tmp_path):
+    dependencies = {
+        "@weareheadless/helloada-payload-admin": "https://github.com/weareheadless/site-agent/releases/download/payload-admin-v0.10.38/weareheadless-helloada-payload-admin-0.10.38.tgz",
+        "@weareheadless/helloada-payload-core": "https://github.com/weareheadless/site-agent/releases/download/payload-core-v0.10.38/weareheadless-helloada-payload-core-0.10.38.tgz",
+    }
+    approved = {item["package"]: item["version"] for item in next_react_toolchain_dependencies()}
+    dependencies.update({name: version for name, version in approved.items() if name not in dependencies})
+
+    def write_lock(shared_overrides=None, omit=None):
+        (tmp_path / "package.json").write_text(json.dumps({"dependencies": dependencies}))
+        packages = {}
+        for name, value in dependencies.items():
+            if name == omit:
+                continue
+            is_shared = name in {
+                "@weareheadless/helloada-payload-admin",
+                "@weareheadless/helloada-payload-core",
+            }
+            entry = {"version": "0.10.38" if is_shared else value}
+            if is_shared:
+                entry["resolved"] = value
+            entry.update((shared_overrides or {}).get(name, {}))
+            packages[f"node_modules/{name}"] = entry
+        (tmp_path / "package-lock.json").write_text(json.dumps({"lockfileVersion": 3, "packages": packages}))
+
+    write_lock()
+    site_build._validate_next_manifest(tmp_path, require_lockfile=True)
+
+    admin = "@weareheadless/helloada-payload-admin"
+    write_lock({admin: {"resolved": dependencies["@weareheadless/helloada-payload-core"]}})
+    with pytest.raises(SiteBuildError, match=f"lockfile does not pin {admin}@"):
+        site_build._validate_next_manifest(tmp_path, require_lockfile=True)
+
+    write_lock({admin: {"version": "0.10.39"}})
+    with pytest.raises(SiteBuildError, match=f"lockfile does not pin {admin}@"):
+        site_build._validate_next_manifest(tmp_path, require_lockfile=True)
+
+    third_party = "cli-color"
+    dependencies[third_party] = "2.0.4"
+    write_lock({third_party: {"version": "0.0.0"}})
+    with pytest.raises(SiteBuildError, match=f"lockfile does not pin {third_party}@"):
+        site_build._validate_next_manifest(tmp_path, require_lockfile=True)
+
+    write_lock(omit=admin)
+    with pytest.raises(SiteBuildError, match=f"lockfile does not pin {admin}@"):
+        site_build._validate_next_manifest(tmp_path, require_lockfile=True)
 
 
 def test_next_manifest_unknown_package_fails_as_not_host_approved(tmp_path):
@@ -176,7 +238,7 @@ def test_build_site_runs_profile_commands_in_workspace(tmp_path, monkeypatch):
         "requires": True,
         "packages": {
             "": {"name": package["name"], "version": "0.0.0"},
-            **{f"node_modules/{name}": {"version": version} for name, version in declared.items()},
+            **_lockfile_package_entries(declared),
         },
     }), encoding="utf-8")
 
@@ -218,7 +280,7 @@ def test_build_site_restores_preexisting_next_build_transient(tmp_path, monkeypa
         "requires": True,
         "packages": {
             "": {"name": package["name"], "version": "0.0.0"},
-            **{f"node_modules/{name}": {"version": version} for name, version in declared.items()},
+            **_lockfile_package_entries(declared),
         },
     }), encoding="utf-8")
     transient = workspace / "tsconfig.tsbuildinfo"
@@ -241,7 +303,7 @@ def test_build_site_stages_noexec_workspace_on_an_executable_mount(tmp_path, mon
         "requires": True,
         "packages": {
             "": {"name": package["name"], "version": "0.0.0"},
-            **{f"node_modules/{name}": {"version": version} for name, version in declared.items()},
+            **_lockfile_package_entries(declared),
         },
     }), encoding="utf-8")
     calls = []
