@@ -27,6 +27,20 @@ type WorkspaceDocument = {
   draftHash: string
 }
 
+type DesignBuild = {
+  state: 'queued' | 'running' | 'ready' | 'failed'
+  run_id: string
+  stage: string
+  stages: Array<{ key: string; label: string; state: 'done' | 'current' | 'pending' | 'failed'; ts: string | null }>
+  started_ts: string
+  elapsed_seconds: number
+  draft_available: boolean
+  error?: string
+  update?: string
+}
+
+const DESIGN_BUILD_STAGES = ['queued', 'planning', 'generating', 'building', 'validating', 'rendering']
+
 type WorkspaceRoute = {
   path: string
   kind: string
@@ -707,6 +721,7 @@ function ReviewWorkspace() {
   const site = useHelloAdaSite()
   const [workspace, setWorkspace] = useState<WorkspaceSnapshot>()
   const [websitePresent, setWebsitePresent] = useState(true)
+  const [designBuild, setDesignBuild] = useState<DesignBuild | null>(null)
   const [selectedRoute, setSelectedRoute] = useState('/')
   const [previewViewport, setPreviewViewport] = useState<PreviewViewport>('desktop')
   const [mobilePane, setMobilePane] = useState<'ada' | 'website'>('ada')
@@ -1223,6 +1238,7 @@ function ReviewWorkspace() {
           website_present?: boolean
           intake?: IntakeStatus
           onboarding?: OnboardingStatus | null
+          build?: DesignBuild | null
           active_job?: {
             id?: number
             conversation_id?: number
@@ -1233,7 +1249,10 @@ function ReviewWorkspace() {
         setAdaUnavailable(false)
         const phase = body.phase || body.mode
         setAdaPhase(phase === 'intake' || phase === 'incubation' || phase === 'workspace' ? phase : 'workspace')
-        if (typeof body.website_present === 'boolean') {
+        if (body.build?.draft_available) {
+          setWebsitePresent(true)
+          loadWorkspace(background)
+        } else if (typeof body.website_present === 'boolean') {
           setWebsitePresent(body.website_present)
           if (!body.website_present) {
             setWorkspace(undefined)
@@ -1247,6 +1266,7 @@ function ReviewWorkspace() {
         }
         setIntakeStatus(body.intake)
         setOnboarding(body.onboarding || undefined)
+        setDesignBuild(body.build || null)
         if (body.conversation_id) setConversationId(body.conversation_id)
         if (body.active_job?.id && body.active_job.conversation_id) {
           const pendingJob: PendingAdaJob = {
@@ -1436,11 +1456,12 @@ function ReviewWorkspace() {
   }, [loadPreviewPlan, previewPlan?.requires_build])
 
   useEffect(() => {
+    const isBuilding = designBuild?.state === 'queued' || designBuild?.state === 'running'
     const timer = window.setInterval(() => {
       loadAdaStatus(conversationId, true, false)
-    }, 30_000)
+    }, isBuilding ? 5_000 : 30_000)
     return () => window.clearInterval(timer)
-  }, [conversationId, loadAdaStatus])
+  }, [conversationId, designBuild?.state, loadAdaStatus])
 
   useEffect(() => {
     if (!editorOpen && !fieldEditorKey) return
@@ -2135,7 +2156,7 @@ function ReviewWorkspace() {
         <button type="button" id="helloada-ada-tab" aria-controls="helloada-ada-pane" aria-pressed={mobilePane === 'ada'} onClick={() => setMobilePane('ada')}>{t('workspace.askAda')}</button>
         <button type="button" id="helloada-website-tab" aria-controls="helloada-website-pane" aria-pressed={mobilePane === 'website'} onClick={() => setMobilePane('website')}>{t('owner.website')}{hasDraft ? <i aria-label={t('owner.readyReview')} /> : null}</button>
       </div> : null}
-       <div className={`helloada-workspace-grid ${websitePresent ? '' : 'is-chat-only'}`}>
+       <div className={`helloada-workspace-grid ${websitePresent ? '' : 'is-chat-only'} ${!websitePresent && designBuild && !designBuild.draft_available ? 'has-build-surface' : ''}`}>
          {websitePresent ? <section id="helloada-website-pane" className="helloada-review-window" aria-label={t('workspace.websiteReview')}>
           <div className="helloada-review-toolbar">
             <div className="helloada-window-dots" aria-hidden="true">
@@ -2258,7 +2279,22 @@ function ReviewWorkspace() {
               ) : null}
             </div>
           <footer className="helloada-preview-footer"><span className={hasDraft ? 'is-draft' : ''}><i aria-hidden="true" />{hasDraft ? t('owner.readyReview') : t('owner.websitePreview')}</span><span>{hasDraft ? t('owner.notLive') : t('owner.previewHint')}</span></footer>
-        </section> : null}
+        </section> : !websitePresent && adaPhase === 'workspace' && designBuild && !designBuild.draft_available && (designBuild.state === 'queued' || designBuild.state === 'running' || designBuild.state === 'failed') ? (
+          <section className={`helloada-build-surface ${designBuild.state === 'failed' ? 'is-failed' : ''}`} aria-label={t('workspace.buildTitle')}>
+            <p className="helloada-eyebrow">{t('workspace.buildEyebrow')}</p>
+            <h2>{designBuild.state === 'failed' ? t('workspace.buildFailed') : t('workspace.buildTitle')}</h2>
+            {designBuild.state === 'failed' ? <p role="alert">{t('workspace.buildStopped').replace('{stage}', designBuild.stages.find((stage) => stage.key === designBuild.stage)?.label || designBuild.stage)}</p> : <p>{t('workspace.buildProgress').replace('{done}', String(designBuild.stages.filter((stage) => DESIGN_BUILD_STAGES.includes(stage.key) && stage.state === 'done').length))}</p>}
+            {designBuild.state !== 'failed' ? <p>{t('workspace.buildElapsed').replace('{time}', String(Math.floor(designBuild.elapsed_seconds / 60)))}</p> : null}
+            <ol className="helloada-build-stages">
+              {DESIGN_BUILD_STAGES.map((key) => {
+                const stage = designBuild.stages.find((item) => item.key === key)
+                if (!stage) return null
+                return <li key={key} className={`is-${stage.state}`} aria-current={stage.state === 'current' ? 'step' : undefined}><span aria-hidden="true">{stage.state === 'done' ? '✓' : stage.state === 'current' ? '•' : '○'}</span>{stage.label}</li>
+              })}
+            </ol>
+            {designBuild.state === 'failed' ? <><p>{designBuild.error || t('workspace.buildErrorFallback')}</p><button type="button" onClick={() => { setMobilePane('ada'); setMessage(t('workspace.buildRetryPrompt')); window.setTimeout(() => messageInputRef.current?.focus(), 0) }}>{t('workspace.buildNextAction')}</button></> : <p className="helloada-build-update">{currentAdaProgress}</p>}
+          </section>
+        ) : null}
 
          <aside id="helloada-ada-pane" className="helloada-ada-panel" aria-label={t('workspace.adaAssistant')}>
            <div className="helloada-panel-header">
