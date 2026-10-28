@@ -27,6 +27,7 @@ from ..core.design_intake_contracts import (
     IntakeFieldProvenance,
     IntakeOrigin,
     IntakeSessionState,
+    migrate_legacy_contact_destination,
 )
 from ..core.incubation_contracts import ResearchTrigger
 from ..core.memory import Memory
@@ -493,6 +494,7 @@ class IntakeCoordinator:
         try:
             session = self.intake_service.get_session(str(sessions[0]["session_id"]))
             draft = DesignIntakeDraft.from_dict(session.get("draft") or {})
+            draft = migrate_legacy_contact_destination(draft)
         except (ContractError, TypeError, ValueError):
             return ""
         unresolved = list(draft.unresolved_core_paths)

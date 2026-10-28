@@ -14,6 +14,7 @@ from ..core.design_intake_contracts import (
     DesignIntakeDraft,
     IntakeTurnResult,
     allowed_intake_field_paths,
+    migrate_legacy_contact_destination,
 )
 from .owner_copy import owner_message_without_unstarted_build, owner_safe_reply
 
@@ -169,6 +170,7 @@ def _advisor_prompt(
     owner_language: str = "",
     website_present: bool | None = None,
 ) -> str:
+    draft = migrate_legacy_contact_destination(draft)
     existing_site = bool(database_only) if website_present is None else bool(website_present)
     asset_summary = [
         {

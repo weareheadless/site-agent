@@ -107,6 +107,8 @@ _ALLOWED_FIELD_PATHS = frozenset({
     "design.content_readiness",
     "notes.owner_facts",
 })
+_LEGACY_READ_ONLY_FIELD_PATHS = frozenset({"conversion.contact_destination"})
+_STORED_FIELD_PATHS = _ALLOWED_FIELD_PATHS | _LEGACY_READ_ONLY_FIELD_PATHS
 
 _CORE_PATHS = (
     "business.name",
@@ -173,6 +175,13 @@ def _path(value: Any, name: str = "path") -> str:
     return result
 
 
+def _stored_path(value: Any, name: str = "path") -> str:
+    result = _text(value, name, maximum=120)
+    if not _PATH.fullmatch(result) or result not in _STORED_FIELD_PATHS:
+        raise ContractError(f"{name} is not an allowed intake field")
+    return result
+
+
 def _optional_positive_id(value: Any, path: str) -> int | None:
     if value is None:
         return None
@@ -208,7 +217,7 @@ def _validate_field_tree(value: Mapping[str, Any], prefix: str = "") -> None:
         if not isinstance(raw_key, str) or not re.fullmatch(r"[a-z][a-z0-9_]*", raw_key):
             raise ContractError("design_intake_draft.fields contains an invalid key")
         path = f"{prefix}.{raw_key}" if prefix else raw_key
-        if path in _ALLOWED_FIELD_PATHS:
+        if path in _STORED_FIELD_PATHS:
             continue
         if not isinstance(child, Mapping):
             raise ContractError(f"{path} is not an allowed intake field")
@@ -234,8 +243,8 @@ def _field_paths(value: Mapping[str, Any], prefix: str = "") -> tuple[str, ...]:
     paths: list[str] = []
     for raw_key, child in value.items():
         path = f"{prefix}.{raw_key}" if prefix else raw_key
-        if path in _ALLOWED_FIELD_PATHS or not isinstance(child, Mapping):
-            if path in _ALLOWED_FIELD_PATHS and _value_present(child):
+        if path in _STORED_FIELD_PATHS or not isinstance(child, Mapping):
+            if path in _STORED_FIELD_PATHS and _value_present(child):
                 paths.append(path)
             continue
         paths.extend(_field_paths(child, path))
@@ -348,6 +357,95 @@ def _normalize_destination(path: str, value: Any) -> Any:
     raise ContractError("conversion.instagram_url must be a handle or allowed https URL")
 
 
+def _split_legacy_contact_destination(value: Any) -> dict[str, str]:
+    """Extract typed URLs from the retired compound field when possible."""
+    if not isinstance(value, str):
+        return {}
+    parts = [part.strip() for part in value.split("·")]
+    if len(parts) < 2:
+        return {}
+    result: dict[str, str] = {}
+    for part in parts:
+        try:
+            if "whatsapp_url" not in result:
+                result["whatsapp_url"] = _normalize_destination("conversion.whatsapp_url", part)
+                continue
+        except ContractError:
+            pass
+        try:
+            if "instagram_url" not in result:
+                result["instagram_url"] = _normalize_destination("conversion.instagram_url", part)
+        except ContractError:
+            continue
+    return result
+
+
+def migrate_legacy_contact_destination(draft: "DesignIntakeDraft") -> "DesignIntakeDraft":
+    """Return a draft with the read-only compound field split and dispositions carried over."""
+    if not isinstance(draft, DesignIntakeDraft):
+        raise ContractError("draft must be a DesignIntakeDraft")
+    conversion = draft.fields.get("conversion")
+    if not isinstance(conversion, Mapping):
+        conversion = {}
+    has_legacy_value = "contact_destination" in conversion
+    has_legacy_reference = (
+        "conversion.contact_destination" in draft.provenance
+        or any(item.path == "conversion.contact_destination" for item in (*draft.assumptions, *draft.deferred, *draft.contradictions))
+    )
+    if not has_legacy_value and not has_legacy_reference:
+        return draft
+    values = {
+        key: str(conversion[key])
+        for key in ("whatsapp_url", "instagram_url")
+        if _value_present(conversion.get(key))
+    }
+    if has_legacy_value:
+        values.update(_split_legacy_contact_destination(conversion.get("contact_destination")))
+    fields = copy.deepcopy(draft.fields)
+    if has_legacy_value or values:
+        fields_conversion = fields.setdefault("conversion", {})
+        fields_conversion.pop("contact_destination", None)
+        for key, value in values.items():
+            existing = fields_conversion.get(key)
+            if _value_present(existing) and existing != value:
+                raise ContractError(f"legacy destination conflicts with {key}")
+            fields_conversion[key] = value
+    provenance = dict(draft.provenance)
+    source = provenance.pop("conversion.contact_destination", None)
+    if source is not None:
+        for key, value in values.items():
+            path = f"conversion.{key}"
+            provenance[path] = IntakeFieldProvenance(
+                path=path, origin=source.origin, source_message_id=source.source_message_id,
+                note=f"Migrated from legacy contact destination: {source.note}".strip(),
+            )
+
+    def carry(items: tuple[IntakeDisposition, ...]) -> tuple[IntakeDisposition, ...]:
+        result = [item for item in items if item.path != "conversion.contact_destination"]
+        for key, value in values.items():
+            result.extend(
+                IntakeDisposition(
+                    path=f"conversion.{key}", note=item.note,
+                    value=value if item.value is not None else None,
+                    source_message_id=item.source_message_id,
+                )
+                for item in items if item.path == "conversion.contact_destination"
+            )
+        return tuple(result)
+
+    return DesignIntakeDraft(
+        schema_version=draft.schema_version,
+        fields=fields,
+        provenance=provenance,
+        assumptions=carry(draft.assumptions),
+        deferred=carry(draft.deferred),
+        contradictions=tuple(item for item in draft.contradictions if item.path != "conversion.contact_destination"),
+        open_topics=draft.open_topics,
+        assets=draft.assets,
+        extra=draft.extra,
+    )
+
+
 @dataclass(frozen=True)
 class IntakeFieldProvenance:
     path: str
@@ -361,7 +459,7 @@ class IntakeFieldProvenance:
         unknown = set(value) - {"path", "origin", "source_message_id", "note"}
         if unknown:
             raise ContractError("provenance contains unsupported fields")
-        path = _path(value.get("path"), "provenance.path")
+        path = _stored_path(value.get("path"), "provenance.path")
         origin = _text(value.get("origin"), "provenance.origin", maximum=30).lower()
         if origin not in {item.value for item in IntakeOrigin}:
             raise ContractError("provenance.origin is invalid")
@@ -395,7 +493,7 @@ class IntakeDisposition:
         if unknown:
             raise ContractError(f"{name} contains unsupported fields")
         return cls(
-            path=_path(value.get("path"), f"{name}.path"),
+            path=_stored_path(value.get("path"), f"{name}.path"),
             note=_text(value.get("note"), f"{name}.note", maximum=2_000),
             value=copy.deepcopy(value.get("value")),
             source_message_id=_optional_positive_id(value.get("source_message_id"), f"{name}.source_message_id"),
@@ -429,7 +527,7 @@ class IntakeContradiction:
         if unknown:
             raise ContractError("contradiction contains unsupported fields")
         return cls(
-            path=_path(value.get("path"), "contradiction.path"),
+            path=_stored_path(value.get("path"), "contradiction.path"),
             first_value=copy.deepcopy(value.get("first_value")),
             second_value=copy.deepcopy(value.get("second_value")),
             first_source_message_id=_optional_positive_id(value.get("first_source_message_id"), "contradiction.first_source_message_id"),
@@ -524,7 +622,7 @@ class DesignIntakeDraft:
             raise ContractError("design_intake_draft.provenance must be an object")
         provenance: dict[str, IntakeFieldProvenance] = {}
         for key, item in provenance_raw.items():
-            if not isinstance(key, str) or key not in _ALLOWED_FIELD_PATHS:
+            if not isinstance(key, str) or key not in _STORED_FIELD_PATHS:
                 raise ContractError("provenance contains an invalid intake field")
             if key in invalid_field_paths:
                 continue
@@ -625,7 +723,7 @@ class DesignIntakeDraft:
         _validate_field_tree(self.fields)
         material_paths = set(_field_paths(self.fields))
         for path in self.provenance:
-            _path(path, "provenance.path")
+            _stored_path(path, "provenance.path")
         missing_provenance = sorted(material_paths - set(self.provenance))
         if missing_provenance:
             raise ContractError("missing provenance for " + ", ".join(missing_provenance[:5]))
@@ -640,11 +738,11 @@ class DesignIntakeDraft:
         canonical_hash(self.to_dict())
 
     def value(self, path: str) -> Any:
-        return _path_value(self.fields, _path(path))
+        return _path_value(self.fields, _stored_path(path))
 
     def owner_confirmed_value(self, path: str) -> Any:
         """Return a value the owner stated or explicitly accepted."""
-        path = _path(path)
+        path = _stored_path(path)
         provenance = self.provenance.get(path)
         if provenance is None or provenance.origin not in _OWNER_CONFIRMED_ORIGINS:
             return None
@@ -737,7 +835,8 @@ class DesignIntakeDraft:
 
     def to_site_intake(self) -> SiteIntake:
         """Apply only safe, reversible defaults and validate the final intake."""
-        fields = copy.deepcopy(self.fields)
+        source = migrate_legacy_contact_destination(self)
+        fields = copy.deepcopy(source.fields)
         _drop_incompatible_model_values(fields)
         if not _value_present(_path_value(fields, "business.name")):
             _copy_path_set(fields, "business.name", "Working website")
@@ -764,9 +863,9 @@ class DesignIntakeDraft:
         if not isinstance(design, dict):
             design = {}
             fields["design"] = design
-        design["assumptions"] = [item.to_dict() for item in self.assumptions]
-        design["deferred"] = [item.to_dict() for item in self.deferred]
-        design["provenance"] = {path: item.to_dict() for path, item in self.provenance.items()}
+        design["assumptions"] = [item.to_dict() for item in source.assumptions]
+        design["deferred"] = [item.to_dict() for item in source.deferred]
+        design["provenance"] = {path: item.to_dict() for path, item in source.provenance.items()}
         assets = []
         for item in self.assets:
             assets.append({
@@ -780,11 +879,11 @@ class DesignIntakeDraft:
             fields["assets"] = assets
         fields["provenance"] = {
             **(fields.get("provenance") if isinstance(fields.get("provenance"), Mapping) else {}),
-            "intake_draft_hash": self.content_hash,
-            "assumptions": [item.to_dict() for item in self.assumptions],
-            "deferred": [item.to_dict() for item in self.deferred],
+            "intake_draft_hash": source.content_hash,
+            "assumptions": [item.to_dict() for item in source.assumptions],
+            "deferred": [item.to_dict() for item in source.deferred],
         }
-        fields["unknowns"] = [item.note for item in self.deferred]
+        fields["unknowns"] = [item.note for item in source.deferred]
         fields["schema_version"] = 1
         return SiteIntake.from_dict(fields)
 
