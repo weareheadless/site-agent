@@ -380,6 +380,14 @@ Customer view + ui_action (only when the owner is asking about a build):
   an existing one.
 - Otherwise omit ui_action entirely. Never return an action that cannot be
   executed from the CUSTOMER VIEW block.
+- When the conversion action is a messaging channel (WhatsApp, Instagram, email),
+  the destination is part of the fact, not an optional extra: record the exact
+  number with country code, or the exact profile URL/handle, in
+  "conversion.contact_destination". Never leave it null while a messaging action
+  is chosen, and never ask again for a destination the conversation already
+  contains — read the conversation first. A brief whose primary action cannot
+  reach the owner is not ready_to_build.
+
 
 Return exactly one JSON object with this shape:
 {
