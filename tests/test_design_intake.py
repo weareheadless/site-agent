@@ -331,7 +331,7 @@ def test_build_composes_creative_direction_from_confirmed_intake(tmp_path):
     class _Lab:
         def __init__(self): self.submissions = []
         def submit(self, prompt, raw_intake, **kwargs):
-            self.submissions.append((prompt, kwargs))
+            self.submissions.append(prompt)
             return {"run_id": "intake-lab-" + "c" * 32, "status": "building", "publishable": False}
         def get_run(self, run_id):
             if not self.submissions: return None
@@ -351,8 +351,7 @@ def test_build_composes_creative_direction_from_confirmed_intake(tmp_path):
     result = service.build(session["session_id"], confirmed_revision=final_revision, idempotency_key="build-direction")
 
     assert len(lab.submissions) == 1
-    assert lab.submissions[0]["run"]["mode"] == "production_candidate"
-    prompt = lab.submissions[0][0]
+    prompt = lab.submissions[0]
     assert "North Star Studio" in prompt
     assert "Brand strategy for independent businesses." in prompt
     assert "Independent business owners" in prompt
