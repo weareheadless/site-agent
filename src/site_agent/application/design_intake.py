@@ -751,8 +751,14 @@ class DesignIntakeService:
                     self.memory.add_message(conversation_id, "system", background)
                 except Exception:  # noqa: BLE001 - analysis sharing must never break a turn
                     pass
+        ui_action = self._resolve_ui_action(turn.ui_action, session)
+        reply = turn.assistant_message
+        if isinstance(turn.ui_action, Mapping) and turn.ui_action.get("action") == "start_build":
+            if isinstance(ui_action, Mapping) and ui_action.get("error"):
+                ui_action = {"action": None, "error": str(ui_action["error"])[:500]}
+                reply = "Your brief is ready. Please confirm it before I start building."
         return {
-            "reply": turn.assistant_message,
+            "reply": reply,
             "changed": True,
             "operation_kind": "design_intake_advice",
             "intake_session_id": session_id,
@@ -765,7 +771,7 @@ class DesignIntakeService:
             "creative_insights": [item.to_dict() for item in turn.creative_insights],
             "advisor_call_count": advisor_call_count,
             "research": dict(research) if research is not None else None,
-            "ui_action": self._resolve_ui_action(turn.ui_action, session),
+            "ui_action": ui_action,
             "background": background,
         }
 
@@ -958,6 +964,12 @@ class DesignIntakeService:
         action_name = str(action.get("action") or "").strip()
         if action_name not in {"open_preview", "start_build"}:
             return None
+        session_id = str(session.get("session_id") or "").strip()
+        if action_name == "start_build" and session_id:
+            try:
+                session = self._row(session_id)
+            except DesignIntakeServiceError:
+                return {"action": None, "error": "intake session could not be reloaded"}
         allowed: set[str] = set()
         if self.lab_service is not None:
             run_id = str(session.get("design_run_id") or "").strip()
@@ -992,6 +1004,8 @@ class DesignIntakeService:
                     return {"action": "start_build", "fresh": True, "error": str(exc)[:500]}
                 session = self._row(str(session.get("session_id") or ""))
             if session.get("status") != IntakeSessionState.CONFIRMED.value:
+                if session_id:
+                    return {"action": None, "error": "intake session is not confirmed"}
                 return None
             revision = int(session.get("confirmed_revision_id") or session.get("confirmed_revision") or 0)
             if revision < 1:
