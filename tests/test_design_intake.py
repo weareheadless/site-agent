@@ -329,16 +329,12 @@ def test_build_composes_creative_direction_from_confirmed_intake(tmp_path):
     memory = Memory(tmp_path / "intake.db")
 
     class _Lab:
-        def __init__(self):
-            self.submissions = []
-
+        def __init__(self): self.submissions = []
         def submit(self, prompt, raw_intake, **kwargs):
-            self.submissions.append(prompt)
+            self.submissions.append((prompt, kwargs))
             return {"run_id": "intake-lab-" + "c" * 32, "status": "building", "publishable": False}
-
         def get_run(self, run_id):
-            if not self.submissions:
-                return None
+            if not self.submissions: return None
             return {"run_id": run_id, "status": "building", "publishable": False}
 
     lab = _Lab()
@@ -355,7 +351,8 @@ def test_build_composes_creative_direction_from_confirmed_intake(tmp_path):
     result = service.build(session["session_id"], confirmed_revision=final_revision, idempotency_key="build-direction")
 
     assert len(lab.submissions) == 1
-    prompt = lab.submissions[0]
+    assert lab.submissions[0]["run"]["mode"] == "production_candidate"
+    prompt = lab.submissions[0][0]
     assert "North Star Studio" in prompt
     assert "Brand strategy for independent businesses." in prompt
     assert "Independent business owners" in prompt
@@ -1641,7 +1638,7 @@ def test_force_new_build_creates_a_fresh_candidate_from_a_reviewable_prior(tmp_p
 
         def submit(self, prompt, raw_intake, **kwargs):
             run_id = f"intake-lab-{len(self.submissions):032x}"
-            self.submissions.append((prompt, run_id))
+            self.submissions.append((prompt, run_id, kwargs))
             return {"run_id": run_id, "status": "building", "publishable": False}
 
         def get_run(self, run_id):
@@ -1711,14 +1708,25 @@ def test_resolve_ui_action_only_opens_lineage_runs(tmp_path):
     assert service._resolve_ui_action({"action": "open_preview", "run_id": "not-in-lineage"}, confirmed) is None
     assert service._resolve_ui_action({"action": "nonsense"}, confirmed) is None
 
-    assert service._resolve_ui_action({"action": "start_build"}, confirmed) == {"action": "start_build", "fresh": True}
+    assert service._resolve_ui_action({"action": "start_build"}, confirmed)["action"] == "start_build"
     assert service._resolve_ui_action({"action": "start_build"}, collecting) is None
     memory.close()
 
 
+class _StartBuildLab:
+    def __init__(self): self.submissions = []
+    def submit(self, prompt, raw_intake, **kwargs):
+        run = {"run_id": f"run-{len(self.submissions)}", "status": "building", "mode": "production_candidate", **kwargs}
+        self.submissions.append((prompt, run))
+        return run
+    def get_run(self, run_id):
+        return next((item[1] for item in self.submissions if item[1]["run_id"] == run_id), None)
+
+
 def test_ready_start_build_proposal_confirms_exact_intake_revision(tmp_path):
     memory = Memory(tmp_path / "intake.db")
-    service = DesignIntakeService(memory)
+    lab = _StartBuildLab()
+    service = DesignIntakeService(memory, lab_service=lab)
     draft = DesignIntakeDraft.from_site_intake(_intake())
     session = service.create_session(draft=draft)
     assert session["status"] == "ready_to_build"
@@ -1726,11 +1734,65 @@ def test_ready_start_build_proposal_confirms_exact_intake_revision(tmp_path):
     action = service._resolve_ui_action({"action": "start_build"}, session)
 
     confirmed = service.get_session(session["session_id"])
-    assert action == {"action": "start_build", "fresh": True}
+    assert action["action"] == "start_build"
+    assert action["fresh"] is True
+    assert action["build"]["run"]["intake_session_id"] == session["session_id"]
+    assert action["build"]["run"]["intake_revision_id"] == confirmed["confirmed_revision_id"]
+    assert len(lab.submissions) == 1
+    assert action["build"]["run"]["mode"] == "production_candidate"
     assert confirmed["status"] == "confirmed"
     assert confirmed["confirmed_revision"]
     assert confirmed["confirmed_hash"]
     assert confirmed["confirmed_ts"]
+    memory.close()
+
+
+def test_ready_start_build_action_is_idempotent_and_visible_in_workspace_status(tmp_path):
+    from site_agent.application.workspace import ChatService
+
+    memory = Memory(tmp_path / "intake.db")
+    lab = _StartBuildLab()
+    service = DesignIntakeService(memory, lab_service=lab)
+    session = service.create_session(draft=DesignIntakeDraft.from_site_intake(_intake()))
+    first = service._resolve_ui_action({"action": "start_build"}, session)
+    repeated = service._resolve_ui_action({"action": "start_build"}, service.get_session(session["session_id"]))
+    assert len(lab.submissions) == 1
+    assert repeated["build"]["run"]["run_id"] == first["build"]["run"]["run_id"]
+
+    class _Coordinator:
+        def status(self, conversation_id):
+            confirmed = service.get_session(session["session_id"])
+            return {"confirmed": True, "session_id": session["session_id"], "confirmed_revision_id": confirmed["confirmed_revision_id"]}
+
+    class _Memory:
+        def list_active_chat_jobs(self, **kwargs): return []
+        def list_design_runs(self, **kwargs): return [lab.submissions[0][1]]
+        def list_design_run_events(self, run_id, **kwargs): return []
+
+    class _Tenant:
+        tenant_id = "test"
+        context = {"intake_coordinator": _Coordinator()}
+        memory = _Memory()
+    # Exercise the existing status projection with the queued production run.
+    workspace = object.__new__(ChatService)
+    workspace._scope = lambda tenant: (_Tenant.memory, None, "test")
+    workspace._journey = lambda tenant: None
+    status = workspace.status(tenant=_Tenant())
+    assert status["build"]["state"] == "queued"
+    assert status["build"]["run_id"] == first["build"]["run"]["run_id"]
+    assert len(status["build"]["stages"]) == 6
+    memory.close()
+
+
+def test_start_build_failure_keeps_confirmation_and_reports_plain_reason(tmp_path):
+    memory = Memory(tmp_path / "intake.db")
+    service = DesignIntakeService(memory)
+    session = service.create_session(draft=DesignIntakeDraft.from_site_intake(_intake()))
+    action = service._resolve_ui_action({"action": "start_build"}, session)
+    confirmed = service.get_session(session["session_id"])
+    assert action is not None
+    assert action["error"] == "design build service is unavailable"
+    assert confirmed["status"] == "confirmed"
     memory.close()
 
 
