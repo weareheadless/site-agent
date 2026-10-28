@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from site_agent.application.designs import DesignService, DesignSharedIntelligence
+from site_agent.hands.site_build import next_react_toolchain_dependencies
 from site_agent.application.design_jobs import DesignJobExecutor
 from site_agent.core.contracts import ContractError
 from site_agent.core.design_contracts import (
@@ -427,6 +428,8 @@ def test_next_target_prompt_keeps_legacy_source_out_of_native_authoring():
     assert "src/app/page.tsx" not in prompt
     assert "next@16.3.4" in prompt
     assert "Do not use ranges or newer versions" in prompt
+    approved = {f"{item['package']}@{item['version']}" for item in next_react_toolchain_dependencies()}
+    assert all(dependency in prompt for dependency in approved)
 
 
 def test_payload_first_build_prompt_does_not_send_copydeck_values_to_the_source_author():

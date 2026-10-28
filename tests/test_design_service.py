@@ -19,7 +19,7 @@ from site_agent.hands.design_quality import QualityPolicy
 from site_agent.hands.builder import BuilderError
 from site_agent.hands.site_build import (
     NEXT_REACT_PROFILE,
-    NEXT_REACT_TOOLCHAIN_DEPENDENCIES,
+    next_react_toolchain_dependencies,
     SiteBuildResult,
     SiteOutputArtifactStore,
 )
@@ -253,7 +253,7 @@ def test_local_initial_build_uses_next_target_and_quality_profile(tmp_path):
         for item in policy.approved_capabilities
     } >= {
         (item["package"], item["version"])
-        for item in NEXT_REACT_TOOLCHAIN_DEPENDENCIES
+        for item in next_react_toolchain_dependencies()
     }
     assert not hasattr(policy, "build_command")
     memory.close()
@@ -707,7 +707,7 @@ def test_local_visual_refinement_reuses_next_target_and_quality_profile(tmp_path
         for item in policy.approved_capabilities
     } >= {
         (item["package"], item["version"])
-        for item in NEXT_REACT_TOOLCHAIN_DEPENDENCIES
+        for item in next_react_toolchain_dependencies()
     }
     memory.transition_design_run(child_run["run_id"], "failed")
     retried = service.create_visual_refinement_run(parent["run_id"], critique, run_id="local-next-retried")

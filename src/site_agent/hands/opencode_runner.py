@@ -1284,10 +1284,10 @@ def _design_prompt(
     allowed_paths = set(getattr(target, "allowed_paths", ()) or ())
     native_framework_block = ""
     if build_profile == "next_react":
-        from .site_build import NEXT_REACT_TOOLCHAIN_DEPENDENCIES
+        from .site_build import next_react_toolchain_dependencies
 
         approved_dependencies = ", ".join(
-            f"{item['package']}@{item['version']}" for item in NEXT_REACT_TOOLCHAIN_DEPENDENCIES
+            f"{item['package']}@{item['version']}" for item in next_react_toolchain_dependencies()
         )
         native_framework_block = (
             "NATIVE NEXT/REACT/PAYLOAD TOOLCHAIN CONTRACT:\n"

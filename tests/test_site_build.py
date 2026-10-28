@@ -6,7 +6,7 @@ import pytest
 import site_agent.hands.site_build as site_build
 from site_agent.hands.site_build import (
     NEXT_REACT_PROFILE,
-    NEXT_REACT_TOOLCHAIN_DEPENDENCIES,
+    next_react_toolchain_dependencies,
     SiteBuildError,
     build_site,
     get_build_profile,
@@ -93,6 +93,36 @@ def test_next_manifest_unknown_package_fails_as_not_host_approved(tmp_path):
         site_build._validate_next_manifest(tmp_path)
 
 
+def test_next_manifest_rejects_third_party_version_different_from_template(tmp_path):
+    (tmp_path / "package.json").write_text(json.dumps({"dependencies": {"cli-color": "2.0.3"}}))
+    with pytest.raises(SiteBuildError, match="approved exact version: cli-color@2.0.4"):
+        site_build._validate_next_manifest(tmp_path)
+
+
+def test_next_manifest_uses_every_exact_template_dependency(tmp_path, monkeypatch):
+    template_path = Path(site_build.__file__).resolve().parents[1] / "templates/next-payload/package.json"
+    template = json.loads(template_path.read_text())
+    dependencies = {**template["dependencies"], **template["devDependencies"]}
+    (tmp_path / "package.json").write_text(json.dumps({"dependencies": dependencies}))
+    assert set(site_build._validate_next_manifest(tmp_path)) == set(dependencies)
+
+    isolated_template = tmp_path / "site_agent/templates/next-payload"
+    isolated_template.mkdir(parents=True)
+    template_path = isolated_template / "package.json"
+    template["dependencies"]["unlisted-template-package"] = "1.2.3"
+    template_path.write_text(json.dumps(template))
+    monkeypatch.setattr(site_build, "__file__", str(tmp_path / "site_agent/hands/site_build.py"))
+    dependency = {"dependencies": {**dependencies, "unlisted-template-package": "1.2.3"}}
+    (tmp_path / "package.json").write_text(json.dumps(dependency))
+    assert "unlisted-template-package" in site_build._validate_next_manifest(tmp_path)
+
+
+def test_next_template_dependency_source_is_fail_closed(tmp_path, monkeypatch):
+    monkeypatch.setattr(site_build, "__file__", str(tmp_path / "site_build.py"))
+    with pytest.raises(SiteBuildError, match="canonical Next/React template package.json is invalid"):
+        site_build.next_react_toolchain_dependencies()
+
+
 def test_prepare_native_workspace_bootstraps_only_technical_next_files(tmp_path):
     workspace = tmp_path / "site"
     workspace.mkdir()
@@ -106,7 +136,7 @@ def test_prepare_native_workspace_bootstraps_only_technical_next_files(tmp_path)
     package = json.loads((workspace / "package.json").read_text(encoding="utf-8"))
     declared = {**package["dependencies"], **package["devDependencies"]}
     assert declared == {
-        item["package"]: item["version"] for item in NEXT_REACT_TOOLCHAIN_DEPENDENCIES
+        item["package"]: item["version"] for item in next_react_toolchain_dependencies()
     }
     assert (workspace / "src" / "app" / "page.tsx").is_file()
     eslint_config = (workspace / "eslint.config.mjs").read_text(encoding="utf-8")
