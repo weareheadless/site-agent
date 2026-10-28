@@ -19,12 +19,9 @@ from site_agent.site_scaffold import initialize_toolchain_workspace
 def _lockfile_package_entries(declared):
     entries = {}
     for name, value in declared.items():
-        artifact = site_build._SHARED_ARTIFACT_RE.fullmatch(value) if name in {
-            "@weareheadless/helloada-payload-admin",
-            "@weareheadless/helloada-payload-core",
-        } else None
+        artifact = site_build._SHARED_ARTIFACT_PATTERNS[name].fullmatch(value) if name in site_build._SHARED_ARTIFACT_PATTERNS else None
         entries[f"node_modules/{name}"] = (
-            {"version": artifact.group("file_version"), "resolved": value}
+            {"version": artifact.group("v"), "resolved": value}
             if artifact else {"version": value}
         )
     return entries
@@ -77,7 +74,7 @@ def test_next_manifest_accepts_immutable_shared_package_release_artifacts(tmp_pa
             "payload-admin-v0.10.38/weareheadless-helloada-payload-admin-0.10.38.tgz"
             if name.endswith("admin") else
             "https://github.com/weareheadless/site-agent/releases/download/"
-            "payload-core-v0.10.38/weareheadless-helloada-payload-core-0.10.38.tgz"
+            "helloada-payload-core-v0.10.38/weareheadless-helloada-payload-core-0.10.38.tgz"
         )
         (tmp_path / "package.json").write_text(json.dumps(package))
         assert set(site_build._validate_next_manifest(tmp_path)) == set(shared_names)
@@ -104,7 +101,7 @@ def test_next_manifest_still_rejects_unknown_and_non_exact_third_party_dependenc
 def test_next_manifest_lockfile_validates_shared_artifact_url_and_version(tmp_path):
     dependencies = {
         "@weareheadless/helloada-payload-admin": "https://github.com/weareheadless/site-agent/releases/download/payload-admin-v0.10.38/weareheadless-helloada-payload-admin-0.10.38.tgz",
-        "@weareheadless/helloada-payload-core": "https://github.com/weareheadless/site-agent/releases/download/payload-core-v0.10.38/weareheadless-helloada-payload-core-0.10.38.tgz",
+        "@weareheadless/helloada-payload-core": "https://github.com/weareheadless/site-agent/releases/download/helloada-payload-core-v0.10.38/weareheadless-helloada-payload-core-0.10.38.tgz",
     }
     approved = {item["package"]: item["version"] for item in next_react_toolchain_dependencies()}
     dependencies.update({name: version for name, version in approved.items() if name not in dependencies})
@@ -148,6 +145,20 @@ def test_next_manifest_lockfile_validates_shared_artifact_url_and_version(tmp_pa
     with pytest.raises(SiteBuildError, match=f"lockfile does not pin {admin}@"):
         site_build._validate_next_manifest(tmp_path, require_lockfile=True)
 
+
+def test_shared_artifact_patterns_are_package_specific_and_pin_versions():
+    admin = "https://github.com/weareheadless/site-agent/releases/download/payload-admin-v0.10.38/weareheadless-helloada-payload-admin-0.10.38.tgz"
+    core = "https://github.com/weareheadless/site-agent/releases/download/helloada-payload-core-v0.5.9/weareheadless-helloada-payload-core-0.5.9.tgz"
+    admin_pattern = site_build._SHARED_ARTIFACT_PATTERNS["@weareheadless/helloada-payload-admin"]
+    core_pattern = site_build._SHARED_ARTIFACT_PATTERNS["@weareheadless/helloada-payload-core"]
+
+    assert admin_pattern.fullmatch(admin)
+    assert core_pattern.fullmatch(core)
+    assert not admin_pattern.fullmatch(core)
+    assert not core_pattern.fullmatch(admin)
+    assert not core_pattern.fullmatch(core.replace("github.com", "example.com"))
+    assert not core_pattern.fullmatch(core.replace("core-0.5.9.tgz", "core-0.5.10.tgz"))
+    assert not core_pattern.fullmatch("0.5.9")
 
 def test_next_manifest_unknown_package_fails_as_not_host_approved(tmp_path):
     (tmp_path / "package.json").write_text(json.dumps({"dependencies": {"unknown-package": "1.0.0"}}))
