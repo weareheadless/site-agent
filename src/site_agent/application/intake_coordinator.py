@@ -32,7 +32,7 @@ from ..core.incubation_contracts import ResearchTrigger
 from ..core.memory import Memory
 from ..config import intake_settings
 from .customer_genesis import CustomerGenesisService
-from .design_intake import DesignIntakeService, _website_present_from_config
+from .design_intake import DesignIntakeService
 from .incubation_activity import IncubationActivityService
 from .incubation_research import IncubationResearchExecutor, IncubationResearchService
 
@@ -63,6 +63,9 @@ class IntakeCoordinator:
         self.config = dict(config)
         journey_config = self.config.get("ada_journey") if isinstance(self.config.get("ada_journey"), Mapping) else {}
         site_config = self.config.get("site") if isinstance(self.config.get("site"), Mapping) else {}
+        # The general helper treats missing website evidence as false; routing
+        # here requires an explicit false so legacy/unconfigured tenants retain
+        # their existing confirmed-session behavior.
         self.first_candidate_journey = (
             journey_config.get("website_present") is False
             or site_config.get("website_present") is False
