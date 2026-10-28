@@ -43,8 +43,8 @@ def test_status_exposes_persisted_order_and_elapsed_time(tmp_path, monkeypatch):
             return cls(2026, 1, 1, 0, 5, tzinfo=tz)
     monkeypatch.setattr(workspace_module.datetime, "datetime", FixedDateTime)
     build = service.status(tenant=tenant)["build"]
-    assert [stage["key"] for stage in build["stages"]] == ["queued", "planning", "generating", "building", "validating", "rendering", "ready", "failed"]
-    assert [stage["state"] for stage in build["stages"]] == ["done", "done", "done", "current", "pending", "pending", "pending", "pending"]
+    assert [stage["key"] for stage in build["stages"]] == ["queued", "planning", "generating", "building", "validating", "rendering"]
+    assert [stage["state"] for stage in build["stages"]] == ["done", "done", "done", "current", "pending", "pending"]
     assert build["elapsed_seconds"] == 300
     assert build["stage"] == "building"
     memory.close()
@@ -67,6 +67,21 @@ def test_failed_status_preserves_last_stage_and_error(tmp_path):
     service, tenant = _service(memory)
     build = service.status(tenant=tenant)["build"]
     assert build["state"] == "failed"
-    assert build["stage"] == "failed"
+    assert build["stage"] == "building"
     assert build["error"] == "build failed"
+    assert [stage["key"] for stage in build["stages"]] == ["queued", "planning", "generating", "building", "validating", "rendering"]
+    assert [stage["state"] for stage in build["stages"]] == ["done", "done", "done", "failed", "pending", "pending"]
+    memory.close()
+
+
+def test_ready_status_marks_pipeline_complete_without_terminal_rows(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    run = _run(memory, status="ready_for_review")
+    memory.add_design_run_event(run["run_id"], "ready", "Ready to review")
+    service, tenant = _service(memory)
+    build = service.status(tenant=tenant)["build"]
+    assert build["state"] == "ready"
+    assert build["stage"] == "ready"
+    assert [stage["key"] for stage in build["stages"]] == ["queued", "planning", "generating", "building", "validating", "rendering"]
+    assert [stage["state"] for stage in build["stages"]] == ["done"] * 6
     memory.close()

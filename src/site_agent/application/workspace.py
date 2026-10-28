@@ -1851,18 +1851,17 @@ class ChatService:
                         and (revision is None or item.get("intake_revision_id") == revision)), None)
             if run is not None:
                 events = memory.list_design_run_events(str(run["run_id"]), limit=500)
-                order = ("queued", "planning", "generating", "building", "validating", "rendering", "ready", "failed")
+                order = ("queued", "planning", "generating", "building", "validating", "rendering")
                 by_stage = {e["stage"]: e for e in events if e.get("stage") in order}
                 terminal = run.get("status") in {"ready_for_review", "failed", "cancelled", "incomplete", "needs_repair", "interrupted"}
                 if not terminal or run.get("status") in {"ready_for_review", "failed"}:
-                    stage = max(by_stage, key=order.index) if by_stage else "queued"
                     failed = run.get("status") == "failed"
-                    if failed:
-                        stage = "failed"
-                    labels = {"queued":"Queued", "planning":"Planning", "generating":"Creating", "building":"Building", "validating":"Reviewing", "rendering":"Rendering", "ready":"Ready to review", "failed":"Needs attention"}
-                    current_i = order.index(stage)
                     ready = run.get("status") == "ready_for_review"
-                    stages = [{"key": key, "label": labels[key], "state": "failed" if failed and key == stage else "current" if key == stage and (not terminal or ready) else "done" if order.index(key) < current_i or key == stage else "pending", "ts": by_stage[key].get("created_ts") if key in by_stage else None} for key in order]
+                    stage = "ready" if ready else max(by_stage, key=order.index) if by_stage else "queued"
+                    stopped_at = max(by_stage, key=order.index) if by_stage else "queued"
+                    labels = {"queued":"Queued", "planning":"Planning", "generating":"Creating", "building":"Building", "validating":"Reviewing", "rendering":"Rendering"}
+                    current_i = order.index(stopped_at)
+                    stages = [{"key": key, "label": labels[key], "state": "done" if ready else "failed" if failed and key == stopped_at else "current" if key == stopped_at and not terminal else "done" if order.index(key) < current_i or key == stopped_at else "pending", "ts": by_stage[key].get("created_ts") if key in by_stage else None} for key in order]
                     started_ts = str(run.get("created_ts") or "")
                     try:
                         started = datetime.datetime.fromisoformat(started_ts.replace("Z", "+00:00"))
