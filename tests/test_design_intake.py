@@ -1716,6 +1716,24 @@ def test_resolve_ui_action_only_opens_lineage_runs(tmp_path):
     memory.close()
 
 
+def test_ready_start_build_proposal_confirms_exact_intake_revision(tmp_path):
+    memory = Memory(tmp_path / "intake.db")
+    service = DesignIntakeService(memory)
+    draft = DesignIntakeDraft.from_site_intake(_intake())
+    session = service.create_session(draft=draft)
+    assert session["status"] == "ready_to_build"
+
+    action = service._resolve_ui_action({"action": "start_build"}, session)
+
+    confirmed = service.get_session(session["session_id"])
+    assert action == {"action": "start_build", "fresh": True}
+    assert confirmed["status"] == "confirmed"
+    assert confirmed["confirmed_revision"]
+    assert confirmed["confirmed_hash"]
+    assert confirmed["confirmed_ts"]
+    memory.close()
+
+
 def test_customer_view_json_is_compact_and_omits_run_detail(tmp_path):
     memory = Memory(tmp_path / "intake.db")
 
