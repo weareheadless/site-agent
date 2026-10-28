@@ -1439,6 +1439,7 @@ class DesignService:
         self.memory.update_design_run(run_id, planning_json=planning)
         if self.get_run(run_id)["status"] == DesignRunStatus.ASSESSING_INTAKE.value:
             self._advance(run_id, DesignRunStatus.PLANNING, "Design planning output is ready to build.")
+        self._record_progress_stage(run_id, "planning", "We’re preparing your design.")
         self.memory.add_design_run_event(run_id, "queued", "Typed design build queued for the background worker.", {
             "candidate_ref": target.candidate_ref,
             "push_mode": target.push_mode,
@@ -1446,7 +1447,13 @@ class DesignService:
             "source_message_id": run.get("source_message_id"),
             "chat_job_id": run.get("chat_job_id"),
         })
+        self._record_progress_stage(run_id, "queued", "Your design build is queued.")
         return self.get_run(run_id)
+
+    def _record_progress_stage(self, run_id: str, stage: str, message: str) -> None:
+        existing = self.memory.list_design_run_events(run_id, limit=500)
+        if not any(event.get("stage") == stage for event in existing):
+            self.memory.add_design_run_event(run_id, stage, message)
 
     def create_review_draft(self, run_id: str) -> dict[str, Any]:
         """Link a passed production candidate to the existing Review workflow."""
@@ -1675,6 +1682,7 @@ class DesignService:
             self.prepare_initial_request(run_id)
         current_status = self.memory.get_design_run(run_id)["status"]
         if current_status == DesignRunStatus.PLANNING.value:
+            self._record_progress_stage(run_id, "generating", "Ada is creating your design.")
             self._advance(run_id, DesignRunStatus.BUILDING, "Starting the isolated design build.")
         elif current_status != DesignRunStatus.BUILDING.value:
             raise DesignServiceError("design run is not ready for building")
@@ -1835,6 +1843,7 @@ class DesignService:
                 })
                 return receipt
             self._advance(run_id, DesignRunStatus.CANDIDATE_READY, "Candidate retained; host validation is a separate operation.")
+            self._record_progress_stage(run_id, "building", "Your design is being assembled.")
             self.memory.add_design_run_event(run_id, "candidate_ready", "Immutable candidate recorded.", {
                 "candidate_sha": receipt.candidate_sha,
                 "candidate_ref": receipt.candidate_ref,
@@ -1923,6 +1932,14 @@ class DesignService:
         if result is None:
             raise DesignRunNotFound(f"no such design run: {run_id}")
         self.memory.add_design_run_event(run_id, status.value, message)
+        stage_for_status = {
+            DesignRunStatus.PLANNING: ("planning", "We’re preparing your design."),
+            DesignRunStatus.VALIDATING: ("validating", "We’re reviewing your design."),
+            DesignRunStatus.READY_FOR_REVIEW: ("ready", "Your design is ready to review."),
+            DesignRunStatus.FAILED: ("failed", "The design build needs attention."),
+        }.get(status)
+        if stage_for_status:
+            self._record_progress_stage(run_id, *stage_for_status)
 
     @staticmethod
     def _screenshot_evidence(quality_report: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -2681,6 +2698,7 @@ class DesignService:
                         if key in published
                     }
 
+            self._record_progress_stage(run_id, "rendering", "We’re rendering your design for review.")
             report = run_quality_gates(
                 repo,
                 base_sha=run["base_sha"],
