@@ -51,6 +51,28 @@ def test_next_react_lint_excludes_generated_and_host_trees():
     assert lint_command[:5] == ("npm", "exec", "--", "eslint", "src")
 
 
+def test_next_manifest_allows_only_template_pinned_shared_package_artifacts(tmp_path):
+    template = json.loads((Path(site_build.__file__).resolve().parents[1] / "templates/next-payload/package.json").read_text())
+    shared_names = ("@weareheadless/helloada-payload-admin", "@weareheadless/helloada-payload-core")
+    package = {"dependencies": {name: template["dependencies"][name] for name in shared_names}}
+    (tmp_path / "package.json").write_text(json.dumps(package))
+    assert set(site_build._validate_next_manifest(tmp_path)) == set(shared_names)
+    for name in shared_names:
+        for invalid in ("https://example.invalid/older.tgz", "0.10.39"):
+            package["dependencies"][name] = invalid
+            (tmp_path / "package.json").write_text(json.dumps(package))
+            with pytest.raises(SiteBuildError, match=f"native dependency must use the approved exact version: {name}"):
+                site_build._validate_next_manifest(tmp_path)
+            package["dependencies"][name] = template["dependencies"][name]
+
+
+def test_next_manifest_still_rejects_unknown_and_non_exact_third_party_dependencies(tmp_path):
+    for package in ({"dependencies": {"unknown-package": "1.0.0"}}, {"dependencies": {"next": "^16.3.4"}}):
+        (tmp_path / "package.json").write_text(json.dumps(package))
+        with pytest.raises(SiteBuildError):
+            site_build._validate_next_manifest(tmp_path)
+
+
 def test_prepare_native_workspace_bootstraps_only_technical_next_files(tmp_path):
     workspace = tmp_path / "site"
     workspace.mkdir()

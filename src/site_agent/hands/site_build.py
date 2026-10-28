@@ -488,6 +488,22 @@ def _validate_next_manifest(root: Path, *, require_lockfile: bool = False) -> tu
     if not isinstance(manifest, Mapping):
         raise SiteBuildError("Next/React package.json must be an object")
     approved = {str(item["package"]): str(item["version"]) for item in NEXT_REACT_TOOLCHAIN_DEPENDENCIES}
+    # Shared HelloAda packages are pinned only by the canonical scaffold. Read
+    # those artifact URLs here rather than maintaining a second host allowlist.
+    template_manifest_path = Path(__file__).resolve().parents[1] / "templates" / "next-payload" / "package.json"
+    try:
+        template_manifest = json.loads(template_manifest_path.read_text(encoding="utf-8"))
+        template_dependencies = template_manifest.get("dependencies") or {}
+    except (OSError, json.JSONDecodeError, AttributeError) as exc:
+        raise SiteBuildError(f"canonical Next/React template package.json is invalid: {exc}") from exc
+    shared_packages = {
+        name: template_dependencies[name]
+        for name in (
+            "@weareheadless/helloada-payload-admin",
+            "@weareheadless/helloada-payload-core",
+        )
+        if name in template_dependencies
+    }
     declared: dict[str, str] = {}
     for section in ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies"):
         values = manifest.get(section) or {}
@@ -496,10 +512,11 @@ def _validate_next_manifest(root: Path, *, require_lockfile: bool = False) -> tu
         for name, version in values.items():
             name = str(name).strip()
             version = str(version).strip()
-            expected = approved.get(name)
+            expected = approved.get(name, shared_packages.get(name))
             if expected is None:
                 raise SiteBuildError(f"native dependency is not host-approved: {name}")
-            if version != expected or not _EXACT_VERSION_RE.fullmatch(version):
+            is_shared_artifact = name in shared_packages
+            if version != expected or (not is_shared_artifact and not _EXACT_VERSION_RE.fullmatch(version)):
                 raise SiteBuildError(f"native dependency must use the approved exact version: {name}@{expected}")
             declared[name] = version
     if require_lockfile:
