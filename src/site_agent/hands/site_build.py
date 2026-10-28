@@ -419,19 +419,21 @@ def prepare_native_workspace(root: str | Path, profile: SiteBuildProfile) -> tup
     return tuple(created)
 
 _EXACT_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
-_SHARED_ARTIFACT_RE = re.compile(
-    r"^https://github\.com/weareheadless/site-agent/releases/download/"
-    r"(?P<tag>payload-(?P<kind>admin|core)-v(?P<tag_version>\d+\.\d+\.\d+))"
-    r"/weareheadless-helloada-payload-(?P=kind)-(?P<file_version>\d+\.\d+\.\d+)\.tgz$"
-)
+_SHARED_ARTIFACT_PATTERNS = {
+    "@weareheadless/helloada-payload-admin": re.compile(
+        r"^https://github\.com/weareheadless/site-agent/releases/download/"
+        r"payload-admin-v(?P<v>\d+\.\d+\.\d+)/weareheadless-helloada-payload-admin-(?P=v)\.tgz$"
+    ),
+    "@weareheadless/helloada-payload-core": re.compile(
+        r"^https://github\.com/weareheadless/site-agent/releases/download/"
+        r"helloada-payload-core-v(?P<v>\d+\.\d+\.\d+)/weareheadless-helloada-payload-core-(?P=v)\.tgz$"
+    ),
+}
 
 
 def _is_shared_artifact(name: str, value: str) -> bool:
-    match = _SHARED_ARTIFACT_RE.fullmatch(value)
-    if not match:
-        return False
-    expected_kind = "admin" if name.endswith("-admin") else "core"
-    return match.group("kind") == expected_kind and match.group("tag_version") == match.group("file_version")
+    pattern = _SHARED_ARTIFACT_PATTERNS.get(name)
+    return pattern is not None and pattern.fullmatch(value) is not None
 
 PROFILES = {NEXT_REACT_PROFILE.name: NEXT_REACT_PROFILE}
 
@@ -537,8 +539,8 @@ def _validate_next_manifest(root: Path, *, require_lockfile: bool = False) -> tu
             entry = packages.get(f"node_modules/{name}")
             locked = entry.get("version") if isinstance(entry, Mapping) else None
             if name in shared_packages and _is_shared_artifact(name, expected):
-                artifact = _SHARED_ARTIFACT_RE.fullmatch(expected)
-                version = artifact.group("file_version") if artifact else None
+                artifact = _SHARED_ARTIFACT_PATTERNS[name].fullmatch(expected)
+                version = artifact.group("v") if artifact else None
                 valid_lock = (
                     isinstance(entry, Mapping)
                     and entry.get("resolved") == expected
