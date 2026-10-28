@@ -988,12 +988,24 @@ class DesignIntakeService:
                         confirmation_text="Owner confirmed the brief in conversation",
                         idempotency_key=f"conversational-confirm-{session.get('session_id')}-{revision}",
                     )
-                except DesignIntakeServiceError:
-                    return None
+                except DesignIntakeServiceError as exc:
+                    return {"action": "start_build", "fresh": True, "error": str(exc)[:500]}
                 session = self._row(str(session.get("session_id") or ""))
             if session.get("status") != IntakeSessionState.CONFIRMED.value:
                 return None
-            return {"action": "start_build", "fresh": True}
+            revision = int(session.get("confirmed_revision_id") or session.get("confirmed_revision") or 0)
+            if revision < 1:
+                return {"action": "start_build", "fresh": True, "error": "confirmed intake revision was not found"}
+            try:
+                build = self.build(
+                    str(session.get("session_id") or ""),
+                    confirmed_revision=revision,
+                    owner_request=str(session.get("owner_request") or ""),
+                    idempotency_key=f"conversational-build-{session.get('session_id')}-{revision}",
+                )
+            except DesignIntakeServiceError as exc:
+                return {"action": "start_build", "fresh": True, "error": str(exc)[:500]}
+            return {"action": "start_build", "fresh": True, "build": build}
         candidate = str(action.get("run_id") or "")
         if candidate in allowed:
             return {"action": "open_preview", "run_id": candidate}
