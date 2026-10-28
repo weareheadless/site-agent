@@ -147,12 +147,18 @@ def _compose_creative_request(intake: SiteIntake) -> str:
     typography = str(brand.get("typography") or "").strip()
     visual_preferences = str(brand.get("visual_preferences") or "").strip()
     primary_action = str(conversion.get("primary_action") or "").strip()
+    whatsapp_url = str(conversion.get("whatsapp_url") or "").strip()
+    instagram_url = str(conversion.get("instagram_url") or "").strip()
     services = [
         str(item).strip()
         for item in (business.get("primary_services") or ())
         if isinstance(item, str) and str(item).strip()
     ]
     brief = f"Creative direction for {name}: {offer}."
+    if whatsapp_url or instagram_url:
+        brief += " Confirmed contact hrefs (use exactly as supplied): " + "; ".join(
+            href for href in (whatsapp_url, instagram_url) if href
+        ) + "."
     if audience_primary:
         brief += f" It is for {audience_primary}."
     if desired_impression:

@@ -747,7 +747,7 @@ def _initial_homepage_payload_data(request, plan: Any, *, featured_media_id: int
         "label": "Homepage introduction",
         "text": body,
     })
-    destination = str(intake.conversion.get("contact_destination") or "").strip()
+    destination = str(intake.conversion.get("whatsapp_url") or intake.conversion.get("instagram_url") or "").strip()
     if destination:
         entries.append({
             "key": "home.hero.primary-action",
@@ -1129,7 +1129,7 @@ def _design_prompt(
         request.mode in {"initial_homepage", "visual_refinement"}
         and isinstance(conversion, Mapping)
         and conversion.get("not_available") is True
-        and not str(conversion.get("contact_destination") or "").strip()
+        and not (conversion.get("whatsapp_url") or conversion.get("instagram_url"))
     ):
         conversion_safety = (
             "CONVERSION SAFETY OVERRIDE:\n"
@@ -1579,7 +1579,7 @@ def _typed_design_quality_policy(config: dict[str, Any], request, target):
         contact_destination_unavailable=(
             isinstance(conversion, Mapping)
             and conversion.get("not_available") is True
-            and not str(conversion.get("contact_destination") or "").strip()
+            and not (conversion.get("whatsapp_url") or conversion.get("instagram_url"))
         ),
     )
     if target.allowed_paths:

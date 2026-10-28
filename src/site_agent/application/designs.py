@@ -680,7 +680,7 @@ class DesignService:
                 "required_pages": list(quality_config.get("required_pages") or intake.site.get("required_pages") or ()),
                 "required_content": list(configured_content or ()),
                 "contact_destination_unavailable": intake.conversion.get("not_available") is True
-                and not str(intake.conversion.get("contact_destination") or "").strip(),
+                and not (intake.conversion.get("whatsapp_url") or intake.conversion.get("instagram_url")),
                 "allowed_patterns": list(
                     quality_config.get("allowed_patterns")
                     or (NEXT_REACT_PROFILE.writable_patterns if build_profile == NEXT_REACT_PROFILE.name else site.get("writable_patterns") or ())
@@ -776,6 +776,11 @@ class DesignService:
                 "business": intake.business,
                 "audience": intake.audience,
                 "conversion": intake.conversion,
+                "contact_hrefs": {
+                    key: intake.conversion[key]
+                    for key in ("whatsapp_url", "instagram_url")
+                    if intake.conversion.get(key)
+                },
                 "brand": intake.brand,
                 "site": intake.site,
                 "constraints": intake.constraints,
@@ -1348,7 +1353,7 @@ class DesignService:
                 contact_destination_unavailable=(
                     isinstance(conversion, Mapping)
                     and conversion.get("not_available") is True
-                    and not str(conversion.get("contact_destination") or "").strip()
+                    and not (conversion.get("whatsapp_url") or conversion.get("instagram_url"))
                 ),
             )
             snapshot = run.get("context_snapshot")

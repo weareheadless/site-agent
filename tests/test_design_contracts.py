@@ -44,7 +44,7 @@ def _intake(**overrides):
         "audience": {"primary": "Independent business owners"},
         "conversion": {
             "primary_action": "Book a consultation",
-            "contact_destination": "mailto:hello@example.com",
+            "whatsapp_url": "https://wa.me/15551234567",
         },
         "brand": {"voice": "Clear, thoughtful, and warm."},
         "site": {"required_pages": ["home", "about", "contact"]},
@@ -125,10 +125,10 @@ def test_site_intake_rejects_unbounded_text_and_unsupported_contact_url():
             "primary_services": ["Brand strategy"],
         }))
 
-    with pytest.raises(ContractError, match="contact_destination"):
+    with pytest.raises(ContractError, match="whatsapp_url"):
         SiteIntake.from_dict(_intake(conversion={
             "primary_action": "Book a consultation",
-            "contact_destination": "javascript:alert(1)",
+            "whatsapp_url": "javascript:alert(1)",
         }))
 
 

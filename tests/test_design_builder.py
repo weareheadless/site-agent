@@ -14,10 +14,10 @@ from site_agent.hands.site_build import NEXT_REACT_PROFILE, SiteBuildResult
 from tests.test_design_contracts import _experience_plan
 
 
-def _payload_first_request(contact_destination=None):
+def _payload_first_request(whatsapp_url=None):
     conversion = {"primary_action": "Start a conversation", "not_available": True}
-    if contact_destination:
-        conversion = {"primary_action": "Start a conversation", "contact_destination": contact_destination}
+    if whatsapp_url:
+        conversion = {"primary_action": "Start a conversation", "whatsapp_url": whatsapp_url}
     return PageBuildRequest.from_dict({
         "schema_version": 1,
         "run_id": "payload-first-home",
@@ -54,7 +54,7 @@ def test_payload_first_homepage_data_is_editable_and_never_invents_a_contact_des
     }
 
     linked = runner._initial_homepage_payload_data(
-        _payload_first_request("mailto:hello@example.com"),
+        _payload_first_request("https://wa.me/15551234567"),
         SimpleNamespace(copy_deck=copy_deck),
         featured_media_id=17,
     )
@@ -65,7 +65,7 @@ def test_payload_first_homepage_data_is_editable_and_never_invents_a_contact_des
     assert linked["seo"]["description"] == copy_deck["meta_description"]
     assert entries[1]["text"] == copy_deck["headline"]
     assert entries[2]["text"] == copy_deck["body"]
-    assert entries[3]["href"] == "mailto:hello@example.com"
+    assert entries[3]["href"] == "https://wa.me/15551234567"
     assert entries[3]["key"] == "home.hero.primary-action"
 
     no_destination = runner._initial_homepage_payload_data(
