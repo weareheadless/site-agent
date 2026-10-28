@@ -3,6 +3,8 @@ import pytest
 import json
 
 from site_agent.application.design_intake import DesignIntakeService, DesignIntakeServiceError
+from site_agent.application.workspace import DesignBuildHandoff
+from site_agent.application.designs import DesignSharedIntelligence
 from site_agent.application.customer_genesis import CustomerGenesisService
 from site_agent.brain.design_intake import (
     DesignIntakeAdvisorError,
@@ -363,6 +365,80 @@ def test_build_composes_creative_direction_from_confirmed_intake(tmp_path):
     assert "shaft of daylight" not in prompt.casefold()
     assert "Build the first visual website candidate" not in prompt
     assert result["session"]["design_run_id"] == "intake-lab-" + "c" * 32
+    memory.close()
+
+
+def test_confirmed_build_handoff_forwards_shared_intelligence(tmp_path):
+    """Exercise the exact handoff keyword contract used by DesignIntakeService.build."""
+    memory = Memory(tmp_path / "handoff.db")
+    intelligence = DesignSharedIntelligence.unavailable()
+
+    class Service:
+        config = {}
+        def resolve_base_sha(self): return "a" * 40
+        def create_run(self, intake, **kwargs):
+            self.run = {"run_id": kwargs["run_id"]}
+            self.create_kwargs = kwargs
+            return self.run
+        def capture_context_snapshot(self, run_id, **kwargs):
+            self.snapshot_kwargs = kwargs
+            return {"shared_intelligence": kwargs["shared_intelligence"].to_dict()}
+        def prepare_initial_request(self, run_id): return {}
+        def build_target_for_run(self, run_id): return {}
+        def queue_build(self, *args): pass
+        def get_run(self, run_id): return {"run_id": run_id, "status": "building", "publishable": True}
+
+    class Executor:
+        def enqueue(self, run_id): pass
+
+    service = Service()
+    handoff = DesignBuildHandoff({"design_service": service, "design_executor": Executor()})
+    result = handoff.submit(
+        "request", _intake().to_dict(), run_id="run-1", conversation_id=None,
+        source_message_id=None, intake_session_id="session-1", intake_revision_id=1,
+        context_extra=None, shared_intelligence=intelligence,
+    )
+    assert result["run_id"] == "run-1"
+    assert service.create_kwargs["mode"] == "production_candidate"
+    assert service.snapshot_kwargs["shared_intelligence"] is intelligence
+    memory.close()
+
+
+def test_build_confirmed_session_through_real_handoff_preserves_shared_intelligence(tmp_path):
+    memory = Memory(tmp_path / "confirmed-handoff.db")
+    intelligence = DesignSharedIntelligence.unavailable()
+
+    class Service:
+        config = {}
+        def resolve_base_sha(self): return "b" * 40
+        def create_run(self, intake, **kwargs):
+            self.run = {"run_id": kwargs["run_id"], "status": "building", "publishable": True, "intake_json": intake}
+            return self.run
+        def capture_context_snapshot(self, run_id, **kwargs):
+            self.snapshot = {"shared_intelligence": kwargs["shared_intelligence"].to_dict()}
+        def prepare_initial_request(self, run_id): return {}
+        def build_target_for_run(self, run_id): return {}
+        def queue_build(self, *args): pass
+        def get_run(self, run_id): return self.run
+
+    class Executor:
+        def enqueue(self, run_id): pass
+
+    design_service = Service()
+    handoff = DesignBuildHandoff({"design_service": design_service, "design_executor": Executor()})
+    intake_service = DesignIntakeService(memory, default_intake=_intake(), lab_service=handoff)
+    session = intake_service.create_session()
+    confirmed = intake_service.confirm(
+        session["session_id"], revision=session["revision"], draft_hash=session["draft_hash"]
+    )
+    result = intake_service.build(
+        session["session_id"], confirmed_revision=confirmed["session"]["confirmed_revision_id"],
+        idempotency_key="confirmed-handoff", shared_intelligence=intelligence,
+    )
+    assert result["run"]["publishable"] is True
+    assert result["session"]["status"] == "confirmed"
+    assert result["session"]["design_run_id"] == result["run"]["run_id"]
+    assert design_service.snapshot["shared_intelligence"] == intelligence.to_dict()
     memory.close()
 
 

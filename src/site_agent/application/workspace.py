@@ -217,6 +217,7 @@ class DesignBuildHandoff:
         intake_session_id: str | None,
         intake_revision_id: int | None,
         context_extra: Mapping[str, Any] | None = None,
+        shared_intelligence: Any | None = None,
     ) -> dict[str, Any]:
         from ..core.design_contracts import SiteIntake
 
@@ -265,6 +266,7 @@ class DesignBuildHandoff:
             source_message_id=source_message_id,
             chat_job_id=None,
             context_extra=context_extra,
+            shared_intelligence=shared_intelligence,
         )
         build_request = service.prepare_initial_request(run["run_id"])
         target = service.build_target_for_run(run["run_id"])
