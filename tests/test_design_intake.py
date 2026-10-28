@@ -1795,6 +1795,53 @@ def test_start_build_failure_keeps_confirmation_and_reports_plain_reason(tmp_pat
     memory.close()
 
 
+def test_advice_turn_start_build_confirms_advanced_revision_once(tmp_path):
+    class _BuildAdvisor:
+        def advise(self, draft, history, owner_message, **kwargs):
+            return IntakeTurnResult(schema_version=1, assistant_message="Building it now…", ui_action={"action": "start_build"})
+
+    memory = Memory(tmp_path / "intake.db")
+    lab = _StartBuildLab()
+    service = DesignIntakeService(memory, lab_service=lab, advisor=_BuildAdvisor())
+    session = service.create_session(draft=DesignIntakeDraft.from_site_intake(_intake()))
+    service.send_message(session["session_id"], "go")
+    job = memory.claim_chat_job("revision-test")
+    result = service.handle_advice_job({}, job)
+    current = service.get_session(session["session_id"])
+    assert current["confirmed_revision"] == current["revision"]
+    assert result["ui_action"]["build"]["run"]["mode"] == "production_candidate"
+    assert len(lab.submissions) == 1
+    assert result["reply"] == "Building it now…"
+    memory.close()
+
+
+def test_advice_turn_failed_confirmation_does_not_promise_build(tmp_path):
+    class _BuildAdvisor:
+        def advise(self, draft, history, owner_message, **kwargs):
+            return IntakeTurnResult(schema_version=1, assistant_message="Building it now…", ui_action={"action": "start_build"})
+
+    memory = Memory(tmp_path / "intake.db")
+    lab = _StartBuildLab()
+    service = DesignIntakeService(memory, lab_service=lab, advisor=_BuildAdvisor())
+    session = service.create_session(draft=DesignIntakeDraft.from_site_intake(_intake()))
+    service.send_message(session["session_id"], "go")
+    job = memory.claim_chat_job("revision-test")
+    # Simulate persistence leaving the post-turn session outside a confirmable state.
+    original_save = memory.save_design_intake_revision
+    def save_unready(*args, **kwargs):
+        saved = original_save(*args, **kwargs)
+        memory.update_design_intake_session(session["session_id"], status="collecting")
+        return saved
+    memory.save_design_intake_revision = save_unready
+    result = service.handle_advice_job({}, job)
+    assert result["ui_action"]["action"] is None
+    assert result["ui_action"]["error"]
+    assert len(result["ui_action"]["error"]) <= 500
+    assert not lab.submissions
+    assert result["reply"] == "Your brief is ready. Please confirm it before I start building."
+    memory.close()
+
+
 def test_customer_view_json_is_compact_and_omits_run_detail(tmp_path):
     memory = Memory(tmp_path / "intake.db")
 
