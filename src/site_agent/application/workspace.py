@@ -2055,15 +2055,6 @@ class ChatService:
         # Real tenants have the shared operation spine. The compatibility
         # fallback below remains for the legacy single-instance test adapter;
         # it is not used by TenantRegistry-created websites.
-        if tenant.context.get("design_operations") is not None:
-            recommendation_id = body.get("recommendation_id")
-            if recommendation_id is None:
-                raise BridgeError("direction_not_approved: propose and approve a design direction first")
-            try:
-                recommendation_id = int(recommendation_id)
-            except (TypeError, ValueError) as exc:
-                raise BridgeError("recommendation_id must be an integer") from exc
-            return self.accept_recommendation(recommendation_id, body, tenant=tenant)
         coordinator = tenant.context["intake_coordinator"]
         intake_service = tenant.context.get("design_intake_service")
         if intake_service is None or getattr(intake_service, "lab_service", None) is None:

@@ -474,6 +474,46 @@ def test_failed_build_is_visible_and_retry_reuses_confirmed_revision(tmp_path):
     memory.close()
 
 
+def test_failed_persisted_candidate_retries_once_with_same_operation_token(tmp_path):
+    memory = Memory(tmp_path / "failed-candidate.db")
+
+    class _Lab:
+        submissions = []
+        def submit(self, prompt, raw_intake, **kwargs):
+            self.submissions.append(kwargs["run_id"])
+            return memory.create_design_run(
+                run_id=kwargs["run_id"], mode="production_candidate", status="building",
+                intake_json=raw_intake, intake_hash="c" * 64, base_sha="d" * 40,
+                publishable=True, candidate_ref=f"refs/ada-design/{kwargs['run_id']}",
+                intake_session_id=kwargs["intake_session_id"],
+                intake_revision_id=kwargs["intake_revision_id"],
+            )
+        def get_run(self, run_id):
+            run = memory.get_design_run(run_id)
+            return run
+
+    lab = _Lab()
+    service = DesignIntakeService(memory, default_intake=_intake(), lab_service=lab)
+    session = service.create_session()
+    confirmed = service.confirm(session["session_id"], revision=session["revision"], draft_hash=session["draft_hash"])
+    revision_id = confirmed["session"]["confirmed_revision_id"]
+    previous = memory.create_design_run(
+        run_id="failed-initial-candidate", mode="production_candidate", status="failed",
+        intake_json=_intake().to_dict(), intake_hash="a" * 64, base_sha="b" * 40,
+        publishable=True, candidate_ref="refs/ada-design/failed-initial-candidate",
+        intake_session_id=session["session_id"], intake_revision_id=revision_id,
+    )
+    frozen = service.get_session(session["session_id"])
+    first = service._resolve_ui_action({"action": "start_build"}, frozen)
+    second = service._resolve_ui_action({"action": "start_build"}, frozen)
+    assert first["build"]["run"]["run_id"] != previous["run_id"]
+    reservation = memory.get_design_intake_operation(session["session_id"], "build", first["build"]["idempotency_key"])
+    assert bool(reservation["force_new"]) is True
+    assert second["build"].get("idempotent") is True
+    assert len(lab.submissions) == 1
+    memory.close()
+
+
 def test_build_uses_explicit_owner_design_request_when_provided(tmp_path):
     memory = Memory(tmp_path / "intake.db")
 
@@ -1026,7 +1066,7 @@ def test_uploaded_asset_is_available_to_build_without_owner_usage_decision(tmp_p
     memory.close()
 
 
-def test_message_after_confirmation_clears_current_build_for_a_new_revision(tmp_path):
+def test_message_after_confirmation_keeps_frozen_revision_until_advisor_proposes_revision(tmp_path):
     memory = Memory(tmp_path / "intake.db")
 
     class _Lab:
@@ -1049,8 +1089,8 @@ def test_message_after_confirmation_clears_current_build_for_a_new_revision(tmp_
     current = service.get_session(session["session_id"])
 
     assert queued["job_id"] > 0
-    assert current["status"] == "collecting"
-    assert current["design_run_id"] is None
+    assert current["status"] == "confirmed"
+    assert current["design_run_id"] == built["session"]["design_run_id"]
     assert current["confirmed_revision"] == built["session"]["confirmed_revision"]
     memory.close()
 
@@ -1066,12 +1106,10 @@ def test_explicit_confirmation_reconciles_a_stale_post_confirmation_job(tmp_path
         idempotency_key="confirm-stale-job",
     )
 
-    # Queueing a new owner turn intentionally reopens the conversation. If its
-    # worker loses the revision race before saving anything, the frozen intake
-    # remains safe to confirm and build again.
+    # Queueing an owner turn keeps the frozen revision until Ada records a change.
     service.send_message(session["session_id"], "Please keep the confirmed direction.")
     current = service.get_session(session["session_id"])
-    assert current["status"] == "collecting"
+    assert current["status"] == "confirmed"
     assert current["revision"] == confirmed["session"]["confirmed_revision"]
 
     resumed = service.confirm(

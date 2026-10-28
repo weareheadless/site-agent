@@ -3,6 +3,8 @@ from types import SimpleNamespace
 from site_agent.application.workspace import ChatService, Journey
 import site_agent.application.workspace as workspace_module
 from site_agent.core.memory import Memory
+from site_agent.application.workspace import Tenant, TenantRegistry
+from site_agent.application.intake_coordinator import IntakeCoordinator
 
 
 class _Intake:
@@ -85,3 +87,75 @@ def test_ready_status_marks_pipeline_complete_without_terminal_rows(tmp_path):
     assert [stage["key"] for stage in build["stages"]] == ["queued", "planning", "generating", "building", "validating", "rendering"]
     assert [stage["state"] for stage in build["stages"]] == ["done"] * 6
     memory.close()
+
+
+def test_confirmed_failed_candidate_routes_owner_turn_to_intake_advisor(tmp_path):
+    memory = Memory(tmp_path / "routing.db")
+    _run(memory, status="failed")
+    session = {"session_id": "intake-a", "conversation_id": memory.create_conversation(),
+               "status": "confirmed", "confirmed_revision_id": 4, "confirmed_revision": 4}
+    class Coordinator(IntakeCoordinator):
+        def __init__(self): self.memory = memory; self.website_present = False; self.first_candidate_journey = True; self.sent = []
+        def _session(self, _conversation_id=None): return session
+        def send_message(self, message, **kwargs):
+            self.sent.append((message, kwargs))
+            return {"job_id": 17, "conversation_id": session["conversation_id"], "session_id": "intake-a"}
+    coordinator = Coordinator()
+    tenant = Tenant("tenant-a", {}, memory, SimpleNamespace(close=lambda: None),
+                    {"llm": object(), "journey": Journey(False, False), "intake_coordinator": coordinator}, "token")
+    registry = TenantRegistry({"tenant-a": tenant})
+    try:
+        result = ChatService(registry=registry).enqueue(
+            {"message": "go", "conversation_id": session["conversation_id"]}, tenant=tenant)
+        assert result["job_id"] == 17
+        assert coordinator.sent[0][0] == "go"
+        assert session["status"] == "confirmed" and session["confirmed_revision"] == 4
+    finally:
+        registry.close()
+
+
+def test_confirmed_successful_candidate_routes_owner_turn_to_workspace(tmp_path):
+    memory = Memory(tmp_path / "routing-success.db")
+    _run(memory, status="ready_for_review")
+    session = {"session_id": "intake-a", "conversation_id": memory.create_conversation(),
+               "status": "confirmed", "confirmed_revision_id": 4, "confirmed_revision": 4}
+    class Coordinator(IntakeCoordinator):
+        def __init__(self): self.memory = memory; self.website_present = False; self.first_candidate_journey = True; self.sent = []
+        def _session(self, _conversation_id=None): return session
+        def send_message(self, message, **kwargs):
+            self.sent.append(message)
+            raise AssertionError("successful candidate must route to workspace chat")
+    coordinator = Coordinator()
+    tenant = Tenant("tenant-a", {}, memory, SimpleNamespace(close=lambda: None),
+                    {"llm": object(), "journey": Journey(False, False), "intake_coordinator": coordinator}, "token")
+    registry = TenantRegistry({"tenant-a": tenant})
+    try:
+        result = ChatService(registry=registry).enqueue(
+            {"message": "update the homepage", "conversation_id": session["conversation_id"]}, tenant=tenant)
+        assert result["mode"] == "workspace"
+        assert coordinator.sent == []
+    finally:
+        registry.close()
+
+
+def test_unconfirmed_intake_message_still_routes_to_advisor(tmp_path):
+    memory = Memory(tmp_path / "routing-unconfirmed.db")
+    session = {"session_id": "intake-a", "conversation_id": memory.create_conversation(),
+               "status": "collecting", "confirmed_revision_id": None, "confirmed_revision": None}
+    class Coordinator(IntakeCoordinator):
+        def __init__(self): self.memory = memory; self.website_present = False; self.first_candidate_journey = True; self.sent = []
+        def _session(self, _conversation_id=None): return session
+        def send_message(self, message, **kwargs):
+            self.sent.append(message)
+            return {"job_id": 19, "conversation_id": session["conversation_id"], "session_id": "intake-a"}
+    coordinator = Coordinator()
+    tenant = Tenant("tenant-a", {}, memory, SimpleNamespace(close=lambda: None),
+                    {"llm": object(), "journey": Journey(False, False), "intake_coordinator": coordinator}, "token")
+    registry = TenantRegistry({"tenant-a": tenant})
+    try:
+        result = ChatService(registry=registry).enqueue(
+            {"message": "more details", "conversation_id": session["conversation_id"]}, tenant=tenant)
+        assert result["job_id"] == 19
+        assert coordinator.sent == ["more details"]
+    finally:
+        registry.close()
