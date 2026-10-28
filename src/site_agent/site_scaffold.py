@@ -115,6 +115,18 @@ _GRAPHQL_VERSION = "16.11.0"
 
 def _package_manifest(name: str) -> dict[str, object]:
     """Return exact Next/React/Payload dependencies, with no visual defaults."""
+    from .hands.site_build import next_react_toolchain_dependencies
+
+    template_dependencies = {
+        item["package"]: item["version"] for item in next_react_toolchain_dependencies()
+    }
+    runtime_names = {
+        "@opennextjs/cloudflare", "@payloadcms/db-d1-sqlite", "@payloadcms/next",
+        "@payloadcms/richtext-lexical", "@payloadcms/storage-r2", "@payloadcms/ui",
+        "cross-env", "graphql", "next", "payload", "react", "react-dom",
+        "@weareheadless/helloada-payload-admin", "@weareheadless/helloada-payload-core",
+        "cli-color", "postal-mime",
+    }
     return {
         "name": f"ada-{name.lower().replace(' ', '-')}-site" if name else "ada-site",
         "private": True,
@@ -126,36 +138,8 @@ def _package_manifest(name: str) -> dict[str, object]:
             "dev": "next dev",
             "start": "next start",
         },
-        "dependencies": {
-            "@gsap/react": _GSAP_REACT_VERSION,
-            "@opennextjs/cloudflare": _OPENNEXT_VERSION,
-            "@payloadcms/db-d1-sqlite": _PAYLOAD_VERSION,
-            "@payloadcms/next": _PAYLOAD_VERSION,
-            "@payloadcms/richtext-lexical": _PAYLOAD_VERSION,
-            "@payloadcms/storage-r2": _PAYLOAD_VERSION,
-            "@payloadcms/translations": _PAYLOAD_VERSION,
-            "@payloadcms/ui": _PAYLOAD_VERSION,
-            "cross-env": _CROSS_ENV_VERSION,
-            "dotenv": _DOTENV_VERSION,
-            "graphql": _GRAPHQL_VERSION,
-            "gsap": _GSAP_VERSION,
-            "next": _NEXT_VERSION,
-            "payload": _PAYLOAD_VERSION,
-            "react": _REACT_VERSION,
-            "react-dom": _REACT_DOM_VERSION,
-        },
-        "devDependencies": {
-            "@types/node": _TYPES_NODE_VERSION,
-            "@types/react": _TYPES_REACT_VERSION,
-            "@types/react-dom": _TYPES_REACT_DOM_VERSION,
-            "@eslint/eslintrc": "3.3.1",
-            "eslint": _ESLINT_VERSION,
-            "eslint-config-next": _ESLINT_CONFIG_NEXT_VERSION,
-            "prettier": _PRETTIER_VERSION,
-            "tsx": _TYPESX_VERSION,
-            "typescript": _TYPESCRIPT_VERSION,
-            "wrangler": _WRANGLER_VERSION,
-        },
+        "dependencies": {key: value for key, value in template_dependencies.items() if key in runtime_names},
+        "devDependencies": {key: value for key, value in template_dependencies.items() if key not in runtime_names},
     }
 
 

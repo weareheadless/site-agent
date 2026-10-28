@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 from site_agent.hands.builder import OperationRoutingBuilder
@@ -39,8 +40,9 @@ def test_new_site_workspace_contains_toolchain_only(tmp_path):
     assert package["dependencies"]["next"]
     assert package["dependencies"]["payload"]
     assert package["dependencies"]["react"]
-    assert package["dependencies"]["gsap"]
-    assert package["dependencies"]["@gsap/react"]
+    template = json.loads((Path(__file__).resolve().parents[1] / "src/site_agent/templates/next-payload/package.json").read_text())
+    assert package["dependencies"] == template["dependencies"]
+    assert package["devDependencies"] == template["devDependencies"]
     assert (root / "next.config.mjs").is_file()
     assert (root / "payload.config.ts").is_file()
     assert (root / "eslint.config.mjs").is_file()

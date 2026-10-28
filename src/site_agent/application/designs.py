@@ -45,7 +45,7 @@ from ..brain.design_guidance import DesignSkillSet, load_design_skills
 from ..brain.page_strategy import native_homepage_request
 from ..hands.site_build import (
     NEXT_REACT_PROFILE,
-    NEXT_REACT_TOOLCHAIN_DEPENDENCIES,
+    next_react_toolchain_dependencies,
     build_site,
 )
 
@@ -1366,7 +1366,7 @@ class DesignService:
                     if isinstance(item, Mapping)
                     and str(item.get("package") or item.get("name") or "").strip()
                 }
-                for item in NEXT_REACT_TOOLCHAIN_DEPENDENCIES:
+                for item in next_react_toolchain_dependencies():
                     package = str(item["package"])
                     existing = approved.get(package, {})
                     merged = dict(existing)

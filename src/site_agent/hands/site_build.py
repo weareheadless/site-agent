@@ -230,36 +230,27 @@ def is_next_react_frontend_path(path: str) -> bool:
     """Return true only for tenant-owned presentation assets, never platform code."""
     return is_frontend_owned_path(path)
 
-# The scaffold owns these build-time dependencies; generated design content does
-# not. Keep the catalog exact so the dependency gate can verify the copied manifest.
-NEXT_REACT_TOOLCHAIN_DEPENDENCIES: tuple[dict[str, str], ...] = (
-    {"package": "@eslint/eslintrc", "version": "3.3.1"},
-    {"package": "@gsap/react", "version": "2.1.2"},
-    {"package": "@opennextjs/cloudflare", "version": "1.20.6"},
-    {"package": "@payloadcms/db-d1-sqlite", "version": "3.88.0"},
-    {"package": "@payloadcms/next", "version": "3.88.0"},
-    {"package": "@payloadcms/richtext-lexical", "version": "3.88.0"},
-    {"package": "@payloadcms/storage-r2", "version": "3.88.0"},
-    {"package": "@payloadcms/translations", "version": "3.88.0"},
-    {"package": "@payloadcms/ui", "version": "3.88.0"},
-    {"package": "@types/node", "version": "22.19.9"},
-    {"package": "@types/react", "version": "19.2.14"},
-    {"package": "@types/react-dom", "version": "19.2.3"},
-    {"package": "cross-env", "version": "7.0.3"},
-    {"package": "dotenv", "version": "16.6.1"},
-    {"package": "eslint", "version": "9.16.0"},
-    {"package": "eslint-config-next", "version": "16.3.4"},
-    {"package": "graphql", "version": "16.11.0"},
-    {"package": "gsap", "version": "3.12.5"},
-    {"package": "next", "version": "16.3.4"},
-    {"package": "payload", "version": "3.88.0"},
-    {"package": "prettier", "version": "3.6.2"},
-    {"package": "react", "version": "19.2.6"},
-    {"package": "react-dom", "version": "19.2.6"},
-    {"package": "tsx", "version": "4.22.4"},
-    {"package": "typescript", "version": "5.7.3"},
-    {"package": "wrangler", "version": "4.130.0"},
-)
+def next_react_toolchain_dependencies() -> tuple[dict[str, str], ...]:
+    """Read the host-approved exact package map from the canonical scaffold."""
+    path = Path(__file__).resolve().parents[1] / "templates" / "next-payload" / "package.json"
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SiteBuildError(f"canonical Next/React template package.json is invalid: {exc}") from exc
+    if not isinstance(manifest, Mapping):
+        raise SiteBuildError("canonical Next/React template package.json must be an object")
+    dependencies: dict[str, str] = {}
+    for section in ("dependencies", "devDependencies"):
+        values = manifest.get(section)
+        if not isinstance(values, Mapping) or not values:
+            raise SiteBuildError(f"canonical Next/React template package.json requires {section}")
+        for name, version in values.items():
+            if not isinstance(name, str) or not name.strip() or not isinstance(version, str) or not version.strip():
+                raise SiteBuildError(f"canonical Next/React template package.json has invalid {section} entry")
+            if name in dependencies:
+                raise SiteBuildError(f"canonical Next/React template declares duplicate dependency: {name}")
+            dependencies[name] = version
+    return tuple({"package": name, "version": version} for name, version in dependencies.items())
 
 # TypeScript's incremental checker writes this beside tsconfig.json even when
 # the project does not declare an incremental build.  It is a host build
@@ -276,14 +267,15 @@ _NEXT_RUNTIME_DEPENDENCIES = frozenset({
 
 
 def _next_manifest(name: str) -> dict[str, Any]:
+    toolchain = next_react_toolchain_dependencies()
     runtime = {
         item["package"]: item["version"]
-        for item in NEXT_REACT_TOOLCHAIN_DEPENDENCIES
+        for item in toolchain
         if item["package"] in _NEXT_RUNTIME_DEPENDENCIES
     }
     development = {
         item["package"]: item["version"]
-        for item in NEXT_REACT_TOOLCHAIN_DEPENDENCIES
+        for item in toolchain
         if item["package"] not in runtime
     }
     return {
@@ -500,15 +492,10 @@ def _validate_next_manifest(root: Path, *, require_lockfile: bool = False) -> tu
         raise SiteBuildError(f"Next/React package.json is invalid: {exc}") from exc
     if not isinstance(manifest, Mapping):
         raise SiteBuildError("Next/React package.json must be an object")
-    approved = {str(item["package"]): str(item["version"]) for item in NEXT_REACT_TOOLCHAIN_DEPENDENCIES}
-    # Shared HelloAda packages are pinned only by the canonical scaffold. Read
-    # those artifact URLs here rather than maintaining a second host allowlist.
-    template_manifest_path = Path(__file__).resolve().parents[1] / "templates" / "next-payload" / "package.json"
-    try:
-        template_manifest = json.loads(template_manifest_path.read_text(encoding="utf-8"))
-        template_dependencies = template_manifest.get("dependencies") or {}
-    except (OSError, json.JSONDecodeError, AttributeError) as exc:
-        raise SiteBuildError(f"canonical Next/React template package.json is invalid: {exc}") from exc
+    toolchain = {str(item["package"]): str(item["version"]) for item in next_react_toolchain_dependencies()}
+    approved = toolchain
+    # Shared HelloAda packages retain their immutable artifact URL validation.
+    template_dependencies = toolchain
     shared_packages = {
         name: template_dependencies[name]
         for name in (
@@ -758,7 +745,7 @@ def copy_build_output(root: str | Path, profile: SiteBuildProfile, destination: 
 __all__ = [
     "NEXT_REACT_PROFILE",
     "NEXT_REACT_BUILD_TRANSIENT_FILES",
-    "NEXT_REACT_TOOLCHAIN_DEPENDENCIES",
+    "next_react_toolchain_dependencies",
     "PROFILES",
     "SiteBuildError",
     "SiteBuildProfile",
