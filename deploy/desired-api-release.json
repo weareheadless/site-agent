@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261028-api-lockfile",
-    "sha": "1d107e3f989d6c1992bd294c2e9c8187aad13b12"
+    "id": "20261028-api-core-pattern",
+    "sha": "5bde1e14d60368076dce5cc7dc00616e918c931b"
   }
 }
