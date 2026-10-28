@@ -128,6 +128,97 @@ def test_payload_first_stage_persists_and_binds_the_exact_default_locale_revisio
     assert "payload_draft_receipts" not in request.content
 
 
+def test_payload_first_stage_adopts_existing_home_route_draft_and_binds_run_identity():
+    from site_agent.hands.payload_gateway import PayloadGatewayError
+
+    class Payload:
+        document = {"id": 41, "slug": "home", "sourceId": "pages:home",
+                    "_helloadaRevision": "sha256:" + "1" * 64}
+        updated = None
+        verified_read = False
+
+        def require_authoring_contract(self):
+            return {"enabled": {"collections": ["pages"]}, "locales": ["es-MX"],
+                    "defaultLocale": "es-MX", "schemaIdentity": "schema-identity",
+                    "authoringContractHash": "authoring-hash"}
+
+        def read_media(self, *_args, **_kwargs):
+            raise AssertionError("no media")
+
+        def create(self, *_args, **_kwargs):
+            raise PayloadGatewayError(
+                "Payload gateway returned 409: a Payload document already uses this route; "
+                "read and update that exact draft instead", status_code=409
+            )
+
+        def read(self, collection, *, identifier, identifier_kind, draft, locale):
+            assert collection == "pages" and draft and locale == "es-MX"
+            if identifier_kind == "slug":
+                assert identifier == "home"
+                return dict(self.document)
+            assert (identifier, identifier_kind) == ("41", "id")
+            self.verified_read = True
+            return dict(self.document)
+
+        def update(self, collection, document_id, data, *, locale, expected_hash, expected_fields):
+            assert (collection, document_id, locale) == ("pages", "41", "es-MX")
+            assert expected_hash == self.document["_helloadaRevision"]
+            self.updated = dict(data)
+            self.document = {**self.document, **data, "_helloadaRevision": "sha256:" + "2" * 64}
+            return dict(self.document)
+
+    payload = Payload()
+    request = _payload_first_request()
+    staged = runner._stage_initial_homepage_payload(
+        {"payload_gateway": payload}, request,
+        SimpleNamespace(copy_deck={"headline": "New heading.", "body": "New body.",
+                                   "primary_action": "Learn more"},
+                       asset_composition_plan=(), asset_evidence=()),
+    )
+    receipt = staged.content["payload_draft_receipts"][0]
+    assert next(item["text"] for item in payload.updated["sections"][0]["entries"]
+                if item["key"] == "home.hero.heading") == "New heading."
+    assert set(payload.updated) == {"title", "slug", "sections", "seo"}
+    assert payload.verified_read
+    assert receipt["document_id"] == "41"
+    assert receipt["operation"] == "update"
+    assert receipt["run_id"] == request.run_id
+
+
+@pytest.mark.parametrize("existing, unreadable", [
+    ({"id": 42, "slug": "about", "sourceId": "pages:about",
+      "_helloadaRevision": "sha256:" + "1" * 64}, False),
+    (None, True),
+])
+def test_payload_first_stage_does_not_adopt_different_or_unreadable_route(existing, unreadable):
+    from site_agent.hands.payload_gateway import PayloadGatewayError
+
+    class Payload:
+        def require_authoring_contract(self):
+            return {"enabled": {"collections": ["pages"]}, "locales": ["es-MX"],
+                    "defaultLocale": "es-MX", "schemaIdentity": "schema-identity",
+                    "authoringContractHash": "authoring-hash"}
+        def read_media(self, *_args, **_kwargs):
+            raise AssertionError("no media")
+        def create(self, *_args, **_kwargs):
+            raise PayloadGatewayError("conflict", status_code=409)
+        def read(self, collection, *, identifier, identifier_kind, draft, locale):
+            assert identifier_kind == "slug" and identifier == "home"
+            if unreadable:
+                raise PayloadGatewayError("not found", status_code=404)
+            return dict(existing)
+        def update(self, *_args, **_kwargs):
+            raise AssertionError("must not update an unverified route")
+
+    with pytest.raises(runner.RunnerError, match="the initial Payload homepage draft could not be verified"):
+        runner._stage_initial_homepage_payload(
+            {"payload_gateway": Payload()}, _payload_first_request(),
+            SimpleNamespace(copy_deck={"headline": "Heading.", "body": "Body.",
+                                       "primary_action": "Learn more"},
+                           asset_composition_plan=(), asset_evidence=()),
+        )
+
+
 def _build_target(value):
     value.setdefault("build_profile", NEXT_REACT_PROFILE.name)
     value["allowed_paths"] = list(NEXT_REACT_PROFILE.writable_patterns)

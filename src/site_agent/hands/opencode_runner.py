@@ -835,11 +835,36 @@ def _stage_initial_homepage_payload(context: dict[str, Any], request, plan: Any,
             raise RunnerError("Ada selected a homepage image that is not present in this tenant's Payload media library") from exc
 
     data = _initial_homepage_payload_data(request, typed_plan, featured_media_id=featured_media_id)
+    operation = "create"
     try:
-        result = payload.create("pages", data, locale=default_locale)
+        try:
+            result = payload.create("pages", data, locale=default_locale)
+        except Exception as exc:
+            # A route conflict may be reconciled only by reading the expected route
+            # and updating that exact document with its current revision as a CAS.
+            if getattr(exc, "status_code", None) != 409:
+                raise
+            existing = payload.read(
+                "pages", identifier=str(data["slug"]), identifier_kind="slug",
+                draft=True, locale=default_locale,
+            )
+            if (
+                str(existing.get("slug") or "") != str(data["slug"])
+                or str(existing.get("sourceId") or "") != "pages:home"
+            ):
+                raise RunnerError("the existing Payload document does not match the requested homepage route")
+            existing_id = str(existing.get("id") or "").strip()
+            existing_revision = str(existing.get("_helloadaRevision") or "")
+            if not existing_id or not existing_revision.startswith("sha256:"):
+                raise RunnerError("the existing Payload homepage draft has no exact identity and revision")
+            result = payload.update(
+                "pages", existing_id, data, locale=default_locale,
+                expected_hash=existing_revision, expected_fields=sorted(data),
+            )
+            operation = "update"
         document_id = str(result.get("id") or "").strip()
         if not document_id:
-            raise RunnerError("Payload did not return the new homepage document identity")
+            raise RunnerError("Payload did not return the homepage document identity")
         verified = payload.read("pages", identifier=document_id, identifier_kind="id", draft=True, locale=default_locale)
     except Exception as exc:  # noqa: BLE001 - keep the design run blocked and its effect explicit
         raise RunnerError(f"the initial Payload homepage draft could not be verified: {str(exc)[:500]}") from exc
@@ -851,9 +876,10 @@ def _stage_initial_homepage_payload(context: dict[str, Any], request, plan: Any,
 
     receipt = {
         "kind": "collection",
-        "operation": "create",
+        "operation": operation,
         "target": "pages",
         "document_id": document_id,
+        "run_id": request.run_id,
         "source_id": str(verified.get("sourceId") or ""),
         "slug": "home",
         "locale": default_locale,
