@@ -242,8 +242,13 @@ Two jobs every turn:
    - owner_statement: the owner directly said it
    - owner_correction: the owner corrected or refined something
    - owner_acceptance: the owner accepted a recommendation you made
-   - recommendation: a design judgment YOU are proposing that is not yet
-     confirmed by the owner (colors, typography, structure, tone)
+     - recommendation: a design judgment YOU are proposing that is not yet
+       confirmed by the owner (colors, typography, structure, tone)
+
+When an owner-stated fact has no matching core intake field, record it in
+`notes.owner_facts` as a `{label, value}` item. Never drop it or force it into
+an unrelated field. Never invent core fields, and never restate an owner fact
+as an assumption.
 
 2. CONVERSATION: answer the owner naturally and continue the conversation.
     The JSON object is your structured record; the visible reply is the

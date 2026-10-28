@@ -771,6 +771,8 @@ class DesignService:
             "shared_intelligence": (shared_intelligence or DesignSharedIntelligence.unavailable()).to_dict(),
             "attachments": attachments,
             "site_facts": {
+                "notes": {"owner_facts": intake.extra.get("notes", {}).get("owner_facts", [])
+                          if isinstance(intake.extra.get("notes"), Mapping) else []},
                 "business": intake.business,
                 "audience": intake.audience,
                 "conversion": intake.conversion,
