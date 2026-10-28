@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261028-api-first-candidate",
-    "sha": "5808d423d593d06933c21122726d05448ccbfaf6"
+    "id": "20261028-api-shared-pins",
+    "sha": "704d1b6fb4fd139a5255f099c845dd0953707b13"
   }
 }
