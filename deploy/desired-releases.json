@@ -1,24 +1,24 @@
 {
   "releases": {
     "atelier-harmonie": {
-      "id": "runtime-20261028021203-0b9a1312",
+      "id": "runtime-20261028024941-e21abc92",
       "sha": "391673c2383163748d1c98a5c56ae9778e0722be",
-      "sharedRuntimeFingerprint": "b60434dbfe6a7392cb1ab5825063303e2386cd5f39751e65e7defbb47439e903"
+      "sharedRuntimeFingerprint": "93b52022c4c774e93c27c6e1fbd5a05d0f7896e3963f51f7501683e74afbd1cb"
     },
     "helloada-handoff-validation-20261021-39b6663e141ff33c": {
-      "id": "runtime-20261028021203-847e2b0f",
+      "id": "runtime-20261028024941-39ce5fca",
       "sha": "c177a7992fe0243f0b7fddb2efe9629da418e072",
-      "sharedRuntimeFingerprint": "b60434dbfe6a7392cb1ab5825063303e2386cd5f39751e65e7defbb47439e903"
+      "sharedRuntimeFingerprint": "93b52022c4c774e93c27c6e1fbd5a05d0f7896e3963f51f7501683e74afbd1cb"
     },
     "inmersion-freediving-bb2a4e404a7fcea4": {
-      "id": "runtime-20261028021203-942b922c",
+      "id": "runtime-20261028024941-14017383",
       "sha": "b8d4614b07336aadfe312925d1c4f5705522accd",
-      "sharedRuntimeFingerprint": "b60434dbfe6a7392cb1ab5825063303e2386cd5f39751e65e7defbb47439e903"
+      "sharedRuntimeFingerprint": "93b52022c4c774e93c27c6e1fbd5a05d0f7896e3963f51f7501683e74afbd1cb"
     },
     "northstar-coffee-full-intake-validation-5a8564dae07494ec": {
-      "id": "runtime-20261028021203-b282254e",
+      "id": "runtime-20261028024942-4fdb23ee",
       "sha": "05155958e7eecefbed4482ae0880d30a0afdebb4",
-      "sharedRuntimeFingerprint": "b60434dbfe6a7392cb1ab5825063303e2386cd5f39751e65e7defbb47439e903"
+      "sharedRuntimeFingerprint": "93b52022c4c774e93c27c6e1fbd5a05d0f7896e3963f51f7501683e74afbd1cb"
     },
     "oceanicvibes": {
       "id": "runtime-20261028024155-ca6a25fb",
@@ -26,9 +26,9 @@
       "sharedRuntimeFingerprint": "93b52022c4c774e93c27c6e1fbd5a05d0f7896e3963f51f7501683e74afbd1cb"
     },
     "site-5fe73d3d38ff6f77": {
-      "id": "runtime-20261028021203-db4832b5",
+      "id": "runtime-20261028024942-bdb6ce1b",
       "sha": "69d5000ea2d37face630a9dcf608cc3b8a1077c4",
-      "sharedRuntimeFingerprint": "b60434dbfe6a7392cb1ab5825063303e2386cd5f39751e65e7defbb47439e903"
+      "sharedRuntimeFingerprint": "93b52022c4c774e93c27c6e1fbd5a05d0f7896e3963f51f7501683e74afbd1cb"
     }
   },
   "schema": 1
