@@ -427,6 +427,19 @@ def prepare_native_workspace(root: str | Path, profile: SiteBuildProfile) -> tup
     return tuple(created)
 
 _EXACT_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
+_SHARED_ARTIFACT_RE = re.compile(
+    r"^https://github\.com/weareheadless/site-agent/releases/download/"
+    r"(?P<tag>payload-(?P<kind>admin|core)-v(?P<tag_version>\d+\.\d+\.\d+))"
+    r"/weareheadless-helloada-payload-(?P=kind)-(?P<file_version>\d+\.\d+\.\d+)\.tgz$"
+)
+
+
+def _is_shared_artifact(name: str, value: str) -> bool:
+    match = _SHARED_ARTIFACT_RE.fullmatch(value)
+    if not match:
+        return False
+    expected_kind = "admin" if name.endswith("-admin") else "core"
+    return match.group("kind") == expected_kind and match.group("tag_version") == match.group("file_version")
 
 PROFILES = {NEXT_REACT_PROFILE.name: NEXT_REACT_PROFILE}
 
@@ -516,7 +529,10 @@ def _validate_next_manifest(root: Path, *, require_lockfile: bool = False) -> tu
             if expected is None:
                 raise SiteBuildError(f"native dependency is not host-approved: {name}")
             is_shared_artifact = name in shared_packages
-            if version != expected or (not is_shared_artifact and not _EXACT_VERSION_RE.fullmatch(version)):
+            valid_shared_artifact = is_shared_artifact and _is_shared_artifact(name, version)
+            if (is_shared_artifact and not (version == expected or valid_shared_artifact)) or (
+                not is_shared_artifact and (version != expected or not _EXACT_VERSION_RE.fullmatch(version))
+            ):
                 raise SiteBuildError(f"native dependency must use the approved exact version: {name}@{expected}")
             declared[name] = version
     if require_lockfile:
