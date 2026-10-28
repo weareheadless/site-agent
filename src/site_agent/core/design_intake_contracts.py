@@ -103,6 +103,7 @@ _ALLOWED_FIELD_PATHS = frozenset({
     "constraints.prohibited_claims",
     "design.assumption_permission",
     "design.content_readiness",
+    "notes.owner_facts",
 })
 
 _CORE_PATHS = (
@@ -276,6 +277,14 @@ def _model_field_value_is_compatible(path: str, value: Any) -> bool:
         return isinstance(value, bool)
     if path in _STRICT_LIST_FIELD_PATHS:
         return isinstance(value, list) and all(isinstance(item, str) for item in value)
+    if path == "notes.owner_facts":
+        return isinstance(value, list) and len(value) <= 20 and all(
+            isinstance(item, Mapping)
+            and set(item) == {"label", "value"}
+            and isinstance(item.get("label"), str) and 0 < len(item["label"].strip()) <= 80
+            and isinstance(item.get("value"), str) and 0 < len(item["value"].strip()) <= 400
+            for item in value
+        )
     return True
 
 
@@ -286,10 +295,13 @@ def _drop_incompatible_model_values(fields: dict[str, Any]) -> set[str]:
         *_STRICT_LIST_FIELD_PATHS,
         "conversion.contact_destination",
         *_STRICT_BOOLEAN_FIELD_PATHS,
+        "notes.owner_facts",
     )
     for path in checked_paths:
         value = _path_value(fields, path)
         if value is not None and not _model_field_value_is_compatible(path, value):
+            if path == "notes.owner_facts":
+                raise ContractError("notes.owner_facts must contain at most 20 {label, value} entries with bounded text")
             invalid_paths.add(path)
     for path in invalid_paths:
         parts = path.split(".")

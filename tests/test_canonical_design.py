@@ -131,6 +131,17 @@ def test_context_capture_redacts_secret_shaped_memory_text(tmp_path):
     memory.close()
 
 
+def test_context_includes_owner_facts_from_intake_extension(tmp_path):
+    memory = Memory(tmp_path / "owner-facts.db")
+    intake = _intake().to_dict()
+    intake["notes"] = {"owner_facts": [{"label": "Instagram", "value": "@northstar"}]}
+    service = DesignService(memory, config={"site": {"repository": "owner/site"}, "llm": {"model": "openrouter/test"}})
+    run = service.create_run(SiteIntake.from_dict(intake), run_id="owner-facts-run", base_sha="a" * 40)
+    snapshot = service.capture_context_snapshot(run["run_id"])
+    assert snapshot.to_dict()["site_facts"]["notes"]["owner_facts"] == intake["notes"]["owner_facts"]
+    memory.close()
+
+
 def test_context_capture_rejects_missing_model_before_builder(tmp_path):
     memory = Memory(tmp_path / "missing-model.db")
     service = DesignService(memory, config={"site": {"repository": "owner/site"}})

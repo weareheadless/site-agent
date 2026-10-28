@@ -31,6 +31,32 @@ def test_advisor_prompt_guides_adaptive_evidence_led_intake_without_industry_scr
     assert "at most two or three related questions per turn" in prompt
     assert "Never claim to have researched a source without evidence" in prompt
     assert "full industry checklist" in prompt
+    assert "notes.owner_facts" in prompt
+
+
+def test_owner_fact_is_validated_persisted_and_round_trips():
+    draft = DesignIntakeDraft.empty().with_value(
+        "notes.owner_facts", [{"label": "Instagram", "value": "@northstar"}],
+        IntakeFieldProvenance("notes.owner_facts", "confirmed", source_message_id=7),
+    )
+    restored = DesignIntakeDraft.from_dict(json.loads(json.dumps(draft.to_dict())))
+    assert restored.value("notes.owner_facts") == [{"label": "Instagram", "value": "@northstar"}]
+    assert restored.provenance["notes.owner_facts"].source_message_id == 7
+    assert DesignIntakeDraft.from_dict(DesignIntakeDraft.empty().to_dict()).value("notes.owner_facts") is None
+    with pytest.raises(Exception):
+        DesignIntakeDraft.from_dict({**draft.to_dict(), "fields": draft.fields, "provenance": {}})
+    for invalid in (
+        [{"label": "Instagram"}],
+        [{"label": "x" * 81, "value": "v"}],
+        [{"label": "x", "value": "v" * 401}],
+        [{"label": "x", "value": "v"}] * 21,
+    ):
+        with pytest.raises(Exception):
+            DesignIntakeDraft.from_dict({
+                **DesignIntakeDraft.empty().to_dict(),
+                "fields": {"notes": {"owner_facts": invalid}},
+                "provenance": {"notes.owner_facts": {"origin": "confirmed"}},
+            })
 
 
 def _intake() -> SiteIntake:
