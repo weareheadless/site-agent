@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "release": {
-    "id": "20261028-api-build-gate",
-    "sha": "177e8e7a7dd4e345a71de64d7f9c0bb92503f8c2"
+    "id": "20261028-api-first-candidate",
+    "sha": "5808d423d593d06933c21122726d05448ccbfaf6"
   }
 }
