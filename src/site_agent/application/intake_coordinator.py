@@ -218,11 +218,9 @@ class IntakeCoordinator:
         session = self._session(conversation_id)
         if str(session.get("status") or "") == IntakeSessionState.CONFIRMED.value:
             return False
-        try:
-            draft = DesignIntakeDraft.from_dict(session.get("draft") or {})
-        except (ContractError, TypeError, ValueError):
-            return True
-        return bool(draft.unresolved_core_paths)
+        # Intake remains the conversational owner surface until explicitly
+        # confirmed, including when all required fields are ready to build.
+        return True
 
     def status(self, conversation_id: int | None = None) -> dict[str, Any]:
         """Return the minimal owner-facing acceptance state for one conversation."""

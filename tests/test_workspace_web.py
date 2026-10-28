@@ -582,6 +582,7 @@ def test_intake_requires_explicit_owner_acceptance(tmp_path):
     })
     session = intake.intake_service.create_session(draft=DesignIntakeDraft.from_site_intake(site_intake))
     before = intake.status(session["conversation_id"])
+    assert intake.needs_intake(session["conversation_id"]) is True
     accepted = intake.confirm(
         session["conversation_id"],
         revision=session["revision"],
@@ -595,6 +596,50 @@ def test_intake_requires_explicit_owner_acceptance(tmp_path):
     assert accepted["confirmed"] is True
     assert intake.needs_intake(session["conversation_id"]) is False
     memory.close()
+
+
+def test_ready_intake_owner_turn_enqueues_advice_job(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    coordinator = IntakeCoordinator(
+        memory,
+        config={"intake": {"database_only": True, "research": {"enabled": False}}},
+        llm=object(),
+    )
+    ready = DesignIntakeDraft.from_site_intake(SiteIntake.from_dict({
+        "schema_version": 1,
+        "business": {"name": "North Star", "offer_summary": "Strategy services", "primary_services": ["Strategy"], "location": "North Shore"},
+        "audience": {"primary": "Independent owners"},
+        "conversion": {"primary_action": "Book a call", "not_available": True},
+        "brand": {"voice": "Clear"}, "site": {"required_pages": ["index.html"]},
+    }))
+    session = coordinator.intake_service.create_session(draft=ready)
+    tenant = Tenant("demo", {"site": {"website_present": False}}, memory, SimpleNamespace(),
+                    {"llm": object(), "intake_coordinator": coordinator}, "token")
+    registry = TenantRegistry({"demo": tenant})
+    service = ChatService(registry=registry)
+    try:
+        assert service.status(session["conversation_id"], tenant=tenant)["phase"] == "intake"
+        response = service.enqueue({"message": "go", "conversation_id": session["conversation_id"]}, tenant=tenant)
+        job = memory.get_chat_job(response["job_id"])
+        assert job["operation_kind"] == "design_intake_advice"
+        assert service.status(session["conversation_id"], tenant=tenant)["phase"] == "intake"
+        coordinator.confirm(
+            session["conversation_id"], revision=session["revision"], draft_hash=session["draft_hash"],
+            confirmation_text="I accept this brief.",
+        )
+        confirmed = memory.get_design_intake_session(session["session_id"])
+        assert confirmed["status"] == "confirmed"
+        assert confirmed["confirmed_revision"]
+        assert confirmed["confirmed_hash"]
+        assert confirmed["confirmed_ts"]
+        assert service.status(session["conversation_id"], tenant=tenant)["phase"] == "workspace"
+        workspace_response = service.enqueue(
+            {"message": "next step?", "conversation_id": session["conversation_id"]}, tenant=tenant
+        )
+        workspace_job = memory.get_chat_job(workspace_response["job_id"])
+        assert workspace_job["operation_kind"] != "design_intake_advice"
+    finally:
+        memory.close()
 
 
 def test_payload_gateway_client_is_server_configured_and_schema_bounded():
