@@ -68,6 +68,46 @@ def _error_class(message: str) -> str:
     return text[:120] or "unknown"
 
 
+def timings(
+    result: FlowResult,
+    started_at: str | None = None,
+    finished_at: str | None = None,
+) -> dict[str, Any]:
+    """Wall-clock cost of each named mark, and of the run.
+
+    Marks are what the owner feels: how long the conversation took, how long the
+    build took, how long provisioning took. Seconds, not opinions.
+    """
+
+    def parse(value: str | None) -> datetime | None:
+        if not value:
+            return None
+        try:
+            return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+
+    ordered = sorted(
+        ((name, parse(stamp)) for name, stamp in result.marks.items() if parse(stamp)),
+        key=lambda item: item[1],
+    )
+    durations: dict[str, float] = {}
+    previous: datetime | None = parse(started_at)
+    for name, stamp in ordered:
+        if previous is not None and stamp is not None:
+            durations[name] = round((stamp - previous).total_seconds(), 1)
+        previous = stamp
+    total: float | None = None
+    start, end = parse(started_at), parse(finished_at)
+    if start and end:
+        total = round((end - start).total_seconds(), 1)
+    return {
+        "marks": {name: stamp.strftime("%Y-%m-%dT%H:%M:%SZ") for name, stamp in ordered},
+        "durations_s": durations,
+        "total_s": total,
+    }
+
+
 def run_id(flow_id: str, stamp: str | None = None) -> str:
     raw = f"{flow_id}-{stamp or utcnow()}".lower()
     return _RUN_ID.sub("-", raw).strip("-")
@@ -111,6 +151,8 @@ def build_bundle(
         "status": result.status,
         "error": result.error,
         "failed_step": result.failed_step,
+        "incubation_id": result.incubation_id,
+        "timings": timings(result, started_at, finished_at),
         "steps": [step.to_dict() for step in result.steps],
         "observations": result.observations.to_dict(),
         "rubric": verdict.to_dict(),

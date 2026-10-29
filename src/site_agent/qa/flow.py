@@ -8,6 +8,7 @@ time: a typo must never silently produce a flow that asserts nothing.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -19,7 +20,7 @@ class FlowError(ValueError):
     """A flow definition is not executable as written."""
 
 
-ACTIONS = ("goto", "click", "fill", "press", "wait_for", "assert", "screenshot", "http")
+ACTIONS = ("goto", "click", "fill", "press", "wait_for", "assert", "screenshot", "http", "converse")
 TIERS = ("deterministic", "live")
 OPS = ("eq", "ne", "gt", "gte", "lt", "lte", "contains", "len_eq", "len_gte", "len_lte")
 EXPECTATIONS = (
@@ -108,6 +109,10 @@ class Step:
     expect: tuple[Expectation, ...] = ()
     screenshot: bool = True
     note: str | None = None
+    mark: str | None = None
+    until: tuple[Expectation, ...] = ()
+    persona: Mapping[str, Any] | None = None
+    reply_timeout_ms: int = 240_000
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -124,6 +129,10 @@ class Step:
             "expect": [item.to_dict() for item in self.expect],
             "screenshot": self.screenshot,
             "note": self.note,
+            "mark": self.mark,
+            "until": [item.to_dict() for item in self.until],
+            "persona": dict(self.persona) if self.persona else None,
+            "reply_timeout_ms": self.reply_timeout_ms,
         }
 
     @classmethod
@@ -138,7 +147,14 @@ class Step:
             Expectation.from_dict(item, f"{where}.expect[{index}]")
             for index, item in enumerate(raw.get("expect") or ())
         )
+        until = tuple(
+            Expectation.from_dict(item, f"{where}.until[{index}]")
+            for index, item in enumerate(raw.get("until") or ())
+        )
         _require_action_fields(action, raw, where)
+        mark = raw.get("mark")
+        if mark is not None and not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", str(mark)):
+            raise FlowError(f"{where}: mark {mark!r} must be lower-case letters, digits, - or _")
         return cls(
             id=identifier,
             action=action,
@@ -153,6 +169,10 @@ class Step:
             expect=expectations,
             screenshot=bool(raw.get("screenshot", True)),
             note=raw.get("note"),
+            mark=str(mark) if mark is not None else None,
+            until=until,
+            persona=dict(raw.get("persona") or {}) or None,
+            reply_timeout_ms=int(raw.get("reply_timeout_ms") or 240_000),
         )
 
 
@@ -169,6 +189,28 @@ def _require_action_fields(action: str, raw: Mapping[str, Any], where: str) -> N
         raise FlowError(f"{where}: 'assert' with no expectations asserts nothing")
     if action == "http" and not raw.get("path"):
         raise FlowError(f"{where}: 'http' needs a path")
+    if action == "converse":
+        if not raw.get("until"):
+            raise FlowError(f"{where}: 'converse' needs 'until', or the conversation never ends")
+        persona = raw.get("persona")
+        if not isinstance(persona, Mapping):
+            raise FlowError(f"{where}: 'converse' needs a persona with facts and a fallback")
+        if not persona.get("fallback"):
+            raise FlowError(f"{where}: persona needs a fallback reply for questions it does not know")
+        facts = persona.get("facts") or ()
+        if not isinstance(facts, Sequence) or isinstance(facts, (str, bytes)):
+            raise FlowError(f"{where}: persona.facts must be a list")
+        for index, fact in enumerate(facts):
+            if not isinstance(fact, Mapping) or not fact.get("reply"):
+                raise FlowError(f"{where}: persona.facts[{index}] needs a reply")
+            when = fact.get("when")
+            if not when or isinstance(when, (str, bytes)):
+                raise FlowError(f"{where}: persona.facts[{index}].when must be a list of keywords")
+        turns = persona.get("max_turns", 8)
+        if not isinstance(turns, int) or not 1 <= turns <= 40:
+            raise FlowError(f"{where}: persona.max_turns must be an integer between 1 and 40")
+    elif raw.get("until"):
+        raise FlowError(f"{where}: 'until' only makes sense on a 'converse' step")
 
 
 @dataclass(frozen=True)

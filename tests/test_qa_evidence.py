@@ -8,6 +8,7 @@ from site_agent.qa.evidence import (
     fingerprint,
     run_id,
     sha256_file,
+    timings,
     write_bundle,
 )
 from site_agent.qa.flow import Flow
@@ -110,3 +111,46 @@ def test_run_id_is_filesystem_and_url_safe():
     value = run_id("Intake To: Preview", "2026-10-29T10:00:00Z")
     assert value == "intake-to-preview-2026-10-29t10-00-00z"
     assert " " not in value and ":" not in value
+
+
+def test_timings_measure_each_stage_and_the_whole_run():
+    result = _result(status="passed")
+    result.marks = {
+        "brief_ready": "2026-10-29T10:02:00Z",
+        "build_requested": "2026-10-29T10:02:30Z",
+        "candidate_ready": "2026-10-29T10:14:30Z",
+        "site_live": "2026-10-29T10:15:00Z",
+    }
+    measured = timings(
+        result,
+        started_at="2026-10-29T10:00:00Z",
+        finished_at="2026-10-29T10:15:00Z",
+    )
+    assert measured["durations_s"]["brief_ready"] == 120.0
+    assert measured["durations_s"]["build_requested"] == 30.0
+    assert measured["durations_s"]["candidate_ready"] == 720.0
+    assert measured["durations_s"]["site_live"] == 30.0
+    assert measured["total_s"] == 900.0
+
+
+def test_timings_survive_a_run_with_no_marks():
+    measured = timings(_result(), started_at=None, finished_at=None)
+    assert measured["marks"] == {}
+    assert measured["durations_s"] == {}
+    assert measured["total_s"] is None
+
+
+def test_bundle_carries_timings_and_incubation_id(tmp_path):
+    result = _result(status="passed")
+    result.marks = {"build_requested": "2026-10-29T10:02:30Z", "candidate_ready": "2026-10-29T10:14:30Z"}
+    result.incubation_id = "intake-abc123"
+    bundle = build_bundle(
+        result,
+        verdict=_verdict(),
+        artifacts_dir=tmp_path,
+        started_at="2026-10-29T10:00:00Z",
+        finished_at="2026-10-29T10:15:00Z",
+    )
+    assert bundle["incubation_id"] == "intake-abc123"
+    assert bundle["timings"]["durations_s"]["candidate_ready"] == 720.0
+    assert bundle["timings"]["total_s"] == 900.0

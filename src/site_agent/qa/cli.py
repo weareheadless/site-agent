@@ -15,6 +15,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Sequence
 
@@ -61,6 +63,15 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--viewport", default="1280x900", help="WIDTHxHEIGHT")
     run.add_argument("--no-screenshots", action="store_true")
     run.add_argument("--json", action="store_true", help="print the bundle instead of a summary")
+    run.add_argument(
+        "--ledger",
+        help="JSON file recording the one test site this harness owns; the next run removes it",
+    )
+    run.add_argument(
+        "--allow-destructive",
+        action="store_true",
+        help="permit removing the previously recorded test site (test/local targets only)",
+    )
     return parser
 
 
@@ -88,6 +99,19 @@ def _run(args: argparse.Namespace) -> int:
     width, _, height = args.viewport.partition("x")
     exit_code = EXIT_PASS
     bundles = []
+    if args.ledger:
+        purged, problem = purge_ledger(
+            args.ledger,
+            base_url=args.base_url,
+            environment=args.environment,
+            allow_destructive=args.allow_destructive,
+        )
+        if problem:
+            print(f"error: {problem}", file=sys.stderr)
+            return EXIT_ERROR
+        if purged:
+            print(f"removed {len(purged)} previous test site(s): {', '.join(purged)}")
+    probe = probe_target(args.base_url)
     for flow in flows:
         try:
             driver = PlaywrightDriver(
@@ -108,11 +132,23 @@ def _run(args: argparse.Namespace) -> int:
                     "sha": args.sha,
                     "deployed_sha": args.deployed_sha,
                     "environment": args.environment,
+                    **probe,
                 },
                 started_at=started,
             )
             path = write_bundle(bundle, Path(args.evidence_dir) / f"{flow.id}.json")
             bundles.append(bundle)
+            if args.ledger and result.incubation_id:
+                record_ledger(
+                    args.ledger,
+                    {
+                        "incubation_id": result.incubation_id,
+                        "flow": flow.id,
+                        "sha": args.sha,
+                        "status": result.status,
+                        "recorded_at": bundle["finished_at"],
+                    },
+                )
         except DriverError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return EXIT_ERROR
@@ -123,6 +159,87 @@ def _run(args: argparse.Namespace) -> int:
         if not bundle["rubric"]["passed"] or bundle["status"] != "passed":
             exit_code = EXIT_FAIL
     return exit_code
+
+
+def purge_ledger(
+    path: str | Path,
+    *,
+    base_url: str,
+    environment: str,
+    allow_destructive: bool,
+) -> tuple[list[str], str | None]:
+    """Remove the test site the previous run left live.
+
+    The harness never guesses which site is disposable. It only removes what its
+    own ledger says it created, and only against a target that is declared
+    non-production. One live test site at a time, by construction.
+    """
+
+    if environment not in ("test", "local"):
+        return [], f"refusing to remove a test site against environment {environment!r}"
+    if not allow_destructive:
+        return [], "removing the previous test site requires --allow-destructive"
+    ledger = Path(path)
+    entries = _read_ledger(ledger)
+    removed: list[str] = []
+    for entry in entries:
+        identifier = str(entry.get("incubation_id") or "")
+        if not identifier:
+            continue
+        request = urllib.request.Request(
+            f"{base_url.rstrip('/')}/api/incubations/{identifier}", method="DELETE"
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                if 200 <= response.status < 300:
+                    removed.append(identifier)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                removed.append(identifier)
+        except OSError as exc:
+            return removed, f"could not remove {identifier}: {exc}"
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text("[]\n", encoding="utf-8")
+    return removed, None
+
+
+def record_ledger(path: str | Path, entry: dict) -> None:
+    ledger = Path(path)
+    entries = _read_ledger(ledger)
+    entries.append(entry)
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_text(json.dumps(entries, indent=2) + "\n", encoding="utf-8")
+
+
+def _read_ledger(path: Path) -> list[dict]:
+    if not path.is_file():
+        return []
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+def probe_target(base_url: str) -> dict:
+    """Record which model the target actually used, so runs stay comparable."""
+
+    try:
+        with urllib.request.urlopen(f"{base_url.rstrip('/')}/api/lab", timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8", "replace"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    model = payload.get("model")
+    engine = payload.get("engine")
+    if not model and isinstance(engine, dict):
+        model = engine.get("model")
+    return {
+        "model": model,
+        "provider": payload.get("provider"),
+        "site_name": payload.get("site_name"),
+    }
 
 
 def _resolve(target: str) -> tuple[Flow, ...]:
@@ -137,16 +254,34 @@ def _resolve(target: str) -> tuple[Flow, ...]:
 
 def _print_summary(bundle: dict, path: Path) -> None:
     status = "PASS" if bundle["status"] == "passed" and bundle["rubric"]["passed"] else "FAIL"
-    print(f"[{status}] {bundle['flow']['id']} ({bundle['flow']['tier']})")
+    model = (bundle.get("target") or {}).get("model")
+    suffix = f"  model={model}" if model else ""
+    print(f"[{status}] {bundle['flow']['id']} ({bundle['flow']['tier']}){suffix}")
     for step in bundle["steps"]:
         mark = {"passed": "ok", "failed": "FAIL", "skipped": "skip", "pending": "..."}.get(
             step["status"], step["status"]
         )
-        print(f"  {mark:<5} {step['id']:<28} {step['duration_ms']:>5}ms  {step['detail']}")
+        extra = f"  [{step['turns']} turns]" if step.get("turns") else ""
+        print(f"  {mark:<5} {step['id']:<28} {step['duration_ms']:>7}ms  {step['detail']}{extra}")
+    timings = bundle.get("timings") or {}
+    for name, seconds in (timings.get("durations_s") or {}).items():
+        print(f"  time  {name:<28} {_human(seconds)}")
+    if timings.get("total_s") is not None:
+        print(f"  time  {'total':<28} {_human(timings['total_s'])}")
     for reason in bundle["rubric"]["reasons"]:
         print(f"  reason: {reason}")
     print(f"  fingerprint {bundle['fingerprint']}")
     print(f"  evidence    {path}")
+
+
+def _human(seconds: float) -> str:
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    minutes, rest = divmod(int(seconds), 60)
+    if minutes < 60:
+        return f"{minutes}m {rest:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h {minutes:02d}m {rest:02d}s"
 
 
 if __name__ == "__main__":  # pragma: no cover

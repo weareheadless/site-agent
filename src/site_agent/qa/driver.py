@@ -17,6 +17,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -58,6 +59,9 @@ class StepResult:
     assertions: list[AssertionResult] = field(default_factory=list)
     screenshot: str | None = None
     http_status: int | None = None
+    mark: str | None = None
+    turns: int = 0
+    transcript: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -69,6 +73,9 @@ class StepResult:
             "assertions": [item.to_dict() for item in self.assertions],
             "screenshot": self.screenshot,
             "http_status": self.http_status,
+            "mark": self.mark,
+            "turns": self.turns,
+            "transcript": list(self.transcript),
         }
 
 
@@ -77,6 +84,7 @@ class Observations:
     console_errors: list[dict[str, Any]] = field(default_factory=list)
     page_errors: list[dict[str, Any]] = field(default_factory=list)
     failed_requests: list[dict[str, Any]] = field(default_factory=list)
+    dialogs: list[dict[str, Any]] = field(default_factory=list)
     page_metrics: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -84,6 +92,7 @@ class Observations:
             "console_errors": list(self.console_errors),
             "page_errors": list(self.page_errors),
             "failed_requests": list(self.failed_requests),
+            "dialogs": list(self.dialogs),
             "page_metrics": dict(self.page_metrics),
         }
 
@@ -96,6 +105,8 @@ class FlowResult:
     steps: list[StepResult] = field(default_factory=list)
     observations: Observations = field(default_factory=Observations)
     artifacts: list[str] = field(default_factory=list)
+    marks: dict[str, str] = field(default_factory=dict)
+    incubation_id: str | None = None
     error: str | None = None
 
     @property
@@ -114,6 +125,8 @@ class FlowResult:
             "steps": [step.to_dict() for step in self.steps],
             "observations": self.observations.to_dict(),
             "artifacts": list(self.artifacts),
+            "marks": dict(self.marks),
+            "incubation_id": self.incubation_id,
         }
 
 
@@ -161,6 +174,7 @@ class PlaywrightDriver:
                     self._attach_listeners(page, result.observations)
                     self._run_steps(page, flow, result, context)
                     self._capture_page_metrics(page, result.observations)
+                    result.incubation_id = self._incubation_id(page)
                 finally:
                     browser.close()
         except DriverError:
@@ -187,6 +201,9 @@ class PlaywrightDriver:
                 continue
             outcome = self._run_step(page, step, result, context, index)
             result.steps.append(outcome)
+            if outcome.status == "passed" and step.mark:
+                outcome.mark = step.mark
+                result.marks[step.mark] = _stamp()
             if outcome.status == "failed":
                 failed = True
                 result.status = "failed"
@@ -261,8 +278,111 @@ class PlaywrightDriver:
             outcome.detail = "captured"
         elif step.action == "http":
             self._http(step, outcome, context)
+        elif step.action == "converse":
+            self._converse(page, step, outcome, context)
         else:  # pragma: no cover - guarded by flow validation
             raise DriverError(f"unsupported action {step.action!r}")
+
+    # -- conversation ---------------------------------------------------
+
+    def _converse(
+        self,
+        page: Any,
+        step: Step,
+        outcome: StepResult,
+        context: dict[str, Any],
+    ) -> None:
+        """Hold the owner's side of a real conversation.
+
+        The owner is scripted from a persona fact sheet, Ada is not. Each turn
+        reads what Ada actually asked, answers it from the facts, and waits for
+        the next reply. The loop ends when an ``until`` condition holds, which is
+        the only honest way to stop: a fixed turn count would either cut a real
+        conversation short or spin after it finished.
+        """
+
+        persona = step.persona or {}
+        facts = list(persona.get("facts") or ())
+        fallback = str(persona.get("fallback") or "")
+        max_turns = int(persona.get("max_turns") or 8)
+        seen = self._message_count(page)
+        transcript: list[dict[str, Any]] = []
+
+        for turn in range(1, max_turns + 1):
+            if self._until_satisfied(page, step.until, context):
+                outcome.turns = turn - 1
+                outcome.transcript = transcript
+                outcome.detail = f"settled after {turn - 1} owner turn(s)"
+                return
+            question = self._last_assistant_text(page)
+            reply = _choose_reply(question, facts, fallback)
+            transcript.append({"turn": turn, "ada": question, "owner": reply})
+            self._send_message(page, reply)
+            seen = self._await_turn(page, seen, step.reply_timeout_ms)
+
+        outcome.transcript = transcript
+        outcome.turns = max_turns
+        if self._until_satisfied(page, step.until, context):
+            outcome.detail = f"settled after {max_turns} owner turn(s)"
+            return
+        raise DriverError(
+            f"conversation did not settle within {max_turns} owner turns; "
+            f"last thing Ada said: {self._last_assistant_text(page)[:200]!r}"
+        )
+
+    def _until_satisfied(
+        self,
+        page: Any,
+        until: Sequence[Expectation],
+        context: dict[str, Any],
+    ) -> bool:
+        return any(self._evaluate(page, expectation, context).passed for expectation in until)
+
+    def _message_count(self, page: Any) -> int:
+        try:
+            return int(page.locator("#messages article.message").count())
+        except Exception:
+            return 0
+
+    def _last_assistant_text(self, page: Any) -> str:
+        locator = page.locator('#messages article.message[data-role="assistant"]')
+        if not locator.count():
+            return ""
+        try:
+            return locator.last.inner_text(timeout=2_000) or ""
+        except Exception:
+            return ""
+
+    def _send_message(self, page: Any, reply: str) -> None:
+        page.locator("#message").first.fill(reply)
+        page.locator("#send").first.click()
+
+    def _await_turn(self, page: Any, seen: int, timeout_ms: int) -> int:
+        """Wait until Ada replied and the composer is idle again."""
+
+        deadline = time.monotonic() + timeout_ms / 1000
+        grew = False
+        while time.monotonic() < deadline:
+            count = self._message_count(page)
+            if count > seen:
+                grew = True
+                if self._chat_idle(page):
+                    return count
+            elif grew and self._chat_idle(page):
+                return count
+            time.sleep(0.25)
+        if not grew:
+            raise DriverError(f"Ada did not reply within {timeout_ms}ms")
+        return self._message_count(page)
+
+    def _chat_idle(self, page: Any) -> bool:
+        try:
+            state = (page.locator("#chat-state").first.inner_text(timeout=1_000) or "").strip().lower()
+        except Exception:
+            return True
+        return state in ("ready", "idle", "")
+
+    # -- http -----------------------------------------------------------
 
     def _http(self, step: Step, outcome: StepResult, context: dict[str, Any]) -> None:
         url = self._absolute(step.path or "/")
@@ -313,10 +433,11 @@ class PlaywrightDriver:
                     lambda: (expectation.text or "") not in self._text(page, expectation.selector or ""),
                 )
             if kind == "count":
+                op = expectation.op[4:] if expectation.op.startswith("len_") else expectation.op
                 return self._poll(
                     expectation,
                     lambda: _compare(
-                        page.locator(expectation.selector or "").count(), expectation.value, expectation.op
+                        page.locator(expectation.selector or "").count(), expectation.value, op
                     ),
                 )
             if kind == "url_contains":
@@ -389,6 +510,17 @@ class PlaywrightDriver:
         return name
 
     def _attach_listeners(self, page: Any, observations: Observations) -> None:
+        def on_dialog(dialog: Any) -> None:
+            observations.dialogs.append(
+                {"step": self._current_step, "type": dialog.type, "message": dialog.message}
+            )
+            # A native confirm() blocks the page until answered; accepting is the
+            # owner's intent in every flow we drive.
+            try:
+                dialog.accept()
+            except Exception:  # pragma: no cover - already dismissed
+                pass
+
         def on_console(message: Any) -> None:
             if getattr(message, "type", "") == "error":
                 observations.console_errors.append(
@@ -412,6 +544,14 @@ class PlaywrightDriver:
         page.on("console", on_console)
         page.on("pageerror", on_page_error)
         page.on("requestfailed", on_request_failed)
+        page.on("dialog", on_dialog)
+
+    def _incubation_id(self, page: Any) -> str | None:
+        try:
+            value = page.evaluate("() => window.localStorage.getItem('ada_incubation_id')")
+        except Exception:
+            return None
+        return str(value) if value else None
 
     def _capture_page_metrics(self, page: Any, observations: Observations) -> None:
         try:
@@ -432,6 +572,19 @@ class PlaywrightDriver:
             )
         except Exception as exc:  # pragma: no cover - page already closed
             observations.page_metrics = {"error": str(exc)}
+
+
+def _stamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _choose_reply(question: str, facts: Sequence[Mapping[str, Any]], fallback: str) -> str:
+    text = (question or "").lower()
+    for fact in facts:
+        keywords = [str(item).lower() for item in fact.get("when") or ()]
+        if keywords and any(keyword in text for keyword in keywords):
+            return str(fact.get("reply") or fallback)
+    return fallback
 
 
 def _location(message: Any) -> str:

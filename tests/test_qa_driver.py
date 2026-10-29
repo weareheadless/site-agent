@@ -38,6 +38,55 @@ PAGES = {
         <script>setTimeout(() => {
             const el = document.createElement("p"); el.id = "late"; el.textContent = "ready";
             document.body.appendChild(el); }, 600);</script></body></html>""",
+    "/chat": """<!doctype html><html><head><title>Ada</title></head><body data-phase="intake">
+        <span id="chat-state">Ready</span>
+        <section id="confirm-panel" hidden><h3 id="confirm-heading">Ready to build</h3></section>
+        <div id="messages"></div>
+        <form id="composer"><textarea id="message"></textarea>
+        <button id="send" type="submit">Send</button></form>
+        <p id="composer-note"></p>
+        <button id="provision" type="button">Provision</button>
+        <p id="provision-note"></p>
+        <script>
+          const QUESTIONS = [
+            "What is the studio called?",
+            "How much are the classes?",
+            "Where can people find you?"
+          ];
+          const messages = document.querySelector("#messages");
+          const note = document.querySelector("#composer-note");
+          let turn = 0;
+          function add(role, text) {
+            const item = document.createElement("article");
+            item.className = "message";
+            item.dataset.role = role;
+            item.textContent = text;
+            messages.append(item);
+          }
+          add("assistant", "Tell me what this website needs to make clear.");
+          document.querySelector("#composer").addEventListener("submit", (event) => {
+            event.preventDefault();
+            const box = document.querySelector("#message");
+            add("user", box.value);
+            box.value = "";
+            document.querySelector("#chat-state").textContent = "Working";
+            setTimeout(() => {
+              turn += 1;
+              if (turn > QUESTIONS.length) {
+                add("assistant", "That is enough. Ready to build.");
+                document.querySelector("#confirm-panel").hidden = false;
+                document.body.dataset.phase = "ready";
+              } else {
+                add("assistant", QUESTIONS[turn - 1]);
+              }
+              document.querySelector("#chat-state").textContent = "Ready";
+            }, 120);
+          });
+          document.querySelector("#provision").addEventListener("click", () => {
+            if (!window.confirm("Provision this exact website candidate?")) return;
+            document.querySelector("#provision-note").textContent = "The website is moving into management.";
+          });
+        </script></body></html>""",
 }
 
 
@@ -235,3 +284,113 @@ def test_screenshots_can_be_disabled_for_cheap_runs(origin, tmp_path):
     result = _driver(origin, tmp_path, screenshots=False).run(flow)
     assert result.steps[0].screenshot is None
     assert not any(Path(tmp_path / "artifacts").glob("*.png"))
+
+
+def test_converse_answers_what_ada_actually_asked(origin, tmp_path):
+    flow = _flow(
+        [
+            {"id": "open", "action": "goto", "url": "/chat"},
+            {"id": "brief", "action": "fill", "selector": "#message", "text": "a ceramics studio"},
+            {"id": "send", "action": "click", "selector": "#send"},
+            {
+                "id": "talk",
+                "action": "converse",
+                "reply_timeout_ms": 5_000,
+                "until": [{"kind": "visible", "selector": "#confirm-panel", "timeout_ms": 500}],
+                "persona": {
+                    "max_turns": 8,
+                    "fallback": "Yes, go ahead.",
+                    "facts": [
+                        {"when": ["called", "name"], "reply": "It is called Atelier Sete."},
+                        {"when": ["how much", "classes", "price"], "reply": "The course is 240 euros."},
+                        {"when": ["find you", "where"], "reply": "Rua da Boavista 112, Lisbon."},
+                    ],
+                },
+            },
+        ]
+    )
+    result = _driver(origin, tmp_path).run(flow)
+    assert result.status == "passed", result.steps[-1].detail
+
+    conversation = result.steps[-1]
+    assert conversation.turns == 3
+    answers = [turn["owner"] for turn in conversation.transcript]
+    assert answers[0] == "It is called Atelier Sete."
+    assert answers[1] == "The course is 240 euros."
+    assert answers[2] == "Rua da Boavista 112, Lisbon."
+
+
+def test_converse_fails_loudly_when_it_never_settles(origin, tmp_path):
+    flow = _flow(
+        [
+            {"id": "open", "action": "goto", "url": "/chat"},
+            {
+                "id": "talk",
+                "action": "converse",
+                "reply_timeout_ms": 3_000,
+                "until": [{"kind": "visible", "selector": "#never-appears", "timeout_ms": 200}],
+                "persona": {
+                    "max_turns": 2,
+                    "fallback": "Yes, go ahead.",
+                    "facts": [{"when": ["called"], "reply": "Atelier Sete."}],
+                },
+            },
+        ]
+    )
+    result = _driver(origin, tmp_path).run(flow)
+    assert result.status == "failed"
+    assert "did not settle within 2 owner turns" in result.steps[-1].detail
+
+
+def test_marks_measure_the_time_to_build(origin, tmp_path):
+    flow = _flow(
+        [
+            {"id": "open", "action": "goto", "url": "/chat", "mark": "opened"},
+            {
+                "id": "brief",
+                "action": "fill",
+                "selector": "#message",
+                "text": "a ceramics studio",
+            },
+            {"id": "send", "action": "click", "selector": "#send", "mark": "build_requested"},
+            {
+                "id": "wait",
+                "action": "assert",
+                "mark": "candidate_ready",
+                "expect": [
+                    {
+                        "kind": "count",
+                        "selector": "#messages article.message",
+                        "op": "len_gte",
+                        "value": 2,
+                        "timeout_ms": 5_000,
+                    }
+                ],
+            },
+        ]
+    )
+    result = _driver(origin, tmp_path).run(flow)
+    assert result.status == "passed", result.steps[-1].detail
+    assert list(result.marks) == ["opened", "build_requested", "candidate_ready"]
+    assert result.steps[3].mark == "candidate_ready"
+
+
+def test_native_confirm_is_accepted_and_recorded(origin, tmp_path):
+    flow = _flow(
+        [
+            {"id": "open", "action": "goto", "url": "/chat"},
+            {
+                "id": "provision",
+                "action": "click",
+                "selector": "#provision",
+                "expect": [
+                    {"kind": "text", "selector": "#provision-note", "text": "management"}
+                ],
+            },
+        ]
+    )
+    result = _driver(origin, tmp_path).run(flow)
+    assert result.status == "passed", result.steps[-1].detail
+    assert result.observations.dialogs
+    assert result.observations.dialogs[0]["message"].startswith("Provision this exact")
+    assert result.observations.console_errors == []

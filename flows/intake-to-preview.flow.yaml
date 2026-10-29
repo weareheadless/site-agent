@@ -1,23 +1,26 @@
 id: intake-to-preview
-title: Confirmed intake produces a candidate in the Design review flow
+title: Confirmed intake produces a candidate and a provisioned site
 tier: live
 description: >
-  The product mission, driven as an owner would drive it. A real intake
-  conversation reaches a buildable brief, the build runs, and the candidate
-  appears in the Design review pane. This is the acceptance flow for UI-056 and
-  the shape every "prove it live" task should reuse.
+  The product mission, driven as an owner would drive it. A real conversation
+  reaches a buildable brief, Ada builds, the candidate appears in the Design
+  review pane, and the site is provisioned. This is the acceptance flow for
+  UI-056 and the shape every "prove it live" task should reuse.
+
+  The owner is scripted from a persona fact sheet so her answers are real
+  answers, not a rubber stamp. Ada is not scripted at all.
 
   Live tier on purpose: it spends model tokens and real build time, so it is a
-  release gate and a nightly run, never a pull-request check. It asserts that
-  the run crosses each boundary; it does not assert taste. Taste is the model
-  judge's advisory job.
+  release gate and a nightly run, never a pull-request check.
 requires:
   - deployed target with working model access
   - disposable tenant and project (never a customer workspace)
   - a build that can produce the declared output shape
+  - a ledger so the previous test site is removed before this one is built
 tags:
   - intake
   - design
+  - provisioning
   - acceptance
   - ui-056
 steps:
@@ -34,9 +37,9 @@ steps:
     action: fill
     selector: "#message"
     text: >
-      I run a small ceramics studio in Lisbon. I sell classes and a few pieces
-      online. I need a site that explains the classes, shows the space, and
-      takes enquiries. Keep it calm and handmade, not corporate.
+      I run a small ceramics studio in Lisbon. We teach wheel-throwing classes
+      and sell a few pieces. I need a site that explains the classes, shows the
+      space, and takes enquiries. Keep it calm and handmade, not corporate.
     expect:
       - kind: visible
         selector: "#send"
@@ -45,24 +48,79 @@ steps:
     action: click
     selector: "#send"
     expect:
-      - kind: visible
-        selector: "#messages .message, #messages > *"
-        timeout_ms: 120000
-        description: Ada's reply reached the conversation
-      - kind: text_absent
-        selector: "#composer-note"
-        text: "is required"
-        description: no raw contract error reaches the owner
+      - kind: count
+        selector: "#messages article.message"
+        op: len_gte
+        value: 2
+        timeout_ms: 300000
+        description: Ada replied to the brief
       - kind: text_absent
         selector: "#composer-note"
         text: "invalid experience plan"
         description: the UI-056 failure signature is absent
 
+  - id: answer-ada
+    action: converse
+    mark: brief_ready
+    reply_timeout_ms: 300000
+    until:
+      - kind: visible
+        selector: "#confirm-panel"
+        timeout_ms: 1000
+        description: Ada has enough of the brief to build
+    persona:
+      name: ceramics-studio-lisbon
+      max_turns: 10
+      fallback: >
+        Yes, that is right. Use what I have told you and go ahead.
+      facts:
+        - when: ["name", "called", "brand"]
+          reply: >
+            The studio is called Atelier Sete. "Sete" because we are the seventh
+            unit on the street.
+        - when: ["where", "location", "address", "visit", "find you"]
+          reply: >
+            Rua da Boavista 112 in Lisbon, open Thursday to Sunday, 11 to 7.
+        - when: ["price", "cost", "how much", "fee", "budget"]
+          reply: >
+            The four-week beginner wheel course is 240 euros. One-off taster
+            sessions are 45 euros and include clay and firing.
+        - when: ["class", "course", "workshop", "teach", "learn"]
+          reply: >
+            Beginners start on the wheel in a group of six, four sessions of two
+            hours. We also run a Saturday taster for people who just want to try.
+        - when: ["shop", "buy", "piece", "product", "sell"]
+          reply: >
+            About thirty pieces at a time, 25 to 90 euros, thrown and glazed here
+            in small batches. Nothing is mass produced.
+        - when: ["who", "audience", "customer", "people"]
+          reply: >
+            People who want a slower weekend, and beginners who have never
+            touched clay. Not a corporate team-building venue.
+        - when: ["contact", "enquir", "email", "phone", "booking", "book"]
+          reply: >
+            Enquiries go to hello@ateliersete.pt. Booking by email is fine for
+            now, we do not take payments online.
+        - when: ["domain", "url", "address of the site"]
+          reply: >
+            Use ateliersete.pt if you need a domain.
+        - when: ["photo", "image", "picture", "asset", "logo"]
+          reply: >
+            No photos or logo yet. Use warm neutrals and generous whitespace
+            rather than stock imagery.
+        - when: ["tone", "style", "feel", "look", "design"]
+          reply: >
+            Calm and handmade. Earthy, not sleek. No stock photos of people in
+            suits.
+        - when: ["when", "deadline", "timeline", "launch"]
+          reply: >
+            No deadline. Get it right rather than fast.
+
   - id: accept-the-brief
     action: fill
     selector: "#message"
     text: >
-      Yes, that is right. Use that brief and build it.
+      Yes, that is right. Build it from that brief.
     expect:
       - kind: visible
         selector: "#send"
@@ -70,17 +128,16 @@ steps:
   - id: send-acceptance
     action: click
     selector: "#send"
+    mark: build_requested
     expect:
-      - kind: visible
-        selector: "#phase-pill"
-        timeout_ms: 120000
       - kind: text_absent
         selector: "#composer-note"
-        text: "failed"
-        description: the build did not report a failure
+        text: "is required"
+        description: no raw contract error reaches the owner
 
   - id: candidate-in-review
     action: assert
+    mark: candidate_ready
     expect:
       - kind: visible
         selector: "#preview-iframe"
@@ -91,3 +148,23 @@ steps:
       - kind: console_clean
       - kind: network_clean
       - kind: no_page_errors
+
+  - id: provision-site
+    action: click
+    selector: "#provision"
+    mark: provision_requested
+    expect:
+      - kind: visible
+        selector: "#provision-note"
+
+  - id: site-live
+    action: assert
+    mark: site_live
+    expect:
+      - kind: visible
+        selector: 'body[data-phase="managed"]'
+        timeout_ms: 900000
+        description: the provisioned site reached the managed phase
+      - kind: text_absent
+        selector: "#provision-note"
+        text: "failed"

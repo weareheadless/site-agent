@@ -64,6 +64,83 @@ Taste -- is the copy coherent, does the result reflect the confirmed brief -- is
 `ModelJudge`. It is advisory by design and never gates a merge. It returns
 `needs_review` rather than guessing when its output is unparseable.
 
+## Holding the owner's side of a conversation
+
+A live flow cannot rubber-stamp its way through intake: if Ada asks a question and
+the test answers "yes, go ahead", the run proves nothing about whether the product
+can actually get a brief out of a person.
+
+The `converse` action scripts the *owner*, never Ada:
+
+```yaml
+- id: answer-ada
+  action: converse
+  mark: brief_ready
+  reply_timeout_ms: 300000
+  until:
+    - kind: visible
+      selector: "#confirm-panel"
+  persona:
+    max_turns: 10
+    fallback: "Yes, that is right. Use what I have told you and go ahead."
+    facts:
+      - when: ["price", "cost", "how much"]
+        reply: "The four-week beginner wheel course is 240 euros."
+```
+
+Each turn reads the last thing Ada actually said, matches it against the fact
+sheet, and answers from those facts. The loop ends when an `until` condition
+holds -- never on a fixed turn count, which would either cut a real conversation
+short or spin after it finished. The whole transcript goes into the evidence, so
+a reviewer can see what was asked and what the owner said.
+
+If the conversation does not settle inside `max_turns`, the step fails and says
+what Ada last asked. That is a product finding, not a harness error.
+
+## Measuring what it costs the owner
+
+Steps can carry a `mark`. Marks become `timings` in the bundle: the seconds
+between each consecutive mark and the total. The live flow marks
+`brief_ready`, `build_requested`, `candidate_ready` and `site_live`, so
+`durations_s["candidate_ready"]` is the build time the product promises to keep
+near twenty minutes.
+
+Marks are wall-clock and deliberately coarse. They answer "how long did the
+owner wait", not "which function was slow".
+
+## One live test site at a time
+
+Provisioning is part of the flow, because a candidate that cannot be provisioned
+is not a delivered site. Leaving provisioned test sites behind is not acceptable,
+so the harness keeps a ledger:
+
+```bash
+python -m site_agent.qa run flows/intake-to-preview.flow.yaml \
+  --base-url "$TEST_ORIGIN" --environment test \
+  --ledger .qa/test-sites.json --allow-destructive
+```
+
+Before the run, every site the ledger records is deleted. After the run, the
+incubation id the browser reported is recorded, so exactly one test site is live
+between runs. The harness never guesses which site is disposable: it only removes
+what it created, and it refuses outright when `--environment` is not `test` or
+`local`. Deleting a provisioned site still depends on the target's own teardown
+semantics, which is why the ledger is explicit rather than a name match.
+
+## Which model runs the target
+
+The harness does not configure the product's model; the target does, and the
+bundle records what the target reported from `/api/lab` as `target.model` and
+`target.provider`. That keeps runs comparable: a run against a fallback provider
+is visibly different evidence from a run against the release provider, and a
+build-time comparison that mixes them is meaningless.
+
+The intended end state is that the harness inherits the same credentials the
+project runner already uses, so nothing here holds its own provider key. While
+those credits are unavailable, point the target at a fallback provider and read
+`target.model` before believing any timing.
+
+
 ## The gate contract
 
 The bundle is `site-agent.qa.evidence/1`. Schema changes are additive and bump
@@ -108,9 +185,13 @@ cannot silently lose its evidence and the fix cannot silently lose its proof.
 
 - `intake-surface` (deterministic) ships and passes against the real Intake Lab
   app with a temporary store.
-- `intake-to-preview` (live) encodes the UI-056 acceptance path. It cannot pass
-  until the build produces the output shape the deployed validator requires, so
-  it is the acceptance gate for that work rather than a green check today.
+- `intake-to-preview` (live) now converses with real answers, marks the build
+  boundary, provisions, and asserts the managed phase. It cannot pass until the
+  build produces the output shape the deployed validator requires, so it is the
+  acceptance gate for that work rather than a green check today.
+- `converse`, marks, timing and the ledger are covered by tests against a
+  fixture app; the full live path has not been run end to end against a
+  provisioned target yet.
 - The model judge is a seam (`ModelJudge(complete=...)`), not a wired provider.
 - Record mode -- capturing a failing run as a replayable scenario -- is designed
   but not built; the deterministic tier currently uses the real app with a

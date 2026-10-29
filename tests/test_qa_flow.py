@@ -129,3 +129,103 @@ def test_step_defaults_to_capturing_a_screenshot():
     assert Step.from_dict(
         {"id": "x", "action": "goto", "url": "/", "screenshot": False}, "where"
     ).screenshot is False
+
+
+def _converse(**overrides):
+    raw = {
+        "id": "talk",
+        "action": "converse",
+        "until": [{"kind": "visible", "selector": "#confirm-panel"}],
+        "persona": {"fallback": "Yes, go ahead.", "facts": [{"when": ["name"], "reply": "Sete."}]},
+    }
+    raw.update(overrides)
+    return _minimal(steps=[raw])
+
+
+def test_converse_requires_an_end_condition():
+    raw = _converse()
+    del raw["steps"][0]["until"]
+    with pytest.raises(FlowError, match="never ends"):
+        Flow.from_dict(raw)
+
+
+def test_converse_requires_a_persona_with_a_fallback():
+    raw = _converse()
+    del raw["steps"][0]["persona"]
+    with pytest.raises(FlowError, match="needs a persona"):
+        Flow.from_dict(raw)
+
+    raw = _converse()
+    del raw["steps"][0]["persona"]["fallback"]
+    with pytest.raises(FlowError, match="fallback"):
+        Flow.from_dict(raw)
+
+
+def test_persona_facts_must_be_answerable():
+    raw = _converse()
+    raw["steps"][0]["persona"]["facts"] = [{"when": ["name"]}]
+    with pytest.raises(FlowError, match="needs a reply"):
+        Flow.from_dict(raw)
+
+    raw = _converse()
+    raw["steps"][0]["persona"]["facts"] = [{"when": "name", "reply": "x"}]
+    with pytest.raises(FlowError, match="must be a list of keywords"):
+        Flow.from_dict(raw)
+
+
+def test_persona_turn_limit_is_bounded():
+    raw = _converse()
+    raw["steps"][0]["persona"]["max_turns"] = 500
+    with pytest.raises(FlowError, match="max_turns"):
+        Flow.from_dict(raw)
+
+
+def test_until_is_rejected_outside_a_conversation():
+    raw = _minimal(
+        steps=[
+            {
+                "id": "open",
+                "action": "goto",
+                "url": "/",
+                "until": [{"kind": "visible", "selector": "#x"}],
+            }
+        ]
+    )
+    with pytest.raises(FlowError, match="only makes sense on a 'converse' step"):
+        Flow.from_dict(raw)
+
+
+def test_marks_must_be_stable_identifiers():
+    with pytest.raises(FlowError, match="mark"):
+        Flow.from_dict(
+            _minimal(steps=[{"id": "open", "action": "goto", "url": "/", "mark": "Build Requested!"}])
+        )
+    flow = Flow.from_dict(
+        _minimal(steps=[{"id": "open", "action": "goto", "url": "/", "mark": "build_requested"}])
+    )
+    assert flow.steps[0].mark == "build_requested"
+
+
+def test_the_live_flow_answers_ada_with_real_facts_and_measures_the_build():
+    root = Path(__file__).resolve().parents[1] / "flows"
+    flow = load_flow(root / "intake-to-preview.flow.yaml")
+    converse = [step for step in flow.steps if step.action == "converse"]
+    assert len(converse) == 1
+    persona = converse[0].persona or {}
+    assert persona["fallback"]
+    assert len(persona["facts"]) >= 5, "a persona that cannot answer is not a test"
+    assert converse[0].until
+
+    marks = [step.mark for step in flow.steps if step.mark]
+    assert "build_requested" in marks
+    assert "candidate_ready" in marks
+    assert "site_live" in marks
+    assert marks.index("build_requested") < marks.index("candidate_ready")
+
+
+def test_the_live_flow_provisions_like_production():
+    root = Path(__file__).resolve().parents[1] / "flows"
+    flow = load_flow(root / "intake-to-preview.flow.yaml")
+    ids = flow.step_ids
+    assert "provision-site" in ids
+    assert ids.index("candidate-in-review") < ids.index("provision-site") < ids.index("site-live")
