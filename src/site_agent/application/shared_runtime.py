@@ -383,9 +383,9 @@ def apply_shared_runtime_overlay(
     if expected_fingerprint is not None:
         if not re.fullmatch(r"[0-9a-f]{64}", expected_fingerprint):
             raise SharedRuntimeError("expected shared runtime fingerprint is invalid")
-        runtime_fingerprint = expected_fingerprint
-    else:
-        runtime_fingerprint = shared_runtime_fingerprint(control_root, manifest_path)
+    runtime_fingerprint = shared_runtime_fingerprint(control_root, manifest_path)
+    if expected_fingerprint is not None and expected_fingerprint != runtime_fingerprint:
+        raise SharedRuntimeError("expected shared runtime fingerprint does not match control bytes")
     rendered = _merge_wrangler(template_config, tenant_config, customer, tenant_id,
                                shared_vars, version_match.group(1))
 
