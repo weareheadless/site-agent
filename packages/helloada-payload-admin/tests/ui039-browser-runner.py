@@ -125,7 +125,70 @@ try:
       page.screenshot(path=f'{root}/page-editor-{width}x{height}.png', full_page=True)
       editor.locator('.helloada-page-editor-footer button').first.click()
       assert not editor.is_visible(), ('page editor remains visible after close', width, height)
+
+    # Exercise the real attachment input and component handlers against the
+    # deterministic mocked HelloAda boundary; no component state is injected.
+    for width, height in [(1440, 900), (390, 844)]:
+      page.set_viewport_size({'width': width, 'height': height})
+      page.reload()
+      page.locator('.helloada-chat-form').wait_for()
+      file_input = page.locator('.helloada-file-input')
+      page.evaluate('() => { window.__holdUpload=true; window.__uploadMode="success" }')
+      file_input.set_input_files({'name':'owner-image.png','mimeType':'image/png','buffer':b'\x89PNG\r\n\x1a\nfixture'})
+      status=page.locator('.helloada-upload-status')
+      status.get_by_text('Uploading').wait_for()
+      assert status.get_by_text('owner-image.png').is_visible(), ('uploading status lacks filename', width)
+      send=page.locator('.helloada-send-button')
+      assert send.is_disabled(), ('send enabled during upload', width)
+      assert page.evaluate('()=>window.__calls.some(c=>c.path==="/api/helloada/media/upload"&&c.method==="POST"&&c.file==="owner-image.png"&&c.fileType==="image/png"&&c.formFields.includes("file"))'), ('upload request did not use multipart file field', width)
+      page.wait_for_function('()=>typeof window.__releaseUpload==="function" && window.__calls.some(c=>c.path==="/api/helloada/media/upload")')
+      page.evaluate('()=>{window.__holdUpload=false;window.__releaseUpload()}')
+      chip=page.get_by_role('button',name='Remove image owner-image.png')
+      chip.get_by_text('Ready').wait_for()
+      page.locator('#helloada-ada-message').fill('Review this image')
+      send.click()
+      page.wait_for_function('()=>window.__calls.some(c=>c.path==="/api/helloada/ada"&&c.method==="POST")')
+      payload=page.evaluate('()=>window.__calls.find(c=>c.path==="/api/helloada/ada"&&c.method==="POST").body')
+      assert payload['attachments']==[{'asset_id':731}], ('send payload did not contain the returned asset id exactly once', payload)
+      outputs.append(f'attachments {width}x{height}: visible upload/ready, multipart file request, exact asset_id sent')
+
+      # Upload a second file and remove its ready chip before sending. The next
+      # ordinary click must not retain the removed asset in its payload.
+      page.reload()
+      page.locator('.helloada-chat-form').wait_for()
+      file_input=page.locator('.helloada-file-input')
+      send=page.locator('.helloada-send-button')
+      page.evaluate('()=>{window.__calls=[];window.__holdUpload=false;window.__uploadMode="success"}')
+      file_input.set_input_files({'name':'remove-me.png','mimeType':'image/png','buffer':b'\x89PNG\r\n\x1a\nfixture'})
+      removed=page.get_by_role('button',name='Remove image owner-image.png')
+      removed.get_by_text('Ready').wait_for()
+      removed.click()
+      page.locator('#helloada-ada-message').fill('Send without removed image')
+      send.click()
+      page.wait_for_function('()=>window.__calls.some(c=>c.path==="/api/helloada/ada"&&c.method==="POST")')
+      payload=page.evaluate('()=>window.__calls.find(c=>c.path==="/api/helloada/ada"&&c.method==="POST").body')
+      assert payload['attachments']==[], ('removed attachment remained in send payload', payload)
+
+      # Unsupported files are visibly rejected without reaching upload.
+      page.reload()
+      page.locator('.helloada-chat-form').wait_for()
+      file_input=page.locator('.helloada-file-input')
+      send=page.locator('.helloada-send-button')
+      page.evaluate('()=>window.__calls=[]')
+      file_input.set_input_files({'name':'notes.txt','mimeType':'text/plain','buffer':b'not an image'})
+      page.get_by_text('Unsupported file type').wait_for()
+      assert not page.evaluate('()=>window.__calls.some(c=>c.path==="/api/helloada/media/upload")'), 'unsupported file reached upload boundary'
+
+      # Simulated upload rejection is explicitly visible and blocks send; keep
+      # the expected fixture failure classified separately from browser errors.
+      page.evaluate('()=>{window.__calls=[];window.__uploadMode="failed"}')
+      file_input.set_input_files({'name':'broken.png','mimeType':'image/png','buffer':b'\x89PNG\r\n\x1a\nfixture'})
+      failed=page.locator('.helloada-upload-status')
+      failed.get_by_text('Upload failed: Fixture upload rejected').wait_for()
+      assert send.is_disabled(), 'send was not blocked after failed upload'
+      assert page.evaluate('()=>window.__expectedFailure') == 'upload rejected: Fixture upload rejected', 'simulated upload failure was not classified'
+      outputs.append(f'attachments {width}x{height}: unsupported and failed uploads visible; failure classified; removal omits asset')
     if errors: raise AssertionError('\n'.join(errors))
-    (root/'browser-report.txt').write_text('\n'.join(outputs)+'\nNo console, page, HTTP, or request failures. Attachments upload/send not browser-tested.\n')
+    (root/'browser-report.txt').write_text('\n'.join(outputs)+'\nNo console, page, HTTP, or request failures. Expected simulated failure: upload rejected: Fixture upload rejected.\n')
     browser.close()
 finally: server.shutdown()

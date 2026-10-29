@@ -11,7 +11,12 @@ bundles the actual production component with only child/API/Next boundaries
 stubbed and compiles the package's real `admin.scss`. All three dialogs are
 checked at 1440x900, 390x844 and 390x480 with ordinary action clicks, visible
 hit-testable footers, overflowing inner content at the short viewport, and
-closed-dialog checks.
+closed-dialog checks. Real file-input selection, attachment status, removal,
+and send payload are also exercised at 1440x900 and 390x844. The upload boundary
+records the actual path, method, multipart `file` field and send JSON; upload
+completion is deferred until the visible uploading state is asserted. The
+fixture also covers unsupported and rejected files and confirms a removed
+attachment is absent from the next payload.
 
 For the field path the harness enables the deliberately hidden quick-edit
 checkbox, records the covered-target hit test, and ordinary-clicks the native
@@ -24,6 +29,7 @@ used.
 
 Reproduce from the package with `node tests/ui039-browser.mjs` (uses the installed
 Python Playwright package and cached Chromium; no install or network access).
+Screenshots and `browser-report.txt` are written to `/tmp/opencode/ui039`.
 This is a local fixture, not a deployed tenant or production-network proof.
-Attachment upload/send and immutable release pins remain separate unfulfilled
-parent requirements; no parent completion is claimed.
+Immutable release pins and live upload remain separate unfulfilled parent
+requirements; no parent completion is claimed.
