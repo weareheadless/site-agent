@@ -162,11 +162,13 @@ count does not increase. The test does not require intake diagnostics to remain
 unchanged.
 
 The existing same-base concurrent recovery control and changed-runtime-base
-rejection remain in the parametrized test. The checkpoint21 composed selection
-passed. The durable `run_test.run` intake+memory receipt also passed twice
-(105 tests each, source checkout `0bfb2948fc254402367c43ceb0ac26a016ae583c`):
-`ui056-checkpoint21-intake-memory-ecd5f8332a4348b48971cb98d5d31648` and
-`ui056-checkpoint21-intake-memory-repeat-ea94ed870b574c989e62e286b66f2330`.
+rejection remain in the parametrized test. On committed source
+`d5b46586d4afea3003031c4c9ded578fbfd757f2`, the checkpoint21 composed selection
+passed (`ui056-checkpoint21-composed-committed-4b581402d8a7417d964b6a456484d514`).
+The durable `run_test.run` intake+memory receipts passed twice (105 tests each):
+`ui056-checkpoint21-intake-memory-committed-55687260042f4b95add5726bc0d32734`
+and
+`ui056-checkpoint21-intake-memory-repeat-committed-1538d3c2de664255aac957b47319dd8f`.
 
 This is still only one absent-native-checkpoint rejection case. Running or
 failed native artifacts, a prior Build attempt, request/context/session/tenant/
