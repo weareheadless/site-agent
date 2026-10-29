@@ -208,6 +208,7 @@ def _validate_managed_payload_scaffold(root: Path) -> None:
         or not re.fullmatch(r"\d+\.\d+\.\d+", admin_version)
         or not re.fullmatch(r"\d+\.\d+\.\d+", core_version)
         or not re.fullmatch(r"[0-9a-f]{64}", str(manifest.get("schemaIdentity") or ""))
+        or manifest.get("schemaIdentity") != canonical_manifest.get("schemaIdentity")
         or not isinstance(dependencies, dict)
         or f"payload-admin-v{admin_version}/" not in str(dependencies.get("@weareheadless/helloada-payload-admin") or "")
         or f"helloada-payload-core-v{core_version}/" not in str(dependencies.get("@weareheadless/helloada-payload-core") or "")

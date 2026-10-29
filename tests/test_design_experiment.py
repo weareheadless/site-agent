@@ -38,7 +38,7 @@ def test_neutral_scaffold_reuse_rejects_unsupported_or_unsafe_scaffolds(tmp_path
     root = tmp_path / "scaffold"
     initialize_neutral_repository(root)
 
-    if mutation in {"schema", "admin_pin", "core_pin"}:
+    if mutation in {"schema", "admin_pin", "core_pin", "schema_identity"}:
         manifest_path = root / "template-manifest.json"
         manifest = json.loads(manifest_path.read_text())
         if mutation == "schema":
@@ -64,8 +64,12 @@ def test_neutral_scaffold_reuse_rejects_unsupported_or_unsafe_scaffolds(tmp_path
     else:
         _git(root, "remote", "add", "origin", "https://example.invalid/site.git")
 
-    with pytest.raises(DesignExperimentError):
-        initialize_neutral_repository(root)
+    if mutation in {"schema", "admin_pin", "core_pin", "schema_identity"}:
+        with pytest.raises(DesignExperimentError, match="canonical Payload package contract"):
+            initialize_neutral_repository(root)
+    else:
+        with pytest.raises(DesignExperimentError):
+            initialize_neutral_repository(root)
 
 
 def test_creation_validates_canonical_template_before_commit(tmp_path):
