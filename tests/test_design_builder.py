@@ -509,6 +509,70 @@ def test_local_design_build_commits_exact_base_to_local_ref_without_push(tmp_pat
     memory.close()
 
 
+def test_native_initial_build_persists_direction_before_writable_build(tmp_path, monkeypatch):
+    clone, base_sha = _clone(tmp_path)
+    memory = Memory(tmp_path / "data" / "memory.db")
+    config = {
+        "data_dir": str(tmp_path / "data"),
+        "site": {"clone_path": str(clone), "writable_patterns": ["*.html", "design/**"]},
+        "design_engine": {"orchestration": "native"},
+        "builder": {"enabled": True},
+    }
+    request = PageBuildRequest.from_dict({
+        "schema_version": 1,
+        "run_id": "native-direction-build",
+        "mode": "initial_homepage",
+        "base_sha": base_sha,
+        "page_path": "index.html",
+        "purpose": "Create the homepage.",
+        "site_intake_hash": "a" * 64,
+        "acceptance_criteria": ["Keep the homepage accessible."],
+    })
+    target = _build_target({
+        "mode": "local_experiment",
+        "base_sha": base_sha,
+        "candidate_ref": "refs/ada-design-lab/native-direction-build",
+        "push_mode": "none",
+        "publishable": False,
+        "clone_path": str(clone),
+        "allowed_paths": ["*.html", "design/**"],
+    })
+    calls = []
+
+    monkeypatch.setattr(runner, "install_agent_files", lambda *args, **kwargs: None)
+
+    def fake_turn(worktree, prompt, config, **kwargs):
+        calls.append({"agent_name": kwargs.get("agent_name"), "prompt": prompt, "memory": kwargs.get("memory")})
+        if kwargs.get("agent_name") == "native-direction":
+            return {
+                "session_id": "direction-session",
+                "reply": "A quiet editorial threshold opens into a tactile story of the owner’s work.",
+                "transcript": '{"type":"text","sessionID":"direction-session"}\n',
+            }
+        _write_presentation(worktree, "<html><body><h1>Candidate</h1></body></html>")
+        return {
+            "session_id": "build-session",
+            "reply": "implemented",
+            "transcript": '{"type":"text","sessionID":"build-session"}\n',
+        }
+
+    monkeypatch.setattr(runner, "run_opencode_turn", fake_turn)
+
+    receipt = runner.stage_design_build({"config": config, "memory": memory}, request, target)
+
+    assert [call["agent_name"] for call in calls] == ["native-direction", "build"]
+    assert calls[0]["memory"] is memory
+    assert calls[1]["memory"] is memory
+    assert "A quiet editorial threshold" in calls[1]["prompt"]
+    assert receipt.direction_path == "design-runs/native-direction-build/direction.md"
+    assert receipt.direction_transcript_path == "design-runs/native-direction-build/direction-opencode.jsonl"
+    direction_file = tmp_path / "data" / receipt.direction_path
+    assert direction_file.read_text() == "A quiet editorial threshold opens into a tactile story of the owner’s work.\n"
+    assert (tmp_path / "data" / receipt.direction_transcript_path).is_file()
+    memory.close()
+
+
+
 @pytest.mark.parametrize(("timeout_fires", "returncode", "kind"), [(True, 130, "timeout"), (False, -2, "signal")])
 def test_native_direction_process_failure_crosses_real_stage_boundary(
     tmp_path, monkeypatch, timeout_fires, returncode, kind
