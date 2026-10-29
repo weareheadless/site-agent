@@ -285,8 +285,10 @@ class Client:
         if self.daily_budget_usd is None or self.memory is None:
             return
         spend = self.memory.llm_spend(since_hours=24)
-        unpriced_calls = int(spend.get("unpriced_calls", 0) or 0)
-        unmeasurable_calls = int(spend.get("unpriced_unmeasurable_calls", 0) or 0)
+        unpriced_owner_calls = int(spend.get("unpriced_owner_calls", spend.get("unpriced_calls", 0)) or 0)
+        unmeasurable_owner_calls = int(
+            spend.get("unpriced_unmeasurable_owner_calls", spend.get("unpriced_unmeasurable_calls", 0)) or 0
+        )
         unpriced_prompt_tokens = int(spend.get("unpriced_prompt_tokens", 0) or 0)
         unpriced_completion_tokens = int(spend.get("unpriced_completion_tokens", 0) or 0)
         fallback_cost = estimate_usage_cost(
@@ -296,10 +298,10 @@ class Client:
             },
             self.prices,
         )
-        if unpriced_calls and (unmeasurable_calls or fallback_cost is None):
+        if unpriced_owner_calls and (unmeasurable_owner_calls or fallback_cost is None):
             raise LLMError(
                 "daily LLM budget cannot be enforced: "
-                f"{unpriced_calls} recent call(s) have no provider receipt or configured cost; "
+                f"{unpriced_owner_calls} recent owner call(s) have no provider receipt or configured cost; "
                 "configure llm.price_per_mtok, use a provider that reports usage cost, "
                 "or provide token counts for every call"
             )

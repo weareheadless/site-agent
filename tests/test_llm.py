@@ -230,6 +230,32 @@ def test_budget_guard_blocks_unmeasurable_unpriced_calls(tmp_path):
     mem.close()
 
 
+def test_budget_guard_ignores_unmeasurable_internal_builder_rows(tmp_path):
+    mem = Memory(tmp_path / "memory.db")
+    config = _config()
+    config["llm"]["daily_budget_usd"] = 1.0
+    mem.log_llm_cost("builder-model", prompt_tokens=0, completion_tokens=0, cost_usd=None, origin="internal_builder")
+    client = Client(config, mem, _FAKE_ENV)
+
+    with mock.patch("site_agent.core.llm._http_post", return_value=_response()):
+        assert client.chat([{"role": "user", "content": "hi"}]) == "ok"
+
+    assert mem.llm_spend()["cost_usd"] > 0
+    mem.close()
+
+
+def test_budget_guard_includes_priced_internal_builder_spend(tmp_path):
+    mem = Memory(tmp_path / "memory.db")
+    config = _config()
+    config["llm"]["daily_budget_usd"] = 0.1
+    mem.log_llm_cost("builder-model", prompt_tokens=0, completion_tokens=0, cost_usd=0.2, origin="internal_builder")
+    client = Client(config, mem, _FAKE_ENV)
+
+    with pytest.raises(LLMError, match="budget exhausted"):
+        client._check_budget()
+    mem.close()
+
+
 def test_chat_rejects_empty_completion(tmp_path):
     mem = Memory(tmp_path / "memory.db")
     with mock.patch("site_agent.core.llm._http_post", return_value=_response(content="")):

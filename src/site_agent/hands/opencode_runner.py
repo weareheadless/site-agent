@@ -4112,6 +4112,12 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
         if usage_recorded or memory is None or not hasattr(memory, "log_llm_cost"):
             return
         usage_recorded = True
+        if (
+            usage_total["prompt_tokens"] <= 0
+            and usage_total["completion_tokens"] <= 0
+            and not has_reported_cost
+        ):
+            return
         usage: dict[str, Any] = dict(usage_total)
         if has_reported_cost:
             usage["cost"] = reported_cost
@@ -4125,6 +4131,7 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
             prompt_tokens=int(usage_total["prompt_tokens"]),
             completion_tokens=int(usage_total["completion_tokens"]),
             cost_usd=estimate_usage_cost(usage, prices),
+            origin="internal_builder",
         )
 
     def partial_result() -> dict[str, Any]:
