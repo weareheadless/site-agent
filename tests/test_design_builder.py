@@ -542,7 +542,7 @@ def test_native_initial_build_persists_direction_before_writable_build(tmp_path,
     monkeypatch.setattr(runner, "install_agent_files", lambda *args, **kwargs: None)
 
     def fake_turn(worktree, prompt, config, **kwargs):
-        calls.append({"agent_name": kwargs.get("agent_name"), "prompt": prompt})
+        calls.append({"agent_name": kwargs.get("agent_name"), "prompt": prompt, "memory": kwargs.get("memory")})
         if kwargs.get("agent_name") == "native-direction":
             return {
                 "session_id": "direction-session",
@@ -561,12 +561,133 @@ def test_native_initial_build_persists_direction_before_writable_build(tmp_path,
     receipt = runner.stage_design_build({"config": config, "memory": memory}, request, target)
 
     assert [call["agent_name"] for call in calls] == ["native-direction", "build"]
+    assert calls[0]["memory"] is memory
+    assert calls[1]["memory"] is memory
     assert "A quiet editorial threshold" in calls[1]["prompt"]
     assert receipt.direction_path == "design-runs/native-direction-build/direction.md"
     assert receipt.direction_transcript_path == "design-runs/native-direction-build/direction-opencode.jsonl"
     direction_file = tmp_path / "data" / receipt.direction_path
     assert direction_file.read_text() == "A quiet editorial threshold opens into a tactile story of the owner’s work.\n"
     assert (tmp_path / "data" / receipt.direction_transcript_path).is_file()
+    memory.close()
+
+
+def test_native_direction_without_memory_preserves_legacy_turn_kwargs(tmp_path, monkeypatch):
+    clone, base_sha = _clone(tmp_path)
+    config = {
+        "data_dir": str(tmp_path / "data"),
+        "site": {"clone_path": str(clone), "writable_patterns": ["*.html", "design/**"]},
+        "design_engine": {"orchestration": "native"},
+        "builder": {"enabled": True},
+    }
+    request = PageBuildRequest.from_dict({
+        "schema_version": 1,
+        "run_id": "native-direction-no-memory",
+        "mode": "initial_homepage",
+        "base_sha": base_sha,
+        "page_path": "index.html",
+        "purpose": "Create the homepage.",
+        "site_intake_hash": "a" * 64,
+        "acceptance_criteria": ["Keep the homepage accessible."],
+    })
+    target = _build_target({
+        "mode": "local_experiment",
+        "base_sha": base_sha,
+        "candidate_ref": "refs/ada-design-lab/native-direction-no-memory",
+        "push_mode": "none",
+        "publishable": False,
+        "clone_path": str(clone),
+        "allowed_paths": ["*.html", "design/**"],
+    })
+    calls = []
+
+    monkeypatch.setattr(runner, "install_agent_files", lambda *args, **kwargs: None)
+
+    def fake_turn(worktree, _prompt, _config, **kwargs):
+        calls.append(dict(kwargs))
+        if kwargs.get("agent_name") == "native-direction":
+            return {"session_id": "direction-session", "reply": "A quiet editorial threshold.", "transcript": "direction\n"}
+        _write_presentation(worktree, "<html><body><h1>Candidate</h1></body></html>")
+        return {"session_id": "build-session", "reply": "implemented", "transcript": "build\n"}
+
+    monkeypatch.setattr(runner, "run_opencode_turn", fake_turn)
+
+    runner.stage_design_build({"config": config}, request, target)
+
+    assert [call["agent_name"] for call in calls] == ["native-direction", "build"]
+    assert all("memory" not in call for call in calls)
+
+
+def test_invalid_creative_direction_accounts_memory_and_never_starts_build(tmp_path, monkeypatch):
+    clone, base_sha = _clone(tmp_path)
+    memory = Memory(tmp_path / "data" / "memory.db")
+    snapshot = DesignContextSnapshot.from_dict({
+        "schema_version": 1,
+        "captured_at": "2026-09-15T12:00:00+00:00",
+        "owner_request": "Create the homepage.",
+        "base_sha": base_sha,
+        "site_facts": {"business": {"name": "North Star Studio"}},
+        "asset_inventory": [],
+        "asset_visual_evidence": [],
+        "execution_profile": {},
+    })
+    run_id = "invalid-creative-direction-memory"
+    memory.create_design_run(
+        run_id=run_id,
+        mode="local_experiment",
+        intake_json={"schema_version": 1},
+        intake_hash="b" * 64,
+        base_sha=base_sha,
+        candidate_ref=f"refs/ada-design-lab/{run_id}",
+    )
+    config = {
+        "data_dir": str(tmp_path / "data"),
+        "site": {"clone_path": str(clone), "writable_patterns": ["*.html", "design/**"]},
+        "design_engine": {"orchestration": "creative", "model": "provider/model"},
+        "builder": {"enabled": True},
+    }
+    request = PageBuildRequest.from_dict({
+        "schema_version": 1,
+        "run_id": run_id,
+        "mode": "initial_homepage",
+        "base_sha": base_sha,
+        "page_path": "index.html",
+        "purpose": "Create the homepage.",
+        "site_intake_hash": "b" * 64,
+        "acceptance_criteria": ["Keep the homepage accessible."],
+        "context_snapshot": snapshot.to_dict(),
+        "context_snapshot_hash": snapshot.content_hash,
+    })
+    target = _build_target({
+        "mode": "local_experiment",
+        "base_sha": base_sha,
+        "candidate_ref": f"refs/ada-design-lab/{run_id}",
+        "push_mode": "none",
+        "publishable": False,
+        "clone_path": str(clone),
+        "allowed_paths": ["*.html", "design/**"],
+    })
+    calls = []
+
+    monkeypatch.setattr(runner, "install_agent_files", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_typed_execution_config", lambda config, request, target: config)
+
+    def fake_turn(_worktree, _prompt, _config, **kwargs):
+        calls.append(dict(kwargs))
+        assert kwargs.get("agent_name") == "native-direction"
+        return {
+            "reply": json.dumps({"direction": "A considered threshold.", "experience_plan": {}}),
+            "transcript": "invalid structured plan\n",
+        }
+
+    monkeypatch.setattr(runner, "run_opencode_turn", fake_turn)
+
+    with pytest.raises(runner.RunnerError, match="typed brand_source_map"):
+        runner.stage_design_build({"config": config, "memory": memory}, request, target)
+
+    assert len(calls) == 1
+    assert calls[0]["agent_name"] == "native-direction"
+    assert calls[0]["memory"] is memory
     memory.close()
 
 
@@ -868,6 +989,7 @@ def test_creative_build_turn_receives_a_compact_hash_bound_experience_plan(
             "agent_name": kwargs.get("agent_name"),
             "prompt": prompt,
             "image_files": tuple(kwargs.get("image_files") or ()),
+            "memory": kwargs.get("memory"),
         })
         if kwargs.get("agent_name") == "native-direction":
             direction = "A quiet threshold opens into a tactile story of the owner's work."
@@ -889,6 +1011,8 @@ def test_creative_build_turn_receives_a_compact_hash_bound_experience_plan(
     receipt = runner.stage_design_build({"config": config, "memory": memory}, request, target)
 
     assert [call["agent_name"] for call in calls] == ["native-direction", "build"]
+    assert calls[0]["memory"] is memory
+    assert calls[1]["memory"] is memory
     assert calls[0]["image_files"]
     assert calls[0]["image_files"] == calls[1]["image_files"]
     assert "public/images/owner.webp" in calls[0]["image_files"]
