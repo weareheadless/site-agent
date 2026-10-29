@@ -758,6 +758,44 @@ def test_native_direction_repair_is_bounded_and_fenced(tmp_path, monkeypatch, ou
         assert reopened_completed[0]["context_snapshot_hash"] == persisted_context_hash == snapshot.content_hash
         assert fence[0]["input_hashes"] == persisted_hash
         assert reopened.get_design_run(run_id)["planning_json"]["integrated_composition"]["experience_plan_hash"] == composition["experience_plan_hash"]
+        # A completed planning checkpoint is reusable once, but the durable
+        # Build fence prevents a restart or facade entry from issuing Build again.
+        from site_agent.hands.builder import BuilderError, NativeOpenCodeBuilder
+
+        with pytest.raises(BuilderError, match="Build dispatch was already claimed"):
+            NativeOpenCodeBuilder({"config": config, "memory": reopened}).build_design(request, target)
+        assert [call["agent_name"] for call in calls] == ["native-direction", "build"]
+
+        # The same run cannot reuse its checkpoint when any frozen identity
+        # dimension changes. Each failure occurs before another provider turn.
+        from site_agent.core.design_contracts import BuildTarget
+
+        facade = NativeOpenCodeBuilder({"config": config, "memory": reopened})
+        changed_request_data = request.to_dict()
+        changed_request_data["purpose"] = "A materially changed request."
+        changed_request = PageBuildRequest.from_dict(changed_request_data)
+        changed_snapshot_data = snapshot.to_dict()
+        changed_snapshot_data["owner_request"] = "A materially changed context."
+        changed_snapshot = DesignContextSnapshot.from_dict(changed_snapshot_data)
+        changed_context_data = request.to_dict()
+        changed_context_data["context_snapshot"] = changed_snapshot.to_dict()
+        changed_context_data["context_snapshot_hash"] = changed_snapshot.content_hash
+        changed_context = PageBuildRequest.from_dict(changed_context_data)
+        changed_assets_data = request.to_dict()
+        changed_assets_data["supplied_media_asset_ids"] = [47]
+        changed_assets = PageBuildRequest.from_dict(changed_assets_data)
+        monkeypatch.setattr(runner, "_materialize_media", lambda *args, **kwargs: [])
+        changed_target_data = target.to_dict()
+        changed_target_data["candidate_ref"] = f"refs/ada-design-lab/{run_id}-different"
+        changed_target = BuildTarget.from_dict(changed_target_data)
+        for drift_request, drift_target in (
+            (changed_request, target), (changed_context, target),
+            (changed_assets, target), (request, changed_target),
+        ):
+            with pytest.raises(BuilderError, match="identity mismatch"):
+                facade.build_design(drift_request, drift_target)
+        assert reopened_completed[0]["input_hashes"] == persisted_hash
+        assert [call["agent_name"] for call in calls] == ["native-direction", "build"]
         reopened.close()
         return
 
