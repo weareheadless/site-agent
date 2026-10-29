@@ -92,10 +92,11 @@ def test_shared_overlay_updates_runtime_and_preserves_tenant_owned_content(tmp_p
     design_before = (checkout / "src/components/site/TenantSections.tsx").read_bytes()
     migration_before = (checkout / "src/migrations/tenant-migration.ts").read_bytes()
 
+    canonical_customer = {**CUSTOMER, "payloadAdmin": "0.10.41", "payloadCore": "0.5.9"}
     result = apply_shared_runtime_overlay(
         ROOT,
         checkout,
-        CUSTOMER,
+        canonical_customer,
         shared_vars={"HELLOADA_HANDOFF_PUBLIC_KEY": "public-key"},
     )
 
@@ -146,9 +147,28 @@ def test_shared_overlay_updates_runtime_and_preserves_tenant_owned_content(tmp_p
     assert "src/lib/helloada-preview-renderer.tsx" not in result["copiedPaths"]
     assert (checkout / "src/migrations/tenant-migration.ts").read_bytes() == migration_before
     package = json.loads((checkout / "package.json").read_text())
+    lock = json.loads((checkout / "package-lock.json").read_text())
     manifest = json.loads((TEMPLATE / "template-manifest.json").read_text())
     admin_version = manifest["payloadAdmin"]
-    assert f"payload-admin-v{admin_version}" in package["dependencies"]["@weareheadless/helloada-payload-admin"]
+    admin_url = (
+        "https://github.com/weareheadless/site-agent/releases/download/"
+        "payload-admin-v0.10.41/weareheadless-helloada-payload-admin-0.10.41.tgz"
+    )
+    assert admin_version == "0.10.41"
+    assert package["dependencies"]["@weareheadless/helloada-payload-admin"] == admin_url
+    assert lock["packages"][""]["dependencies"]["@weareheadless/helloada-payload-admin"] == admin_url
+    assert lock["packages"]["node_modules/@weareheadless/helloada-payload-admin"] == {
+        **lock["packages"]["node_modules/@weareheadless/helloada-payload-admin"],
+        "version": "0.10.41",
+        "resolved": admin_url,
+        "integrity": "sha512-zFCfUi3pBUNigomXOhA2bUGowVfyr1lJTjS3v/PlGDKIZA04fAxtXbBsqkX9fTo5NKXgL2nF27l9jFzhxyV8IQ==",
+    }
+    assert manifest["payloadCore"] == canonical_customer["payloadCore"]
+    assert config["vars"]["HELLOADA_PAYLOAD_ADMIN_VERSION"] == "0.10.41"
+    assert config["vars"]["HELLOADA_PAYLOAD_CORE_VERSION"] == "0.5.9"
+    assert manifest["migrationHead"] == "63a934836e0868ac7cdea4716bb9a0935708399567e219bac6346950325deb9a"
+    assert manifest["contentContract"] == "helloada-content-v4"
+    assert manifest["schemaRevision"] == 8
     assert result["payloadAdmin"] == admin_version
     assert len(result["fingerprint"]) == 64
     assert "worker.ts" in result["changedPaths"]
@@ -202,6 +222,13 @@ def test_runtime_fingerprint_covers_contract_generator_and_payload_schema_source
     generator.write_text((ROOT / "scripts/generate-payload-contract.mjs").read_text())
     schema_source = control / "packages/helloada-payload-core/src/fingerprint-source.ts"
     schema_source.write_text("changed schema")
+    assert shared_runtime_fingerprint(control) != original
+
+    schema_source.write_text("schema")
+    lockfile = template / "package-lock.json"
+    lock = json.loads(lockfile.read_text())
+    lock["packages"]["node_modules/@weareheadless/helloada-payload-admin"]["resolved"] += "?changed"
+    lockfile.write_text(json.dumps(lock))
     assert shared_runtime_fingerprint(control) != original
 
 
