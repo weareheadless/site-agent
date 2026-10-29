@@ -2745,7 +2745,14 @@ def stage_design_build(
                     _changed_paths(worktree, base_sha),
                 ))
             except Exception as exc:  # noqa: BLE001 - dependency provisioning is a mandatory build precondition
-                raise RunnerError(f"approved frontend runtime provisioning failed: {str(exc)[:2_000]}") from exc
+                raise RunnerError(
+                    f"approved frontend runtime provisioning failed: {str(exc)[:2_000]}",
+                    result={
+                        **initial,
+                        "transcript_path": transcript_path,
+                        **({"process_failure": turn_process_failure} if turn_process_failure else {}),
+                    },
+                ) from exc
             try:
                 local_check = _run_local_design_self_check(
                     execution_config,
@@ -2758,6 +2765,8 @@ def stage_design_build(
                 partial = dict(exc.result or {})
                 partial.setdefault("session_id", session_id or "")
                 partial["transcript_path"] = transcript_path
+                if turn_process_failure:
+                    partial["process_failure"] = turn_process_failure
                 raise RunnerError(str(exc), result=partial) from exc
             if repair_brief is None:
                 coordinator.record_implementation_phase(
@@ -2852,7 +2861,7 @@ def stage_design_build(
             partial.setdefault("session_id", session_id or "")
             partial["transcript_path"] = transcript_path
             if turn_process_failure:
-                partial.setdefault("process_failure", turn_process_failure)
+                partial["process_failure"] = turn_process_failure
             raise RunnerError(str(exc), result=partial) from exc
         build_error = "\n".join(item for item in (turn_error, provision_error) if item)
         if build_error:

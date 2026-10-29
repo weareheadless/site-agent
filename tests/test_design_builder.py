@@ -1375,6 +1375,92 @@ def test_specialist_timeout_after_source_authoring_runs_host_gates_before_finali
     memory.close()
 
 
+@pytest.mark.parametrize("failure_point", ["self_check", "provision", "finalization"])
+def test_provider_timeout_metadata_survives_host_and_finalization_failures(
+    tmp_path, monkeypatch, failure_point
+):
+    clone, base_sha = _clone(tmp_path)
+    memory = Memory(tmp_path / "data" / "memory.db")
+    config = {
+        "data_dir": str(tmp_path / "data"),
+        "site": {"clone_path": str(clone), "writable_patterns": ["*.html", "design/**"]},
+        "builder": {"enabled": True},
+    }
+    request = PageBuildRequest.from_dict({
+        "schema_version": 1,
+        "run_id": f"preserve-timeout-{failure_point}",
+        "mode": "initial_homepage",
+        "base_sha": base_sha,
+        "page_path": "index.html",
+        "purpose": "Create the homepage.",
+        "site_intake_hash": "a" * 64,
+        "acceptance_criteria": ["Keep the homepage accessible."],
+    })
+    target = _build_target({
+        "mode": "local_experiment",
+        "base_sha": base_sha,
+        "candidate_ref": f"refs/ada-design-lab/preserve-timeout-{failure_point}",
+        "push_mode": "none",
+        "publishable": False,
+        "clone_path": str(clone),
+        "allowed_paths": ["*.html", "design/**"],
+    })
+    plan = {"experience_journey": {"scenes": [{"id": "arrival"}]}}
+    original_failure = {
+        "kind": "timeout", "effective_timeout_seconds": 1800,
+        "returncode": -15, "stage": "source_authoring", "last_tool": "write_file",
+    }
+    secondary_failure = {
+        "kind": "signal", "effective_timeout_seconds": 1800,
+        "returncode": -2, "stage": "host_finalization", "last_tool": "git_commit",
+    }
+    host_error = f"{failure_point} host gate failed"
+
+    class FidelityReport:
+        def to_dict(self):
+            return {"status": "passed"}
+
+    class FakeCoordinator:
+        def __init__(self, context):
+            pass
+
+        def record_implementation_phase(self, request, target, *, plan, provider_result):
+            pass
+
+        def run_experience_fidelity_phase(self, request, target, *, plan, workspace, progress, image_files):
+            return FidelityReport()
+
+    def failed_turn(worktree, prompt, config, **kwargs):
+        _write_presentation(worktree, "<html><body><h1>Candidate</h1></body></html>")
+        raise runner.RunnerError(
+            "opencode timed out after 1800s", result={"session_id": "timeout-session", "reply": "implemented",
+                                           "transcript": "timeout\\n", "process_failure": original_failure},
+        )
+
+    def failing_host(*args, **kwargs):
+        raise runner.RunnerError(host_error, result={"process_failure": secondary_failure})
+
+    monkeypatch.setattr("site_agent.application.design_orchestration.SpecialistDesignCoordinator", FakeCoordinator)
+    monkeypatch.setattr(runner, "_journey_source_coverage", lambda *args, **kwargs: {})
+    monkeypatch.setattr(runner, "_run_local_design_self_check", failing_host if failure_point == "self_check" else lambda *args, **kwargs: {"ok": True})
+    monkeypatch.setattr(runner, "_provision_referenced_frontend_libraries", failing_host if failure_point == "provision" else lambda *args, **kwargs: ())
+    monkeypatch.setattr(runner, "run_opencode_turn", failed_turn)
+
+    def finalize_progress(message):
+        if failure_point == "finalization" and message == "committing the validated design candidate":
+            raise runner.RunnerError(host_error, result={"process_failure": secondary_failure})
+
+    with pytest.raises(runner.RunnerError) as raised:
+        runner.stage_design_build(
+            {"config": config, "memory": memory}, request, target,
+            design_plan=plan, progress=finalize_progress,
+        )
+
+    assert host_error in str(raised.value)
+    assert raised.value.result["process_failure"] == original_failure
+    memory.close()
+
+
 def test_creative_host_repair_timeout_runs_plan_closure_before_finalizing(tmp_path, monkeypatch):
     clone, base_sha = _clone(tmp_path)
     memory = Memory(tmp_path / "data" / "memory.db")
