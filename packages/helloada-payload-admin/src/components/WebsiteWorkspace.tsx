@@ -13,6 +13,7 @@ import { EditableRichTextEditor } from './EditableRichTextEditor'
 import { fetchHelloAda } from '../api/fetchHelloAda'
 import { useHelloAdaTranslations } from '../api/useHelloAdaTranslations'
 import { mediaReferenceId, mediaUrl as migrationMediaUrl } from '../lib/media'
+import { canSendChatAttachments, remainingChatAttachmentSlots, splitChatImageFiles } from '../lib/chat-attachments'
 import { useHelloAdaSite } from '../config/provider'
 import { HelloAdaMark } from './HelloAdaLogo'
 import { WorkspaceIcon } from './WorkspaceIcon'
@@ -200,6 +201,8 @@ type ChatAttachment = {
   analysis_status?: string
   analysis_error?: string | null
 }
+
+type UploadEntry = { id: string; filename: string; status: 'uploading' | 'failed' | 'unsupported'; reason?: string }
 
 type AdaPhase = 'unknown' | 'intake' | 'incubation' | 'workspace'
 
@@ -756,6 +759,7 @@ function ReviewWorkspace() {
   const [previewRevision, setPreviewRevision] = useState(0)
   const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([])
   const [uploadingMedia, setUploadingMedia] = useState(false)
+  const [uploadEntries, setUploadEntries] = useState<UploadEntry[]>([])
   const [briefOpen, setBriefOpen] = useState(false)
   const [briefCorrection, setBriefCorrection] = useState('')
   const [editorOpen, setEditorOpen] = useState(false)
@@ -1123,13 +1127,13 @@ function ReviewWorkspace() {
       if (current.some((item) => String(item.asset_id) === String(attachment.asset_id))) {
         return current.filter((item) => String(item.asset_id) !== String(attachment.asset_id))
       }
-      if (current.length >= 12) {
+      if (current.length + uploadEntries.filter((entry) => entry.status === 'uploading').length >= 12) {
         setError(t('error.attachLimit'))
         return current
       }
       return [...current, attachment]
     })
-  }, [t])
+  }, [t, uploadEntries])
 
   const uploadEditorImage = useCallback(async (file: File, key: string) => {
     setEditorError('')
@@ -1528,29 +1532,43 @@ function ReviewWorkspace() {
   }, [chatWorking, loading, messages.length, scrollChatToBottom])
 
   const uploadImages = async (files: FileList | File[]) => {
-    const selected = Array.from(files).filter((file) => file.type.startsWith('image/'))
-    if (!selected.length || uploadingMedia) return
-    if (selected.length + pendingAttachments.length > 12) {
+    const allFiles = Array.from(files)
+    if (!allFiles.length || uploadingMedia) return
+    const { supported: selected, unsupported } = splitChatImageFiles(allFiles)
+    const unsupportedEntries = unsupported.map((file) => ({ id: `${file.name}-${Math.random()}`, filename: file.name, status: 'unsupported' as const, reason: t('workspace.unsupportedImage') }))
+    if (unsupportedEntries.length) setUploadEntries((current) => [...current, ...unsupportedEntries])
+    const slots = remainingChatAttachmentSlots(pendingAttachments.length, uploadEntries.filter((entry) => entry.status === 'uploading').length)
+    if (selected.length > slots) {
       setError(t('error.attachLimit'))
       return
     }
+    if (!selected.length) return
     setUploadingMedia(true)
     setError('')
-    const uploaded: ChatAttachment[] = []
+    const entries = selected.map((file, index) => ({ id: `${file.name}-${Date.now()}-${index}`, filename: file.name, status: 'uploading' as const }))
+    setUploadEntries((current) => [...current, ...entries])
+    let activeEntryId = entries[0]?.id
     try {
-      for (const file of selected) {
+      for (let index = 0; index < selected.length; index += 1) {
+        activeEntryId = entries[index].id
+        const file = selected[index]
         const form = new FormData()
         form.append('file', file)
         const response = await fetchHelloAda('/api/helloada/media/upload', { method: 'POST', body: form })
         const body = (await response.json()) as { attachment?: ChatAttachment; message?: string }
         if (!response.ok || !body.attachment?.asset_id) {
-          throw new Error(body.message || t('error.imageAttach'))
+          const reason = body.message || t('error.imageAttach')
+          setUploadEntries((current) => current.map((entry) => entry.id === entries[index].id ? { ...entry, status: 'failed', reason } : entry))
+          setError(reason)
+          continue
         }
-        uploaded.push(body.attachment)
+        setPendingAttachments((current) => current.some((item) => String(item.asset_id) === String(body.attachment?.asset_id)) ? current : [...current, body.attachment!])
+        setUploadEntries((current) => current.filter((entry) => entry.id !== entries[index].id))
       }
-      setPendingAttachments((current) => [...current, ...uploaded])
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t('error.imageAttach'))
+      const reason = cause instanceof Error ? cause.message : t('error.imageAttach')
+      if (activeEntryId) setUploadEntries((current) => current.map((entry) => entry.id === activeEntryId ? { ...entry, status: 'failed', reason } : entry))
+      setError(reason)
     } finally {
       setUploadingMedia(false)
       if (fileInputRef.current) fileInputRef.current.value = ''
@@ -1560,7 +1578,7 @@ function ReviewWorkspace() {
   const sendMessage = async (preset?: string) => {
     const attachments = preset ? [] : pendingAttachments
     const text = (preset || message).trim() || (attachments.length ? 'Please review the attached images.' : '')
-    if ((!text && !attachments.length) || chatWorking || uploadingMedia) return
+    if (!canSendChatAttachments(Boolean(text), attachments.length, uploadEntries.map((entry) => entry.status)) || chatWorking || uploadingMedia) return
     setSending(true)
     setError('')
     setAdaSteps([])
@@ -2518,8 +2536,9 @@ function ReviewWorkspace() {
              }}
            >
              <label className="helloada-sr-only" htmlFor="helloada-ada-message">{t('workspace.askAda')}</label>
-            {pendingAttachments.length ? (
-               <div className="helloada-pending-attachments" aria-label={t('workspace.pendingAttachments')}>
+             {pendingAttachments.length || uploadEntries.length ? (
+                <div className="helloada-pending-attachments" aria-label={t('workspace.pendingAttachments')}>
+                 {uploadEntries.map((entry) => <div className="helloada-pending-attachment" key={entry.id} style={{ width: 'auto', height: 'auto', minHeight: 46, maxWidth: '100%', padding: 6, display: 'flex', alignItems: 'center', gap: 6, cursor: 'default', overflow: 'visible' }}><span style={{ width: 'auto', height: 'auto', fontSize: 12 }}>{entry.filename}</span><small>{entry.status === 'uploading' ? t('workspace.attachmentUploading') : entry.status === 'failed' ? `${t('workspace.attachmentFailed')}: ${entry.reason}` : entry.reason}</small><button type="button" aria-label={`${t('workspace.removeImage')} ${entry.filename}`} onClick={() => setUploadEntries((current) => current.filter((item) => item.id !== entry.id))}>×</button></div>)}
                 {pendingAttachments.map((attachment, index) => {
                   const source = attachment.thumbnail_url || attachment.preview_url || attachment.url || ''
                   return (
@@ -2577,7 +2596,7 @@ function ReviewWorkspace() {
                  className="helloada-send-button"
                  type="button"
                  onClick={() => void sendMessage()}
-                  disabled={adaPhase === 'unknown' || chatWorking || uploadingMedia || (!message.trim() && !pendingAttachments.length)}
+                   disabled={adaPhase === 'unknown' || chatWorking || uploadingMedia || uploadEntries.length > 0 || (!message.trim() && !pendingAttachments.length)}
                   aria-label={t('workspace.send')}
                >
                 <WorkspaceIcon name="arrow" />
