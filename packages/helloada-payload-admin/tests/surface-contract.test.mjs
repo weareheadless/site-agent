@@ -32,7 +32,7 @@ test('navigation and Ada are explicitly dark; review and Growth inherit paper', 
 });
 test('nested tool windows explicitly restore paper instead of inheriting dark chat', () => {
   const owner = read('owner-workspace.scss');
-  for (const name of ['manage-drawer', 'chat-gallery', 'publish-dialog']) assert.match(owner, new RegExp(`\\.helloada-${name} \\{\\s*@include surfaces\\.paper;`));
+  for (const name of ['manage-drawer', 'chat-gallery', 'publish-dialog']) assert.match(owner, new RegExp(`\\.helloada-${name}(?:\\[open\\])? \\{\\s*@include surfaces\\.paper;`));
   for (const name of ['field-popover', 'page-editor']) assert.match(read('admin.scss'), new RegExp(`\\.helloada-${name} \\{\\s*@include surfaces\\.paper;`));
 });
 test('native collection, field and login surfaces use paper rather than dark literals', () => {
