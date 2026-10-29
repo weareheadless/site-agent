@@ -121,9 +121,8 @@ design_intake_operations.session_id, design_intake_operations.operation,
 design_intake_operations.request_hash`; the other raised
 `DesignIntakeServiceError('same-run recovery rejected: ')`. The observed result
 was zero admissions and zero queued Build dispatches. This is retained as a red
-regression; product source was not modified. Durable runner receipts:
-`ui056-matrix16-composed-contention-a490189a4adb4945b121082873b02e12` and
-`ui056-matrix16-composed-contention-56ceb9e824af4b8dadc26c8f3424fae1`.
+regression; product source was not modified. Durable runner receipts are
+recorded in the handoff and bind to the exact tested source SHA.
 
 The fake Build provider, builder and Payload boundaries establish no candidate
 completion, review, publication, authorization bypass, or live-site outcome.
