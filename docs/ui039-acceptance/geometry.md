@@ -8,25 +8,19 @@ height uses a `100vh` fallback followed by `100dvh` where supported.
 
 Browser evidence is local and uses mocked API/Next boundaries. The harness
 bundles the actual production component with only child/API/Next boundaries
-stubbed and compiles the package's real `admin.scss`. Publish geometry passes at
-1440x900, 390x844 and 390x480 with ordinary action clicks and closed-dialog
-checks. The full page-editor geometry is exercised at those sizes by the
-harness, but the full three-dialog acceptance is incomplete because field
-dialog interaction does not yet pass.
+stubbed and compiles the package's real `admin.scss`. All three dialogs are
+checked at 1440x900, 390x844 and 390x480 with ordinary action clicks, visible
+hit-testable footers, overflowing inner content at the short viewport, and
+closed-dialog checks.
 
-For the field path the harness checks the hidden quick-edit checkbox, records
-the original covered-target hit test, then attempts dismissal with a normal
-outside click at `(4, 4)`. That click does not close the native
-`.helloada-preview-options` `<details>` menu, so the harness stops before
-hovering/clicking the field. The retained exact failure is
-`outside click did not dismiss preview options`. The trace reports that before
-dismissal the field center `(945.5, 125.5)` hit the `owner.editManually` button
-inside the open options menu; the menu remains `open` after the outside click.
-The menu rect was `x=851.28..1091.28, y=78.5..180.5`, overlapping the iframe
-rect `x=488..1403, y=99..765`. The trace establishes the overlap but does not
-establish whether the real field is reachable after a legitimate user
-dismissal. No product workaround, synthetic event, forced state, fabricated
-field dialog, or forced click was used.
+For the field path the harness enables the deliberately hidden quick-edit
+checkbox, records the covered-target hit test, and ordinary-clicks the native
+details summary to close `.helloada-preview-options`. It then real-hovers the
+iframe field and ordinary-clicks the real overlay action to open the field
+dialog. The covered-target diagnostic is retained as evidence of the menu's
+initial overlap; native `<details>` does not dismiss on outside click. No
+synthetic field activation, forced state, fabricated dialog, or forced click is
+used.
 
 Reproduce from the package with `node tests/ui039-browser.mjs` (uses the installed
 Python Playwright package and cached Chromium; no install or network access).
