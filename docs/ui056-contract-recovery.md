@@ -99,7 +99,31 @@ real handoff enqueue, then starts the real executor and drains its admitted job
 through exactly one fake Build provider dispatch. Native direction is not
 repeated and the durable Build-dispatch fence is retained. The changed-base
 variant rejects before enqueue. This remains deterministic fixture evidence;
-it does not exercise a truly simultaneous race, production tenant authorization
-changes, the retained Astrid dynamic artifact/static-out boundary, actual
-provider/build output, deployment, or owner-visible review. No claim of issue
-completion or live acceptance follows from this source slice.
+it does not exercise production tenant authorization changes, the retained
+Astrid dynamic artifact/static-out boundary, actual provider/build output,
+deployment, or owner-visible review. No claim of issue completion or live
+acceptance follows from this source slice.
+
+## Matrix16 concurrent application contention (2026-10-29; failing)
+
+The composed same-run fixture was changed to invoke two real
+DesignIntakeService/DesignBuildHandoff/DesignService/DesignJobExecutor
+compositions, each with its own reopened `Memory` connection, distinct
+idempotency key and thread. A `threading.Barrier` sits immediately before each
+connection's real `admit_prebuild_design_recovery`; it delegates unchanged to
+the original method and does not hold the Memory lock. Executors are not
+started before both callers finish. The losing caller is recorded as its actual
+response or exception.
+
+The first two attempts failed before either caller reached that admission
+barrier. One raised `sqlite3.IntegrityError: UNIQUE constraint failed:
+design_intake_operations.session_id, design_intake_operations.operation,
+design_intake_operations.request_hash`; the other raised
+`DesignIntakeServiceError('same-run recovery rejected: ')`. The observed result
+was zero admissions and zero queued Build dispatches. This is retained as a red
+regression; product source was not modified. Durable runner receipts:
+`ui056-matrix16-composed-contention-a490189a4adb4945b121082873b02e12` and
+`ui056-matrix16-composed-contention-56ceb9e824af4b8dadc26c8f3424fae1`.
+
+The fake Build provider, builder and Payload boundaries establish no candidate
+completion, review, publication, authorization bypass, or live-site outcome.

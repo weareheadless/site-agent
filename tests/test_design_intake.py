@@ -578,15 +578,8 @@ def test_composed_same_run_recovery_reopens_checkpoint_and_dispatches_build_once
             intake_service.build(session["session_id"],
                 confirmed_revision=confirmed["session"]["confirmed_revision_id"], idempotency_key="composition13-drift")
         return
-    try:
-        recovered = intake_service.build(session["session_id"],
-            confirmed_revision=confirmed["session"]["confirmed_revision_id"], idempotency_key="composition13-recover")
-        assert recovered["run"]["run_id"] == run_id
-    except Exception as exc:
-        pytest.fail(f"composed recovery reached first retained failure: {type(exc).__name__}: {exc}")
-    assert service.get_run(run_id)["planning_json"]["build_request"] == request.to_dict()
-    assert service.get_run(run_id)["planning_json"]["build_target"] == target.to_dict()
-    assert executor._queue.qsize() == 1, "recovery admission did not enqueue through the handoff"
+    # Both application callers validate the same durable checkpoint before either
+    # can execute the real Memory compare-and-swap admission fence.
     second_memory = Memory(db)
     second_service = DesignService(second_memory, config=config, builder=OperationRoutingBuilder(
         {"config": config, "memory": second_memory, "payload_gateway": payload}
@@ -595,11 +588,38 @@ def test_composed_same_run_recovery_reopens_checkpoint_and_dispatches_build_once
     second_handoff = DesignBuildHandoff({"memory": second_memory, "config": config,
                                         "design_service": second_service, "design_executor": second_executor})
     second_intake = DesignIntakeService(second_memory, config=config, default_intake=_intake(), lab_service=second_handoff)
-    duplicate = second_intake.build(session["session_id"],
-        confirmed_revision=confirmed["session"]["confirmed_revision_id"], idempotency_key="composition13-second")
-    assert duplicate.get("build_pending") is True
-    assert executor._queue.qsize() == 1, "a distinct Memory caller enqueued a duplicate recovery"
-    assert second_executor._queue.empty()
+    admission_barrier = threading.Barrier(2, timeout=10)
+    for caller_memory in (memory, second_memory):
+        admit = caller_memory.admit_prebuild_design_recovery
+        def observed_admit(*args, _admit=admit, **kwargs):
+            admission_barrier.wait()
+            return _admit(*args, **kwargs)
+        caller_memory.admit_prebuild_design_recovery = observed_admit
+    outcomes = []
+    def call_build(intake, key):
+        try:
+            outcomes.append(("result", intake.build(session["session_id"],
+                confirmed_revision=confirmed["session"]["confirmed_revision_id"], idempotency_key=key)))
+        except Exception as exc:
+            outcomes.append(("error", exc))
+    callers = [threading.Thread(target=call_build, args=(intake_service, "composition13-concurrent-a")),
+               threading.Thread(target=call_build, args=(second_intake, "composition13-concurrent-b"))]
+    for caller in callers:
+        caller.start()
+    for caller in callers:
+        caller.join(15)
+    assert all(not caller.is_alive() for caller in callers), "recovery callers did not reach admission barrier"
+    assert len(outcomes) == 2
+    successes = [value for kind, value in outcomes if kind == "result" and value.get("run")]
+    assert len(successes) == 1, f"expected exactly one recovery admission, outcomes={outcomes!r}"
+    assert successes[0]["run"]["run_id"] == run_id
+    losers = [value for kind, value in outcomes if kind == "result" and not value.get("run")]
+    errors = [value for kind, value in outcomes if kind == "error"]
+    assert len(losers) + len(errors) == 1, f"losing caller response was not observable: {outcomes!r}"
+    assert executor._queue.qsize() + second_executor._queue.qsize() == 1, "concurrent admission enqueued more than once"
+    assert service.get_run(run_id)["planning_json"]["build_request"] == request.to_dict()
+    assert service.get_run(run_id)["planning_json"]["build_target"] == target.to_dict()
+    assert second_executor._queue.empty(), "losing caller enqueued a Build"
     second_memory.close()
     executor.start()
     assert build_dispatched.wait(5), "the admitted worker did not reach the Build provider boundary"
@@ -615,6 +635,15 @@ def test_composed_same_run_recovery_reopens_checkpoint_and_dispatches_build_once
     )
     assert any(item["phase"] == "build_dispatch" for item in memory.list_design_phase_artifacts(run_id))
     assert direction_calls.count("native-direction") == 1
+    reopened = Memory(db)
+    persisted = reopened.get_design_run(run_id)
+    assert persisted["planning_json"]["build_request"] == request.to_dict()
+    assert persisted["planning_json"]["build_target"] == target.to_dict()
+    assert any(item["phase"] == "native_direction" and item["status"] == "completed"
+               for item in reopened.list_design_phase_artifacts(run_id))
+    assert any(item["phase"] == "build_dispatch" for item in reopened.list_design_phase_artifacts(run_id))
+    assert any(item["stage"] == "recovery_admitted" for item in reopened.list_design_run_events(run_id))
+    reopened.close()
     memory.close()
 
 
