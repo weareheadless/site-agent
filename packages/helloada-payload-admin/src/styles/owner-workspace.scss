@@ -118,7 +118,15 @@
   .helloada-build-stages li { display: flex; gap: 12px; align-items: center; color: var(--helloada-muted); }
   .helloada-build-stages li.is-done, .helloada-build-stages li.is-current { color: var(--helloada-ink); }
   .helloada-build-stages li.is-current { font-weight: 650; }
-  .helloada-build-update { border-top: 1px solid var(--helloada-soft-line); padding-top: 18px; color: var(--helloada-muted); }
+  .helloada-build-elapsed { font-variant-numeric: tabular-nums; }
+  .helloada-build-update { border-top: 1px solid var(--helloada-soft-line); padding-top: 18px; color: var(--helloada-ink); }
+  .helloada-build-age { margin-top: 4px; font-size: .85em; color: var(--helloada-muted); font-variant-numeric: tabular-nums; }
+  .helloada-build-feed { display: grid; gap: 6px; margin: 16px 0 0; padding: 0; list-style: none; font-size: .85em; color: var(--helloada-muted); }
+  .helloada-build-feed li { display: flex; gap: 10px; }
+  .helloada-build-feed li > span { min-width: 52px; font-variant-numeric: tabular-nums; opacity: .7; }
+  .helloada-build-feed li.is-current { color: var(--helloada-ink); }
+  .helloada-build-stall { display: grid; gap: 10px; justify-items: start; margin-top: 18px; padding: 14px 16px; border: 1px solid var(--helloada-soft-line); border-radius: 12px; background: color-mix(in srgb, var(--helloada-ink) 4%, transparent); }
+  .helloada-build-stall p { margin: 0; }
   .helloada-build-surface button { min-height: 42px; padding: 0 16px; border: 0; border-radius: 12px; background: var(--helloada-ink); color: var(--helloada-panel); }
   .helloada-owner-workspace .helloada-review-window { grid-column: 2; grid-row: 1; border-radius: 0 19px 19px 0; }
   .helloada-owner-workspace .helloada-ada-panel { @include surfaces.chrome; color: var(--helloada-ink); grid-column: 1; grid-row: 1; position: relative; top: auto; border-right: 1px solid var(--helloada-soft-line); border-radius: 19px 0 0 19px; background: var(--helloada-review); }

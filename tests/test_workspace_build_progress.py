@@ -32,7 +32,16 @@ def _run(memory, *, revision=4, status="building"):
     memory.conn.execute("UPDATE design_runs SET created_ts=? WHERE run_id=?", ("2026-01-01T00:00:00+00:00", run["run_id"]))
     for stage in ("queued", "planning", "generating", "building"):
         memory.add_design_run_event(run["run_id"], stage, f"Reached {stage}")
+    memory.conn.execute("UPDATE design_run_events SET created_ts=? WHERE run_id=?", ("2026-01-01T00:00:00+00:00", run["run_id"]))
     return run
+
+
+def _fixed_clock(monkeypatch, *, minute=5, second=0):
+    class FixedDateTime(__import__("datetime").datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 1, 1, 0, minute, second, tzinfo=tz)
+    monkeypatch.setattr(workspace_module.datetime, "datetime", FixedDateTime)
 
 
 def test_status_exposes_persisted_order_and_elapsed_time(tmp_path, monkeypatch):
@@ -58,6 +67,50 @@ def test_status_is_null_without_run_or_for_superseded_revision(tmp_path):
     assert service.status(tenant=tenant)["build"] is None
     _run(memory, revision=3)
     assert service.status(tenant=tenant)["build"] is None
+    memory.close()
+
+
+def test_status_surfaces_live_progress_updates_and_their_age(tmp_path, monkeypatch):
+    memory = Memory(tmp_path / "memory.db")
+    run = _run(memory, status="building")
+    memory.add_design_run_event(run["run_id"], "progress", "Writing the hero section and navigation.")
+    memory.conn.execute(
+        "UPDATE design_run_events SET created_ts=? WHERE stage='progress'",
+        ("2026-01-01T00:04:30+00:00",),
+    )
+    service, tenant = _service(memory)
+    _fixed_clock(monkeypatch, minute=5)
+    build = service.status(tenant=tenant)["build"]
+    assert build["update"] == "Writing the hero section and navigation."
+    assert build["updates"][-1]["message"] == "Writing the hero section and navigation."
+    assert build["update_ts"] == "2026-01-01T00:04:30+00:00"
+    assert build["last_event_age_seconds"] == 30
+    assert build["stalled"] is False
+    memory.close()
+
+
+def test_status_marks_a_running_build_that_stopped_talking(tmp_path, monkeypatch):
+    memory = Memory(tmp_path / "memory.db")
+    _run(memory, status="building")
+    service, tenant = _service(memory)
+    _fixed_clock(monkeypatch, minute=20)
+    build = service.status(tenant=tenant)["build"]
+    assert build["state"] == "running"
+    assert build["last_event_age_seconds"] == 1200
+    assert build["stalled"] is True
+    assert build["stall_threshold_seconds"] == 180
+    memory.close()
+
+
+def test_status_keeps_internal_worker_stages_out_of_the_owner_feed(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    run = _run(memory, status="building")
+    memory.add_design_run_event(run["run_id"], "claimed", "Design run claimed by the durable worker.")
+    memory.add_design_run_event(run["run_id"], "candidate_ready", "Immutable candidate recorded.")
+    service, tenant = _service(memory)
+    build = service.status(tenant=tenant)["build"]
+    assert build["update"] == "Reached building"
+    assert [item["stage"] for item in build["updates"]] == ["queued", "planning", "generating", "building"]
     memory.close()
 
 
