@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -110,7 +111,8 @@ def timings(
 
 def run_id(flow_id: str, stamp: str | None = None) -> str:
     raw = f"{flow_id}-{stamp or utcnow()}".lower()
-    return _RUN_ID.sub("-", raw).strip("-")
+    identifier = _RUN_ID.sub("-", raw).strip("-")
+    return identifier if stamp else identifier + '-' + uuid.uuid4().hex[:12]
 
 
 def build_bundle(
@@ -122,6 +124,8 @@ def build_bundle(
     started_at: str | None = None,
     finished_at: str | None = None,
 ) -> dict[str, Any]:
+    finished_at = finished_at or utcnow()
+    started_at = started_at or finished_at
     root = Path(artifacts_dir)
     files = []
     for name in result.artifacts:
@@ -145,10 +149,13 @@ def build_bundle(
             "sha": (target or {}).get("sha"),
             "deployed_sha": (target or {}).get("deployed_sha"),
             "environment": (target or {}).get("environment"),
+            "model": (target or {}).get("model"),
+            "provider": (target or {}).get("provider"),
         },
         "started_at": started_at or utcnow(),
         "finished_at": finished_at or utcnow(),
         "status": result.status,
+        "failure_kind": result.failure_kind,
         "error": result.error,
         "failed_step": result.failed_step,
         "incubation_id": result.incubation_id,

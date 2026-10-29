@@ -7,11 +7,11 @@ description: >
   review pane, and the site is provisioned. This is the acceptance flow for
   UI-056 and the shape every "prove it live" task should reuse.
 
-  The owner is scripted from a persona fact sheet so her answers are real
-  answers, not a rubber stamp. Ada is not scripted at all.
+  An AI owner answers naturally from a business brief, not a lookup table.
+  Ada is not scripted either.
 
   Live tier on purpose: it spends model tokens and real build time, so it is a
-  release gate and a nightly run, never a pull-request check.
+  bounded exploratory run until canonical onboarding and teardown are qualified.
 requires:
   - deployed target with working model access
   - disposable tenant and project (never a customer workspace)
@@ -142,6 +142,7 @@ steps:
   - id: provision-site
     action: click
     selector: "#provision"
+    confirm_dialog: "Provision this exact website candidate?"
     mark: provision_requested
     expect:
       - kind: visible

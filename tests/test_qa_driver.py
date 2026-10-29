@@ -446,6 +446,7 @@ def test_native_confirm_is_accepted_and_recorded(origin, tmp_path):
                 "id": "provision",
                 "action": "click",
                 "selector": "#provision",
+                "confirm_dialog": "Provision this exact website candidate?",
                 "expect": [
                     {"kind": "text", "selector": "#provision-note", "text": "management"}
                 ],
@@ -457,3 +458,40 @@ def test_native_confirm_is_accepted_and_recorded(origin, tmp_path):
     assert result.observations.dialogs
     assert result.observations.dialogs[0]["message"].startswith("Provision this exact")
     assert result.observations.console_errors == []
+
+
+def test_unexpected_confirm_is_dismissed_and_blocks_verdict(origin, tmp_path):
+    flow = _flow([
+        {"id": "open", "action": "goto", "url": "/chat"},
+        {"id": "unexpected", "action": "click", "selector": "#provision"},
+    ])
+    result = _driver(origin, tmp_path).run(flow)
+    assert result.observations.dialogs[0]['expected'] is False
+    assert RuleJudge().review(result).passed is False
+
+
+def test_owner_failure_preserves_partial_transcript(origin, tmp_path):
+    calls = []
+
+    def complete(messages):
+        calls.append(messages)
+        if len(calls) == 2:
+            raise RuntimeError('owner provider unavailable')
+        return 'The studio is called Atelier Sete.'
+
+    flow = _flow([
+        {"id": "open", "action": "goto", "url": "/chat"},
+        {"id": "talk", "action": "converse", "reply_timeout_ms": 2000,
+         "until": [{"kind": "visible", "selector": "#never-appears", "timeout_ms": 100}],
+         "persona": {"max_turns": 3, "brief": "You are Mariana, owner of Atelier Sete."}},
+    ])
+    result = _driver(origin, tmp_path, owner_complete=complete).run(flow)
+    assert result.failure_kind == 'execution'
+    assert len(result.steps[-1].transcript) == 1
+
+
+def test_http_error_response_is_a_network_failure(origin, tmp_path):
+    flow = _flow([{'id': 'open', 'action': 'goto', 'url': '/missing-page'}])
+    result = _driver(origin, tmp_path).run(flow)
+    assert any(item['reason'] == 'HTTP 404' for item in result.observations.failed_requests)
+    assert not RuleJudge().review(result).passed

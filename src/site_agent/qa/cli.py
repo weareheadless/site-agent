@@ -13,17 +13,19 @@ bundle, and a stable fingerprint. Everything else is for humans.
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import os
 import sys
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 from pathlib import Path
 from typing import Sequence
 
 from .conversation import chat_completion, opencode_completion
-from .driver import DriverError, PlaywrightDriver
-from .evidence import build_bundle, utcnow, write_bundle
+from .driver import DriverError, FlowResult, PlaywrightDriver
+from .evidence import build_bundle, run_id, utcnow, write_bundle
 from .flow import Flow, FlowError, load_flow, load_flows
 from .rubric import RuleJudge
 
@@ -65,6 +67,10 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--viewport", default="1280x900", help="WIDTHxHEIGHT")
     run.add_argument("--no-screenshots", action="store_true")
     run.add_argument("--json", action="store_true", help="print the bundle instead of a summary")
+    run.add_argument(
+        "--runner-results-dir", type=Path,
+        help="durable runner test-results directory; failed results become deduplicated issues",
+    )
     run.add_argument(
         "--ledger",
         help="JSON file recording the one test site this harness owns; the next run removes it",
@@ -138,22 +144,28 @@ def _run(args: argparse.Namespace) -> int:
             print(f"removed {len(purged)} previous test site(s): {', '.join(purged)}")
     probe = probe_target(args.base_url)
     for flow in flows:
+        identifier = run_id(flow.id)
+        artifacts = Path(args.artifacts_dir) / flow.id / identifier
         try:
             driver = PlaywrightDriver(
                 base_url=args.base_url,
-                artifacts_dir=Path(args.artifacts_dir) / flow.id,
+                artifacts_dir=artifacts,
                 timeout_ms=args.timeout_ms,
                 viewport={"width": int(width), "height": int(height)},
                 screenshots=not args.no_screenshots,
                 owner_complete=owner_complete,
             )
             started = utcnow()
-            result = driver.run(flow)
+            try:
+                result = driver.run(flow)
+            except (DriverError, KeyboardInterrupt) as exc:
+                result = FlowResult(flow=flow, base_url=args.base_url, status="error",
+                                    failure_kind="execution", error=str(exc) or "interrupted")
             verdict = RuleJudge().review(result)
             bundle = build_bundle(
                 result,
                 verdict=verdict,
-                artifacts_dir=Path(args.artifacts_dir) / flow.id,
+                artifacts_dir=artifacts,
                 target={
                     "sha": args.sha,
                     "deployed_sha": args.deployed_sha,
@@ -162,9 +174,12 @@ def _run(args: argparse.Namespace) -> int:
                 },
                 started_at=started,
             )
+            bundle["run_id"] = identifier
             if owner_complete is not None:
                 bundle["test_owner"] = {"backend": args.owner_backend, "model": args.owner_model}
-            path = write_bundle(bundle, Path(args.evidence_dir) / f"{flow.id}.json")
+            path = write_bundle(bundle, Path(args.evidence_dir) / f"{identifier}.json")
+            if args.runner_results_dir:
+                write_bundle(bundle, args.runner_results_dir / f"{identifier}.json")
             bundles.append(bundle)
             if args.ledger and result.incubation_id:
                 record_ledger(
@@ -175,6 +190,7 @@ def _run(args: argparse.Namespace) -> int:
                         "sha": args.sha,
                         "status": result.status,
                         "recorded_at": bundle["finished_at"],
+                        "base_url": args.base_url.rstrip('/'),
                     },
                 )
         except DriverError as exc:
@@ -207,8 +223,20 @@ def purge_ledger(
         return [], f"refusing to remove a test site against environment {environment!r}"
     if not allow_destructive:
         return [], "removing the previous test site requires --allow-destructive"
+    host = urlsplit(base_url).hostname
+    try:
+        loopback = host == 'localhost' or ipaddress.ip_address(host or '').is_loopback
+    except ValueError:
+        loopback = False
+    if not loopback:
+        return [], 'remote website teardown is not qualified; refusing incubation-only cleanup'
     ledger = Path(path)
-    entries = _read_ledger(ledger)
+    try:
+        entries = _read_ledger(ledger)
+    except ValueError:
+        return [], 'invalid cleanup ledger; preserve it for investigation'
+    if any(entry.get('base_url') != base_url.rstrip('/') for entry in entries):
+        return [], 'cleanup ledger belongs to another or unknown target'
     removed: list[str] = []
     for entry in entries:
         identifier = str(entry.get("incubation_id") or "")
@@ -224,6 +252,8 @@ def purge_ledger(
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 removed.append(identifier)
+            else:
+                return removed, f'could not remove {identifier}: HTTP {exc.code}; ledger retained'
         except OSError as exc:
             return removed, f"could not remove {identifier}: {exc}"
     ledger.parent.mkdir(parents=True, exist_ok=True)
@@ -244,9 +274,11 @@ def _read_ledger(path: Path) -> list[dict]:
         return []
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return []
-    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError('invalid cleanup ledger') from exc
+    if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+        raise ValueError('invalid cleanup ledger')
+    return value
 
 
 def probe_target(base_url: str) -> dict:
@@ -259,13 +291,14 @@ def probe_target(base_url: str) -> dict:
         return {}
     if not isinstance(payload, dict):
         return {}
-    model = payload.get("model")
+    implementation = payload.get('implementation') or {}
+    model = payload.get("model") or implementation.get('model')
     engine = payload.get("engine")
     if not model and isinstance(engine, dict):
         model = engine.get("model")
     return {
         "model": model,
-        "provider": payload.get("provider"),
+        "provider": payload.get("provider") or implementation.get('provider'),
         "site_name": payload.get("site_name"),
     }
 

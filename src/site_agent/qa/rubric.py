@@ -59,7 +59,7 @@ class JudgeVerdict:
 
     @property
     def passed(self) -> bool:
-        return not self.failed_checks and self.verdict != "fail"
+        return not self.failed_checks and self.verdict == "pass"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -88,6 +88,8 @@ class RuleJudge:
             self._ready(result),
             self._no_raw_internals(result),
             self._images(result),
+            Check('browser.dialogs', not any(not item.get('expected') for item in result.observations.dialogs),
+                  detail='unexpected native dialogs must not be accepted'),
         ]
         failed = [check for check in checks if not check.ok and check.blocking]
         reasons = [f"{check.id}: {check.detail}" for check in failed]
@@ -109,6 +111,9 @@ class RuleJudge:
             return Check("flow.steps", False, detail=f"step {first.id} failed: {first.detail}")
         if result.status == "error":
             return Check("flow.steps", False, detail=f"driver error: {result.error}")
+        if (len(result.steps) != len(result.flow.steps)
+                or any(step.status != 'passed' for step in result.steps)):
+            return Check('flow.steps', False, detail='flow evidence is incomplete')
         return Check("flow.steps", True, detail=f"{len(result.steps)} steps passed")
 
     def _console(self, result: FlowResult) -> Check:

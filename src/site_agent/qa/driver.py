@@ -67,6 +67,7 @@ class StepResult:
     mark: str | None = None
     turns: int = 0
     transcript: list[dict[str, Any]] = field(default_factory=list)
+    failure_kind: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -81,6 +82,7 @@ class StepResult:
             "mark": self.mark,
             "turns": self.turns,
             "transcript": list(self.transcript),
+            "failure_kind": self.failure_kind,
         }
 
 
@@ -113,6 +115,7 @@ class FlowResult:
     marks: dict[str, str] = field(default_factory=dict)
     incubation_id: str | None = None
     error: str | None = None
+    failure_kind: str | None = None
 
     @property
     def failed_step(self) -> str | None:
@@ -158,6 +161,7 @@ class PlaywrightDriver:
         self.owner_complete = owner_complete
         self._current_step = "setup"
         self._abort: tuple[Expectation, ...] = ()
+        self._confirm_dialog = None
 
     # -- public ---------------------------------------------------------
 
@@ -189,6 +193,7 @@ class PlaywrightDriver:
             raise
         except Exception as exc:  # pragma: no cover - browser launch/transport
             result.status = "error"
+            result.failure_kind = "execution"
             result.error = f"{type(exc).__name__}: {exc}"
         return result
 
@@ -215,6 +220,7 @@ class PlaywrightDriver:
             if outcome.status == "failed":
                 failed = True
                 result.status = "failed"
+                result.failure_kind = outcome.failure_kind or "observed"
                 result.error = outcome.detail or f"step {step.id} failed"
         if result.status == "passed" and any(step.status == "failed" for step in result.steps):
             result.status = "failed"
@@ -230,6 +236,7 @@ class PlaywrightDriver:
         outcome = StepResult(id=step.id, action=step.action)
         started = time.monotonic()
         self._abort = step.abort
+        self._confirm_dialog = step.confirm_dialog
         try:
             self._perform(page, step, outcome, context)
             for expectation in step.expect:
@@ -239,6 +246,7 @@ class PlaywrightDriver:
                     break
             if any(not item.passed for item in outcome.assertions):
                 outcome.status = "failed"
+                outcome.failure_kind = "observed"
                 outcome.detail = "; ".join(
                     item.detail for item in outcome.assertions if not item.passed
                 ) or "assertion failed"
@@ -246,12 +254,19 @@ class PlaywrightDriver:
                 outcome.status = "passed"
         except _Aborted as exc:
             outcome.status = "failed"
+            outcome.failure_kind = "observed"
             outcome.detail = f"aborted: {exc}"
+        except KeyboardInterrupt:
+            outcome.status = "failed"
+            outcome.failure_kind = "execution"
+            outcome.detail = "Test execution interrupted"
         except Exception as exc:
             outcome.status = "failed"
+            outcome.failure_kind = "execution"
             outcome.detail = f"{type(exc).__name__}: {exc}"
         finally:
             self._abort = ()
+            self._confirm_dialog = None
             outcome.duration_ms = int((time.monotonic() - started) * 1000)
             if self.screenshots and step.screenshot:
                 shot = self._screenshot(page, index, step.id, result.artifacts)
@@ -324,6 +339,9 @@ class PlaywrightDriver:
             )
         owner = OwnerAgent(brief, self.owner_complete, max_turns=max_turns)
         seen = self._message_count(page)
+        last = page.locator('#messages article.message').last
+        if seen and last.get_attribute('data-role') != 'assistant':
+            seen = self._await_turn(page, seen - 1, step.reply_timeout_ms)
 
         for turn in range(1, max_turns + 1):
             if self._until_satisfied(page, step.until, context):
@@ -333,6 +351,9 @@ class PlaywrightDriver:
                 return
             question = self._last_assistant_text(page)
             reply = owner.reply(question)
+            # Preserve the transcript even if the next browser action fails.
+            outcome.transcript = list(owner.transcript)
+            outcome.turns = turn
             self._send_message(page, reply)
             seen = self._await_turn(page, seen, step.reply_timeout_ms)
 
@@ -377,25 +398,21 @@ class PlaywrightDriver:
         """Wait until Ada replied and the composer is idle again."""
 
         deadline = time.monotonic() + timeout_ms / 1000
-        grew = False
         while time.monotonic() < deadline:
+            # A newly inserted USER message is not Ada's reply. Require the
+            # final message to belong to Ada and the composer to be idle.
             count = self._message_count(page)
-            if count > seen:
-                grew = True
-                if self._chat_idle(page):
-                    return count
-            elif grew and self._chat_idle(page):
+            last = page.locator('#messages article.message').last
+            if count > seen and last.get_attribute('data-role') == 'assistant' and self._chat_idle(page):
                 return count
             time.sleep(0.25)
-        if not grew:
-            raise DriverError(f"Ada did not reply within {timeout_ms}ms")
-        return self._message_count(page)
+        raise DriverError(f"Ada did not finish a reply within {timeout_ms}ms")
 
     def _chat_idle(self, page: Any) -> bool:
         try:
             state = (page.locator("#chat-state").first.inner_text(timeout=1_000) or "").strip().lower()
         except Exception:
-            return True
+            return False
         return state in ("ready", "idle", "")
 
     # -- http -----------------------------------------------------------
@@ -577,10 +594,10 @@ class PlaywrightDriver:
             observations.dialogs.append(
                 {"step": self._current_step, "type": dialog.type, "message": dialog.message}
             )
-            # A native confirm() blocks the page until answered; accepting is the
-            # owner's intent in every flow we drive.
+            allowed = dialog.type == 'confirm' and dialog.message == self._confirm_dialog
+            observations.dialogs[-1]['expected'] = allowed
             try:
-                dialog.accept()
+                dialog.accept() if allowed else dialog.dismiss()
             except Exception:  # pragma: no cover - already dismissed
                 pass
 
@@ -607,6 +624,10 @@ class PlaywrightDriver:
         page.on("console", on_console)
         page.on("pageerror", on_page_error)
         page.on("requestfailed", on_request_failed)
+        page.on("response", lambda response: observations.failed_requests.append({
+            'step': self._current_step, 'url': response.url,
+            'method': response.request.method, 'reason': f'HTTP {response.status}',
+        }) if response.status >= 400 else None)
         page.on("dialog", on_dialog)
 
     def _incubation_id(self, page: Any) -> str | None:

@@ -45,9 +45,9 @@ def target():
         server.server_close()
 
 
-def _ledger(path: Path, *ids: str) -> Path:
+def _ledger(path: Path, *ids: str, base_url=None) -> Path:
     path.write_text(
-        json.dumps([{"incubation_id": identifier, "flow": "intake-to-preview"} for identifier in ids]),
+        json.dumps([{"incubation_id": identifier, "flow": "intake-to-preview", 'base_url': base_url} for identifier in ids]),
         encoding="utf-8",
     )
     return path
@@ -74,7 +74,7 @@ def test_purge_requires_an_explicit_destructive_flag(tmp_path, target):
 
 
 def test_purge_removes_exactly_what_the_ledger_records(tmp_path, target):
-    ledger = _ledger(tmp_path / "ledger.json", "intake-1", "already-gone")
+    ledger = _ledger(tmp_path / "ledger.json", "intake-1", "already-gone", base_url=target)
     removed, problem = purge_ledger(
         ledger, base_url=target, environment="test", allow_destructive=True
     )
@@ -108,5 +108,18 @@ def test_a_corrupt_ledger_never_deletes_anything(tmp_path, target):
         ledger, base_url=target, environment="test", allow_destructive=True
     )
     assert removed == []
-    assert problem is None
+    assert 'invalid cleanup ledger' in problem
     assert _Handler.deleted == []
+
+
+def test_a_ledger_from_another_target_is_refused(tmp_path, target):
+    ledger = _ledger(tmp_path / 'ledger.json', 'intake-1', base_url='http://localhost:9999')
+    _, problem = purge_ledger(ledger, base_url=target, environment='test', allow_destructive=True)
+    assert 'another or unknown target' in problem
+    assert _Handler.deleted == []
+
+
+def test_test_flag_does_not_authorize_remote_website_deletion(tmp_path):
+    ledger = _ledger(tmp_path / 'ledger.json', 'intake-1', base_url='https://customer.example')
+    _, problem = purge_ledger(ledger, base_url='https://customer.example', environment='test', allow_destructive=True)
+    assert 'teardown is not qualified' in problem

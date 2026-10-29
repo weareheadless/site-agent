@@ -40,6 +40,12 @@ EXPECTATIONS = (
 _HTTP_EXPECTATIONS = ("status", "json")
 
 
+def _identifier(value, where):
+    if not isinstance(value, str) or not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,100}', value):
+        raise FlowError(f'{where}: id must be a safe lower-case identifier')
+    return value
+
+
 @dataclass(frozen=True)
 class Expectation:
     kind: str
@@ -75,8 +81,12 @@ class Expectation:
             raise FlowError(f"{where}: unknown comparison {op!r}")
         if kind in ("visible", "hidden", "text", "text_absent", "count") and not raw.get("selector"):
             raise FlowError(f"{where}: expectation {kind!r} needs a selector")
-        if kind == "text" and raw.get("text") is None:
-            raise FlowError(f"{where}: expectation 'text' needs text")
+        if kind in ('text', 'text_absent', 'url_contains') and not raw.get('text'):
+            raise FlowError(f"{where}: expectation {kind!r} needs non-empty text")
+        if kind in ('count', 'status') and not isinstance(raw.get('value'), int):
+            raise FlowError(f'{where}: {kind} needs an integer value')
+        if int(raw.get('timeout_ms') or 15_000) <= 0:
+            raise FlowError(f'{where}: timeout must be positive')
         if kind in _HTTP_EXPECTATIONS and not raw.get("step"):
             raise FlowError(f"{where}: expectation {kind!r} needs the id of an http step")
         if kind == "json" and not raw.get("path"):
@@ -114,6 +124,7 @@ class Step:
     abort: tuple[Expectation, ...] = ()
     persona: Mapping[str, Any] | None = None
     reply_timeout_ms: int = 240_000
+    confirm_dialog: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -135,6 +146,7 @@ class Step:
             "abort": [item.to_dict() for item in self.abort],
             "persona": dict(self.persona) if self.persona else None,
             "reply_timeout_ms": self.reply_timeout_ms,
+            "confirm_dialog": self.confirm_dialog,
         }
 
     @classmethod
@@ -142,6 +154,7 @@ class Step:
         identifier = str(raw.get("id") or "").strip()
         if not identifier:
             raise FlowError(f"{where}: step needs an id")
+        _identifier(identifier, where)
         action = str(raw.get("action") or "").strip()
         if action not in ACTIONS:
             raise FlowError(f"{where}: unknown action {action!r}; known: {', '.join(ACTIONS)}")
@@ -157,6 +170,8 @@ class Step:
             Expectation.from_dict(item, f"{where}.abort[{index}]")
             for index, item in enumerate(raw.get("abort") or ())
         )
+        if any(item.kind not in ('visible', 'hidden', 'text', 'text_absent', 'count') for item in abort):
+            raise FlowError(f'{where}: abort needs a page condition')
         _require_action_fields(action, raw, where)
         mark = raw.get("mark")
         if mark is not None and not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", str(mark)):
@@ -180,6 +195,7 @@ class Step:
             abort=abort,
             persona=dict(raw.get("persona") or {}) or None,
             reply_timeout_ms=int(raw.get("reply_timeout_ms") or 240_000),
+            confirm_dialog=raw.get('confirm_dialog'),
         )
 
 
@@ -244,6 +260,7 @@ class Flow:
         identifier = str(raw.get("id") or "").strip()
         if not identifier:
             raise FlowError(f"{where}: flow needs an id")
+        _identifier(identifier, where)
         tier = str(raw.get("tier") or "deterministic").strip()
         if tier not in TIERS:
             raise FlowError(f"{where}: unknown tier {tier!r}; known: {', '.join(TIERS)}")

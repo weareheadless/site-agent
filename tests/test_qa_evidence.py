@@ -154,3 +154,13 @@ def test_bundle_carries_timings_and_incubation_id(tmp_path):
     assert bundle["incubation_id"] == "intake-abc123"
     assert bundle["timings"]["durations_s"]["candidate_ready"] == 720.0
     assert bundle["timings"]["total_s"] == 900.0
+
+
+def test_default_finished_at_is_used_for_total_time_and_models_are_retained(tmp_path):
+    bundle = build_bundle(_result(), verdict=_verdict(), artifacts_dir=tmp_path,
+                          started_at='2026-10-29T00:00:00Z',
+                          target={'model': 'gpt-6-luna', 'provider': 'openai'})
+    assert bundle['timings']['total_s'] is not None
+    assert bundle['target']['model'] == 'gpt-6-luna'
+    assert bundle['target']['provider'] == 'openai'
+    assert run_id('demo') != run_id('demo'), 'two runs in one second must not overwrite evidence'
