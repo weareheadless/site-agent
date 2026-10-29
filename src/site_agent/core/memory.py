@@ -3763,6 +3763,74 @@ class Memory:
         return len(rows)
 
     @_locked
+    def admit_prebuild_design_recovery(self, run_id: str, *, expected_status: str) -> dict[str, Any]:
+        """Admit one explicitly validated, pre-Build native checkpoint recovery.
+
+        This is intentionally not a general terminal-status transition. The
+        application service performs the frozen identity checks first; this
+        transaction is the final compare-and-swap that lets only one caller
+        return the run to PLANNING.
+        """
+        if expected_status not in {DesignRunStatus.FAILED.value, DesignRunStatus.INTERRUPTED.value}:
+            raise ContractError("pre-Build recovery requires a failed or interrupted run")
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.conn.execute("SELECT * FROM design_runs WHERE run_id = ?", (str(run_id),)).fetchone()
+            if row is None:
+                self.conn.commit()
+                return {"admitted": False, "run": None}
+            run = self.get_design_run(run_id)
+            planning = run.get("planning_json") if isinstance(run.get("planning_json"), dict) else {}
+            if run.get("status") != expected_status:
+                self.conn.commit()
+                return {"admitted": False, "run": run}
+            if any(run.get(field) for field in ("candidate_sha", "design_manifest_path", "quality_report_hash")):
+                raise ContractError("pre-Build recovery is blocked by candidate output")
+            phases = self.conn.execute(
+                "SELECT phase, status FROM design_run_phase_artifacts WHERE run_id = ? AND phase = 'build_dispatch'",
+                (str(run_id),),
+            ).fetchall()
+            if phases:
+                raise ContractError("pre-Build recovery is blocked by an existing Build dispatch attempt")
+            direction = self.conn.execute(
+                "SELECT status, payload_json FROM design_run_phase_artifacts "
+                "WHERE run_id = ? AND phase = 'native_direction' ORDER BY id DESC LIMIT 1",
+                (str(run_id),),
+            ).fetchone()
+            if direction is None or direction["status"] != "completed":
+                raise ContractError("pre-Build recovery requires a durably completed native-direction checkpoint")
+            try:
+                checkpoint = json.loads(direction["payload_json"] or "{}")
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise ContractError("native-direction checkpoint is malformed") from exc
+            if not isinstance(checkpoint, dict) or not all(
+                isinstance(checkpoint.get(key), str) and checkpoint.get(key).strip()
+                for key in ("direction", "direction_path", "direction_hash")
+            ) or not isinstance(checkpoint.get("experience_plan"), dict):
+                raise ContractError("native-direction checkpoint is incomplete or malformed")
+            if not isinstance(planning.get("build_request"), dict) or not isinstance(planning.get("build_target"), dict):
+                raise ContractError("pre-Build recovery requires persisted build request and target")
+            now = _now()
+            self.conn.execute(
+                "UPDATE design_runs SET status = ?, error = '', updated_ts = ? "
+                "WHERE run_id = ? AND status = ?",
+                (DesignRunStatus.PLANNING.value, now, str(run_id), expected_status),
+            )
+            if self.conn.execute("SELECT changes()").fetchone()[0] != 1:
+                self.conn.rollback()
+                return {"admitted": False, "run": self.get_design_run(run_id)}
+            detail = self._design_json({"from": expected_status, "to": DesignRunStatus.PLANNING.value}, "recovery detail", max_bytes=20_000)[0]
+            self.conn.execute(
+                "INSERT INTO design_run_events (run_id, stage, message, detail_json, created_ts) VALUES (?, ?, ?, ?, ?)",
+                (str(run_id), "recovery_admitted", "Validated native-direction checkpoint admitted for one same-run Build.", detail, now),
+            )
+            self.conn.commit()
+        except BaseException:
+            self.conn.rollback()
+            raise
+        return {"admitted": True, "run": self.get_design_run(run_id)}
+
+    @_locked
     def add_design_run_event(
         self,
         run_id: str,

@@ -32,3 +32,23 @@ Only a returned invalid typed plan is eligible for one correction. Its response,
 The fake-turn stage regression now crosses `NativeOpenCodeBuilder -> stage_design_build -> Memory`: it persists a completed direction/typed-plan checkpoint, closes and reopens Memory, hydrates the original direction and plan, and reaches one Build without another direction turn. Nested competing facade entries using distinct Memory connections at the direction and Build fake-provider barriers return the exact running-claim and Build-fence diagnostics; exactly one direction and one Build dispatch occur. Reopened Memory preserves the direction hashes/payload and completed Build fence. A subsequent facade entry raises `BuilderError` without another provider invocation. Changed request, context snapshot, supplied-media identity, and target are rejected against the original persisted phase hashes before any new external turn. Existing fake-turn coverage also proves corrected-valid reaches one Build, invalid-twice does not Build and stays exhausted after reopen, and provider/process failure is not semantically retried.
 
 No paid provider call, production tenant mutation, release or owner-visible recovery has been attempted. This slice does not reopen failed runs, schedule explicit lifecycle recovery, or complete the issue's later deployment/live-intake acceptance: explicit failed-run lifecycle recovery, canonical deployment and actual Astrid intake remain parent acceptance gaps.
+
+## Same-run lifecycle implementation draft (unverified)
+
+The current UI-056 draft adds a narrow application recovery branch for a run
+already attached to the confirmed intake session. It uses the persisted typed
+request and target, records request/context/shared-intelligence identity at the
+original handoff, validates the completed native-direction phase against the
+runner's `_native_phase_identity`, and asks canonical Memory to compare-and-swap
+only `failed`/`interrupted` to `planning`. Memory refuses missing/malformed
+direction checkpoints, candidate output, or any `build_dispatch` artifact.
+The handoff skips run creation, context capture, request preparation and target
+re-resolution; only the CAS winner enqueues the original run. `force_new` and
+unlinked prior failures keep their separate-run behavior.
+
+This is implementation evidence only. The required real composition regression
+through DesignIntakeService, DesignBuildHandoff, DesignService,
+DesignJobExecutor, native builder and reopened Memory has not yet been added.
+Changed-input and concurrent independent-caller coverage is incomplete, and no
+actual Astrid or deployed acceptance has occurred. The new behavior must not be
+treated as accepted until those gates pass.

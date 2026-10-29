@@ -92,6 +92,48 @@ def test_completed_native_checkpoint_is_reusable_after_reopen(tmp_path):
     reopened.close()
 
 
+def test_prebuild_recovery_admission_is_compare_and_swap_and_durable(tmp_path):
+    path = tmp_path / "recovery-cas.db"
+    seed = Memory(path)
+    seed.create_design_run(
+        run_id="recovery-cas-run", mode="production_candidate", status="failed",
+        intake_json={}, intake_hash="a" * 64, base_sha="b" * 40,
+        publishable=True, candidate_ref="refs/ada-design/recovery-cas-run",
+    )
+    seed.update_design_run("recovery-cas-run", planning_json={
+        "build_request": {"run_id": "recovery-cas-run"},
+        "build_target": {"run_id": "recovery-cas-run"},
+    })
+    claimed = seed.claim_design_phase(
+        "recovery-cas-run", "native_direction", variant_key="initial", base_sha="b" * 40,
+        context_snapshot_hash="c" * 64, input_hashes=["d" * 64], max_attempts=2,
+    )
+    seed.complete_design_phase(claimed["id"], {
+        "direction": "direction", "direction_path": "direction.json",
+        "direction_hash": "e" * 64, "experience_plan": {"plan": True},
+    })
+    seed.close()
+
+    barrier = Barrier(2)
+
+    def admit():
+        memory = Memory(path)
+        barrier.wait()
+        try:
+            return memory.admit_prebuild_design_recovery("recovery-cas-run", expected_status="failed")
+        finally:
+            memory.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: admit(), range(2)))
+    assert sum(bool(item["admitted"]) for item in results) == 1
+    reopened = Memory(path)
+    assert reopened.get_design_run("recovery-cas-run")["status"] == "planning"
+    assert [event["stage"] for event in reopened.list_design_run_events("recovery-cas-run")][-1] == "recovery_admitted"
+    assert reopened.admit_prebuild_design_recovery("recovery-cas-run", expected_status="failed")["admitted"] is False
+    reopened.close()
+
+
 def test_fresh_db_creates_current_schema(tmp_path):
     mem = Memory(tmp_path / "memory.db")
     version = mem.conn.execute("PRAGMA user_version").fetchone()[0]
