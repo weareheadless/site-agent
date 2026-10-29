@@ -164,17 +164,33 @@ def _set_current(current: Path, destination: Path) -> None:
     os.replace(temporary, current)
 
 
-def _health_check(url: str, attempts: int = 60) -> None:
-    for _ in range(attempts):
+def _health_check(url: str, attempts: int = 180) -> int:
+    for attempt in range(1, attempts + 1):
         try:
             with urllib.request.urlopen(url, timeout=2) as response:
                 payload = json.loads(response.read(4096))
             if response.status == 200 and payload == {"ok": True}:
-                return
+                return attempt
         except (OSError, urllib.error.URLError, ValueError, json.JSONDecodeError):
             pass
         time.sleep(1)
     raise RuntimeError("API /healthz did not pass after restart")
+
+
+def _capture_failed_unit_log(path: Path) -> str | None:
+    """Best-effort, bounded journal capture; diagnostics must never block rollback."""
+    try:
+        result = subprocess.run(["journalctl", "-u", SERVICE, "-n", "200", "--no-pager"],
+                                text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                check=False, timeout=10)
+        output = "\n".join(result.stdout.splitlines()[-200:])
+        output = output.encode("utf-8")[-32768:].decode("utf-8", errors="replace")
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path.write_text(output + ("\n" if output else ""), encoding="utf-8")
+        os.chmod(path, 0o600)
+        return str(path)
+    except Exception:
+        return None
 
 
 def _runtime_config_preflight(source_dir: Path, python: str, log_path: Path) -> None:
@@ -403,7 +419,16 @@ def deploy(source_dir: Path, source_sha: str, release_id: str, root: Path,
         _set_current(current, release_dir)
         _record(receipt_path, receipt, "activated")
         _restart_api()
-        _health_check(health_url)
+        health_started = time.monotonic()
+        try:
+            health_attempts = _health_check(health_url)
+        except Exception:
+            failed_log = _capture_failed_unit_log(receipt_path.parent / "failed-unit.log")
+            receipt["healthCheck"] = {"attempts": 180, "secondsWaited": round(time.monotonic() - health_started, 1)}
+            if failed_log:
+                receipt["failedUnitLogPath"] = failed_log
+            raise
+        receipt["healthCheck"] = {"attempts": health_attempts, "secondsWaited": round(time.monotonic() - health_started, 1)}
         _record(receipt_path, receipt, "health-passed", "deployed",
                 finishedAt=datetime.now(timezone.utc).isoformat())
         return receipt

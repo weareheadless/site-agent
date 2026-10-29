@@ -22,6 +22,69 @@ api_deploy = importlib.util.module_from_spec(API_SPEC)
 API_SPEC.loader.exec_module(api_deploy)
 
 
+def test_api_health_check_uses_extended_window_and_exact_contract(monkeypatch):
+    class Response:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *_args): pass
+        def read(self, _size): return b'{"ok": true}'
+    monkeypatch.setattr(api_deploy.urllib.request, "urlopen", lambda *_a, **_k: Response())
+    assert api_deploy._health_check("http://health") == 1
+    assert api_deploy._health_check.__defaults__ == (180,)
+
+
+def test_api_health_failure_log_capture_is_best_effort_and_bounded(tmp_path, monkeypatch):
+    monkeypatch.setattr(api_deploy.urllib.request, "urlopen", lambda *_a, **_k: (_ for _ in ()).throw(OSError()))
+    monkeypatch.setattr(api_deploy.time, "sleep", lambda _seconds: None)
+    with pytest.raises(RuntimeError, match="did not pass"):
+        api_deploy._health_check("http://health", attempts=2)
+    monkeypatch.setattr(api_deploy.subprocess, "run", lambda *_a, **_k: (_ for _ in ()).throw(OSError()))
+    assert api_deploy._capture_failed_unit_log(tmp_path / "failed-unit.log") is None
+
+
+def test_api_deploy_failure_receipt_has_health_diagnostics(tmp_path, monkeypatch):
+    source = tmp_path / "snapshot"
+    (source / "src/site_agent").mkdir(parents=True)
+    (source / "deploy").mkdir()
+    (source / "pyproject.toml").write_text("[project]\n")
+    (source / "src/site_agent/__init__.py").write_text("")
+    (source / ".site-agent-source-sha").write_text("a" * 40)
+    (source / "deploy/site-agent-api.service").write_text("[Service]\n")
+    (source / "deploy/api-runtime.json").write_text(json.dumps({"schema": 1, "requiredExtras": ["crawlseo", "design-lab", "ga"]}))
+    root = tmp_path / "root"
+    prior = root / "api/releases/prior"
+    prior.mkdir(parents=True)
+    (root / "api/current").symlink_to(prior)
+    real_is_file, real_read_bytes = Path.is_file, Path.read_bytes
+    host = Path("/etc/systemd/system/site-agent-api.service")
+    monkeypatch.setattr(Path, "is_file", lambda path: True if path == host else real_is_file(path))
+    monkeypatch.setattr(Path, "read_bytes", lambda path: b"[Service]\n" if path == host else real_read_bytes(path))
+    monkeypatch.setattr(api_deploy, "_runtime_config_preflight", lambda *_a: None)
+    monkeypatch.setattr(api_deploy, "_verify_wheel_runtime_dependencies", lambda *_a, **_k: None)
+    monkeypatch.setattr(api_deploy, "_verify_payload_template_bundle", lambda *_a: None)
+    def run(command, **kwargs):
+        if command[:2] == ["systemd-analyze", "verify"]: return subprocess.CompletedProcess(command, 0, "", "")
+        if "wheel" in command:
+            Path(command[command.index("--wheel-dir") + 1], "site_agent-1.whl").write_bytes(b"wheel")
+        elif "install" in command:
+            Path(command[command.index("--target") + 1], "site_agent").mkdir(parents=True)
+        elif "-c" in command:
+            target = Path(kwargs["env"]["PYTHONPATH"])
+            return subprocess.CompletedProcess(command, 0, json.dumps({"path": str(target / "site_agent/__init__.py"), "version": "1"}), "")
+        return subprocess.CompletedProcess(command, 0, "", "")
+    monkeypatch.setattr(api_deploy, "_run", run)
+    monkeypatch.setattr(api_deploy, "_restart_api", lambda: None)
+    def unhealthy(_url): raise RuntimeError("API /healthz did not pass after restart")
+    monkeypatch.setattr(api_deploy, "_health_check", unhealthy)
+    monkeypatch.setattr(api_deploy, "_capture_failed_unit_log", lambda path: str(path))
+    with pytest.raises(RuntimeError, match="did not pass"):
+        api_deploy.deploy(source, "a" * 40, "candidate", root, "/venv/python", "http://health")
+    receipt = json.loads((root / "runs/api/candidate/receipt.json").read_text())
+    assert receipt["healthCheck"]["attempts"] == 180
+    assert receipt["healthCheck"]["secondsWaited"] >= 0
+    assert receipt["failedUnitLogPath"].endswith("failed-unit.log")
+
+
 def test_interrupted_api_rollback_records_failed_health_and_keeps_previous_selected(tmp_path, monkeypatch):
     releases = tmp_path / "api/releases"
     previous = releases / "previous"
