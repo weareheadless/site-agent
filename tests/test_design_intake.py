@@ -442,6 +442,160 @@ def test_build_confirmed_session_through_real_handoff_preserves_shared_intellige
     memory.close()
 
 
+@pytest.mark.parametrize("runtime_base_drift", [False, True], ids=["same-base", "changed-runtime-base"])
+def test_composed_same_run_recovery_reopens_checkpoint_and_dispatches_build_once(
+    tmp_path, monkeypatch, runtime_base_drift,
+):
+    """Exercise intake -> handoff -> real worker/facade using a disposable tenant clone."""
+    import subprocess
+
+    from site_agent.application.design_jobs import DesignJobExecutor
+    from site_agent.application.designs import DesignService
+    from site_agent.core.design_contracts import DesignRunStatus
+    from site_agent.hands import opencode_runner as runner
+    from site_agent.hands.builder import OperationRoutingBuilder
+    from site_agent.hands.site_build import SiteBuildResult
+
+    import site_agent.hands.site_build as site_build
+    monkeypatch.setattr(site_build, "prepare_site_toolchain", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(site_build, "build_site", lambda _root, profile, **_kwargs: SiteBuildResult(
+        profile=profile.name, ok=True, output_dir=profile.output_dir,
+        commands=({"command": ["test"], "status": "passed"},), route_inventory=("index.html",),
+    ))
+
+    clone = tmp_path / "tenant-clone"
+    clone.mkdir()
+    def git(*args):
+        return subprocess.run(["git", "-C", str(clone), *args], check=True, capture_output=True, text=True)
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "test@example.com")
+    git("config", "user.name", "Test")
+    (clone / "index.html").write_text("<html><body>baseline</body></html>")
+    git("add", "-A")
+    git("commit", "-qm", "tenant baseline")
+    remote = tmp_path / "tenant-origin.git"
+    subprocess.run(["git", "clone", "--bare", str(clone), str(remote)], check=True, capture_output=True)
+    git("remote", "add", "origin", str(remote))
+    config = {
+        "data_dir": str(tmp_path),
+        "site": {"clone_path": str(clone), "writable_patterns": ["*.html", "design/**"]},
+        "design_engine": {"orchestration": "creative", "model": "fixture/model"},
+        "builder": {"enabled": True},
+    }
+    db = tmp_path / "memory.db"
+    memory = Memory(db)
+    class PayloadBoundary:
+        document = None
+        def require_authoring_contract(self):
+            return {"enabled": {"collections": ["pages"]}, "locales": ["en"],
+                    "defaultLocale": "en", "schemaIdentity": "fixture", "authoringContractHash": "fixture"}
+        def read_media(self, *_args, **_kwargs):
+            raise AssertionError("no intake media is attached")
+        def create(self, collection, data, *, locale):
+            self.document = {"id": 41, "slug": "home", "sourceId": "pages:home", **data,
+                             "_helloadaRevision": "sha256:" + "1" * 64}
+            return dict(self.document)
+        def read(self, *_args, **_kwargs):
+            return dict(self.document)
+    payload = PayloadBoundary()
+    builder = OperationRoutingBuilder({"config": config, "memory": memory, "payload_gateway": payload})
+    service = DesignService(memory, config=config, builder=builder)
+    executor = DesignJobExecutor({"memory": memory, "config": config}, service)
+    handoff = DesignBuildHandoff({"memory": memory, "config": config, "design_service": service,
+                                  "design_executor": executor})
+    intake_service = DesignIntakeService(memory, config=config, default_intake=_intake(), lab_service=handoff)
+    session = intake_service.create_session()
+    confirmed = intake_service.confirm(session["session_id"], revision=session["revision"], draft_hash=session["draft_hash"])
+    result = intake_service.build(session["session_id"], confirmed_revision=confirmed["session"]["confirmed_revision_id"],
+                                  idempotency_key="composition13-original")
+    run_id = result["run"]["run_id"]
+    direction_calls = []
+
+    def fake_turn(_worktree, _prompt, _config, **kwargs):
+        direction_calls.append(kwargs.get("agent_name"))
+        if kwargs.get("agent_name") == "native-direction":
+            from tests.test_design_contracts import _experience_plan
+            plan = _experience_plan()
+            plan.pop("asset_evidence", None)
+            plan.pop("asset_composition_plan", None)
+            return {"session_id": "direction", "structured": {"direction": "A measured arrival.",
+                    "experience_plan": plan}, "transcript": "valid native direction\n"}
+        raise AssertionError("fixture stops after the one recovered Build provider dispatch")
+
+    monkeypatch.setattr(runner, "install_agent_files", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_origin_url", lambda *_args, **_kwargs: str(remote))
+    monkeypatch.setattr(runner, "run_opencode_turn", fake_turn)
+    real_stage = runner.stage_design_build
+    interrupted = False
+    def interrupt_at_pre_build(context, request, target, progress=None, **kwargs):
+        nonlocal interrupted
+        def boundary(message):
+            nonlocal interrupted
+            if progress:
+                progress(message)
+            if not interrupted and "starting the integrated Build turn" in message:
+                interrupted = True
+                raise KeyboardInterrupt("simulated process death at documented pre-Build boundary")
+        return real_stage(context, request, target, progress=boundary, **kwargs)
+    monkeypatch.setattr(runner, "stage_design_build", interrupt_at_pre_build)
+    try:
+        executor._run(run_id)
+    except KeyboardInterrupt as exc:
+        assert "pre-Build boundary" in str(exc)
+    else:
+        pytest.fail(f"worker stopped before pre-Build barrier: status={service.get_run(run_id).get('status')!r}; "
+                    f"error={service.get_run(run_id).get('error')!r}; calls={direction_calls!r}")
+    phases = memory.list_design_phase_artifacts(run_id)
+    assert any(item["phase"] == "native_direction" and item["status"] == "completed" for item in phases), (
+        f"native checkpoint was not reached; worker_error={service.get_run(run_id).get('error')!r}; "
+        f"provider_calls={direction_calls!r}; phases={phases!r}"
+    )
+    run = service.get_run(run_id)
+    planning = run["planning_json"]
+    from site_agent.core.design_contracts import BuildTarget, PageBuildRequest
+    request = PageBuildRequest.from_dict(planning["build_request"])
+    target = BuildTarget.from_dict(planning["build_target"])
+    memory.transition_design_run(run_id, DesignRunStatus.INTERRUPTED.value,
+                                 error="worker process ended at the persisted pre-Build boundary")
+    memory.close()
+    memory = Memory(db)
+    builder = OperationRoutingBuilder({"config": config, "memory": memory, "payload_gateway": payload})
+    service = DesignService(memory, config=config, builder=builder)
+    executor = DesignJobExecutor({"memory": memory, "config": config}, service)
+    handoff = DesignBuildHandoff({"memory": memory, "config": config, "design_service": service,
+                                  "design_executor": executor})
+    intake_service = DesignIntakeService(memory, config=config, default_intake=_intake(), lab_service=handoff)
+    if runtime_base_drift:
+        (clone / "runtime-drift.txt").write_text("isolated tenant HEAD changed after checkpoint\n")
+        git("add", "-A")
+        git("commit", "-qm", "runtime base drift")
+        assert service.resolve_base_sha() != target.base_sha
+        with pytest.raises(DesignIntakeServiceError, match="base"):
+            intake_service.build(session["session_id"],
+                confirmed_revision=confirmed["session"]["confirmed_revision_id"], idempotency_key="composition13-drift")
+        return
+    try:
+        recovered = intake_service.build(session["session_id"],
+            confirmed_revision=confirmed["session"]["confirmed_revision_id"], idempotency_key="composition13-recover")
+        assert recovered["run"]["run_id"] == run_id
+    except Exception as exc:
+        pytest.fail(f"composed recovery reached first retained failure: {type(exc).__name__}: {exc}")
+    assert service.get_run(run_id)["planning_json"]["build_request"] == request.to_dict()
+    assert service.get_run(run_id)["planning_json"]["build_target"] == target.to_dict()
+    executor._run(run_id)
+    assert direction_calls.count("native-direction") == 1
+    assert service.get_run(run_id)["status"] == DesignRunStatus.FAILED.value
+    assert "fixture stops after the one recovered Build provider dispatch" in service.get_run(run_id)["error"]
+    assert direction_calls.count("build") == 1, (
+        f"recovered worker did not reach Build provider dispatch: status={service.get_run(run_id).get('status')!r}; "
+        f"error={service.get_run(run_id).get('error')!r}; calls={direction_calls!r}; "
+        f"phases={memory.list_design_phase_artifacts(run_id)!r}"
+    )
+    assert any(item["phase"] == "build_dispatch" for item in memory.list_design_phase_artifacts(run_id))
+    assert direction_calls.count("native-direction") == 1
+    memory.close()
+
+
 def test_failed_build_is_visible_and_retry_reuses_confirmed_revision(tmp_path):
     memory = Memory(tmp_path / "failed-build.db")
 

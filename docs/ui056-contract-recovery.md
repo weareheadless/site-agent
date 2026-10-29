@@ -52,3 +52,32 @@ DesignJobExecutor, native builder and reopened Memory has not yet been added.
 Changed-input and concurrent independent-caller coverage is incomplete, and no
 actual Astrid or deployed acceptance has occurred. The new behavior must not be
 treated as accepted until those gates pass.
+
+## Composition13 worker evidence (2026-10-29; incomplete)
+
+Added parametrized `test_composed_same_run_recovery_reopens_checkpoint_and_dispatches_build_once`
+in `tests/test_design_intake.py`. It starts from a confirmed intake with real
+DesignIntakeService, DesignBuildHandoff, DesignService, DesignJobExecutor,
+OperationRoutingBuilder and SQLite Memory; it uses only temporary Git repos,
+fake provider turns and a minimal Payload gateway boundary. It interrupts at
+the runner's documented pre-Build progress boundary after a genuine completed
+native-direction phase, closes/reopens Memory, recovers the same run, and
+checks the persisted request/target and exactly one native-direction call.
+The recovered executor reaches exactly one Build provider dispatch and leaves
+the real `build_dispatch` phase fence in Memory.
+
+This is **not a valid-completion proof**: the Build provider stub deliberately
+raises immediately after recording that dispatch, and the test asserts the run
+fails with that fixture diagnostic. It does not test concurrent callers or
+target/tenant drift. The changed-runtime-base case is a deliberately retained
+red regression: after the frozen checkpoint is persisted and reopened, the
+isolated clone's HEAD is advanced. `service.resolve_base_sha()` confirms the
+new SHA differs from the frozen target, but `DesignIntakeService.build()` does
+not raise the expected `DesignIntakeServiceError` and proceeds to same-run
+admission. This exposes that recovery admission does not compare current base
+to the frozen base. No source fix was made. The initial fixture failure was the missing
+canonical Payload workspace (`first-site generation is waiting for the tenant's
+canonical Payload workspace`); supplying a test-only Payload boundary allowed
+the composed path to reach Build. No source fix was made. Therefore the
+manager's current-base drift concern remains unresolved and no full acceptance
+is claimed. This local evidence is not Astrid/live acceptance.
