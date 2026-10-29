@@ -140,8 +140,37 @@ of assuming caller A wins, retains both Memory connections through completion,
 and reopens the database to check for a failed reservation.
 
 At this repair checkpoint the affected suites pass twice (302 passed each
-run). This remains fixture evidence only. The required negative-checkpoint and
-identity-drift matrix (missing/running/failed checkpoint, prior dispatch,
-owner request/context/tenant/authorized-target drift), durable runner receipts,
-PR update and source acceptance have not yet been established. No provider
-output, completed candidate, review, deployment or live outcome is claimed.
+run). This remains fixture evidence only. At that time the required
+negative-checkpoint and identity-drift matrix (missing/running/failed
+checkpoint, prior dispatch, owner request/context/tenant/authorized-target
+drift), durable runner receipts, PR update and source acceptance had not yet
+been established. No provider output, completed candidate, review, deployment
+or live outcome is claimed.
+
+## Checkpoint21 absent-native rejection evidence (2026-10-29)
+
+The composed recovery regression now has a third fixture case that removes the
+persisted `native_direction` artifact from the disposable SQLite database after
+the interrupted run is reopened. It snapshots the run, remaining phase
+artifacts and events after that deletion, then calls the real confirmed-intake
+`build` path with a new idempotency key. The actual `DesignService` recovery
+policy rejects with `completed native direction and no Build attempt` before
+the real Memory admission CAS; an assertion-failing CAS wrapper proves the
+boundary. Reopening Memory shows the run, remaining phase fences and events
+unchanged, the executor queue remains empty, and the native-direction call
+count does not increase. The test does not require intake diagnostics to remain
+unchanged.
+
+The existing same-base concurrent recovery control and changed-runtime-base
+rejection remain in the parametrized test. The checkpoint21 composed selection
+passed. The durable `run_test.run` intake+memory receipt also passed twice
+(105 tests each, source checkout `0bfb2948fc254402367c43ceb0ac26a016ae583c`):
+`ui056-checkpoint21-intake-memory-ecd5f8332a4348b48971cb98d5d31648` and
+`ui056-checkpoint21-intake-memory-repeat-ea94ed870b574c989e62e286b66f2330`.
+
+This is still only one absent-native-checkpoint rejection case. Running or
+failed native artifacts, a prior Build attempt, request/context/session/tenant/
+authorized-target identity negatives, the broader/full suites, controlled
+invalid-plan evidence, and actual Astrid dynamic owner review remain gaps.
+No candidate, paid provider call, production mutation, deployment, or original
+issue acceptance is claimed.

@@ -442,7 +442,10 @@ def test_build_confirmed_session_through_real_handoff_preserves_shared_intellige
     memory.close()
 
 
-@pytest.mark.parametrize("runtime_base_drift", [False, True], ids=["same-base", "changed-runtime-base"])
+@pytest.mark.parametrize(
+    "runtime_base_drift", [False, True, None],
+    ids=["same-base", "changed-runtime-base", "missing-native-checkpoint"],
+)
 def test_composed_same_run_recovery_reopens_checkpoint_and_dispatches_build_once(
     tmp_path, monkeypatch, runtime_base_drift,
 ):
@@ -569,6 +572,39 @@ def test_composed_same_run_recovery_reopens_checkpoint_and_dispatches_build_once
     handoff = DesignBuildHandoff({"memory": memory, "config": config, "design_service": service,
                                   "design_executor": executor})
     intake_service = DesignIntakeService(memory, config=config, default_intake=_intake(), lab_service=handoff)
+    if runtime_base_drift is None:
+        # Remove only the native checkpoint in this disposable fixture database.
+        memory.conn.execute(
+            "DELETE FROM design_run_phase_artifacts WHERE run_id = ? AND phase = 'native_direction'",
+            (run_id,),
+        )
+        memory.conn.commit()
+        before_rejection = Memory(db)
+        run_before_rejection = before_rejection.get_design_run(run_id)
+        phases_before_rejection = before_rejection.list_design_phase_artifacts(run_id)
+        events_before_rejection = before_rejection.list_design_run_events(run_id)
+        calls_before_rejection = len(direction_calls)
+
+        def unexpected_admission(*_args, **_kwargs):
+            raise AssertionError("missing native checkpoint reached recovery admission CAS")
+
+        monkeypatch.setattr(memory, "admit_prebuild_design_recovery", unexpected_admission)
+        with pytest.raises(DesignIntakeServiceError, match="completed native direction and no Build attempt"):
+            intake_service.build(
+                session["session_id"],
+                confirmed_revision=confirmed["session"]["confirmed_revision_id"],
+                idempotency_key="composition13-missing-native",
+            )
+
+        after_rejection = Memory(db)
+        assert after_rejection.get_design_run(run_id) == run_before_rejection
+        assert after_rejection.list_design_phase_artifacts(run_id) == phases_before_rejection
+        assert after_rejection.list_design_run_events(run_id) == events_before_rejection
+        assert executor._queue.empty(), "rejected recovery enqueued a Build"
+        assert len(direction_calls) == calls_before_rejection, "rejected recovery called a model"
+        after_rejection.close()
+        before_rejection.close()
+        return
     if runtime_base_drift:
         (clone / "runtime-drift.txt").write_text("isolated tenant HEAD changed after checkpoint\n")
         git("add", "-A")
@@ -614,9 +650,40 @@ def test_composed_same_run_recovery_reopens_checkpoint_and_dispatches_build_once
               if not worker._queue.empty()]
     assert len(queued) == 1, f"expected exactly one recovery admission, outcomes={outcomes!r}"
     winning_caller, winning_executor = queued[0]
+    by_caller = {caller_id: (kind, value) for caller_id, kind, value in outcomes}
+    winner_kind, winner_value = by_caller[winning_caller]
+    assert winner_kind == "result", f"admission winner did not return a result: {winner_value!r}"
+    assert winner_value["run"]["run_id"] == run_id
+    loser_id = "b" if winning_caller == "a" else "a"
+    loser_kind, loser_value = by_caller[loser_id]
+    if loser_kind == "error":
+        assert isinstance(loser_value, DesignIntakeServiceError), repr(loser_value)
+        assert "admission" in str(loser_value).lower() or "recovery" in str(loser_value).lower(), repr(loser_value)
+    else:
+        assert loser_value["run"]["run_id"] == run_id
+        assert loser_value.get("recovered") is not True
     assert executor._queue.qsize() + second_executor._queue.qsize() == 1, "concurrent admission enqueued more than once"
     assert service.get_run(run_id)["planning_json"]["build_request"] == request.to_dict()
     assert service.get_run(run_id)["planning_json"]["build_target"] == target.to_dict()
+    before_start = Memory(db)
+    persisted_before_start = before_start.get_design_run(run_id)
+    assert persisted_before_start["status"] == DesignRunStatus.PLANNING.value
+    assert persisted_before_start["planning_json"]["build_request"] == request.to_dict()
+    assert persisted_before_start["planning_json"]["build_target"] == target.to_dict()
+    assert persisted_before_start["context_snapshot_hash"] == request.context_snapshot_hash
+    recovery_identity = persisted_before_start["planning_json"]["same_run_recovery_identity"]
+    assert recovery_identity["context_extra_hash"] == service.get_run(run_id)["planning_json"]["same_run_recovery_identity"]["context_extra_hash"]
+    assert sum(event["stage"] == "recovery_admitted" for event in before_start.list_design_run_events(run_id)) == 1
+    intake_before_start = before_start.get_design_intake_session(session["session_id"])
+    assert intake_before_start["status"] == "confirmed"
+    reservation_before_start = before_start.conn.execute(
+        "SELECT state, run_id FROM design_intake_operations WHERE session_id = ? AND operation = 'build'",
+        (session["session_id"],),
+    ).fetchone()
+    assert reservation_before_start is not None
+    assert reservation_before_start["state"] != "failed"
+    assert reservation_before_start["run_id"] == run_id
+    before_start.close()
     losing_executor = second_executor if winning_executor is executor else executor
     assert losing_executor._queue.empty(), "losing caller enqueued a Build"
     winning_executor.start()
@@ -631,7 +698,7 @@ def test_composed_same_run_recovery_reopens_checkpoint_and_dispatches_build_once
         f"error={service.get_run(run_id).get('error')!r}; calls={direction_calls!r}; "
         f"phases={memory.list_design_phase_artifacts(run_id)!r}"
     )
-    assert any(item["phase"] == "build_dispatch" for item in memory.list_design_phase_artifacts(run_id))
+    assert sum(item["phase"] == "build_dispatch" for item in memory.list_design_phase_artifacts(run_id)) == 1
     assert direction_calls.count("native-direction") == 1
     reopened = Memory(db)
     persisted = reopened.get_design_run(run_id)
@@ -639,8 +706,8 @@ def test_composed_same_run_recovery_reopens_checkpoint_and_dispatches_build_once
     assert persisted["planning_json"]["build_target"] == target.to_dict()
     assert any(item["phase"] == "native_direction" and item["status"] == "completed"
                for item in reopened.list_design_phase_artifacts(run_id))
-    assert any(item["phase"] == "build_dispatch" for item in reopened.list_design_phase_artifacts(run_id))
-    assert any(item["stage"] == "recovery_admitted" for item in reopened.list_design_run_events(run_id))
+    assert sum(item["phase"] == "build_dispatch" for item in reopened.list_design_phase_artifacts(run_id)) == 1
+    assert sum(item["stage"] == "recovery_admitted" for item in reopened.list_design_run_events(run_id)) == 1
     operations = reopened.conn.execute("SELECT state FROM design_intake_operations WHERE session_id = ? AND operation = 'build'", (session["session_id"],)).fetchall()
     assert not operations or all(row["state"] != "failed" for row in operations), "losing caller poisoned intake reservation"
     reopened.close()
