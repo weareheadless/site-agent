@@ -92,6 +92,47 @@ def test_completed_native_checkpoint_is_reusable_after_reopen(tmp_path):
     reopened.close()
 
 
+def test_intake_build_reservation_is_authoritative_across_memory_connections(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from site_agent.application.design_intake import DesignIntakeService
+    from tests.test_design_intake import _intake
+    from site_agent.application.design_intake import DesignIntakeDraft
+
+    path = tmp_path / "reservation-race.db"
+    seed = Memory(path)
+    service = DesignIntakeService(seed, default_intake=_intake())
+    session = service.create_session()
+    confirmed = service.confirm(session["session_id"], revision=session["revision"], draft_hash=session["draft_hash"])
+    args = dict(session_id=session["session_id"], request_hash="a" * 64,
+                confirmed_revision_id=confirmed["session"]["confirmed_revision_id"],
+                confirmed_revision=confirmed["session"]["confirmed_revision"], force_new=False)
+    barrier = Barrier(2)
+
+    def reserve(key, run_id):
+        memory = Memory(path)
+        barrier.wait()
+        try:
+            return memory.reserve_design_intake_build(
+                **args, idempotency_key=key, reserved_run_id=run_id,
+            )
+        finally:
+            memory.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda pair: reserve(*pair),
+                                 [("race-a", "run-a"), ("race-b", "run-b")]))
+    assert sorted(bool(result["created"]) for result in results) == [False, True]
+    assert len({result["id"] for result in results}) == 1
+    assert len({result["run_id"] for result in results}) == 1
+    with pytest.raises(ContractError, match="different request"):
+        seed.reserve_design_intake_build(
+            **{**args, "request_hash": "b" * 64}, idempotency_key=results[0]["idempotency_key"],
+            reserved_run_id="mismatch",
+        )
+    seed.close()
+
+
 def test_prebuild_recovery_admission_is_compare_and_swap_and_durable(tmp_path):
     path = tmp_path / "recovery-cas.db"
     seed = Memory(path)

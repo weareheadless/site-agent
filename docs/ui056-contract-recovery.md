@@ -126,3 +126,22 @@ recorded in the handoff and bind to the exact tested source SHA.
 
 The fake Build provider, builder and Payload boundaries establish no candidate
 completion, review, publication, authorization bypass, or live-site outcome.
+
+## Repair17 reservation boundary progress
+
+The first race is now serialized with SQLite `BEGIN IMMEDIATE` before the
+reservation read, decision and insert. The deterministic two-connection test
+starts both callers at a barrier immediately before the real reservation
+method, then verifies both receive the same authoritative reservation ID/run
+and only one reports creation. A conflicting request hash under the winning
+idempotency token remains an error. The composed concurrency fixture now
+selects the executor whose queue actually contains the admitted work instead
+of assuming caller A wins, retains both Memory connections through completion,
+and reopens the database to check for a failed reservation.
+
+At this repair checkpoint the affected suites pass twice (302 passed each
+run). This remains fixture evidence only. The required negative-checkpoint and
+identity-drift matrix (missing/running/failed checkpoint, prior dispatch,
+owner request/context/tenant/authorized-target drift), durable runner receipts,
+PR update and source acceptance have not yet been established. No provider
+output, completed candidate, review, deployment or live outcome is claimed.

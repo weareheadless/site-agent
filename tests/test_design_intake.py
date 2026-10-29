@@ -596,35 +596,33 @@ def test_composed_same_run_recovery_reopens_checkpoint_and_dispatches_build_once
             return _admit(*args, **kwargs)
         caller_memory.admit_prebuild_design_recovery = observed_admit
     outcomes = []
-    def call_build(intake, key):
+    def call_build(caller_id, intake, key):
         try:
-            outcomes.append(("result", intake.build(session["session_id"],
+            outcomes.append((caller_id, "result", intake.build(session["session_id"],
                 confirmed_revision=confirmed["session"]["confirmed_revision_id"], idempotency_key=key)))
         except Exception as exc:
-            outcomes.append(("error", exc))
-    callers = [threading.Thread(target=call_build, args=(intake_service, "composition13-concurrent-a")),
-               threading.Thread(target=call_build, args=(second_intake, "composition13-concurrent-b"))]
+            outcomes.append((caller_id, "error", exc))
+    callers = [threading.Thread(target=call_build, args=("a", intake_service, "composition13-concurrent-a")),
+               threading.Thread(target=call_build, args=("b", second_intake, "composition13-concurrent-b"))]
     for caller in callers:
         caller.start()
     for caller in callers:
         caller.join(15)
     assert all(not caller.is_alive() for caller in callers), "recovery callers did not reach admission barrier"
     assert len(outcomes) == 2
-    successes = [value for kind, value in outcomes if kind == "result" and value.get("run")]
-    assert len(successes) == 1, f"expected exactly one recovery admission, outcomes={outcomes!r}"
-    assert successes[0]["run"]["run_id"] == run_id
-    losers = [value for kind, value in outcomes if kind == "result" and not value.get("run")]
-    errors = [value for kind, value in outcomes if kind == "error"]
-    assert len(losers) + len(errors) == 1, f"losing caller response was not observable: {outcomes!r}"
+    queued = [(caller_id, worker) for caller_id, worker in (("a", executor), ("b", second_executor))
+              if not worker._queue.empty()]
+    assert len(queued) == 1, f"expected exactly one recovery admission, outcomes={outcomes!r}"
+    winning_caller, winning_executor = queued[0]
     assert executor._queue.qsize() + second_executor._queue.qsize() == 1, "concurrent admission enqueued more than once"
     assert service.get_run(run_id)["planning_json"]["build_request"] == request.to_dict()
     assert service.get_run(run_id)["planning_json"]["build_target"] == target.to_dict()
-    assert second_executor._queue.empty(), "losing caller enqueued a Build"
-    second_memory.close()
-    executor.start()
+    losing_executor = second_executor if winning_executor is executor else executor
+    assert losing_executor._queue.empty(), "losing caller enqueued a Build"
+    winning_executor.start()
     assert build_dispatched.wait(5), "the admitted worker did not reach the Build provider boundary"
-    executor.stop()
-    executor.join(5)
+    winning_executor.stop()
+    winning_executor.join(5)
     assert direction_calls.count("native-direction") == 1
     assert service.get_run(run_id)["status"] == DesignRunStatus.FAILED.value
     assert "fixture stops after the one recovered Build provider dispatch" in service.get_run(run_id)["error"]
@@ -643,7 +641,10 @@ def test_composed_same_run_recovery_reopens_checkpoint_and_dispatches_build_once
                for item in reopened.list_design_phase_artifacts(run_id))
     assert any(item["phase"] == "build_dispatch" for item in reopened.list_design_phase_artifacts(run_id))
     assert any(item["stage"] == "recovery_admitted" for item in reopened.list_design_run_events(run_id))
+    operations = reopened.conn.execute("SELECT state FROM design_intake_operations WHERE session_id = ? AND operation = 'build'", (session["session_id"],)).fetchall()
+    assert not operations or all(row["state"] != "failed" for row in operations), "losing caller poisoned intake reservation"
     reopened.close()
+    second_memory.close()
     memory.close()
 
 

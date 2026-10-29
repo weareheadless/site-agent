@@ -4417,7 +4417,10 @@ class Memory:
             "confirmed_revision": confirmed_revision,
             "run_id": reserved_run_id,
         }
-        with self.conn:
+        # Serialize the read/decision/insert across Memory instances, not only
+        # callers sharing this instance's Python lock.
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
             existing = self.conn.execute(
                 "SELECT * FROM design_intake_operations WHERE session_id = ? AND operation = 'build' "
                 "AND idempotency_key = ?",
@@ -4428,6 +4431,7 @@ class Memory:
                     raise ContractError("build idempotency_key was already used for a different request")
                 result = self.get_design_intake_operation(session_id, "build", idempotency_key) or {}
                 result["created"] = False
+                self.conn.commit()
                 return result
             if not force_new:
                 existing = self.conn.execute(
@@ -4440,6 +4444,7 @@ class Memory:
                 if existing is not None:
                     result = self.get_design_intake_operation(session_id, "build", existing["idempotency_key"]) or {}
                     result["created"] = False
+                    self.conn.commit()
                     return result
             now = _now()
             cur = self.conn.execute(
@@ -4450,6 +4455,10 @@ class Memory:
                 (session_id, idempotency_key, request_hash, canonical_json(response), now,
                  reserved_run_id, confirmed_revision_id, confirmed_revision, int(force_new), now),
             )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
         result = self.get_design_intake_operation(session_id, "build", idempotency_key) or {
             "id": cur.lastrowid,
             "session_id": session_id,
