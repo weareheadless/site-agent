@@ -2574,7 +2574,11 @@ function ReviewWorkspace() {
                        aria-label={`${t('workspace.removeImage')} ${attachment.name || `${t('workspace.image')} ${index + 1}`}`}
                       onClick={() => setPendingAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index))}
                     >
-                       {source ? <Image src={source} alt="" width={46} height={46} unoptimized /> : <span>{t('workspace.image')}</span>}
+                       {source ? <Image src={source} alt="" width={46} height={46} unoptimized /> : null}
+                       <span className="helloada-pending-attachment-details">
+                         <strong>{attachment.name || `${t('workspace.image')} ${index + 1}`}</strong>
+                         <small>{t('workspace.attachmentReady')}</small>
+                       </span>
                       <b aria-hidden="true">×</b>
                     </button>
                   )

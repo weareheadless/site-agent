@@ -2528,11 +2528,13 @@ textarea:focus-visible {
 
 .helloada-pending-attachment {
   position: relative;
-  display: block;
-  width: 46px;
-  height: 46px;
-  padding: 0;
-  overflow: hidden;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: min(260px, 100%);
+  min-height: 46px;
+  padding: 5px 26px 5px 5px;
+  overflow: visible;
   border: 1px solid rgba(255, 107, 94, 0.35);
   border-radius: 8px;
   background: rgba(255, 107, 94, 0.08);
@@ -2540,15 +2542,31 @@ textarea:focus-visible {
 }
 
 .helloada-pending-attachment img,
-.helloada-pending-attachment > span {
+.helloada-pending-attachment > span:not(.helloada-pending-attachment-details) {
   display: grid;
-  width: 100%;
-  height: 100%;
+  flex: 0 0 46px;
+  width: 46px;
+  height: 46px;
+  border-radius: 5px;
   place-items: center;
   object-fit: cover;
   color: var(--helloada-muted);
   font-size: 8px;
 }
+
+.helloada-pending-attachment-details {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
+.helloada-pending-attachment-details strong { font-size: 11px; line-height: 1.25; }
+.helloada-pending-attachment-details small { color: var(--helloada-muted); font-size: 10px; }
 
 .helloada-pending-attachment b {
   position: absolute;
