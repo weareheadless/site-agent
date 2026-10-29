@@ -2662,9 +2662,11 @@ function ReviewWorkspace() {
          </aside>
        </div>
 
-       <dialog ref={publishDialogRef} className="helloada-publish-dialog" aria-labelledby="helloada-publish-title">
-         <HelloAdaMark size={40} /><h2 id="helloada-publish-title">{t('owner.publishTitle')}</h2><p><strong>{currentRouteLabel}</strong> · {site.siteName}</p><p>{t('owner.publishNote')}</p>
-         <div><button type="button" autoFocus onClick={() => publishDialogRef.current?.close()}>{t('owner.keepReviewing')}</button><button type="button" className="is-primary" disabled={!hasDraft || !selectedDocument?.draftHash || publishing || Boolean(pendingChangeCount)} onClick={() => { publishDialogRef.current?.close(); void publishDraft() }}>{t('owner.publishChanges')}<WorkspaceIcon name="arrow" /></button></div>
+        <dialog ref={publishDialogRef} className="helloada-publish-dialog" aria-labelledby="helloada-publish-title">
+          <div className="helloada-publish-dialog-scroll">
+            <HelloAdaMark size={40} /><h2 id="helloada-publish-title">{t('owner.publishTitle')}</h2><p><strong>{currentRouteLabel}</strong> · {site.siteName}</p><p>{t('owner.publishNote')}</p>
+          </div>
+          <footer><button type="button" autoFocus onClick={() => publishDialogRef.current?.close()}>{t('owner.keepReviewing')}</button><button type="button" className="is-primary" disabled={!hasDraft || !selectedDocument?.draftHash || publishing || Boolean(pendingChangeCount)} onClick={() => { publishDialogRef.current?.close(); void publishDraft() }}>{t('owner.publishChanges')}<WorkspaceIcon name="arrow" /></button></footer>
        </dialog>
 
         {fieldEditorEntry && fieldEditorKey ? (
@@ -2678,6 +2680,7 @@ function ReviewWorkspace() {
                 </div>
                 <button type="button" aria-label={t('workspace.pageClose')} onClick={closeFieldEditor}>×</button>
               </header>
+              <div className="helloada-field-popover-scroll">
               {fieldEditorError ? <p className="helloada-page-editor-message is-error" role="alert">{fieldEditorError}</p> : null}
               {fieldEditorEntry.type === 'text' || fieldEditorEntry.type === 'link' ? (
                 <textarea
@@ -2743,6 +2746,7 @@ function ReviewWorkspace() {
                   />
                 </div>
               )}
+              </div>
               <footer className="helloada-field-popover-footer">
                 <button type="button" className="helloada-page-editor-cancel" onClick={closeFieldEditor}>{t('workspace.pageClose')}</button>
                 <button type="button" className="helloada-page-editor-save" onClick={applyFieldEditor}>{t('workspace.applyFieldChange')}</button>

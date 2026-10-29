@@ -2660,6 +2660,7 @@ textarea:focus-visible {
   display: grid;
   place-items: center;
   padding: clamp(14px, 4vw, 42px);
+  overflow: auto;
   background: rgba(3, 5, 9, 0.72);
   backdrop-filter: blur(12px);
 }
@@ -2670,18 +2671,19 @@ textarea:focus-visible {
   inset: 0;
   display: grid;
   place-items: center;
-  padding: 18px;
+  padding: 24px;
+  overflow: auto;
   background: rgba(3, 5, 9, 0.5);
   backdrop-filter: blur(8px);
 }
 
 .helloada-field-popover {
   @include surfaces.paper;
-  display: grid;
-  gap: 16px;
+  display: flex;
+  flex-direction: column;
   width: min(510px, 100%);
-  max-height: min(720px, calc(100dvh - 36px));
-  overflow: auto;
+  max-height: min(720px, calc(100vh - 48px));
+  overflow: hidden;
   padding: 20px;
   border: 1px solid rgba(255, 107, 94, 0.35);
   border-radius: 18px;
@@ -2689,11 +2691,24 @@ textarea:focus-visible {
   box-shadow: 0 28px 90px rgba(0, 0, 0, 0.58), inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 
+@supports (height: 100dvh) {
+  .helloada-field-popover { max-height: min(720px, calc(100dvh - 48px)); }
+}
+
+.helloada-field-popover-scroll {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 16px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .helloada-field-popover-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
+  flex: 0 0 auto;
 }
 
 .helloada-field-popover-header h2 {
@@ -2764,7 +2779,10 @@ textarea:focus-visible {
   justify-content: flex-end;
   flex-wrap: wrap;
   gap: 8px;
+  flex: 0 0 auto;
 }
+
+.helloada-field-popover-footer { padding-top: 8px; }
 
 .helloada-field-popover-image-actions button,
 .helloada-field-popover-footer button {
@@ -2833,12 +2851,16 @@ textarea:focus-visible {
   display: flex;
   flex-direction: column;
   width: min(900px, 100%);
-  max-height: min(870px, calc(100dvh - 28px));
+  max-height: min(870px, calc(100vh - 48px));
   overflow: hidden;
   border: 1px solid rgba(255, 107, 94, 0.26);
   border-radius: 22px;
   background: var(--helloada-panel);
   box-shadow: 0 34px 110px rgba(0, 0, 0, 0.58), 0 0 0 1px rgba(255, 200, 87, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+@supports (height: 100dvh) {
+  .helloada-page-editor { max-height: min(870px, calc(100dvh - 48px)); }
 }
 
 .helloada-page-editor-header {
@@ -2847,6 +2869,7 @@ textarea:focus-visible {
   align-items: flex-start;
   justify-content: space-between;
   gap: 24px;
+  flex: 0 0 auto;
   padding: 24px 26px 20px;
   border-bottom: 1px solid var(--helloada-soft-line);
   background: linear-gradient(110deg, rgba(255, 107, 94, 0.08), rgba(255, 200, 87, 0.16));
@@ -2895,6 +2918,7 @@ textarea:focus-visible {
 .helloada-page-editor-scroll {
   display: grid;
   gap: 22px;
+  flex: 1 1 auto;
   min-height: 0;
   padding: 22px 26px;
   overflow-y: auto;
@@ -3305,6 +3329,7 @@ textarea:focus-visible {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+  flex: 0 0 auto;
   padding: 14px 26px;
   border-top: 1px solid var(--helloada-soft-line);
   background: var(--helloada-inset);
@@ -3524,18 +3549,18 @@ textarea:focus-visible {
   }
 
   .helloada-editor-backdrop {
-    place-items: end center;
-    padding: 0;
+    place-items: center;
+    padding: 24px;
   }
 
   .helloada-field-popover-backdrop {
-    place-items: end center;
-    padding: 0;
+    place-items: center;
+    padding: 24px;
   }
 
   .helloada-field-popover {
     width: 100%;
-    max-height: 94dvh;
+    max-height: calc(100vh - 48px);
     border-right: 0;
     border-bottom: 0;
     border-left: 0;
@@ -3543,11 +3568,16 @@ textarea:focus-visible {
   }
 
   .helloada-page-editor {
-    max-height: 94dvh;
+    max-height: calc(100vh - 48px);
     border-right: 0;
     border-bottom: 0;
     border-left: 0;
     border-radius: 20px 20px 0 0;
+  }
+
+  @supports (height: 100dvh) {
+    .helloada-field-popover,
+    .helloada-page-editor { max-height: calc(100dvh - 48px); }
   }
 
   .helloada-page-editor-header,

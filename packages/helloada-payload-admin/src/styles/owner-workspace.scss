@@ -242,10 +242,12 @@
   .helloada-gallery-use { display: inline-flex; align-items: center; justify-content: space-between; gap: 7px; min-height: 30px; padding: 0 9px; border: 1px solid var(--helloada-soft-line); border-radius: 8px; color: var(--helloada-muted); font-size: 10px; text-decoration: none; transition: color 500ms var(--helloada-ease), border-color 500ms var(--helloada-ease), background-color 500ms var(--helloada-ease); }
   .helloada-gallery-use:hover { border-color: rgba(255,107,94,.5); color: var(--helloada-ink); background: var(--helloada-cyan-soft); }
   .helloada-gallery-more { display: block; margin: 15px auto 2px; min-height: 34px; padding: 0 12px; border: 1px solid var(--helloada-soft-line); border-radius: 9px; color: var(--helloada-ink); background: var(--helloada-inset); cursor: pointer; font-size: 10px; }
-  .helloada-publish-dialog { @include surfaces.paper; width: min(430px, calc(100% - 32px)); padding: 30px; border: 1px solid var(--helloada-line); border-radius: 23px; background: var(--helloada-panel); color: var(--helloada-ink); }
+  .helloada-publish-dialog[open] { @include surfaces.paper; display: flex; flex-direction: column; width: min(430px, calc(100% - 32px)); max-height: calc(100vh - 48px); overflow: hidden; padding: 30px; border: 1px solid var(--helloada-line); border-radius: 23px; background: var(--helloada-panel); color: var(--helloada-ink); }
+  @supports (height: 100dvh) { .helloada-publish-dialog { max-height: calc(100dvh - 48px); } }
+  .helloada-publish-dialog-scroll { min-height: 0; overflow-y: auto; }
   .helloada-publish-dialog h2 { font-size: 25px; line-height: 1.1; letter-spacing: -.04em; font-weight: 500; margin: 23px 0 16px; }
   .helloada-publish-dialog p { font-size: 13px; line-height: 1.65; color: var(--helloada-muted); }
-  .helloada-publish-dialog > div { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 26px; }
+  .helloada-publish-dialog > footer { display: flex; flex: 0 0 auto; justify-content: space-between; align-items: center; gap: 12px; margin-top: 26px; }
   .helloada-publish-dialog button { display: inline-flex; gap: 9px; align-items: center; min-height: 42px; padding: 0 14px; border: 0; border-radius: 999px; color: var(--helloada-ink); background: var(--helloada-inset); font-size: 11px; cursor: pointer; }
   .helloada-publish-dialog button.is-primary { background: var(--helloada-cyan); color: var(--helloada-action-ink); }
   .helloada-owner-workspace .helloada-alert { padding: 12px 16px; font-size: 12px; border-radius: 12px; }
