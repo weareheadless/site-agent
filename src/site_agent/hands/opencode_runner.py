@@ -729,8 +729,17 @@ def _claim_native_phase(memory, request, target, phase: str, *, max_attempts: in
         if any(item.get("status") == "failed" and item.get("error_code") != "invalid_generated_plan" for item in prior):
             raise RunnerError("native direction provider/process failure is terminal; safe reconciliation is required")
     base_sha, context_hash, hashes = _native_phase_identity(request, target)
+    variant_key = "initial"
+    if phase == "build_dispatch":
+        # The fence is scoped to this approved Build operation on this run; a
+        # later, separately authorized operation has its own identity/key.
+        from ..core.design_contracts import canonical_hash
+
+        variant_key = "build-" + canonical_hash({
+            "request": request.to_dict(), "target": target.to_dict(),
+        })[:32]
     return memory.claim_design_phase(
-        request.run_id, phase, variant_key="initial", base_sha=base_sha,
+        request.run_id, phase, variant_key=variant_key, base_sha=base_sha,
         context_snapshot_hash=context_hash, input_hashes=hashes, max_attempts=max_attempts,
         provider_id="opencode", model="native-direction" if phase == "native_direction" else "build",
     )
