@@ -3,6 +3,9 @@ import json
 import pytest
 
 from site_agent.hands import opencode_provider
+from site_agent.hands import opencode_runner
+from site_agent.core.memory import Memory
+from site_agent.core.llm import Client, LLMError
 
 
 def test_specialist_agent_definitions_are_focused_and_read_only_where_expected(tmp_path):
@@ -167,3 +170,96 @@ def test_adapter_scopes_configured_output_limit_to_specialist_turn(monkeypatch, 
     assert model["limit"]["output"] == 65536
     assert model["options"]["max_tokens"] == 65536
     assert not (tmp_path / "opencode.json").exists()
+
+
+def test_failed_builder_without_usage_does_not_write_poisoning_cost_row(monkeypatch, tmp_path):
+    class FailedProcess:
+        pid = 12345
+        returncode = 1
+        stdout = iter([json.dumps({"type": "text", "part": {"text": "provider failed"}})])
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    memory = Memory(tmp_path / "memory.db")
+    monkeypatch.setattr(opencode_runner, "_opencode_bin", lambda config: "opencode")
+    monkeypatch.setattr(opencode_runner, "_isolated_env", lambda *args, **kwargs: {})
+    monkeypatch.setattr(opencode_runner.subprocess, "Popen", lambda *args, **kwargs: FailedProcess())
+
+    with pytest.raises(opencode_runner.RunnerError, match="exited 1"):
+        opencode_runner.run_opencode_turn(
+            tmp_path, "build", {"builder": {"timeout_seconds": 3}}, memory=memory,
+        )
+
+    assert memory.conn.execute("SELECT COUNT(*) FROM llm_costs").fetchone()[0] == 0
+    config = {
+        "env": {"llm_api_key": "TEST_KEY"},
+        "llm": {"daily_budget_usd": 1.0, "price_per_mtok": {"input": 1.0, "output": 2.0}},
+    }
+    monkeypatch.setattr(
+        "site_agent.core.llm._http_post",
+        lambda *args, **kwargs: {
+            "model": "owner-model",
+            "choices": [{"message": {"content": "chat available"}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "cost": 0.0},
+        },
+    )
+    assert Client(config, memory, {"TEST_KEY": "test-key"}).chat([{"role": "user", "content": "hi"}]) == "chat available"
+    memory.close()
+
+
+def test_builder_zero_cost_receipt_is_measurable_and_recorded(monkeypatch, tmp_path):
+    class FreeProcess:
+        pid = 12345
+        returncode = 1
+        stdout = iter([
+            json.dumps({"type": "step_finish", "part": {"type": "step-finish", "cost": 0}}),
+            json.dumps({"type": "text", "part": {"text": "provider failed"}}),
+        ])
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    memory = Memory(tmp_path / "memory.db")
+    monkeypatch.setattr(opencode_runner, "_opencode_bin", lambda config: "opencode")
+    monkeypatch.setattr(opencode_runner, "_isolated_env", lambda *args, **kwargs: {})
+    monkeypatch.setattr(opencode_runner.subprocess, "Popen", lambda *args, **kwargs: FreeProcess())
+
+    with pytest.raises(opencode_runner.RunnerError, match="exited 1"):
+        opencode_runner.run_opencode_turn(
+            tmp_path, "build", {"builder": {"timeout_seconds": 3}}, memory=memory,
+        )
+
+    row = memory.conn.execute("SELECT prompt_tokens, completion_tokens, cost_usd, origin FROM llm_costs").fetchone()
+    assert tuple(row) == (0, 0, 0.0, "internal_builder")
+    memory.close()
+
+
+def test_builder_estimates_measured_tokens_and_marks_internal_origin(monkeypatch, tmp_path):
+    class MeteredProcess:
+        pid = 12345
+        returncode = 1
+        stdout = iter([
+            json.dumps({
+                "type": "step_finish",
+                "part": {"type": "step-finish", "tokens": {"input": 1_000, "output": 500}},
+            }),
+            json.dumps({"type": "text", "part": {"text": "provider failed"}}),
+        ])
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    memory = Memory(tmp_path / "memory.db")
+    config = {"builder": {"model": "builder-model", "timeout_seconds": 3},
+              "llm": {"price_per_mtok": {"input": 1.0, "output": 2.0}}}
+    monkeypatch.setattr(opencode_runner, "_opencode_bin", lambda config: "opencode")
+    monkeypatch.setattr(opencode_runner, "_isolated_env", lambda *args, **kwargs: {})
+    monkeypatch.setattr(opencode_runner.subprocess, "Popen", lambda *args, **kwargs: MeteredProcess())
+
+    with pytest.raises(opencode_runner.RunnerError, match="exited 1"):
+        opencode_runner.run_opencode_turn(tmp_path, "build", config, memory=memory)
+
+    row = memory.conn.execute("SELECT prompt_tokens, completion_tokens, cost_usd, origin FROM llm_costs").fetchone()
+    assert tuple(row) == (1_000, 500, 0.002, "internal_builder")
+    memory.close()

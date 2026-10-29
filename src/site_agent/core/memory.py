@@ -78,7 +78,7 @@ from .incubation_contracts import (
 
 _OPERATION_FIELD_UNSET = object()
 
-SCHEMA_VERSION = 59
+SCHEMA_VERSION = 60
 
 MIGRATIONS: dict[int, list[str]] = {
     1: [
@@ -1239,6 +1239,9 @@ MIGRATIONS: dict[int, list[str]] = {
         )""",
         "CREATE TRIGGER crawlseo_migration_freeze_verifications_no_update BEFORE UPDATE ON crawlseo_migration_freeze_verifications BEGIN SELECT RAISE(ABORT, 'freeze verification receipts are immutable'); END",
         "CREATE TRIGGER crawlseo_migration_freeze_verifications_no_delete BEFORE DELETE ON crawlseo_migration_freeze_verifications BEGIN SELECT RAISE(ABORT, 'freeze verification receipts are immutable'); END",
+    ],
+    60: [
+        "ALTER TABLE llm_costs ADD COLUMN origin TEXT NOT NULL DEFAULT 'owner'",
     ],
 }
 
@@ -6774,12 +6777,17 @@ class Memory:
         prompt_tokens: int,
         completion_tokens: int,
         cost_usd: float | None = None,
+        *,
+        origin: str = "owner",
     ) -> None:
+        origin = str(origin or "owner").strip()
+        if origin not in {"owner", "internal_builder"}:
+            raise ValueError("unsupported LLM cost origin")
         with self.conn:
             self.conn.execute(
-                "INSERT INTO llm_costs (ts, model, prompt_tokens, completion_tokens, cost_usd) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (_now(), model, prompt_tokens, completion_tokens, cost_usd),
+                "INSERT INTO llm_costs (ts, model, prompt_tokens, completion_tokens, cost_usd, origin) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (_now(), model, prompt_tokens, completion_tokens, cost_usd, origin),
             )
 
     @_locked
@@ -7819,6 +7827,8 @@ class Memory:
             "COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN prompt_tokens ELSE 0 END),0) AS unpriced_prompt_tokens, "
             "COALESCE(SUM(CASE WHEN cost_usd IS NULL THEN completion_tokens ELSE 0 END),0) AS unpriced_completion_tokens, "
             "COALESCE(SUM(CASE WHEN cost_usd IS NULL AND prompt_tokens <= 0 AND completion_tokens <= 0 THEN 1 ELSE 0 END),0) AS unpriced_unmeasurable_calls "
+            ", COALESCE(SUM(CASE WHEN origin = 'owner' AND cost_usd IS NULL THEN 1 ELSE 0 END),0) AS unpriced_owner_calls "
+            ", COALESCE(SUM(CASE WHEN origin = 'owner' AND cost_usd IS NULL AND prompt_tokens <= 0 AND completion_tokens <= 0 THEN 1 ELSE 0 END),0) AS unpriced_unmeasurable_owner_calls "
             "FROM llm_costs WHERE ts >= ?",
             (cutoff,),
         ).fetchone()
@@ -7830,4 +7840,6 @@ class Memory:
             "unpriced_prompt_tokens": row["unpriced_prompt_tokens"],
             "unpriced_completion_tokens": row["unpriced_completion_tokens"],
             "unpriced_unmeasurable_calls": row["unpriced_unmeasurable_calls"],
+            "unpriced_owner_calls": row["unpriced_owner_calls"],
+            "unpriced_unmeasurable_owner_calls": row["unpriced_unmeasurable_owner_calls"],
         }

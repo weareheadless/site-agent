@@ -37,6 +37,24 @@ def test_fresh_db_creates_current_schema(tmp_path):
     mem.close()
 
 
+def test_llm_cost_origin_defaults_to_owner_and_is_included_in_spend(tmp_path):
+    mem = Memory(tmp_path / "memory.db")
+    mem.log_llm_cost("owner-model", 2, 3, None)
+    mem.log_llm_cost("builder-model", 0, 0, None, origin="internal_builder")
+
+    rows = [dict(row) for row in mem.conn.execute("SELECT model, origin FROM llm_costs ORDER BY id")]
+    spend = mem.llm_spend()
+
+    assert rows == [
+        {"model": "owner-model", "origin": "owner"},
+        {"model": "builder-model", "origin": "internal_builder"},
+    ]
+    assert spend["unpriced_unmeasurable_calls"] == 1
+    assert spend["unpriced_unmeasurable_owner_calls"] == 0
+    assert spend["cost_usd"] == 0
+    mem.close()
+
+
 def test_schema_54_database_migrates_connector_event_inbox(tmp_path):
     path = tmp_path / "memory-v54.db"
     with sqlite3.connect(path) as conn:
@@ -47,6 +65,26 @@ def test_schema_54_database_migrates_connector_event_inbox(tmp_path):
     upgraded = Memory(path)
     assert upgraded.get_schema_version() == SCHEMA_VERSION
     assert upgraded.conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='crawlseo_event_inbox'").fetchone()
+    upgraded.close()
+
+
+def test_schema_59_llm_cost_rows_upgrade_with_owner_origin_without_rewriting(tmp_path):
+    path = tmp_path / "memory-v59.db"
+    with sqlite3.connect(path) as conn:
+        for version in range(1, 60):
+            for statement in MIGRATIONS.get(version, []):
+                conn.execute(statement)
+        conn.execute(
+            "INSERT INTO llm_costs (ts, model, prompt_tokens, completion_tokens, cost_usd) "
+            "VALUES ('2026-10-28T00:00:00+00:00', 'old-model', 0, 0, NULL)"
+        )
+        conn.execute("PRAGMA user_version = 59")
+
+    upgraded = Memory(path)
+    row = upgraded.conn.execute(
+        "SELECT ts, model, prompt_tokens, completion_tokens, cost_usd, origin FROM llm_costs"
+    ).fetchone()
+    assert tuple(row) == ("2026-10-28T00:00:00+00:00", "old-model", 0, 0, None, "owner")
     upgraded.close()
 
 
