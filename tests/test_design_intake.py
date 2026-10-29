@@ -448,6 +448,7 @@ def test_composed_same_run_recovery_reopens_checkpoint_and_dispatches_build_once
 ):
     """Exercise intake -> handoff -> real worker/facade using a disposable tenant clone."""
     import subprocess
+    import threading
 
     from site_agent.application.design_jobs import DesignJobExecutor
     from site_agent.application.designs import DesignService
@@ -510,6 +511,7 @@ def test_composed_same_run_recovery_reopens_checkpoint_and_dispatches_build_once
                                   idempotency_key="composition13-original")
     run_id = result["run"]["run_id"]
     direction_calls = []
+    build_dispatched = threading.Event()
 
     def fake_turn(_worktree, _prompt, _config, **kwargs):
         direction_calls.append(kwargs.get("agent_name"))
@@ -520,6 +522,8 @@ def test_composed_same_run_recovery_reopens_checkpoint_and_dispatches_build_once
             plan.pop("asset_composition_plan", None)
             return {"session_id": "direction", "structured": {"direction": "A measured arrival.",
                     "experience_plan": plan}, "transcript": "valid native direction\n"}
+        if kwargs.get("agent_name") == "build":
+            build_dispatched.set()
         raise AssertionError("fixture stops after the one recovered Build provider dispatch")
 
     monkeypatch.setattr(runner, "install_agent_files", lambda *args, **kwargs: None)
@@ -582,7 +586,25 @@ def test_composed_same_run_recovery_reopens_checkpoint_and_dispatches_build_once
         pytest.fail(f"composed recovery reached first retained failure: {type(exc).__name__}: {exc}")
     assert service.get_run(run_id)["planning_json"]["build_request"] == request.to_dict()
     assert service.get_run(run_id)["planning_json"]["build_target"] == target.to_dict()
-    executor._run(run_id)
+    assert executor._queue.qsize() == 1, "recovery admission did not enqueue through the handoff"
+    second_memory = Memory(db)
+    second_service = DesignService(second_memory, config=config, builder=OperationRoutingBuilder(
+        {"config": config, "memory": second_memory, "payload_gateway": payload}
+    ))
+    second_executor = DesignJobExecutor({"memory": second_memory, "config": config}, second_service)
+    second_handoff = DesignBuildHandoff({"memory": second_memory, "config": config,
+                                        "design_service": second_service, "design_executor": second_executor})
+    second_intake = DesignIntakeService(second_memory, config=config, default_intake=_intake(), lab_service=second_handoff)
+    duplicate = second_intake.build(session["session_id"],
+        confirmed_revision=confirmed["session"]["confirmed_revision_id"], idempotency_key="composition13-second")
+    assert duplicate.get("build_pending") is True
+    assert executor._queue.qsize() == 1, "a distinct Memory caller enqueued a duplicate recovery"
+    assert second_executor._queue.empty()
+    second_memory.close()
+    executor.start()
+    assert build_dispatched.wait(5), "the admitted worker did not reach the Build provider boundary"
+    executor.stop()
+    executor.join(5)
     assert direction_calls.count("native-direction") == 1
     assert service.get_run(run_id)["status"] == DesignRunStatus.FAILED.value
     assert "fixture stops after the one recovered Build provider dispatch" in service.get_run(run_id)["error"]

@@ -1329,14 +1329,22 @@ class DesignIntakeService:
                     existing_run = self.lab_service.get_run(existing_run_id)
                 except Exception:
                     existing_run = None
-                if existing_run is not None:
+                # A completed reservation is an ordinary duplicate only when
+                # it is not an explicit same-run recovery. Recovery must pass
+                # through the handoff's persisted-identity checks and CAS fence
+                # before it can be reported as successful.
+                if existing_run is not None and not recovery_run_id:
                     if reservation.get("state") == "reserved":
                         self.memory.complete_design_intake_build(session_id, str(reservation.get("idempotency_key") or token), request_hash, run_id=existing_run_id)
                     return {"session": self.get_session(session_id), "run": existing_run, "idempotent": True}
-            if reservation.get("state") == "failed":
+            if recovery_run_id and existing_run_id:
+                # recover_prebuild_run owns the durable one-winner admission
+                # fence; do not let the intake reservation shortcut bypass it.
+                pass
+            elif reservation.get("state") == "failed":
                 message = str(reservation.get("error") or "the previous build reservation failed")
                 raise DesignIntakeServiceError(message[:500])
-            if reservation.get("state") == "reserved":
+            elif reservation.get("state") == "reserved":
                 try:
                     claimed = self.memory.claim_design_intake_build_submission(
                         session_id,
@@ -1356,7 +1364,7 @@ class DesignIntakeService:
                         "build_pending": True,
                         "idempotency_key": str(reservation.get("idempotency_key") or token),
                     }
-            else:
+            elif not (recovery_run_id and existing_run_id):
                 return {
                     "session": self.get_session(session_id),
                     "run": None,

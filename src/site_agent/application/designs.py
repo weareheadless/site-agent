@@ -1501,6 +1501,21 @@ class DesignService:
             raise DesignServiceError("same-run recovery request or target changed from the frozen build identity")
         if request.run_id != run_id or request.base_sha != run.get("base_sha") or target.base_sha != run.get("base_sha"):
             raise DesignServiceError("same-run recovery base or run identity does not match")
+        # The persisted target proves what was authorized when the run was
+        # created; it does not authorize resuming against a changed checkout or
+        # newly configured destination. Resolve the currently configured base
+        # and target before the admission CAS/enqueue.
+        try:
+            current_base_sha = self.resolve_base_sha()
+        except DesignServiceError as exc:
+            raise DesignServiceError(f"same-run recovery current base could not be resolved: {exc}") from exc
+        if current_base_sha != target.base_sha:
+            raise DesignServiceError(
+                f"same-run recovery base changed from frozen {target.base_sha} to current {current_base_sha}"
+            )
+        current_target = self.build_target_for_run(run_id)
+        if current_target.to_dict() != target.to_dict():
+            raise DesignServiceError("same-run recovery authorized target changed from the frozen build identity")
         if not run.get("context_snapshot_hash") or request.context_snapshot_hash != run.get("context_snapshot_hash"):
             raise DesignServiceError("same-run recovery context snapshot hash does not match")
         snapshot = run.get("context_snapshot") if isinstance(run.get("context_snapshot"), Mapping) else {}

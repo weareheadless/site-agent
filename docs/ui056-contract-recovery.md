@@ -81,3 +81,25 @@ canonical Payload workspace`); supplying a test-only Payload boundary allowed
 the composed path to reach Build. No source fix was made. Therefore the
 manager's current-base drift concern remains unresolved and no full acceptance
 is claimed. This local evidence is not Astrid/live acceptance.
+
+## Admission14 correction: recovery reservation shortcut (2026-10-29)
+
+The changed-base reproduction above failed because `DesignIntakeService.build`
+returned an already-reserved run before calling `DesignBuildHandoff.submit`.
+The recovery path now bypasses only that successful-duplicate shortcut and
+reaches `DesignService.recover_prebuild_run`, where the current configured base
+and current authorized target are checked against the frozen target before the
+existing durable Memory CAS. A changed base raises a specific `base changed`
+error before admission or enqueue. Ordinary successful duplicate submissions
+retain their idempotent response. Only the CAS winner enqueues; a distinct
+Memory caller sees the existing pending reservation and cannot enqueue again.
+
+The composed regression closes/reopens Memory before recovery, observes the
+real handoff enqueue, then starts the real executor and drains its admitted job
+through exactly one fake Build provider dispatch. Native direction is not
+repeated and the durable Build-dispatch fence is retained. The changed-base
+variant rejects before enqueue. This remains deterministic fixture evidence;
+it does not exercise a truly simultaneous race, production tenant authorization
+changes, the retained Astrid dynamic artifact/static-out boundary, actual
+provider/build output, deployment, or owner-visible review. No claim of issue
+completion or live acceptance follows from this source slice.
