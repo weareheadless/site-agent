@@ -7,8 +7,9 @@ This supersedes the initiative sequencing in `docs/project-plan-2026-10-27.md`
 and historical `/SEO/PLAN*.md`, not repository instructions or the existing
 exact-approval, CMS, source-trust and release contracts. §8 carries forward the
 earlier proof and hardening work. Reconcile the current board before claiming a
-task; no DS issues have been created by this document. The board is the status
-ledger; §7 is the specification for the DS work.
+task; the 17 DS issues are linked in §7a on the existing Unified Business
+Intelligence project. The board is the status ledger; §7 is the specification
+for the DS work.
 
 Scope: consolidate verified, genuinely overlapping third-party collection onto
 DataForSEO behind CrawlSEO; retain first-party measurements, useful free sources
@@ -729,6 +730,43 @@ isolation. Exercise the existing causal approved-improvement gate before declari
 the dashboard delivered; use a fresh authenticated Payload session on the exact
 released SHA/package/runtime identity. Standalone HelloAda is not a substitute.
 
+## 7a. Published implementation tasks
+
+All 17 work packages are issue-backed tasks on the existing
+[Unified Business Intelligence project](https://github.com/users/weareheadless/projects/3).
+Each issue carries the full work-package acceptance, candidate scope, removal
+boundary, immutable reviewed specification link and actual native `blockedBy`
+dependencies. This is not a second backlog or permission to bypass repository
+claim/review/release rules. Use the board for current status, not this link index.
+
+| Work ID | Owning task |
+|---|---|
+| DS-01 | [crawlseo#128 — Provider capability verification](https://github.com/weareheadless/crawlseo/issues/128) |
+| DS-02 | [crawlseo#129 — Search-research orchestration](https://github.com/weareheadless/crawlseo/issues/129) |
+| DS-03 | [crawlseo#130 — Evidence contract](https://github.com/weareheadless/crawlseo/issues/130) |
+| DS-04 | [crawlseo#131 — Crawler overlap replacement](https://github.com/weareheadless/crawlseo/issues/131) |
+| DS-05 | [crawlseo#132 — Dashboard metric semantics](https://github.com/weareheadless/crawlseo/issues/132) |
+| DS-06 | [crawlseo#133 — Evidence-backed AI visibility](https://github.com/weareheadless/crawlseo/issues/133) |
+| DS-07 | [crawlseo#134 — Credentials and locales](https://github.com/weareheadless/crawlseo/issues/134) |
+| DS-08 | [crawlseo#135 — Shared budget accounting](https://github.com/weareheadless/crawlseo/issues/135) |
+| DS-09 | [crawlseo#136 — Shared scoped MCP services](https://github.com/weareheadless/crawlseo/issues/136) |
+| DS-10 | [site-agent#476 — Canonical intelligence read](https://github.com/weareheadless/site-agent/issues/476) |
+| DS-11 | [site-agent#477 — Retire local research authority](https://github.com/weareheadless/site-agent/issues/477) |
+| DS-12 | [site-agent#478 — Remove obsolete authority configuration](https://github.com/weareheadless/site-agent/issues/478) |
+| DS-13 | [site-agent#479 — Existing Ada execution lifecycle](https://github.com/weareheadless/site-agent/issues/479) |
+| DS-14 | [crawlseo#137 — Refresh scheduling and cache policy](https://github.com/weareheadless/crawlseo/issues/137) |
+| DS-15 | [site-agent#480 — Payload analytics enrichment](https://github.com/weareheadless/site-agent/issues/480) |
+| DS-16 | [crawlseo#138 — Remote business-research lifecycle](https://github.com/weareheadless/crawlseo/issues/138) |
+| DS-17 | [crawlseo#139 — Combined recommendation synthesis](https://github.com/weareheadless/crawlseo/issues/139) |
+
+Initial board setup verified 2026-10-29: 17 open issues, 45 native dependency
+links, each with Work ID, Area, Phase, Priority P1 and Status Specified. DS-01,
+DS-02 and DS-07 are Needs review pending specification publication through
+[plan PR #475](https://github.com/weareheadless/site-agent/pull/475) and current
+source/scope review; the other 14 are Blocked by dependencies. Promote readiness
+explicitly after the relevant gates, not by dispatching automatically. Astrid
+intake recovery remains P0 / In progress and was not changed by task publication.
+
 ## 8. Ongoing task adaptation
 
 These are reconciliation instructions, **not verified current issue statuses or
@@ -890,6 +928,11 @@ have owning tasks and semantic regression guards. Earlier UI/proof/hardening
 requirements were reconciled into §8 rather than silently dropped. These checks
 validate the plan, not implementation or production readiness; no application
 test-suite result is claimed for this documentation-only review.
+
+Task publication subsequently created the 17 issues in §7a and verified their
+project metadata, full acceptance/removal boundaries and 45 native dependency
+links. No implementation, agent dispatch, paid call or production change was
+performed as part of publishing the tasks.
 
 The architecture is aligned for staged implementation. **There is no blanket
 "SOTA verified" or production-ready sign-off:** unexecuted provider and tenant
