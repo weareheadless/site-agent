@@ -1862,7 +1862,9 @@ class DesignService:
                 if not partial and getattr(exc, "__cause__", None) is not None:
                     partial = dict(getattr(exc.__cause__, "result", {}) or {})
                 process_failure = partial.get("process_failure")
-                if isinstance(process_failure, Mapping):
+                if isinstance(process_failure, Mapping) and process_failure.get("kind") in {
+                    "timeout", "signal", "nonzero_exit"
+                }:
                     process_failure = {
                         key: process_failure[key]
                         for key in (
