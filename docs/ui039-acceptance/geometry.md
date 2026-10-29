@@ -18,11 +18,19 @@ dialog geometry or full-matrix acceptance. Detailed assertion/DOM evidence is
 retained in the test output; no field-dialog markup or state is fabricated.
 The requested all-three-dialog overflow/click evidence remains incomplete.
 The exact failing assertion is `quick-edit iframe overlay did not appear after
-real hover`: diagnostics showed `checkboxChecked: true`, `pageFieldCount: 18`,
-same-origin iframe field `field-0` present and loaded, `pointerEvents.count: 0`,
-and `.helloada-preview-edit-overlay` count `0` after Playwright hovered the real
-iframe target. Thus the feature gate and fixture record exist, but the iframe
-document did not observe the hover event in this harness run.
+real hover`. The quick-edit checkbox is checked, the same-origin iframe is
+complete, its `field-0` exists, and all 18 editable fixture entries loaded. The
+iframe target's center is at page coordinate `(945.5, 125.5)`, but the page
+hit-test resolves to the `owner.editManually` button (rect `x=862.28..1080.28`,
+`y=89.5..129.5`), inside the still-open `.helloada-preview-options > div`
+(`x=851.28..1091.28`, `y=78.5..180.5`). This options menu overlaps the top of
+the iframe (`x=488..1403`, `y=99..765`) and intercepts the pointer. Consequently
+the iframe's real pointerover listener sees zero events and no edit overlay is
+created. This identifies a production interaction/positioning defect in the
+preview-options dropdown and its relationship to the iframe, not a missing
+fixture field or same-origin routing failure. The production source is outside
+this test-only authorization; no synthetic event, forced state, menu dismissal,
+or altered hover target is used to bypass it. The failing regression is retained.
 
 Reproduce from the package with `node tests/ui039-browser.mjs` (uses the installed
 Python Playwright package and cached Chromium; no install or network access).

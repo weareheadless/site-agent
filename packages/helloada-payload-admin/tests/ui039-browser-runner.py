@@ -80,10 +80,12 @@ try:
       try:
         overlay_button.wait_for(timeout=5000)
       except Exception as error:
+        target_hit = target.evaluate('(el)=>{const r=el.getBoundingClientRect();const frame=parent.document.querySelector("iframe.helloada-preview-frame").getBoundingClientRect();const x=frame.x+r.x+r.width/2,y=frame.y+r.y+r.height/2;const hit=parent.document.elementFromPoint(x,y);return {frameRect:frame.toJSON(),targetRect:r.toJSON(),pagePoint:{x,y},pageHit:{tag:hit?.tagName,className:hit?.className,text:hit?.textContent?.trim().slice(0,120),rect:hit?.getBoundingClientRect().toJSON()},options:parent.document.querySelector(".helloada-preview-options")?.outerHTML,optionsMenuRect:parent.document.querySelector(".helloada-preview-options > div")?.getBoundingClientRect().toJSON()}}')
         evidence = {
           'checkboxChecked': checkbox.is_checked(),
           'preview': page.locator('iframe.helloada-preview-frame').evaluate('(el)=>({src:el.src,readyState:el.contentDocument?.readyState,field:el.contentDocument?.querySelector("[data-helloada-field=field-0]")?.outerHTML})'),
           'pageFieldCount': page.evaluate('()=>window.__pageFieldCount'),
+          'targetHitTest': target_hit,
           'pointerEvents': page.locator('iframe.helloada-preview-frame').evaluate('(el)=>({count:el.contentWindow.__pointerEventCount,last:el.contentWindow.__lastPointerTarget})'),
           'overlay': page.locator('.helloada-preview-edit-overlay').count(),
           'workspaceText': page.locator('.helloada-workspace').inner_text()[:1200],
