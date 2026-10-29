@@ -36,6 +36,7 @@ from ..core.design_contracts import (
     RepairBrief,
     RepairReport,
     canonical_hash,
+    brand_behavior_contract_description,
     canonical_json,
 )
 from ..hands.opencode_provider import (
@@ -1639,10 +1640,8 @@ class SpecialistDesignCoordinator:
               "Nested records must use the declared contract fields and schema_version 1. Copy asset_evidence exactly from the "
               "frozen evidence supplied below; do not rename, summarize, or add fields to those records. Use each exact "
               "asset_id and asset_sha256 from that evidence in asset_composition_plan.\n"
-              "Behavior-system named records must include id and meaning; output_channels must include id and property, "
-              "and scene_graph must include id and exit_condition. signature_behavior must be an object with id, meaning, "
-              "and acceptance_conditions. Do not substitute owner or range for meaning.\n"
-              "The review_rubric field must be a JSON array of records using exactly id and condition, with optional "
+              + brand_behavior_contract_description() + " Do not substitute owner or range for meaning.\n"
+              + "The review_rubric field must be a JSON array of records using exactly id and condition, with optional "
               "evidence_refs; use condition for the observable pass requirement, not criterion or pass_condition.\n"
               "Every scene text field listed above must be a JSON string, not an array or object; only "
               "acceptance_condition_ids and evidence_refs are arrays. Use concrete executable language and do not use "
