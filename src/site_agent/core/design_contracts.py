@@ -85,6 +85,8 @@ class DesignPhase(str, Enum):
     TRANSFER_REVIEW = "transfer_review"
     TEMPORAL_REVIEW = "temporal_review"
     ONBOARDING_REPORT = "onboarding_report"
+    NATIVE_DIRECTION = "native_direction"
+    BUILD_DISPATCH = "build_dispatch"
 
 
 class DesignPhaseStatus(str, Enum):

@@ -2642,23 +2642,25 @@ class Memory:
         hashes = [str(item).strip().lower() for item in input_hashes]
         if len(hashes) > 32 or any(not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", item) for item in hashes):
             raise ContractError("input_hashes contains an invalid content hash")
-        with self.conn:
-            row = self.conn.execute(
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            rows = self.conn.execute(
                 "SELECT * FROM design_run_phase_artifacts "
-                "WHERE run_id = ? AND phase = ? AND variant_key = ? "
-                "AND status IN ('running', 'completed') ORDER BY id DESC LIMIT 1",
+                "WHERE run_id = ? AND phase = ? AND variant_key = ? ORDER BY id ASC",
                 (run_id, phase, variant_key),
-            ).fetchone()
+            ).fetchall()
+            for prior in rows:
+                if (prior["base_sha"] != base_sha
+                        or prior["context_snapshot_hash"] != context_snapshot_hash
+                        or json.loads(prior["input_hashes_json"] or "[]") != hashes):
+                    raise ContractError(f"design phase {phase}/{variant_key} identity mismatch")
+            row = next((prior for prior in reversed(rows) if prior["status"] in ("running", "completed")), None)
             if row is not None:
                 result = self._design_phase_record(row)
                 result["claimed"] = False
+                self.conn.commit()
                 return result
-            attempt_row = self.conn.execute(
-                "SELECT COALESCE(MAX(attempt), 0) AS attempt FROM design_run_phase_artifacts "
-                "WHERE run_id = ? AND phase = ? AND variant_key = ?",
-                (run_id, phase, variant_key),
-            ).fetchone()
-            attempt = int(attempt_row["attempt"] or 0) + 1
+            attempt = max((int(prior["attempt"]) for prior in rows), default=0) + 1
             if attempt > max_attempts:
                 raise ContractError(f"design phase {phase}/{variant_key} exhausted its attempts")
             now = _now()
@@ -2676,6 +2678,10 @@ class Memory:
             row = self.conn.execute(
                 "SELECT * FROM design_run_phase_artifacts WHERE id = ?", (cur.lastrowid,)
             ).fetchone()
+            self.conn.commit()
+        except BaseException:
+            self.conn.rollback()
+            raise
         result = self._design_phase_record(row)
         result["claimed"] = True
         return result
@@ -2743,9 +2749,13 @@ class Memory:
         *,
         error_code: str,
         error_detail: str = "",
+        payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if isinstance(phase_artifact_id, bool) or not isinstance(phase_artifact_id, int) or phase_artifact_id < 1:
             raise ContractError("phase_artifact_id must be a positive integer")
+        if payload is not None and not isinstance(payload, dict):
+            raise ContractError("phase failure payload must be an object")
+        encoded_payload = canonical_json(payload) if payload is not None else None
         with self.conn:
             row = self.conn.execute(
                 "SELECT * FROM design_run_phase_artifacts WHERE id = ?", (phase_artifact_id,)
@@ -2756,8 +2766,13 @@ class Memory:
                 return self._design_phase_record(row)
             now = _now()
             self.conn.execute(
-                "UPDATE design_run_phase_artifacts SET status = 'failed', error_code = ?, error_detail = ?, updated_ts = ? WHERE id = ?",
-                (str(error_code).strip()[:120], str(error_detail).strip()[:2_000], now, phase_artifact_id),
+                "UPDATE design_run_phase_artifacts SET status = 'failed', error_code = ?, error_detail = ?, "
+                "payload_json = COALESCE(?, payload_json), "
+                "output_hash = CASE WHEN ? IS NULL THEN output_hash ELSE ? END, updated_ts = ? WHERE id = ?",
+                (
+                    str(error_code).strip()[:120], str(error_detail).strip()[:2_000], encoded_payload,
+                    encoded_payload, canonical_hash(payload) if payload is not None else "", now, phase_artifact_id,
+                ),
             )
             row = self.conn.execute(
                 "SELECT * FROM design_run_phase_artifacts WHERE id = ?", (phase_artifact_id,)

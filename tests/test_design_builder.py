@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 from PIL import Image
 
+from site_agent.core.contracts import ContractError
 from site_agent.core.design_contracts import BuildTarget, DesignContextSnapshot, ExperiencePlanBundle, PageBuildRequest
 from site_agent.core.memory import Memory
 from site_agent.hands import opencode_runner as runner
@@ -618,7 +619,8 @@ def test_native_direction_without_memory_preserves_legacy_turn_kwargs(tmp_path, 
     assert all("memory" not in call for call in calls)
 
 
-def test_invalid_creative_direction_accounts_memory_and_never_starts_build(tmp_path, monkeypatch):
+@pytest.mark.parametrize("outcome", ["invalid", "provider_error", "corrected_valid"])
+def test_native_direction_repair_is_bounded_and_fenced(tmp_path, monkeypatch, outcome):
     clone, base_sha = _clone(tmp_path)
     memory = Memory(tmp_path / "data" / "memory.db")
     snapshot = DesignContextSnapshot.from_dict({
@@ -668,26 +670,107 @@ def test_invalid_creative_direction_accounts_memory_and_never_starts_build(tmp_p
         "allowed_paths": ["*.html", "design/**"],
     })
     calls = []
+    prompts = []
 
     monkeypatch.setattr(runner, "install_agent_files", lambda *args, **kwargs: None)
     monkeypatch.setattr(runner, "_typed_execution_config", lambda config, request, target: config)
+    if outcome == "corrected_valid":
+        from site_agent.application.design_orchestration import SpecialistDesignCoordinator as RealCoordinator
+
+        class FakeCoordinator:
+            _normalize_experience_plan_payload = staticmethod(RealCoordinator._normalize_experience_plan_payload)
+
+            def __init__(self, _context):
+                pass
+
+            def record_implementation_phase(self, *args, **kwargs):
+                return None
+
+            def run_experience_fidelity_phase(self, *args, **kwargs):
+                return SimpleNamespace(to_dict=lambda: {})
+
+        monkeypatch.setattr(
+            "site_agent.application.design_orchestration.SpecialistDesignCoordinator", FakeCoordinator,
+        )
+        monkeypatch.setattr(runner, "_run_local_design_self_check", lambda *args, **kwargs: {})
+        monkeypatch.setattr(runner, "_provision_referenced_frontend_libraries", lambda *args, **kwargs: ())
 
     def fake_turn(_worktree, _prompt, _config, **kwargs):
         calls.append(dict(kwargs))
+        prompts.append(_prompt)
+        if kwargs.get("agent_name") == "build":
+            _write_presentation(_worktree, "<html><body><h1>Candidate</h1></body></html>")
+            return {"session_id": "build-session", "reply": "implemented", "transcript": "build transcript\n"}
         assert kwargs.get("agent_name") == "native-direction"
+        if outcome == "provider_error":
+            raise runner.RunnerError("provider process failed", result={"transcript": "provider failure\n"})
+        from tests.test_design_contracts import _experience_plan
+
+        valid_plan = _experience_plan()
+        valid_plan.pop("asset_evidence")
+        valid_plan.pop("asset_composition_plan")
+        invalid_plan = json.loads(json.dumps(valid_plan))
+        invalid_plan["behavior_system"]["utility_behaviors"][0].pop("meaning")
+        if outcome == "corrected_valid" and len(calls) == 2:
+            return {
+                "session_id": "direction-corrected",
+                "structured": {"direction": "A specific measured arrival.", "experience_plan": valid_plan},
+                "transcript": "corrected structured plan\n",
+            }
         return {
-            "reply": json.dumps({"direction": "A considered threshold.", "experience_plan": {}}),
+            "session_id": "direction-invalid",
+            "structured": {"direction": "A considered threshold.", "experience_plan": invalid_plan},
             "transcript": "invalid structured plan\n",
         }
 
     monkeypatch.setattr(runner, "run_opencode_turn", fake_turn)
 
-    with pytest.raises(runner.RunnerError, match="typed brand_source_map"):
-        runner.stage_design_build({"config": config, "memory": memory}, request, target)
-
-    assert len(calls) == 1
-    assert calls[0]["agent_name"] == "native-direction"
-    assert calls[0]["memory"] is memory
+    if outcome == "corrected_valid":
+        receipt = runner.stage_design_build({"config": config, "memory": memory}, request, target)
+        assert receipt.experience_plan["behavior_system"]["utility_behaviors"][0]["meaning"]
+        assert [call["agent_name"] for call in calls] == ["native-direction", "native-direction", "build"]
+        phase = memory.list_design_phase_artifacts(run_id, phase="native_direction")
+        fence = memory.list_design_phase_artifacts(run_id, phase="build_dispatch")
+        assert [item["status"] for item in phase] == ["failed", "completed"]
+        assert [item["status"] for item in fence] == ["running"]
+        assert phase[0]["payload"]["response"]["structured"]["experience_plan"]["behavior_system"]["utility_behaviors"][0].get("meaning") is None
+        assert "utility_behaviors[0].meaning" in prompts[1]
+        assert "A considered threshold." in prompts[1]
+        assert "Do not add generic filler" in prompts[1]
+        assert phase[0]["context_snapshot_hash"] == phase[1]["context_snapshot_hash"] == snapshot.content_hash
+        assert phase[0]["input_hashes"] == phase[1]["input_hashes"] == fence[0]["input_hashes"]
+        assert memory.get_design_run(run_id)["planning_json"]["integrated_composition"]["state"] == "planned"
+        with pytest.raises(runner.RunnerError, match="Build dispatch was already claimed"):
+            runner.stage_design_build({"config": config, "memory": memory}, request, target)
+        assert [call["agent_name"] for call in calls] == ["native-direction", "native-direction", "build"]
+    else:
+        with pytest.raises(runner.RunnerError, match=(
+            "provider process failed" if outcome == "provider_error" else r"utility_behaviors\[0\].meaning"
+        )):
+            runner.stage_design_build({"config": config, "memory": memory}, request, target)
+        assert len(calls) == (1 if outcome == "provider_error" else 2)
+        assert all(call["agent_name"] == "native-direction" for call in calls)
+    phases = memory.list_design_phase_artifacts(run_id, phase="native_direction")
+    if outcome == "provider_error":
+        assert [phase["status"] for phase in phases] == ["failed"]
+        assert phases[0]["error_code"] == "provider_or_process_failure"
+        memory.close()
+        reopened = Memory(tmp_path / "data" / "memory.db")
+        with pytest.raises(runner.RunnerError, match="provider/process failure is terminal"):
+            runner.stage_design_build({"config": config, "memory": reopened}, request, target)
+        assert len(calls) == 1
+        reopened.close()
+        return
+    elif outcome == "invalid":
+        assert [phase["status"] for phase in phases] == ["failed", "failed"]
+        assert "utility_behaviors[0].meaning" in phases[0]["payload"]["diagnostic"]
+        memory.close()
+        reopened = Memory(tmp_path / "data" / "memory.db")
+        with pytest.raises(ContractError, match="exhausted"):
+            runner.stage_design_build({"config": config, "memory": reopened}, request, target)
+        assert len(calls) == 2
+        reopened.close()
+        return
     memory.close()
 
 
