@@ -270,6 +270,25 @@ def test_candidate_receipt_is_build_only_and_has_host_identity():
     assert receipt.model == "deepseek-ai/DeepSeek-V4-Flash"
     assert not hasattr(receipt, "quality_report_hash")
     assert not hasattr(receipt, "visual_critique")
+    assert "process_failure" not in receipt.to_dict()
+
+
+def test_candidate_receipt_process_failure_round_trips_and_rejects_unrelated_keys():
+    value = {
+        "run_id": "design-run-1", "operation_kind": "initial_build", "base_sha": "a" * 40,
+        "candidate_sha": "b" * 40, "candidate_ref": "refs/ada-design/design-run-1",
+        "changed_paths": ["index.html"], "manifest_path": "design/ada-design-manifest.json",
+        "manifest_hash": "c" * 64, "opencode_session_id": "session-1",
+        "transcript_path": "artifacts/transcript.jsonl", "provider": "entrim", "model": "test",
+        "publishable": False,
+        "process_failure": {"kind": "timeout", "stage": "build", "effective_timeout_seconds": 12,
+                            "returncode": -15, "unrelated": "not allowed"},
+    }
+    with pytest.raises(ContractError, match="process_failure contains unknown fields"):
+        DesignCandidateReceipt.from_dict(value)
+    value["process_failure"].pop("unrelated")
+    receipt = DesignCandidateReceipt.from_dict(value)
+    assert DesignCandidateReceipt.from_dict(receipt.to_dict()).process_failure == value["process_failure"]
 
 
 def _asset_evidence(**overrides):

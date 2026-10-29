@@ -3040,6 +3040,7 @@ class DesignCandidateReceipt:
     direction_hash: str = ""
     direction_transcript_path: str = ""
     experience_plan: dict[str, Any] = field(default_factory=dict)
+    process_failure: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, raw: Mapping[str, Any]) -> "DesignCandidateReceipt":
@@ -3082,6 +3083,17 @@ class DesignCandidateReceipt:
         experience_plan = _optional_object(value.get("experience_plan"), "experience_plan")
         if experience_plan:
             ExperiencePlanBundle.from_dict(experience_plan)
+        process_failure = _optional_object(value.get("process_failure"), "process_failure")
+        if process_failure:
+            allowed_failure_fields = {
+                "kind", "effective_timeout_seconds", "returncode", "signal_number", "signal_name",
+                "signal_inferred_number", "signal_inferred_name", "returncode_interpretation",
+                "host_termination_reason", "stage", "last_tool",
+            }
+            if set(process_failure) - allowed_failure_fields:
+                raise ContractError("process_failure contains unknown fields")
+            if process_failure.get("kind") not in {"timeout", "signal", "nonzero_exit"}:
+                raise ContractError("process_failure.kind is invalid")
         return cls(
             run_id=_text(value.get("run_id"), "run_id", maximum=120),
             operation_kind=validate_design_operation_kind(value.get("operation_kind")),
@@ -3110,10 +3122,11 @@ class DesignCandidateReceipt:
             direction_hash=direction_hash,
             direction_transcript_path=direction_transcript_path,
             experience_plan=experience_plan,
+            process_failure=process_failure,
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "run_id": self.run_id,
             "operation_kind": self.operation_kind,
             "base_sha": self.base_sha,
@@ -3139,6 +3152,9 @@ class DesignCandidateReceipt:
             "direction_transcript_path": self.direction_transcript_path,
             "experience_plan": copy.deepcopy(self.experience_plan),
         }
+        if self.process_failure:
+            result["process_failure"] = copy.deepcopy(self.process_failure)
+        return result
 
     @property
     def provider_id(self) -> str:

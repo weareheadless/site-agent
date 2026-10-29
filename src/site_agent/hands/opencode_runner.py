@@ -2697,6 +2697,7 @@ def stage_design_build(
             if not initial:
                 raise
             turn_error = str(exc)[:2_000]
+        turn_process_failure = initial.get("process_failure") if turn_error else None
         session_id = initial.get("session_id") or None
         output.append(str(initial.get("reply") or ""))
         transcript_path = _persist_design_transcript(
@@ -2803,15 +2804,13 @@ def stage_design_build(
                         **initial,
                         "transcript_path": transcript_path,
                         "experience_fidelity_error": str(exc)[:1_500],
+                        **({"process_failure": turn_process_failure} if turn_process_failure else {}),
                     },
                 ) from exc
-            # A timeout after source authoring is recoverable once the host
-            # local check and the existing fidelity phase have both run. Other
-            # provider failures remain explicit build errors below. Browser
-            # validation happens after the immutable candidate is finalized,
-            # through the durable design-job path.
-            if recoverable_turn_timeout:
-                turn_error = ""
+            # Host checks and fidelity may retain a timed-out candidate, but the
+            # incomplete provider turn remains an explicit build failure. Browser
+            # validation happens after candidate finalization through the durable
+            # design-job path.
         for relative_path in specialist_agent_paths:
             try:
                 (worktree / relative_path).unlink()
@@ -2852,10 +2851,14 @@ def stage_design_build(
             partial = dict(getattr(exc, "result", {}) or {})
             partial.setdefault("session_id", session_id or "")
             partial["transcript_path"] = transcript_path
+            if turn_process_failure:
+                partial.setdefault("process_failure", turn_process_failure)
             raise RunnerError(str(exc), result=partial) from exc
         build_error = "\n".join(item for item in (turn_error, provision_error) if item)
         if build_error:
             receipt = replace(receipt, build_error=build_error)
+        if turn_process_failure:
+            receipt = replace(receipt, process_failure=dict(turn_process_failure))
         return receipt
     finally:
         # Role definitions are disposable provider inputs, never candidate

@@ -1351,7 +1351,9 @@ def test_specialist_timeout_after_source_authoring_runs_host_gates_before_finali
         _write_presentation(worktree, "<html><body><h1>Candidate</h1></body></html>")
         raise runner.RunnerError(
             "opencode timed out after 1800s",
-            result={"session_id": "specialist-session", "reply": "implemented", "transcript": "timeout\n"},
+            result={"session_id": "specialist-session", "reply": "implemented", "transcript": "timeout\n",
+                    "process_failure": {"kind": "timeout", "effective_timeout_seconds": 1800,
+                                        "returncode": -15, "stage": "build"}},
         )
 
     monkeypatch.setattr("site_agent.application.design_orchestration.SpecialistDesignCoordinator", FakeCoordinator)
@@ -1364,7 +1366,8 @@ def test_specialist_timeout_after_source_authoring_runs_host_gates_before_finali
         {"config": config, "memory": memory}, request, target, design_plan=plan
     )
 
-    assert receipt.build_error == ""
+    assert receipt.build_error == "opencode timed out after 1800s"
+    assert receipt.process_failure["kind"] == "timeout"
     assert [item[0] for item in calls] == ["coordinator", "implementation", "fidelity"]
     assert calls[1][1]["provider_turn_error"] == "opencode timed out after 1800s"
     assert _git(clone, "rev-parse", target.candidate_ref).stdout.strip() == receipt.candidate_sha
@@ -1427,7 +1430,9 @@ def test_creative_host_repair_timeout_runs_plan_closure_before_finalizing(tmp_pa
         _write_presentation(worktree, "<html><body><h1>Repaired</h1></body></html>")
         raise runner.RunnerError(
             "opencode timed out after 900s",
-            result={"session_id": "creative-host-session", "reply": "implemented", "transcript": "timeout\n"},
+            result={"session_id": "creative-host-session", "reply": "implemented", "transcript": "timeout\n",
+                    "process_failure": {"kind": "timeout", "effective_timeout_seconds": 900,
+                                        "returncode": -15, "stage": "build"}},
         )
 
     monkeypatch.setattr("site_agent.application.design_orchestration.SpecialistDesignCoordinator", FakeCoordinator)
@@ -1443,7 +1448,8 @@ def test_creative_host_repair_timeout_runs_plan_closure_before_finalizing(tmp_pa
         repair_brief={"source": "host_deterministic_evidence"},
     )
 
-    assert receipt.build_error == ""
+    assert receipt.build_error == "opencode timed out after 900s"
+    assert receipt.process_failure["kind"] == "timeout"
     assert [item[0] for item in calls] == ["coordinator", "fidelity"]
     assert isinstance(calls[1][1], ExperiencePlanBundle)
     assert _git(clone, "rev-parse", target.candidate_ref).stdout.strip() == receipt.candidate_sha
