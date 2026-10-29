@@ -3580,6 +3580,7 @@ def _write_researcher_agent(oc: Path, prompt: str) -> None:
 
 def _write_native_direction_agent(oc: Path, *, structured: bool = False) -> None:
     """Install the bounded read-only agent used before a native Build turn."""
+    from ..core.design_contracts import brand_behavior_contract_description
     agent_dir = oc / "agent"
     agent_dir.mkdir(parents=True, exist_ok=True)
     output = (
@@ -3591,7 +3592,7 @@ def _write_native_direction_agent(oc: Path, *, structured: bool = False) -> None
         "signals_not_safe_to_infer, owner_evidence_refs, asset_evidence_refs, and confidence_by_signal. Use the exact "
         "supplied evidence IDs in its reference arrays. asset_composition_plan must be an array of records whose asset_id "
         "is an exact supplied evidence ID, with the complete typed asset-composition fields and responsive treatment "
-        "objects. Do not use Markdown fences or commentary."
+        "objects. " + brand_behavior_contract_description() + " Do not use Markdown fences or commentary."
         if structured
         else
         "Return only one concise human-readable design direction for the next integrated Build turn. Do not provide "

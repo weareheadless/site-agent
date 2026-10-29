@@ -449,6 +449,34 @@ def _named_records(
     return tuple(result)
 
 
+# One authority for both validation and producer-facing contract language.
+BRAND_BEHAVIOR_NAMED_RECORD_FIELDS: dict[str, tuple[str, ...]] = {
+    "conceptual_entities": ("id", "meaning"),
+    "state_variables": ("id", "meaning"),
+    "input_signals": ("id", "meaning"),
+    "forces_and_relationships": ("id", "meaning"),
+    "output_channels": ("id", "property"),
+    "scene_graph": ("id", "exit_condition"),
+    "utility_behaviors": ("id", "meaning"),
+    "narrative_behaviors": ("id", "meaning"),
+}
+
+
+def brand_behavior_contract_description() -> str:
+    """Describe the existing BrandBehaviorSystem shapes for its producers."""
+    fields = BRAND_BEHAVIOR_NAMED_RECORD_FIELDS
+    arrays = "; ".join(f"{name}: each record requires {', '.join(required)}" for name, required in fields.items())
+    return (
+        "BrandBehaviorSystem requirements: named arrays may be empty; when an array has records, "
+        "each record requires these non-empty string fields: " + arrays + ". "
+        "signature_behavior is an object requiring non-empty string id and meaning and a non-empty array "
+        "of non-empty string acceptance_conditions. resting_state, performance_budget, and transfer_test "
+        "are objects; transfer_test.state is a string. evidence_refs is a non-empty array of strings. "
+        "allowed_implementation_capabilities, prohibited_generic_effects, and observable_acceptance_conditions "
+        "are arrays of strings and may be empty. Required descriptive scalar fields are non-empty strings."
+    )
+
+
 @dataclass(frozen=True)
 class NormalizedPoint:
     """A bounded point in an asset's normalized coordinate space."""
@@ -992,15 +1020,15 @@ class BrandBehaviorSystem:
             schema_version=version,
             **texts,
             evidence_refs=evidence_refs,
-            conceptual_entities=_named_records(value.get("conceptual_entities"), "brand_behavior_system.conceptual_entities"),
-            state_variables=_named_records(value.get("state_variables"), "brand_behavior_system.state_variables"),
-            input_signals=_named_records(value.get("input_signals"), "brand_behavior_system.input_signals"),
-            forces_and_relationships=_named_records(value.get("forces_and_relationships"), "brand_behavior_system.forces_and_relationships"),
-            output_channels=_named_records(value.get("output_channels"), "brand_behavior_system.output_channels", required_fields=("id", "property")),
-            scene_graph=_named_records(value.get("scene_graph"), "brand_behavior_system.scene_graph", required_fields=("id", "exit_condition")),
+            conceptual_entities=_named_records(value.get("conceptual_entities"), "brand_behavior_system.conceptual_entities", required_fields=BRAND_BEHAVIOR_NAMED_RECORD_FIELDS["conceptual_entities"]),
+            state_variables=_named_records(value.get("state_variables"), "brand_behavior_system.state_variables", required_fields=BRAND_BEHAVIOR_NAMED_RECORD_FIELDS["state_variables"]),
+            input_signals=_named_records(value.get("input_signals"), "brand_behavior_system.input_signals", required_fields=BRAND_BEHAVIOR_NAMED_RECORD_FIELDS["input_signals"]),
+            forces_and_relationships=_named_records(value.get("forces_and_relationships"), "brand_behavior_system.forces_and_relationships", required_fields=BRAND_BEHAVIOR_NAMED_RECORD_FIELDS["forces_and_relationships"]),
+            output_channels=_named_records(value.get("output_channels"), "brand_behavior_system.output_channels", required_fields=BRAND_BEHAVIOR_NAMED_RECORD_FIELDS["output_channels"]),
+            scene_graph=_named_records(value.get("scene_graph"), "brand_behavior_system.scene_graph", required_fields=BRAND_BEHAVIOR_NAMED_RECORD_FIELDS["scene_graph"]),
             signature_behavior=signature,
-            utility_behaviors=_named_records(value.get("utility_behaviors"), "brand_behavior_system.utility_behaviors"),
-            narrative_behaviors=_named_records(value.get("narrative_behaviors"), "brand_behavior_system.narrative_behaviors"),
+            utility_behaviors=_named_records(value.get("utility_behaviors"), "brand_behavior_system.utility_behaviors", required_fields=BRAND_BEHAVIOR_NAMED_RECORD_FIELDS["utility_behaviors"]),
+            narrative_behaviors=_named_records(value.get("narrative_behaviors"), "brand_behavior_system.narrative_behaviors", required_fields=BRAND_BEHAVIOR_NAMED_RECORD_FIELDS["narrative_behaviors"]),
             resting_state=_object(value.get("resting_state"), "brand_behavior_system.resting_state"),
             performance_budget=_object(value.get("performance_budget"), "brand_behavior_system.performance_budget"),
             allowed_implementation_capabilities=_text_tuple(value.get("allowed_implementation_capabilities"), "brand_behavior_system.allowed_implementation_capabilities", maximum=30, item_maximum=120),

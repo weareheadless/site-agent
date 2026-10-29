@@ -6,8 +6,10 @@ import pytest
 from site_agent.core.design_contracts import (
     BuildTarget,
     CreativeRealizationReview,
+    DesignContextSnapshot,
     ExperiencePlanBundle,
     PageBuildRequest,
+    brand_behavior_contract_description,
     canonical_hash,
 )
 from site_agent.core.memory import Memory
@@ -68,9 +70,11 @@ class _Result:
 class _FakeInvoker:
     def __init__(self):
         self.calls = []
+        self.invocations = []
 
     def invoke(self, request, progress=None):
         self.calls.append(request.role)
+        self.invocations.append(request)
         phase = (
             "copy"
             if request.role == "copywriter"
@@ -108,6 +112,10 @@ class _FakeInvoker:
             "producer": request.role,
             "payload": {"idea": request.role + "-" + variant, "needs_repair": False, "state": "passed"},
         }
+        if request.role == "brand-source-analyst":
+            payload["payload"] = {
+                "brand_source_map": _experience_plan()["brand_source_map"],
+            }
         return _Result(request.role, request.role + "-session", payload)
 
 
@@ -128,6 +136,39 @@ def test_coordinator_runs_three_concepts_and_one_selection(tmp_path):
     assert fake.calls.count("copywriter") == 1
     assert fake.calls.count("creative-director") == 1
     assert len(memory.list_design_phase_artifacts("design-orchestration-1", status="completed")) == 5
+    memory.close()
+
+
+def test_strict_creative_selection_invocation_contains_shared_behavior_contract(tmp_path):
+    memory = Memory(tmp_path / "memory.db")
+    _run(memory, "design-orchestration-1")
+    fake = _FakeInvoker()
+    coordinator = SpecialistDesignCoordinator(
+        {"memory": memory, "config": {"design_engine": {"model": "test"}}},
+        invoker=fake,
+    )
+    snapshot = DesignContextSnapshot.from_dict({
+        "schema_version": 1,
+        "captured_at": "2026-01-01T00:00:00+00:00",
+        "owner_request": "Create a distinctive homepage.",
+        "base_sha": "a" * 40,
+    })
+    request = PageBuildRequest.from_dict({
+        **_request().to_dict(),
+        "context_snapshot": snapshot.to_dict(),
+        "context_snapshot_hash": snapshot.content_hash,
+    })
+
+    with pytest.raises(DesignOrchestrationError):
+        coordinator.create_plan(request, _target())
+
+    selection = next(
+        invocation
+        for invocation in fake.invocations
+        if invocation.role == "creative-director"
+        and "Act as the creative director. Compare the three independent concepts" in invocation.prompt
+    )
+    assert brand_behavior_contract_description() in selection.prompt
     memory.close()
 
 
