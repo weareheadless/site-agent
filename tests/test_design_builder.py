@@ -509,7 +509,10 @@ def test_local_design_build_commits_exact_base_to_local_ref_without_push(tmp_pat
     memory.close()
 
 
-def test_native_initial_build_persists_direction_before_writable_build(tmp_path, monkeypatch):
+@pytest.mark.parametrize(("timeout_fires", "returncode", "kind"), [(True, 130, "timeout"), (False, -2, "signal")])
+def test_native_direction_process_failure_crosses_real_stage_boundary(
+    tmp_path, monkeypatch, timeout_fires, returncode, kind
+):
     clone, base_sha = _clone(tmp_path)
     memory = Memory(tmp_path / "data" / "memory.db")
     config = {
@@ -537,38 +540,42 @@ def test_native_initial_build_persists_direction_before_writable_build(tmp_path,
         "clone_path": str(clone),
         "allowed_paths": ["*.html", "design/**"],
     })
-    calls = []
-
     monkeypatch.setattr(runner, "install_agent_files", lambda *args, **kwargs: None)
+    import threading
+    import site_agent.hands.opencode_runner as opencode_runner
 
-    def fake_turn(worktree, prompt, config, **kwargs):
-        calls.append({"agent_name": kwargs.get("agent_name"), "prompt": prompt, "memory": kwargs.get("memory")})
-        if kwargs.get("agent_name") == "native-direction":
-            return {
-                "session_id": "direction-session",
-                "reply": "A quiet editorial threshold opens into a tactile story of the owner’s work.",
-                "transcript": '{"type":"text","sessionID":"direction-session"}\n',
-            }
-        _write_presentation(worktree, "<html><body><h1>Candidate</h1></body></html>")
-        return {
-            "session_id": "build-session",
-            "reply": "implemented",
-            "transcript": '{"type":"text","sessionID":"build-session"}\n',
-        }
+    real_popen = opencode_runner.subprocess.Popen
+    class Process:
+        pid = 83421
+        stdout = iter(['{"type":"tool_use","part":{"type":"tool","tool":"Read"}}\n'])
+        def __init__(self): self.returncode = returncode
+        def wait(self, timeout=None): return returncode
+        def send_signal(self, _signal): pass
+    process = Process()
+    def selective_popen(command, *args, **kwargs):
+        if command and command[0] == opencode_runner._opencode_bin(config):
+            return process
+        return real_popen(command, *args, **kwargs)
+    class Timer:
+        def __init__(self, _seconds, callback): self.callback = callback
+        def start(self):
+            if timeout_fires: self.callback()
+        def cancel(self): pass
+    monkeypatch.setattr(opencode_runner.subprocess, "Popen", selective_popen)
+    monkeypatch.setattr(threading, "Timer", Timer)
+    monkeypatch.setattr(opencode_runner.os, "killpg", lambda pid, _sig: None if pid == process.pid else (_ for _ in ()).throw(AssertionError(pid)))
 
-    monkeypatch.setattr(runner, "run_opencode_turn", fake_turn)
-
-    receipt = runner.stage_design_build({"config": config, "memory": memory}, request, target)
-
-    assert [call["agent_name"] for call in calls] == ["native-direction", "build"]
-    assert calls[0]["memory"] is memory
-    assert calls[1]["memory"] is memory
-    assert "A quiet editorial threshold" in calls[1]["prompt"]
-    assert receipt.direction_path == "design-runs/native-direction-build/direction.md"
-    assert receipt.direction_transcript_path == "design-runs/native-direction-build/direction-opencode.jsonl"
-    direction_file = tmp_path / "data" / receipt.direction_path
-    assert direction_file.read_text() == "A quiet editorial threshold opens into a tactile story of the owner’s work.\n"
-    assert (tmp_path / "data" / receipt.direction_transcript_path).is_file()
+    with pytest.raises(runner.RunnerError) as caught:
+        runner.stage_design_build({"config": config, "memory": memory}, request, target)
+    failure = caught.value.result["process_failure"]
+    assert failure["kind"] == kind
+    assert failure["stage"] == "native-direction"
+    assert failure["last_tool"] == "Read"
+    transcript_path = caught.value.result["direction_transcript_path"]
+    assert transcript_path == "design-runs/native-direction-build/direction-opencode.jsonl"
+    persisted_transcript = tmp_path / "data" / transcript_path
+    assert persisted_transcript.is_file()
+    assert '"tool":"Read"' in persisted_transcript.read_text()
     memory.close()
 
 
