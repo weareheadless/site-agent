@@ -37,10 +37,36 @@ type DesignBuild = {
   elapsed_seconds: number
   draft_available: boolean
   error?: string
-  update?: string
+  update?: string | null
+  update_ts?: string | null
+  updates?: Array<{ stage: string; message: string; ts: string }>
+  last_event_ts?: string | null
+  last_event_age_seconds?: number | null
+  stall_threshold_seconds?: number
+  stalled?: boolean
 }
 
 const DESIGN_BUILD_STAGES = ['queued', 'planning', 'generating', 'building', 'validating', 'rendering']
+
+function formatDuration(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds))
+  const minutes = Math.floor(total / 60)
+  const rest = total % 60
+  return minutes ? `${minutes}m ${String(rest).padStart(2, '0')}s` : `${rest}s`
+}
+
+function formatAge(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds))
+  if (total < 60) return `${total}s`
+  const minutes = Math.floor(total / 60)
+  return minutes < 60 ? `${minutes} min` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`
+}
+
+function formatUpdateClock(value: string): string {
+  const parsed = Date.parse(value || '')
+  if (!Number.isFinite(parsed)) return ''
+  return new Date(parsed).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
 
 type WorkspaceRoute = {
   path: string
@@ -725,6 +751,7 @@ function ReviewWorkspace() {
   const [workspace, setWorkspace] = useState<WorkspaceSnapshot>()
   const [websitePresent, setWebsitePresent] = useState(true)
   const [designBuild, setDesignBuild] = useState<DesignBuild | null>(null)
+  const [buildClock, setBuildClock] = useState(() => Date.now())
   const [selectedRoute, setSelectedRoute] = useState('/')
   const [previewViewport, setPreviewViewport] = useState<PreviewViewport>('desktop')
   const [mobilePane, setMobilePane] = useState<'ada' | 'website'>('ada')
@@ -1458,13 +1485,31 @@ function ReviewWorkspace() {
     return () => window.clearInterval(timer)
   }, [loadPreviewPlan, previewPlan?.requires_build])
 
+  const loadAdaStatusRef = useRef(loadAdaStatus)
   useEffect(() => {
-    const isBuilding = designBuild?.state === 'queued' || designBuild?.state === 'running'
+    loadAdaStatusRef.current = loadAdaStatus
+  }, [loadAdaStatus])
+
+  const buildRunning = designBuild?.state === 'queued' || designBuild?.state === 'running'
+
+  useEffect(() => {
+    // Poll on a fixed cadence while a build runs. The ref keeps the interval
+    // alive when a callback identity changes, so the surface cannot freeze on
+    // a stale snapshot.
     const timer = window.setInterval(() => {
-      loadAdaStatus(conversationId, true, false)
-    }, isBuilding ? 5_000 : 30_000)
+      loadAdaStatusRef.current(conversationId, true, false)
+    }, buildRunning ? 2_000 : 30_000)
     return () => window.clearInterval(timer)
-  }, [conversationId, designBuild?.state, loadAdaStatus])
+  }, [conversationId, buildRunning])
+
+  const buildSurfaceVisible = buildRunning && !websitePresent && !designBuild?.draft_available
+
+  useEffect(() => {
+    if (!buildSurfaceVisible) return
+    setBuildClock(Date.now())
+    const timer = window.setInterval(() => setBuildClock(Date.now()), 1_000)
+    return () => window.clearInterval(timer)
+  }, [buildSurfaceVisible])
 
   useEffect(() => {
     if (!editorOpen && !fieldEditorKey) return
@@ -2126,6 +2171,23 @@ function ReviewWorkspace() {
     return steps.slice(-8)
   })()
   const currentAdaProgress = adaProgressSteps[adaProgressSteps.length - 1]?.text || t('workspace.thinking')
+  const buildStartedAt = designBuild ? Date.parse(designBuild.started_ts || '') : NaN
+  const buildElapsedSeconds = designBuild
+    ? Number.isFinite(buildStartedAt)
+      ? Math.max(0, Math.floor((buildClock - buildStartedAt) / 1000))
+      : Math.max(0, designBuild.elapsed_seconds || 0)
+    : 0
+  const buildUpdateTs = designBuild?.update_ts || designBuild?.last_event_ts || ''
+  const buildUpdateAt = buildUpdateTs ? Date.parse(buildUpdateTs) : NaN
+  const buildUpdateAge = Number.isFinite(buildUpdateAt)
+    ? Math.max(0, Math.floor((buildClock - buildUpdateAt) / 1000))
+    : designBuild?.last_event_age_seconds ?? null
+  const buildUpdateText = designBuild?.update?.trim() || t('workspace.buildUpdate')
+  const buildStalled = designBuild?.state !== 'failed' && (
+    Boolean(designBuild?.stalled)
+    || (buildRunning && buildUpdateAge !== null && buildUpdateAge > (designBuild?.stall_threshold_seconds || 180))
+  )
+  const recentBuildUpdates = (designBuild?.updates || []).slice(-4).reverse()
   const onboardingStages = [
     t('workspace.onboardingBusiness'),
     t('workspace.onboardingFirstPage'),
@@ -2270,11 +2332,11 @@ function ReviewWorkspace() {
             </div>
           <footer className="helloada-preview-footer"><span className={hasDraft ? 'is-draft' : ''}><i aria-hidden="true" />{hasDraft ? t('owner.readyReview') : t('owner.websitePreview')}</span><span>{hasDraft ? t('owner.notLive') : t('owner.previewHint')}</span></footer>
         </section> : !websitePresent && adaPhase === 'workspace' && designBuild && !designBuild.draft_available && (designBuild.state === 'queued' || designBuild.state === 'running' || designBuild.state === 'failed') ? (
-          <section className={`helloada-build-surface ${designBuild.state === 'failed' ? 'is-failed' : ''}`} aria-label={t('workspace.buildTitle')}>
+          <section className={`helloada-build-surface ${designBuild.state === 'failed' ? 'is-failed' : ''} ${buildStalled ? 'is-stalled' : ''}`} aria-label={t('workspace.buildTitle')}>
             <p className="helloada-eyebrow">{t('workspace.buildEyebrow')}</p>
             <h2>{designBuild.state === 'failed' ? t('workspace.buildFailed') : t('workspace.buildTitle')}</h2>
             {designBuild.state === 'failed' ? <p role="alert">{t('workspace.buildStopped').replace('{stage}', designBuild.stages.find((stage) => stage.key === designBuild.stage)?.label || designBuild.stage)}</p> : <p>{t('workspace.buildProgress').replace('{done}', String(designBuild.stages.filter((stage) => DESIGN_BUILD_STAGES.includes(stage.key) && stage.state === 'done').length))}</p>}
-            {designBuild.state !== 'failed' ? <p>{t('workspace.buildElapsed').replace('{time}', String(Math.floor(designBuild.elapsed_seconds / 60)))}</p> : null}
+            {designBuild.state !== 'failed' ? <p className="helloada-build-elapsed">{t('workspace.buildElapsedLive').replace('{time}', formatDuration(buildElapsedSeconds))}</p> : null}
             <ol className="helloada-build-stages">
               {DESIGN_BUILD_STAGES.map((key) => {
                 const stage = designBuild.stages.find((item) => item.key === key)
@@ -2282,7 +2344,25 @@ function ReviewWorkspace() {
                 return <li key={key} className={`is-${stage.state}`} aria-current={stage.state === 'current' ? 'step' : undefined}><span aria-hidden="true">{stage.state === 'done' ? '✓' : stage.state === 'current' ? '•' : '○'}</span>{stage.label}</li>
               })}
             </ol>
-            {designBuild.state === 'failed' ? <><p>{designBuild.error || t('workspace.buildErrorFallback')}</p><button type="button" onClick={() => { setMobilePane('ada'); setMessage(t('workspace.buildRetryPrompt')); window.setTimeout(() => messageInputRef.current?.focus(), 0) }}>{t('workspace.buildNextAction')}</button></> : <p className="helloada-build-update">{currentAdaProgress}</p>}
+            {designBuild.state === 'failed' ? <><p>{designBuild.error || t('workspace.buildErrorFallback')}</p><button type="button" onClick={() => { setMobilePane('ada'); setMessage(t('workspace.buildRetryPrompt')); window.setTimeout(() => messageInputRef.current?.focus(), 0) }}>{t('workspace.buildNextAction')}</button></> : <>
+              <p className="helloada-build-update" aria-live="polite">{buildUpdateText}</p>
+              <p className="helloada-build-age">{buildUpdateAge === null ? t('workspace.buildUpdateStarting') : t('workspace.buildUpdated').replace('{age}', formatAge(buildUpdateAge))}</p>
+              {recentBuildUpdates.length > 1 ? (
+                <ol className="helloada-build-feed" aria-label={t('workspace.buildRecent')}>
+                  {recentBuildUpdates.map((item, index) => (
+                    <li key={`${item.ts}-${index}`} className={index === 0 ? 'is-current' : undefined}>
+                      <span>{formatUpdateClock(item.ts)}</span>{item.message}
+                    </li>
+                  ))}
+                </ol>
+              ) : null}
+              {buildStalled ? (
+                <div className="helloada-build-stall" role="status">
+                  <p>{t('workspace.buildStalled').replace('{age}', formatAge(buildUpdateAge ?? 0))}</p>
+                  <button type="button" onClick={() => { setMobilePane('ada'); setMessage(t('workspace.buildStalledPrompt')); window.setTimeout(() => messageInputRef.current?.focus(), 0) }}>{t('workspace.buildStalledAction')}</button>
+                </div>
+              ) : null}
+            </>}
           </section>
         ) : null}
 

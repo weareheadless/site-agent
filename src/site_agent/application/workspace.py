@@ -49,6 +49,20 @@ class SourceConflict(BridgeError):
     """A source edit was based on stale or mismatched source evidence."""
 
 
+def _iso_age_seconds(value: str) -> int | None:
+    """Seconds between a persisted ISO timestamp and now, or None if unreadable."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        moment = datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except (ValueError, TypeError):
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=datetime.timezone.utc)
+    return max(0, int((datetime.datetime.now(datetime.timezone.utc) - moment).total_seconds()))
+
+
 def _canonical_route_inventory(context: Mapping[str, Any]) -> dict[str, Any]:
     """Derive exact public URLs and a content revision from canonical Payload inventory."""
     from .growth_workflow import _inventory
@@ -1902,18 +1916,31 @@ class ChatService:
                     failed = run.get("status") == "failed"
                     ready = run.get("status") == "ready_for_review"
                     stage = "ready" if ready else max(by_stage, key=order.index) if by_stage else "queued"
-                    stopped_at = max(by_stage, key=order.index) if by_stage else "queued"
+                    stopped_at = "rendering" if ready else max(by_stage, key=order.index) if by_stage else "queued"
                     labels = {"queued":"Queued", "planning":"Planning", "generating":"Creating", "building":"Building", "validating":"Reviewing", "rendering":"Rendering"}
                     current_i = order.index(stopped_at)
                     stages = [{"key": key, "label": labels[key], "state": "done" if ready else "failed" if failed and key == stopped_at else "current" if key == stopped_at and not terminal else "done" if order.index(key) < current_i or key == stopped_at else "pending", "ts": by_stage[key].get("created_ts") if key in by_stage else None} for key in order]
                     started_ts = str(run.get("created_ts") or "")
-                    try:
-                        started = datetime.datetime.fromisoformat(started_ts.replace("Z", "+00:00"))
-                        elapsed = max(0, int((datetime.datetime.now(datetime.timezone.utc) - started).total_seconds()))
-                    except (ValueError, TypeError):
-                        elapsed = 0
+                    elapsed = _iso_age_seconds(started_ts) or 0
                     state = "failed" if failed else "ready" if run.get("status") == "ready_for_review" else "queued" if stage == "queued" else "running"
                     build = {"state": state, "run_id": str(run["run_id"]), "stage": stage, "stages": stages, "started_ts": started_ts, "elapsed_seconds": elapsed, "draft_available": bool(run.get("draft_id") and run.get("status") == "ready_for_review")}
+                    # Liveness: the build surface must be able to say what Ada is
+                    # doing right now and when she last said it. Only owner-copy
+                    # events feed the surface; internal worker stages stay out.
+                    updates = [
+                        {"stage": str(event.get("stage") or ""), "message": str(event["message"])[:240], "ts": str(event.get("created_ts") or "")}
+                        for event in events
+                        if event.get("stage") in {*order, "progress"} and str(event.get("message") or "").strip()
+                    ][-5:]
+                    last_event_ts = updates[-1]["ts"] if updates else ""
+                    last_event_age = _iso_age_seconds(last_event_ts) if last_event_ts else None
+                    build["updates"] = updates
+                    build["update"] = updates[-1]["message"] if updates else None
+                    build["update_ts"] = last_event_ts or None
+                    build["last_event_ts"] = last_event_ts or None
+                    build["last_event_age_seconds"] = last_event_age
+                    build["stall_threshold_seconds"] = 180
+                    build["stalled"] = bool(state == "running" and last_event_age is not None and last_event_age > 180)
                     if failed:
                         build["error"] = str(run.get("error") or "The design build needs attention.")
         onboarding = self._new_site_onboarding(memory, intake_status, tenant) if not website_present else None
