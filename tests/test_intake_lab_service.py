@@ -131,6 +131,49 @@ def test_submit_persists_typed_local_job_before_enqueue(tmp_path):
     memory.close()
 
 
+def test_two_intake_instances_reuse_canonical_scaffold_and_reach_planning(tmp_path):
+    from site_agent.core.design_contracts import PageBuildRequest
+
+    scaffold = tmp_path / "neutral-scaffold"
+    workspace = tmp_path / "lab"
+    config = {"role": "intake", "incubation": {"scaffold": str(scaffold)}}
+    completed = []
+
+    for index in range(2):
+        memory = Memory(tmp_path / f"data-{index}" / "intake-lab.db")
+        design = DesignService(memory, config=config)
+
+        def prepare(run_id, memory=memory):
+            run = memory.get_design_run(run_id)
+            return PageBuildRequest.from_dict({
+                "schema_version": 1,
+                "run_id": run_id,
+                "mode": "initial_homepage",
+                "base_sha": run["base_sha"],
+                "page_path": "index.html",
+                "purpose": "Create a calm, precise homepage.",
+                "site_intake_hash": run["intake_hash"],
+                "acceptance_criteria": ["Keep the homepage accessible."],
+                "content": {"creative_prompt": run["owner_request"]},
+            })
+
+        design.prepare_initial_request = prepare
+        executor = _Executor(memory)
+        service = IntakeLabService(
+            design, executor, config=config, workspace=workspace,
+            default_intake=SiteIntake.from_dict(_intake()),
+            default_prompt="Create the first website design.",
+        )
+        result = service.submit(f"Create attempt {index}.", _intake(), run_id=f"scaffold-run-{index}")
+        assert executor.enqueued == [result["run_id"]]
+        assert memory.get_design_run(result["run_id"])["planning_json"]["build_request"]["run_id"] == result["run_id"]
+        completed.append(result["base_sha"])
+        memory.close()
+
+    assert completed[0] == completed[1]
+    assert subprocess.run(["git", "-C", str(scaffold), "status", "--porcelain"], check=True, capture_output=True, text=True).stdout == ""
+
+
 def test_invalid_intake_is_rejected_before_a_run_is_created(tmp_path):
     memory = Memory(tmp_path / "intake-lab.db")
     design = DesignService(memory, config={})

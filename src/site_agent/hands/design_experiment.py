@@ -175,6 +175,7 @@ def initialize_neutral_repository(root: str | Path) -> tuple[Path, str]:
     from ..site_scaffold import initialize_managed_site
 
     initialize_managed_site(destination, "New website")
+    _validate_managed_payload_scaffold(destination)
     _run(destination, "init", "-q", "-b", "main")
     _run(destination, "config", "user.email", "intake-ada@localhost")
     _run(destination, "config", "user.name", "Intake Ada")
@@ -187,6 +188,10 @@ def _validate_managed_payload_scaffold(root: Path) -> None:
     """Reject non-canonical sites and locally forked schemas at the site boundary."""
     try:
         manifest = json.loads((root / "template-manifest.json").read_text(encoding="utf-8"))
+        canonical_manifest_path = (
+            Path(__file__).resolve().parents[1] / "templates" / "next-payload" / "template-manifest.json"
+        )
+        canonical_manifest = json.loads(canonical_manifest_path.read_text(encoding="utf-8"))
         package = json.loads((root / "package.json").read_text(encoding="utf-8"))
         payload_config = (root / "payload.config.ts").read_text(encoding="utf-8")
         agent_guide = (root / "AGENTS.md").read_text(encoding="utf-8")
@@ -197,7 +202,8 @@ def _validate_managed_payload_scaffold(root: Path) -> None:
     core_version = str(manifest.get("payloadCore") or "") if isinstance(manifest, dict) else ""
     if (
         not isinstance(manifest, dict)
-        or manifest.get("templateSchema") != 7
+        or not isinstance(canonical_manifest, dict)
+        or manifest.get("templateSchema") != canonical_manifest.get("templateSchema")
         or not re.fullmatch(r"helloada-content-v\d+", str(manifest.get("contentContract") or ""))
         or not re.fullmatch(r"\d+\.\d+\.\d+", admin_version)
         or not re.fullmatch(r"\d+\.\d+\.\d+", core_version)
