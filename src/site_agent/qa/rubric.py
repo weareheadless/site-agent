@@ -175,11 +175,13 @@ class RuleJudge:
 
 
 def _visible_text(result: FlowResult) -> str:
-    parts: list[str] = [str((result.observations.page_metrics or {}).get("bodyText") or "")]
-    for step in result.steps:
-        if step.detail:
-            parts.append(step.detail)
-    return "\n".join(part for part in parts if part)
+    """What the owner could actually read on screen.
+
+    Deliberately excludes the harness's own step details: a DriverError message
+    is not something the owner ever saw.
+    """
+
+    return str((result.observations.page_metrics or {}).get("bodyText") or "")
 
 
 def review(result: FlowResult, *, judge: Any | None = None) -> JudgeVerdict:

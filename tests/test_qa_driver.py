@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import http.server
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -38,6 +39,9 @@ PAGES = {
         <script>setTimeout(() => {
             const el = document.createElement("p"); el.id = "late"; el.textContent = "ready";
             document.body.appendChild(el); }, 600);</script></body></html>""",
+    "/blocked": """<!doctype html><html><body data-phase="blocked">
+        <p id="phase-detail">Ada needs to resolve a technical problem</p>
+        <div id="preview"></div></body></html>""",
     "/chat": """<!doctype html><html><head><title>Ada</title></head><body data-phase="intake">
         <span id="chat-state">Ready</span>
         <section id="confirm-panel" hidden><h3 id="confirm-heading">Ready to build</h3></section>
@@ -286,6 +290,26 @@ def test_screenshots_can_be_disabled_for_cheap_runs(origin, tmp_path):
     assert not any(Path(tmp_path / "artifacts").glob("*.png"))
 
 
+def _fake_owner():
+    """A stand-in for the owner model: answers what was asked, in one sentence."""
+
+    answers = [
+        "It is called Atelier Sete.",
+        "The course is 240 euros.",
+        "Rua da Boavista 112, Lisbon.",
+    ]
+
+    def complete(messages):
+        asked = messages[-1]["content"].lower()
+        if "called" in asked or "name" in asked:
+            return answers[0]
+        if "how much" in asked or "price" in asked:
+            return answers[1]
+        return answers[2]
+
+    return complete
+
+
 def test_converse_answers_what_ada_actually_asked(origin, tmp_path):
     flow = _flow(
         [
@@ -299,17 +323,12 @@ def test_converse_answers_what_ada_actually_asked(origin, tmp_path):
                 "until": [{"kind": "visible", "selector": "#confirm-panel", "timeout_ms": 500}],
                 "persona": {
                     "max_turns": 8,
-                    "fallback": "Yes, go ahead.",
-                    "facts": [
-                        {"when": ["called", "name"], "reply": "It is called Atelier Sete."},
-                        {"when": ["how much", "classes", "price"], "reply": "The course is 240 euros."},
-                        {"when": ["find you", "where"], "reply": "Rua da Boavista 112, Lisbon."},
-                    ],
+                    "brief": "You are Mariana, who runs a ceramics studio in Lisbon.",
                 },
             },
         ]
     )
-    result = _driver(origin, tmp_path).run(flow)
+    result = _driver(origin, tmp_path, owner_complete=_fake_owner()).run(flow)
     assert result.status == "passed", result.steps[-1].detail
 
     conversation = result.steps[-1]
@@ -331,13 +350,12 @@ def test_converse_fails_loudly_when_it_never_settles(origin, tmp_path):
                 "until": [{"kind": "visible", "selector": "#never-appears", "timeout_ms": 200}],
                 "persona": {
                     "max_turns": 2,
-                    "fallback": "Yes, go ahead.",
-                    "facts": [{"when": ["called"], "reply": "Atelier Sete."}],
+                    "brief": "You are Mariana, who runs a ceramics studio in Lisbon.",
                 },
             },
         ]
     )
-    result = _driver(origin, tmp_path).run(flow)
+    result = _driver(origin, tmp_path, owner_complete=_fake_owner()).run(flow)
     assert result.status == "failed"
     assert "did not settle within 2 owner turns" in result.steps[-1].detail
 
@@ -373,6 +391,51 @@ def test_marks_measure_the_time_to_build(origin, tmp_path):
     assert result.status == "passed", result.steps[-1].detail
     assert list(result.marks) == ["opened", "build_requested", "candidate_ready"]
     assert result.steps[3].mark == "candidate_ready"
+
+
+def test_abort_fails_fast_instead_of_waiting_for_a_preview_that_will_never_come(origin, tmp_path):
+    flow = _flow(
+        [
+            {"id": "open", "action": "goto", "url": "/blocked"},
+            {
+                "id": "candidate",
+                "action": "assert",
+                "abort": [
+                    {
+                        "kind": "visible",
+                        "selector": 'body[data-phase="blocked"]',
+                        "description": "the build reported a terminal failure",
+                    }
+                ],
+                "expect": [
+                    {"kind": "visible", "selector": "#preview-iframe", "timeout_ms": 30_000}
+                ],
+            },
+        ]
+    )
+    started = time.monotonic()
+    result = _driver(origin, tmp_path).run(flow)
+    elapsed = time.monotonic() - started
+    assert result.status == "failed"
+    assert elapsed < 10, "abort must not wait out the preview timeout"
+    assert "aborted" in result.steps[-1].detail
+    assert "technical problem" in result.steps[-1].detail
+
+
+def test_abort_does_not_fire_when_the_target_is_healthy(origin, tmp_path):
+    flow = _flow(
+        [
+            {"id": "open", "action": "goto", "url": "/ok"},
+            {
+                "id": "check",
+                "action": "assert",
+                "abort": [{"kind": "visible", "selector": 'body[data-phase="blocked"]'}],
+                "expect": [{"kind": "visible", "selector": "#composer", "timeout_ms": 3_000}],
+            },
+        ]
+    )
+    result = _driver(origin, tmp_path).run(flow)
+    assert result.status == "passed", result.steps[-1].detail
 
 
 def test_native_confirm_is_accepted_and_recorded(origin, tmp_path):

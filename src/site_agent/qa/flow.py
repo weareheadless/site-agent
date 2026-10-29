@@ -111,6 +111,7 @@ class Step:
     note: str | None = None
     mark: str | None = None
     until: tuple[Expectation, ...] = ()
+    abort: tuple[Expectation, ...] = ()
     persona: Mapping[str, Any] | None = None
     reply_timeout_ms: int = 240_000
 
@@ -131,6 +132,7 @@ class Step:
             "note": self.note,
             "mark": self.mark,
             "until": [item.to_dict() for item in self.until],
+            "abort": [item.to_dict() for item in self.abort],
             "persona": dict(self.persona) if self.persona else None,
             "reply_timeout_ms": self.reply_timeout_ms,
         }
@@ -150,6 +152,10 @@ class Step:
         until = tuple(
             Expectation.from_dict(item, f"{where}.until[{index}]")
             for index, item in enumerate(raw.get("until") or ())
+        )
+        abort = tuple(
+            Expectation.from_dict(item, f"{where}.abort[{index}]")
+            for index, item in enumerate(raw.get("abort") or ())
         )
         _require_action_fields(action, raw, where)
         mark = raw.get("mark")
@@ -171,6 +177,7 @@ class Step:
             note=raw.get("note"),
             mark=str(mark) if mark is not None else None,
             until=until,
+            abort=abort,
             persona=dict(raw.get("persona") or {}) or None,
             reply_timeout_ms=int(raw.get("reply_timeout_ms") or 240_000),
         )
@@ -194,19 +201,11 @@ def _require_action_fields(action: str, raw: Mapping[str, Any], where: str) -> N
             raise FlowError(f"{where}: 'converse' needs 'until', or the conversation never ends")
         persona = raw.get("persona")
         if not isinstance(persona, Mapping):
-            raise FlowError(f"{where}: 'converse' needs a persona with facts and a fallback")
-        if not persona.get("fallback"):
-            raise FlowError(f"{where}: persona needs a fallback reply for questions it does not know")
-        facts = persona.get("facts") or ()
-        if not isinstance(facts, Sequence) or isinstance(facts, (str, bytes)):
-            raise FlowError(f"{where}: persona.facts must be a list")
-        for index, fact in enumerate(facts):
-            if not isinstance(fact, Mapping) or not fact.get("reply"):
-                raise FlowError(f"{where}: persona.facts[{index}] needs a reply")
-            when = fact.get("when")
-            if not when or isinstance(when, (str, bytes)):
-                raise FlowError(f"{where}: persona.facts[{index}].when must be a list of keywords")
-        turns = persona.get("max_turns", 8)
+            raise FlowError(f"{where}: 'converse' needs a persona brief describing the owner")
+        brief = persona.get("brief")
+        if not isinstance(brief, str) or not brief.strip():
+            raise FlowError(f"{where}: persona needs a brief: who this owner is and what they know")
+        turns = persona.get("max_turns", 12)
         if not isinstance(turns, int) or not 1 <= turns <= 40:
             raise FlowError(f"{where}: persona.max_turns must be an integer between 1 and 40")
     elif raw.get("until"):

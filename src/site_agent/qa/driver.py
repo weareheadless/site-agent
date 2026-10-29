@@ -21,11 +21,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from .conversation import OwnerAgent
 from .flow import Expectation, Flow, Step
 
 
 class DriverError(RuntimeError):
     """The flow could not be driven at all (browser, target, or transport)."""
+
+
+class _Aborted(Exception):
+    """A terminal condition made the rest of the wait pointless."""
 
 
 @dataclass
@@ -142,6 +147,7 @@ class PlaywrightDriver:
         viewport: Mapping[str, int] | None = None,
         screenshots: bool = True,
         browser_channel: str | None = None,
+        owner_complete: Any | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.artifacts_dir = Path(artifacts_dir)
@@ -149,7 +155,9 @@ class PlaywrightDriver:
         self.viewport = dict(viewport or {"width": 1280, "height": 900})
         self.screenshots = screenshots
         self.browser_channel = browser_channel
+        self.owner_complete = owner_complete
         self._current_step = "setup"
+        self._abort: tuple[Expectation, ...] = ()
 
     # -- public ---------------------------------------------------------
 
@@ -221,6 +229,7 @@ class PlaywrightDriver:
     ) -> StepResult:
         outcome = StepResult(id=step.id, action=step.action)
         started = time.monotonic()
+        self._abort = step.abort
         try:
             self._perform(page, step, outcome, context)
             for expectation in step.expect:
@@ -235,10 +244,14 @@ class PlaywrightDriver:
                 ) or "assertion failed"
             else:
                 outcome.status = "passed"
+        except _Aborted as exc:
+            outcome.status = "failed"
+            outcome.detail = f"aborted: {exc}"
         except Exception as exc:
             outcome.status = "failed"
             outcome.detail = f"{type(exc).__name__}: {exc}"
         finally:
+            self._abort = ()
             outcome.duration_ms = int((time.monotonic() - started) * 1000)
             if self.screenshots and step.screenshot:
                 shot = self._screenshot(page, index, step.id, result.artifacts)
@@ -294,34 +307,37 @@ class PlaywrightDriver:
     ) -> None:
         """Hold the owner's side of a real conversation.
 
-        The owner is scripted from a persona fact sheet, Ada is not. Each turn
-        reads what Ada actually asked, answers it from the facts, and waits for
-        the next reply. The loop ends when an ``until`` condition holds, which is
-        the only honest way to stop: a fixed turn count would either cut a real
-        conversation short or spin after it finished.
+        The owner is a model with a brief, not a script: Ada bundles questions,
+        rephrases, and follows up, so the answers have to be reasoned rather than
+        matched. The loop ends when an ``until`` condition holds -- never on a
+        fixed turn count, which would either cut a real conversation short or
+        spin after it finished.
         """
 
         persona = step.persona or {}
-        facts = list(persona.get("facts") or ())
-        fallback = str(persona.get("fallback") or "")
-        max_turns = int(persona.get("max_turns") or 8)
+        brief = str(persona.get("brief") or "").strip()
+        max_turns = int(persona.get("max_turns") or 12)
+        if self.owner_complete is None:
+            raise DriverError(
+                "this flow needs an owner model; pass --owner-model (and its key env) "
+                "so the conversation can be held rather than guessed"
+            )
+        owner = OwnerAgent(brief, self.owner_complete, max_turns=max_turns)
         seen = self._message_count(page)
-        transcript: list[dict[str, Any]] = []
 
         for turn in range(1, max_turns + 1):
             if self._until_satisfied(page, step.until, context):
                 outcome.turns = turn - 1
-                outcome.transcript = transcript
+                outcome.transcript = list(owner.transcript)
                 outcome.detail = f"settled after {turn - 1} owner turn(s)"
                 return
             question = self._last_assistant_text(page)
-            reply = _choose_reply(question, facts, fallback)
-            transcript.append({"turn": turn, "ada": question, "owner": reply})
+            reply = owner.reply(question)
             self._send_message(page, reply)
             seen = self._await_turn(page, seen, step.reply_timeout_ms)
 
-        outcome.transcript = transcript
         outcome.turns = max_turns
+        outcome.transcript = list(owner.transcript)
         if self._until_satisfied(page, step.until, context):
             outcome.detail = f"settled after {max_turns} owner turn(s)"
             return
@@ -417,6 +433,7 @@ class PlaywrightDriver:
         context: dict[str, Any],
     ) -> AssertionResult:
         kind = expectation.kind
+        self._poll_page = page
         try:
             if kind == "visible":
                 return self._poll(expectation, lambda: self._visible(page, expectation.selector or ""))
@@ -460,14 +477,60 @@ class PlaywrightDriver:
                     passed,
                     f"{expectation.path} = {actual!r} ({expectation.op} {expectation.value!r})",
                 )
+        except _Aborted:
+            raise
         except Exception as exc:
             return AssertionResult(expectation, False, f"{type(exc).__name__}: {exc}")
         return AssertionResult(expectation, False, f"unsupported expectation {kind!r}")
 
+    def _abort_reason(self, page: Any) -> str | None:
+        """A terminal failure the flow should not wait out.
+
+        A build that has already reported `blocked` will never render a preview,
+        so waiting for the preview timeout buries the real cause behind thirty
+        minutes of polling.
+        """
+
+        for expectation in self._abort:
+            if self._satisfied_now(page, expectation):
+                detail = self._owner_visible_reason(page)
+                described = expectation.description or expectation.kind
+                return f"{described}{': ' + detail if detail else ''}"
+        return None
+
+    def _satisfied_now(self, page: Any, expectation: Expectation) -> bool:
+        try:
+            if expectation.kind == "visible":
+                return self._visible(page, expectation.selector or "")
+            if expectation.kind == "hidden":
+                return not self._visible(page, expectation.selector or "")
+            if expectation.kind == "text":
+                return (expectation.text or "") in self._text(page, expectation.selector or "")
+            if expectation.kind == "text_absent":
+                return (expectation.text or "") not in self._text(page, expectation.selector or "")
+            if expectation.kind == "count":
+                op = expectation.op[4:] if expectation.op.startswith("len_") else expectation.op
+                return _compare(page.locator(expectation.selector or "").count(), expectation.value, op)
+        except Exception:
+            return False
+        return False
+
+    def _owner_visible_reason(self, page: Any) -> str:
+        for selector in ("#phase-detail", "#composer-note", "#provision-note"):
+            text = self._text(page, selector).strip()
+            if text:
+                return text
+        return ""
+
     def _poll(self, expectation: Expectation, predicate: Any) -> AssertionResult:
+        page = getattr(self, "_poll_page", None)
         deadline = time.monotonic() + expectation.timeout_ms / 1000
         last = False
         while time.monotonic() < deadline:
+            if page is not None:
+                reason = self._abort_reason(page)
+                if reason:
+                    raise _Aborted(reason)
             try:
                 last = bool(predicate())
             except Exception:
@@ -576,15 +639,6 @@ class PlaywrightDriver:
 
 def _stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def _choose_reply(question: str, facts: Sequence[Mapping[str, Any]], fallback: str) -> str:
-    text = (question or "").lower()
-    for fact in facts:
-        keywords = [str(item).lower() for item in fact.get("when") or ()]
-        if keywords and any(keyword in text for keyword in keywords):
-            return str(fact.get("reply") or fallback)
-    return fallback
 
 
 def _location(message: Any) -> str:

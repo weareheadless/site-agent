@@ -17,6 +17,7 @@ result is *good* lives in :mod:`site_agent.qa.rubric`, and the default rubric is
 deterministic so a gate never depends on a model's opinion.
 """
 
+from .conversation import OwnerAgent, chat_completion
 from .driver import DriverError, FlowResult, PlaywrightDriver
 from .evidence import EVIDENCE_SCHEMA, build_bundle, fingerprint, write_bundle
 from .flow import Expectation, Flow, FlowError, Step, load_flow
@@ -31,10 +32,12 @@ __all__ = [
     "FlowResult",
     "JudgeVerdict",
     "ModelJudge",
+    "OwnerAgent",
     "PlaywrightDriver",
     "RuleJudge",
     "Step",
     "build_bundle",
+    "chat_completion",
     "fingerprint",
     "load_flow",
     "review",

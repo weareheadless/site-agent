@@ -69,58 +69,44 @@ steps:
         timeout_ms: 1000
         description: Ada has enough of the brief to build
     persona:
-      name: ceramics-studio-lisbon
-      max_turns: 10
-      fallback: >
-        Yes, that is right. Use what I have told you and go ahead.
-      facts:
-        - when: ["name", "called", "brand"]
-          reply: >
-            The studio is called Atelier Sete. "Sete" because we are the seventh
-            unit on the street.
-        - when: ["where", "location", "address", "visit", "find you"]
-          reply: >
-            Rua da Boavista 112 in Lisbon, open Thursday to Sunday, 11 to 7.
-        - when: ["price", "cost", "how much", "fee", "budget"]
-          reply: >
-            The four-week beginner wheel course is 240 euros. One-off taster
-            sessions are 45 euros and include clay and firing.
-        - when: ["class", "course", "workshop", "teach", "learn"]
-          reply: >
-            Beginners start on the wheel in a group of six, four sessions of two
-            hours. We also run a Saturday taster for people who just want to try.
-        - when: ["shop", "buy", "piece", "product", "sell"]
-          reply: >
-            About thirty pieces at a time, 25 to 90 euros, thrown and glazed here
-            in small batches. Nothing is mass produced.
-        - when: ["who", "audience", "customer", "people"]
-          reply: >
-            People who want a slower weekend, and beginners who have never
-            touched clay. Not a corporate team-building venue.
-        - when: ["contact", "enquir", "email", "phone", "booking", "book"]
-          reply: >
-            Enquiries go to hello@ateliersete.pt. Booking by email is fine for
-            now, we do not take payments online.
-        - when: ["domain", "url", "address of the site"]
-          reply: >
-            Use ateliersete.pt if you need a domain.
-        - when: ["photo", "image", "picture", "asset", "logo"]
-          reply: >
-            No photos or logo yet. Use warm neutrals and generous whitespace
-            rather than stock imagery.
-        - when: ["tone", "style", "feel", "look", "design"]
-          reply: >
-            Calm and handmade. Earthy, not sleek. No stock photos of people in
-            suits.
-        - when: ["when", "deadline", "timeline", "launch"]
-          reply: >
-            No deadline. Get it right rather than fast.
+      max_turns: 14
+      brief: |
+        You are Mariana, co-owner of Atelier Sete, a small ceramics studio at
+        Rua da Boavista 112 in Lisbon. You run it with one other potter and have
+        been there six years. You are talking to Ada, who is building the studio
+        website.
+
+        What you know:
+        - The studio is called Atelier Sete, because it is the seventh unit on
+          the street. The story is worth telling on the page.
+        - Open Thursday to Sunday, 11:00 to 19:00.
+        - Beginner wheel-throwing course: four sessions of two hours, groups of
+          six, 240 euros. Saturday taster sessions, 45 euros, clay and firing
+          included.
+        - About thirty pieces for sale at a time, 25 to 90 euros, thrown and
+          glazed in small batches. Nothing mass produced.
+        - Audience: people who want a slower weekend, and beginners who have
+          never touched clay. Not a corporate team-building venue.
+        - Enquiries: hello@ateliersete.pt. Booking by email is fine; no online
+          payments for now.
+        - Domain: ateliersete.pt.
+        - No photos or logo yet. Warm neutrals and generous whitespace rather
+          than stock imagery.
+        - Tone: calm and handmade, earthy rather than sleek. No stock photos of
+          people in suits.
+        - No deadline. Get it right rather than fast.
+
+        You are not in a hurry, but you are concise: you are a working potter,
+        not a marketing person. You do not know anything about web design and
+        you are happy to leave those decisions to Ada, as long as the result
+        feels like the studio.
 
   - id: accept-the-brief
     action: fill
     selector: "#message"
     text: >
-      Yes, that is right. Build it from that brief.
+      That is all correct and the brief is complete. Please confirm it and build
+      the site now.
     expect:
       - kind: visible
         selector: "#send"
@@ -138,6 +124,10 @@ steps:
   - id: candidate-in-review
     action: assert
     mark: candidate_ready
+    abort:
+      - kind: visible
+        selector: 'body[data-phase="blocked"]'
+        description: the build reported a terminal failure
     expect:
       - kind: visible
         selector: "#preview-iframe"

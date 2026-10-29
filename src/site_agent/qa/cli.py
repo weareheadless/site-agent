@@ -14,12 +14,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Sequence
 
+from .conversation import chat_completion
 from .driver import DriverError, PlaywrightDriver
 from .evidence import build_bundle, utcnow, write_bundle
 from .flow import Flow, FlowError, load_flow, load_flows
@@ -72,6 +74,20 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="permit removing the previously recorded test site (test/local targets only)",
     )
+    run.add_argument(
+        "--owner-model",
+        default=os.environ.get("SITE_AGENT_QA_OWNER_MODEL", ""),
+        help="model that plays the owner in a conversation flow, e.g. openrouter/openai/gpt-6-luna",
+    )
+    run.add_argument(
+        "--owner-api-key-env",
+        default=os.environ.get("SITE_AGENT_QA_OWNER_KEY_ENV", "OPENROUTER_API_KEY"),
+        help="environment variable holding the owner model's key (default: OPENROUTER_API_KEY)",
+    )
+    run.add_argument(
+        "--owner-base-url",
+        default=os.environ.get("SITE_AGENT_QA_OWNER_BASE_URL", "https://openrouter.ai/api/v1"),
+    )
     return parser
 
 
@@ -112,6 +128,7 @@ def _run(args: argparse.Namespace) -> int:
         if purged:
             print(f"removed {len(purged)} previous test site(s): {', '.join(purged)}")
     probe = probe_target(args.base_url)
+    owner_complete = _owner_completer(args)
     for flow in flows:
         try:
             driver = PlaywrightDriver(
@@ -120,6 +137,7 @@ def _run(args: argparse.Namespace) -> int:
                 timeout_ms=args.timeout_ms,
                 viewport={"width": int(width), "height": int(height)},
                 screenshots=not args.no_screenshots,
+                owner_complete=owner_complete,
             )
             started = utcnow()
             result = driver.run(flow)
@@ -240,6 +258,24 @@ def probe_target(base_url: str) -> dict:
         "provider": payload.get("provider"),
         "site_name": payload.get("site_name"),
     }
+
+
+def _owner_completer(args: argparse.Namespace):
+    """Build the owner model, or nothing when the flow needs no conversation."""
+
+    if not args.owner_model:
+        return None
+    key = os.environ.get(args.owner_api_key_env, "").strip()
+    if not key:
+        print(
+            f"error: --owner-model needs a key in ${args.owner_api_key_env}",
+            file=sys.stderr,
+        )
+        raise SystemExit(EXIT_ERROR)
+    model = args.owner_model
+    if model.startswith("openrouter/"):
+        model = model[len("openrouter/") :]
+    return chat_completion(model=model, api_key=key, base_url=args.owner_base_url)
 
 
 def _resolve(target: str) -> tuple[Flow, ...]:

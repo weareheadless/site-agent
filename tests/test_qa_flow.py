@@ -136,7 +136,7 @@ def _converse(**overrides):
         "id": "talk",
         "action": "converse",
         "until": [{"kind": "visible", "selector": "#confirm-panel"}],
-        "persona": {"fallback": "Yes, go ahead.", "facts": [{"when": ["name"], "reply": "Sete."}]},
+        "persona": {"brief": "You are Mariana, who runs a ceramics studio in Lisbon."},
     }
     raw.update(overrides)
     return _minimal(steps=[raw])
@@ -149,27 +149,15 @@ def test_converse_requires_an_end_condition():
         Flow.from_dict(raw)
 
 
-def test_converse_requires_a_persona_with_a_fallback():
+def test_converse_requires_a_persona_brief():
     raw = _converse()
     del raw["steps"][0]["persona"]
-    with pytest.raises(FlowError, match="needs a persona"):
+    with pytest.raises(FlowError, match="persona brief"):
         Flow.from_dict(raw)
 
     raw = _converse()
-    del raw["steps"][0]["persona"]["fallback"]
-    with pytest.raises(FlowError, match="fallback"):
-        Flow.from_dict(raw)
-
-
-def test_persona_facts_must_be_answerable():
-    raw = _converse()
-    raw["steps"][0]["persona"]["facts"] = [{"when": ["name"]}]
-    with pytest.raises(FlowError, match="needs a reply"):
-        Flow.from_dict(raw)
-
-    raw = _converse()
-    raw["steps"][0]["persona"]["facts"] = [{"when": "name", "reply": "x"}]
-    with pytest.raises(FlowError, match="must be a list of keywords"):
+    raw["steps"][0]["persona"] = {"brief": "   "}
+    with pytest.raises(FlowError, match="who this owner is"):
         Flow.from_dict(raw)
 
 
@@ -206,14 +194,16 @@ def test_marks_must_be_stable_identifiers():
     assert flow.steps[0].mark == "build_requested"
 
 
-def test_the_live_flow_answers_ada_with_real_facts_and_measures_the_build():
+def test_the_live_flow_gives_the_owner_a_brief_not_a_script():
     root = Path(__file__).resolve().parents[1] / "flows"
     flow = load_flow(root / "intake-to-preview.flow.yaml")
     converse = [step for step in flow.steps if step.action == "converse"]
     assert len(converse) == 1
     persona = converse[0].persona or {}
-    assert persona["fallback"]
-    assert len(persona["facts"]) >= 5, "a persona that cannot answer is not a test"
+    brief = str(persona["brief"])
+    assert len(brief) > 200, "the owner needs enough context to answer like a person"
+    assert "facts" not in persona, "answers come from a model, not a lookup table"
+    assert persona["max_turns"] >= 8
     assert converse[0].until
 
     marks = [step.mark for step in flow.steps if step.mark]
@@ -221,6 +211,16 @@ def test_the_live_flow_answers_ada_with_real_facts_and_measures_the_build():
     assert "candidate_ready" in marks
     assert "site_live" in marks
     assert marks.index("build_requested") < marks.index("candidate_ready")
+
+
+def test_the_live_flow_aborts_when_the_build_reports_a_terminal_failure():
+    root = Path(__file__).resolve().parents[1] / "flows"
+    flow = load_flow(root / "intake-to-preview.flow.yaml")
+    candidate = next(step for step in flow.steps if step.id == "candidate-in-review")
+    assert candidate.abort, "waiting 30 minutes for a preview that will never render hides the cause"
+    assert any(
+        'blocked' in (expectation.selector or "") for expectation in candidate.abort
+    )
 
 
 def test_the_live_flow_provisions_like_production():

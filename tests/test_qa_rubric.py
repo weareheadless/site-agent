@@ -57,14 +57,26 @@ def test_uncaught_page_errors_block():
 
 
 def test_raw_contract_error_reaching_the_owner_blocks():
-    result = _result(status="failed", detail="creative direction returned an invalid experience plan: brand_behavior_system.utility_behaviors[0].meaning is required")
+    result = _result(status="failed", detail="step open failed")
+    result.observations.page_metrics["bodyText"] = (
+        "creative direction returned an invalid experience plan: "
+        "brand_behavior_system.utility_behaviors[0].meaning is required"
+    )
     verdict = review(result)
     assert "owner.error_text" in _ids(verdict)
     assert "flow.steps" in _ids(verdict)
 
 
+def test_harness_error_text_is_not_mistaken_for_owner_text():
+    result = _result(status="failed", detail="DriverError: conversation did not settle")
+    assert "owner.error_text" not in _ids(review(result))
+
+
 def test_a_clean_failure_with_an_actionable_message_is_not_penalised():
-    result = _result(status="failed", detail="Ada could not finish the plan. Retry from the brief.")
+    result = _result(status="failed", detail="step open failed")
+    result.observations.page_metrics["bodyText"] = (
+        "Ada could not finish the plan. Retry from the brief."
+    )
     result.steps[0].status = "failed"
     verdict = review(result)
     assert "owner.error_text" not in _ids(verdict)
