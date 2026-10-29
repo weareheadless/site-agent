@@ -1,0 +1,93 @@
+id: intake-to-preview
+title: Confirmed intake produces a candidate in the Design review flow
+tier: live
+description: >
+  The product mission, driven as an owner would drive it. A real intake
+  conversation reaches a buildable brief, the build runs, and the candidate
+  appears in the Design review pane. This is the acceptance flow for UI-056 and
+  the shape every "prove it live" task should reuse.
+
+  Live tier on purpose: it spends model tokens and real build time, so it is a
+  release gate and a nightly run, never a pull-request check. It asserts that
+  the run crosses each boundary; it does not assert taste. Taste is the model
+  judge's advisory job.
+requires:
+  - deployed target with working model access
+  - disposable tenant and project (never a customer workspace)
+  - a build that can produce the declared output shape
+tags:
+  - intake
+  - design
+  - acceptance
+  - ui-056
+steps:
+  - id: open-intake
+    action: goto
+    url: /
+    expect:
+      - kind: visible
+        selector: "#composer"
+      - kind: visible
+        selector: "#phase-pill"
+
+  - id: state-the-brief
+    action: fill
+    selector: "#message"
+    text: >
+      I run a small ceramics studio in Lisbon. I sell classes and a few pieces
+      online. I need a site that explains the classes, shows the space, and
+      takes enquiries. Keep it calm and handmade, not corporate.
+    expect:
+      - kind: visible
+        selector: "#send"
+
+  - id: send-brief
+    action: click
+    selector: "#send"
+    expect:
+      - kind: visible
+        selector: "#messages .message, #messages > *"
+        timeout_ms: 120000
+        description: Ada's reply reached the conversation
+      - kind: text_absent
+        selector: "#composer-note"
+        text: "is required"
+        description: no raw contract error reaches the owner
+      - kind: text_absent
+        selector: "#composer-note"
+        text: "invalid experience plan"
+        description: the UI-056 failure signature is absent
+
+  - id: accept-the-brief
+    action: fill
+    selector: "#message"
+    text: >
+      Yes, that is right. Use that brief and build it.
+    expect:
+      - kind: visible
+        selector: "#send"
+
+  - id: send-acceptance
+    action: click
+    selector: "#send"
+    expect:
+      - kind: visible
+        selector: "#phase-pill"
+        timeout_ms: 120000
+      - kind: text_absent
+        selector: "#composer-note"
+        text: "failed"
+        description: the build did not report a failure
+
+  - id: candidate-in-review
+    action: assert
+    expect:
+      - kind: visible
+        selector: "#preview-iframe"
+        timeout_ms: 1800000
+        description: the candidate renders in the Design review pane
+      - kind: visible
+        selector: "#preview-heading"
+      - kind: console_clean
+      - kind: network_clean
+      - kind: no_page_errors
