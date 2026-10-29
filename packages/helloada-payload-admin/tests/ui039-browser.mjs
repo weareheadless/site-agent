@@ -15,13 +15,14 @@ const virtual = {
     let body = {};
     if (url.includes('/workspace')) body = {site:{name:'Fixture site',url:'https://fixture.invalid'},routes:[{path:'/',kind:'page',collection:'pages',sourceId:'page-1'}],documents:[{id:'1',collection:'pages',sourceId:'page-1',slug:'home',title:'Home',status:'draft',draftHash:'draft-hash'}],ada:{configured:true}};
     else if (url.includes('/api/helloada/ada?')) body = {phase:'workspace',website_present:true};
-    else if (url.includes('/page-fields')) body = {fields:Array.from({length:18},(_,i)=>({id:'field-'+i,key:'field-'+i,label:i===0?'Heading':'Long body '+i,editorVisible:true,editable:true,status:'editable',type:'text',value:'Body '+i,text:'Body '+i,contentEdit:{collection:'pages',documentId:'1',field:'field-'+i,expectedValue:'Body '+i}}))};
+    else if (url.includes('/page-fields')) body = {fields:Array.from({length:18},(_,i)=>{const text=('Body '+i+' ').repeat(i===0?24:12); return {id:'field-'+i,key:'field-'+i,label:i===0?'Heading — '+('long field title ').repeat(12):'Long body '+i,section:'Main content — '+('section details ').repeat(12),editorVisible:true,editable:true,status:'editable',type:'text',value:text,text,contentEdit:{collection:'pages',documentId:'1',field:'field-'+i,expectedValue:text}}})};
     else if (url.includes('/drafts')) body = {drafts:[]};
     else if (url.includes('/conversations')) body = {conversations:[]};
     else if (url.includes('/api/helloada/ada')) body = {jobs:[]};
+    if (url.includes('/page-fields')) window.__pageFieldCount = body.fields.length;
     return {ok:true,status:200,json:async()=>body};
   }`,
-  'translations': `export function useHelloAdaTranslations(){ return {language:'en', t:(key)=>key}; }`,
+  'translations': `const labels={'owner.publishTitle':'Publish changes?','owner.publishNote':'Review this long publication summary. '.repeat(32),'owner.keepReviewing':'Keep reviewing','owner.publishChanges':'Publish changes','workspace.quickEditLabel':'Quick editing','workspace.quickEditButton':'Edit field','workspace.quickEditFieldButton':'Edit field','workspace.pageClose':'Close','workspace.applyFieldChange':'Apply field change'}; const t=(key)=>labels[key]||key; export function useHelloAdaTranslations(){ return {language:'en', t}; }`,
   'provider': `export function useHelloAdaSite(){ return {siteName:'Fixture site',features:{bookings:false},routes:{preview:'/preview'},apiPrefix:'/api/helloada'}; }`,
   'search': `export function useSearchParams(){return new URLSearchParams(location.search)}`,
   'image': `import React from 'react'; export default function Image(props){return React.createElement('img',props)}`,

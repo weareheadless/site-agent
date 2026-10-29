@@ -8,15 +8,24 @@ height uses a `100vh` fallback followed by `100dvh` where supported.
 
 Browser evidence is local and uses mocked API/Next boundaries. The harness
 bundles the actual production component with only child/API/Next boundaries
-stubbed, compiles the package's real `admin.scss`, launches Chromium and checks
-footer hit-testing and viewport bounds. Publish and full page-editor screenshots
-at 1440x900, 390x844 and 390x480, plus the exact run report, are in
-`/tmp/opencode/ui039/`. It is not a deployed tenant or production-network proof.
+stubbed and compiles the package's real `admin.scss`. Publish geometry passes at
+1440x900, 390x844 and 390x480 with ordinary action clicks and closed-dialog
+checks. The full page-editor was previously measured at these sizes by the
+inherited harness. The updated harness attempts the quick-edit route through the
+checkbox, same-origin iframe hover and actual overlay button, but it currently
+fails before opening the field dialog, so this retry does not establish field
+dialog geometry or full-matrix acceptance. Detailed assertion/DOM evidence is
+retained in the test output; no field-dialog markup or state is fabricated.
+The requested all-three-dialog overflow/click evidence remains incomplete.
+The exact failing assertion is `quick-edit iframe overlay did not appear after
+real hover`: diagnostics showed `checkboxChecked: true`, `pageFieldCount: 18`,
+same-origin iframe field `field-0` present and loaded, `pointerEvents.count: 0`,
+and `.helloada-preview-edit-overlay` count `0` after Playwright hovered the real
+iframe target. Thus the feature gate and fixture record exist, but the iframe
+document did not observe the hover event in this harness run.
+
 Reproduce from the package with `node tests/ui039-browser.mjs` (uses the installed
 Python Playwright package and cached Chromium; no install or network access).
-
-The field popover is not included in the browser report: the mocked preview
-fixture did not reach its quick-edit target. Its production source and compiled
-styles are covered by package checks, but runtime geometry remains an acceptance
-gap. Attachments are covered by deterministic package tests only; no browser
-upload/send is claimed.
+This is a local fixture, not a deployed tenant or production-network proof.
+Attachments remain a separate acceptance gap: deterministic package tests only;
+no browser upload/send is claimed.
