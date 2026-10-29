@@ -13,7 +13,7 @@ import { EditableRichTextEditor } from './EditableRichTextEditor'
 import { fetchHelloAda } from '../api/fetchHelloAda'
 import { useHelloAdaTranslations } from '../api/useHelloAdaTranslations'
 import { mediaReferenceId, mediaUrl as migrationMediaUrl } from '../lib/media'
-import { canSendChatAttachments, remainingChatAttachmentSlots, splitChatImageFiles } from '../lib/chat-attachments'
+import { canSendChatAttachments, remainingChatAttachmentSlots, splitChatImageFiles, uploadChatImages } from '../lib/chat-attachments'
 import { useHelloAdaSite } from '../config/provider'
 import { HelloAdaMark } from './HelloAdaLogo'
 import { WorkspaceIcon } from './WorkspaceIcon'
@@ -1538,37 +1538,43 @@ function ReviewWorkspace() {
     const unsupportedEntries = unsupported.map((file) => ({ id: `${file.name}-${Math.random()}`, filename: file.name, status: 'unsupported' as const, reason: t('workspace.unsupportedImage') }))
     if (unsupportedEntries.length) setUploadEntries((current) => [...current, ...unsupportedEntries])
     const slots = remainingChatAttachmentSlots(pendingAttachments.length, uploadEntries.filter((entry) => entry.status === 'uploading').length)
-    if (selected.length > slots) {
+    const accepted = selected.slice(0, slots)
+    const overflow = selected.slice(slots)
+    if (overflow.length) {
+      const overflowEntries = overflow.map((file, index) => ({
+        id: `${file.name}-${Date.now()}-limit-${index}`,
+        filename: file.name,
+        status: 'failed' as const,
+        reason: t('error.attachLimit'),
+      }))
+      setUploadEntries((current) => [...current, ...overflowEntries])
       setError(t('error.attachLimit'))
-      return
     }
-    if (!selected.length) return
+    if (!accepted.length) return
     setUploadingMedia(true)
     setError('')
-    const entries = selected.map((file, index) => ({ id: `${file.name}-${Date.now()}-${index}`, filename: file.name, status: 'uploading' as const }))
+    const entries = accepted.map((file, index) => ({ id: `${file.name}-${Date.now()}-${index}`, filename: file.name, status: 'uploading' as const }))
     setUploadEntries((current) => [...current, ...entries])
-    let activeEntryId = entries[0]?.id
     try {
-      for (let index = 0; index < selected.length; index += 1) {
-        activeEntryId = entries[index].id
-        const file = selected[index]
+      await uploadChatImages({
+        files: accepted,
+        entries,
+        upload: async (file) => {
         const form = new FormData()
         form.append('file', file)
         const response = await fetchHelloAda('/api/helloada/media/upload', { method: 'POST', body: form })
         const body = (await response.json()) as { attachment?: ChatAttachment; message?: string }
         if (!response.ok || !body.attachment?.asset_id) {
-          const reason = body.message || t('error.imageAttach')
-          setUploadEntries((current) => current.map((entry) => entry.id === entries[index].id ? { ...entry, status: 'failed' as const, reason } : entry))
-          setError(reason)
-          continue
+          throw new Error(body.message || t('error.imageAttach'))
         }
-        setPendingAttachments((current) => current.some((item) => String(item.asset_id) === String(body.attachment?.asset_id)) ? current : [...current, body.attachment!])
-        setUploadEntries((current) => current.filter((entry) => entry.id !== entries[index].id))
-      }
-    } catch (cause) {
-      const reason = cause instanceof Error ? cause.message : t('error.imageAttach')
-      if (activeEntryId) setUploadEntries((current) => current.map((entry) => entry.id === activeEntryId ? { ...entry, status: 'failed' as const, reason } : entry))
-      setError(reason)
+        return { ...body.attachment, asset_id: body.attachment.asset_id }
+        },
+        addAttachment: (attachment) => setPendingAttachments((current) => current.some((item) => String(item.asset_id) === String(attachment.asset_id)) ? current : [...current, attachment]),
+        updateEntry: (id, update) => setUploadEntries((current) => current.map((entry) => entry.id === id ? { ...entry, ...update } : entry)),
+        removeEntry: (id) => setUploadEntries((current) => current.filter((entry) => entry.id !== id)),
+        reportFailure: setError,
+        fallbackError: t('error.imageAttach'),
+      })
     } finally {
       setUploadingMedia(false)
       if (fileInputRef.current) fileInputRef.current.value = ''
@@ -2538,7 +2544,26 @@ function ReviewWorkspace() {
              <label className="helloada-sr-only" htmlFor="helloada-ada-message">{t('workspace.askAda')}</label>
              {pendingAttachments.length || uploadEntries.length ? (
                 <div className="helloada-pending-attachments" aria-label={t('workspace.pendingAttachments')}>
-                 {uploadEntries.map((entry) => <div className="helloada-pending-attachment" key={entry.id} style={{ width: 'auto', height: 'auto', minHeight: 46, maxWidth: '100%', padding: 6, display: 'flex', alignItems: 'center', gap: 6, cursor: 'default', overflow: 'visible' }}><span style={{ width: 'auto', height: 'auto', fontSize: 12 }}>{entry.filename}</span><small>{entry.status === 'uploading' ? t('workspace.attachmentUploading') : entry.status === 'failed' ? `${t('workspace.attachmentFailed')}: ${entry.reason}` : entry.reason}</small><button type="button" disabled={entry.status === 'uploading'} aria-label={`${t('workspace.removeImage')} ${entry.filename}`} onClick={() => setUploadEntries((current) => current.filter((item) => item.id !== entry.id))}>×</button></div>)}
+                  {uploadEntries.map((entry) => (
+                    <div className="helloada-pending-attachment helloada-upload-status" key={entry.id}>
+                      <span>{entry.filename}</span>
+                      <small>
+                        {entry.status === 'uploading'
+                          ? t('workspace.attachmentUploading')
+                          : entry.status === 'failed'
+                            ? `${t('workspace.attachmentFailed')}: ${entry.reason}`
+                            : entry.reason}
+                      </small>
+                      <button
+                        type="button"
+                        disabled={entry.status === 'uploading'}
+                        aria-label={`${t('workspace.removeImage')} ${entry.filename}`}
+                        onClick={() => setUploadEntries((current) => current.filter((item) => item.id !== entry.id))}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
                 {pendingAttachments.map((attachment, index) => {
                   const source = attachment.thumbnail_url || attachment.preview_url || attachment.url || ''
                   return (

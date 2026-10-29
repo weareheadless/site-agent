@@ -2,6 +2,21 @@
    Native Payload editors keep their layout; their entry point is Manage. */
 @use 'surfaces' as surfaces;
 @mixin styles {
+  .helloada-upload-status {
+    width: auto;
+    height: auto;
+    min-height: 46px;
+    max-width: 100%;
+    padding: 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: default;
+    overflow: visible;
+
+    > span { width: auto; height: auto; font-size: 12px; }
+  }
+
   .template-default .document-header h1,
   .template-default .collection-list__header h1 {
     font-size: 20px;
