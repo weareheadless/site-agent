@@ -619,7 +619,7 @@ def test_native_direction_without_memory_preserves_legacy_turn_kwargs(tmp_path, 
     assert all("memory" not in call for call in calls)
 
 
-@pytest.mark.parametrize("outcome", ["invalid", "provider_error", "corrected_valid"])
+@pytest.mark.parametrize("outcome", ["invalid", "provider_error", "corrected_valid", "checkpoint_resume"])
 def test_native_direction_repair_is_bounded_and_fenced(tmp_path, monkeypatch, outcome):
     clone, base_sha = _clone(tmp_path)
     memory = Memory(tmp_path / "data" / "memory.db")
@@ -674,7 +674,7 @@ def test_native_direction_repair_is_bounded_and_fenced(tmp_path, monkeypatch, ou
 
     monkeypatch.setattr(runner, "install_agent_files", lambda *args, **kwargs: None)
     monkeypatch.setattr(runner, "_typed_execution_config", lambda config, request, target: config)
-    if outcome == "corrected_valid":
+    if outcome in {"corrected_valid", "checkpoint_resume"}:
         from site_agent.application.design_orchestration import SpecialistDesignCoordinator as RealCoordinator
 
         class FakeCoordinator:
@@ -711,11 +711,11 @@ def test_native_direction_repair_is_bounded_and_fenced(tmp_path, monkeypatch, ou
         valid_plan.pop("asset_composition_plan")
         invalid_plan = json.loads(json.dumps(valid_plan))
         invalid_plan["behavior_system"]["utility_behaviors"][0].pop("meaning")
-        if outcome == "corrected_valid" and len(calls) == 2:
+        if outcome == "checkpoint_resume" or (outcome == "corrected_valid" and len(calls) == 2):
             return {
-                "session_id": "direction-corrected",
+                "session_id": "direction-corrected" if outcome == "corrected_valid" else "direction-valid",
                 "structured": {"direction": "A specific measured arrival.", "experience_plan": valid_plan},
-                "transcript": "corrected structured plan\n",
+                "transcript": "valid structured plan\n",
             }
         return {
             "session_id": "direction-invalid",
@@ -724,6 +724,42 @@ def test_native_direction_repair_is_bounded_and_fenced(tmp_path, monkeypatch, ou
         }
 
     monkeypatch.setattr(runner, "run_opencode_turn", fake_turn)
+
+    if outcome == "checkpoint_resume":
+        class SimulatedInterruption(Exception):
+            pass
+
+        def interrupt_before_build(message):
+            if "starting the integrated Build turn" in message:
+                raise SimulatedInterruption()
+
+        with pytest.raises(SimulatedInterruption):
+            runner.stage_design_build(
+                {"config": config, "memory": memory}, request, target, progress=interrupt_before_build,
+            )
+        completed = memory.list_design_phase_artifacts(run_id, phase="native_direction")
+        assert [item["status"] for item in completed] == ["completed"]
+        composition = memory.get_design_run(run_id)["planning_json"]["integrated_composition"]
+        assert composition["state"] == "planned"
+        persisted_hash = completed[0]["input_hashes"]
+        persisted_context_hash = completed[0]["context_snapshot_hash"]
+        assert completed[0]["payload"]["direction"] == "A specific measured arrival."
+        memory.close()
+        reopened = Memory(tmp_path / "data" / "memory.db")
+        receipt = runner.stage_design_build({"config": config, "memory": reopened}, request, target)
+        assert receipt.experience_plan["behavior_system"]["utility_behaviors"][0]["meaning"]
+        assert [call["agent_name"] for call in calls] == ["native-direction", "build"]
+        assert calls[-1]["memory"] is reopened
+        assert "A specific measured arrival." in prompts[-1]
+        assert "image_files" not in calls[0] or calls[0]["image_files"] == calls[-1].get("image_files")
+        reopened_completed = reopened.list_design_phase_artifacts(run_id, phase="native_direction")
+        fence = reopened.list_design_phase_artifacts(run_id, phase="build_dispatch")
+        assert reopened_completed[0]["input_hashes"] == persisted_hash
+        assert reopened_completed[0]["context_snapshot_hash"] == persisted_context_hash == snapshot.content_hash
+        assert fence[0]["input_hashes"] == persisted_hash
+        assert reopened.get_design_run(run_id)["planning_json"]["integrated_composition"]["experience_plan_hash"] == composition["experience_plan_hash"]
+        reopened.close()
+        return
 
     if outcome == "corrected_valid":
         receipt = runner.stage_design_build({"config": config, "memory": memory}, request, target)
