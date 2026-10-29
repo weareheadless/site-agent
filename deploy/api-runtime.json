@@ -1,0 +1,4 @@
+{
+  "schema": 1,
+  "requiredExtras": ["crawlseo", "design-lab", "ga"]
+}

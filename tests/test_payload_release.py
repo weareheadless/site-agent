@@ -187,18 +187,33 @@ def test_api_wheel_dependency_audit_is_independent_of_pip_install_flags(tmp_path
 
     env = {}
     log_path = tmp_path / "dependency-audit.log"
-    installed = wheel_with_requirement(
-        "installed.whl", "pip>=1\nhelloada-release-test-extra; extra == 'optional'"
-    )
+    installed = wheel_with_requirement("installed.whl", "pip>=1\n"
+        "helloada-release-test-extra; extra == 'optional'")
     api_deploy._verify_wheel_runtime_dependencies(
-        sys.executable, installed, cwd=tmp_path, env=env, log_path=log_path
+        sys.executable, installed, cwd=tmp_path, required_extras=[], env=env, log_path=log_path
     )
+    with pytest.raises(RuntimeError, match="optional: helloada-release-test-extra"):
+        api_deploy._verify_wheel_runtime_dependencies(
+            sys.executable, installed, cwd=tmp_path, required_extras=["optional"],
+            env=env, log_path=log_path
+        )
 
     missing = wheel_with_requirement("missing.whl", "helloada-release-test-missing>=1")
     with pytest.raises(RuntimeError, match="helloada-release-test-missing"):
         api_deploy._verify_wheel_runtime_dependencies(
-            sys.executable, missing, cwd=tmp_path, env=env, log_path=log_path
+            sys.executable, missing, cwd=tmp_path, required_extras=[], env=env, log_path=log_path
         )
+
+
+def test_api_runtime_extras_manifest_is_closed_and_unique(tmp_path):
+    source = tmp_path / "source"
+    (source / "deploy").mkdir(parents=True)
+    manifest = source / "deploy/api-runtime.json"
+    manifest.write_text('{"schema":1,"requiredExtras":["crawlseo","design-lab","ga"]}')
+    assert api_deploy._load_required_extras(source) == ["crawlseo", "design-lab", "ga"]
+    manifest.write_text('{"schema":1,"requiredExtras":["unknown"]}')
+    with pytest.raises(RuntimeError, match="unknown declarations"):
+        api_deploy._load_required_extras(source)
 
 
 def test_api_source_snapshot_is_immutable_and_sha_marked(tmp_path):
