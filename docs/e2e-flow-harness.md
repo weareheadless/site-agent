@@ -70,7 +70,8 @@ A live flow cannot rubber-stamp its way through intake: if Ada asks a question a
 the test answers "yes, go ahead", the run proves nothing about whether the product
 can actually get a brief out of a person.
 
-The `converse` action scripts the *owner*, never Ada:
+The `converse` action gives an AI owner a business brief and lets it answer Ada's
+actual questions. Neither side follows a keyword table or scripted replies:
 
 ```yaml
 - id: answer-ada
@@ -82,20 +83,36 @@ The `converse` action scripts the *owner*, never Ada:
       selector: "#confirm-panel"
   persona:
     max_turns: 10
-    fallback: "Yes, that is right. Use what I have told you and go ahead."
-    facts:
-      - when: ["price", "cost", "how much"]
-        reply: "The four-week beginner wheel course is 240 euros."
+    brief: |
+      You are Mariana, owner of Atelier Sete in Lisbon. Your beginner wheel
+      course is four sessions and costs 240 euros. Answer naturally from what
+      you know; leave design decisions to Ada.
 ```
 
-Each turn reads the last thing Ada actually said, matches it against the fact
-sheet, and answers from those facts. The loop ends when an `until` condition
+Each turn supplies the conversation history and persona to the owner model.
+The loop ends when an `until` condition
 holds -- never on a fixed turn count, which would either cut a real conversation
 short or spin after it finished. The whole transcript goes into the evidence, so
 a reviewer can see what was asked and what the owner said.
 
 If the conversation does not settle inside `max_turns`, the step fails and says
-what Ada last asked. That is a product finding, not a harness error.
+what Ada last asked. Inspect the transcript to distinguish product failure from
+an owner-agent or browser-driver defect before filing a regression.
+
+The default is `openai/gpt-6-luna` through OpenCode's existing authenticated
+OpenAI provider, the same credential path used by the project runner:
+
+```bash
+python -m site_agent.qa run flows/intake-to-preview.flow.yaml \
+  --base-url "$TEST_ORIGIN" --environment test \
+  --owner-backend opencode --owner-model openai/gpt-6-luna
+```
+
+The owner runs with all tools denied, does not receive credentials, and cannot
+rotate host-global accounts. OpenRouter is not a fallback: a compatible API is
+used only with an explicit `--owner-backend compatible-api`. The bundle records
+`test_owner.backend` and `test_owner.model`, separately from Ada's target model.
+Changing the test owner does not change the production product's provider.
 
 ## Measuring what it costs the owner
 
@@ -120,12 +137,14 @@ python -m site_agent.qa run flows/intake-to-preview.flow.yaml \
   --ledger .qa/test-sites.json --allow-destructive
 ```
 
-Before the run, every site the ledger records is deleted. After the run, the
-incubation id the browser reported is recorded, so exactly one test site is live
-between runs. The harness never guesses which site is disposable: it only removes
-what it created, and it refuses outright when `--environment` is not `test` or
-`local`. Deleting a provisioned site still depends on the target's own teardown
-semantics, which is why the ledger is explicit rather than a name match.
+The current ledger records an incubation only after the run finishes and calls
+incubation DELETE before the next run. This does **not** prove website resources
+are deprovisioned or enforce single-flight execution. Interrupted runs can escape
+registration, and a test/local flag is not proof of tenant ownership. Until the
+canonical teardown, durable registration and locking are qualified, serialize
+runs externally and use an explicitly owned scratch target; do not enable this
+cleanup against provisioned websites. One live test website remains a requirement,
+not an established safety guarantee of this ledger.
 
 ## Which model runs the target
 
@@ -135,10 +154,9 @@ bundle records what the target reported from `/api/lab` as `target.model` and
 is visibly different evidence from a run against the release provider, and a
 build-time comparison that mixes them is meaningless.
 
-The intended end state is that the harness inherits the same credentials the
-project runner already uses, so nothing here holds its own provider key. While
-those credits are unavailable, point the target at a fallback provider and read
-`target.model` before believing any timing.
+The owner model now uses the runner's existing OpenCode authentication by default.
+The product under test still owns its own model configuration; record the actual
+target provider and model before comparing timings.
 
 
 ## The gate contract
@@ -154,9 +172,11 @@ the version. The fields the runner needs:
 - `target.sha` / `target.deployed_sha` -- what was actually tested;
 - `artifacts.files[].sha256` -- what the reviewer can inspect.
 
-Merge requires `status == passed` and `rubric.passed == true` on the exact head.
-Release requires the same from a `live` flow whose `target.deployed_sha` matches
-the released slot.
+Intended gate semantics are `status == passed` and `rubric.passed == true` on the
+exact head, plus a live flow whose observed serving identity matches the released
+slot for release acceptance. These gates are not installed by this branch.
+The exploratory live flow is not gate-ready until canonical Payload entry,
+provisioning, public-site checks, interruption-safe evidence and cleanup are proven.
 
 ## Adding a flow
 
@@ -168,6 +188,19 @@ Keep each flow to one owner journey. A flow that covers two journeys fails in a
 place that does not name the journey.
 
 ## Using it to investigate
+
+The project runner discovers these tests through
+`projects/site-agent-tests.json` in `weareheadless/project-runner`:
+
+```bash
+python3 runner/test_catalog.py --project site-agent --issue 458
+python3 runner/test_catalog.py --project site-agent --path src/site_agent/web/intake_lab.py
+```
+
+The runner mandate points to the catalogue. Entries give commands, prerequisites,
+cost tier, relevant issues/paths, evidence and limitations. Discovery never starts
+paid work. On a fix, rerun the relevant reproduction; on a failure, attach the
+evidence to the existing issue or file a narrowly supported prerequisite.
 
 This is the half that removes the most waste. When an issue says "reproduce",
 the deliverable is a red flow, not a paragraph:
@@ -185,10 +218,9 @@ cannot silently lose its evidence and the fix cannot silently lose its proof.
 
 - `intake-surface` (deterministic) ships and passes against the real Intake Lab
   app with a temporary store.
-- `intake-to-preview` (live) now converses with real answers, marks the build
-  boundary, provisions, and asserts the managed phase. It cannot pass until the
-  build produces the output shape the deployed validator requires, so it is the
-  acceptance gate for that work rather than a green check today.
+- `intake-to-preview` (live) converses with an AI owner, marks boundaries and
+  attempts provisioning. Exploratory runs reached a failed build and exposed
+  scaffold reuse rejection (#481); no end-to-end provisioned success is claimed.
 - `converse`, marks, timing and the ledger are covered by tests against a
   fixture app; the full live path has not been run end to end against a
   provisioned target yet.

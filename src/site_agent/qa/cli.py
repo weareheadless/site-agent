@@ -21,7 +21,7 @@ import urllib.request
 from pathlib import Path
 from typing import Sequence
 
-from .conversation import chat_completion
+from .conversation import chat_completion, opencode_completion
 from .driver import DriverError, PlaywrightDriver
 from .evidence import build_bundle, utcnow, write_bundle
 from .flow import Flow, FlowError, load_flow, load_flows
@@ -76,8 +76,13 @@ def _parser() -> argparse.ArgumentParser:
     )
     run.add_argument(
         "--owner-model",
-        default=os.environ.get("SITE_AGENT_QA_OWNER_MODEL", ""),
-        help="model that plays the owner in a conversation flow, e.g. openrouter/openai/gpt-6-luna",
+        default=os.environ.get("SITE_AGENT_QA_OWNER_MODEL", "openai/gpt-6-luna"),
+        help="owner model (default: openai/gpt-6-luna via the runner's OpenCode auth)",
+    )
+    run.add_argument(
+        "--owner-backend", choices=("opencode", "compatible-api"),
+        default=os.environ.get("SITE_AGENT_QA_OWNER_BACKEND", "opencode"),
+        help="opencode reuses runner authentication; compatible-api is explicit opt-in",
     )
     run.add_argument(
         "--owner-api-key-env",
@@ -115,6 +120,10 @@ def _run(args: argparse.Namespace) -> int:
     width, _, height = args.viewport.partition("x")
     exit_code = EXIT_PASS
     bundles = []
+    # Validate the owner backend before any destructive test-target cleanup.
+    owner_complete = _owner_completer(args) if any(
+        step.action == "converse" for flow in flows for step in flow.steps
+    ) else None
     if args.ledger:
         purged, problem = purge_ledger(
             args.ledger,
@@ -128,7 +137,6 @@ def _run(args: argparse.Namespace) -> int:
         if purged:
             print(f"removed {len(purged)} previous test site(s): {', '.join(purged)}")
     probe = probe_target(args.base_url)
-    owner_complete = _owner_completer(args)
     for flow in flows:
         try:
             driver = PlaywrightDriver(
@@ -154,6 +162,8 @@ def _run(args: argparse.Namespace) -> int:
                 },
                 started_at=started,
             )
+            if owner_complete is not None:
+                bundle["test_owner"] = {"backend": args.owner_backend, "model": args.owner_model}
             path = write_bundle(bundle, Path(args.evidence_dir) / f"{flow.id}.json")
             bundles.append(bundle)
             if args.ledger and result.incubation_id:
@@ -265,6 +275,8 @@ def _owner_completer(args: argparse.Namespace):
 
     if not args.owner_model:
         return None
+    if args.owner_backend == "opencode":
+        return opencode_completion(model=args.owner_model)
     key = os.environ.get(args.owner_api_key_env, "").strip()
     if not key:
         print(
