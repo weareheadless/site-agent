@@ -443,7 +443,9 @@ def test_build_confirmed_session_through_real_handoff_preserves_shared_intellige
 
 
 @pytest.mark.parametrize(
-    "recovery_case", ["same-base", "changed-runtime-base", "missing-native-checkpoint",
+    "recovery_case", ["same-base", "changed-runtime-base", "changed-owner-request",
+                      "changed-context-extra", "changed-intake-session-id", "changed-authorized-target",
+                      "missing-native-checkpoint",
                       "running-native-checkpoint", "failed-native-checkpoint", "prior-build-attempt"],
 )
 def test_composed_same_run_recovery_reopens_checkpoint_and_dispatches_build_once(
@@ -454,7 +456,7 @@ def test_composed_same_run_recovery_reopens_checkpoint_and_dispatches_build_once
     import threading
 
     from site_agent.application.design_jobs import DesignJobExecutor
-    from site_agent.application.designs import DesignService
+    from site_agent.application.designs import DesignService, DesignServiceError
     from site_agent.core.design_contracts import DesignRunStatus
     from site_agent.hands import opencode_runner as runner
     from site_agent.hands.builder import OperationRoutingBuilder
@@ -572,6 +574,53 @@ def test_composed_same_run_recovery_reopens_checkpoint_and_dispatches_build_once
     handoff = DesignBuildHandoff({"memory": memory, "config": config, "design_service": service,
                                   "design_executor": executor})
     intake_service = DesignIntakeService(memory, config=config, default_intake=_intake(), lab_service=handoff)
+    if recovery_case in {"changed-owner-request", "changed-context-extra",
+                         "changed-intake-session-id", "changed-authorized-target"}:
+        # Exercise the real policy boundary directly with the exact original handoff
+        # inputs (context_extra/shared_intelligence were both None).
+        if recovery_case == "changed-authorized-target":
+            target_repository = target.repository
+            config["site"]["repository"] = str(tmp_path / "different-authorized-repository")
+            assert service.build_target_for_run(run_id).repository != target_repository
+        before_rejection = Memory(db)
+        run_before = before_rejection.get_design_run(run_id)
+        phases_before = before_rejection.list_design_phase_artifacts(run_id)
+        events_before = before_rejection.list_design_run_events(run_id)
+        calls_before = len(direction_calls)
+        def unexpected_admission(*_args, **_kwargs):
+            raise AssertionError("changed recovery identity reached Memory admission CAS")
+        monkeypatch.setattr(memory, "admit_prebuild_design_recovery", unexpected_admission)
+        owner_request = run["owner_request"]
+        recovery_session_id = run["intake_session_id"]
+        recovery_context_extra = None
+        if recovery_case == "changed-owner-request":
+            owner_request += " changed"
+            expected_error = "identity does not match"
+        elif recovery_case == "changed-context-extra":
+            recovery_context_extra = {"changed": True}
+            expected_error = "request, context, or shared intelligence changed"
+        elif recovery_case == "changed-intake-session-id":
+            recovery_session_id += "-changed"
+            expected_error = "identity does not match"
+        else:
+            expected_error = "authorized target changed"
+        with pytest.raises(DesignServiceError, match=expected_error):
+            service.recover_prebuild_run(
+                run_id, request=request, target=target,
+                intake_session_id=recovery_session_id,
+                intake_revision_id=run["intake_revision_id"], owner_request=owner_request,
+                context_extra=recovery_context_extra,
+            )
+        after_rejection = Memory(db)
+        assert after_rejection.get_design_run(run_id) == run_before
+        assert after_rejection.list_design_phase_artifacts(run_id) == phases_before
+        assert after_rejection.list_design_run_events(run_id) == events_before
+        assert executor._queue.empty()
+        assert len(direction_calls) == calls_before
+        after_rejection.close()
+        before_rejection.close()
+        memory.close()
+        return
     if recovery_case in {"missing-native-checkpoint", "running-native-checkpoint",
                          "failed-native-checkpoint", "prior-build-attempt"}:
         # Mutate only durable phase artifacts in this disposable fixture database.

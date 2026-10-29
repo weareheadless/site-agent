@@ -197,3 +197,58 @@ and memory suites passed twice as
 Fixture/unit evidence only: request/context/session/tenant/authorized-target
 identity-negative coverage, full suite, live candidate and owner review remain
 gaps. No request is accepted and no deployment/live verification is claimed.
+
+## Identities23 current-target failure (2026-10-29; retained red)
+
+Four changed-identity cases were added to the composed disposable-checkpoint
+selection. Changed owner request and intake session are rejected by the real
+`DesignService.recover_prebuild_run` identity comparison; changed `context_extra`
+is rejected by its frozen recovery hash. They fence Memory admission and compare
+reopened run/phases/events, queue and provider-call count. They are not yet
+validated by the failing selection receipt (all three passed there).
+
+The original changed-authorized-target perturbation mutated `site.writable_patterns`,
+but the fixture uses the `NEXT_REACT_PROFILE` whose canonical writable patterns
+override that setting. Consequently, the effective frozen target did not change;
+the failed result in receipt `ui056-identities23-composed-2e7033abe60b487ba97d683ee4b5796b`
+(9 passed, 1 failed) was a test-perturbation error, not evidence of a product
+defect. It must not be interpreted as a demonstrated authorization-target
+admission bug. Earlier attempts are failed checkpoints, not passing evidence.
+
+## Target24 effective repository identity correction (2026-10-29)
+
+The authorized-target case now changes the current `service.config['site']['repository']`
+to a distinct disposable fixture identity while leaving the persisted target and
+base untouched. It asserts the real `service.build_target_for_run(run_id)` returns
+a repository different from the frozen target, then calls the unmocked real
+`recover_prebuild_run` with the original request/target. The case requires the
+real `authorized target changed` rejection before Memory CAS and preserves the
+reopened run/phase/event, queue, and provider-call assertions. Canonical profile
+allowlists are unchanged. This repository identity drift test does not prove
+cross-tenant isolation. Durable `run_test.run` receipts on tested checkout SHA
+`0c74a7e9e02b60ddaa4063071663150f47d797b3`:
+
+- `ui056-target24-composed-f60b4404a86c44a59fbf5a32f601d131`: 10 passed.
+- `ui056-target24-intake-memory-91020ebc50ec42fab42e7423644e3371` and
+  `ui056-target24-intake-memory-fdeb6454960a4f8faa6c46af6f4dec64`: 112 passed
+  each.
+- `ui056-target24-affected-03fc32d5358a48d48e48d08c8872ed7e`: 170 passed
+  across the existing intake, memory, design-service, and design-jobs suites.
+
+The earlier stop on the broader affected-suite request was a management
+test-selection error: it named nonexistent
+`tests/test_design_recovery_admission.py` and `tests/test_workspace.py` instead
+of the existing workspace-lifecycle and workspace-build-progress suites. The
+manager subsequently ran the six existing suites (intake, memory, design
+service, design jobs, workspace lifecycle, and workspace build progress) twice;
+both runs passed 185 tests. Durable `run_test.run` receipts are recorded in
+`/home/admin/tools/project-runner/.tick/site-agent/evidence/pass69-tests.json`
+and the independent review in
+`/home/admin/tools/project-runner/.tick/site-agent/evidence/pass69-independent-review.md`.
+Those manager-owned receipts tested the retained diff on checkout SHA
+`0c74a7e9e02b60ddaa4063071663150f47d797b3`; they are distinct from the narrower
+published-SHA runs. Earlier malformed runner invocations are setup errors, not
+product regressions. Compileall and `git diff --check` pass. No source repair or
+production change was made. This remains fixture/unit evidence, not
+cross-tenant isolation, candidate delivery, live verification, or full UI-056
+acceptance.
