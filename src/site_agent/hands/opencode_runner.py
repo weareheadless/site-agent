@@ -2556,6 +2556,8 @@ def stage_design_build(
                 "progress": progress,
                 "agent_name": "native-direction",
             }
+            if execution_context.get("memory") is not None:
+                direction_kwargs["memory"] = execution_context["memory"]
             if direction_image_files:
                 direction_kwargs["image_files"] = direction_image_files
             if "env" in context:

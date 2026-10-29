@@ -542,7 +542,7 @@ def test_native_initial_build_persists_direction_before_writable_build(tmp_path,
     monkeypatch.setattr(runner, "install_agent_files", lambda *args, **kwargs: None)
 
     def fake_turn(worktree, prompt, config, **kwargs):
-        calls.append({"agent_name": kwargs.get("agent_name"), "prompt": prompt})
+        calls.append({"agent_name": kwargs.get("agent_name"), "prompt": prompt, "memory": kwargs.get("memory")})
         if kwargs.get("agent_name") == "native-direction":
             return {
                 "session_id": "direction-session",
@@ -561,6 +561,8 @@ def test_native_initial_build_persists_direction_before_writable_build(tmp_path,
     receipt = runner.stage_design_build({"config": config, "memory": memory}, request, target)
 
     assert [call["agent_name"] for call in calls] == ["native-direction", "build"]
+    assert calls[0]["memory"] is memory
+    assert calls[1]["memory"] is memory
     assert "A quiet editorial threshold" in calls[1]["prompt"]
     assert receipt.direction_path == "design-runs/native-direction-build/direction.md"
     assert receipt.direction_transcript_path == "design-runs/native-direction-build/direction-opencode.jsonl"
@@ -868,6 +870,7 @@ def test_creative_build_turn_receives_a_compact_hash_bound_experience_plan(
             "agent_name": kwargs.get("agent_name"),
             "prompt": prompt,
             "image_files": tuple(kwargs.get("image_files") or ()),
+            "memory": kwargs.get("memory"),
         })
         if kwargs.get("agent_name") == "native-direction":
             direction = "A quiet threshold opens into a tactile story of the owner's work."
@@ -889,6 +892,8 @@ def test_creative_build_turn_receives_a_compact_hash_bound_experience_plan(
     receipt = runner.stage_design_build({"config": config, "memory": memory}, request, target)
 
     assert [call["agent_name"] for call in calls] == ["native-direction", "build"]
+    assert calls[0]["memory"] is memory
+    assert calls[1]["memory"] is memory
     assert calls[0]["image_files"]
     assert calls[0]["image_files"] == calls[1]["image_files"]
     assert "public/images/owner.webp" in calls[0]["image_files"]
