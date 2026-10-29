@@ -180,6 +180,115 @@ def test_run_opencode_enforces_timeout_while_streaming(tmp_path, monkeypatch):
         )
 
 
+@pytest.mark.parametrize(
+    ("timeout_fires", "returncode", "expected_kind", "expected_inferred"),
+    [
+        (True, 130, "timeout", None),
+        (False, -2, "signal", None),
+        (False, 130, "nonzero_exit", 2),
+        (False, 7, "nonzero_exit", None),
+    ],
+)
+def test_opencode_process_failures_have_structured_stage_evidence(
+    tmp_path, monkeypatch, timeout_fires, returncode, expected_kind, expected_inferred
+):
+    class FakeTimer:
+        def __init__(self, _seconds, callback):
+            self.callback = callback
+
+        def start(self):
+            if timeout_fires:
+                self.callback()
+
+        def cancel(self):
+            pass
+
+    class FakeProcess:
+        pid = 12345
+
+        def __init__(self):
+            self.returncode = returncode
+            self.stdout = iter([
+                json.dumps({"type": "tool_use", "part": {"type": "tool", "tool": "Read"}}) + "\n"
+            ])
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def send_signal(self, _signal):
+            pass
+
+    process = FakeProcess()
+    monkeypatch.setattr(runner, "_opencode_bin", lambda _config: "opencode")
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: process)
+    monkeypatch.setattr("threading.Timer", FakeTimer)
+
+    def kill_group(_pid, _signal):
+        # Model the wrapper's positive 130 status after the watchdog terminates it.
+        process.returncode = 130
+
+    monkeypatch.setattr(runner.os, "killpg", kill_group)
+    with pytest.raises(runner.RunnerError) as caught:
+        runner.run_opencode_turn(
+            tmp_path,
+            "build",
+            {"builder": {"timeout_seconds": 4, "provider_timeout_seconds": 9}},
+            agent_name="native-direction",
+        )
+
+    failure = caught.value.result["process_failure"]
+    assert failure["kind"] == expected_kind
+    assert failure["stage"] == "native-direction"
+    assert failure["last_tool"] == "Read"
+    assert failure["effective_timeout_seconds"] == 9
+    assert failure["returncode"] == process.returncode
+    assert failure.get("signal_inferred_number") == expected_inferred
+    if timeout_fires:
+        assert "timed out after 9s" in str(caught.value)
+        assert failure["host_termination_reason"] == "runner_timeout"
+    elif returncode == -2:
+        assert failure["signal_number"] == 2
+        assert failure["signal_name"] == "SIGINT"
+    elif returncode == 130:
+        assert "not proof of OS signal sender" in failure["returncode_interpretation"]
+
+
+def test_run_opencode_turn_explicit_timeout_overrides_provider_timeout(tmp_path, monkeypatch):
+    class FakeTimer:
+        def __init__(self, _seconds, _callback):
+            captured["timeout"] = _seconds
+
+        def start(self):
+            pass
+
+        def cancel(self):
+            pass
+
+    class FakeProcess:
+        pid = 12345
+        returncode = 0
+        stdout = iter([json.dumps({"type": "text", "text": "finished"}) + "\n"])
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    monkeypatch.setattr(runner, "_opencode_bin", lambda _config: "opencode")
+    monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: FakeProcess())
+    monkeypatch.setattr("threading.Timer", FakeTimer)
+    captured = {}
+    monkeypatch.setattr(runner, "_stage_cli_prompt", lambda _clone, prompt: (prompt, None, None))
+    monkeypatch.setattr(runner, "_restore_cli_prompt", lambda *_args: None)
+    result = runner.run_opencode_turn(
+        tmp_path,
+        "build",
+        {"builder": {"provider_timeout_seconds": 9}},
+        timeout_seconds=3,
+    )
+    captured.update(result)
+    assert captured["timeout"] == 3
+    assert captured["reply"] == "finished"
+
+
 def test_run_opencode_leaves_provider_retries_to_opencode(tmp_path, monkeypatch):
     class FakeProcess:
         pid = 12345

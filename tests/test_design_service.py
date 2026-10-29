@@ -865,6 +865,14 @@ def test_noop_builder_failure_retains_transcript_without_candidate(tmp_path):
                 result={
                     "session_id": "noop-session",
                     "transcript_path": "design-runs/design-noop/opencode.jsonl",
+                    "process_failure": {
+                        "kind": "timeout",
+                        "effective_timeout_seconds": 9,
+                        "returncode": -15,
+                        "host_termination_reason": "runner_timeout",
+                        "stage": "native-direction",
+                        "last_tool": "Read",
+                    },
                 },
             )
 
@@ -898,6 +906,15 @@ def test_noop_builder_failure_retains_transcript_without_candidate(tmp_path):
     assert stored["transcript_path"] == "design-runs/design-noop/opencode.jsonl"
     assert stored["opencode_session_id"] == "noop-session"
     assert stored["transcript_artifact_id"]
+    failed_event = next(event for event in stored["events"] if event["stage"] == "failed")
+    assert failed_event["detail"]["process_failure"] == {
+        "kind": "timeout",
+        "effective_timeout_seconds": 9,
+        "returncode": -15,
+        "host_termination_reason": "runner_timeout",
+        "stage": "native-direction",
+        "last_tool": "Read",
+    }
     memory.close()
 
 

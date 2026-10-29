@@ -1861,6 +1861,19 @@ class DesignService:
                 partial = dict(getattr(exc, "result", {}) or {})
                 if not partial and getattr(exc, "__cause__", None) is not None:
                     partial = dict(getattr(exc.__cause__, "result", {}) or {})
+                process_failure = partial.get("process_failure")
+                if isinstance(process_failure, Mapping):
+                    process_failure = {
+                        key: process_failure[key]
+                        for key in (
+                            "kind", "effective_timeout_seconds", "returncode", "signal_number",
+                            "signal_name", "signal_inferred_number", "signal_inferred_name",
+                            "returncode_interpretation", "host_termination_reason", "stage", "last_tool",
+                        )
+                        if key in process_failure
+                    }
+                else:
+                    process_failure = None
                 transcript_path = str(partial.get("transcript_path") or "").strip()
                 if transcript_path:
                     try:
@@ -1925,7 +1938,10 @@ class DesignService:
                     DesignRunStatus.CANCELLED.value,
                 }:
                     self.memory.transition_design_run(run_id, DesignRunStatus.FAILED.value, error=str(exc))
-                    self.memory.add_design_run_event(run_id, "failed", "The design build failed.", {"error": str(exc)[:500]})
+                    event_data = {"error": str(exc)[:500]}
+                    if process_failure:
+                        event_data["process_failure"] = process_failure
+                    self.memory.add_design_run_event(run_id, "failed", "The design build failed.", event_data)
             except Exception:
                 pass
             if isinstance(exc, DesignServiceError):

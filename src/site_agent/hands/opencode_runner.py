@@ -4018,7 +4018,12 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
     from ..config import resolve_secret, timing_enabled
 
     b = config.get("builder") or {}
-    timeout = max(1, int(timeout_seconds or b.get("timeout_seconds", 1800)))
+    configured_timeout = (
+        timeout_seconds
+        if timeout_seconds is not None
+        else b.get("provider_timeout_seconds", b.get("timeout_seconds", 1800))
+    )
+    timeout = max(1, int(configured_timeout))
     agent_name = str(agent_name or "build").strip()
     if not _re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", agent_name):
         raise RunnerError("opencode agent name is invalid")
@@ -4138,6 +4143,7 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
         )
 
     def partial_result() -> dict[str, Any]:
+        last_tool = str(tool_calls[-1].get("tool") or "") if tool_calls else ""
         return {
             "reply": chr(10).join(prose[-24:] or tail[-24:]),
             "session_id": str(session or ""),
@@ -4148,6 +4154,12 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
             **({"cost": reported_cost} if has_reported_cost else {}),
             "raw_output": "\n".join(tail),
             "transcript": "\n".join(transcript_lines) + ("\n" if transcript_lines else ""),
+            "process_failure": {
+                "effective_timeout_seconds": timeout,
+                "returncode": proc.returncode,
+                "stage": agent_name,
+                "last_tool": last_tool or None,
+            },
         }
 
     try:
@@ -4242,7 +4254,12 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
             except Exception:  # noqa: BLE001 - observability must not break builds
                 pass
     if timed_out.is_set():
-        raise RunnerError(f"opencode timed out after {timeout}s", result=partial_result())
+        failure_result = partial_result()
+        failure = failure_result["process_failure"]
+        failure.update({"kind": "timeout", "host_termination_reason": "runner_timeout"})
+        raise RunnerError(
+            f"opencode timed out after {timeout}s at stage {agent_name}", result=failure_result
+        )
     if protocol_error:
         raise RunnerError(
             "opencode emitted unsupported DSML/XML instead of a native tool call: " + protocol_error,
@@ -4250,9 +4267,48 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
         )
     if proc.returncode != 0:
         detail = chr(10).join(tail[-8:])
+        failure_result = partial_result()
+        failure = failure_result["process_failure"]
+        if proc.returncode is not None and proc.returncode < 0:
+            number = -proc.returncode
+            try:
+                signal_name = signal.Signals(number).name
+            except ValueError:
+                signal_name = None
+            failure.update({
+                "kind": "signal",
+                "signal_number": number,
+                "signal_name": signal_name,
+                "host_termination_reason": None,
+            })
+        else:
+            number = proc.returncode - 128 if proc.returncode is not None and proc.returncode >= 128 else None
+            try:
+                signal_name = signal.Signals(number).name if number is not None else None
+            except ValueError:
+                signal_name = None
+            failure.update({
+                "kind": "nonzero_exit",
+                "signal_inferred_number": number,
+                "signal_inferred_name": signal_name,
+                "returncode_interpretation": "wrapper_or_convention; not proof of OS signal sender" if number else "ordinary_exit",
+                "host_termination_reason": None,
+            })
+        if proc.returncode is not None and proc.returncode < 0:
+            failure_message = (
+                f"opencode terminated by {failure.get('signal_name') or 'signal'} "
+                f"({failure['signal_number']}) at stage {agent_name}: {detail[:400]}"
+            )
+        elif failure.get("signal_inferred_number"):
+            failure_message = (
+                f"opencode exited {proc.returncode} (wrapper status; inferred "
+                f"{failure.get('signal_inferred_name') or 'signal'}) at stage {agent_name}: {detail[:400]}"
+            )
+        else:
+            failure_message = f"opencode exited {proc.returncode} at stage {agent_name}: {detail[:400]}"
         raise RunnerError(
-            f"opencode exited {proc.returncode}: {detail[:400]}",
-            result=partial_result(),
+            failure_message,
+            result=failure_result,
         )
     # A capability the host deliberately denied is not a broken turn. The
     # authoring agent may attempt a browser/server/delegation command that the
