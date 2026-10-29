@@ -44,7 +44,9 @@ jobs:
       - name: Test browser driver and real local intake shell (no provider calls)
         env:
           PYTHONPATH: src
-        run: python -m pytest tests/test_qa_*.py -q --basetemp=.qa/pytest
+        run: |
+          mkdir -p .qa/pytest
+          python -m pytest tests/test_qa_*.py -q --basetemp=.qa/pytest
       - uses: actions/upload-artifact@v4
         if: always()
         with:
