@@ -209,6 +209,7 @@ class CrawlSEOProject:
     domain: str
     url: str
     connections: dict[str, dict[str, str]]
+    workspace_id: str = ""
 
     @classmethod
     def from_mapping(cls, payload: Mapping[str, Any]) -> "CrawlSEOProject":
@@ -229,11 +230,17 @@ class CrawlSEOProject:
             domain=_crawlseo_text(site.get("domain"), "project.site.domain"),
             url=_crawlseo_text(site.get("url"), "project.site.url"),
             connections=connections,
+            workspace_id=(
+                _crawlseo_text(data["workspace_id"], "workspace_id")
+                if "workspace_id" in data
+                else ""
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "project_id": self.project_id,
+            "workspace_id": self.workspace_id,
             "site": {"domain": self.domain, "url": self.url},
             "connections": {name: dict(connection) for name, connection in self.connections.items()},
         }
