@@ -38,6 +38,17 @@ tenant release.
 On failure the timer restores the prior immutable slot, restarts it, and writes
 a sanitized receipt. No tenant Worker requests run if the API release fails.
 
+`deploy/api-runtime.json` is the sole declaration of required runtime extras.
+The release gate validates its closed set (`crawlseo`, `design-lab`, `ga`),
+checks wheel requirements once for the base environment and once per declared
+extra, then installs the wheel in an isolated candidate directory and exercises
+the connector's official MCP client loader, Playwright's sync browser API and
+the Google auth request/credential imports. This smoke does not launch a
+browser, contact providers, read tenant configuration or use provider secrets.
+The host virtualenv is only inspected; the release never installs into it.
+Rollback receipts distinguish restored-slot health success from failure; a
+failed rollback leaves the previous slot selected and records that result.
+
 Receipts and the built wheel live under
 `/SOCIAL/payload-releases/runs/api/<release-id>/receipt.json` and
 `/SOCIAL/payload-releases/api/releases/<release-id>/`. The previous API slot is

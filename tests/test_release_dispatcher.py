@@ -22,6 +22,27 @@ api_deploy = importlib.util.module_from_spec(API_SPEC)
 API_SPEC.loader.exec_module(api_deploy)
 
 
+def test_interrupted_api_rollback_records_failed_health_and_keeps_previous_selected(tmp_path, monkeypatch):
+    releases = tmp_path / "api/releases"
+    previous = releases / "previous"
+    previous.mkdir(parents=True)
+    current = tmp_path / "api/current"
+    receipt_path = tmp_path / "receipt.json"
+    receipt = {"stage": "activated", "previousRelease": "previous"}
+    monkeypatch.setattr(api_deploy, "_restart_api", lambda: None)
+    monkeypatch.setattr(api_deploy, "_health_check", lambda *_args: (_ for _ in ()).throw(RuntimeError("unhealthy")))
+
+    with pytest.raises(RuntimeError, match="health check failed"):
+        api_deploy._recover_interrupted(receipt_path, receipt, current, releases, "http://health")
+
+    assert current.resolve() == previous.resolve()
+    persisted = json.loads(receipt_path.read_text())
+    assert persisted["status"] == "failed"
+    assert persisted["stage"] == "recovery-rollback-failed"
+    assert persisted["rollbackRelease"] == "previous"
+    assert persisted["rollbackHealth"] is False
+
+
 def test_api_release_requires_the_complete_payload_template_bundle(tmp_path):
     template = tmp_path / "site_agent/templates/next-payload"
     template.mkdir(parents=True)

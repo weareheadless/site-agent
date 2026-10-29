@@ -77,7 +77,25 @@ def _run(command: list[str], *, cwd: Path | None = None, env: dict[str, str] | N
     return result
 
 
+def _load_required_extras(source_dir: Path) -> list[str]:
+    try:
+        manifest = json.loads((source_dir / "deploy/api-runtime.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("API runtime extras manifest is missing or invalid") from exc
+    allowed = {"crawlseo", "design-lab", "ga"}
+    if (not isinstance(manifest, dict) or set(manifest) != {"schema", "requiredExtras"}
+            or type(manifest["schema"]) is not int or manifest["schema"] != 1
+            or not isinstance(manifest["requiredExtras"], list)
+            or not manifest["requiredExtras"]
+            or any(not isinstance(extra, str) or extra not in allowed for extra in manifest["requiredExtras"])
+            or len(set(manifest["requiredExtras"])) != len(manifest["requiredExtras"])
+            or set(manifest["requiredExtras"]) != allowed):
+        raise RuntimeError("API runtime extras manifest has invalid or unknown declarations")
+    return manifest["requiredExtras"]
+
+
 def _verify_wheel_runtime_dependencies(python: str, wheel: Path, *, cwd: Path,
+                                       required_extras: list[str],
                                        env: dict[str, str], log_path: Path) -> None:
     """Check the built wheel against the service interpreter without pip CLI feature drift."""
     code = "\n".join((
@@ -92,32 +110,36 @@ def _verify_wheel_runtime_dependencies(python: str, wheel: Path, *, cwd: Path,
         "        raise RuntimeError('wheel must contain exactly one distribution metadata file')",
         "    distribution = BytesParser().parsebytes(archive.read(names[0]))",
         "missing = []",
-        "marker_environment = default_environment()",
-        "marker_environment['extra'] = ''",
+        "environments = [('default', default_environment())]",
+        "for extra in json.loads(sys.argv[2]):",
+        "    marker_environment = default_environment()",
+        "    marker_environment['extra'] = extra",
+        "    environments.append((extra, marker_environment))",
         "for raw in distribution.get_all('Requires-Dist', []):",
         "    requirement = Requirement(raw)",
-        "    if requirement.marker and not requirement.marker.evaluate(marker_environment):",
-        "        continue",
-        "    try:",
-        "        installed = metadata.version(requirement.name)",
-        "    except metadata.PackageNotFoundError:",
-        "        missing.append(requirement.name)",
-        "    else:",
-        "        if requirement.specifier and not requirement.specifier.contains(installed, prereleases=True):",
-        "            missing.append(f'{requirement.name}{requirement.specifier} (installed {installed})')",
-        "print(json.dumps(sorted(set(missing))))",
+        "    for extra, marker_environment in environments:",
+        "        if requirement.marker and not requirement.marker.evaluate(marker_environment):",
+        "            continue",
+        "        try:",
+        "            installed = metadata.version(requirement.name)",
+        "        except metadata.PackageNotFoundError:",
+        "            missing.append({'extra': extra, 'package': requirement.name})",
+        "        else:",
+        "            if requirement.specifier and not requirement.specifier.contains(installed, prereleases=True):",
+        "                missing.append({'extra': extra, 'package': requirement.name, 'installed': installed, 'required': str(requirement.specifier)})",
+        "print(json.dumps(sorted({json.dumps(item, sort_keys=True) for item in missing})))",
     ))
-    result = _run([python, "-c", code, str(wheel)], cwd=cwd, env=env, log_path=log_path)
+    result = _run([python, "-c", code, str(wheel), json.dumps(required_extras)], cwd=cwd, env=env, log_path=log_path)
     try:
-        missing = json.loads(result.stdout)
+        missing = [json.loads(item) for item in json.loads(result.stdout)]
     except json.JSONDecodeError as exc:
         raise RuntimeError("API dependency audit returned invalid output") from exc
-    if not isinstance(missing, list) or any(not isinstance(item, str) for item in missing):
+    if not isinstance(missing, list) or any(not isinstance(item, dict) for item in missing):
         raise RuntimeError("API dependency audit returned invalid output")
     if missing:
         raise RuntimeError(
             "API release requires runtime dependencies not present in the service environment: "
-            + ", ".join(missing)
+            + ", ".join(f"{item['extra']}: {item['package']}" for item in missing)
         )
 
 
@@ -248,10 +270,17 @@ def _recover_interrupted(receipt_path: Path, receipt: dict[str, Any], current: P
     if previous_path.parent != releases.resolve() or not previous_path.is_dir():
         raise RuntimeError("interrupted API release has no valid rollback slot")
     _set_current(current, previous_path)
-    _restart_api()
-    _health_check(health_url)
+    try:
+        _restart_api()
+        _health_check(health_url)
+    except Exception as exc:
+        _record(receipt_path, receipt, "recovery-rollback-failed", "failed",
+                rollbackRelease=previous_path.name, rollbackHealth=False,
+                rollbackFailure=type(exc).__name__)
+        raise RuntimeError("interrupted API release restored the previous slot but its health check failed") from exc
     _record(receipt_path, receipt, "recovered", "interrupted",
-            recovery="restored previous immutable API slot")
+            recovery="restored previous immutable API slot", rollbackRelease=previous_path.name,
+            rollbackHealth=True)
     return True
 
 
@@ -323,7 +352,9 @@ def deploy(source_dir: Path, source_sha: str, release_id: str, root: Path,
         wheel = wheels[0]
         wheel_hash = hashlib.sha256(wheel.read_bytes()).hexdigest()
 
-        _verify_wheel_runtime_dependencies(python, wheel, cwd=source_dir, env=clean_env,
+        required_extras = _load_required_extras(source_dir)
+        _verify_wheel_runtime_dependencies(python, wheel, cwd=source_dir,
+                                           required_extras=required_extras, env=clean_env,
                                            log_path=log_path)
 
         site_packages = staging / "site-packages"
@@ -331,10 +362,19 @@ def deploy(source_dir: Path, source_sha: str, release_id: str, root: Path,
               str(site_packages), str(wheel)], cwd=source_dir, env=clean_env, log_path=log_path)
         _verify_payload_template_bundle(site_packages)
         smoke_env = {**clean_env, "PYTHONPATH": str(site_packages)}
-        smoke = _run([python, "-c",
-                      "import importlib.metadata as m, importlib.util, json, pathlib; "
-                      "p=pathlib.Path(importlib.util.find_spec('site_agent').origin).resolve(); "
-                      "print(json.dumps({'path':str(p),'version':m.version('site-agent')}))"],
+        smoke_code = "\n".join((
+            "import importlib.metadata as m, importlib.util, json, pathlib",
+            "from site_agent.hands.crawlseo import _load_mcp_sdk",
+            "_load_mcp_sdk()",
+            "from playwright.sync_api import sync_playwright",
+            "assert callable(sync_playwright)",
+            "from google.auth.transport.requests import Request",
+            "from google.oauth2 import service_account",
+            "assert callable(Request) and hasattr(service_account, 'Credentials')",
+            "p=pathlib.Path(importlib.util.find_spec('site_agent').origin).resolve()",
+            "print(json.dumps({'path':str(p),'version':m.version('site-agent')}))",
+        ))
+        smoke = _run([python, "-c", smoke_code],
                      cwd=Path("/"), env=smoke_env)
         smoke_result = json.loads(smoke.stdout)
         if not Path(smoke_result["path"]).is_relative_to(site_packages.resolve()):
@@ -377,11 +417,13 @@ def deploy(source_dir: Path, source_sha: str, release_id: str, root: Path,
                 _health_check(health_url)
                 _record(receipt_path, receipt, "rolled-back", "rolled-back",
                         failure=type(exc).__name__, failureMessage=str(exc),
+                        rollbackRelease=prior_path.name, rollbackHealth=True,
                         finishedAt=datetime.now(timezone.utc).isoformat())
             except Exception as rollback_error:
                 _record(receipt_path, receipt, "rollback-failed", "failed",
                         failure=type(exc).__name__, failureMessage=str(exc),
                         rollbackFailure=type(rollback_error).__name__,
+                        rollbackRelease=prior_path.name, rollbackHealth=False,
                         finishedAt=datetime.now(timezone.utc).isoformat())
         else:
             _record(receipt_path, receipt, receipt.get("stage", "failed"), "failed",
