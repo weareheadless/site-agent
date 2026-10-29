@@ -581,6 +581,50 @@ def test_behavior_contract_rejects_missing_resting_or_reduced_motion_translation
         BrandBehaviorSystem.from_dict({**raw, "reduced_motion_translation": ""})
 
 
+def test_behavior_contract_requires_semantic_meaning_in_every_named_record():
+    raw = _experience_plan()["behavior_system"]
+    # The incident's utility record had id/trigger/response, but no meaning.
+    with pytest.raises(ContractError, match=r"utility_behaviors\[0\]\.meaning is required"):
+        BrandBehaviorSystem.from_dict({
+            **raw,
+            "utility_behaviors": [{"id": "focus", "trigger": "tab", "response": "visible"}],
+        })
+
+    for array_name in ("conceptual_entities", "state_variables", "input_signals",
+                       "forces_and_relationships", "utility_behaviors", "narrative_behaviors"):
+        with pytest.raises(ContractError, match=rf"{array_name}\[0\]\.meaning is required"):
+            BrandBehaviorSystem.from_dict({
+                **raw,
+                array_name: [{"id": "neutral-record", "trigger": "input", "response": "output"}],
+            })
+    with pytest.raises(ContractError, match=r"scene_graph\[0\]\.exit_condition is required"):
+        BrandBehaviorSystem.from_dict({**raw, "scene_graph": [{"id": "scene", "trigger": "input", "response": "output"}]})
+    with pytest.raises(ContractError, match=r"output_channels\[0\]\.property is required"):
+        BrandBehaviorSystem.from_dict({**raw, "output_channels": [{"id": "channel", "meaning": "visible change"}]})
+
+
+def test_behavior_contract_accepts_distinct_semantics_and_empty_optional_arrays():
+    first = _experience_plan()["behavior_system"]
+    second = {
+        **first,
+        "thesis": "A quiet editorial sequence helps readers compare choices.",
+        "utility_behaviors": [],
+        "narrative_behaviors": [],
+        "conceptual_entities": [{"id": "chapters", "meaning": "editorial units"}],
+        "state_variables": [],
+        "input_signals": [],
+        "forces_and_relationships": [],
+        "scene_graph": [],
+        "output_channels": [],
+    }
+    parsed_first = BrandBehaviorSystem.from_dict(first)
+    parsed_second = BrandBehaviorSystem.from_dict(second)
+
+    assert parsed_first.thesis != parsed_second.thesis
+    assert parsed_second.utility_behaviors == ()
+    assert parsed_second.narrative_behaviors == ()
+
+
 def test_temporal_evidence_hashes_local_frame_manifest_only():
     raw = {
         "schema_version": 1,
