@@ -1558,7 +1558,7 @@ function ReviewWorkspace() {
         const body = (await response.json()) as { attachment?: ChatAttachment; message?: string }
         if (!response.ok || !body.attachment?.asset_id) {
           const reason = body.message || t('error.imageAttach')
-          setUploadEntries((current) => current.map((entry) => entry.id === entries[index].id ? { ...entry, status: 'failed', reason } : entry))
+          setUploadEntries((current) => current.map((entry) => entry.id === entries[index].id ? { ...entry, status: 'failed' as const, reason } : entry))
           setError(reason)
           continue
         }
@@ -1567,7 +1567,7 @@ function ReviewWorkspace() {
       }
     } catch (cause) {
       const reason = cause instanceof Error ? cause.message : t('error.imageAttach')
-      if (activeEntryId) setUploadEntries((current) => current.map((entry) => entry.id === activeEntryId ? { ...entry, status: 'failed', reason } : entry))
+      if (activeEntryId) setUploadEntries((current) => current.map((entry) => entry.id === activeEntryId ? { ...entry, status: 'failed' as const, reason } : entry))
       setError(reason)
     } finally {
       setUploadingMedia(false)
@@ -2538,7 +2538,7 @@ function ReviewWorkspace() {
              <label className="helloada-sr-only" htmlFor="helloada-ada-message">{t('workspace.askAda')}</label>
              {pendingAttachments.length || uploadEntries.length ? (
                 <div className="helloada-pending-attachments" aria-label={t('workspace.pendingAttachments')}>
-                 {uploadEntries.map((entry) => <div className="helloada-pending-attachment" key={entry.id} style={{ width: 'auto', height: 'auto', minHeight: 46, maxWidth: '100%', padding: 6, display: 'flex', alignItems: 'center', gap: 6, cursor: 'default', overflow: 'visible' }}><span style={{ width: 'auto', height: 'auto', fontSize: 12 }}>{entry.filename}</span><small>{entry.status === 'uploading' ? t('workspace.attachmentUploading') : entry.status === 'failed' ? `${t('workspace.attachmentFailed')}: ${entry.reason}` : entry.reason}</small><button type="button" aria-label={`${t('workspace.removeImage')} ${entry.filename}`} onClick={() => setUploadEntries((current) => current.filter((item) => item.id !== entry.id))}>×</button></div>)}
+                 {uploadEntries.map((entry) => <div className="helloada-pending-attachment" key={entry.id} style={{ width: 'auto', height: 'auto', minHeight: 46, maxWidth: '100%', padding: 6, display: 'flex', alignItems: 'center', gap: 6, cursor: 'default', overflow: 'visible' }}><span style={{ width: 'auto', height: 'auto', fontSize: 12 }}>{entry.filename}</span><small>{entry.status === 'uploading' ? t('workspace.attachmentUploading') : entry.status === 'failed' ? `${t('workspace.attachmentFailed')}: ${entry.reason}` : entry.reason}</small><button type="button" disabled={entry.status === 'uploading'} aria-label={`${t('workspace.removeImage')} ${entry.filename}`} onClick={() => setUploadEntries((current) => current.filter((item) => item.id !== entry.id))}>×</button></div>)}
                 {pendingAttachments.map((attachment, index) => {
                   const source = attachment.thumbnail_url || attachment.preview_url || attachment.url || ''
                   return (
