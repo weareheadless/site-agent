@@ -176,3 +176,24 @@ authorized-target identity negatives, the broader/full suites, controlled
 invalid-plan evidence, and actual Astrid dynamic owner review remain gaps.
 No candidate, paid provider call, production mutation, deployment, or original
 issue acceptance is claimed.
+
+## Checkpoint22 pre-Build admission rejection matrix (2026-10-29)
+
+Extended the composed disposable-database regression with persisted running and
+failed `native_direction` artifacts and a persisted `build_dispatch` claim.
+Each negative case snapshots the run, phase artifacts and events after fixture
+mutation, then invokes real intake recovery with only the Memory admission CAS
+patched to fail if reached. The owning recovery policy rejects all three with
+`completed native direction and no Build attempt`; reopened Memory remains
+unchanged, the queue is empty and direction provider-call count is unchanged.
+The existing absent-native rejection, same-base concurrent control and changed
+runtime-base rejection remain in the selection.
+
+Receipts on source `2ae08bfc035c1fad15385403023eb26686230263`: composed selection
+`ui056-checkpoints22-composed-b7470b46f2054e43bea9c8ac8cc6a552` passed; intake
+and memory suites passed twice as
+`ui056-checkpoints22-intake-memory-1-7e308a3ec4124fdbbf31ad6b5d9f8841` and
+`ui056-checkpoints22-intake-memory-2-90ef8863e4834bde936b8dac750aa2aa`.
+Fixture/unit evidence only: request/context/session/tenant/authorized-target
+identity-negative coverage, full suite, live candidate and owner review remain
+gaps. No request is accepted and no deployment/live verification is claimed.

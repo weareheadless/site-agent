@@ -443,11 +443,11 @@ def test_build_confirmed_session_through_real_handoff_preserves_shared_intellige
 
 
 @pytest.mark.parametrize(
-    "runtime_base_drift", [False, True, None],
-    ids=["same-base", "changed-runtime-base", "missing-native-checkpoint"],
+    "recovery_case", ["same-base", "changed-runtime-base", "missing-native-checkpoint",
+                      "running-native-checkpoint", "failed-native-checkpoint", "prior-build-attempt"],
 )
 def test_composed_same_run_recovery_reopens_checkpoint_and_dispatches_build_once(
-    tmp_path, monkeypatch, runtime_base_drift,
+    tmp_path, monkeypatch, recovery_case,
 ):
     """Exercise intake -> handoff -> real worker/facade using a disposable tenant clone."""
     import subprocess
@@ -572,12 +572,21 @@ def test_composed_same_run_recovery_reopens_checkpoint_and_dispatches_build_once
     handoff = DesignBuildHandoff({"memory": memory, "config": config, "design_service": service,
                                   "design_executor": executor})
     intake_service = DesignIntakeService(memory, config=config, default_intake=_intake(), lab_service=handoff)
-    if runtime_base_drift is None:
-        # Remove only the native checkpoint in this disposable fixture database.
-        memory.conn.execute(
-            "DELETE FROM design_run_phase_artifacts WHERE run_id = ? AND phase = 'native_direction'",
-            (run_id,),
-        )
+    if recovery_case in {"missing-native-checkpoint", "running-native-checkpoint",
+                         "failed-native-checkpoint", "prior-build-attempt"}:
+        # Mutate only durable phase artifacts in this disposable fixture database.
+        if recovery_case == "missing-native-checkpoint":
+            memory.conn.execute(
+                "DELETE FROM design_run_phase_artifacts WHERE run_id = ? AND phase = 'native_direction'", (run_id,)
+            )
+        elif recovery_case in {"running-native-checkpoint", "failed-native-checkpoint"}:
+            memory.conn.execute(
+                "UPDATE design_run_phase_artifacts SET status = ? WHERE run_id = ? AND phase = 'native_direction'",
+                ("running" if recovery_case == "running-native-checkpoint" else "failed", run_id),
+            )
+        else:
+            memory.claim_design_phase(run_id, "build_dispatch", base_sha=request.base_sha,
+                                      context_snapshot_hash=request.context_snapshot_hash)
         memory.conn.commit()
         before_rejection = Memory(db)
         run_before_rejection = before_rejection.get_design_run(run_id)
@@ -604,8 +613,9 @@ def test_composed_same_run_recovery_reopens_checkpoint_and_dispatches_build_once
         assert len(direction_calls) == calls_before_rejection, "rejected recovery called a model"
         after_rejection.close()
         before_rejection.close()
+        memory.close()
         return
-    if runtime_base_drift:
+    if recovery_case == "changed-runtime-base":
         (clone / "runtime-drift.txt").write_text("isolated tenant HEAD changed after checkpoint\n")
         git("add", "-A")
         git("commit", "-qm", "runtime base drift")
