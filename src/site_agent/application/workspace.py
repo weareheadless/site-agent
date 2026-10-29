@@ -2758,10 +2758,20 @@ class ChatService:
             project = service.project()
             if not isinstance(project, Mapping):
                 raise ValueError("CrawlSEO workspace is invalid")
-            workspace_id = str(project.get("workspaceId") or project.get("workspace_id") or "")
-            project_id = str(project.get("id") or project.get("projectId") or "")
-            if not workspace_id:
-                raise ValueError("CrawlSEO workspace id is invalid")
+
+            def required_identity(canonical: str, aliases: tuple[str, ...]) -> str:
+                # A present canonical field is authoritative, even when invalid;
+                # aliases are only for pre-canonical service implementations.
+                key = canonical if canonical in project else next(
+                    (alias for alias in aliases if alias in project), None
+                )
+                value = project.get(key) if key is not None else None
+                if not isinstance(value, str) or not value.strip():
+                    raise ValueError(f"CrawlSEO {canonical} is invalid")
+                return value
+
+            workspace_id = required_identity("workspace_id", ("workspaceId",))
+            project_id = required_identity("project_id", ("id", "projectId"))
             snapshot = service.intelligence_snapshot(site_id=site_id, workspace_id=workspace_id, project_id=project_id)
             if not snapshot.get("businessProfile") and not snapshot.get("research"):
                 return {"state": "not_started", "reason": "no intelligence has been recorded for this tenant yet"}

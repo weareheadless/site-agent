@@ -11,6 +11,7 @@ from site_agent.core.contracts import (
     Capability,
     CapabilityAvailability,
     ContractError,
+    CrawlSEOProject,
     EffectClass,
     OwnerAction,
     ProviderReceipt,
@@ -20,6 +21,26 @@ from site_agent.core.contracts import (
     validate_approval_transition,
 )
 from site_agent.application.capabilities import CapabilityRegistry, CapabilityRegistryError, default_capabilities
+
+
+def test_crawlseo_project_preserves_optional_workspace_identity_and_validates_supplied_values():
+    base = {
+        "project_id": "project-canonical",
+        "site": {"domain": "example.test", "url": "https://example.test/"},
+        "connections": {},
+    }
+    legacy = CrawlSEOProject.from_mapping(base)
+    assert legacy.workspace_id == ""
+    assert legacy.to_dict()["workspace_id"] == ""
+
+    canonical = CrawlSEOProject.from_mapping({**base, "workspace_id": " workspace-canonical "})
+    assert canonical.workspace_id == " workspace-canonical "
+    assert canonical.to_dict()["project_id"] == "project-canonical"
+    assert canonical.to_dict()["workspace_id"] == " workspace-canonical "
+
+    for invalid in (None, "", "  ", 42, [], {}):
+        with pytest.raises(ContractError, match="workspace_id"):
+            CrawlSEOProject.from_mapping({**base, "workspace_id": invalid})
 
 
 def _action(**overrides):
