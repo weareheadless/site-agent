@@ -694,6 +694,57 @@ def _persist_integrated_composition(
     )
 
 
+def _native_phase_identity(request, target) -> tuple[str, str, list[str]]:
+    """Return the frozen identity shared by native planning and Build claims."""
+    from ..core.design_contracts import canonical_hash
+
+    request_value = request.to_dict() if hasattr(request, "to_dict") else dict(request)
+    target_value = target.to_dict() if hasattr(target, "to_dict") else dict(target)
+    request_hash = canonical_hash(request_value)
+    target_hash = canonical_hash(target_value)
+    assets_hash = canonical_hash({
+        "supplied_media_asset_ids": list(getattr(request, "supplied_media_asset_ids", ()) or ()),
+        "asset_visual_evidence": [
+            item.to_dict() if hasattr(item, "to_dict") else dict(item)
+            for item in (request.context_snapshot.asset_visual_evidence if request.context_snapshot else ())
+        ],
+    })
+    return str(request.base_sha), str(request.context_snapshot_hash or ""), [request_hash, target_hash, assets_hash]
+
+
+def _claim_native_phase(memory, request, target, phase: str, *, max_attempts: int = 1) -> dict[str, Any] | None:
+    """Claim a production native boundary; retain no-Memory fixture compatibility."""
+    if memory is None or not hasattr(memory, "get_design_run"):
+        if bool(getattr(target, "publishable", False)):
+            raise RunnerError(f"publishable design {phase} requires canonical durable Memory")
+        return None
+    if memory.get_design_run(request.run_id) is None:
+        # The lower-level stage API is also used by isolated legacy fixtures.
+        # Application build entry validates/persists the run before dispatch.
+        if bool(getattr(target, "publishable", False)):
+            raise RunnerError(f"publishable design {phase} has no durable design run")
+        return None
+    if phase == "native_direction":
+        prior = memory.list_design_phase_artifacts(request.run_id, phase=phase)
+        if any(item.get("status") == "failed" and item.get("error_code") != "invalid_generated_plan" for item in prior):
+            raise RunnerError("native direction provider/process failure is terminal; safe reconciliation is required")
+    base_sha, context_hash, hashes = _native_phase_identity(request, target)
+    variant_key = "initial"
+    if phase == "build_dispatch":
+        # The fence is scoped to this approved Build operation on this run; a
+        # later, separately authorized operation has its own identity/key.
+        from ..core.design_contracts import canonical_hash
+
+        variant_key = "build-" + canonical_hash({
+            "request": request.to_dict(), "target": target.to_dict(),
+        })[:32]
+    return memory.claim_design_phase(
+        request.run_id, phase, variant_key=variant_key, base_sha=base_sha,
+        context_snapshot_hash=context_hash, input_hashes=hashes, max_attempts=max_attempts,
+        provider_id="opencode", model="native-direction" if phase == "native_direction" else "build",
+    )
+
+
 def _initial_homepage_payload_data(request, plan: Any, *, featured_media_id: int | None = None) -> dict[str, Any]:
     """Map confirmed intake and Ada's final homepage copy into canonical Payload fields."""
     from ..core.design_contracts import ExperiencePlanBundle, SiteIntake
@@ -2352,6 +2403,7 @@ def stage_design_build(
 
     if not isinstance(request, PageBuildRequest) or not isinstance(target, BuildTarget):
         raise RunnerError("typed design builds require PageBuildRequest and BuildTarget")
+    phase_identity_request = request
     if request.context_snapshot is not None:
         if request.context_snapshot.base_sha != target.base_sha:
             raise RunnerError("design context snapshot base SHA does not match the build target")
@@ -2564,66 +2616,174 @@ def stage_design_build(
                 direction_kwargs["api_key"] = provider_key
                 direction_kwargs["env"] = context.get("env")
                 direction_kwargs["api_key_env"] = provider_env_name
+            native_memory = execution_context.get("memory")
+            native_phase = (
+                _claim_native_phase(native_memory, request, target, "native_direction", max_attempts=2)
+                if creative_orchestration else None
+            )
             try:
-                direction_result = run_opencode_turn(
-                    worktree,
-                    _native_direction_prompt(
-                        request,
-                        target,
-                        tuple(direction_image_files),
+                if native_phase and not native_phase.get("claimed"):
+                    if native_phase.get("status") == "completed":
+                        cached = native_phase.get("payload") or {}
+                        native_direction = str(cached.get("direction") or "")
+                        experience_plan = ExperiencePlanBundle.from_dict(cached["experience_plan"])
+                        direction_path = str(cached["direction_path"])
+                        direction_hash = str(cached["direction_hash"])
+                        direction_transcript_path = str(cached.get("transcript_path") or "")
+                        design_plan = experience_plan
+                    else:
+                        raise RunnerError(
+                            "native direction provider call is still running; reconciliation required before replay"
+                        )
+                else:
+                    direction_prompt = _native_direction_prompt(
+                        request, target, tuple(direction_image_files),
                         require_experience_plan=creative_orchestration,
-                    ),
-                    execution_config,
-                    **direction_kwargs,
-                )
+                    )
+                    if native_phase and int(native_phase.get("attempt") or 0) == 2:
+                        previous_attempts = native_memory.list_design_phase_artifacts(
+                            request.run_id, phase="native_direction",
+                        )
+                        first_failure = next(
+                            (item for item in previous_attempts if item.get("attempt") == 1), {}
+                        )
+                        failed_payload = first_failure.get("payload") or {}
+                        direction_prompt += (
+                            "\n\nThe previous response failed typed validation. Correct only the reported fields; "
+                            "preserve its valid creative decisions and use the same frozen request, context, and assets. "
+                            "Do not add generic filler or invent semantics.\nDiagnostics:\n"
+                            + str(failed_payload.get("diagnostic") or first_failure.get("error_detail") or "")
+                            + "\nOriginal response:\n"
+                            + json.dumps(failed_payload.get("response") or {}, ensure_ascii=True, sort_keys=True)
+                        )
+                    direction_result = run_opencode_turn(
+                        worktree, direction_prompt, execution_config, **direction_kwargs,
+                    )
+                    direction_transcript_path = _persist_design_transcript(
+                        execution_config, request.run_id,
+                        str(direction_result.get("transcript") or json.dumps(direction_result, ensure_ascii=True, sort_keys=True)),
+                        filename="direction-opencode.jsonl",
+                    )
+                    try:
+                        native_direction, experience_plan = _native_direction_payload(
+                            direction_result, request, require_experience_plan=creative_orchestration,
+                        )
+                    except RunnerError as parse_error:
+                        if not (creative_orchestration and native_phase and native_phase.get("claimed")):
+                            raise
+                        native_memory.fail_design_phase(
+                            int(native_phase["id"]), error_code="invalid_generated_plan",
+                            error_detail=str(parse_error), payload={
+                                "response": dict(direction_result),
+                                "transcript": str(direction_result.get("transcript") or ""),
+                                "diagnostic": str(parse_error),
+                            },
+                        )
+                        if int(native_phase.get("attempt") or 0) >= 2:
+                            raise parse_error
+                        correction_phase = _claim_native_phase(
+                            native_memory, request, target, "native_direction", max_attempts=2,
+                        )
+                        if not correction_phase or not correction_phase.get("claimed"):
+                            raise RunnerError("native direction correction is not safely claimable") from parse_error
+                        previous_attempts = native_memory.list_design_phase_artifacts(
+                            request.run_id, phase="native_direction",
+                        )
+                        first_failure = next(
+                            (item for item in previous_attempts if item.get("attempt") == 1), {}
+                        )
+                        failed_payload = first_failure.get("payload") or {}
+                        direction_prompt += (
+                            "\n\nThe previous response failed typed validation. Correct only the reported fields; "
+                            "preserve its valid creative decisions and use the same frozen request, context, and assets. "
+                            "Do not add generic filler or invent semantics.\nDiagnostics:\n"
+                            + str(failed_payload.get("diagnostic") or parse_error)
+                            + "\nOriginal response:\n"
+                            + json.dumps(failed_payload.get("response") or {}, ensure_ascii=True, sort_keys=True)
+                        )
+                        try:
+                            direction_result = run_opencode_turn(
+                                worktree, direction_prompt, execution_config, **direction_kwargs,
+                            )
+                        except RunnerError as correction_error:
+                            native_memory.fail_design_phase(
+                                int(correction_phase["id"]), error_code="provider_or_process_failure",
+                                error_detail=str(correction_error), payload={
+                                    "response": dict(getattr(correction_error, "result", {}) or {}),
+                                },
+                            )
+                            raise
+                        direction_transcript_path = _persist_design_transcript(
+                            execution_config, request.run_id,
+                            str(direction_result.get("transcript") or json.dumps(direction_result, ensure_ascii=True, sort_keys=True)),
+                            filename="direction-opencode.jsonl",
+                        )
+                        try:
+                            native_direction, experience_plan = _native_direction_payload(
+                                direction_result, request, require_experience_plan=True,
+                            )
+                        except RunnerError as correction_error:
+                            native_memory.fail_design_phase(
+                                int(correction_phase["id"]), error_code="invalid_generated_plan",
+                                error_detail=str(correction_error), payload={
+                                    "response": dict(getattr(correction_error, "result", {}) or direction_result),
+                                    "transcript": str(direction_result.get("transcript") or ""),
+                                    "diagnostic": str(correction_error),
+                                },
+                            )
+                            raise
+                    finally:
+                        try:
+                            direction_agent_path.unlink()
+                        except FileNotFoundError:
+                            pass
+                    direction_path, direction_hash = _persist_design_direction(
+                        execution_config, request.run_id, native_direction,
+                    )
+                    if creative_orchestration and experience_plan is not None:
+                        experience_plan = _bind_experience_plan_artifacts(
+                            experience_plan, request, direction_hash,
+                        )
+                        design_plan = experience_plan
+                        _persist_integrated_composition(
+                            execution_context, request, experience_plan,
+                            direction_path=direction_path, direction_hash=direction_hash,
+                        )
+                        if native_phase and native_phase.get("claimed"):
+                            native_memory.complete_design_phase(
+                                int(correction_phase["id"] if 'correction_phase' in locals() else native_phase["id"]),
+                                {
+                                    "direction": native_direction,
+                                    "experience_plan": experience_plan.to_dict(),
+                                    "direction_path": direction_path,
+                                    "direction_hash": direction_hash,
+                                    "transcript_path": direction_transcript_path,
+                                },
+                            )
             except RunnerError as exc:
                 partial = dict(exc.result or {})
-                raw_direction_transcript = str(
-                    partial.get("transcript") or json.dumps(partial, ensure_ascii=True, sort_keys=True)
-                )
-                direction_transcript_path = _persist_design_transcript(
-                    execution_config,
-                    request.run_id,
-                    raw_direction_transcript,
-                    filename="direction-opencode.jsonl",
-                )
-                partial["direction_transcript_path"] = direction_transcript_path
+                if partial:
+                    raw_direction_transcript = str(
+                        partial.get("transcript") or json.dumps(partial, ensure_ascii=True, sort_keys=True)
+                    )
+                    direction_transcript_path = _persist_design_transcript(
+                        execution_config, request.run_id, raw_direction_transcript,
+                        filename="direction-opencode.jsonl",
+                    )
+                    partial["direction_transcript_path"] = direction_transcript_path
+                if (native_phase and native_phase.get("claimed")
+                        and native_phase.get("status") == "running"
+                        and "correction_phase" not in locals()):
+                    native_memory.fail_design_phase(
+                        int(native_phase["id"]), error_code="provider_or_process_failure",
+                        error_detail=str(exc), payload={"response": partial},
+                    )
                 raise RunnerError(str(exc), result=partial) from exc
             finally:
                 try:
                     direction_agent_path.unlink()
                 except FileNotFoundError:
                     pass
-            direction_transcript_path = _persist_design_transcript(
-                execution_config,
-                request.run_id,
-                str(direction_result.get("transcript") or json.dumps(direction_result, ensure_ascii=True, sort_keys=True)),
-                filename="direction-opencode.jsonl",
-            )
-            native_direction, experience_plan = _native_direction_payload(
-                direction_result,
-                request,
-                require_experience_plan=creative_orchestration,
-            )
-            direction_path, direction_hash = _persist_design_direction(
-                execution_config,
-                request.run_id,
-                native_direction,
-            )
-            if creative_orchestration and experience_plan is not None:
-                experience_plan = _bind_experience_plan_artifacts(
-                    experience_plan,
-                    request,
-                    direction_hash,
-                )
-                design_plan = experience_plan
-                _persist_integrated_composition(
-                    execution_context,
-                    request,
-                    experience_plan,
-                    direction_path=direction_path,
-                    direction_hash=direction_hash,
-                )
             if progress:
                 progress("Ada's design direction is persisted; starting the integrated Build turn")
         if payload_first_required:
@@ -2667,6 +2827,13 @@ def stage_design_build(
             turn_kwargs["api_key_env"] = provider_env_name
         if attached_image_files:
             turn_kwargs["image_files"] = attached_image_files
+        build_fence = _claim_native_phase(
+            execution_context.get("memory"), phase_identity_request, target, "build_dispatch", max_attempts=1,
+        )
+        if build_fence is not None and not build_fence.get("claimed"):
+            raise RunnerError(
+                "Build dispatch was already claimed for this run; safe reconciliation is required before another invocation"
+            )
         try:
             initial = run_opencode_turn(
                 worktree,
