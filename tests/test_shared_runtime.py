@@ -243,3 +243,39 @@ def test_shared_overlay_rejects_wrong_tenant_resource_identity(tmp_path: Path):
             wrong,
             shared_vars={"HELLOADA_HANDOFF_PUBLIC_KEY": "public-key"},
         )
+
+
+def test_overlay_requires_matching_actual_runtime_fingerprint_before_writes(tmp_path: Path):
+    checkout = _tenant_checkout(tmp_path)
+    before = {p.relative_to(checkout).as_posix(): p.read_bytes() for p in checkout.rglob("*") if p.is_file()}
+    control = tmp_path / "control"
+    shutil.copytree(ROOT, control, ignore=shutil.ignore_patterns(".git", ".venv", "__pycache__"))
+    actual = shared_runtime_fingerprint(control)
+    with pytest.raises(SharedRuntimeError, match="does not match"):
+        apply_shared_runtime_overlay(control, checkout, CUSTOMER,
+            shared_vars={"HELLOADA_HANDOFF_PUBLIC_KEY": "public-key"}, expected_fingerprint="0" * 64)
+    after = {p.relative_to(checkout).as_posix(): p.read_bytes() for p in checkout.rglob("*") if p.is_file()}
+    assert after == before
+    source = control / "src/site_agent/templates/next-payload/worker.ts"
+    source.write_bytes(source.read_bytes() + b"// tampered")
+    with pytest.raises(SharedRuntimeError, match="does not match"):
+        apply_shared_runtime_overlay(control, checkout, CUSTOMER,
+            shared_vars={"HELLOADA_HANDOFF_PUBLIC_KEY": "public-key"}, expected_fingerprint=actual)
+
+
+def test_overlay_fingerprint_matching_and_omitted_expected(tmp_path: Path):
+    actual = shared_runtime_fingerprint(ROOT)
+    for expected in (actual, None):
+        checkout = _tenant_checkout(tmp_path / str(expected is None))
+        result = apply_shared_runtime_overlay(ROOT, checkout, CUSTOMER,
+            shared_vars={"HELLOADA_HANDOFF_PUBLIC_KEY": "public-key"}, expected_fingerprint=expected)
+        assert result["fingerprint"] == actual
+
+
+def test_overlay_rejects_malformed_expected_fingerprint_before_writes(tmp_path: Path):
+    checkout = _tenant_checkout(tmp_path)
+    before = {p.relative_to(checkout).as_posix(): p.read_bytes() for p in checkout.rglob("*") if p.is_file()}
+    with pytest.raises(SharedRuntimeError, match="invalid"):
+        apply_shared_runtime_overlay(ROOT, checkout, CUSTOMER,
+            shared_vars={"HELLOADA_HANDOFF_PUBLIC_KEY": "public-key"}, expected_fingerprint="not-a-hash")
+    assert {p.relative_to(checkout).as_posix(): p.read_bytes() for p in checkout.rglob("*") if p.is_file()} == before

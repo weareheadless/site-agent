@@ -4,6 +4,7 @@ import json
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 import yaml
+import pytest
 
 from site_agent.application.growth import growth_snapshot
 from site_agent.application.workspace import ChatService, Tenant, TenantRegistry
@@ -183,6 +184,156 @@ def test_control_plane_intelligence_without_recorded_knowledge_is_not_started(tm
         assert response.status_code == 200
         assert response.json() == {'state': 'not_started',
                                    'reason': 'no intelligence has been recorded for this tenant yet'}
+
+
+def test_intelligence_composes_real_project_contract_and_isolates_canonical_identities(tmp_path):
+    from site_agent.application.crawlseo import CrawlSEOApplicationService
+
+    class FaithfulProvider:
+        def __init__(self, project_id, workspace_id):
+            self.project_id = project_id
+            self.workspace_id = workspace_id
+            self.reads = []
+
+        def project(self):
+            # This is the canonical seo_get_project shape, not the reader's
+            # desired camelCase view.
+            return {
+                'project_id': self.project_id,
+                'workspace_id': self.workspace_id,
+                'site': {'domain': f'{self.project_id}.example', 'url': f'https://{self.project_id}.example/'},
+                'connections': {'gsc': {'status': 'active', 'property': 'url'},
+                                'ga4': {'status': 'active', 'property': 'property'}},
+            }
+
+        def business_knowledge_document(self, workspace_id, project_id, document_id):
+            self.reads.append(('business', workspace_id, project_id, document_id))
+            return {'name': project_id, 'documentId': document_id}
+
+        def latest_research_report(self):
+            self.reads.append(('research',))
+            return {'status': 'completed'}
+
+        def connector_capabilities(self, *, site_id):
+            return {'schemaVersion': '1.0', 'siteId': site_id, 'projectId': self.project_id,
+                    'capabilities': ['findings.read']}
+
+        def connector_findings(self, **kwargs):
+            self.reads.append(('findings', kwargs['site_id']))
+            return {'schemaVersion': '1.0', 'siteId': kwargs['site_id'], 'projectId': self.project_id,
+                    'findings': [], 'nextCursor': None}
+
+        def connector_actions(self, **kwargs):
+            self.reads.append(('actions', kwargs['site_id']))
+            return {'schemaVersion': '1.0', 'siteId': kwargs['site_id'], 'actions': [], 'nextCursor': None}
+
+    tenants = {}
+    providers = {}
+    for tenant_id, project_id, workspace_id in (
+        ('alpha', 'project-alpha-exact', 'workspace-alpha-exact'),
+        ('beta', 'project-beta-exact', 'workspace-beta-exact'),
+    ):
+        memory = Memory(tmp_path / f'{tenant_id}.db')
+        provider = FaithfulProvider(project_id, workspace_id)
+        providers[tenant_id] = provider
+        tenants[tenant_id] = Tenant(tenant_id, {}, memory, None, {
+            'crawlseo_service': CrawlSEOApplicationService(provider),
+            'connector_site_id': f'site-{tenant_id}',
+        }, f'{tenant_id}-token')
+    registry = TenantRegistry(tenants)
+    service = ChatService(registry=registry)
+    for tenant_id, project_id, workspace_id in (
+        ('alpha', 'project-alpha-exact', 'workspace-alpha-exact'),
+        ('beta', 'project-beta-exact', 'workspace-beta-exact'),
+    ):
+        normalized = tenants[tenant_id].context['crawlseo_service'].project()
+        assert normalized['project_id'] == project_id
+        assert normalized['workspace_id'] == workspace_id
+    app = FastAPI()
+    register_workspace_routes(app, config={}, env={}, service=service, registry=registry)
+    with TestClient(app) as client:
+        for tenant_id, project_id, workspace_id in (
+            ('alpha', 'project-alpha-exact', 'workspace-alpha-exact'),
+            ('beta', 'project-beta-exact', 'workspace-beta-exact'),
+        ):
+            response = client.get('/api/workspace/intelligence',
+                headers={'Authorization': f'Bearer {tenant_id}-token'})
+            assert response.status_code == 200
+            assert response.json()['state'] == 'available'
+            assert response.json()['businessProfile']['name'] == project_id
+            assert providers[tenant_id].reads[0] == ('business', workspace_id, project_id, 'business-profile')
+        assert providers['alpha'].reads[0][1:] != providers['beta'].reads[0][1:]
+
+
+@pytest.mark.parametrize('project_payload', [
+    {'workspace_id': 'valid-workspace'},
+    {'project_id': None, 'workspace_id': 'valid-workspace'},
+    {'project_id': 17, 'workspace_id': 'valid-workspace'},
+    {'project_id': 'valid-project'},
+    {'project_id': 'valid-project', 'workspace_id': None},
+    {'project_id': 'valid-project', 'workspace_id': ['not', 'text']},
+    {'project_id': 'valid-project', 'workspace_id': '   '},
+])
+def test_intelligence_rejects_malformed_canonical_identity_before_downstream_reads(tmp_path, project_payload):
+    from site_agent.application.crawlseo import CrawlSEOApplicationService
+
+    class MalformedProvider:
+        def __init__(self):
+            self.reads = []
+
+        def project(self):
+            return {
+                **project_payload,
+                'site': {'domain': 'tenant.example', 'url': 'https://tenant.example/'},
+                'connections': {},
+                # Valid aliases must not rescue an invalid canonical value.
+                'id': 'alias-project', 'projectId': 'alias-project',
+                'workspaceId': 'alias-workspace',
+            }
+
+        def business_knowledge_document(self, *args):
+            self.reads.append(('business', args))
+            return {}
+
+        def latest_research_report(self):
+            self.reads.append(('research',))
+            return {}
+
+        def connector_findings(self, **kwargs):
+            self.reads.append(('findings', kwargs))
+            return {}
+
+        def connector_actions(self, **kwargs):
+            self.reads.append(('actions', kwargs))
+            return {}
+
+    provider = MalformedProvider()
+    tenant = Tenant('alpha', {}, Memory(tmp_path / 'malformed.db'), None, {
+        'crawlseo_service': CrawlSEOApplicationService(provider), 'connector_site_id': 'site-alpha',
+    }, 'alpha-token')
+    registry = TenantRegistry({'alpha': tenant})
+    result = ChatService(registry=registry).intelligence_summary(tenant=tenant)
+    assert result['state'] == 'unavailable'
+    assert provider.reads == []
+
+
+def test_intelligence_aliases_apply_only_when_canonical_keys_are_absent(tmp_path):
+    tenant = Tenant('alpha', {}, Memory(tmp_path / 'aliases.db'), None, {
+        'crawlseo_service': SimpleNamespace(
+            project=lambda: {'workspaceId': 'workspace-alias', 'projectId': 'project-alias'},
+            intelligence_snapshot=lambda **kwargs: {'businessProfile': {}, 'research': {'status': 'completed'},
+                'coverage': {}, 'actions': []},
+        ),
+        'connector_site_id': 'site-alpha',
+    }, 'alpha-token')
+    registry = TenantRegistry({'alpha': tenant})
+    calls = []
+    tenant.context['crawlseo_service'].intelligence_snapshot = lambda **kwargs: (
+        calls.append(kwargs) or {'businessProfile': {}, 'research': {'status': 'completed'}, 'coverage': {}, 'actions': []}
+    )
+    result = ChatService(registry=registry).intelligence_summary(tenant=tenant)
+    assert result['state'] == 'available'
+    assert calls == [{'site_id': 'site-alpha', 'workspace_id': 'workspace-alias', 'project_id': 'project-alias'}]
 
 
 def test_migrated_tenant_keeps_its_existing_provider_credential_file(tmp_path):

@@ -1,4 +1,6 @@
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import pytest
 
@@ -8,6 +10,7 @@ from site_agent.core.contracts import (
     ApprovalRequest,
     Artifact,
     ArtifactKind,
+    ContractError,
     EffectClass,
     OwnerAction,
     ProviderReceipt,
@@ -15,6 +18,78 @@ from site_agent.core.contracts import (
 )
 from site_agent.core.memory import MIGRATIONS, Memory, SCHEMA_VERSION
 from site_agent.core.media_contracts import MediaAsset, MediaKind, MediaStatus
+
+
+@pytest.mark.parametrize(("phase", "max_attempts"), [("native_direction", 2), ("build_dispatch", 1)])
+def test_native_phase_claim_is_atomic_across_memory_connections_and_survives_reopen(tmp_path, phase, max_attempts):
+    path = tmp_path / "memory.db"
+    seed = Memory(path)
+    seed.create_design_run(
+        run_id="phase-claim-run", mode="production_candidate", status="created",
+        intake_json={"site": "North Star"}, intake_hash="a" * 64, base_sha="b" * 40,
+        publishable=True, candidate_ref="refs/ada-design/phase-claim-run",
+    )
+    seed.close()
+    barrier = Barrier(2)
+
+    def claim():
+        memory = Memory(path)
+        barrier.wait()
+        try:
+            return memory.claim_design_phase(
+                "phase-claim-run", phase, variant_key="initial",
+                base_sha="b" * 40, context_snapshot_hash="c" * 64,
+                input_hashes=["d" * 64], max_attempts=max_attempts,
+            )
+        finally:
+            memory.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        claims = list(pool.map(lambda _: claim(), range(2)))
+    assert sum(bool(claim["claimed"]) for claim in claims) == 1
+    running = next(claim for claim in claims if claim["claimed"])
+    reopened = Memory(path)
+    current = reopened.claim_design_phase(
+        "phase-claim-run", phase, variant_key="initial",
+        base_sha="b" * 40, context_snapshot_hash="c" * 64,
+        input_hashes=["d" * 64], max_attempts=max_attempts,
+    )
+    assert current["id"] == running["id"]
+    assert current["claimed"] is False
+    with pytest.raises(ContractError, match="identity mismatch"):
+        reopened.claim_design_phase(
+            "phase-claim-run", phase, variant_key="initial",
+            base_sha="b" * 40, context_snapshot_hash="c" * 64,
+            input_hashes=["e" * 64], max_attempts=max_attempts,
+        )
+    reopened.close()
+
+
+def test_completed_native_checkpoint_is_reusable_after_reopen(tmp_path):
+    path = tmp_path / "completed.db"
+    memory = Memory(path)
+    memory.create_design_run(
+        run_id="completed-run", mode="production_candidate", status="created",
+        intake_json={}, intake_hash="a" * 64, base_sha="b" * 40,
+        publishable=True, candidate_ref="refs/ada-design/completed-run",
+    )
+    claimed = memory.claim_design_phase(
+        "completed-run", "native_direction", variant_key="initial", base_sha="b" * 40,
+        context_snapshot_hash="c" * 64, input_hashes=["d" * 64], max_attempts=2,
+    )
+    completed = memory.complete_design_phase(claimed["id"], {"direction": "specific", "experience_plan": {"plan": True}})
+    memory.close()
+
+    reopened = Memory(path)
+    reused = reopened.claim_design_phase(
+        "completed-run", "native_direction", variant_key="initial", base_sha="b" * 40,
+        context_snapshot_hash="c" * 64, input_hashes=["d" * 64], max_attempts=2,
+    )
+    assert reused["id"] == completed["id"]
+    assert reused["status"] == "completed"
+    assert reused["payload"] == {"direction": "specific", "experience_plan": {"plan": True}}
+    assert reused["claimed"] is False
+    reopened.close()
 
 
 def test_fresh_db_creates_current_schema(tmp_path):
