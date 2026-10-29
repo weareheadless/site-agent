@@ -621,6 +621,8 @@ def test_native_direction_without_memory_preserves_legacy_turn_kwargs(tmp_path, 
 
 @pytest.mark.parametrize("outcome", ["invalid", "provider_error", "corrected_valid", "checkpoint_resume"])
 def test_native_direction_repair_is_bounded_and_fenced(tmp_path, monkeypatch, outcome):
+    from site_agent.hands.builder import BuilderError, NativeOpenCodeBuilder
+
     clone, base_sha = _clone(tmp_path)
     memory = Memory(tmp_path / "data" / "memory.db")
     snapshot = DesignContextSnapshot.from_dict({
@@ -671,6 +673,8 @@ def test_native_direction_repair_is_bounded_and_fenced(tmp_path, monkeypatch, ou
     })
     calls = []
     prompts = []
+    competing_errors = []
+    competing_attempts = []
 
     monkeypatch.setattr(runner, "install_agent_files", lambda *args, **kwargs: None)
     monkeypatch.setattr(runner, "_typed_execution_config", lambda config, request, target: config)
@@ -698,6 +702,17 @@ def test_native_direction_repair_is_bounded_and_fenced(tmp_path, monkeypatch, ou
     def fake_turn(_worktree, _prompt, _config, **kwargs):
         calls.append(dict(kwargs))
         prompts.append(_prompt)
+        if outcome == "checkpoint_resume" and kwargs.get("agent_name") in {"native-direction", "build"}:
+            # Re-enter the complete facade through an independent SQLite
+            # connection while the winner's durable phase is still running.
+            competing_memory = Memory(tmp_path / "data" / "memory.db")
+            competing_attempts.append(kwargs["agent_name"])
+            try:
+                NativeOpenCodeBuilder({"config": config, "memory": competing_memory}).build_design(request, target)
+            except BuilderError as exc:
+                competing_errors.append(str(exc))
+            finally:
+                competing_memory.close()
         if kwargs.get("agent_name") == "build":
             _write_presentation(_worktree, "<html><body><h1>Candidate</h1></body></html>")
             return {"session_id": "build-session", "reply": "implemented", "transcript": "build transcript\n"}
@@ -746,9 +761,15 @@ def test_native_direction_repair_is_bounded_and_fenced(tmp_path, monkeypatch, ou
         assert completed[0]["payload"]["direction"] == "A specific measured arrival."
         memory.close()
         reopened = Memory(tmp_path / "data" / "memory.db")
-        receipt = runner.stage_design_build({"config": config, "memory": reopened}, request, target)
+        receipt = NativeOpenCodeBuilder({"config": config, "memory": reopened}).build_design(request, target)
         assert receipt.experience_plan["behavior_system"]["utility_behaviors"][0]["meaning"]
         assert [call["agent_name"] for call in calls] == ["native-direction", "build"]
+        assert competing_attempts == ["native-direction", "build"]
+        assert len(competing_errors) == 2
+        assert competing_errors == [
+            "native direction provider call is still running; reconciliation required before replay",
+            "Build dispatch was already claimed for this run; safe reconciliation is required before another invocation",
+        ]
         assert calls[-1]["memory"] is reopened
         assert "A specific measured arrival." in prompts[-1]
         assert "image_files" not in calls[0] or calls[0]["image_files"] == calls[-1].get("image_files")
@@ -760,8 +781,6 @@ def test_native_direction_repair_is_bounded_and_fenced(tmp_path, monkeypatch, ou
         assert reopened.get_design_run(run_id)["planning_json"]["integrated_composition"]["experience_plan_hash"] == composition["experience_plan_hash"]
         # A completed planning checkpoint is reusable once, but the durable
         # Build fence prevents a restart or facade entry from issuing Build again.
-        from site_agent.hands.builder import BuilderError, NativeOpenCodeBuilder
-
         with pytest.raises(BuilderError, match="Build dispatch was already claimed"):
             NativeOpenCodeBuilder({"config": config, "memory": reopened}).build_design(request, target)
         assert [call["agent_name"] for call in calls] == ["native-direction", "build"]
