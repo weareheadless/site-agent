@@ -22,6 +22,168 @@ api_deploy = importlib.util.module_from_spec(API_SPEC)
 API_SPEC.loader.exec_module(api_deploy)
 
 
+def test_interrupted_api_rollback_records_failed_health_and_keeps_previous_selected(tmp_path, monkeypatch):
+    releases = tmp_path / "api/releases"
+    previous = releases / "previous"
+    previous.mkdir(parents=True)
+    current = tmp_path / "api/current"
+    receipt_path = tmp_path / "receipt.json"
+    receipt = {"stage": "activated", "previousRelease": "previous"}
+    monkeypatch.setattr(api_deploy, "_restart_api", lambda: None)
+    monkeypatch.setattr(api_deploy, "_health_check", lambda *_args: (_ for _ in ()).throw(RuntimeError("unhealthy")))
+
+    with pytest.raises(RuntimeError, match="health check failed"):
+        api_deploy._recover_interrupted(receipt_path, receipt, current, releases, "http://health")
+
+    assert current.resolve() == previous.resolve()
+    persisted = json.loads(receipt_path.read_text())
+    assert persisted["status"] == "failed"
+    assert persisted["stage"] == "recovery-rollback-failed"
+    assert persisted["rollbackRelease"] == "previous"
+    assert persisted["rollbackHealth"] is False
+
+
+@pytest.mark.parametrize("rollback_healthy", [True, False])
+def test_api_deploy_rolls_back_candidate_health_failure(tmp_path, monkeypatch, rollback_healthy):
+    source = tmp_path / "snapshot"
+    (source / "src/site_agent").mkdir(parents=True)
+    (source / "deploy").mkdir()
+    (source / "pyproject.toml").write_text("[project]\n")
+    (source / "src/site_agent/__init__.py").write_text("")
+    (source / ".site-agent-source-sha").write_text("a" * 40)
+    (source / "deploy/site-agent-api.service").write_text("[Service]\n")
+    (source / "deploy/api-runtime.json").write_text(
+        json.dumps({"schema": 1, "requiredExtras": ["crawlseo", "design-lab", "ga"]})
+    )
+    root = tmp_path / "payload-releases"
+    previous = root / "api/releases/prior"
+    previous.mkdir(parents=True)
+    current = root / "api/current"
+    current.symlink_to(previous)
+
+    calls = []
+    selected_during_health = []
+    real_is_file, real_read_bytes = Path.is_file, Path.read_bytes
+    host_unit = Path("/etc/systemd/system/site-agent-api.service")
+
+    def host_contract_is_file(path):
+        if path == host_unit:
+            return True
+        return real_is_file(path)
+
+    def host_contract_read_bytes(path):
+        if path == host_unit:
+            return b"[Service]\n"
+        return real_read_bytes(path)
+
+    monkeypatch.setattr(Path, "is_file", host_contract_is_file)
+    monkeypatch.setattr(Path, "read_bytes", host_contract_read_bytes)
+    monkeypatch.setattr(api_deploy, "_runtime_config_preflight", lambda *_args: None)
+    monkeypatch.setattr(api_deploy, "_verify_wheel_runtime_dependencies", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(api_deploy, "_verify_payload_template_bundle", lambda *_args: None)
+
+    def fake_run(command, *, cwd=None, env=None, **_kwargs):
+        calls.append(command)
+        if command[:2] == ["systemd-analyze", "verify"]:
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if command[:3] == ["/venv/python", "-m", "pytest"]:
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if command[:4] == ["/venv/python", "-m", "pip", "wheel"]:
+            wheel_dir = Path(command[command.index("--wheel-dir") + 1])
+            (wheel_dir / "site_agent-1.0-py3-none-any.whl").write_bytes(b"fixture wheel")
+        elif command[:4] == ["/venv/python", "-m", "pip", "install"]:
+            target = Path(command[command.index("--target") + 1])
+            (target / "site_agent").mkdir(parents=True)
+            (target / "site_agent/__init__.py").write_text("")
+        elif command[:2] == ["/venv/python", "-c"]:
+            target = Path(env["PYTHONPATH"])
+            return subprocess.CompletedProcess(command, 0, json.dumps({
+                "path": str(target / "site_agent/__init__.py"), "version": "1.0",
+            }), "")
+        else:
+            raise AssertionError(f"unexpected external command: {command!r}")
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(api_deploy, "_run", fake_run)
+    monkeypatch.setattr(api_deploy, "_restart_api", lambda: calls.append(["restart-broker"]))
+
+    def health(_url):
+        selected = current.resolve()
+        selected_during_health.append(selected.name)
+        if selected.name != "prior" or not rollback_healthy:
+            raise RuntimeError("unhealthy")
+
+    monkeypatch.setattr(api_deploy, "_health_check", health)
+    with pytest.raises(RuntimeError, match="unhealthy"):
+        api_deploy.deploy(source, "a" * 40, "candidate", root, "/venv/python", "http://health")
+
+    receipt = json.loads((root / "runs/api/candidate/receipt.json").read_text())
+    assert current.resolve() == previous.resolve()
+    assert receipt["rollbackRelease"] == "prior"
+    assert receipt["rollbackHealth"] is rollback_healthy
+    assert receipt["status"] == ("rolled-back" if rollback_healthy else "failed")
+    assert selected_during_health == ["candidate", "prior"]
+    assert calls.count(["restart-broker"]) == 2
+    assert all(command[0] in ("/venv/python", "systemd-analyze") or command == ["restart-broker"]
+               for command in calls)
+    assert not any("/SOCIAL/site-agent/.venv" in str(command) for command in calls)
+
+
+def test_api_deploy_smoke_failure_never_promotes_or_restarts(tmp_path, monkeypatch):
+    source = tmp_path / "snapshot"
+    (source / "src/site_agent").mkdir(parents=True)
+    (source / "deploy").mkdir()
+    (source / "pyproject.toml").write_text("[project]\n")
+    (source / "src/site_agent/__init__.py").write_text("")
+    (source / ".site-agent-source-sha").write_text("a" * 40)
+    (source / "deploy/site-agent-api.service").write_text("[Service]\n")
+    (source / "deploy/api-runtime.json").write_text(
+        json.dumps({"schema": 1, "requiredExtras": ["crawlseo", "design-lab", "ga"]})
+    )
+    root = tmp_path / "payload-releases"
+    previous = root / "api/releases/prior"
+    previous.mkdir(parents=True)
+    current = root / "api/current"
+    current.symlink_to(previous)
+    real_is_file, real_read_bytes = Path.is_file, Path.read_bytes
+    unit = Path("/etc/systemd/system/site-agent-api.service")
+    monkeypatch.setattr(Path, "is_file", lambda p: True if p == unit else real_is_file(p))
+    monkeypatch.setattr(Path, "read_bytes", lambda p: b"[Service]\n" if p == unit else real_read_bytes(p))
+    monkeypatch.setattr(api_deploy, "_runtime_config_preflight", lambda *_args: None)
+    monkeypatch.setattr(api_deploy, "_verify_wheel_runtime_dependencies", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(api_deploy, "_verify_payload_template_bundle", lambda *_args: None)
+    calls = []
+
+    def fail_smoke(command, **_kwargs):
+        calls.append(command)
+        if command[:2] == ["/venv/python", "-c"] and "from site_agent.hands.crawlseo" in command[2]:
+            raise RuntimeError("smoke import failed")
+        if command[0] == "systemd-analyze":
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if "pytest" in command:
+            return subprocess.CompletedProcess(command, 0, "", "")
+        if "wheel" in command:
+            wheel_dir = Path(command[command.index("--wheel-dir") + 1])
+            (wheel_dir / "site_agent-1.0-py3-none-any.whl").write_bytes(b"fixture wheel")
+        elif "install" in command:
+            target = Path(command[command.index("--target") + 1])
+            (target / "site_agent").mkdir(parents=True)
+        else:
+            raise AssertionError(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(api_deploy, "_run", fail_smoke)
+    monkeypatch.setattr(api_deploy, "_restart_api", lambda: pytest.fail("candidate restart occurred"))
+    with pytest.raises(RuntimeError, match="smoke import failed"):
+        api_deploy.deploy(source, "a" * 40, "candidate-smoke-failure", root,
+                          "/venv/python", "http://health")
+    assert current.resolve() == previous.resolve()
+    assert not (root / "api/releases/candidate-smoke-failure").exists()
+    assert any(command[:2] == ["/venv/python", "-c"] for command in calls)
+    assert all(command[0] in ("/venv/python", "systemd-analyze") for command in calls)
+    assert all("/SOCIAL/site-agent/.venv" not in str(command) for command in calls)
+
+
 def test_api_release_requires_the_complete_payload_template_bundle(tmp_path):
     template = tmp_path / "site_agent/templates/next-payload"
     template.mkdir(parents=True)
