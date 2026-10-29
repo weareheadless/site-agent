@@ -1,3 +1,9 @@
+> **Superseded 2026-10-29.** The canonical plan is
+> [`docs/project-plan-2026-10-29.md`](project-plan-2026-10-29.md). This file is
+> kept for history; use the successor's staged dependencies and readiness gates.
+> Its §8 carries forward unfinished UI, live-proof and hardening requirements;
+> supersession does not waive existing approval, source-trust or release contracts.
+
 # Project plan — 2026-10-27
 
 Status of the Unified Business Intelligence initiative after the first delivery
