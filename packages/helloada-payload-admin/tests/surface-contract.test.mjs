@@ -76,3 +76,11 @@ test('new-site onboarding steps reflect the confirmed brief and stay out of esta
   assert.match(workspace, /onboarding\?\.report\?\.candidate_sha/);
   assert.doesNotMatch(workspace, /helloada-onboarding-steps[^]*?\d+%/);
 });
+
+test('intake has no manual first-page design CTA and chat remains the design-start path', () => {
+  assert.doesNotMatch(workspace, /startFirstPage|canStartFirstPage|workspace\.startFirstPage|workspace\.starting/);
+  assert.match(workspace, /const sendMessage = async/);
+  assert.match(workspace, /fetchHelloAda\('\/api\/helloada\/ada/);
+  assert.match(workspace, /void sendMessage\(\)/);
+  assert.doesNotMatch(workspace, /\/api\/helloada\/design\/start/);
+});

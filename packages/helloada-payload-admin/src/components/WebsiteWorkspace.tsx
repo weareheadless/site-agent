@@ -752,7 +752,6 @@ function ReviewWorkspace() {
   const [messages, setMessages] = useState(initialMessages)
   const [loading, setLoading] = useState(true)
   const [sending, setSending] = useState(false)
-  const [accepting, setAccepting] = useState(false)
   const [error, setError] = useState('')
   const [previewRevision, setPreviewRevision] = useState(0)
   const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([])
@@ -1635,36 +1634,6 @@ function ReviewWorkspace() {
     void sendMessage(correction)
   }
 
-  const startFirstPage = async () => {
-    if (!intakeStatus?.session_id || !intakeStatus.confirmed || accepting) return
-    setAccepting(true)
-    setError('')
-    try {
-      const response = await fetchHelloAda('/api/helloada/design/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          conversation_id: conversationId || intakeStatus.conversation_id,
-          confirmed_revision: intakeStatus.confirmed_revision_id || intakeStatus.confirmed_revision,
-          owner_request: 'Start the first page design from the confirmed working brief.',
-          idempotency_key: `helloada-first-page-${intakeStatus.session_id}-${intakeStatus.confirmed_revision || intakeStatus.revision}`,
-        }),
-      })
-      const body = (await response.json()) as { message?: string; error?: string; run?: { run_id?: string } }
-      if (!response.ok) throw new Error(body.message || body.error || t('error.briefStart'))
-      setMessages((current) => [...current, {
-        role: 'system',
-        text: body.run?.run_id
-           ? `${t('workspace.firstQueued')} (${body.run.run_id}).`
-           : t('workspace.firstQueued'),
-      }])
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t('error.briefStart'))
-    } finally {
-      setAccepting(false)
-    }
-  }
-
   const briefSections = useMemo(() => {
     const summary = intakeStatus?.summary
     if (!summary) return []
@@ -2118,9 +2087,6 @@ function ReviewWorkspace() {
         [t('owner.writeUpdate'), t('workspace.shortDraftPrompt')],
         [t('owner.newPage'), t('workspace.shortStartPagePrompt')],
       ]
-  const canStartFirstPage = !websitePresent
-    && adaPhase === 'workspace'
-    && Boolean(intakeStatus?.confirmed && intakeStatus.session_id)
   const hasBrief = briefSections.length > 0
   const adaProgressSteps = (() => {
     const seen = new Set<string>()
@@ -2354,13 +2320,6 @@ function ReviewWorkspace() {
                    onClick={() => setBriefOpen((current) => !current)}
                  >
                    {briefOpen ? t('workspace.closeBrief') : t('workspace.viewBrief')}
-                 </button>
-               ) : null}
-               {/* Acceptance happens in the conversation: answering Ada is the
-                   confirmation, so there is no separate accept control here. */}
-               {canStartFirstPage ? (
-                 <button className="helloada-phase-action is-primary" type="button" onClick={() => void startFirstPage()} disabled={accepting}>
-                   {accepting ? t('workspace.starting') : t('workspace.startFirstPage')}
                  </button>
                ) : null}
                {adaUnavailable ? <button className="helloada-phase-action" type="button" onClick={() => loadAdaStatus(conversationId)}>{t('owner.retry')}</button> : null}
