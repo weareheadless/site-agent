@@ -70,6 +70,12 @@ try:
     frame = page.frame_locator('iframe.helloada-preview-frame')
     target = frame.locator('[data-helloada-field="field-0"]')
     target.wait_for(timeout=5000)
+    # Preserve the original obstruction as evidence, then dismiss the native
+    # details menu exactly as a user can: an ordinary click outside it.
+    covered_target = target.evaluate('(el)=>{const r=el.getBoundingClientRect();const f=parent.document.querySelector("iframe.helloada-preview-frame").getBoundingClientRect();const x=f.x+r.x+r.width/2,y=f.y+r.y+r.height/2;const hit=parent.document.elementFromPoint(x,y);return {point:{x,y},tag:hit?.tagName,className:hit?.className,text:hit?.textContent?.trim().slice(0,120),optionsOpen:parent.document.querySelector(".helloada-preview-options")?.open}}')
+    assert covered_target['optionsOpen'], ('expected preview options to still be open for covered-target diagnostic', covered_target)
+    page.mouse.click(4, 4)
+    assert not page.locator('.helloada-preview-options').evaluate('(el)=>el.open'), ('outside click did not dismiss preview options', covered_target)
     target.hover()
     field_dialog = page.locator('.helloada-field-popover[role=dialog]')
     for width, height in viewports:
@@ -83,6 +89,8 @@ try:
         target_hit = target.evaluate('(el)=>{const r=el.getBoundingClientRect();const frame=parent.document.querySelector("iframe.helloada-preview-frame").getBoundingClientRect();const x=frame.x+r.x+r.width/2,y=frame.y+r.y+r.height/2;const hit=parent.document.elementFromPoint(x,y);return {frameRect:frame.toJSON(),targetRect:r.toJSON(),pagePoint:{x,y},pageHit:{tag:hit?.tagName,className:hit?.className,text:hit?.textContent?.trim().slice(0,120),rect:hit?.getBoundingClientRect().toJSON()},options:parent.document.querySelector(".helloada-preview-options")?.outerHTML,optionsMenuRect:parent.document.querySelector(".helloada-preview-options > div")?.getBoundingClientRect().toJSON()}}')
         evidence = {
           'checkboxChecked': checkbox.is_checked(),
+          'coveredTargetBeforeDismiss': covered_target,
+          'optionsClosedAfterOutsideClick': not page.locator('.helloada-preview-options').evaluate('(el)=>el.open'),
           'preview': page.locator('iframe.helloada-preview-frame').evaluate('(el)=>({src:el.src,readyState:el.contentDocument?.readyState,field:el.contentDocument?.querySelector("[data-helloada-field=field-0]")?.outerHTML})'),
           'pageFieldCount': page.evaluate('()=>window.__pageFieldCount'),
           'targetHitTest': target_hit,
