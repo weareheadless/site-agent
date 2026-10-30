@@ -164,7 +164,8 @@ def test_package_resolver_uses_real_http_defaults_read_only(monkeypatch, active_
     assert result[0]["id"] == "deploy-1"
     assert result[2] == result[3]
     assert calls and all(method == "GET" for method, _ in calls)
-    assert len(calls) == (2 if active_version == "uploaded" else 3)
+    # The final deployment read is the resolver's required stability snapshot.
+    assert len(calls) == (3 if active_version == "uploaded" else 4)
 
 
 @pytest.mark.parametrize("active_version, trigger, active_identity", [
