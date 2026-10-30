@@ -441,8 +441,10 @@ def _native_direction_payload(
         for item in snapshot_items
         if isinstance(item, Mapping) and item.get("asset_id")
     }
-    if snapshot_items:
-        normalized["asset_evidence"] = snapshot_items
+    # The host owns evidence binding: replace whatever the direction model
+    # returned with the frozen snapshot, so a malformed model list can never
+    # invalidate an otherwise usable plan.
+    normalized["asset_evidence"] = snapshot_items
 
     source_map = normalized.get("brand_source_map")
     if not isinstance(source_map, Mapping):
