@@ -220,6 +220,19 @@ class DesignBuildHandoff:
     def __init__(self, context: dict[str, Any]) -> None:
         self.context = context
 
+    def get_run(self, run_id: str) -> dict[str, Any]:
+        """Return the persisted run for a handoff caller.
+
+        The intake service treats the handoff as the design facade: it asks for
+        an existing run when a reservation is a duplicate or a same-run
+        recovery. Without this the request failed with an AttributeError only
+        after a build finally got far enough to need it.
+        """
+        service = self.context.get("design_service")
+        if service is None:
+            raise BridgeError("the full design build service is unavailable")
+        return service.get_run(run_id)
+
     def submit(
         self,
         request: str,
