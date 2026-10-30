@@ -2707,7 +2707,7 @@ class Memory:
         if not isinstance(payload, dict):
             raise ContractError("phase payload must be an object")
         encoded = canonical_json(payload)
-        output_hash = str(output_hash or canonical_hash(payload)).strip().lower()
+        output_hash = str(output_hash or canonical_hash(payload, max_bytes=MAX_QUALITY_REPORT_BYTES)).strip().lower()
         if not re.fullmatch(r"[0-9a-f]{64}", output_hash):
             raise ContractError("output_hash is not a valid content hash")
         if isinstance(prompt_tokens, bool) or not isinstance(prompt_tokens, int) or prompt_tokens < 0:
@@ -2773,7 +2773,7 @@ class Memory:
                 "output_hash = CASE WHEN ? IS NULL THEN output_hash ELSE ? END, updated_ts = ? WHERE id = ?",
                 (
                     str(error_code).strip()[:120], str(error_detail).strip()[:2_000], encoded_payload,
-                    encoded_payload, canonical_hash(payload) if payload is not None else "", now, phase_artifact_id,
+                    encoded_payload, canonical_hash(payload, max_bytes=MAX_QUALITY_REPORT_BYTES) if payload is not None else "", now, phase_artifact_id,
                 ),
             )
             row = self.conn.execute(

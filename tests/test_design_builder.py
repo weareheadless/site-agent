@@ -1949,3 +1949,18 @@ def test_operation_router_uses_native_builder_for_every_design_operation():
         assert "unsupported design operation kind" in str(exc)
     else:
         raise AssertionError("unsupported operation kind was accepted")
+
+
+def test_composition_entries_without_supplied_media_are_dropped_not_fatal():
+    """A composition entry only means something when that asset was supplied."""
+    from site_agent.hands.opencode_runner import _bind_compositions
+
+    invented = {"schema_version": 1, "asset_id": "41", "asset_sha256": "a" * 64,
+                "structural_contribution": ["hero"], "evidence_refs": ["owner:message:10"]}
+    assert _bind_compositions([invented], {}) == []
+
+    supplied = {"schema_version": 1, "asset_id": "asset-7", "asset_sha256": "b" * 64,
+                "structural_contribution": ["hero"], "evidence_refs": ["owner:message:10"]}
+    kept = _bind_compositions([invented, supplied], {"asset-7": {"asset_sha256": "c" * 64}})
+    assert [entry["asset_id"] for entry in kept] == ["asset-7"]
+    assert kept[0]["asset_sha256"] == "c" * 64

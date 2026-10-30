@@ -363,7 +363,13 @@ def _native_direction_payload(
     if not require_experience_plan:
         return _native_direction_text(result), None
 
-    from ..core.design_contracts import ExperienceJourney, ExperiencePlanBundle, canonical_hash, canonical_json
+    from ..core.design_contracts import (
+        MAX_DESIGN_HASH_BYTES,
+        ExperienceJourney,
+        ExperiencePlanBundle,
+        canonical_hash,
+        canonical_json,
+    )
     from ..application.design_orchestration import SpecialistDesignCoordinator
     from .opencode_provider import decode_structured_output
 
@@ -485,7 +491,7 @@ def _native_direction_payload(
             normalized_confidence[normalized_key[:120]] = score
         source_map["confidence_by_signal"] = normalized_confidence
     normalized["brand_source_map"] = source_map
-    normalized["brand_source_map_hash"] = canonical_hash(source_map)
+    normalized["brand_source_map_hash"] = canonical_hash(source_map, max_bytes=MAX_DESIGN_HASH_BYTES)
 
     def resolve_asset_id(value: Any) -> str:
         candidate = str(value or "").strip()
@@ -499,50 +505,7 @@ def _native_direction_payload(
     if isinstance(compositions, Mapping):
         compositions = [compositions]
     if isinstance(compositions, (list, tuple)):
-        bound_compositions: list[Any] = []
-        for item in compositions:
-            if not isinstance(item, Mapping):
-                bound_compositions.append(item)
-                continue
-            composition_fields = {
-                "schema_version", "asset_id", "asset_sha256", "narrative_role", "page_regions",
-                "relationship_to_copy", "relationship_to_other_assets", "structural_contribution", "crop_policy",
-                "focal_region_to_preserve", "negative_space_usage", "layering_and_overlap_policy",
-                "background_and_contrast_policy", "desktop_treatment", "tablet_treatment", "mobile_treatment",
-                "loading_priority", "accessibility_intent", "prohibited_uses", "acceptance_conditions",
-                "evidence_refs", "logo_rule",
-            }
-            bound = {key: value for key, value in item.items() if key in composition_fields}
-            bound["schema_version"] = 1
-            asset_id = resolve_asset_id(bound.get("asset_id"))
-            bound["asset_id"] = asset_id
-            evidence = snapshot_evidence.get(asset_id)
-            if evidence is not None:
-                bound["asset_sha256"] = evidence.get("asset_sha256")
-            logo_rule = bound.get("logo_rule")
-            if isinstance(logo_rule, Mapping):
-                logo_fields = {
-                    "schema_version", "asset_id", "optical_sizing", "clear_space", "allowed_backgrounds",
-                    "navigation_relationship", "breakpoint_treatments", "minimum_optical_size",
-                    "maximum_optical_size", "collision_exclusions", "role", "evidence_refs",
-                }
-                bound_logo = {key: value for key, value in logo_rule.items() if key in logo_fields}
-                bound_logo["schema_version"] = 1
-                bound_logo["asset_id"] = resolve_asset_id(bound_logo.get("asset_id") or asset_id)
-                required_logo_fields = {
-                    "schema_version", "asset_id", "optical_sizing", "clear_space", "allowed_backgrounds",
-                    "navigation_relationship", "breakpoint_treatments", "minimum_optical_size",
-                    "maximum_optical_size", "collision_exclusions", "role", "evidence_refs",
-                }
-                # The optical rule is optional.  If the model returns a
-                # prose/legacy logo shape, do not invent measurements to make
-                # it fit the typed contract; preserve the composition plan
-                # and omit only this optional rule.
-                bound["logo_rule"] = (
-                    bound_logo if required_logo_fields.issubset(bound_logo) else None
-                )
-            bound_compositions.append(bound)
-        normalized["asset_composition_plan"] = bound_compositions
+        normalized["asset_composition_plan"] = _bind_compositions(compositions, snapshot_evidence)
 
     journey = normalized.get("experience_journey")
     if isinstance(journey, Mapping):
@@ -577,7 +540,7 @@ def _native_direction_payload(
             )
         copy_deck[field] = value.strip()
     normalized["copy_deck"] = copy_deck
-    normalized["copy_deck_hash"] = canonical_hash(copy_deck)
+    normalized["copy_deck_hash"] = canonical_hash(copy_deck, max_bytes=MAX_DESIGN_HASH_BYTES)
 
     behavior = normalized.get("behavior_system")
     if isinstance(behavior, Mapping):
@@ -634,6 +597,48 @@ def _native_direction_payload(
                 result=dict(result),
             )
     return direction, plan
+
+
+def _bind_compositions(compositions, snapshot_evidence):
+    """Keep only composition entries whose asset was actually supplied.
+
+    A composition plan describes how a supplied asset joins the page. When the
+    frozen request supplied no media, or the entry names an asset that is not in
+    the evidence set, the entry cannot be realized; dropping it keeps a valid
+    creative direction from failing on an invented identifier.
+    """
+    bound_compositions = []
+    for item in compositions:
+        if not isinstance(item, Mapping):
+            continue
+        composition_fields = {
+            "schema_version", "asset_id", "asset_sha256", "narrative_role", "page_regions",
+            "relationship_to_copy", "relationship_to_other_assets", "structural_contribution", "crop_policy",
+            "focal_region_to_preserve", "negative_space_usage", "layering_and_overlap_policy",
+            "background_and_contrast_policy", "desktop_treatment", "tablet_treatment", "mobile_treatment",
+            "loading_priority", "accessibility_intent", "prohibited_uses", "acceptance_conditions",
+            "evidence_refs", "logo_rule",
+        }
+        bound = {key: value for key, value in item.items() if key in composition_fields}
+        bound["schema_version"] = 1
+        asset_id = str(bound.get("asset_id") or "").strip()
+        if asset_id not in snapshot_evidence:
+            continue
+        bound["asset_id"] = asset_id
+        bound["asset_sha256"] = snapshot_evidence[asset_id].get("asset_sha256")
+        logo_rule = bound.get("logo_rule")
+        if isinstance(logo_rule, Mapping):
+            logo_fields = {
+                "schema_version", "asset_id", "optical_sizing", "clear_space", "allowed_backgrounds",
+                "navigation_relationship", "breakpoint_treatments", "minimum_optical_size",
+                "maximum_optical_size", "collision_exclusions", "role", "evidence_refs",
+            }
+            bound_logo = {key: value for key, value in logo_rule.items() if key in logo_fields}
+            bound_logo["schema_version"] = 1
+            bound_logo["asset_id"] = str(bound_logo.get("asset_id") or asset_id)
+            bound["logo_rule"] = bound_logo if set(logo_fields).issubset(bound_logo) else None
+        bound_compositions.append(bound)
+    return bound_compositions
 
 
 def _bind_experience_plan_artifacts(plan: Any, request, direction_hash: str):
@@ -697,19 +702,19 @@ def _persist_integrated_composition(
 
 def _native_phase_identity(request, target) -> tuple[str, str, list[str]]:
     """Return the frozen identity shared by native planning and Build claims."""
-    from ..core.design_contracts import canonical_hash
+    from ..core.design_contracts import MAX_DESIGN_HASH_BYTES, canonical_hash
 
     request_value = request.to_dict() if hasattr(request, "to_dict") else dict(request)
     target_value = target.to_dict() if hasattr(target, "to_dict") else dict(target)
-    request_hash = canonical_hash(request_value)
-    target_hash = canonical_hash(target_value)
+    request_hash = canonical_hash(request_value, max_bytes=MAX_DESIGN_HASH_BYTES)
+    target_hash = canonical_hash(target_value, max_bytes=MAX_DESIGN_HASH_BYTES)
     assets_hash = canonical_hash({
         "supplied_media_asset_ids": list(getattr(request, "supplied_media_asset_ids", ()) or ()),
         "asset_visual_evidence": [
             item.to_dict() if hasattr(item, "to_dict") else dict(item)
             for item in (request.context_snapshot.asset_visual_evidence if request.context_snapshot else ())
         ],
-    })
+    }, max_bytes=MAX_DESIGN_HASH_BYTES)
     return str(request.base_sha), str(request.context_snapshot_hash or ""), [request_hash, target_hash, assets_hash]
 
 
@@ -734,11 +739,11 @@ def _claim_native_phase(memory, request, target, phase: str, *, max_attempts: in
     if phase == "build_dispatch":
         # The fence is scoped to this approved Build operation on this run; a
         # later, separately authorized operation has its own identity/key.
-        from ..core.design_contracts import canonical_hash
+        from ..core.design_contracts import MAX_DESIGN_HASH_BYTES, canonical_hash
 
         variant_key = "build-" + canonical_hash({
             "request": request.to_dict(), "target": target.to_dict(),
-        })[:32]
+        }, max_bytes=MAX_DESIGN_HASH_BYTES)[:32]
     return memory.claim_design_phase(
         request.run_id, phase, variant_key=variant_key, base_sha=base_sha,
         context_snapshot_hash=context_hash, input_hashes=hashes, max_attempts=max_attempts,
@@ -1680,7 +1685,7 @@ def _typed_execution_config(config: dict[str, Any], request, target) -> dict[str
     snapshot = request.context_snapshot
     if snapshot is None:
         return config
-    from ..core.design_contracts import canonical_hash
+    from ..core.design_contracts import MAX_DESIGN_HASH_BYTES, canonical_hash
 
     profile = snapshot.execution_profile
     if not isinstance(profile, dict):
@@ -1694,7 +1699,7 @@ def _typed_execution_config(config: dict[str, Any], request, target) -> dict[str
         raise RunnerError("typed design execution profile has no quality policy")
     recorded_hash = str(quality_identity.get("hash") or "").strip()
     identity_without_hash = {key: value for key, value in quality_identity.items() if key != "hash"}
-    if not recorded_hash or canonical_hash(identity_without_hash) != recorded_hash:
+    if not recorded_hash or canonical_hash(identity_without_hash, max_bytes=MAX_DESIGN_HASH_BYTES) != recorded_hash:
         raise RunnerError("typed design quality policy hash is invalid")
 
     result = copy.deepcopy(config)
