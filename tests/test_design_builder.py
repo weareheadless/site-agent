@@ -1951,16 +1951,19 @@ def test_operation_router_uses_native_builder_for_every_design_operation():
         raise AssertionError("unsupported operation kind was accepted")
 
 
-def test_composition_entries_without_supplied_media_are_dropped_not_fatal():
-    """A composition entry only means something when that asset was supplied."""
+def test_composition_entries_follow_the_supplied_assets_not_only_evidence():
+    """Owner-selected media is authoritative even before visual evidence exists."""
     from site_agent.hands.opencode_runner import _bind_compositions
 
-    invented = {"schema_version": 1, "asset_id": "41", "asset_sha256": "a" * 64,
-                "structural_contribution": ["hero"], "evidence_refs": ["owner:message:10"]}
-    assert _bind_compositions([invented], {}) == []
-
-    supplied = {"schema_version": 1, "asset_id": "asset-7", "asset_sha256": "b" * 64,
-                "structural_contribution": ["hero"], "evidence_refs": ["owner:message:10"]}
-    kept = _bind_compositions([invented, supplied], {"asset-7": {"asset_sha256": "c" * 64}})
-    assert [entry["asset_id"] for entry in kept] == ["asset-7"]
-    assert kept[0]["asset_sha256"] == "c" * 64
+    entries = [
+        {"schema_version": 1, "asset_id": "41", "asset_sha256": "a" * 64,
+         "structural_contribution": ["hero"], "evidence_refs": ["owner:message:10"]},
+        {"schema_version": 1, "asset_id": "5", "asset_sha256": "b" * 64,
+         "structural_contribution": ["hero"], "evidence_refs": ["owner:message:10"]},
+        {"schema_version": 1, "asset_id": "asset-7", "asset_sha256": "c" * 64,
+         "structural_contribution": ["hero"], "evidence_refs": ["owner:message:10"]},
+    ]
+    kept = _bind_compositions(entries, {}, [5, 6, 7])
+    assert [entry["asset_id"] for entry in kept] == ["5", "7"]
+    # Without any supplied media an invented identifier is still refused.
+    assert _bind_compositions(entries, {}, []) == []
