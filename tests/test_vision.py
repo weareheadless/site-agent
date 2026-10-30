@@ -145,3 +145,46 @@ def test_site_image_context_is_disabled_without_public_preview_url(tmp_path):
     clone.mkdir()
     (clone / "index.html").write_text('<img src="images/hero.jpg">')
     assert vision.site_image_context({"vision": {"enabled": True}}, clone) == ""
+
+
+def test_structured_analysis_always_requests_the_full_schema(monkeypatch):
+    """Owner uploads are analyzed by the conversation model, not MediaWorker's prompt."""
+    calls = []
+
+    def fake_post(*args):
+        calls.append(args[2])
+        return {"choices": [{"message": {"content": (
+            '{"schema_version":1,"description":"","tags":["logo"],"alt_text":"A logo",'
+            '"orientation":"square","dominant_colors":["black"],"suggested_uses":[],'
+            '"quality_notes":[],"ocr_text":"","knowledge_relevant":false,'
+            '"proposed_knowledge_markdown":""}'
+        )}}]}
+
+    monkeypatch.setattr(vision, "_http_post", fake_post)
+    client = vision.VisionClient({
+        "vision": {"base_url": "https://example.test/v1", "model": "qwen"},
+        "env": {"vision_api_key": "KEY"},
+    }, env={"KEY": "secret"})
+
+    analysis = client.analyze_images(["https://example.test/logo.png"], "Analyze this image.")
+
+    prompt = calls[0]["messages"][0]["content"][0]["text"]
+    assert prompt.startswith("Analyze this image.")
+    assert "knowledge_relevant (boolean" in prompt
+    assert "proposed_knowledge_markdown (string" in prompt
+    assert analysis.tags == ["logo"]
+
+
+def test_media_worker_instruction_is_not_duplicated(monkeypatch):
+    calls = []
+    monkeypatch.setattr(vision, "_http_post", lambda *args: calls.append(args[2]) or {
+        "choices": [{"message": {"content": '{"schema_version":1,"knowledge_relevant":false}'}}]})
+    client = vision.VisionClient({
+        "vision": {"base_url": "https://example.test/v1", "model": "qwen"},
+        "env": {"vision_api_key": "KEY"},
+    }, env={"KEY": "secret"})
+
+    client.analyze_images(["https://example.test/image.webp"], MediaWorker._instruction())
+
+    prompt = calls[0]["messages"][0]["content"][0]["text"]
+    assert prompt == MediaWorker._instruction()

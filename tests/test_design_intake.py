@@ -2680,3 +2680,56 @@ def test_conversational_confirmation_accepts_a_ready_brief():
     assert "READY_TO_BUILD.value:" in source, "a ready brief must be confirmable from the conversation"
     ui = (design_intake.__file__ and "")
     assert ui is not None
+
+
+class _PayloadMediaService:
+    """Payload tenants keep canonical media outside the local library."""
+
+    def __init__(self, assets):
+        self.assets = assets
+
+    def get(self, asset_id):
+        return self.assets[int(asset_id)]
+
+    def resolve_attachments(self, asset_ids):
+        return [{"asset_id": int(asset_id), "position": index, "type": "media_asset"}
+                for index, asset_id in enumerate(asset_ids or [])]
+
+
+class _PayloadAsset:
+    def __init__(self, url="https://example.test/api/media/file/hero.png", content_type="image/png"):
+        self.asset_id = 41
+        self.original_name = "hero.png"
+        self.content_type = content_type
+        self.url = url
+
+
+def test_payload_media_can_be_bound_to_intake_without_the_local_library(tmp_path):
+    """Owner uploads live in Payload, so binding must ask the media service."""
+    memory = Memory(tmp_path / "intake.db")
+    service = DesignIntakeService(
+        memory,
+        default_intake=_intake(),
+        media_service=_PayloadMediaService({41: _PayloadAsset()}),
+    )
+    session = service.create_session()
+
+    queued = service.send_message(session["session_id"], "Use this logo.", attachments=[41])
+
+    assert queued["job_id"]
+    assert [row["asset_id"] for row in memory.list_design_intake_assets(session["session_id"])] == [41]
+    memory.close()
+
+
+def test_payload_media_that_is_not_an_image_is_still_rejected(tmp_path):
+    memory = Memory(tmp_path / "intake.db")
+    service = DesignIntakeService(
+        memory,
+        default_intake=_intake(),
+        media_service=_PayloadMediaService({41: _PayloadAsset(content_type="application/pdf")}),
+    )
+    session = service.create_session()
+
+    with pytest.raises(DesignIntakeServiceError, match="only ready, unarchived images"):
+        service.send_message(session["session_id"], "Use this document.", attachments=[41])
+    memory.close()

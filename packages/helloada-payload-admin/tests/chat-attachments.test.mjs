@@ -1,12 +1,78 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { canSendChatAttachments, remainingChatAttachmentSlots, splitChatImageFiles, uploadChatImages } from '../src/lib/chat-attachments.ts'
+import { canSendChatAttachments, remainingChatAttachmentSlots, splitChatImageFiles, uploadChatImage, uploadChatImages } from '../src/lib/chat-attachments.ts'
 
 test('mixed selections retain supported images and report unsupported files separately', () => {
   const files = [{ name: 'a.png', type: 'image/png' }, { name: 'notes.pdf', type: 'application/pdf' }]
   const result = splitChatImageFiles(files)
   assert.deepEqual(result.supported.map((file) => file.name), ['a.png'])
   assert.deepEqual(result.unsupported.map((file) => file.name), ['notes.pdf'])
+})
+
+test('XHR upload reports real byte progress and uses the authenticated canonical HelloAda path', async () => {
+  const originalXhr = globalThis.XMLHttpRequest
+  const originalFormData = globalThis.FormData
+  const originalLastRequest = globalThis.lastRequest
+  const seen = {}
+  class MockXhr {
+    upload = {}
+    constructor() { globalThis.lastRequest = this }
+    open(method, url) { seen.method = method; seen.url = url }
+    send(form) {
+      seen.form = form
+      this.upload.onprogress({ lengthComputable: true, loaded: 3, total: 4 })
+      this.status = 201
+      this.responseText = JSON.stringify({ attachment: { asset_id: 'media-1' } })
+      this.onload()
+    }
+  }
+  class MockFormData { append(...args) { seen.formField = args } }
+  globalThis.XMLHttpRequest = MockXhr
+  globalThis.FormData = MockFormData
+  try {
+    const progress = []
+    const result = await uploadChatImage({ name: 'photo.png' }, {
+      resolvePath: (path) => path.replace('/api/helloada', '/api/workspace'),
+      onProgress: (value) => progress.push(value),
+    })
+    assert.deepEqual(progress, [75])
+    assert.equal(seen.method, 'POST')
+    assert.equal(seen.url, '/api/workspace/media/upload')
+    assert.equal(globalThis.lastRequest.withCredentials, true)
+    assert.equal(globalThis.lastRequest.timeout, 25_000)
+    assert.equal(seen.formField[0], 'file')
+    assert.equal(seen.formField[1].name, 'photo.png')
+    assert.equal(result.attachment.asset_id, 'media-1')
+  } finally {
+    globalThis.XMLHttpRequest = originalXhr
+    globalThis.FormData = originalFormData
+    if (originalLastRequest === undefined) delete globalThis.lastRequest
+    else globalThis.lastRequest = originalLastRequest
+  }
+})
+
+test('XHR upload rejects HTTP, malformed response, network, and timeout failures', async () => {
+  const originalXhr = globalThis.XMLHttpRequest
+  class MockXhr {
+    upload = {}
+    open() {}
+    send() { this.mode() }
+    mode() {}
+  }
+  globalThis.XMLHttpRequest = MockXhr
+  try {
+    for (const [mode, expected] of [
+      [(xhr) => { xhr.status = 413; xhr.responseText = JSON.stringify({ message: 'Too large' }); xhr.onload() }, /Too large/],
+      [(xhr) => { xhr.status = 200; xhr.responseText = '{'; xhr.onload() }, /invalid response/],
+      [(xhr) => xhr.onerror(), /network error/],
+      [(xhr) => xhr.ontimeout(), /timed out/],
+    ]) {
+      MockXhr.prototype.mode = function () { mode(this) }
+      await assert.rejects(uploadChatImage({ name: 'photo.png' }, { resolvePath: (path) => path }), expected)
+    }
+  } finally {
+    globalThis.XMLHttpRequest = originalXhr
+  }
 })
 
 test('successful attachment remains independently ready when later upload fails', () => {

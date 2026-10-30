@@ -423,9 +423,43 @@ class DesignIntakeService:
                 owner_note=owner_note,
             ))
         try:
-            return self.memory.replace_design_intake_assets(session_id, ordered)
+            return self.memory.replace_design_intake_assets(
+                session_id, ordered, asset_validator=self._bind_validator,
+            )
         except (ContractError, ValueError) as exc:
             raise DesignIntakeServiceError(str(exc)[:500]) from exc
+
+    @property
+    def _bind_validator(self):
+        """The local library check stays authoritative when no service is bound."""
+        return self._asset_is_bindable if self.media_service is not None else None
+
+    def _asset_is_bindable(self, asset_id: int) -> bool:
+        """Ask the owning media service whether one image can join the intake.
+
+        Payload tenants keep canonical media in Payload; the local library is
+        empty for them, so the service (not the SQLite asset table) decides.
+        """
+        if self.media_service is None:
+            return False
+        try:
+            asset = self.media_service.get(int(asset_id))
+        except Exception:  # noqa: BLE001 — an unreadable asset is not bindable
+            return False
+        if asset is None:
+            return False
+        content_type = str(getattr(asset, "content_type", "") or "").strip().lower()
+        if content_type and not content_type.startswith("image/"):
+            return False
+        status = getattr(asset, "status", None)
+        if status is not None and str(getattr(status, "value", status) or "") != "ready":
+            return False
+        kind = getattr(asset, "media_kind", None)
+        if kind is not None and str(getattr(kind, "value", kind) or "") != "image":
+            return False
+        if getattr(asset, "archived_ts", None):
+            return False
+        return bool(getattr(asset, "url", None) or getattr(asset, "normalized_key", None))
 
     def update_assets(self, session_id: str, assets: Any) -> dict[str, Any]:
         self._row(session_id)
@@ -442,7 +476,9 @@ class DesignIntakeService:
             except ContractError as exc:
                 raise DesignIntakeServiceError(str(exc)[:500]) from exc
         try:
-            self.memory.replace_design_intake_assets(session_id, normalized)
+            self.memory.replace_design_intake_assets(
+                session_id, normalized, asset_validator=self._bind_validator,
+            )
         except (ContractError, ValueError) as exc:
             raise DesignIntakeServiceError(str(exc)[:500]) from exc
         return self.get_session(session_id)
@@ -1251,10 +1287,32 @@ class DesignIntakeService:
         attached_run_id = str(session.get("design_run_id") or "").strip()
         if not force_new and attached_run_id:
             prior = self.memory.get_design_run(attached_run_id)
+            if (
+                prior is not None
+                and prior.get("intake_session_id") == session_id
+                and int(prior.get("intake_revision_id") or 0) == int(revision_row["id"])
+                and str(prior.get("status") or "") not in {
+                    DesignRunStatus.FAILED.value, DesignRunStatus.INTERRUPTED.value,
+                    DesignRunStatus.CANCELLED.value,
+                }
+            ):
+                return {"session": self.get_session(session_id), "run": self.lab_service.get_run(attached_run_id), "idempotent": True}
             if prior is not None and str(prior.get("status") or "") in {
                 DesignRunStatus.FAILED.value, DesignRunStatus.INTERRUPTED.value,
             }:
-                recovery_run_id = attached_run_id
+                if (
+                    prior.get("intake_session_id") == session_id
+                    and int(prior.get("intake_revision_id") or 0) != int(revision_row["id"])
+                ):
+                    # A newer owner-confirmed revision is a new build, not
+                    # recovery of an immutable run with a different brief.
+                    # Retain the failed run and its evidence unchanged.
+                    force_new = True
+                    token = self._operation_token(
+                        f"revised-{attached_run_id}-{revision_row['id']}", "build",
+                    )
+                else:
+                    recovery_run_id = attached_run_id
         if not force_new and not recovery_run_id:
             # Preserve the historical separate-run behavior for unrelated or
             # unlinked failed work. Same-run recovery is never inferred from a

@@ -303,9 +303,13 @@ dream:
   lures: []   # optional associative interference; empty means no lure
 
 vision:
+  # Owner-uploaded images are analyzed and tagged by the conversation model.
+  # `enabled` additionally reads site imagery during builds (opt-in: it adds
+  # provider cost to every build), `media_analysis` covers owner uploads only.
   enabled: false
-  base_url: ""          # OpenAI-compatible /v1 endpoint
-  model: ""
+  media_analysis: true
+  base_url: ""          # OpenAI-compatible /v1 endpoint; empty means llm.base_url
+  model: ""             # empty means llm.model
   timeout_seconds: 90
   max_tokens: 4096
 

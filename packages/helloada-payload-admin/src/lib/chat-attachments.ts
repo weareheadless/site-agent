@@ -1,7 +1,47 @@
 export type ChatUploadState = 'uploading' | 'failed' | 'unsupported'
 
-export type ChatUploadEntry = { id: string; filename: string; status: ChatUploadState; reason?: string }
+export type ChatUploadEntry = { id: string; filename: string; status: ChatUploadState; reason?: string; progress?: number; previewUrl?: string }
 export type ChatUploadedAttachment = { asset_id: number | string }
+
+const CHAT_UPLOAD_TIMEOUT_MS = 25_000
+
+export function uploadChatImage<T>(file: File, options: {
+  endpoint?: string
+  timeoutMs?: number
+  resolvePath: (path: string) => string
+  onProgress?: (progress: number) => void
+}): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest()
+    request.open('POST', options.resolvePath(options.endpoint || '/api/helloada/media/upload'))
+    request.withCredentials = true
+    request.timeout = options.timeoutMs ?? CHAT_UPLOAD_TIMEOUT_MS
+    request.upload.onprogress = (event) => {
+      if (!event.lengthComputable || event.total <= 0) return
+      options.onProgress?.(Math.max(0, Math.min(100, Math.round(event.loaded / event.total * 100))))
+    }
+    request.onerror = () => reject(new Error('Image upload network error'))
+    request.ontimeout = () => reject(new Error('Image upload timed out'))
+    request.onabort = () => reject(new Error('Image upload was cancelled'))
+    request.onload = () => {
+      let body: { message?: string } & Record<string, unknown>
+      try {
+        body = JSON.parse(request.responseText || '{}') as typeof body
+      } catch {
+        reject(new Error('Image upload returned an invalid response'))
+        return
+      }
+      if (request.status < 200 || request.status >= 300) {
+        reject(new Error(body.message || `Image upload failed (${request.status})`))
+        return
+      }
+      resolve(body as T)
+    }
+    const form = new FormData()
+    form.append('file', file)
+    request.send(form)
+  })
+}
 
 export async function uploadChatImages<T extends { name: string }>(options: {
   files: readonly T[]

@@ -11,9 +11,10 @@ import { HelloAdaGallery } from './HelloAdaGallery'
 import { MailflarePayloadView } from './MailflarePayloadView'
 import { EditableRichTextEditor } from './EditableRichTextEditor'
 import { fetchHelloAda } from '../api/fetchHelloAda'
+import { helloAdaPath } from '../config/site'
 import { useHelloAdaTranslations } from '../api/useHelloAdaTranslations'
 import { mediaReferenceId, mediaUrl as migrationMediaUrl } from '../lib/media'
-import { canSendChatAttachments, remainingChatAttachmentSlots, splitChatImageFiles, uploadChatImages } from '../lib/chat-attachments'
+import { canSendChatAttachments, remainingChatAttachmentSlots, splitChatImageFiles, uploadChatImage, uploadChatImages } from '../lib/chat-attachments'
 import { useHelloAdaSite } from '../config/provider'
 import { HelloAdaMark } from './HelloAdaLogo'
 import { WorkspaceIcon } from './WorkspaceIcon'
@@ -188,6 +189,8 @@ type EditableMedia = {
   sourcePages?: string[]
   mimeType?: string | null
   portable?: boolean
+  analysisStatus?: string | null
+  tags?: string[]
 }
 
 type PreviewEditTarget = {
@@ -228,7 +231,7 @@ type ChatAttachment = {
   analysis_error?: string | null
 }
 
-type UploadEntry = { id: string; filename: string; status: 'uploading' | 'failed' | 'unsupported'; reason?: string }
+type UploadEntry = { id: string; filename: string; status: 'uploading' | 'failed' | 'unsupported'; reason?: string; progress?: number; previewUrl?: string }
 
 type AdaPhase = 'unknown' | 'intake' | 'incubation' | 'workspace'
 
@@ -787,6 +790,16 @@ function ReviewWorkspace() {
   const [pendingAttachments, setPendingAttachments] = useState<ChatAttachment[]>([])
   const [uploadingMedia, setUploadingMedia] = useState(false)
   const [uploadEntries, setUploadEntries] = useState<UploadEntry[]>([])
+  const uploadPreviewUrls = useRef(new Set<string>())
+  const galleryAnalysisPolls = useRef(0)
+  useEffect(() => {
+    const current = new Set(uploadEntries.flatMap((entry) => entry.previewUrl ? [entry.previewUrl] : []))
+    for (const url of uploadPreviewUrls.current) if (!current.has(url)) URL.revokeObjectURL(url)
+    uploadPreviewUrls.current = current
+  }, [uploadEntries])
+  useEffect(() => () => {
+    for (const url of uploadPreviewUrls.current) URL.revokeObjectURL(url)
+  }, [])
   const [briefOpen, setBriefOpen] = useState(false)
   const [briefCorrection, setBriefCorrection] = useState('')
   const [editorOpen, setEditorOpen] = useState(false)
@@ -1541,6 +1554,16 @@ function ReviewWorkspace() {
   }, [chatGalleryOpen, chatGallerySearch, editorMediaSearch, editorOpen, fieldEditorKey, loadEditorMedia])
 
   useEffect(() => {
+    if (!chatGalleryOpen || galleryAnalysisPolls.current >= 30) return
+    if (!editorMedia.some((media) => media.analysisStatus === 'pending' || media.analysisStatus === 'processing')) return
+    const timer = window.setTimeout(() => {
+      galleryAnalysisPolls.current += 1
+      void loadEditorMedia(1, false, chatGallerySearch)
+    }, 4000)
+    return () => window.clearTimeout(timer)
+  }, [chatGalleryOpen, chatGallerySearch, editorMedia, loadEditorMedia])
+
+  useEffect(() => {
     if (!selectedAssetId || importedAssetRef.current === selectedAssetId) return
     importedAssetRef.current = selectedAssetId
     const attachment: ChatAttachment = {
@@ -1577,6 +1600,7 @@ function ReviewWorkspace() {
   }, [chatWorking, loading, messages.length, scrollChatToBottom])
 
   const uploadImages = async (files: FileList | File[]) => {
+    galleryAnalysisPolls.current = 0
     const allFiles = Array.from(files)
     if (!allFiles.length || uploadingMedia) return
     const { supported: selected, unsupported } = splitChatImageFiles(allFiles)
@@ -1598,21 +1622,32 @@ function ReviewWorkspace() {
     if (!accepted.length) return
     setUploadingMedia(true)
     setError('')
-    const entries = accepted.map((file, index) => ({ id: `${file.name}-${Date.now()}-${index}`, filename: file.name, status: 'uploading' as const }))
+    const entries = accepted.map((file, index) => ({ id: `${file.name}-${Date.now()}-${index}`, filename: file.name, status: 'uploading' as const, progress: 0, previewUrl: URL.createObjectURL(file) }))
     setUploadEntries((current) => [...current, ...entries])
     try {
       await uploadChatImages({
         files: accepted,
         entries,
         upload: async (file) => {
-        const form = new FormData()
-        form.append('file', file)
-        const response = await fetchHelloAda('/api/helloada/media/upload', { method: 'POST', body: form })
-        const body = (await response.json()) as { attachment?: ChatAttachment; message?: string }
-        if (!response.ok || !body.attachment?.asset_id) {
-          throw new Error(body.message || t('error.imageAttach'))
+        const entry = entries[accepted.indexOf(file)]
+        const body = await uploadChatImage<{ attachment?: ChatAttachment; message?: string }>(file, {
+          resolvePath: helloAdaPath,
+          onProgress: (progress) => setUploadEntries((current) => current.map((item) => item.id === entry.id ? { ...item, progress } : item)),
+        })
+        if (!body.attachment?.asset_id) throw new Error(body.message || t('error.imageAttach'))
+        const attachment: ChatAttachment & { asset_id: number | string } = { ...body.attachment, asset_id: body.attachment.asset_id }
+        const media: EditableMedia = {
+          id: attachment.asset_id,
+          sourceId: attachment.sourceId || null,
+          filename: attachment.name || file.name,
+          alt: attachment.alt_text || attachment.name || file.name,
+          url: attachment.url || attachment.preview_url || attachment.thumbnail_url || null,
+          sourceUrl: attachment.url || null,
+          analysisStatus: attachment.analysis_status || 'pending',
         }
-        return { ...body.attachment, asset_id: body.attachment.asset_id }
+        setEditorMedia((current) => [media, ...current.filter((item) => String(item.id) !== String(media.id))])
+        void loadEditorMedia(1, false, chatGallerySearch)
+        return attachment
         },
         addAttachment: (attachment) => setPendingAttachments((current) => current.some((item) => String(item.asset_id) === String(attachment.asset_id)) ? current : [...current, attachment]),
         updateEntry: (id, update) => setUploadEntries((current) => current.map((entry) => entry.id === id ? { ...entry, ...update } : entry)),
@@ -2629,11 +2664,12 @@ function ReviewWorkspace() {
                       <span>{entry.filename}</span>
                       <small>
                         {entry.status === 'uploading'
-                          ? t('workspace.attachmentUploading')
+                          ? `${t('workspace.attachmentUploading')} ${entry.progress ?? 0}%`
                           : entry.status === 'failed'
                             ? `${t('workspace.attachmentFailed')}: ${entry.reason}`
                             : entry.reason}
                       </small>
+                      {entry.status === 'uploading' ? <progress aria-label={`${entry.filename} upload progress`} max={100} value={entry.progress ?? 0} /> : null}
                       <button
                         type="button"
                         disabled={entry.status === 'uploading'}
@@ -2721,6 +2757,13 @@ function ReviewWorkspace() {
                     <button type="button" onClick={() => fileInputRef.current?.click()} disabled={uploadingMedia}>{t('workspace.pageUploadImage')}</button>
                   </div>
                   <div className="helloada-chat-gallery-grid">
+                    {uploadEntries.map((entry) => (
+                      <div className="helloada-chat-upload-preview" key={entry.id} role={entry.status === 'failed' ? 'alert' : 'status'}>
+                        {entry.previewUrl ? <Image src={entry.previewUrl} alt="" width={92} height={70} unoptimized /> : <span>{entry.filename}</span>}
+                        <small>{entry.status === 'uploading' ? `${entry.filename} · ${entry.progress ?? 0}%` : `${entry.filename} · ${entry.reason || t('workspace.attachmentFailed')}`}</small>
+                        {entry.status === 'uploading' ? <progress aria-label={`${entry.filename} upload progress`} max={100} value={entry.progress ?? 0} /> : null}
+                      </div>
+                    ))}
                     {editorMedia.map((media) => {
                       const selected = pendingAttachments.some((item) => String(item.asset_id) === String(media.id))
                       const source = publicMediaUrl(media)
@@ -2728,6 +2771,8 @@ function ReviewWorkspace() {
                         <button type="button" key={String(media.id)} className={selected ? 'is-selected' : ''} aria-pressed={selected} onClick={() => chooseChatMedia(media)}>
                           {source ? <Image src={source} alt={media.alt || media.filename || t('workspace.image')} width={92} height={70} unoptimized /> : <span>{t('workspace.pageGalleryUnavailable')}</span>}
                           <small>{media.alt || media.filename || `#${media.id}`}</small>
+                          {media.tags?.length ? <small>{media.tags.slice(0, 4).join(' · ')}</small> : null}
+                          {media.analysisStatus && media.analysisStatus !== 'ready' ? <small>{t(media.analysisStatus === 'failed' ? 'workspace.analysisUnavailable' : 'owner.galleryAnalysing')}</small> : null}
                         </button>
                       )
                     })}

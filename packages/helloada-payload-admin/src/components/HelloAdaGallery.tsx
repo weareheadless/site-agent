@@ -20,6 +20,9 @@ type GalleryMedia = {
   sourceUrl?: string | null
   originalUrl?: string | null
   sourcePages?: string[]
+  description?: string | null
+  analysisStatus?: string | null
+  tags?: string[]
 }
 
 type GalleryResponse = {
@@ -55,6 +58,7 @@ export function HelloAdaGallery() {
   const [uploading, setUploading] = useState(false)
   const [error, setError] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
+  const analysisPollsRef = useRef(0)
 
   const load = useCallback(async (nextPage: number, append: boolean, query: string) => {
     setLoading(true)
@@ -91,6 +95,7 @@ export function HelloAdaGallery() {
       const response = await fetchHelloAda('/api/helloada/media/upload', { method: 'POST', body: form })
       const body = (await response.json()) as { attachment?: { asset_id?: string | number; url?: string; preview_url?: string; name?: string; alt_text?: string }; message?: string }
       if (!response.ok || body.attachment?.asset_id === undefined) throw new Error(body.message || t('error.imageAttach'))
+      analysisPollsRef.current = 0
       await load(1, false, search)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : t('error.imageAttach'))
@@ -99,6 +104,18 @@ export function HelloAdaGallery() {
       if (inputRef.current) inputRef.current.value = ''
     }
   }
+
+  // Ada analyzes uploads in the background; refresh a bounded number of times
+  // so the owner sees the resulting alt text and tags without reloading.
+  const analyzing = media.some((item) => item.analysisStatus === 'pending' || item.analysisStatus === 'processing')
+  useEffect(() => {
+    if (!analyzing || analysisPollsRef.current >= 30) return
+    const timer = window.setTimeout(() => {
+      analysisPollsRef.current += 1
+      void load(1, false, search)
+    }, 4000)
+    return () => window.clearTimeout(timer)
+  }, [analyzing, load, media, search])
 
   return (
     <main className="helloada-gallery">
@@ -142,6 +159,14 @@ export function HelloAdaGallery() {
                   </div>
                   <div className="helloada-gallery-card-meta">
                     <div><strong>{mediaLabel(item)}</strong><small>{item.filename || `#${item.id}`}</small></div>
+                    {item.tags?.length ? (
+                      <ul className="helloada-gallery-tags" aria-label={t('owner.galleryTags')}>
+                        {item.tags.slice(0, 4).map((tag) => <li key={tag}>{tag}</li>)}
+                      </ul>
+                    ) : null}
+                    {item.analysisStatus && item.analysisStatus !== 'ready' ? (
+                      <small className="helloada-gallery-analysis">{t(item.analysisStatus === 'failed' ? 'workspace.analysisUnavailable' : 'owner.galleryAnalysing')}</small>
+                    ) : null}
                     <Link className="helloada-gallery-use" href={conversationHref(item)}>{t('owner.galleryUseInChat')}<WorkspaceIcon name="arrow" size={15} /></Link>
                   </div>
                 </article>

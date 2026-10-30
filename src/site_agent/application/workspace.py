@@ -592,7 +592,11 @@ class TenantRegistry:
 
                     context["media_service"] = PayloadMediaService(payload_client)
                 vision_config = tenant_config.get("vision") or {}
-                if isinstance(vision_config, Mapping) and bool(vision_config.get("enabled")) and context.get("media_analyzer") is None:
+                if (
+                    isinstance(vision_config, Mapping)
+                    and (bool(vision_config.get("enabled")) or bool(vision_config.get("media_analysis")))
+                    and context.get("media_analyzer") is None
+                ):
                     from ..core.vision import VisionClient
 
                     context["media_analyzer"] = VisionClient(tenant_config, env=dict(env), memory=memory)
@@ -1027,6 +1031,14 @@ class TenantRegistry:
         settings = tenant.config.get("scheduler") or {}
         settings = settings if isinstance(settings, Mapping) else {}
         scheduler = tenant.runtime.scheduler
+        if tenant.context.get("media_analyzer") is not None and tenant.context.get("payload_gateway") is not None:
+            # Payload's pending media documents are the durable work inventory.
+            # A Worker notification accelerates analysis; interrupted requests
+            # remain pending and are picked up by this same tenant scheduler.
+            service = ChatService(memory=tenant.memory, llm=tenant.context.get("llm"))
+            scheduler.job("media_analysis", {"every": "1h"}, lambda: service.analyze_pending_media(tenant=tenant))
+            if tenant.memory.kv_get("next_run:media_analysis") is None:
+                tenant.memory.kv_set("next_run:media_analysis", scheduler.clock())
         site = tenant.config.get("site") if isinstance(tenant.config.get("site"), Mapping) else {}
         payload = site.get("payload") if isinstance(site.get("payload"), Mapping) else {}
         payload_site = bool(site.get("website_present") and payload.get("enabled"))
@@ -5365,6 +5377,32 @@ class ChatService:
         return {"ok": True, "draft_id": draft_id, "branch": preview_branch, "preview": preview_job}
 
     def analyze_media(self, body: Mapping[str, Any], *, tenant: Tenant | None = None) -> dict[str, Any]:
+        if tenant is None:
+            raise BridgeError("tenant is required")
+        # Serialize notification and scheduler callers within the sole tenant
+        # runtime, then re-read canonical state before any paid provider call.
+        lock = tenant.context.setdefault("media_analysis_lock", threading.RLock())
+        with lock:
+            return self._analyze_media(body, tenant=tenant)
+
+    def analyze_pending_media(self, *, tenant: Tenant) -> dict[str, Any]:
+        """Resume pending uploads, never automatically replay failed analyses."""
+        payload = tenant.context.get("payload_gateway")
+        if payload is None:
+            raise BridgeError("Payload media is not configured")
+        completed = []
+        for document in payload.list_media(draft=True, limit=100):
+            if document.get("analysisStatus") != "pending":
+                continue
+            if not str(document.get("mimeType") or "").startswith("image/"):
+                continue
+            self.analyze_media({"media_id": str(document["id"])}, tenant=tenant)
+            completed.append(str(document["id"]))
+            if len(completed) >= 5:
+                break
+        return {"analyzed": completed}
+
+    def _analyze_media(self, body: Mapping[str, Any], *, tenant: Tenant) -> dict[str, Any]:
         """Analyze one Payload asset and write only the resulting metadata draft."""
         _memory, _llm, _tenant_id = self._scope(tenant)
         if tenant is None:
@@ -5381,6 +5419,8 @@ class ChatService:
             raise BridgeError("focus is too long")
         try:
             media = payload.read_media(media_id, identifier_kind="id", draft=True)
+            if media.get("analysisStatus") == "ready" and not focus:
+                return {"media": media, "analysis": media.get("analysis") or {}, "draft": True}
             expected_media_hash = str(media.get("_helloadaRevision") or "").strip()
             if not expected_media_hash:
                 raise BridgeError("Payload media draft has no revision hash; reload the media before analyzing it.")
