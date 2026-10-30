@@ -39,3 +39,6 @@ def test_pending_payload_inventory_is_durable_and_duplicate_notifications_do_not
     assert analyzer.calls == 1
     assert payload.document["analysisModel"] == "conversation-model"
     assert payload.document["tags"] == [{"value": "logo"}]
+    payload.document["analysisStatus"] = "failed"
+    service.analyze_media({"media_id": "5"}, tenant=tenant)
+    assert analyzer.calls == 1

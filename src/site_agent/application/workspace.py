@@ -5419,7 +5419,7 @@ class ChatService:
             raise BridgeError("focus is too long")
         try:
             media = payload.read_media(media_id, identifier_kind="id", draft=True)
-            if media.get("analysisStatus") == "ready" and not focus:
+            if media.get("analysisStatus") in {"ready", "failed"} and not focus:
                 return {"media": media, "analysis": media.get("analysis") or {}, "draft": True}
             expected_media_hash = str(media.get("_helloadaRevision") or "").strip()
             if not expected_media_hash:
