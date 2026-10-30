@@ -655,7 +655,8 @@ def test_read_only_runtime_activation_requires_verified_current_worker_proof(tmp
     assert len(mounted) == 1
 
 
-def test_normal_release_activation_composes_real_registration_and_registry_mount(tmp_path):
+@pytest.mark.parametrize("verify_only", [False, True])
+def test_release_activation_composes_real_registration_and_registry_mount(tmp_path, verify_only):
     """Exercise the receipt-to-durable-config-to-mounted-registry activation path."""
     import yaml
 
@@ -704,8 +705,8 @@ def test_normal_release_activation_composes_real_registration_and_registry_mount
             "tenant": tenant_id,
             "releaseId": release_id,
             "sourceSha": source_sha,
-            "status": "running",
-            "stage": "verify-connection",
+            "status": "failed" if verify_only else "running",
+            "stage": "verify-deployment" if verify_only else "verify-connection",
             "approvalId": None,
             "uploadedVersion": activation["uploaded_version"],
             "pipelineSha": activation["control_sha"],
@@ -731,12 +732,23 @@ def test_normal_release_activation_composes_real_registration_and_registry_mount
             },
         }
         receipt_path = tmp_path / "releases" / "runs" / tenant_id / release_id / "receipt.json"
+        if verify_only:
+            receipt["currentVerification"] = {
+                "releaseId": release_id, "sourceSha": source_sha,
+                "uploadedVersion": activation["uploaded_version"],
+                "workerVersion": "worker-version-current", "deploymentId": "deployment-current",
+                "trafficPercentage": 100, "uploadedScriptEtag": "f" * 64,
+                "activeScriptEtag": "f" * 64, "uploadedBindingIdentity": "9" * 64,
+                "activeBindingIdentity": "9" * 64, "mode": "secret_rotation",
+                "verifiedAt": "2026-10-30T11:45:27.168209Z",
+            }
         receipt_path.parent.mkdir(parents=True)
         receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
         service.config["deployment_pipeline"] = {"release_root": str(tmp_path / "releases")}
 
         result = service.activate_runtime_after_health(
             tenant_id, release_id=release_id, source_sha=source_sha,
+            **({"verification": receipt["currentVerification"]} if verify_only else {}),
         )
 
         assert result["runtime_active"] is True
@@ -756,6 +768,18 @@ def test_normal_release_activation_composes_real_registration_and_registry_mount
         index = json.loads((tmp_path / "websites" / "tenants.json").read_text(encoding="utf-8"))
         assert index[tenant_id]["bootstrap_state"] == "runtime"
         assert RuntimeActivation.from_receipt(tenant_id, release_id, receipt).to_dict() == activation
+        if verify_only:
+            service.close()
+            registry.close()
+            registry = TenantRegistry.from_config(config, env)
+            registration = TenantRegistrationService(config, env, registry=registry)
+            service = WebsiteBootstrapService(config, env, registration=registration, registry=registry)
+            service._activate_runtime(tenant_id, {})
+            persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            assert persisted["site"]["payload"]["runtime_activation"] == activation
+            mounted = registry.for_tenant_id(tenant_id)
+            assert mounted.config["site"]["payload"]["runtime_activation"] == activation
+            assert json.loads((tmp_path / "websites" / "tenants.json").read_text())[tenant_id]["bootstrap_state"] == "ready"
     finally:
         service.close()
         registry.close()

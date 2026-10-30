@@ -22,13 +22,15 @@ mount. Activating an unbound release explicitly removes any prior binding;
 ordinary remounts and owner-ready state changes preserve it.
 
 The composed regression in `tests/test_bootstrap.py` uses a disposable local
-tenant registry and a canonical normal-release receipt to exercise
-`activate_runtime_after_health` through the real registration sync and registry
-reload. It checks that the same exact receipt binding reaches persisted YAML
-and the mounted registry while existing locale/media contract metadata remains
-intact. This is a focused activation-path fixture, not full acceptance of the
-remaining verify-only, restart, stale-release, malformed-input, or legacy
-binding cases.
+tenant registry and canonical normal and failed/deployed verify-only receipts
+to exercise `activate_runtime_after_health` through the real registration sync
+and registry reload. The verify-only case supplies current Worker verification,
+then closes and reconstructs the registry and registration service from the
+same files before exercising the actual owner-ready update. It checks exact
+binding preservation in persisted YAML and mounted config, with locale/media
+contract metadata intact. No causal-path methods are stubbed; external systems
+are not contacted. This remains focused fixture evidence, not full acceptance
+of stale-release, malformed-input, or legacy-binding cases.
 
 Journey status for this work: no Ada-created candidate, no observed defining
 behavior, no real owner review, and no bypass workaround. The journey is not
