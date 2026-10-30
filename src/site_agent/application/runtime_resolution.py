@@ -72,6 +72,34 @@ def _receipt_path(config: Mapping[str, Any], activation: RuntimeActivation) -> P
     return path
 
 
+def _validate_receipt(receipt: Any, tenant_id: str, activation: RuntimeActivation,
+                      identity: Mapping[str, Any], website: bool) -> None:
+    if not isinstance(receipt, Mapping) or receipt.get("status") not in {"deployed", "verified"}:
+        raise RuntimeResolutionError("canonical release receipt is not terminal and successful")
+    if receipt.get("tenant") != tenant_id or receipt.get("releaseId") != activation.release_id or receipt.get("sourceSha") != activation.source_sha:
+        raise RuntimeResolutionError("canonical release receipt identity mismatch")
+    try:
+        if RuntimeActivation.from_receipt(tenant_id, activation.release_id, receipt) != activation:
+            raise RuntimeResolutionError("canonical release receipt differs from registered activation")
+    except (TypeError, ValueError):
+        raise RuntimeResolutionError("canonical release receipt activation is incomplete") from None
+    health = receipt.get("health")
+    expected = {"ok": True, "tenant": tenant_id, "releaseSha": activation.source_sha,
+        "payloadAdmin": identity["adminVersion"], "payloadCore": identity["coreVersion"],
+        "contentContract": identity["contract"], "schemaRevision": identity["schemaRevision"],
+        "schemaIdentity": identity["schemaIdentity"], "migrationHead": identity["migrationHead"]}
+    if not isinstance(health, Mapping) or any(health.get(k) != v for k, v in expected.items()):
+        raise RuntimeResolutionError("canonical receipt health does not match registered runtime")
+    if receipt.get("websitePresent") is not website:
+        raise RuntimeResolutionError("canonical receipt websitePresent differs from registered runtime")
+    deployment = receipt.get("deployment")
+    versions = deployment.get("versions") if isinstance(deployment, Mapping) else None
+    if (not isinstance(deployment, Mapping) or not isinstance(deployment.get("id"), str) or not deployment.get("id")
+            or not isinstance(versions, list) or len(versions) != 1 or not isinstance(versions[0], Mapping)
+            or versions[0].get("version_id") != activation.uploaded_version or versions[0].get("percentage") != 100):
+        raise RuntimeResolutionError("receipt lacks exact uploaded-version deployment evidence")
+
+
 class RuntimeResolutionService:
     """Resolve only the registered tenant's persisted activation and receipt."""
 
@@ -136,34 +164,7 @@ class RuntimeResolutionService:
             raise
         except (OSError, UnicodeError, ValueError):
             raise RuntimeResolutionError("canonical release receipt is unavailable or malformed") from None
-        if not isinstance(receipt, Mapping) or receipt.get("status") not in {"deployed", "verified"}:
-            raise RuntimeResolutionError("canonical release receipt is not terminal and successful")
-        if (receipt.get("tenant") != tenant_id or receipt.get("releaseId") != activation.release_id
-                or receipt.get("sourceSha") != activation.source_sha):
-            raise RuntimeResolutionError("canonical release receipt identity mismatch")
-        try:
-            from_receipt = RuntimeActivation.from_receipt(tenant_id, activation.release_id, receipt)
-        except (TypeError, ValueError):
-            raise RuntimeResolutionError("canonical release receipt activation is incomplete") from None
-        if from_receipt != activation:
-            raise RuntimeResolutionError("canonical release receipt differs from registered activation")
-        health = receipt.get("health")
-        expected_health = {"ok": True, "tenant": tenant_id, "releaseSha": activation.source_sha,
-                           "payloadAdmin": identity["adminVersion"], "payloadCore": identity["coreVersion"],
-                           "contentContract": identity["contract"], "schemaRevision": identity["schemaRevision"],
-                           "schemaIdentity": identity["schemaIdentity"], "migrationHead": identity["migrationHead"]}
-        if not isinstance(health, Mapping) or any(health.get(k) != v for k, v in expected_health.items()):
-            raise RuntimeResolutionError("canonical receipt health does not match registered runtime")
-        if receipt.get("websitePresent") is not website:
-            raise RuntimeResolutionError("canonical receipt websitePresent differs from registered runtime")
-        deployment = receipt.get("deployment")
-        versions = deployment.get("versions") if isinstance(deployment, Mapping) else None
-        if (not isinstance(deployment, Mapping) or not isinstance(deployment.get("id"), str)
-                or not deployment.get("id") or not isinstance(versions, list) or len(versions) != 1
-                or not isinstance(versions[0], Mapping)
-                or versions[0].get("version_id") != activation.uploaded_version
-                or versions[0].get("percentage") != 100):
-            raise RuntimeResolutionError("receipt lacks exact uploaded-version deployment evidence")
+        _validate_receipt(receipt, tenant_id, activation, identity, website)
         try:
             deploy_env = credential_environment(self.root_config, self.env)
             verified = cloudflare_worker_verification.resolve_verified_active_worker(
@@ -176,14 +177,16 @@ class RuntimeResolutionService:
             if not isinstance(deployment_id, str) or not deployment_id:
                 raise ValueError("invalid deployment identity")
             # Re-read registered authority and exact receipt after remote verification.
-            current_tenant, current_activation, _, _, current_worker = self._registered(tenant_id)
+            current_tenant, current_activation, current_identity, current_website, current_worker = self._registered(tenant_id)
             if (current_tenant is not tenant or current_activation != activation or current_worker != worker):
                 raise RuntimeResolutionError("registered runtime identity drifted during verification")
+            if current_identity != identity or current_website is not website:
+                raise RuntimeResolutionError("registered Payload runtime contract drifted during verification")
+            current_receipt_path = _receipt_path(self.root_config, current_activation)
+            if current_receipt_path != receipt_path:
+                raise RuntimeResolutionError("canonical receipt path drifted during verification")
             current_receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
-            if not isinstance(current_receipt, Mapping) or RuntimeActivation.from_receipt(
-                tenant_id, activation.release_id, current_receipt
-            ) != activation or current_receipt.get("tenant") != tenant_id or current_receipt.get("releaseId") != activation.release_id:
-                raise RuntimeResolutionError("canonical receipt identity drifted during verification")
+            _validate_receipt(current_receipt, tenant_id, activation, identity, website)
             cloudflare_worker_verification.require_active_worker_snapshot(
                 {"worker": worker}, deploy_env, deployment_id, active_version,
             )

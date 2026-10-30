@@ -21,3 +21,15 @@ receipt and active Worker before using the candidate. Control materialization,
 nonsecret config freeze, content snapshots, artifacts, visual/behavioral review
 and owner Design acceptance are later boundaries. This work does not establish
 UI-047 or UI-056 as Verified.
+
+The resolver acceptance suite exercises invalid or absent bindings and receipts,
+tenant/release/source/control/fingerprint/upload identity drift, unmounted and
+unregistered tenants, receipt health/website/deployment/path safety, and
+mid-verification rechecks. A separate registered tenant fixture proves receipt
+and Worker selection stay tenant-scoped. The canonical verifier is exercised
+through a fake GET-only Cloudflare transport for split traffic, unauthorized
+code/binding replacement and the permitted secret-only replacement case; the
+fixtures assert that resolution leaves tenant config and receipt bytes intact.
+The article checkpoint-loss regression pins the Memory draft timestamp in both
+mirrors and checks exact Payload revision/update behavior for changed and
+unchanged `modifiedAt` values.
