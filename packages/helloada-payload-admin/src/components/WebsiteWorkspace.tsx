@@ -845,6 +845,7 @@ function ReviewWorkspace() {
   const lastMessageCountRef = useRef(0)
   const previousSendingRef = useRef(false)
   const activeAdaPollRef = useRef<number | undefined>(undefined)
+  const transientFailures = useRef({ workspace: 0, status: 0 })
   const chatWorking = sending || Boolean(pendingAdaJob)
 
   useEffect(() => {
@@ -1018,15 +1019,22 @@ function ReviewWorkspace() {
 
   const loadWorkspace = useCallback((background = false) => {
     if (!background) setLoading(true)
-    setError('')
+    if (!background) setError('')
     return fetchHelloAda('/api/helloada/workspace', { cache: 'no-store' })
       .then(async (response) => {
         const body = (await response.json()) as WorkspaceSnapshot & { message?: string }
         if (!response.ok) throw new Error(body.message || t('error.workspaceLoad'))
+        transientFailures.current.workspace = 0
         setWorkspace(body)
       })
       .catch((cause) => {
-        setError(cause instanceof Error ? cause.message : t('error.workspaceLoad'))
+        // A background refresh must never replace a working conversation with a
+        // network banner. Keep the last good snapshot and only surface an error
+        // once repeated failures prove the connection is genuinely gone.
+        transientFailures.current.workspace += 1
+        const message = cause instanceof Error ? cause.message : t('error.workspaceLoad')
+        if (!background || transientFailures.current.workspace >= 3) setError(message)
+        else console.warn('workspace refresh temporarily unavailable', { message })
       })
       .finally(() => setLoading(false))
   }, [t])
@@ -1289,6 +1297,7 @@ function ReviewWorkspace() {
           } | null
         }
         if (!response.ok) throw new Error(t('error.adaPhase'))
+        transientFailures.current.status = 0
         setAdaUnavailable(false)
         const phase = body.phase || body.mode
         setAdaPhase(phase === 'intake' || phase === 'incubation' || phase === 'workspace' ? phase : 'workspace')
@@ -1321,9 +1330,14 @@ function ReviewWorkspace() {
       })
       .catch(() => {
         // Do not guess that intake is complete. Website context stays dormant
-        // until the server proves the explicit acceptance transition.
-        setAdaPhase('unknown')
-        setAdaUnavailable(true)
+        // until the server proves the explicit acceptance transition. A single
+        // dropped request on a slow connection must not blank the composer or
+        // discard the conversation the owner is already reading.
+        transientFailures.current.status += 1
+        if (transientFailures.current.status >= 3) {
+          setAdaPhase('unknown')
+          setAdaUnavailable(true)
+        }
         loadWorkspace(background)
       })
   }, [loadWorkspace, rememberPendingAdaJob, t])
