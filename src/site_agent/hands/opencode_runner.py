@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import subprocess
+import threading
 import time
 from dataclasses import replace
 from collections.abc import Mapping, Sequence
@@ -2253,7 +2254,9 @@ def _run_local_design_self_check(
             ),
         )
     except SiteBuildError as exc:
-        raise RunnerError(f"mandatory local design self-check failed: {str(exc)[:1_000]}") from exc
+        raise RunnerError(
+            f"mandatory local design self-check failed: {summarize_build_failure(str(exc))}"
+        ) from exc
     report = result.to_dict()
     if not result.ok:
         failed_commands = [
@@ -2265,7 +2268,7 @@ def _run_local_design_self_check(
             failed = failed_commands[-1]
             command = " ".join(str(part) for part in (failed.get("command") or ()))
             output = str(failed.get("stderr") or failed.get("stdout") or failed.get("error") or "").strip()
-            detail = f" ({command or 'build step'}: {output[-1_500:]})"
+            detail = f" ({command or 'build step'}: {summarize_build_failure(output)})"
         raise RunnerError(
             "mandatory local design self-check failed" + detail,
             result={"local_check": report},
@@ -4142,13 +4145,14 @@ def stage_infusion(
             turn_kwargs["env"] = context.get("env")
             turn_kwargs["api_key_env"] = provider_env_name
         run_timeout = int(timeout_seconds or 0) or int(builder.get("timeout_seconds", 0)) or None
-        result = run_opencode_turn(
-            worktree,
-            brief,
-            config,
-            timeout_seconds=run_timeout,
-            **turn_kwargs,
-        )
+        with _build_heartbeat(progress, "opencode is still working on the repository"):
+            result = run_opencode_turn(
+                worktree,
+                brief,
+                config,
+                timeout_seconds=run_timeout,
+                **turn_kwargs,
+            )
         tool_names = {str(call.get("tool") or "") for call in result.get("tool_calls") or []}
         used_pipeworx = bool({"ask_pipeworx", "discover_tools", "pipeworx"} & tool_names or any("pipeworx" in name for name in tool_names))
         raw_reply = "\n".join(str(line) for line in result.get("raw_tail") or [])
@@ -4181,7 +4185,6 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
     successful turn, and is rejected immediately.
     """
     import signal
-    import threading
     from ..config import resolve_secret, timing_enabled
 
     b = config.get("builder") or {}
@@ -4723,6 +4726,73 @@ def _canonical_media_webp(service: Any, stored: Any) -> bytes:
     except MediaProcessingError as exc:
         raise RunnerError(f"the Library image could not be prepared for the build: {str(exc)[:200]}") from exc
 
+
+_ANSI_ESCAPE = _re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_FAILURE_LINE = _re.compile(
+    r"(?:^|\s)(?:error\s+TS\d+|Error:|error:|failed|Failed|ERR!|Type error)",
+)
+
+
+class _build_heartbeat:
+    """Keep the owner build surface honest while one long turn is in flight.
+
+    A Build turn can run for twenty minutes without a milestone. Without a
+    heartbeat the surface cannot tell "still working" from "stuck", so it told
+    the owner the build may be stuck while it was genuinely progressing.
+    """
+
+    def __init__(self, progress: Any, message: str, *, interval: float = 60.0) -> None:
+        self.progress = progress
+        self.message = message
+        self.interval = max(15.0, float(interval))
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def __enter__(self) -> "_build_heartbeat":
+        if callable(self.progress):
+            self._thread = threading.Thread(target=self._run, name="ada-build-heartbeat", daemon=True)
+            self._thread.start()
+        return self
+
+    def _run(self) -> None:
+        while not self._stop.wait(self.interval):
+            try:
+                self.progress(self.message)
+            except Exception:  # noqa: BLE001 - liveness reporting must never fail a build
+                return
+
+    def __exit__(self, *_exc: object) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2)
+
+
+def summarize_build_failure(output: str, *, limit: int = 1_600) -> str:
+    """Return the useful part of a failed build command's output.
+
+    Build logs end with framework warning banners, so a raw tail hides the
+    actual error. Strip terminal colour codes and keep the error lines with a
+    little context, falling back to the tail when nothing matches.
+    """
+    clean = _ANSI_ESCAPE.sub("", str(output or ""))
+    lines = [line.rstrip() for line in clean.splitlines()]
+    interesting = [
+        index for index, line in enumerate(lines)
+        if _FAILURE_LINE.search(line) and not line.lstrip().startswith(("▲", "○"))
+    ]
+    if interesting:
+        kept: list[str] = []
+        seen: set[int] = set()
+        for index in interesting[:8]:
+            for candidate in range(max(0, index - 2), min(len(lines), index + 3)):
+                if candidate not in seen:
+                    seen.add(candidate)
+                    kept.append(lines[candidate])
+        summary = "\n".join(line for line in kept if line.strip())
+        if summary.strip():
+            return summary[:limit]
+    tail = "\n".join(line for line in lines if line.strip())[-limit:]
+    return tail
 
 def _materialize_media(context: dict[str, Any], clone: Path) -> list[str]:
     """Copy exact canonical WebPs into the isolated checkout, never URLs."""

@@ -36,6 +36,7 @@ from .contracts import (
 )
 from .design_contracts import (
     MAX_CONTRACT_BYTES,
+    MAX_PLANNING_BYTES,
     MAX_QUALITY_REPORT_BYTES,
     DesignContextSnapshot,
     DesignOperationKind,
@@ -3598,7 +3599,7 @@ class Memory:
             encoded, computed_hash = self._design_json(
                 fields["planning_json"],
                 "planning_json",
-                max_bytes=MAX_CONTRACT_BYTES,
+                max_bytes=MAX_PLANNING_BYTES,
             )
             updates["planning_json"] = encoded
             if "planning_hash" not in fields:
@@ -3657,7 +3658,7 @@ class Memory:
                 raise ContractError("quality_report_hash does not match quality_report_json")
         if "planning_json" in fields and fields.get("planning_hash"):
             _, computed_hash = self._design_json(
-                fields["planning_json"], "planning_json", max_bytes=MAX_CONTRACT_BYTES
+                fields["planning_json"], "planning_json", max_bytes=MAX_PLANNING_BYTES
             )
             if computed_hash != str(fields["planning_hash"]).strip().lower():
                 raise ContractError("planning_hash does not match planning_json")

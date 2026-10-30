@@ -98,7 +98,7 @@ def test_status_marks_a_running_build_that_stopped_talking(tmp_path, monkeypatch
     assert build["state"] == "running"
     assert build["last_event_age_seconds"] == 1200
     assert build["stalled"] is True
-    assert build["stall_threshold_seconds"] == 180
+    assert build["stall_threshold_seconds"] == 600
     memory.close()
 
 
@@ -212,3 +212,18 @@ def test_unconfirmed_intake_message_still_routes_to_advisor(tmp_path):
         assert coordinator.sent == ["more details"]
     finally:
         registry.close()
+
+
+def test_planning_envelope_allows_a_real_business_brief_without_truncation(tmp_path):
+    """A full run envelope (intake, copy deck, direction, journey) is not a
+    shared 400 KB contract; truncating it would lose the design itself."""
+    from site_agent.core.design_contracts import MAX_CONTRACT_BYTES, MAX_PLANNING_BYTES
+
+    assert MAX_PLANNING_BYTES > MAX_CONTRACT_BYTES
+    memory = Memory(tmp_path / "memory.db")
+    run = _run(memory, status="planning")
+    big = {"copy_deck": "x" * (MAX_CONTRACT_BYTES + 50_000), "run_id": run["run_id"]}
+    memory.update_design_run(run["run_id"], planning_json=big)
+    stored = memory.get_design_run(run["run_id"])
+    assert stored["planning_json"]["copy_deck"] == big["copy_deck"]
+    memory.close()

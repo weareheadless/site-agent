@@ -417,7 +417,14 @@ Return exactly one JSON object with this shape:
 Use only these field paths:
 """ + ", ".join(allowed_intake_field_paths()) + "\n\nTrusted design judgment (apply silently; do not recite it):\n" + design_guidance + "\n\nCurrent draft:\n" + canonical_json(draft.to_dict()) + "\n\nAvailable uploaded images:\n" + canonical_json(asset_summary)
     if customer_view:
-        prompt += "\n\nCUSTOMER VIEW (what the owner can currently see):\n" + customer_view
+        prompt += (
+            "\n\nCUSTOMER VIEW (what the owner can currently see):\n" + customer_view
+            + "\nWhen the owner asks about a build, its progress, or why something failed, "
+            "answer from this view and never claim nothing was built while an active_run_id "
+            "or a version exists. A failed run must be reported as failed, quoting "
+            "active_failure_reason when present, in plain language the owner can act on. "
+            "Do not restart a build the owner did not ask to restart."
+        )
 
     briefing = _knowledge_briefing(knowledge_briefing)
     if briefing:
