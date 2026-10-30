@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { getCloudflareContext } from '@opennextjs/cloudflare'
 import { getPayload } from 'payload'
 import type { CollectionSlug, PayloadRequest, TypedLocale } from 'payload'
 
@@ -11,7 +12,7 @@ import {
   helloAdaContentBindings,
 } from '@weareheadless/helloada-payload-core/bindings'
 import type { HelloAdaBindingEdit } from '@weareheadless/helloada-payload-core/bindings'
-import { helloAdaConnection, helloAdaRuntimeStatus } from '@weareheadless/helloada-payload-admin/server'
+import { helloAdaConnection, helloAdaRuntime, helloAdaRuntimeStatus } from '@weareheadless/helloada-payload-admin/server'
 import { helloAdaSite } from '@/helloada.config'
 import { articleIndexPath, pathForDocument } from '@/lib/content-routes'
 import { hashJson, stableJson, withoutPayloadMetadata } from '@/lib/payload-hash'
@@ -33,6 +34,27 @@ export const dynamic = 'force-dynamic'
 type RouteProps = { params: Promise<{ path?: string[] }> }
 
 const errorResponse = (message: string, status = 400) => NextResponse.json({ error: 'helloada_bridge_error', message }, { status })
+
+/** Payload pending records are durable; this notification accelerates analysis. */
+const scheduleMediaAnalysis = (mediaId: unknown): void => {
+  const id = text(mediaId)
+  if (!id) return
+  const pending = (async () => {
+    const runtime = helloAdaRuntime()
+    if (!runtime.configured) throw new Error('Tenant media analysis connection is not configured')
+    const response = await fetch(`${runtime.url}/workspace/media/analyze`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${runtime.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ media_id: id }),
+    })
+    if (!response.ok) throw new Error(`Tenant media analysis returned HTTP ${response.status}`)
+  })().catch((cause: unknown) => {
+    console.error('helloada_media_analysis_failed', { tenant: tenantId(), mediaId: id, error: errorMessage(cause) })
+  })
+  // The shared tenant scheduler owns recovery if a request or Worker ends
+  // before the provider finishes. Never rely on waitUntil as the work store.
+  getCloudflareContext().ctx.waitUntil(pending)
+}
 
 const editableCollections = ['pages', 'posts', 'products'] as const
 type EditableCollection = (typeof editableCollections)[number]
@@ -286,6 +308,11 @@ export async function GET(request: Request, { params }: RouteProps) {
       ...mediaObject(item),
       mimeType: text(item.mimeType),
       portable: false,
+      analysisStatus: text(item.analysisStatus) || 'pending',
+      description: text(item.description),
+      tags: Array.isArray(item.tags)
+        ? item.tags.map((tag) => text(asObject(tag).value)).filter(Boolean).slice(0, 20)
+        : [],
     })).filter((item) => !search || `${item.filename} ${item.alt}`.toLowerCase().includes(search))
     const totalPages = Math.max(1, Math.ceil(media.length / limit))
     const currentPage = Math.min(page, totalPages)
@@ -446,6 +473,7 @@ export async function POST(request: Request, { params }: RouteProps) {
       user: auth.user,
       file: { data: Buffer.from(await value.arrayBuffer()), mimetype: value.type, name: `${globalThis.crypto.randomUUID()}-${value.name}`, size: value.size },
     })
+    scheduleMediaAnalysis((document as unknown as Record<string, unknown>).id)
     return NextResponse.json({ attachment: attachmentFrom(document as unknown as Record<string, unknown>) }, { status: 201 })
   }
   if (path === '/publish') {
