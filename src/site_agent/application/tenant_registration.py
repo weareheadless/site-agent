@@ -26,6 +26,7 @@ from typing import Any
 import yaml
 
 from ..core.memory import SCHEMA_VERSION, Memory
+from .runtime_activation import RuntimeActivation
 
 _SAFE_ID = re.compile(r"^[a-z][a-z0-9-]{1,62}$")
 _SAFE_ENV = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -37,6 +38,7 @@ _SAFE_ENV = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 WORKER_SITE_AGENT_TOKEN_ENV = "HELLOADA_SITE_AGENT_TOKEN"
 
 _TENANTS_FILE = "tenants.json"
+_RUNTIME_ACTIVATION_UNSET = object()
 
 
 class TenantRegistrationError(ValueError):
@@ -353,6 +355,7 @@ class TenantRegistrationService:
         runtime_identity: Mapping[str, Any],
         *,
         website_present: bool,
+        runtime_activation: RuntimeActivation | None | object = _RUNTIME_ACTIVATION_UNSET,
     ) -> bool:
         """Pin an already verified Worker contract into this tenant's runtime config."""
         normalized = str(tenant_id or "").strip().lower()
@@ -360,6 +363,13 @@ class TenantRegistrationService:
             raise TenantRegistrationError("website id must be a lowercase slug")
         if not isinstance(website_present, bool):
             raise TenantRegistrationError("verified websitePresent state must be a boolean")
+        if runtime_activation is not _RUNTIME_ACTIVATION_UNSET and runtime_activation is not None:
+            try:
+                if not isinstance(runtime_activation, RuntimeActivation):
+                    raise ValueError("runtime activation must be typed")
+                runtime_activation = RuntimeActivation.from_mapping(runtime_activation.to_dict())
+            except (TypeError, ValueError) as exc:
+                raise TenantRegistrationError("runtime activation binding is invalid") from exc
         expected_keys = {
             "adminVersion", "contract", "coreVersion", "schemaRevision",
             "schemaIdentity", "migrationHead",
@@ -463,6 +473,11 @@ class TenantRegistrationService:
                 updated_site["website_present"] = website_present
                 updated_payload = dict(payload)
                 updated_payload["contract"] = canonical_contract
+                if runtime_activation is not _RUNTIME_ACTIVATION_UNSET:
+                    if runtime_activation is None:
+                        updated_payload.pop("runtime_activation", None)
+                    else:
+                        updated_payload["runtime_activation"] = runtime_activation.to_dict()
                 updated_site["payload"] = updated_payload
                 updated["site"] = updated_site
                 before = yaml.safe_dump(raw, sort_keys=False, allow_unicode=True)

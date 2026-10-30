@@ -334,6 +334,8 @@ def _adoption_fixture(tmp_path, *, registered=True):
         "repository": "https://github.com/weareheadless/oceanicvibes.git",
         "releaseId": release_id,
         "sourceSha": source_sha,
+        "pipelineSha": "f" * 40,
+        "sharedRuntimeFingerprint": "9" * 64,
         "status": "deployed",
         "approvalId": None,
         "uploadedVersion": uploaded_version,
@@ -544,6 +546,8 @@ def test_bootstrap_runtime_activation_requires_exact_live_health_receipt(tmp_pat
         "approvalId": None,
         "initialSchemaHead": "c" * 64,
         "uploadedVersion": "version-demo",
+        "pipelineSha": "d" * 40,
+        "sharedRuntimeFingerprint": "e" * 64,
         "deployment": {"versions": [{"version_id": "version-demo", "percentage": 100}]},
         "payloadAdmin": "0.10.1",
         "payloadCore": "0.5.1",
@@ -585,6 +589,22 @@ def test_bootstrap_runtime_activation_requires_exact_live_health_receipt(tmp_pat
         "runtime_active": True,
     }
     assert len(activated) == 1
+    assert activated[0][2]["runtime_activation"].to_dict() == {
+        "schema": 1,
+        "tenant_id": tenant_id,
+        "release_id": release_id,
+        "source_sha": source_sha,
+        "control_sha": "d" * 40,
+        "shared_runtime_fingerprint": "e" * 64,
+        "uploaded_version": "version-demo",
+    }
+
+    receipt["sharedRuntimeFingerprint"] = "malformed"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    with pytest.raises(BootstrapError, match="provenance is invalid"):
+        service.activate_runtime_after_health(tenant_id, release_id=release_id, source_sha=source_sha)
+    assert len(activated) == 1
+    receipt["sharedRuntimeFingerprint"] = "e" * 64
 
     receipt["stage"] = "verify-deployment"
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
@@ -612,14 +632,20 @@ def test_read_only_runtime_activation_requires_verified_current_worker_proof(tmp
     receipt.update(status="failed", stage="verify-deployment")
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
     mounted = []
-    service._mount_runtime = lambda selected_tenant, state, **_kwargs: mounted.append((selected_tenant, state))
+    service._mount_runtime = lambda selected_tenant, state, **kwargs: mounted.append((selected_tenant, state, kwargs))
 
     result = service.activate_runtime_after_health(
         tenant, release_id=release, source_sha=source_sha,
         verification=receipt["currentVerification"],
     )
     assert result["runtime_active"] is True
-    assert mounted == [(tenant, {"tenant_id": tenant})]
+    assert mounted[0][:2] == (tenant, {"tenant_id": tenant})
+    assert mounted[0][2]["runtime_activation"].to_dict() == {
+        "schema": 1, "tenant_id": tenant, "release_id": release,
+        "source_sha": source_sha, "control_sha": "f" * 40,
+        "shared_runtime_fingerprint": "9" * 64,
+        "uploaded_version": "903fba29-2211-4d6b-a7e4-5e3236a2c02a",
+    }
 
     invalid = {**receipt["currentVerification"], "activeScriptEtag": "f" * 64}
     with pytest.raises(BootstrapError, match="verified Worker boundary"):
@@ -627,6 +653,388 @@ def test_read_only_runtime_activation_requires_verified_current_worker_proof(tmp
             tenant, release_id=release, source_sha=source_sha, verification=invalid,
         )
     assert len(mounted) == 1
+
+
+def _runtime_activation_composition(tmp_path, *, release_id="rel-20261030123456-aabbccdd"):
+    """Build the real local activation chain used by provenance composition tests."""
+    import yaml
+
+    tenant_id = "new-site"
+    source_sha = "a" * 40
+    runtime_identity = {
+        "adminVersion": "0.10.1", "contract": "helloada-content-v3",
+        "coreVersion": "0.5.2", "schemaRevision": 5,
+        "schemaIdentity": "b" * 64, "migrationHead": "c" * 64,
+    }
+    activation = {
+        "schema": 1, "tenant_id": tenant_id, "release_id": release_id,
+        "source_sha": source_sha, "control_sha": "d" * 40,
+        "shared_runtime_fingerprint": "e" * 64,
+        "uploaded_version": "worker-version-compose8",
+    }
+    config, _unused, env = _host(tmp_path)
+    registry = TenantRegistry.from_config(config, env)
+    registration = TenantRegistrationService(config, env, registry=registry)
+    service = WebsiteBootstrapService(config, env, registration=registration, registry=registry)
+    registration.register(tenant_id, display_name="New Site")
+    tenant_dir = tmp_path / "websites" / tenant_id
+    config_path = tenant_dir / "config.yaml"
+    tenant_config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    tenant_config["site"]["payload"].update(
+        enabled=True, url="https://new-site.example", token_env="PROVISIONED_NEW_SITE_TOKEN",
+        api_prefix="/api/workspace",
+        contract={**runtime_identity, "media_fields": ["alt", "description"],
+                  "locales": ["en", "es-MX"], "defaultLocale": "en"},
+    )
+    TenantRegistrationService._replace_config(config_path, tenant_config)
+
+    def make_receipt():
+        return {
+            "tenant": tenant_id, "releaseId": release_id, "sourceSha": source_sha,
+            "status": "running", "stage": "verify-connection", "approvalId": None,
+            "uploadedVersion": activation["uploaded_version"],
+            "pipelineSha": activation["control_sha"],
+            "sharedRuntimeFingerprint": activation["shared_runtime_fingerprint"],
+            "deployment": {"versions": [{"version_id": activation["uploaded_version"], "percentage": 100}]},
+            "payloadAdmin": runtime_identity["adminVersion"],
+            "payloadCore": runtime_identity["coreVersion"],
+            "contentContract": runtime_identity["contract"],
+            "schemaRevision": runtime_identity["schemaRevision"],
+            "schemaIdentity": runtime_identity["schemaIdentity"],
+            "migrationHead": runtime_identity["migrationHead"], "websitePresent": True,
+            "health": {
+                "ok": True, "tenant": tenant_id, "releaseSha": source_sha,
+                "payloadAdmin": runtime_identity["adminVersion"],
+                "payloadCore": runtime_identity["coreVersion"],
+                "contentContract": runtime_identity["contract"],
+                "schemaRevision": runtime_identity["schemaRevision"],
+                "schemaIdentity": runtime_identity["schemaIdentity"],
+                "migrationHead": runtime_identity["migrationHead"],
+            },
+        }
+
+    receipt_path = tmp_path / "releases" / "runs" / tenant_id / release_id / "receipt.json"
+    receipt_path.parent.mkdir(parents=True)
+    receipt = make_receipt()
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    service.config["deployment_pipeline"] = {"release_root": str(tmp_path / "releases")}
+    return {
+        "tenant_id": tenant_id, "release_id": release_id, "source_sha": source_sha,
+        "runtime_identity": runtime_identity, "activation": activation,
+        "config_path": config_path, "registration": registration, "registry": registry,
+        "service": service, "receipt": receipt, "receipt_path": receipt_path,
+        "make_receipt": make_receipt,
+    }
+
+
+@pytest.mark.parametrize("verify_only", [False, True])
+def test_release_activation_composes_real_registration_and_registry_mount(tmp_path, verify_only):
+    """Exercise the receipt-to-durable-config-to-mounted-registry activation path."""
+    import yaml
+
+    from site_agent.application.runtime_activation import RuntimeActivation
+
+    tenant_id = "new-site"
+    release_id = "rel-20261030123456-aabbccdd"
+    source_sha = "a" * 40
+    runtime_identity = {
+        "adminVersion": "0.10.1",
+        "contract": "helloada-content-v3",
+        "coreVersion": "0.5.2",
+        "schemaRevision": 5,
+        "schemaIdentity": "b" * 64,
+        "migrationHead": "c" * 64,
+    }
+    activation = {
+        "schema": 1,
+        "tenant_id": tenant_id,
+        "release_id": release_id,
+        "source_sha": source_sha,
+        "control_sha": "d" * 40,
+        "shared_runtime_fingerprint": "e" * 64,
+        "uploaded_version": "worker-version-compose8",
+    }
+    config, _unused, env = _host(tmp_path)
+    registry = TenantRegistry.from_config(config, env)
+    registration = TenantRegistrationService(config, env, registry=registry)
+    service = WebsiteBootstrapService(config, env, registration=registration, registry=registry)
+    try:
+        registration.register(tenant_id, display_name="New Site")
+        tenant_dir = tmp_path / "websites" / tenant_id
+        config_path = tenant_dir / "config.yaml"
+        tenant_config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        tenant_config["site"]["payload"].update(
+            enabled=True,
+            url="https://new-site.example",
+            token_env="PROVISIONED_NEW_SITE_TOKEN",
+            api_prefix="/api/workspace",
+            contract={**runtime_identity, "media_fields": ["alt", "description"],
+                      "locales": ["en", "es-MX"], "defaultLocale": "en"},
+        )
+        TenantRegistrationService._replace_config(config_path, tenant_config)
+
+        receipt = {
+            "tenant": tenant_id,
+            "releaseId": release_id,
+            "sourceSha": source_sha,
+            "status": "failed" if verify_only else "running",
+            "stage": "verify-deployment" if verify_only else "verify-connection",
+            "approvalId": None,
+            "uploadedVersion": activation["uploaded_version"],
+            "pipelineSha": activation["control_sha"],
+            "sharedRuntimeFingerprint": activation["shared_runtime_fingerprint"],
+            "deployment": {"versions": [{"version_id": activation["uploaded_version"], "percentage": 100}]},
+            "payloadAdmin": runtime_identity["adminVersion"],
+            "payloadCore": runtime_identity["coreVersion"],
+            "contentContract": runtime_identity["contract"],
+            "schemaRevision": runtime_identity["schemaRevision"],
+            "schemaIdentity": runtime_identity["schemaIdentity"],
+            "migrationHead": runtime_identity["migrationHead"],
+            "websitePresent": True,
+            "health": {
+                "ok": True,
+                "tenant": tenant_id,
+                "releaseSha": source_sha,
+                "payloadAdmin": runtime_identity["adminVersion"],
+                "payloadCore": runtime_identity["coreVersion"],
+                "contentContract": runtime_identity["contract"],
+                "schemaRevision": runtime_identity["schemaRevision"],
+                "schemaIdentity": runtime_identity["schemaIdentity"],
+                "migrationHead": runtime_identity["migrationHead"],
+            },
+        }
+        receipt_path = tmp_path / "releases" / "runs" / tenant_id / release_id / "receipt.json"
+        if verify_only:
+            receipt["currentVerification"] = {
+                "releaseId": release_id, "sourceSha": source_sha,
+                "uploadedVersion": activation["uploaded_version"],
+                "workerVersion": "worker-version-current", "deploymentId": "deployment-current",
+                "trafficPercentage": 100, "uploadedScriptEtag": "f" * 64,
+                "activeScriptEtag": "f" * 64, "uploadedBindingIdentity": "9" * 64,
+                "activeBindingIdentity": "9" * 64, "mode": "secret_rotation",
+                "verifiedAt": "2026-10-30T11:45:27.168209Z",
+            }
+        receipt_path.parent.mkdir(parents=True)
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+        service.config["deployment_pipeline"] = {"release_root": str(tmp_path / "releases")}
+
+        result = service.activate_runtime_after_health(
+            tenant_id, release_id=release_id, source_sha=source_sha,
+            **({"verification": receipt["currentVerification"]} if verify_only else {}),
+        )
+
+        assert result["runtime_active"] is True
+        persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        payload = persisted["site"]["payload"]
+        assert payload["runtime_activation"] == activation
+        assert payload["contract"] == {
+            **runtime_identity,
+            "media_fields": ["alt", "description"],
+            "locales": ["en", "es-MX"],
+            "defaultLocale": "en",
+        }
+        mounted = registry.for_tenant_id(tenant_id)
+        assert mounted is not None
+        assert mounted.config["site"]["payload"]["runtime_activation"] == activation
+        assert mounted.config["site"]["payload"]["contract"] == payload["contract"]
+        index = json.loads((tmp_path / "websites" / "tenants.json").read_text(encoding="utf-8"))
+        assert index[tenant_id]["bootstrap_state"] == "runtime"
+        assert RuntimeActivation.from_receipt(tenant_id, release_id, receipt).to_dict() == activation
+        if verify_only:
+            service.close()
+            registry.close()
+            registry = TenantRegistry.from_config(config, env)
+            registration = TenantRegistrationService(config, env, registry=registry)
+            service = WebsiteBootstrapService(config, env, registration=registration, registry=registry)
+            service._activate_runtime(tenant_id, {})
+            persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+            assert persisted["site"]["payload"]["runtime_activation"] == activation
+            mounted = registry.for_tenant_id(tenant_id)
+            assert mounted.config["site"]["payload"]["runtime_activation"] == activation
+            assert json.loads((tmp_path / "websites" / "tenants.json").read_text())[tenant_id]["bootstrap_state"] == "ready"
+    finally:
+        service.close()
+        registry.close()
+
+
+@pytest.mark.parametrize("changed_provenance", ["release_id", "control_sha", "fingerprint"])
+def test_release_activation_reloads_valid_stale_mounted_binding(
+    tmp_path, monkeypatch, changed_provenance,
+):
+    import yaml
+
+    context = _runtime_activation_composition(tmp_path)
+    service, registry = context["service"], context["registry"]
+    try:
+        service.activate_runtime_after_health(
+            context["tenant_id"], release_id=context["release_id"], source_sha=context["source_sha"],
+        )
+        old = context["activation"]
+        updated_receipt = context["make_receipt"]()
+        if changed_provenance == "release_id":
+            updated_receipt["releaseId"] = "rel-20261030123457-aabbccde"
+            context["release_id"] = updated_receipt["releaseId"]
+        elif changed_provenance == "control_sha":
+            updated_receipt["pipelineSha"] = "f" * 40
+        else:
+            updated_receipt["sharedRuntimeFingerprint"] = "9" * 64
+        if changed_provenance == "release_id":
+            context["receipt_path"] = context["receipt_path"].parent.parent / context["release_id"] / "receipt.json"
+            context["receipt_path"].parent.mkdir()
+        context["receipt_path"].write_text(json.dumps(updated_receipt), encoding="utf-8")
+        from site_agent.application.runtime_activation import RuntimeActivation
+
+        updated_binding = RuntimeActivation.from_receipt(
+            context["tenant_id"], context["release_id"], updated_receipt,
+        )
+        context["registration"].sync_payload_runtime(
+            context["tenant_id"], context["runtime_identity"], website_present=True,
+            runtime_activation=updated_binding,
+        )
+        current = registry.for_tenant_id(context["tenant_id"])
+        # Persisted config is already current; independently make only the mount stale.
+        current.config["site"]["payload"]["runtime_activation"] = old
+        calls = []
+        real_reload = registry.reload_tenant
+
+        def wrapped_reload(*args, **kwargs):
+            calls.append(args[0])
+            return real_reload(*args, **kwargs)
+
+        monkeypatch.setattr(registry, "reload_tenant", wrapped_reload)
+        result = service.activate_runtime_after_health(
+            context["tenant_id"], release_id=context["release_id"], source_sha=context["source_sha"],
+        )
+        expected = {
+            **old,
+            "release_id": context["release_id"],
+            "control_sha": updated_receipt["pipelineSha"],
+            "shared_runtime_fingerprint": updated_receipt["sharedRuntimeFingerprint"],
+        }
+        assert result["runtime_active"] is True
+        assert calls == [context["tenant_id"]]
+        persisted = yaml.safe_load(context["config_path"].read_text(encoding="utf-8"))["site"]["payload"]
+        mounted = registry.for_tenant_id(context["tenant_id"]).config["site"]["payload"]
+        assert persisted["runtime_activation"] == expected
+        assert mounted["runtime_activation"] == expected
+        assert persisted["contract"] == mounted["contract"]
+        assert persisted["contract"]["schemaIdentity"] == context["runtime_identity"]["schemaIdentity"]
+        assert persisted["contract"]["media_fields"] == ["alt", "description"]
+        assert persisted["contract"]["locales"] == ["en", "es-MX"]
+        assert persisted["contract"]["defaultLocale"] == "en"
+    finally:
+        service.close()
+        registry.close()
+
+
+@pytest.mark.parametrize("provenance_change", [
+    {"pipelineSha": "__absent__"},
+    {"pipelineSha": "z" * 40},
+    {"sharedRuntimeFingerprint": "not-a-fingerprint"},
+])
+def test_invalid_receipt_provenance_rejected_before_persist_or_reload(
+    tmp_path, monkeypatch, provenance_change,
+):
+    import yaml
+    from site_agent.application.bootstrap import BootstrapError
+
+    context = _runtime_activation_composition(tmp_path)
+    service, registry = context["service"], context["registry"]
+    try:
+        service.activate_runtime_after_health(
+            context["tenant_id"], release_id=context["release_id"], source_sha=context["source_sha"],
+        )
+        config_before = context["config_path"].read_bytes()
+        index_path = tmp_path / "websites" / "tenants.json"
+        index_before = index_path.read_bytes()
+        mounted_before = registry.for_tenant_id(context["tenant_id"]).config["site"]["payload"]["runtime_activation"]
+        malformed = context["make_receipt"]()
+        for key, value in provenance_change.items():
+            if value == "__absent__":
+                malformed.pop(key)
+            else:
+                malformed[key] = value
+        context["receipt_path"].write_text(json.dumps(malformed), encoding="utf-8")
+        calls = []
+        real_reload = registry.reload_tenant
+
+        def wrapped_reload(*args, **kwargs):
+            calls.append(args[0])
+            return real_reload(*args, **kwargs)
+
+        monkeypatch.setattr(registry, "reload_tenant", wrapped_reload)
+        with pytest.raises(BootstrapError, match="runtime activation provenance"):
+            service.activate_runtime_after_health(
+                context["tenant_id"], release_id=context["release_id"], source_sha=context["source_sha"],
+            )
+        assert calls == []
+        assert context["config_path"].read_bytes() == config_before
+        assert index_path.read_bytes() == index_before
+        assert registry.for_tenant_id(context["tenant_id"]).config["site"]["payload"]["runtime_activation"] == mounted_before
+        assert yaml.safe_load(config_before)["site"]["payload"]["runtime_activation"] == mounted_before
+    finally:
+        service.close()
+        registry.close()
+
+
+def test_historical_unbound_activation_clears_persisted_and_mounted_binding(tmp_path, monkeypatch):
+    import yaml
+
+    context = _runtime_activation_composition(tmp_path)
+    service, registry = context["service"], context["registry"]
+    try:
+        service.activate_runtime_after_health(
+            context["tenant_id"], release_id=context["release_id"], source_sha=context["source_sha"],
+        )
+        historical = context["make_receipt"]()
+        historical.pop("pipelineSha")
+        historical.pop("sharedRuntimeFingerprint")
+        context["receipt_path"].write_text(json.dumps(historical), encoding="utf-8")
+        calls = []
+        real_reload = registry.reload_tenant
+
+        def wrapped_reload(*args, **kwargs):
+            calls.append(args[0])
+            return real_reload(*args, **kwargs)
+
+        monkeypatch.setattr(registry, "reload_tenant", wrapped_reload)
+        service.activate_runtime_after_health(
+            context["tenant_id"], release_id=context["release_id"], source_sha=context["source_sha"],
+        )
+        persisted = yaml.safe_load(context["config_path"].read_text(encoding="utf-8"))["site"]["payload"]
+        mounted = registry.for_tenant_id(context["tenant_id"]).config["site"]["payload"]
+        assert calls == [context["tenant_id"]]
+        assert "runtime_activation" not in persisted
+        assert "runtime_activation" not in mounted
+        assert persisted["contract"] == mounted["contract"]
+        assert persisted["contract"]["media_fields"] == ["alt", "description"]
+        assert persisted["contract"]["locales"] == ["en", "es-MX"]
+    finally:
+        service.close()
+        registry.close()
+
+
+def test_runtime_activation_post_reload_guard_rejects_stale_binding(tmp_path, monkeypatch):
+    """Fault injection guard only; not evidence for real registry reload composition."""
+    from site_agent.application.bootstrap import BootstrapError
+
+    context = _runtime_activation_composition(tmp_path)
+    service, registry = context["service"], context["registry"]
+    try:
+        service.activate_runtime_after_health(
+            context["tenant_id"], release_id=context["release_id"], source_sha=context["source_sha"],
+        )
+        current = registry.for_tenant_id(context["tenant_id"])
+        stale = dict(context["activation"], control_sha="f" * 40)
+        current.config["site"]["payload"]["runtime_activation"] = stale
+        monkeypatch.setattr(registry, "reload_tenant", lambda *args, **kwargs: None)
+        with pytest.raises(BootstrapError, match="mounted tenant runtime does not match"):
+            service.activate_runtime_after_health(
+                context["tenant_id"], release_id=context["release_id"], source_sha=context["source_sha"],
+            )
+    finally:
+        service.close()
+        registry.close()
 
 
 @pytest.mark.parametrize("approval_id,initial_schema,valid", [
@@ -719,6 +1127,7 @@ def test_regular_release_activation_syncs_contract_without_bootstrap_state(
                 "migrationHead": "c" * 64,
             },
             "website_present": True,
+            "runtime_activation": None,
         },
     )]
 
