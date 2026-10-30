@@ -334,6 +334,8 @@ def _adoption_fixture(tmp_path, *, registered=True):
         "repository": "https://github.com/weareheadless/oceanicvibes.git",
         "releaseId": release_id,
         "sourceSha": source_sha,
+        "pipelineSha": "f" * 40,
+        "sharedRuntimeFingerprint": "9" * 64,
         "status": "deployed",
         "approvalId": None,
         "uploadedVersion": uploaded_version,
@@ -630,14 +632,20 @@ def test_read_only_runtime_activation_requires_verified_current_worker_proof(tmp
     receipt.update(status="failed", stage="verify-deployment")
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
     mounted = []
-    service._mount_runtime = lambda selected_tenant, state, **_kwargs: mounted.append((selected_tenant, state))
+    service._mount_runtime = lambda selected_tenant, state, **kwargs: mounted.append((selected_tenant, state, kwargs))
 
     result = service.activate_runtime_after_health(
         tenant, release_id=release, source_sha=source_sha,
         verification=receipt["currentVerification"],
     )
     assert result["runtime_active"] is True
-    assert mounted == [(tenant, {"tenant_id": tenant})]
+    assert mounted[0][:2] == (tenant, {"tenant_id": tenant})
+    assert mounted[0][2]["runtime_activation"].to_dict() == {
+        "schema": 1, "tenant_id": tenant, "release_id": release,
+        "source_sha": source_sha, "control_sha": "f" * 40,
+        "shared_runtime_fingerprint": "9" * 64,
+        "uploaded_version": "903fba29-2211-4d6b-a7e4-5e3236a2c02a",
+    }
 
     invalid = {**receipt["currentVerification"], "activeScriptEtag": "f" * 64}
     with pytest.raises(BootstrapError, match="verified Worker boundary"):
