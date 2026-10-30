@@ -162,3 +162,15 @@ test('production batch orchestration waits for deferred uploads and leaves no ph
   assert.deepEqual([...pending.values()], ['failed'])
   assert.deepEqual(ready.map((item) => item.asset_id), ['one'])
 })
+
+test('a dropped background refresh keeps the working conversation instead of showing a network banner', async () => {
+  const { readFileSync } = await import('node:fs')
+  const source = readFileSync(new URL('../src/components/WebsiteWorkspace.tsx', import.meta.url), 'utf8')
+  const workspace = source.slice(source.indexOf('const loadWorkspace = useCallback'), source.indexOf('const loadPreviewPlan = useCallback'))
+  assert.match(workspace, /transientFailures\.current\.workspace \+= 1/)
+  assert.match(workspace, /if \(!background \|\| transientFailures\.current\.workspace >= 3\) setError\(message\)/)
+  assert.match(workspace, /transientFailures\.current\.workspace = 0/)
+  const status = source.slice(source.indexOf('const loadAdaStatus = useCallback'), source.indexOf('const completeAdaJob = useCallback'))
+  assert.match(status, /transientFailures\.current\.status \+= 1/)
+  assert.match(status, /if \(transientFailures\.current\.status >= 3\)/)
+})
