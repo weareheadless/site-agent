@@ -505,7 +505,11 @@ def _native_direction_payload(
     if isinstance(compositions, Mapping):
         compositions = [compositions]
     if isinstance(compositions, (list, tuple)):
-        normalized["asset_composition_plan"] = _bind_compositions(compositions, snapshot_evidence)
+        normalized["asset_composition_plan"] = _bind_compositions(
+            compositions,
+            snapshot_evidence,
+            getattr(request, "supplied_media_asset_ids", ()) or (),
+        )
 
     journey = normalized.get("experience_journey")
     if isinstance(journey, Mapping):
@@ -599,14 +603,26 @@ def _native_direction_payload(
     return direction, plan
 
 
-def _bind_compositions(compositions, snapshot_evidence):
+def _bind_compositions(compositions, snapshot_evidence, supplied_ids=()):
     """Keep only composition entries whose asset was actually supplied.
 
-    A composition plan describes how a supplied asset joins the page. When the
-    frozen request supplied no media, or the entry names an asset that is not in
-    the evidence set, the entry cannot be realized; dropping it keeps a valid
-    creative direction from failing on an invented identifier.
+    A composition plan describes how a supplied asset joins the page. The frozen
+    request's supplied asset ids are authoritative: an entry is kept when it
+    resolves to one of them, even if this build has no visual evidence for it
+    yet. Only an entry naming an asset the owner never supplied is dropped, so a
+    valid creative direction is not failed by an invented identifier.
     """
+    allowed = {str(value).strip() for value in (supplied_ids or ())}
+    allowed.update(str(key) for key in snapshot_evidence)
+
+    def resolve(value):
+        candidate = str(value or "").strip()
+        if candidate in allowed:
+            return candidate
+        suffix = candidate.rsplit(".", 1)[-1].rsplit("-", 1)[-1]
+        matches = [key for key in allowed if key.rsplit("-", 1)[-1] == suffix]
+        return matches[0] if len(matches) == 1 else ""
+
     bound_compositions = []
     for item in compositions:
         if not isinstance(item, Mapping):
@@ -621,11 +637,13 @@ def _bind_compositions(compositions, snapshot_evidence):
         }
         bound = {key: value for key, value in item.items() if key in composition_fields}
         bound["schema_version"] = 1
-        asset_id = str(bound.get("asset_id") or "").strip()
-        if asset_id not in snapshot_evidence:
+        asset_id = resolve(bound.get("asset_id"))
+        if not asset_id:
             continue
         bound["asset_id"] = asset_id
-        bound["asset_sha256"] = snapshot_evidence[asset_id].get("asset_sha256")
+        evidence = snapshot_evidence.get(asset_id)
+        if isinstance(evidence, Mapping) and evidence.get("asset_sha256"):
+            bound["asset_sha256"] = evidence.get("asset_sha256")
         logo_rule = bound.get("logo_rule")
         if isinstance(logo_rule, Mapping):
             logo_fields = {
