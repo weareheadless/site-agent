@@ -209,6 +209,55 @@ def test_verified_payload_contract_sync_updates_tenant_config_atomically(tmp_pat
         registry.close()
 
 
+def test_runtime_activation_is_payload_sibling_and_clear_is_explicit(tmp_path):
+    from site_agent.application.runtime_activation import RuntimeActivation
+
+    config, env = _host(tmp_path)
+    registry = TenantRegistry.from_config(config, env)
+    service = TenantRegistrationService(config, env, registry=registry)
+    try:
+        service.register("new-site", display_name="New Site")
+        tenant_path = tmp_path / "websites" / "new-site" / "config.yaml"
+        tenant_config = yaml.safe_load(tenant_path.read_text(encoding="utf-8"))
+        tenant_config["site"]["payload"].update(
+            enabled=True, token_env="PROVISIONED_NEW_SITE_TOKEN",
+            contract={"adminVersion": "0.10.1", "contract": "helloada-content-v3",
+                      "coreVersion": "0.5.2", "schemaRevision": 5,
+                      "schemaIdentity": "c" * 64, "migrationHead": "d" * 64,
+                      "media_fields": ["alt"], "locales": ["en"], "defaultLocale": "en"},
+        )
+        TenantRegistrationService._replace_config(tenant_path, tenant_config)
+        identity = {"adminVersion": "0.10.1", "contract": "helloada-content-v3",
+                    "coreVersion": "0.5.2", "schemaRevision": 5,
+                    "schemaIdentity": "c" * 64, "migrationHead": "d" * 64}
+        binding = {"schema": 1, "tenant_id": "new-site", "release_id": "rel-1",
+                   "source_sha": "a" * 40, "control_sha": "b" * 40,
+                   "shared_runtime_fingerprint": "e" * 64, "uploaded_version": "version-1"}
+        activation = RuntimeActivation.from_mapping(binding)
+        service.sync_payload_runtime("new-site", identity, website_present=True, runtime_activation=activation)
+        updated = yaml.safe_load(tenant_path.read_text(encoding="utf-8"))
+        assert updated["site"]["payload"]["runtime_activation"] == binding
+        assert updated["site"]["payload"]["contract"]["media_fields"] == ["alt"]
+        assert updated["site"]["payload"]["contract"]["locales"] == ["en"]
+        second_binding = RuntimeActivation.from_mapping({**binding, "release_id": "rel-2",
+                                                         "control_sha": "f" * 40,
+                                                         "shared_runtime_fingerprint": "9" * 64,
+                                                         "uploaded_version": "version-2"})
+        assert service.sync_payload_runtime(
+            "new-site", identity, website_present=True, runtime_activation=second_binding,
+        ) is True
+        updated = yaml.safe_load(tenant_path.read_text(encoding="utf-8"))
+        assert updated["site"]["payload"]["runtime_activation"] == second_binding.to_dict()
+        # Omission means ordinary remount and preserves; explicit None means a
+        # newly activated legacy release and clears stale provenance.
+        service.sync_payload_runtime("new-site", identity, website_present=True)
+        assert yaml.safe_load(tenant_path.read_text(encoding="utf-8"))["site"]["payload"]["runtime_activation"] == second_binding.to_dict()
+        service.sync_payload_runtime("new-site", identity, website_present=True, runtime_activation=None)
+        assert "runtime_activation" not in yaml.safe_load(tenant_path.read_text(encoding="utf-8"))["site"]["payload"]
+    finally:
+        registry.close()
+
+
 def test_registration_fails_closed_on_a_corrupt_registry(tmp_path):
     config, env = _host(tmp_path)
     registry = TenantRegistry.from_config(config, env)

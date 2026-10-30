@@ -48,6 +48,7 @@ from .tenant_registration import (
     TenantRegistrationService,
     tenant_token_env,
 )
+from .runtime_activation import RuntimeActivation
 
 
 class BootstrapError(RuntimeError):
@@ -60,6 +61,7 @@ _WORKERS_DEV_SCRIPT_NAME_MAX_LENGTH = 54
 _RESOURCE_NAME_HASH_LENGTH = 20
 _PRIVATE_RECEIPT_KEYS = frozenset({"site_dir", "config_path", "account_id", "ssh_url", "clone_url"})
 _HELLOADA_HANDOFF_ISSUER = "https://helloada.app"
+_RUNTIME_ACTIVATION_UNSET = object()
 
 
 def _now() -> str:
@@ -662,12 +664,17 @@ class WebsiteBootstrapService:
             website_present = receipt.get("websitePresent")
             if not isinstance(website_present, bool):
                 raise BootstrapError("runtime activation release has no explicit websitePresent state")
+            try:
+                activation = RuntimeActivation.from_receipt(normalized, release_id, receipt)
+            except ValueError as exc:
+                raise BootstrapError(str(exc)) from exc
 
             self._mount_runtime(
                 normalized,
                 state,
                 runtime_identity=runtime_identity,
                 website_present=website_present,
+                runtime_activation=activation,
             )
             return {
                 "tenant_id": normalized,
@@ -943,6 +950,7 @@ class WebsiteBootstrapService:
         *,
         runtime_identity: Mapping[str, Any] | None = None,
         website_present: bool | None = None,
+        runtime_activation: RuntimeActivation | None | object = _RUNTIME_ACTIVATION_UNSET,
     ) -> None:
         """Pin and mount only a contract proven by the live Worker health receipt."""
         config_path = Path(str(state.get("config_path") or self._state_path(tenant_id).parent / "config.yaml"))
@@ -959,6 +967,7 @@ class WebsiteBootstrapService:
                     tenant_id,
                     runtime_identity,
                     website_present=website_present,
+                    **({"runtime_activation": runtime_activation} if runtime_activation is not _RUNTIME_ACTIVATION_UNSET else {}),
                 )
             except TenantRegistrationError as exc:
                 raise BootstrapError(str(exc)) from exc
@@ -971,12 +980,17 @@ class WebsiteBootstrapService:
             site = runtime.config.get("site")
             payload = site.get("payload") if isinstance(site, Mapping) else None
             contract = payload.get("contract") if isinstance(payload, Mapping) else None
-            return (
+            matches = (
                 isinstance(contract, Mapping)
                 and all(contract.get(key) == value for key, value in runtime_identity.items())
                 and isinstance(site, Mapping)
                 and site.get("website_present") is website_present
             )
+            if not matches or runtime_activation is _RUNTIME_ACTIVATION_UNSET:
+                return matches
+            mounted_binding = payload.get("runtime_activation") if isinstance(payload, Mapping) else None
+            expected_binding = runtime_activation.to_dict() if isinstance(runtime_activation, RuntimeActivation) else None
+            return mounted_binding == expected_binding
 
         current = self.registry.for_tenant_id(tenant_id)
         if current is None or config_changed or not mounted_contract_matches(current):

@@ -544,6 +544,8 @@ def test_bootstrap_runtime_activation_requires_exact_live_health_receipt(tmp_pat
         "approvalId": None,
         "initialSchemaHead": "c" * 64,
         "uploadedVersion": "version-demo",
+        "pipelineSha": "d" * 40,
+        "sharedRuntimeFingerprint": "e" * 64,
         "deployment": {"versions": [{"version_id": "version-demo", "percentage": 100}]},
         "payloadAdmin": "0.10.1",
         "payloadCore": "0.5.1",
@@ -585,6 +587,22 @@ def test_bootstrap_runtime_activation_requires_exact_live_health_receipt(tmp_pat
         "runtime_active": True,
     }
     assert len(activated) == 1
+    assert activated[0][2]["runtime_activation"].to_dict() == {
+        "schema": 1,
+        "tenant_id": tenant_id,
+        "release_id": release_id,
+        "source_sha": source_sha,
+        "control_sha": "d" * 40,
+        "shared_runtime_fingerprint": "e" * 64,
+        "uploaded_version": "version-demo",
+    }
+
+    receipt["sharedRuntimeFingerprint"] = "malformed"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    with pytest.raises(BootstrapError, match="provenance is invalid"):
+        service.activate_runtime_after_health(tenant_id, release_id=release_id, source_sha=source_sha)
+    assert len(activated) == 1
+    receipt["sharedRuntimeFingerprint"] = "e" * 64
 
     receipt["stage"] = "verify-deployment"
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
@@ -719,6 +737,7 @@ def test_regular_release_activation_syncs_contract_without_bootstrap_state(
                 "migrationHead": "c" * 64,
             },
             "website_present": True,
+            "runtime_activation": None,
         },
     )]
 
