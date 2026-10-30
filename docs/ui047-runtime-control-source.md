@@ -1,19 +1,23 @@
-# UI-047 exact runtime control source
+# UI047 runtime control source boundary
 
-`materialize_runtime_control` is an internal helper for a previously validated
-`RuntimeActivation` and an operator-owned local Site-Agent Git repository. It
-does not choose a receipt, deployment, tenant identity, or control revision.
-The repository's `origin` must be the canonical Site-Agent GitHub SSH/HTTPS
-URL. The helper reads only local Git objects and archives the binding's full
-commit SHA; it never fetches, selects a branch, changes the mirror index, or
-executes archived code.
+`materialize_runtime_control` accepts an already-validated `RuntimeActivation`
+and an operator-owned local Site-Agent Git mirror. It confirms the official
+origin and resolves only the exact full control commit recorded in the binding.
+It does not select a receipt, fetch from a remote, follow a branch, or execute
+historical source.
 
-Archive entries are screened before writing into a private temporary directory
-under the caller's explicit existing scratch parent. The reviewed shared-runtime
-fingerprint is calculated from those exact files and must match the activation
-before a typed proof is yielded. The proof includes both the full control SHA
-and isolated source root. The directory is removed when the context exits,
-including exceptions. This is a short-lived source snapshot, not a freshness,
-parity, owner-approval, or current-deployment assertion. Canonical receipt
-selection, deployment verification, frozen tenant configuration, drift checks,
-dynamic Worker/assets transport, and owner Design review remain future work.
+The helper reads the commit tree with `git ls-tree` and each regular blob with
+`git cat-file`. Git archive attributes therefore cannot omit or rewrite bytes.
+Only regular non-executable/executable blobs are accepted; symlinks, gitlinks,
+other modes and unsafe paths fail closed. The executable bit is retained. The
+whole tree is written into a private, per-context temporary directory beneath
+the caller's existing scratch parent. The reviewed shared-runtime fingerprint
+is checked before yielding the typed proof, which also retains the exact control
+SHA. The mirror, its index and tenant candidate sources are not modified.
+
+The snapshot is removed on normal exit, validation failure, and caller
+exceptions. Caller exceptions propagate unchanged. Independent invocations do
+not share snapshot state. This is only exact local source materialization; it
+does not establish deployment freshness/parity, resolve canonical receipts,
+freeze tenant configuration, detect candidate drift, transport dynamic Worker
+assets, or establish owner Design acceptance.
