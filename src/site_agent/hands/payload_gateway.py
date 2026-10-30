@@ -945,8 +945,7 @@ class PayloadGatewayClient:
             raise PayloadGatewayError("booking gateway did not return the updated settings revision")
         return updated
 
-    @staticmethod
-    def _media_data(data: Mapping[str, Any]) -> dict[str, Any]:
+    def _media_data(self, data: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(data, Mapping):
             raise PayloadGatewayError("media data must be an object")
         unknown = sorted(set(data) - self.contract.media_fields)
