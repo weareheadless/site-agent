@@ -2328,7 +2328,72 @@ def test_advice_turn_failed_confirmation_does_not_promise_build(tmp_path):
     assert result["ui_action"]["error"]
     assert len(result["ui_action"]["error"]) <= 500
     assert not lab.submissions
-    assert result["reply"] == "Your brief is ready. Please confirm it before I start building."
+    assert result["reply"] == "Please confirm the current brief before I start building."
+    memory.close()
+
+
+def test_confirmed_handoff_failure_does_not_request_confirmation(tmp_path):
+    class Advisor:
+        def advise(self, draft, history, owner_message, **kwargs):
+            return IntakeTurnResult(schema_version=1, assistant_message="Building it now…",
+                                    ui_action={"action": "start_build"})
+
+    memory = Memory(tmp_path / "intake.db")
+    service = DesignIntakeService(memory, default_intake=_intake(), advisor=Advisor())
+    session = service.create_session()
+    service.confirm(session["session_id"], revision=session["revision"], draft_hash=session["draft_hash"])
+    service.send_message(session["session_id"], "go")
+    job = memory.claim_chat_job("failure-test")
+    result = run_job({"memory": memory, "design_intake_service": service,
+                      "config": {}, "llm": object()}, job, "failure-test")
+    assert result["ui_action"]["error_code"] == "build_handoff_failed"
+    assert "could not start" in result["reply"]
+    assert "Please confirm" not in result["reply"]
+    assert "Building it now" not in result["reply"]
+    assert service.get_session(session["session_id"])["confirmed_revision"]
+    assert memory.get_chat_job(job["id"])["status"] == "done"
+    assert "design build service is unavailable" in str(memory.get_chat_job(job["id"])["result"])
+    memory.close()
+
+
+def test_failed_confirmed_session_can_reach_guarded_recovery(tmp_path):
+    memory = Memory(tmp_path / "failed.db")
+    calls = []
+    class Advisor:
+        def advise(self, draft, history, owner_message, **kwargs):
+            return IntakeTurnResult(schema_version=1, assistant_message="Building it now…",
+                                    ui_action={"action": "start_build"})
+
+    class Lab:
+        def submit(self, *args, **kwargs):
+            calls.append(kwargs)
+            raise RuntimeError("same-run recovery rejected: same-run recovery identity checkpoint is missing or malformed")
+        def get_run(self, run_id):
+            return memory.get_design_run(run_id)
+    service = DesignIntakeService(memory, default_intake=_intake(), lab_service=Lab(), advisor=Advisor())
+    session = service.create_session()
+    service.confirm(session["session_id"], revision=session["revision"], draft_hash=session["draft_hash"])
+    frozen = service.get_session(session["session_id"])
+    run = memory.create_design_run(run_id="historical-failed", mode="production_candidate", status="failed",
+        intake_json=memory.list_design_intake_revisions(session["session_id"])[-1]["site_intake"], intake_hash="a" * 64, base_sha="b" * 40,
+        publishable=True, candidate_ref="refs/ada-design/historical-failed",
+        intake_session_id=session["session_id"], intake_revision_id=frozen["confirmed_revision_id"])
+    memory.update_design_intake_session(session["session_id"], status="failed", design_run_id=run["run_id"], build_error="stopped")
+    for message in ("go", "??"):
+        service.send_message(session["session_id"], message)
+        job = memory.claim_chat_job("recovery-test")
+        result = run_job({"memory": memory, "design_intake_service": service,
+                          "config": {}, "llm": object()}, job, "recovery-test")
+        action = result["ui_action"]
+        assert action["error_code"] == "build_handoff_failed"
+        assert "checkpoint" in action["error"]
+        assert "could not start" in result["reply"]
+        assert "confirm" not in result["reply"].lower()
+    current = service.get_session(session["session_id"])
+    assert current["confirmed_revision"] == frozen["confirmed_revision"]
+    assert current["design_run_id"] == run["run_id"]
+    assert calls and all(call["resume_run_id"] == run["run_id"] for call in calls)
+    assert len(memory.list_design_runs()) == 1
     memory.close()
 
 
