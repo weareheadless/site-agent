@@ -655,6 +655,112 @@ def test_read_only_runtime_activation_requires_verified_current_worker_proof(tmp
     assert len(mounted) == 1
 
 
+def test_normal_release_activation_composes_real_registration_and_registry_mount(tmp_path):
+    """Exercise the receipt-to-durable-config-to-mounted-registry activation path."""
+    import yaml
+
+    from site_agent.application.runtime_activation import RuntimeActivation
+
+    tenant_id = "new-site"
+    release_id = "rel-20261030123456-aabbccdd"
+    source_sha = "a" * 40
+    runtime_identity = {
+        "adminVersion": "0.10.1",
+        "contract": "helloada-content-v3",
+        "coreVersion": "0.5.2",
+        "schemaRevision": 5,
+        "schemaIdentity": "b" * 64,
+        "migrationHead": "c" * 64,
+    }
+    activation = {
+        "schema": 1,
+        "tenant_id": tenant_id,
+        "release_id": release_id,
+        "source_sha": source_sha,
+        "control_sha": "d" * 40,
+        "shared_runtime_fingerprint": "e" * 64,
+        "uploaded_version": "worker-version-compose8",
+    }
+    config, _unused, env = _host(tmp_path)
+    registry = TenantRegistry.from_config(config, env)
+    registration = TenantRegistrationService(config, env, registry=registry)
+    service = WebsiteBootstrapService(config, env, registration=registration, registry=registry)
+    try:
+        registration.register(tenant_id, display_name="New Site")
+        tenant_dir = tmp_path / "websites" / tenant_id
+        config_path = tenant_dir / "config.yaml"
+        tenant_config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        tenant_config["site"]["payload"].update(
+            enabled=True,
+            url="https://new-site.example",
+            token_env="PROVISIONED_NEW_SITE_TOKEN",
+            api_prefix="/api/workspace",
+            contract={**runtime_identity, "media_fields": ["alt", "description"],
+                      "locales": ["en", "es-MX"], "defaultLocale": "en"},
+        )
+        TenantRegistrationService._replace_config(config_path, tenant_config)
+
+        receipt = {
+            "tenant": tenant_id,
+            "releaseId": release_id,
+            "sourceSha": source_sha,
+            "status": "running",
+            "stage": "verify-connection",
+            "approvalId": None,
+            "uploadedVersion": activation["uploaded_version"],
+            "pipelineSha": activation["control_sha"],
+            "sharedRuntimeFingerprint": activation["shared_runtime_fingerprint"],
+            "deployment": {"versions": [{"version_id": activation["uploaded_version"], "percentage": 100}]},
+            "payloadAdmin": runtime_identity["adminVersion"],
+            "payloadCore": runtime_identity["coreVersion"],
+            "contentContract": runtime_identity["contract"],
+            "schemaRevision": runtime_identity["schemaRevision"],
+            "schemaIdentity": runtime_identity["schemaIdentity"],
+            "migrationHead": runtime_identity["migrationHead"],
+            "websitePresent": True,
+            "health": {
+                "ok": True,
+                "tenant": tenant_id,
+                "releaseSha": source_sha,
+                "payloadAdmin": runtime_identity["adminVersion"],
+                "payloadCore": runtime_identity["coreVersion"],
+                "contentContract": runtime_identity["contract"],
+                "schemaRevision": runtime_identity["schemaRevision"],
+                "schemaIdentity": runtime_identity["schemaIdentity"],
+                "migrationHead": runtime_identity["migrationHead"],
+            },
+        }
+        receipt_path = tmp_path / "releases" / "runs" / tenant_id / release_id / "receipt.json"
+        receipt_path.parent.mkdir(parents=True)
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+        service.config["deployment_pipeline"] = {"release_root": str(tmp_path / "releases")}
+
+        result = service.activate_runtime_after_health(
+            tenant_id, release_id=release_id, source_sha=source_sha,
+        )
+
+        assert result["runtime_active"] is True
+        persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        payload = persisted["site"]["payload"]
+        assert payload["runtime_activation"] == activation
+        assert payload["contract"] == {
+            **runtime_identity,
+            "media_fields": ["alt", "description"],
+            "locales": ["en", "es-MX"],
+            "defaultLocale": "en",
+        }
+        mounted = registry.for_tenant_id(tenant_id)
+        assert mounted is not None
+        assert mounted.config["site"]["payload"]["runtime_activation"] == activation
+        assert mounted.config["site"]["payload"]["contract"] == payload["contract"]
+        index = json.loads((tmp_path / "websites" / "tenants.json").read_text(encoding="utf-8"))
+        assert index[tenant_id]["bootstrap_state"] == "runtime"
+        assert RuntimeActivation.from_receipt(tenant_id, release_id, receipt).to_dict() == activation
+    finally:
+        service.close()
+        registry.close()
+
+
 @pytest.mark.parametrize("approval_id,initial_schema,valid", [
     (None, False, True), (61, False, True),
     (0, False, False), (-1, False, False), (True, False, False),

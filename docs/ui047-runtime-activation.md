@@ -20,3 +20,17 @@ Historical receipts with both `pipelineSha` and
 binding. Partial or malformed provenance fails before config writes or runtime
 mount. Activating an unbound release explicitly removes any prior binding;
 ordinary remounts and owner-ready state changes preserve it.
+
+The composed regression in `tests/test_bootstrap.py` uses a disposable local
+tenant registry and a canonical normal-release receipt to exercise
+`activate_runtime_after_health` through the real registration sync and registry
+reload. It checks that the same exact receipt binding reaches persisted YAML
+and the mounted registry while existing locale/media contract metadata remains
+intact. This is a focused activation-path fixture, not full acceptance of the
+remaining verify-only, restart, stale-release, malformed-input, or legacy
+binding cases.
+
+Journey status for this work: no Ada-created candidate, no observed defining
+behavior, no real owner review, and no bypass workaround. The journey is not
+ready. Capture remains a prerequisite only; no live reads/writes, model calls,
+paid flow, release, provisioning, resolver, or Design transport are involved.
