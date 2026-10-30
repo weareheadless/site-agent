@@ -218,6 +218,7 @@ class DesignBuildHandoff:
         intake_revision_id: int | None,
         context_extra: Mapping[str, Any] | None = None,
         shared_intelligence: Any | None = None,
+        resume_run_id: str | None = None,
     ) -> dict[str, Any]:
         from ..core.design_contracts import SiteIntake
 
@@ -244,6 +245,32 @@ class DesignBuildHandoff:
                 "site": {**dict(service_site or {}), **dict(runtime_site)},
             }
         site_intake = SiteIntake.from_dict(dict(intake))
+        if resume_run_id:
+            recovery_owner_request = str(request)
+            if str(resume_run_id) != str(run_id):
+                raise BridgeError("same-run recovery ID does not match the confirmed intake run")
+            retained = service.get_run(str(resume_run_id))
+            planning = retained.get("planning_json") if isinstance(retained, Mapping) else None
+            if not isinstance(planning, Mapping):
+                raise BridgeError("same-run recovery has no persisted planning payload")
+            try:
+                from ..core.design_contracts import BuildTarget, PageBuildRequest
+
+                build_request = PageBuildRequest.from_dict(planning.get("build_request") or {})
+                target = BuildTarget.from_dict(planning.get("build_target") or {})
+                admission = service.recover_prebuild_run(
+                    str(resume_run_id), request=build_request, target=target,
+                    intake_session_id=str(intake_session_id or ""),
+                    intake_revision_id=int(intake_revision_id or 0),
+                    owner_request=recovery_owner_request,
+                    context_extra=context_extra,
+                    shared_intelligence=shared_intelligence,
+                )
+            except Exception as exc:
+                raise BridgeError(f"same-run recovery rejected: {str(exc)[:400]}") from exc
+            if admission.get("admitted"):
+                executor.enqueue(str(resume_run_id))
+            return service.get_run(str(resume_run_id))
         base_sha = service.resolve_base_sha()
         run = service.create_run(
             site_intake,
@@ -270,6 +297,21 @@ class DesignBuildHandoff:
         )
         build_request = service.prepare_initial_request(run["run_id"])
         target = service.build_target_for_run(run["run_id"])
+        from ..core.design_contracts import canonical_hash
+        from .designs import DesignSharedIntelligence
+
+        planning = dict((service.get_run(run["run_id"]) or {}).get("planning_json") or {})
+        planning["same_run_recovery_identity"] = {
+            "schema_version": 1,
+            "owner_request_hash": canonical_hash(request),
+            "context_extra_hash": canonical_hash(dict(context_extra or {})),
+            "shared_intelligence_hash": canonical_hash(
+                shared_intelligence.to_dict() if shared_intelligence is not None
+                else DesignSharedIntelligence.unavailable().to_dict()
+            ),
+        }
+        if getattr(service, "memory", None) is not None:
+            service.memory.update_design_run(run["run_id"], planning_json=planning)
         service.queue_build(run["run_id"], build_request, target)
         executor.enqueue(run["run_id"])
         return service.get_run(run["run_id"])

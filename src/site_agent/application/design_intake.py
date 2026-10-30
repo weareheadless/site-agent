@@ -1243,15 +1243,50 @@ class DesignIntakeService:
         )
         if revision_row is None or int(revision_row.get("revision") or 0) != int(session.get("confirmed_revision") or 0):
             raise DesignIntakeServiceError("confirmed intake revision was not found")
-        previous = next((item for item in self.memory.list_design_runs(mode="production_candidate", limit=500)
-                         if str(item.get("intake_session_id") or "") == session_id
-                         and item.get("intake_revision_id") == int(revision_row["id"])
-                         and str(item.get("status") or "") == "failed"), None)
-        if previous is not None:
-            token = self._operation_token(f"{token}:{str(previous.get('run_id') or '')[-32:]}", "build")
-            force_new = True
+        recovery_run_id = ""
+        attached_run_id = str(session.get("design_run_id") or "").strip()
+        if not force_new and attached_run_id:
+            prior = self.memory.get_design_run(attached_run_id)
+            if prior is not None and str(prior.get("status") or "") in {
+                DesignRunStatus.FAILED.value, DesignRunStatus.INTERRUPTED.value,
+            }:
+                recovery_run_id = attached_run_id
+        if not force_new and not recovery_run_id:
+            # Preserve the historical separate-run behavior for unrelated or
+            # unlinked failed work. Same-run recovery is never inferred from a
+            # matching intake revision alone.
+            prior_failed = next((item for item in self.memory.list_design_runs(mode="production_candidate", limit=500)
+                                 if str(item.get("intake_session_id") or "") == session_id
+                                 and item.get("intake_revision_id") == int(revision_row["id"])
+                                 and str(item.get("status") or "") == DesignRunStatus.FAILED.value), None)
+            if prior_failed is not None:
+                force_new = True
+        if recovery_run_id:
+            token = self._operation_token(f"recover-{session_id}-{recovery_run_id}", "build")
         intake = SiteIntake.from_dict(revision_row["site_intake"])
-        if str(owner_request or "").strip() not in _PLACEHOLDER_REQUESTS:
+        if recovery_run_id:
+            # Recovery consumes the frozen request from the run; it never
+            # compiles a new prompt or asks the handoff to capture context.
+            prior = self.memory.get_design_run(recovery_run_id) or {}
+            request = str(prior.get("owner_request") or "")
+            supplied_request = str(owner_request or "").strip()
+            if supplied_request not in _PLACEHOLDER_REQUESTS and supplied_request != request:
+                raise DesignIntakeServiceError("same-run recovery owner request changed from the frozen build identity")
+            if prior.get("intake_json") != intake.to_dict():
+                raise DesignIntakeServiceError("same-run recovery confirmed intake changed from the frozen run")
+            if prior.get("intake_session_id") != session_id or int(prior.get("intake_revision_id") or 0) != int(revision_row["id"]):
+                raise DesignIntakeServiceError("same-run recovery is not bound to this confirmed intake revision")
+            current_assets = [
+                IntakeAssetBinding.from_dict({
+                    "asset_id": row["asset_id"], "position": row["position"],
+                    "usage": row["usage"], "reference_aspects": row.get("reference_aspects") or [],
+                    "owner_note": row.get("owner_note") or "",
+                }).to_dict()
+                for row in self.memory.list_design_intake_assets(session_id)
+            ]
+            if canonical_hash(current_assets) != canonical_hash([item.to_dict() for item in intake.assets]):
+                raise DesignIntakeServiceError("same-run recovery intake assets changed from the confirmed revision")
+        elif str(owner_request or "").strip() not in _PLACEHOLDER_REQUESTS:
             request = _message(owner_request)
         else:
             request = _compose_creative_request(intake)
@@ -1260,8 +1295,9 @@ class DesignIntakeService:
             "confirmed_revision": int(revision_row["revision"]),
             "owner_request": request,
             "force_new": bool(force_new),
+            "resume_run_id": recovery_run_id,
         }
-        if session.get("status") == IntakeSessionState.FAILED.value:
+        if session.get("status") == IntakeSessionState.FAILED.value and not recovery_run_id:
             force_new = True
             request_identity["retry_nonce"] = token
             request_identity["force_new"] = True
@@ -1284,6 +1320,8 @@ class DesignIntakeService:
         except (ContractError, ValueError) as exc:
             raise DesignIntakeServiceError(str(exc)[:500]) from exc
         existing_run_id = str((reservation.get("response") or {}).get("run_id") or reservation.get("run_id") or "").strip()
+        if recovery_run_id:
+            existing_run_id = recovery_run_id
         recovered = False
         if not reservation.get("created"):
             if existing_run_id:
@@ -1291,14 +1329,22 @@ class DesignIntakeService:
                     existing_run = self.lab_service.get_run(existing_run_id)
                 except Exception:
                     existing_run = None
-                if existing_run is not None:
+                # A completed reservation is an ordinary duplicate only when
+                # it is not an explicit same-run recovery. Recovery must pass
+                # through the handoff's persisted-identity checks and CAS fence
+                # before it can be reported as successful.
+                if existing_run is not None and not recovery_run_id:
                     if reservation.get("state") == "reserved":
                         self.memory.complete_design_intake_build(session_id, str(reservation.get("idempotency_key") or token), request_hash, run_id=existing_run_id)
                     return {"session": self.get_session(session_id), "run": existing_run, "idempotent": True}
-            if reservation.get("state") == "failed":
+            if recovery_run_id and existing_run_id:
+                # recover_prebuild_run owns the durable one-winner admission
+                # fence; do not let the intake reservation shortcut bypass it.
+                pass
+            elif reservation.get("state") == "failed":
                 message = str(reservation.get("error") or "the previous build reservation failed")
                 raise DesignIntakeServiceError(message[:500])
-            if reservation.get("state") == "reserved":
+            elif reservation.get("state") == "reserved":
                 try:
                     claimed = self.memory.claim_design_intake_build_submission(
                         session_id,
@@ -1318,7 +1364,7 @@ class DesignIntakeService:
                         "build_pending": True,
                         "idempotency_key": str(reservation.get("idempotency_key") or token),
                     }
-            else:
+            elif not (recovery_run_id and existing_run_id):
                 return {
                     "session": self.get_session(session_id),
                     "run": None,
@@ -1337,6 +1383,7 @@ class DesignIntakeService:
                 intake_revision_id=int(revision_row["id"]),
                 context_extra=context_extra,
                 shared_intelligence=shared_intelligence,
+                resume_run_id=recovery_run_id or None,
             )
             run_id = str(run.get("run_id") or "").strip()
             if not run_id:

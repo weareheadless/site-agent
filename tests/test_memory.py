@@ -92,6 +92,89 @@ def test_completed_native_checkpoint_is_reusable_after_reopen(tmp_path):
     reopened.close()
 
 
+def test_intake_build_reservation_is_authoritative_across_memory_connections(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from site_agent.application.design_intake import DesignIntakeService
+    from tests.test_design_intake import _intake
+    from site_agent.application.design_intake import DesignIntakeDraft
+
+    path = tmp_path / "reservation-race.db"
+    seed = Memory(path)
+    service = DesignIntakeService(seed, default_intake=_intake())
+    session = service.create_session()
+    confirmed = service.confirm(session["session_id"], revision=session["revision"], draft_hash=session["draft_hash"])
+    args = dict(session_id=session["session_id"], request_hash="a" * 64,
+                confirmed_revision_id=confirmed["session"]["confirmed_revision_id"],
+                confirmed_revision=confirmed["session"]["confirmed_revision"], force_new=False)
+    barrier = Barrier(2)
+
+    def reserve(key, run_id):
+        memory = Memory(path)
+        barrier.wait()
+        try:
+            return memory.reserve_design_intake_build(
+                **args, idempotency_key=key, reserved_run_id=run_id,
+            )
+        finally:
+            memory.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda pair: reserve(*pair),
+                                 [("race-a", "run-a"), ("race-b", "run-b")]))
+    assert sorted(bool(result["created"]) for result in results) == [False, True]
+    assert len({result["id"] for result in results}) == 1
+    assert len({result["run_id"] for result in results}) == 1
+    with pytest.raises(ContractError, match="different request"):
+        seed.reserve_design_intake_build(
+            **{**args, "request_hash": "b" * 64}, idempotency_key=results[0]["idempotency_key"],
+            reserved_run_id="mismatch",
+        )
+    seed.close()
+
+
+def test_prebuild_recovery_admission_is_compare_and_swap_and_durable(tmp_path):
+    path = tmp_path / "recovery-cas.db"
+    seed = Memory(path)
+    seed.create_design_run(
+        run_id="recovery-cas-run", mode="production_candidate", status="failed",
+        intake_json={}, intake_hash="a" * 64, base_sha="b" * 40,
+        publishable=True, candidate_ref="refs/ada-design/recovery-cas-run",
+    )
+    seed.update_design_run("recovery-cas-run", planning_json={
+        "build_request": {"run_id": "recovery-cas-run"},
+        "build_target": {"run_id": "recovery-cas-run"},
+    })
+    claimed = seed.claim_design_phase(
+        "recovery-cas-run", "native_direction", variant_key="initial", base_sha="b" * 40,
+        context_snapshot_hash="c" * 64, input_hashes=["d" * 64], max_attempts=2,
+    )
+    seed.complete_design_phase(claimed["id"], {
+        "direction": "direction", "direction_path": "direction.json",
+        "direction_hash": "e" * 64, "experience_plan": {"plan": True},
+    })
+    seed.close()
+
+    barrier = Barrier(2)
+
+    def admit():
+        memory = Memory(path)
+        barrier.wait()
+        try:
+            return memory.admit_prebuild_design_recovery("recovery-cas-run", expected_status="failed")
+        finally:
+            memory.close()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: admit(), range(2)))
+    assert sum(bool(item["admitted"]) for item in results) == 1
+    reopened = Memory(path)
+    assert reopened.get_design_run("recovery-cas-run")["status"] == "planning"
+    assert [event["stage"] for event in reopened.list_design_run_events("recovery-cas-run")][-1] == "recovery_admitted"
+    assert reopened.admit_prebuild_design_recovery("recovery-cas-run", expected_status="failed")["admitted"] is False
+    reopened.close()
+
+
 def test_fresh_db_creates_current_schema(tmp_path):
     mem = Memory(tmp_path / "memory.db")
     version = mem.conn.execute("PRAGMA user_version").fetchone()[0]

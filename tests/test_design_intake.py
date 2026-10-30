@@ -442,6 +442,382 @@ def test_build_confirmed_session_through_real_handoff_preserves_shared_intellige
     memory.close()
 
 
+@pytest.mark.parametrize(
+    "recovery_case", ["same-base", "changed-runtime-base", "changed-owner-request",
+                      "changed-context-extra", "changed-intake-session-id", "changed-authorized-target",
+                      "changed-page-build-request", "changed-shared-intelligence", "foreign-tenant-run",
+                      "missing-native-checkpoint",
+                      "running-native-checkpoint", "failed-native-checkpoint", "prior-build-attempt"],
+)
+def test_composed_same_run_recovery_reopens_checkpoint_and_dispatches_build_once(
+    tmp_path, monkeypatch, recovery_case,
+):
+    """Exercise intake -> handoff -> real worker/facade using a disposable tenant clone."""
+    import subprocess
+    import threading
+
+    from site_agent.application.design_jobs import DesignJobExecutor
+    from site_agent.application.designs import DesignService, DesignServiceError
+    from site_agent.core.design_contracts import DesignRunStatus
+    from site_agent.hands import opencode_runner as runner
+    from site_agent.hands.builder import OperationRoutingBuilder
+    from site_agent.hands.site_build import SiteBuildResult
+
+    import site_agent.hands.site_build as site_build
+    monkeypatch.setattr(site_build, "prepare_site_toolchain", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(site_build, "build_site", lambda _root, profile, **_kwargs: SiteBuildResult(
+        profile=profile.name, ok=True, output_dir=profile.output_dir,
+        commands=({"command": ["test"], "status": "passed"},), route_inventory=("index.html",),
+    ))
+
+    clone = tmp_path / "tenant-clone"
+    clone.mkdir()
+    def git(*args):
+        return subprocess.run(["git", "-C", str(clone), *args], check=True, capture_output=True, text=True)
+    git("init", "-q", "-b", "main")
+    git("config", "user.email", "test@example.com")
+    git("config", "user.name", "Test")
+    (clone / "index.html").write_text("<html><body>baseline</body></html>")
+    git("add", "-A")
+    git("commit", "-qm", "tenant baseline")
+    remote = tmp_path / "tenant-origin.git"
+    subprocess.run(["git", "clone", "--bare", str(clone), str(remote)], check=True, capture_output=True)
+    git("remote", "add", "origin", str(remote))
+    config = {
+        "data_dir": str(tmp_path),
+        "site": {"clone_path": str(clone), "writable_patterns": ["*.html", "design/**"]},
+        "design_engine": {"orchestration": "creative", "model": "fixture/model"},
+        "builder": {"enabled": True},
+    }
+    db = tmp_path / "memory.db"
+    memory = Memory(db)
+    class PayloadBoundary:
+        document = None
+        def require_authoring_contract(self):
+            return {"enabled": {"collections": ["pages"]}, "locales": ["en"],
+                    "defaultLocale": "en", "schemaIdentity": "fixture", "authoringContractHash": "fixture"}
+        def read_media(self, *_args, **_kwargs):
+            raise AssertionError("no intake media is attached")
+        def create(self, collection, data, *, locale):
+            self.document = {"id": 41, "slug": "home", "sourceId": "pages:home", **data,
+                             "_helloadaRevision": "sha256:" + "1" * 64}
+            return dict(self.document)
+        def read(self, *_args, **_kwargs):
+            return dict(self.document)
+    payload = PayloadBoundary()
+    builder = OperationRoutingBuilder({"config": config, "memory": memory, "payload_gateway": payload})
+    service = DesignService(memory, config=config, builder=builder)
+    executor = DesignJobExecutor({"memory": memory, "config": config}, service)
+    handoff = DesignBuildHandoff({"memory": memory, "config": config, "design_service": service,
+                                  "design_executor": executor})
+    intake_service = DesignIntakeService(memory, config=config, default_intake=_intake(), lab_service=handoff)
+    session = intake_service.create_session()
+    confirmed = intake_service.confirm(session["session_id"], revision=session["revision"], draft_hash=session["draft_hash"])
+    result = intake_service.build(session["session_id"], confirmed_revision=confirmed["session"]["confirmed_revision_id"],
+                                  idempotency_key="composition13-original")
+    run_id = result["run"]["run_id"]
+    direction_calls = []
+    build_dispatched = threading.Event()
+
+    def fake_turn(_worktree, _prompt, _config, **kwargs):
+        direction_calls.append(kwargs.get("agent_name"))
+        if kwargs.get("agent_name") == "native-direction":
+            from tests.test_design_contracts import _experience_plan
+            plan = _experience_plan()
+            plan.pop("asset_evidence", None)
+            plan.pop("asset_composition_plan", None)
+            return {"session_id": "direction", "structured": {"direction": "A measured arrival.",
+                    "experience_plan": plan}, "transcript": "valid native direction\n"}
+        if kwargs.get("agent_name") == "build":
+            build_dispatched.set()
+        raise AssertionError("fixture stops after the one recovered Build provider dispatch")
+
+    monkeypatch.setattr(runner, "install_agent_files", lambda *args, **kwargs: None)
+    monkeypatch.setattr(runner, "_origin_url", lambda *_args, **_kwargs: str(remote))
+    monkeypatch.setattr(runner, "run_opencode_turn", fake_turn)
+    real_stage = runner.stage_design_build
+    interrupted = False
+    def interrupt_at_pre_build(context, request, target, progress=None, **kwargs):
+        nonlocal interrupted
+        def boundary(message):
+            nonlocal interrupted
+            if progress:
+                progress(message)
+            if not interrupted and "starting the integrated Build turn" in message:
+                interrupted = True
+                raise KeyboardInterrupt("simulated process death at documented pre-Build boundary")
+        return real_stage(context, request, target, progress=boundary, **kwargs)
+    monkeypatch.setattr(runner, "stage_design_build", interrupt_at_pre_build)
+    try:
+        executor._run(run_id)
+    except KeyboardInterrupt as exc:
+        assert "pre-Build boundary" in str(exc)
+    else:
+        pytest.fail(f"worker stopped before pre-Build barrier: status={service.get_run(run_id).get('status')!r}; "
+                    f"error={service.get_run(run_id).get('error')!r}; calls={direction_calls!r}")
+    phases = memory.list_design_phase_artifacts(run_id)
+    assert any(item["phase"] == "native_direction" and item["status"] == "completed" for item in phases), (
+        f"native checkpoint was not reached; worker_error={service.get_run(run_id).get('error')!r}; "
+        f"provider_calls={direction_calls!r}; phases={phases!r}"
+    )
+    run = service.get_run(run_id)
+    planning = run["planning_json"]
+    from site_agent.core.design_contracts import BuildTarget, PageBuildRequest
+    request = PageBuildRequest.from_dict(planning["build_request"])
+    target = BuildTarget.from_dict(planning["build_target"])
+    memory.transition_design_run(run_id, DesignRunStatus.INTERRUPTED.value,
+                                 error="worker process ended at the persisted pre-Build boundary")
+    memory.close()
+    memory = Memory(db)
+    builder = OperationRoutingBuilder({"config": config, "memory": memory, "payload_gateway": payload})
+    service = DesignService(memory, config=config, builder=builder)
+    executor = DesignJobExecutor({"memory": memory, "config": config}, service)
+    handoff = DesignBuildHandoff({"memory": memory, "config": config, "design_service": service,
+                                  "design_executor": executor})
+    intake_service = DesignIntakeService(memory, config=config, default_intake=_intake(), lab_service=handoff)
+    if recovery_case in {"changed-owner-request", "changed-context-extra",
+                         "changed-intake-session-id", "changed-authorized-target",
+                         "changed-page-build-request", "changed-shared-intelligence", "foreign-tenant-run"}:
+        # Exercise the real policy boundary directly with the exact original handoff
+        # inputs (context_extra/shared_intelligence were both None).
+        if recovery_case == "changed-authorized-target":
+            target_repository = target.repository
+            config["site"]["repository"] = str(tmp_path / "different-authorized-repository")
+            assert service.build_target_for_run(run_id).repository != target_repository
+        before_rejection = Memory(db)
+        run_before = before_rejection.get_design_run(run_id)
+        phases_before = before_rejection.list_design_phase_artifacts(run_id)
+        events_before = before_rejection.list_design_run_events(run_id)
+        calls_before = len(direction_calls)
+        def unexpected_admission(*_args, **_kwargs):
+            raise AssertionError("changed recovery identity reached Memory admission CAS")
+        monkeypatch.setattr(memory, "admit_prebuild_design_recovery", unexpected_admission)
+        owner_request = run["owner_request"]
+        recovery_session_id = run["intake_session_id"]
+        recovery_context_extra = None
+        if recovery_case == "changed-owner-request":
+            owner_request += " changed"
+            expected_error = "identity does not match"
+        elif recovery_case == "changed-context-extra":
+            recovery_context_extra = {"changed": True}
+            expected_error = "request, context, or shared intelligence changed"
+        elif recovery_case == "changed-intake-session-id":
+            recovery_session_id += "-changed"
+            expected_error = "identity does not match"
+        elif recovery_case == "changed-page-build-request":
+            from dataclasses import replace
+            changed_request = replace(request, purpose=request.purpose + " changed")
+            assert changed_request.to_dict() != request.to_dict()
+            request = changed_request
+            expected_error = "request.*target.*frozen|frozen.*request"
+        elif recovery_case == "changed-shared-intelligence":
+            changed_shared = DesignSharedIntelligence.unavailable()
+            changed_shared.research["revision"] = "different-revision"
+            assert changed_shared.to_dict() != DesignSharedIntelligence.unavailable().to_dict()
+            expected_error = "request, context, or shared intelligence changed"
+        elif recovery_case == "foreign-tenant-run":
+            foreign_memory = Memory(tmp_path / "other-tenant" / "memory.db")
+            foreign_service = DesignService(foreign_memory, config=config, builder=OperationRoutingBuilder(
+                {"config": config, "memory": foreign_memory, "payload_gateway": payload}
+            ))
+            foreign_executor = DesignJobExecutor({"memory": foreign_memory, "config": config}, foreign_service)
+            foreign_calls_before = len(direction_calls)
+            foreign_runs_before = foreign_memory.list_design_runs()
+            foreign_admit = foreign_memory.admit_prebuild_design_recovery
+            def unexpected_foreign_admission(*args, **kwargs):
+                raise AssertionError("foreign tenant attempted admission CAS")
+            monkeypatch.setattr(foreign_memory, "admit_prebuild_design_recovery", unexpected_foreign_admission)
+            from site_agent.application.designs import DesignRunNotFound
+            with pytest.raises(DesignRunNotFound):
+                foreign_service.recover_prebuild_run(
+                    run_id, request=request, target=target,
+                    intake_session_id=run["intake_session_id"],
+                    intake_revision_id=run["intake_revision_id"], owner_request=run["owner_request"],
+                )
+            assert foreign_memory.list_design_runs() == foreign_runs_before == []
+            assert foreign_memory.list_design_phase_artifacts(run_id) == []
+            assert foreign_memory.list_design_run_events(run_id) == []
+            assert foreign_executor._queue.empty() and executor._queue.empty()
+            assert len(direction_calls) == foreign_calls_before
+            foreign_memory.close()
+            expected_error = None
+        else:
+            expected_error = "authorized target changed"
+        if recovery_case != "foreign-tenant-run":
+            kwargs = {}
+            if recovery_case == "changed-shared-intelligence":
+                kwargs["shared_intelligence"] = changed_shared
+            with pytest.raises(DesignServiceError, match=expected_error):
+                service.recover_prebuild_run(
+                run_id, request=request, target=target,
+                intake_session_id=recovery_session_id,
+                intake_revision_id=run["intake_revision_id"], owner_request=owner_request,
+                context_extra=recovery_context_extra,
+                **kwargs,
+                )
+        after_rejection = Memory(db)
+        assert after_rejection.get_design_run(run_id) == run_before
+        assert after_rejection.list_design_phase_artifacts(run_id) == phases_before
+        assert after_rejection.list_design_run_events(run_id) == events_before
+        assert executor._queue.empty()
+        assert len(direction_calls) == calls_before
+        after_rejection.close()
+        before_rejection.close()
+        memory.close()
+        return
+    if recovery_case in {"missing-native-checkpoint", "running-native-checkpoint",
+                         "failed-native-checkpoint", "prior-build-attempt"}:
+        # Mutate only durable phase artifacts in this disposable fixture database.
+        if recovery_case == "missing-native-checkpoint":
+            memory.conn.execute(
+                "DELETE FROM design_run_phase_artifacts WHERE run_id = ? AND phase = 'native_direction'", (run_id,)
+            )
+        elif recovery_case in {"running-native-checkpoint", "failed-native-checkpoint"}:
+            memory.conn.execute(
+                "UPDATE design_run_phase_artifacts SET status = ? WHERE run_id = ? AND phase = 'native_direction'",
+                ("running" if recovery_case == "running-native-checkpoint" else "failed", run_id),
+            )
+        else:
+            memory.claim_design_phase(run_id, "build_dispatch", base_sha=request.base_sha,
+                                      context_snapshot_hash=request.context_snapshot_hash)
+        memory.conn.commit()
+        before_rejection = Memory(db)
+        run_before_rejection = before_rejection.get_design_run(run_id)
+        phases_before_rejection = before_rejection.list_design_phase_artifacts(run_id)
+        events_before_rejection = before_rejection.list_design_run_events(run_id)
+        calls_before_rejection = len(direction_calls)
+
+        def unexpected_admission(*_args, **_kwargs):
+            raise AssertionError("missing native checkpoint reached recovery admission CAS")
+
+        monkeypatch.setattr(memory, "admit_prebuild_design_recovery", unexpected_admission)
+        with pytest.raises(DesignIntakeServiceError, match="completed native direction and no Build attempt"):
+            intake_service.build(
+                session["session_id"],
+                confirmed_revision=confirmed["session"]["confirmed_revision_id"],
+                idempotency_key="composition13-missing-native",
+            )
+
+        after_rejection = Memory(db)
+        assert after_rejection.get_design_run(run_id) == run_before_rejection
+        assert after_rejection.list_design_phase_artifacts(run_id) == phases_before_rejection
+        assert after_rejection.list_design_run_events(run_id) == events_before_rejection
+        assert executor._queue.empty(), "rejected recovery enqueued a Build"
+        assert len(direction_calls) == calls_before_rejection, "rejected recovery called a model"
+        after_rejection.close()
+        before_rejection.close()
+        memory.close()
+        return
+    if recovery_case == "changed-runtime-base":
+        (clone / "runtime-drift.txt").write_text("isolated tenant HEAD changed after checkpoint\n")
+        git("add", "-A")
+        git("commit", "-qm", "runtime base drift")
+        assert service.resolve_base_sha() != target.base_sha
+        with pytest.raises(DesignIntakeServiceError, match="base"):
+            intake_service.build(session["session_id"],
+                confirmed_revision=confirmed["session"]["confirmed_revision_id"], idempotency_key="composition13-drift")
+        return
+    # Both application callers validate the same durable checkpoint before either
+    # can execute the real Memory compare-and-swap admission fence.
+    second_memory = Memory(db)
+    second_service = DesignService(second_memory, config=config, builder=OperationRoutingBuilder(
+        {"config": config, "memory": second_memory, "payload_gateway": payload}
+    ))
+    second_executor = DesignJobExecutor({"memory": second_memory, "config": config}, second_service)
+    second_handoff = DesignBuildHandoff({"memory": second_memory, "config": config,
+                                        "design_service": second_service, "design_executor": second_executor})
+    second_intake = DesignIntakeService(second_memory, config=config, default_intake=_intake(), lab_service=second_handoff)
+    admission_barrier = threading.Barrier(2, timeout=10)
+    for caller_memory in (memory, second_memory):
+        admit = caller_memory.admit_prebuild_design_recovery
+        def observed_admit(*args, _admit=admit, **kwargs):
+            admission_barrier.wait()
+            return _admit(*args, **kwargs)
+        caller_memory.admit_prebuild_design_recovery = observed_admit
+    outcomes = []
+    def call_build(caller_id, intake, key):
+        try:
+            outcomes.append((caller_id, "result", intake.build(session["session_id"],
+                confirmed_revision=confirmed["session"]["confirmed_revision_id"], idempotency_key=key)))
+        except Exception as exc:
+            outcomes.append((caller_id, "error", exc))
+    callers = [threading.Thread(target=call_build, args=("a", intake_service, "composition13-concurrent-a")),
+               threading.Thread(target=call_build, args=("b", second_intake, "composition13-concurrent-b"))]
+    for caller in callers:
+        caller.start()
+    for caller in callers:
+        caller.join(15)
+    assert all(not caller.is_alive() for caller in callers), "recovery callers did not reach admission barrier"
+    assert len(outcomes) == 2
+    queued = [(caller_id, worker) for caller_id, worker in (("a", executor), ("b", second_executor))
+              if not worker._queue.empty()]
+    assert len(queued) == 1, f"expected exactly one recovery admission, outcomes={outcomes!r}"
+    winning_caller, winning_executor = queued[0]
+    by_caller = {caller_id: (kind, value) for caller_id, kind, value in outcomes}
+    winner_kind, winner_value = by_caller[winning_caller]
+    assert winner_kind == "result", f"admission winner did not return a result: {winner_value!r}"
+    assert winner_value["run"]["run_id"] == run_id
+    loser_id = "b" if winning_caller == "a" else "a"
+    loser_kind, loser_value = by_caller[loser_id]
+    if loser_kind == "error":
+        assert isinstance(loser_value, DesignIntakeServiceError), repr(loser_value)
+        assert "admission" in str(loser_value).lower() or "recovery" in str(loser_value).lower(), repr(loser_value)
+    else:
+        assert loser_value["run"]["run_id"] == run_id
+        assert loser_value.get("recovered") is not True
+    assert executor._queue.qsize() + second_executor._queue.qsize() == 1, "concurrent admission enqueued more than once"
+    assert service.get_run(run_id)["planning_json"]["build_request"] == request.to_dict()
+    assert service.get_run(run_id)["planning_json"]["build_target"] == target.to_dict()
+    before_start = Memory(db)
+    persisted_before_start = before_start.get_design_run(run_id)
+    assert persisted_before_start["status"] == DesignRunStatus.PLANNING.value
+    assert persisted_before_start["planning_json"]["build_request"] == request.to_dict()
+    assert persisted_before_start["planning_json"]["build_target"] == target.to_dict()
+    assert persisted_before_start["context_snapshot_hash"] == request.context_snapshot_hash
+    recovery_identity = persisted_before_start["planning_json"]["same_run_recovery_identity"]
+    assert recovery_identity["context_extra_hash"] == service.get_run(run_id)["planning_json"]["same_run_recovery_identity"]["context_extra_hash"]
+    assert sum(event["stage"] == "recovery_admitted" for event in before_start.list_design_run_events(run_id)) == 1
+    intake_before_start = before_start.get_design_intake_session(session["session_id"])
+    assert intake_before_start["status"] == "confirmed"
+    reservation_before_start = before_start.conn.execute(
+        "SELECT state, run_id FROM design_intake_operations WHERE session_id = ? AND operation = 'build'",
+        (session["session_id"],),
+    ).fetchone()
+    assert reservation_before_start is not None
+    assert reservation_before_start["state"] != "failed"
+    assert reservation_before_start["run_id"] == run_id
+    before_start.close()
+    losing_executor = second_executor if winning_executor is executor else executor
+    assert losing_executor._queue.empty(), "losing caller enqueued a Build"
+    winning_executor.start()
+    assert build_dispatched.wait(5), "the admitted worker did not reach the Build provider boundary"
+    winning_executor.stop()
+    winning_executor.join(5)
+    assert direction_calls.count("native-direction") == 1
+    assert service.get_run(run_id)["status"] == DesignRunStatus.FAILED.value
+    assert "fixture stops after the one recovered Build provider dispatch" in service.get_run(run_id)["error"]
+    assert direction_calls.count("build") == 1, (
+        f"recovered worker did not reach Build provider dispatch: status={service.get_run(run_id).get('status')!r}; "
+        f"error={service.get_run(run_id).get('error')!r}; calls={direction_calls!r}; "
+        f"phases={memory.list_design_phase_artifacts(run_id)!r}"
+    )
+    assert sum(item["phase"] == "build_dispatch" for item in memory.list_design_phase_artifacts(run_id)) == 1
+    assert direction_calls.count("native-direction") == 1
+    reopened = Memory(db)
+    persisted = reopened.get_design_run(run_id)
+    assert persisted["planning_json"]["build_request"] == request.to_dict()
+    assert persisted["planning_json"]["build_target"] == target.to_dict()
+    assert any(item["phase"] == "native_direction" and item["status"] == "completed"
+               for item in reopened.list_design_phase_artifacts(run_id))
+    assert sum(item["phase"] == "build_dispatch" for item in reopened.list_design_phase_artifacts(run_id)) == 1
+    assert sum(item["stage"] == "recovery_admitted" for item in reopened.list_design_run_events(run_id)) == 1
+    operations = reopened.conn.execute("SELECT state FROM design_intake_operations WHERE session_id = ? AND operation = 'build'", (session["session_id"],)).fetchall()
+    assert not operations or all(row["state"] != "failed" for row in operations), "losing caller poisoned intake reservation"
+    reopened.close()
+    second_memory.close()
+    memory.close()
+
+
 def test_failed_build_is_visible_and_retry_reuses_confirmed_revision(tmp_path):
     memory = Memory(tmp_path / "failed-build.db")
 

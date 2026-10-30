@@ -1455,6 +1455,114 @@ class DesignService:
         self._record_progress_stage(run_id, "queued", "Your design build is queued.")
         return self.get_run(run_id)
 
+    def recover_prebuild_run(
+        self,
+        run_id: str,
+        *,
+        request: PageBuildRequest,
+        target: BuildTarget,
+        intake_session_id: str,
+        intake_revision_id: int,
+        owner_request: str,
+        context_extra: Mapping[str, Any] | None = None,
+        shared_intelligence: "DesignSharedIntelligence | None" = None,
+    ) -> dict[str, Any]:
+        """Admit a same-run recovery only from a complete pre-Build checkpoint."""
+        from ..core.design_contracts import ExperiencePlanBundle
+        from ..hands.opencode_runner import _native_phase_identity
+
+        run = self.get_run(run_id)
+        if run.get("status") not in {DesignRunStatus.FAILED.value, DesignRunStatus.INTERRUPTED.value}:
+            raise DesignServiceError("same-run recovery requires a failed or interrupted design run")
+        if (
+            run.get("mode") != "production_candidate"
+            or run.get("intake_session_id") != intake_session_id
+            or int(run.get("intake_revision_id") or 0) != int(intake_revision_id)
+            or str(run.get("owner_request") or "") != str(owner_request or "")
+        ):
+            raise DesignServiceError("same-run recovery identity does not match the confirmed intake")
+        planning = run.get("planning_json") if isinstance(run.get("planning_json"), Mapping) else {}
+        recovery_identity = planning.get("same_run_recovery_identity")
+        if not isinstance(recovery_identity, Mapping) or recovery_identity.get("schema_version") != 1:
+            raise DesignServiceError("same-run recovery identity checkpoint is missing or malformed")
+        expected_shared = (shared_intelligence or DesignSharedIntelligence.unavailable()).to_dict()
+        if (
+            recovery_identity.get("owner_request_hash") != canonical_hash(owner_request)
+            or recovery_identity.get("context_extra_hash") != canonical_hash(dict(context_extra or {}))
+            or recovery_identity.get("shared_intelligence_hash") != canonical_hash(expected_shared)
+        ):
+            raise DesignServiceError("same-run recovery request, context, or shared intelligence changed")
+        try:
+            stored_request = PageBuildRequest.from_dict(planning.get("build_request") or {})
+            stored_target = BuildTarget.from_dict(planning.get("build_target") or {})
+        except (ContractError, KeyError, TypeError, ValueError) as exc:
+            raise DesignServiceError("same-run recovery requires a valid persisted request and target") from exc
+        if request.to_dict() != stored_request.to_dict() or target.to_dict() != stored_target.to_dict():
+            raise DesignServiceError("same-run recovery request or target changed from the frozen build identity")
+        if request.run_id != run_id or request.base_sha != run.get("base_sha") or target.base_sha != run.get("base_sha"):
+            raise DesignServiceError("same-run recovery base or run identity does not match")
+        # The persisted target proves what was authorized when the run was
+        # created; it does not authorize resuming against a changed checkout or
+        # newly configured destination. Resolve the currently configured base
+        # and target before the admission CAS/enqueue.
+        try:
+            current_base_sha = self.resolve_base_sha()
+        except DesignServiceError as exc:
+            raise DesignServiceError(f"same-run recovery current base could not be resolved: {exc}") from exc
+        if current_base_sha != target.base_sha:
+            raise DesignServiceError(
+                f"same-run recovery base changed from frozen {target.base_sha} to current {current_base_sha}"
+            )
+        current_target = self.build_target_for_run(run_id)
+        if current_target.to_dict() != target.to_dict():
+            raise DesignServiceError("same-run recovery authorized target changed from the frozen build identity")
+        if not run.get("context_snapshot_hash") or request.context_snapshot_hash != run.get("context_snapshot_hash"):
+            raise DesignServiceError("same-run recovery context snapshot hash does not match")
+        snapshot = run.get("context_snapshot") if isinstance(run.get("context_snapshot"), Mapping) else {}
+        try:
+            if DesignContextSnapshot.from_dict(snapshot).content_hash != run.get("context_snapshot_hash"):
+                raise ValueError("snapshot hash mismatch")
+        except (ContractError, TypeError, ValueError) as exc:
+            raise DesignServiceError("same-run recovery context snapshot is malformed") from exc
+        for key, value in (context_extra or {}).items():
+            if canonical_hash(snapshot.get(key)) != canonical_hash(value):
+                raise DesignServiceError("same-run recovery context inputs changed")
+        if canonical_hash(snapshot.get("shared_intelligence")) != canonical_hash(expected_shared):
+            raise DesignServiceError("same-run recovery shared intelligence changed")
+        try:
+            phases = self.memory.list_design_phase_artifacts(run_id)
+            directions = [item for item in phases if item.get("phase") == "native_direction"]
+            builds = [item for item in phases if item.get("phase") == "build_dispatch"]
+            if builds or not directions or directions[-1].get("status") != "completed":
+                raise DesignServiceError("same-run recovery requires completed native direction and no Build attempt")
+            checkpoint = directions[-1].get("payload")
+            if not isinstance(checkpoint, Mapping):
+                raise DesignServiceError("same-run recovery native-direction checkpoint is malformed")
+            plan = ExperiencePlanBundle.from_dict(checkpoint.get("experience_plan") or {})
+            if (
+                plan.run_id != run_id
+                or plan.base_sha != run.get("base_sha")
+                or plan.context_snapshot_hash != request.context_snapshot_hash
+            ):
+                raise DesignServiceError("same-run recovery experience-plan identity does not match")
+            phase_base, phase_context, input_hashes = _native_phase_identity(request, target)
+            if (
+                directions[-1].get("base_sha") != phase_base
+                or directions[-1].get("context_snapshot_hash") != phase_context
+                or directions[-1].get("input_hashes") != input_hashes
+            ):
+                raise DesignServiceError("same-run recovery native checkpoint identity does not match")
+            if run.get("candidate_sha") or run.get("design_manifest_path") or run.get("quality_report_hash"):
+                raise DesignServiceError("same-run recovery is blocked by candidate output")
+            admitted = self.memory.admit_prebuild_design_recovery(run_id, expected_status=str(run["status"]))
+        except (ContractError, KeyError, TypeError, ValueError) as exc:
+            if isinstance(exc, DesignServiceError):
+                raise
+            raise DesignServiceError(str(exc)[:500]) from exc
+        if not admitted.get("admitted"):
+            return {"admitted": False, "run": admitted.get("run")}
+        return {"admitted": True, "run": admitted.get("run")}
+
     def _record_progress_stage(self, run_id: str, stage: str, message: str) -> None:
         existing = self.memory.list_design_run_events(run_id, limit=500)
         if not any(event.get("stage") == stage for event in existing):
