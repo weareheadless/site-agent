@@ -1749,3 +1749,53 @@ def test_owner_media_without_a_media_service_is_recorded_not_skipped(tmp_path):
         "error": "no media service is available to read this owner-supplied image",
     }]
     memory.close()
+
+
+def test_payload_tenant_media_evidence_uses_the_builds_public_destination(tmp_path):
+    """Evidence paths and build materialization must agree on one destination.
+
+    Without a shared rule the snapshot described a path the build never wrote,
+    so the frozen evidence could not match the files in the candidate.
+    """
+    from types import SimpleNamespace
+    from io import BytesIO
+    from PIL import Image
+
+    buffer = BytesIO()
+    Image.new("RGB", (64, 48), "white").save(buffer, format="PNG")
+    payload = buffer.getvalue()
+
+    class MediaService:
+        def get(self, media_id):
+            return SimpleNamespace(
+                status=SimpleNamespace(value="ready"),
+                media_kind=SimpleNamespace(value="image"),
+                archived_ts=None,
+                original_name="astrid-logo.png",
+                analysis={"description": "black monogram"},
+                description="",
+                provider_id="media-library",
+                model="",
+                analysis_status=SimpleNamespace(value="ready"),
+            )
+
+        def read_preview(self, media_id, thumbnail=False):
+            return payload, "image/png"
+
+    memory = Memory(tmp_path / "data" / "design.db")
+    service = DesignService(
+        memory,
+        config={"site": {"adapter": "payload_gateway"}},
+        media_service=MediaService(),
+    )
+
+    evidence, errors, bindings = service._capture_asset_visual_evidence(
+        [{"id": "5", "usage": "logo"}],
+        source_clone=None,
+    )
+
+    assert errors == []
+    assert [item.asset_id for item in evidence] == ["media-5"]
+    assert evidence[0].relative_path == "public/assets/images/ada-5-astrid-logo.webp"
+    assert bindings["5"]["visual_evidence_id"] == "media-5"
+    memory.close()
