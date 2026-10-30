@@ -21,18 +21,23 @@ binding. Partial or malformed provenance fails before config writes or runtime
 mount. Activating an unbound release explicitly removes any prior binding;
 ordinary remounts and owner-ready state changes preserve it.
 
-The composed regression in `tests/test_bootstrap.py` uses a disposable local
-tenant registry and canonical normal and failed/deployed verify-only receipts
-to exercise `activate_runtime_after_health` through the real registration sync
-and registry reload. The verify-only case supplies current Worker verification,
-then closes and reconstructs the registry and registration service from the
-same files before exercising the actual owner-ready update. It checks exact
-binding preservation in persisted YAML and mounted config, with locale/media
-contract metadata intact. No causal-path methods are stubbed; external systems
-are not contacted. This remains focused fixture evidence, not full acceptance
-of stale-release, malformed-input, or legacy-binding cases.
+The composed regressions in `tests/test_bootstrap.py` use a disposable local
+tenant registry and canonical receipts to exercise
+`activate_runtime_after_health` through real registration sync and registry
+reload. Normal and verify-only activation remain covered; the verify-only case
+restarts the local registry and exercises the owner-ready update. Additional
+cases change only receipt provenance while keeping schema/website identity
+fixed, prove a stale mounted binding causes a real reload, reject incomplete or
+malformed provenance before config/index writes or reload, and clear a previous
+binding for a historical receipt with both provenance fields absent. A
+separately labelled fault-injection guard makes reload a no-op only to prove
+that post-reload validation raises instead of reporting success. The composed
+cases check strict contract metadata including media and locale values. No
+external services are contacted; this is local composition evidence, not live
+runtime parity evidence.
 
-Journey status for this work: no Ada-created candidate, no observed defining
-behavior, no real owner review, and no bypass workaround. The journey is not
-ready. Capture remains a prerequisite only; no live reads/writes, model calls,
-paid flow, release, provisioning, resolver, or Design transport are involved.
+Journey status for this work: confirmed intake remains a prerequisite only;
+there is no Ada-created accepted candidate, no observed defining behavior, no
+actual owner Design acceptance, and no bypass workaround. The journey is not
+ready. No provider, paid flow, release, provisioning, customer mutation,
+resolver, or Design transport is involved.
