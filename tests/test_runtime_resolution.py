@@ -63,7 +63,9 @@ def test_registered_receipt_resolves_secret_free_immutable_evidence(tmp_path, mo
     from site_agent.hands import cloudflare_worker_verification as verifier
     monkeypatch.setattr(verifier, "resolve_verified_active_worker", _verified)
     monkeypatch.setattr(verifier, "require_active_worker_snapshot", lambda *_args: None)
-    service, registry, _path, _receipt, binding = _setup(tmp_path)
+    service, registry, receipt_path, _receipt, binding = _setup(tmp_path)
+    config_path = Path(registry.for_tenant_id("new-site").config_path)
+    receipt_before, config_before = receipt_path.read_bytes(), config_path.read_bytes()
     try:
         result = service.resolve("new-site")
         assert result.activation == binding
@@ -72,6 +74,8 @@ def test_registered_receipt_resolves_secret_free_immutable_evidence(tmp_path, mo
         assert "secret" not in repr(result).lower()
         with pytest.raises((AttributeError, TypeError)):
             result.deployment_id = "changed"
+        assert receipt_path.read_bytes() == receipt_before
+        assert config_path.read_bytes() == config_before
     finally:
         registry.close()
 
@@ -103,6 +107,24 @@ def test_failed_receipt_cannot_be_authorized_by_worker_verifier(tmp_path, monkey
     receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
     try:
         with pytest.raises(RuntimeResolutionError, match="terminal"):
+            service.resolve("new-site")
+    finally:
+        registry.close()
+
+
+def test_registered_activation_drift_during_verification_is_rejected(tmp_path, monkeypatch):
+    from site_agent.hands import cloudflare_worker_verification as verifier
+    service, registry, _path, _receipt, _binding = _setup(tmp_path)
+    config_path = Path(registry.for_tenant_id("new-site").config_path)
+    def mutate_registered_config(*_args):
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        config["site"]["payload"]["runtime_activation"]["uploaded_version"] = "version-2"
+        TenantRegistrationService._replace_config(config_path, config)
+        return _verified()
+    monkeypatch.setattr(verifier, "resolve_verified_active_worker", mutate_registered_config)
+    monkeypatch.setattr(verifier, "require_active_worker_snapshot", lambda *_args: None)
+    try:
+        with pytest.raises(RuntimeResolutionError, match="drifted"):
             service.resolve("new-site")
     finally:
         registry.close()

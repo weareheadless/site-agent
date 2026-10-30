@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+import yaml
+
 from ..credentials import credential_environment
 from ..hands import cloudflare_worker_verification
 from .release_queue import release_root
@@ -28,8 +30,7 @@ class RuntimeResolution:
     binding_identity: str
 
 
-def _contract(tenant: Any) -> tuple[dict[str, Any], bool]:
-    config = tenant.config if isinstance(tenant.config, Mapping) else {}
+def _contract(config: Mapping[str, Any]) -> tuple[dict[str, Any], bool]:
     site = config.get("site") if isinstance(config.get("site"), Mapping) else {}
     payload = site.get("payload") if isinstance(site.get("payload"), Mapping) else {}
     raw = payload.get("contract")
@@ -94,7 +95,18 @@ class RuntimeResolutionService:
         tenant = self.registry.for_tenant_id(tenant_id)
         if tenant is None or tenant.tenant_id != tenant_id:
             raise RuntimeResolutionError("registered tenant is not mounted")
-        site = tenant.config.get("site") if isinstance(tenant.config.get("site"), Mapping) else {}
+        try:
+            config_path = Path(tenant.config_path)
+            if not config_path.is_file() or config_path.is_symlink():
+                raise RuntimeResolutionError("registered tenant config is unavailable")
+            config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        except RuntimeResolutionError:
+            raise
+        except (OSError, UnicodeError, yaml.YAMLError):
+            raise RuntimeResolutionError("registered tenant config is unavailable") from None
+        if not isinstance(config, Mapping) or config.get("instance_name") != tenant_id:
+            raise RuntimeResolutionError("registered tenant config identity is invalid")
+        site = config.get("site") if isinstance(config.get("site"), Mapping) else {}
         payload = site.get("payload") if isinstance(site.get("payload"), Mapping) else {}
         try:
             raw_binding = payload.get("runtime_activation")
@@ -111,7 +123,8 @@ class RuntimeResolutionService:
         worker = worker_config.get("worker_name")
         if not isinstance(worker, str) or not re.fullmatch(r"[a-z][a-z0-9-]{1,62}", worker):
             raise RuntimeResolutionError("registered Worker identity is invalid")
-        identity, website = _contract(tenant)
+        # Use this just-read registered config for contract checks as well.
+        identity, website = _contract(config)
         return tenant, activation, identity, website, worker
 
     def resolve(self, tenant_id: str) -> RuntimeResolution:
