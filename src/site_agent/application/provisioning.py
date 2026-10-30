@@ -781,7 +781,9 @@ def generate_customer_config(
             "reasoning_effort": "low",
             "validation_repair_attempts": 0,
         },
-        "vision": {"enabled": False},
+        # Owner images are analyzed by the tenant's own conversation model; the
+        # provider fields stay empty so the package derives them from `llm`.
+        "vision": {"media_analysis": True},
         "publish_mode": "ask_first",
         "display_name": str(display_name or "New customer site")[:200],
         "env": {

@@ -25,6 +25,8 @@ test('request-time Worker bindings win over stale process environment', () => {
 test('shared bridge forwards explicit Growth checks and refuses unknown methods and paths', () => {
   const api = runtime({})
   assert.equal(api.helloAdaWorkspacePath('/api/helloada/growth/check', 'POST'), '/workspace/growth/check')
+  assert.equal(api.helloAdaWorkspacePath('/api/helloada/media/analyze', 'POST'), '/workspace/media/analyze')
+  assert.equal(api.helloAdaWorkspacePath('/api/helloada/media/analyze', 'GET'), undefined)
   assert.equal(api.helloAdaWorkspacePath('/api/helloada/growth/articles/45', 'GET'), '/workspace/growth/articles/45')
   assert.equal(api.helloAdaWorkspacePath('/api/helloada/growth/budget', 'GET'), '/workspace/growth/budget')
   assert.equal(api.helloAdaWorkspacePath('/api/helloada/growth/budget', 'PUT'), '/workspace/growth/budget')

@@ -362,3 +362,53 @@ def test_media_service_transfers_ready_asset_through_provider_boundary(tmp_path)
     assert {key: value[0] for key, value in target_store.objects.items()} == objects
     source_memory.close()
     target_memory.close()
+
+
+class _PayloadLibrary:
+    """Payload-backed Library: bytes come through the service, not a local store."""
+
+    def __init__(self, data: bytes):
+        self.data = data
+
+    def resolve_attachments(self, asset_ids):
+        return [{"asset_id": int(asset_id), "position": index, "type": "media_asset"}
+                for index, asset_id in enumerate(asset_ids or [])]
+
+    def get(self, asset_id):
+        from site_agent.hands.payload_gateway import PayloadMediaAsset
+
+        return PayloadMediaAsset(
+            asset_id=int(asset_id),
+            original_name="Astrid logo.png",
+            content_type="image/png",
+            original_size=len(self.data),
+            width=20,
+            height=10,
+            description="",
+            tags=(),
+            ocr_text="",
+            analysis={},
+            url="https://example.test/api/media/file/logo.png",
+            alt_text="Astrid logo",
+            analysis_status="ready",
+        )
+
+    def read_preview(self, asset_id, *, thumbnail: bool = False):
+        del asset_id, thumbnail
+        return self.data, "image/png"
+
+
+def test_materialize_media_reads_payload_library_bytes(tmp_path):
+    output = io.BytesIO()
+    Image.new("RGB", (20, 10), "blue").save(output, format="PNG")
+    clone = tmp_path / "clone"
+    clone.mkdir()
+
+    paths = _materialize_media(
+        {"config": {"site": {"media": {"site_asset_dir": "assets/images"}}},
+         "media_service": _PayloadLibrary(output.getvalue()), "_media_asset_ids": [41]},
+        clone,
+    )
+
+    assert paths == ["assets/images/ada-41-Astrid-logo.webp"]
+    assert (clone / paths[0]).read_bytes()[:4] == b"RIFF"

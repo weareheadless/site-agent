@@ -4702,6 +4702,28 @@ def _prepare_builder_context(context: dict[str, Any], progress=None,
     return site_clone, clone, base_ref, _change_state(clone)
 
 
+def _canonical_media_webp(service: Any, stored: Any) -> bytes:
+    """Return canonical WebP bytes for one Library asset.
+
+    Payload tenants keep the binary in Payload, so the bytes come back through
+    the media service instead of the local object store.
+    """
+    store = getattr(service, "store", None)
+    key = str(getattr(stored, "normalized_key", "") or "")
+    if store is not None and key:
+        return store.get(key)
+    reader = getattr(service, "read_preview", None)
+    if not callable(reader):
+        raise RunnerError("the media Library cannot supply image bytes for this build")
+    from .media_processing import MediaProcessingError, process_image
+
+    raw, _content_type = reader(int(stored.asset_id))
+    try:
+        return process_image(raw).normalized
+    except MediaProcessingError as exc:
+        raise RunnerError(f"the Library image could not be prepared for the build: {str(exc)[:200]}") from exc
+
+
 def _materialize_media(context: dict[str, Any], clone: Path) -> list[str]:
     """Copy exact canonical WebPs into the isolated checkout, never URLs."""
     ids = list(context.get("_media_asset_ids") or [])
@@ -4713,6 +4735,10 @@ def _materialize_media(context: dict[str, Any], clone: Path) -> list[str]:
     site = context["config"].get("site") or {}
     settings = site.get("media") or {}
     destination = str(settings.get("site_asset_dir") or "").strip().strip("/")
+    if not destination and site.get("adapter") == "payload_gateway":
+        # Canonical Payload frontends use Next's public asset boundary for the
+        # isolated build's selected-media derivatives, not a tenant-local CMS.
+        destination = "public/assets/images"
     if not destination or destination.startswith((".", "..")) or ".." in Path(destination).parts:
         raise RunnerError("site.media.site_asset_dir must be configured for image builds")
     target_root = (clone / destination).resolve()
@@ -4731,7 +4757,7 @@ def _materialize_media(context: dict[str, Any], clone: Path) -> list[str]:
         clone_root = clone.resolve()
         if parent != clone_root and clone_root not in parent.parents:
             raise RunnerError("materialized media path escapes the preview worktree")
-        data = service.store.get(stored.normalized_key)
+        data = _canonical_media_webp(service, stored)
         if not target.exists() or target.read_bytes() != data:
             target.write_bytes(data)
         paths.append(relative)

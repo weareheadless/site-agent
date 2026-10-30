@@ -218,6 +218,9 @@
   .helloada-chat-gallery-grid img, .helloada-chat-gallery-grid span { display: block; width: 100%; height: 58px; object-fit: cover; border-radius: 5px; }
   .helloada-chat-gallery-grid span { display: grid; place-items: center; color: var(--helloada-dim); background: var(--helloada-panel-soft); font-size: 9px; }
   .helloada-chat-gallery-grid small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; }
+  .helloada-chat-upload-preview { display: grid; gap: 5px; min-width: 0; padding: 5px; border: 1px solid var(--helloada-soft-line); border-radius: 9px; color: var(--helloada-muted); background: var(--helloada-inset); }
+  .helloada-chat-upload-preview img { width: 100%; height: 58px; object-fit: cover; border-radius: 5px; }
+  .helloada-chat-upload-preview progress, .helloada-upload-status progress { width: 100%; height: 6px; accent-color: var(--helloada-cyan); }
   .helloada-chat-gallery > p { margin: 0; color: var(--helloada-muted); font-size: 10px; }
 
   .helloada-gallery { min-height: calc(100dvh - 90px); max-width: 1640px; margin: 0 auto; padding: 18px 24px 40px; color: var(--helloada-ink); }
@@ -247,6 +250,9 @@
   .helloada-gallery-card-meta > div { display: grid; gap: 3px; min-width: 0; }
   .helloada-gallery-card-meta strong { overflow: hidden; color: var(--helloada-ink); font-size: 11px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
   .helloada-gallery-card-meta small { overflow: hidden; color: var(--helloada-dim); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+  .helloada-gallery-tags { display: flex; flex-wrap: wrap; gap: 4px; margin: 0; padding: 0; list-style: none; }
+  .helloada-gallery-tags li { padding: 2px 6px; border: 1px solid var(--helloada-soft-line); border-radius: 999px; color: var(--helloada-muted); background: var(--helloada-inset); font-size: 9px; line-height: 1.4; }
+  .helloada-gallery-analysis { color: var(--helloada-dim); font-size: 9px; font-style: italic; }
   .helloada-gallery-use { display: inline-flex; align-items: center; justify-content: space-between; gap: 7px; min-height: 30px; padding: 0 9px; border: 1px solid var(--helloada-soft-line); border-radius: 8px; color: var(--helloada-muted); font-size: 10px; text-decoration: none; transition: color 500ms var(--helloada-ease), border-color 500ms var(--helloada-ease), background-color 500ms var(--helloada-ease); }
   .helloada-gallery-use:hover { border-color: rgba(255,107,94,.5); color: var(--helloada-ink); background: var(--helloada-cyan-soft); }
   .helloada-gallery-more { display: block; margin: 15px auto 2px; min-height: 34px; padding: 0 12px; border: 1px solid var(--helloada-soft-line); border-radius: 9px; color: var(--helloada-ink); background: var(--helloada-inset); cursor: pointer; font-size: 10px; }

@@ -11,6 +11,20 @@ from .llm import LLMError, _http_post, estimate_usage_cost
 from .memory import Memory
 from .media_contracts import MediaAnalysis
 
+# The structured contract every caller gets, so an analysis request never fails
+# on a provider that returns only the fields it was explicitly asked for.
+ANALYSIS_SHAPE_CONTRACT = (
+    "Return one JSON object and nothing else, with exactly these keys: "
+    "schema_version (the number 1), description (string), tags (array of strings), "
+    "alt_text (string), orientation (one of landscape, portrait, square, unknown), "
+    "dominant_colors (array of strings), suggested_uses (array of strings), "
+    "quality_notes (array of strings), ocr_text (string), "
+    "knowledge_relevant (boolean: true only when the image itself states verifiable "
+    "business facts such as a service, price, address, or opening hours), "
+    "proposed_knowledge_markdown (string; required when knowledge_relevant is true, "
+    "otherwise an empty string)."
+)
+
 
 class VisionClient:
     """Analyze public or data-URL images without changing the text LLM client."""
@@ -31,7 +45,12 @@ class VisionClient:
         self.model = str(cfg.get("model", ""))
         self.timeout = float(cfg.get("timeout_seconds", 90))
         self.max_tokens = int(cfg.get("max_tokens", 4096))
-        self.api_key = resolve_secret(config, "vision_api_key", os.environ if env is None else env)
+        self.api_key = (
+            resolve_secret(config, "vision_api_key", os.environ if env is None else env)
+            # One provider for the product: the conversation model analyzes
+            # owner images unless a dedicated vision credential is configured.
+            or resolve_secret(config, "llm_api_key", os.environ if env is None else env)
+        )
         self.prices = cfg.get("price_per_mtok") or (config.get("llm") or {}).get("price_per_mtok") or {}
         self.include_usage = bool(cfg.get("include_usage", "openrouter.ai" in self.base_url))
         self.memory = memory
@@ -82,7 +101,8 @@ class VisionClient:
             raise LLMError("vision requires at least one image")
         if len(image_urls) > 30:
             raise LLMError("vision request contains too many pages")
-        content = [{"type": "text", "text": instruction}]
+        prompt = instruction if "knowledge_relevant" in instruction else f"{instruction}\n\n{ANALYSIS_SHAPE_CONTRACT}"
+        content = [{"type": "text", "text": prompt}]
         content.extend({"type": "image_url", "image_url": {"url": url, "detail": "low"}} for url in image_urls)
         payload = {"model": self.model, "messages": [{"role": "user", "content": content}],
                    "max_tokens": self.max_tokens, "response_format": {"type": "json_object"},

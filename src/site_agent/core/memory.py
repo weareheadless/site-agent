@@ -17,6 +17,7 @@ import sqlite3
 import threading
 from dataclasses import replace
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from .contracts import (
@@ -4645,6 +4646,8 @@ class Memory:
         self,
         session_id: str,
         assets: list[IntakeAssetBinding] | tuple[IntakeAssetBinding, ...],
+        *,
+        asset_validator: Callable[[int], bool] | None = None,
     ) -> list[dict[str, Any]]:
         session_id = self._validate_intake_session_id(session_id)
         session = self.get_design_intake_session(session_id)
@@ -4658,6 +4661,12 @@ class Memory:
         if len({item.position for item in normalized}) != len(normalized):
             raise ContractError("intake asset positions must be unique")
         for item in normalized:
+            if asset_validator is not None:
+                # Payload-backed tenants keep canonical media in Payload, so the
+                # owning service decides readiness instead of the local library.
+                if not asset_validator(item.asset_id):
+                    raise ContractError("only ready, unarchived images can be bound to intake")
+                continue
             asset = self.get_media_asset(item.asset_id)
             if asset is None or asset.status.value != "ready" or asset.media_kind.value != "image" or asset.archived_ts:
                 raise ContractError("only ready, unarchived images can be bound to intake")

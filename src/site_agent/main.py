@@ -812,7 +812,7 @@ def _cmd_intake_lab(args: argparse.Namespace) -> int:
             local_context["media_service"] = local_media_service
             local_analyzer = None
             vision_config = local_config.get("vision") or {}
-            if vision_config.get("enabled"):
+            if vision_config.get("enabled") or vision_config.get("media_analysis"):
                 local_vision = VisionClient(local_config, env=local_environment, memory=local_memory)
                 if local_vision.api_key and local_vision.base_url and local_vision.model:
                     local_analyzer = local_vision

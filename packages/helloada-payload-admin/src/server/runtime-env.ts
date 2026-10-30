@@ -11,6 +11,7 @@ export function helloAdaWorkspacePath(path: string, method: string, search = "")
   const crawlseoActionDecision = suffix.match(/^\/growth\/actions\/([0-9]+)\/decision$/);
   if (crawlseoActionDecision && method === "POST") return `/workspace/growth/actions/${crawlseoActionDecision[1]}/decision${search}`;
   if (method === "POST" && suffix === "/growth/check") return `/workspace/growth/check${search}`;
+  if (method === "POST" && suffix === "/media/analyze") return `/workspace/media/analyze${search}`;
   if (method === "POST" && /^\/messages\/[0-9]+\/draft-with-ada$/.test(suffix)) return `/workspace/messages/reply-draft${search}`;
   if (suffix === "/ada" && method === "POST") return `/workspace/chat${search}`;
   if (suffix === "/ada" && method === "GET") {

@@ -10,6 +10,8 @@ The route prefix remains configurable because the first customer still uses
 
 from __future__ import annotations
 
+import asyncio
+
 import hmac
 import re
 from pathlib import Path
@@ -826,7 +828,9 @@ def register_workspace_routes(
         if not isinstance(body, dict):
             raise HTTPException(status_code=400, detail="request body must be an object")
         try:
-            return service.analyze_media(body, tenant=tenant)
+            # Vision and Payload calls are blocking I/O. Do not freeze every
+            # tenant's conversation while a provider reads an uploaded image.
+            return await asyncio.to_thread(service.analyze_media, body, tenant=tenant)
         except BridgeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 

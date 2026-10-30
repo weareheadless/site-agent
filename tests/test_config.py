@@ -223,3 +223,28 @@ def test_design_orchestration_is_explicit_and_bounded():
                 "required_viewports": [{"name": "desktop", "width": 1440, "height": 1000}],
             }
         })
+
+
+def test_vision_defaults_use_the_tenant_conversation_model(tmp_path):
+    """Every tenant analyzes owner images; no per-tenant vision wiring."""
+    config, _ = load(env={})
+    assert config["vision"]["media_analysis"] is True
+    assert config["vision"]["enabled"] is False
+    assert config["vision"]["base_url"] == config["llm"]["base_url"]
+    assert config["vision"]["model"] == config["llm"]["model"]
+
+
+def test_vision_keeps_an_explicit_provider_and_opt_out(tmp_path):
+    explicit = tmp_path / "explicit.yaml"
+    explicit.write_text(yaml.safe_dump({
+        "llm": {"base_url": "https://conversation.test/v1", "model": "conversation-model"},
+        "vision": {"enabled": True, "base_url": "https://vision.test/v1", "model": "vision-model"},
+    }))
+    config, _ = load(explicit, env={}, validate_integrations=False)
+    assert config["vision"]["base_url"] == "https://vision.test/v1"
+    assert config["vision"]["model"] == "vision-model"
+
+    disabled = tmp_path / "disabled.yaml"
+    disabled.write_text(yaml.safe_dump({"vision": {"enabled": False}}))
+    config, _ = load(disabled, env={}, validate_integrations=False)
+    assert config["vision"]["enabled"] is False

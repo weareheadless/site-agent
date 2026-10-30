@@ -845,6 +845,27 @@ def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]
     return out
 
 
+def apply_vision_defaults(config: dict[str, Any]) -> dict[str, Any]:
+    """Let every tenant analyze owner images with its own conversation model.
+
+    Vision is a package capability, not per-tenant wiring: when a tenant leaves
+    the provider fields empty the conversation model is used, so a release
+    reaches every registered tenant without hand-edited configuration.
+    """
+    vision = config.get("vision")
+    if not isinstance(vision, dict):
+        vision = {}
+        config["vision"] = vision
+    if not (bool(vision.get("enabled")) or bool(vision.get("media_analysis"))):
+        return config
+    llm = config.get("llm") or {}
+    if not str(vision.get("base_url") or "").strip():
+        vision["base_url"] = str(llm.get("base_url") or "").strip()
+    if not str(vision.get("model") or "").strip():
+        vision["model"] = str(llm.get("model") or "").strip()
+    return config
+
+
 def load(
     config_path: str | Path | None = None,
     env: dict[str, str] | None = None,
@@ -866,6 +887,7 @@ def load(
     if not isinstance(override, dict):
         raise ConfigError(f"configuration root must be a mapping: {path}")
     merged = deep_merge(defaults, override)
+    apply_vision_defaults(merged)
     validate_research_config(merged)
     validate_seo_workflow_config(merged)
     validate_credentials_config(merged)
