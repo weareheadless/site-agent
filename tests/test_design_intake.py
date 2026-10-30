@@ -445,6 +445,7 @@ def test_build_confirmed_session_through_real_handoff_preserves_shared_intellige
 @pytest.mark.parametrize(
     "recovery_case", ["same-base", "changed-runtime-base", "changed-owner-request",
                       "changed-context-extra", "changed-intake-session-id", "changed-authorized-target",
+                      "changed-page-build-request", "changed-shared-intelligence", "foreign-tenant-run",
                       "missing-native-checkpoint",
                       "running-native-checkpoint", "failed-native-checkpoint", "prior-build-attempt"],
 )
@@ -575,7 +576,8 @@ def test_composed_same_run_recovery_reopens_checkpoint_and_dispatches_build_once
                                   "design_executor": executor})
     intake_service = DesignIntakeService(memory, config=config, default_intake=_intake(), lab_service=handoff)
     if recovery_case in {"changed-owner-request", "changed-context-extra",
-                         "changed-intake-session-id", "changed-authorized-target"}:
+                         "changed-intake-session-id", "changed-authorized-target",
+                         "changed-page-build-request", "changed-shared-intelligence", "foreign-tenant-run"}:
         # Exercise the real policy boundary directly with the exact original handoff
         # inputs (context_extra/shared_intelligence were both None).
         if recovery_case == "changed-authorized-target":
@@ -602,15 +604,57 @@ def test_composed_same_run_recovery_reopens_checkpoint_and_dispatches_build_once
         elif recovery_case == "changed-intake-session-id":
             recovery_session_id += "-changed"
             expected_error = "identity does not match"
+        elif recovery_case == "changed-page-build-request":
+            from dataclasses import replace
+            changed_request = replace(request, purpose=request.purpose + " changed")
+            assert changed_request.to_dict() != request.to_dict()
+            request = changed_request
+            expected_error = "request.*target.*frozen|frozen.*request"
+        elif recovery_case == "changed-shared-intelligence":
+            changed_shared = DesignSharedIntelligence.unavailable()
+            changed_shared.research["revision"] = "different-revision"
+            assert changed_shared.to_dict() != DesignSharedIntelligence.unavailable().to_dict()
+            expected_error = "request, context, or shared intelligence changed"
+        elif recovery_case == "foreign-tenant-run":
+            foreign_memory = Memory(tmp_path / "other-tenant" / "memory.db")
+            foreign_service = DesignService(foreign_memory, config=config, builder=OperationRoutingBuilder(
+                {"config": config, "memory": foreign_memory, "payload_gateway": payload}
+            ))
+            foreign_executor = DesignJobExecutor({"memory": foreign_memory, "config": config}, foreign_service)
+            foreign_calls_before = len(direction_calls)
+            foreign_runs_before = foreign_memory.list_design_runs()
+            foreign_admit = foreign_memory.admit_prebuild_design_recovery
+            def unexpected_foreign_admission(*args, **kwargs):
+                raise AssertionError("foreign tenant attempted admission CAS")
+            monkeypatch.setattr(foreign_memory, "admit_prebuild_design_recovery", unexpected_foreign_admission)
+            from site_agent.application.designs import DesignRunNotFound
+            with pytest.raises(DesignRunNotFound):
+                foreign_service.recover_prebuild_run(
+                    run_id, request=request, target=target,
+                    intake_session_id=run["intake_session_id"],
+                    intake_revision_id=run["intake_revision_id"], owner_request=run["owner_request"],
+                )
+            assert foreign_memory.list_design_runs() == foreign_runs_before == []
+            assert foreign_memory.list_design_phase_artifacts(run_id) == []
+            assert foreign_memory.list_design_run_events(run_id) == []
+            assert foreign_executor._queue.empty() and executor._queue.empty()
+            assert len(direction_calls) == foreign_calls_before
+            foreign_memory.close()
+            expected_error = None
         else:
             expected_error = "authorized target changed"
-        with pytest.raises(DesignServiceError, match=expected_error):
-            service.recover_prebuild_run(
+        if recovery_case != "foreign-tenant-run":
+            kwargs = {}
+            if recovery_case == "changed-shared-intelligence":
+                kwargs["shared_intelligence"] = changed_shared
+            with pytest.raises(DesignServiceError, match=expected_error):
+                service.recover_prebuild_run(
                 run_id, request=request, target=target,
                 intake_session_id=recovery_session_id,
                 intake_revision_id=run["intake_revision_id"], owner_request=owner_request,
                 context_extra=recovery_context_extra,
-            )
+                **kwargs,
+                )
         after_rejection = Memory(db)
         assert after_rejection.get_design_run(run_id) == run_before
         assert after_rejection.list_design_phase_artifacts(run_id) == phases_before

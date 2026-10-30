@@ -252,3 +252,25 @@ product regressions. Compileall and `git diff --check` pass. No source repair or
 production change was made. This remains fixture/unit evidence, not
 cross-tenant isolation, candidate delivery, live verification, or full UI-056
 acceptance.
+
+## Negative identity completion (2026-10-30)
+
+The composed reopened-checkpoint fixture adds three deterministic negatives.
+Changing a typed `PageBuildRequest.purpose` changes its serialization while the
+persisted request remains frozen; changing the supplied
+`DesignSharedIntelligence` research revision changes its serialization while
+its persisted identity remains frozen. Both real service calls reject before
+admission, preserve the reopened run/phases/events, queue no Build and make no
+additional provider calls. A third case presents the original run ID to a
+separately configured DesignService backed by a fresh isolated tenant Memory.
+It rejects with `DesignRunNotFound`; the foreign store remains empty, its
+admission fence is not reached, and both queues/provider-call counts remain
+unchanged. The original store remains subject to the same unchanged-state
+assertions.
+
+The foreign-Memory case proves application-service/store isolation only. It
+does not prove authenticated HTTP routing or arbitrary caller-to-tenant
+authorization. These are deterministic fixture checks, not live acceptance;
+they do not prove candidate generation, visual review, owner Design, or
+deployment. Exact durable runner receipts and tested SHA are recorded after
+the required affected-suite runs.
