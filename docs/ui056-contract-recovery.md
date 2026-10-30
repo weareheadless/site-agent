@@ -274,3 +274,14 @@ authorization. These are deterministic fixture checks, not live acceptance;
 they do not prove candidate generation, visual review, owner Design, or
 deployment. Exact durable runner receipts and tested SHA are recorded after
 the required affected-suite runs.
+
+On source `90bd86b7d7ce1df461d03e81745e7dcdc251bd08`, the six requested
+existing suites (intake, memory, design service, design jobs, workspace
+lifecycle, workspace build progress) passed twice, 188 tests each. Durable
+`run_test.run` IDs are `ui056-negatives26-affected-9edd9fe375fa4dad8d10fc08b0022c6a`
+and `ui056-negatives26-affected-d3e5213433e9447b946b4817233c63c6`. Their
+receipt summary is retained at
+`/home/admin/tools/project-runner/.tick/site-agent/evidence/pass70-negatives26/`.
+Compilation and `git diff --check` passed. These receipts bind to this exact
+test/document commit; no full suite, package build, live provider, tenant,
+deployment, generated candidate or owner review is claimed.
