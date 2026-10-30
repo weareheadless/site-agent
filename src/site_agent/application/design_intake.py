@@ -64,6 +64,14 @@ def _website_present_from_config(config: Mapping[str, Any]) -> bool:
 # The builder's creative prompt is composed from the confirmed intake unless the
 # owner supplied a real design request. Placeholders from older clients would
 # otherwise reach the design pipeline.
+# A build in these states is still producing its candidate. Starting a second
+# one would duplicate provider spend and race two writers on the same tenant
+# Payload draft and preview clone.
+_ACTIVE_RUN_STATUSES = frozenset({
+    "created", "assessing_intake", "planning", "building", "candidate_ready",
+    "validating", "needs_repair",
+})
+
 _PLACEHOLDER_REQUESTS = frozenset({
     "",
     "Build the first visual website candidate from this confirmed conversation.",
@@ -953,9 +961,11 @@ class DesignIntakeService:
                 run = None
             if isinstance(run, Mapping) and str(run.get("run_id") or ""):
                 revisions = run.get("revisions") if isinstance(run.get("revisions"), list) else []
+                failure = str(run.get("error") or "").strip()
                 compact.update({
                     "active_run_id": str(run.get("run_id") or ""),
                     "active_status": str(run.get("status") or ""),
+                    **({"active_failure_reason": failure[:1_200]} if failure else {}),
                     "preferred_run_id": str(run.get("preferred_run_id") or ""),
                     "versions": [
                         {
@@ -1283,6 +1293,23 @@ class DesignIntakeService:
         )
         if revision_row is None or int(revision_row.get("revision") or 0) != int(session.get("confirmed_revision") or 0):
             raise DesignIntakeServiceError("confirmed intake revision was not found")
+        if not force_new:
+            # One conversation owns at most one live build. A newer confirmed
+            # revision must never start a second run while an earlier one is
+            # still planning or building; report the live run instead.
+            live = next((
+                item for item in self.memory.list_design_runs(mode="production_candidate", limit=200)
+                if str(item.get("intake_session_id") or "") == session_id
+                and str(item.get("status") or "") in _ACTIVE_RUN_STATUSES
+            ), None)
+            if live is not None:
+                return {
+                    "session": self.get_session(session_id),
+                    "run": self.lab_service.get_run(str(live["run_id"])),
+                    "idempotent": True,
+                    "build_pending": True,
+                    "active_run_id": str(live["run_id"]),
+                }
         recovery_run_id = ""
         attached_run_id = str(session.get("design_run_id") or "").strip()
         if not force_new and attached_run_id:

@@ -26,6 +26,11 @@ MAX_CONTRACT_BYTES = 400_000
 # screenshots, motion and journey measurements). It is a diagnostic record, not
 # a model contract, so it gets a larger persistence bound without truncation.
 MAX_QUALITY_REPORT_BYTES = 2_000_000
+# A planning record is the durable envelope for one run: frozen intake, copy
+# deck, direction, experience plan and build request. Those artifacts are
+# legitimately large for a real business, and truncating them is not an option,
+# so the envelope has its own bound instead of inflating every shared contract.
+MAX_PLANNING_BYTES = 1_500_000
 MAX_TEXT_LENGTH = 20_000
 MAX_LIST_ITEMS = 200
 _SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
