@@ -298,27 +298,45 @@ def test_article_sync_does_not_adopt_an_unlinked_payload_post(tmp_path):
 
 
 
-def test_article_sync_adopts_exact_unpublished_payload_draft_after_local_checkpoint_loss(tmp_path):
+@pytest.mark.parametrize("modified_at_changed", [False, True])
+def test_article_sync_adopts_exact_unpublished_payload_draft_after_local_checkpoint_loss(tmp_path, monkeypatch, modified_at_changed):
     memory = Memory(tmp_path / "memory.db")
     payload = Payload()
     draft_id = memory.save_draft(title="An interrupted guide", body="Exact draft body.", kind="article")
 
+    # Checkpoint-loss reconciliation reads the draft timestamp from the memory
+    # mirror. Freeze it across both reads so wall-clock timing cannot decide
+    # whether modifiedAt differs.
+    original_list_drafts = memory.list_drafts
+    fixed_updated_ts = "2026-01-01T00:00:00+00:00"
+    def list_drafts_with_fixed_timestamp(*args, **kwargs):
+        drafts = original_list_drafts(*args, **kwargs)
+        for draft in drafts:
+            if draft["id"] == draft_id:
+                draft["updated_ts"] = fixed_updated_ts
+        return drafts
+    monkeypatch.setattr(memory, "list_drafts", list_drafts_with_fixed_timestamp)
+
     _mirror_article_draft_to_workspace(_context(memory, payload), draft_id)
     original_document = deepcopy(payload.documents[0])
+    assert original_document["modifiedAt"] == fixed_updated_ts
+    payload.documents[0]["modifiedAt"] = "2026-02-01T00:00:00Z" if modified_at_changed else original_document["modifiedAt"]
+    expected_updates = int(modified_at_changed)
     memory.update_draft_meta(draft_id, {})
     _mirror_article_draft_to_workspace(_context(memory, payload), draft_id)
 
     sync = memory.list_drafts()[0]["meta"]["payload_sync"]
     current_document = payload.documents[0]
     assert payload.creates == 1
-    assert payload.updates in {0, 1}
+    assert payload.updates == expected_updates
     assert payload.publishes == 0
+    assert current_document["modifiedAt"] == fixed_updated_ts
     assert {
-        key: value for key, value in current_document.items() if key != "modifiedAt"
+        key: value for key, value in current_document.items() if key not in {"modifiedAt", "_helloadaRevision"}
     } == {
-        key: value for key, value in original_document.items() if key != "modifiedAt"
+        key: value for key, value in original_document.items() if key not in {"modifiedAt", "_helloadaRevision"}
     }
-    assert (current_document["modifiedAt"] != original_document["modifiedAt"]) == (payload.updates == 1)
+    assert payload.documents[0]["_helloadaRevision"] == ("sha256:" + "b" * 64 if expected_updates else original_document["_helloadaRevision"])
     assert sync["state"] == "ready_for_review"
     assert sync["document_id"] == "post-1"
     assert sync["source_id"] == "posts:an-interrupted-guide"
