@@ -1754,12 +1754,14 @@ def test_owner_media_without_a_media_service_is_recorded_not_skipped(tmp_path):
 def test_payload_tenant_media_evidence_uses_the_builds_public_destination(tmp_path):
     """Evidence paths and build materialization must agree on one destination.
 
-    Without a shared rule the snapshot described a path the build never wrote,
-    so the frozen evidence could not match the files in the candidate.
+    The tenant media service returns PayloadMediaAsset, which carries the same
+    facts as the local MediaAsset under a different shape. Reading the local
+    dataclass directly failed the whole handoff with
+    `'PayloadMediaAsset' object has no attribute 'provider_id'`.
     """
-    from types import SimpleNamespace
     from io import BytesIO
     from PIL import Image
+    from site_agent.hands.payload_gateway import PayloadMediaAsset
 
     buffer = BytesIO()
     Image.new("RGB", (64, 48), "white").save(buffer, format="PNG")
@@ -1767,16 +1769,20 @@ def test_payload_tenant_media_evidence_uses_the_builds_public_destination(tmp_pa
 
     class MediaService:
         def get(self, media_id):
-            return SimpleNamespace(
-                status=SimpleNamespace(value="ready"),
-                media_kind=SimpleNamespace(value="image"),
-                archived_ts=None,
+            return PayloadMediaAsset(
+                asset_id=media_id,
                 original_name="astrid-logo.png",
-                analysis={"description": "black monogram"},
+                content_type="image/png",
+                original_size=len(payload),
+                width=64,
+                height=48,
                 description="",
-                provider_id="media-library",
-                model="",
-                analysis_status=SimpleNamespace(value="ready"),
+                tags=(),
+                ocr_text="",
+                analysis={"description": "black monogram", "model": "vision/model"},
+                url="",
+                alt_text="",
+                analysis_status="ready",
             )
 
         def read_preview(self, media_id, thumbnail=False):
@@ -1797,5 +1803,6 @@ def test_payload_tenant_media_evidence_uses_the_builds_public_destination(tmp_pa
     assert errors == []
     assert [item.asset_id for item in evidence] == ["media-5"]
     assert evidence[0].relative_path == "public/assets/images/ada-5-astrid-logo.webp"
+    assert evidence[0].semantic_description == "black monogram"
     assert bindings["5"]["visual_evidence_id"] == "media-5"
     memory.close()

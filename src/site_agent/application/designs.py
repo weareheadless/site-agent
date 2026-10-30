@@ -430,17 +430,30 @@ class DesignService:
                     stem = re.sub(r"[^A-Za-z0-9_-]+", "-", Path(str(asset.original_name or "image")).stem).strip("-")[:60] or "image"
                     relative = safe_relative_path(f"{media_destination}/ada-{media_id}-{stem}.webp", "asset_visual_evidence.relative_path")
                     data, _content_type = self.media_service.read_preview(media_id, thumbnail=False)
-                    analysis = asset.analysis if isinstance(asset.analysis, Mapping) else {}
+                    analysis = getattr(asset, "analysis", None)
+                    analysis = analysis if isinstance(analysis, Mapping) else {}
                     semantic = {
-                        "description": analysis.get("description") or asset.description,
+                        "description": analysis.get("description") or getattr(asset, "description", ""),
                         "quality_constraints": analysis.get("quality_notes") or (),
                     }
+                    # A local MediaAsset exposes provider/model and an enum
+                    # analysis status; the tenant's Payload asset exposes the
+                    # same facts as plain strings inside its analysis record.
+                    # Both are valid media services, so read the shared shape
+                    # rather than the local dataclass.
+                    analysis_status = getattr(asset, "analysis_status", "")
+                    analysis_status = str(getattr(analysis_status, "value", analysis_status) or "")
                     vision_metadata = {
                         **semantic,
-                        "provider_id": asset.provider_id or "media-library",
-                        "model": asset.model,
+                        "provider_id": str(
+                            getattr(asset, "provider_id", "")
+                            or analysis.get("provider")
+                            or analysis.get("provider_id")
+                            or "media-library"
+                        ),
+                        "model": str(getattr(asset, "model", "") or analysis.get("model") or ""),
                     }
-                    if str(getattr(getattr(asset, "analysis_status", None), "value", "")) != "ready":
+                    if analysis_status != "ready":
                         vision_metadata = {"description": "", "quality_constraints": ()}
                     add_evidence(
                         raw=raw,
