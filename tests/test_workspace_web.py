@@ -3589,3 +3589,14 @@ def test_design_handoff_adopts_the_tenants_media_service():
     )
 
     assert service.media_service is media
+
+
+def test_design_handoff_exposes_the_persisted_run():
+    """The intake service asks the handoff for an existing run on a duplicate."""
+    class Service:
+        def get_run(self, run_id):
+            return {"run_id": run_id, "status": "building"}
+
+    handoff = DesignBuildHandoff({"design_service": Service()})
+
+    assert handoff.get_run("run-1") == {"run_id": "run-1", "status": "building"}
