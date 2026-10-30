@@ -2221,7 +2221,7 @@ function ReviewWorkspace() {
   const buildUpdateText = designBuild?.update?.trim() || t('workspace.buildUpdate')
   const buildStalled = designBuild?.state !== 'failed' && (
     Boolean(designBuild?.stalled)
-    || (buildRunning && buildUpdateAge !== null && buildUpdateAge > (designBuild?.stall_threshold_seconds || 180))
+    || (buildRunning && buildUpdateAge !== null && buildUpdateAge > (designBuild?.stall_threshold_seconds || 600))
   )
   const recentBuildUpdates = (designBuild?.updates || []).slice(-4).reverse()
   const onboardingStages = [
