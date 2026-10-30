@@ -5390,17 +5390,22 @@ class ChatService:
         payload = tenant.context.get("payload_gateway")
         if payload is None:
             raise BridgeError("Payload media is not configured")
-        completed = []
+        analyzed, failed = [], []
         for document in payload.list_media(draft=True, limit=100):
             if document.get("analysisStatus") != "pending":
                 continue
             if not str(document.get("mimeType") or "").startswith("image/"):
                 continue
-            self.analyze_media({"media_id": str(document["id"])}, tenant=tenant)
-            completed.append(str(document["id"]))
-            if len(completed) >= 5:
+            try:
+                self.analyze_media({"media_id": str(document["id"])}, tenant=tenant)
+                analyzed.append(str(document["id"]))
+            except BridgeError as exc:
+                # One unreadable upload must not block the rest of the batch.
+                # Its failure state is durable and is never replayed here.
+                failed.append({"media_id": str(document["id"]), "error": str(exc)[:200]})
+            if len(analyzed) + len(failed) >= 5:
                 break
-        return {"analyzed": completed}
+        return {"analyzed": analyzed, "failed": failed}
 
     def _analyze_media(self, body: Mapping[str, Any], *, tenant: Tenant) -> dict[str, Any]:
         """Analyze one Payload asset and write only the resulting metadata draft."""
