@@ -214,6 +214,29 @@ def _journey_for_config(config: Mapping[str, Any]) -> Journey:
     return Journey(website_present=website_present, incubation_needed=incubation_needed)
 
 
+def _fail_unstarted_run(service: Any, run_id: str, exc: BaseException) -> None:
+    """Mark a run that never reached the queue as failed.
+
+    A run left in ``created`` is not buildable, hides the failure from the
+    owner, and makes the next attempt look like an idempotent duplicate. The
+    transition is best-effort: the original exception is what the caller sees.
+    """
+    memory = getattr(service, "memory", None)
+    if memory is None:
+        return
+    from ..core.design_contracts import DesignRunStatus
+
+    try:
+        memory.transition_design_run(
+            run_id, DesignRunStatus.FAILED.value, error=str(exc)[:500],
+        )
+        memory.add_design_run_event(
+            run_id, "failed", "The design build could not be started.",
+        )
+    except Exception:  # noqa: BLE001 - never mask the original failure
+        pass
+
+
 class DesignBuildHandoff:
     """Bridge confirmed no-site intake into the normal typed design worker."""
 
@@ -321,34 +344,41 @@ class DesignBuildHandoff:
             intake_session_id=intake_session_id,
             intake_revision_id=intake_revision_id,
         )
-        service.capture_context_snapshot(
-            run["run_id"],
-            owner_request=request,
-            conversation_id=conversation_id,
-            source_message_id=source_message_id,
-            chat_job_id=None,
-            context_extra=context_extra,
-            shared_intelligence=shared_intelligence,
-        )
-        build_request = service.prepare_initial_request(run["run_id"])
-        target = service.build_target_for_run(run["run_id"])
-        from ..core.design_contracts import canonical_hash
-        from .designs import DesignSharedIntelligence
+        try:
+            service.capture_context_snapshot(
+                run["run_id"],
+                owner_request=request,
+                conversation_id=conversation_id,
+                source_message_id=source_message_id,
+                chat_job_id=None,
+                context_extra=context_extra,
+                shared_intelligence=shared_intelligence,
+            )
+            build_request = service.prepare_initial_request(run["run_id"])
+            target = service.build_target_for_run(run["run_id"])
+            from ..core.design_contracts import canonical_hash
+            from .designs import DesignSharedIntelligence
 
-        planning = dict((service.get_run(run["run_id"]) or {}).get("planning_json") or {})
-        planning["same_run_recovery_identity"] = {
-            "schema_version": 1,
-            "owner_request_hash": canonical_hash(request),
-            "context_extra_hash": canonical_hash(dict(context_extra or {})),
-            "shared_intelligence_hash": canonical_hash(
-                shared_intelligence.to_dict() if shared_intelligence is not None
-                else DesignSharedIntelligence.unavailable().to_dict()
-            ),
-        }
-        if getattr(service, "memory", None) is not None:
-            service.memory.update_design_run(run["run_id"], planning_json=planning)
-        service.queue_build(run["run_id"], build_request, target)
-        executor.enqueue(run["run_id"])
+            planning = dict((service.get_run(run["run_id"]) or {}).get("planning_json") or {})
+            planning["same_run_recovery_identity"] = {
+                "schema_version": 1,
+                "owner_request_hash": canonical_hash(request),
+                "context_extra_hash": canonical_hash(dict(context_extra or {})),
+                "shared_intelligence_hash": canonical_hash(
+                    shared_intelligence.to_dict() if shared_intelligence is not None
+                    else DesignSharedIntelligence.unavailable().to_dict()
+                ),
+            }
+            if getattr(service, "memory", None) is not None:
+                service.memory.update_design_run(run["run_id"], planning_json=planning)
+            service.queue_build(run["run_id"], build_request, target)
+            executor.enqueue(run["run_id"])
+        except Exception as exc:
+            # A run that never reached the queue must not stay "created": it is
+            # not buildable, it hides the failure from the owner, and the next
+            # attempt reports it as an idempotent duplicate instead of starting.
+            _fail_unstarted_run(service, run["run_id"], exc)
+            raise
         return service.get_run(run["run_id"])
 
 
