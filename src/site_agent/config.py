@@ -23,6 +23,25 @@ class ConfigError(ValueError):
     """A configuration file or value cannot be used safely."""
 
 
+PAYLOAD_SITE_ASSET_DIR = "public/assets/images"
+
+
+def site_media_destination(config: Mapping[str, Any]) -> str:
+    """Return the canonical public destination for owner-supplied site media.
+
+    A Payload/Next tenant publishes selected media under Next's public asset
+    boundary. The frozen visual evidence and the build materialization must
+    agree on this path, or the plan points at files the build never writes.
+    An explicit ``site.media.site_asset_dir`` always wins.
+    """
+    site = (config or {}).get("site") or {}
+    media = site.get("media") or {}
+    destination = str(media.get("site_asset_dir") or "").strip().replace("\\", "/").strip("/")
+    if not destination and str(site.get("adapter") or "") == "payload_gateway":
+        destination = PAYLOAD_SITE_ASSET_DIR
+    return destination
+
+
 def crawlseo_research_authority_selected(config: Mapping[str, Any] | None) -> bool:
     """Return true whenever CrawlSEO was selected, even if its connector is broken.
 

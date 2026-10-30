@@ -4858,13 +4858,9 @@ def _materialize_media(context: dict[str, Any], clone: Path) -> list[str]:
     service = context.get("media_service")
     if service is None:
         raise RunnerError("the media Library is unavailable for this build")
-    site = context["config"].get("site") or {}
-    settings = site.get("media") or {}
-    destination = str(settings.get("site_asset_dir") or "").strip().strip("/")
-    if not destination and site.get("adapter") == "payload_gateway":
-        # Canonical Payload frontends use Next's public asset boundary for the
-        # isolated build's selected-media derivatives, not a tenant-local CMS.
-        destination = "public/assets/images"
+    from ..config import site_media_destination
+
+    destination = site_media_destination(context["config"])
     if not destination or destination.startswith((".", "..")) or ".." in Path(destination).parts:
         raise RunnerError("site.media.site_asset_dir must be configured for image builds")
     target_root = (clone / destination).resolve()

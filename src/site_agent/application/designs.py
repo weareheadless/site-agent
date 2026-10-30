@@ -332,8 +332,9 @@ class DesignService:
         evidence: list[AssetVisualEvidence] = []
         errors: list[dict[str, str]] = []
         bindings: dict[str, dict[str, str]] = {}
-        media_settings = (self.config.get("site") or {}).get("media") or {}
-        media_destination = str(media_settings.get("site_asset_dir") or "").strip().strip("/")
+        from ..config import site_media_destination
+
+        media_destination = site_media_destination(self.config)
         clone_root = source_clone.resolve() if source_clone is not None else None
         seen_keys: set[str] = set()
 
