@@ -1,0 +1,47 @@
+name: Branch drift
+
+# The release runner only sees main. Work on a branch with no open pull request
+# can never reach a tenant, and nothing reports it. This check makes that state
+# visible every day and fails while it persists.
+
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+    inputs:
+      max_age:
+        description: Fail when an orphaned branch is older than this many days
+        required: false
+        default: '7'
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fetch every branch
+        run: git fetch --prune origin '+refs/heads/*:refs/remotes/origin/*'
+      - name: Report branch work outside main
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python scripts/branch_drift.py --max-age "${{ inputs.max_age || '7' }}" \
+            | tee /tmp/branch-drift.txt
+      - name: Summarize
+        if: always()
+        run: |
+          {
+            echo '### Branch drift'
+            echo '```'
+            head -80 /tmp/branch-drift.txt || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
