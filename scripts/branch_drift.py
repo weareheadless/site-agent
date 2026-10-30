@@ -37,6 +37,7 @@ BASE = f"{REMOTE}/main"
 class Branch:
     name: str
     ahead: int
+    unique: int
     last_commit_ts: int
     author: str
     subject: str
@@ -62,9 +63,13 @@ def describe(name: str) -> Branch | None:
     ahead = int(git("rev-list", "--count", f"{BASE}..{name}").strip() or 0)
     if ahead == 0:
         return None
+    # Patch equivalence, not ancestry: a squash or rebase merge leaves the
+    # branch ahead of main even though its change is already there.
+    unique = sum(1 for line in git("cherry", BASE, name).splitlines()
+                 if line.startswith("+"))
     raw = git("log", "-1", "--format=%ct%x00%an%x00%s", name).rstrip("\n")
     ts, author, subject = raw.split("\x00", 2)
-    return Branch(name.removeprefix(f"{REMOTE}/"), ahead, int(ts), author, subject)
+    return Branch(name.removeprefix(f"{REMOTE}/"), ahead, unique, int(ts), author, subject)
 
 
 def open_pull_requests() -> dict[str, int]:
@@ -131,14 +136,15 @@ def main() -> int:
     orphans: list[Branch] = []
     for branch in live:
         branch.pr = prs.get(branch.name)
-        if branch.pr is None:
+        if branch.pr is None and branch.unique > 0:
             orphans.append(branch)
 
     report = {
         "branches": len(branches),
         "merged_into_main": len(merged),
         "ahead_of_main": len(live),
-        "in_open_pr": len(live) - len(orphans),
+        "already_in_main_by_patch": sum(1 for b in live if b.unique == 0),
+        "in_open_pr": sum(1 for b in live if b.pr is not None),
         "orphaned": len(orphans),
         "orphaned_older_than_7d": sum(1 for b in orphans if b.age_days > 7),
         "oldest_orphan_days": max((b.age_days for b in orphans), default=0),
@@ -146,7 +152,8 @@ def main() -> int:
 
     if args.json:
         print(json.dumps({**report, "orphans": [
-            {"branch": b.name, "ahead": b.ahead, "age_days": b.age_days,
+            {"branch": b.name, "ahead": b.ahead, "unique": b.unique,
+             "age_days": b.age_days,
              "author": b.author, "subject": b.subject}
             for b in sorted(orphans, key=lambda b: -b.age_days)
         ]}, indent=2))
@@ -159,7 +166,7 @@ def main() -> int:
         if orphans:
             print("\nwork with no path to main (branch, commits ahead, age, last commit):")
             for branch in sorted(orphans, key=lambda b: -b.age_days):
-                print(f"  {branch.age_days:>4}d  +{branch.ahead:<3} {branch.name}  "
+                print(f"  {branch.age_days:>4}d  +{branch.unique:<3} {branch.name}  "
                       f"{branch.subject[:70]}")
         if merged:
             print(f"\n{len(merged)} branches are fully in main and safe to delete "

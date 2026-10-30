@@ -21,9 +21,11 @@ python scripts/branch_drift.py --list-merged   # branches safe to delete
 an orphaned branch is older than seven days, so the condition surfaces instead
 of sitting quietly.
 
-A branch is *orphaned* when it has commits `main` does not have and no open pull
-request points at its head. Merged branches are clutter, not risk; the report
-lists them separately.
+A branch is *orphaned* when it has changes `main` does not have and no open
+pull request points at its head. The report compares patches, not ancestry, so
+a squash or rebase merge does not make a branch look stranded. Branches already
+in `main` by patch, or fully merged, are clutter rather than risk and are listed
+separately.
 
 ## Controls that keep it from recurring
 
@@ -34,9 +36,9 @@ lists them separately.
 2. **Let the runner queue on any `main` push**, not only on pull-request merges.
    Today a direct push deploys nothing until someone writes
    `deploy/desired-api-release.json`.
-3. **Delete the branch on merge.** 190 of the branches in this repository are
-   already fully contained in `main`; they exist only as noise that makes the
-   206 orphaned ones hard to see.
+3. **Delete the branch on merge.** Today 190 branches are fully contained in
+   `main` and another 93 carry only changes already in `main` by patch; they
+   exist as noise that makes the 114 orphaned ones hard to see.
 4. **Run the drift check in the release path.** Before the timer queues a
    release, the same report can note orphaned work in the receipt, so a release
    never looks complete while older work is stranded.
