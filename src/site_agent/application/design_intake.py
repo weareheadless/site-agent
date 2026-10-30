@@ -953,9 +953,11 @@ class DesignIntakeService:
                 run = None
             if isinstance(run, Mapping) and str(run.get("run_id") or ""):
                 revisions = run.get("revisions") if isinstance(run.get("revisions"), list) else []
+                failure = str(run.get("error") or "").strip()
                 compact.update({
                     "active_run_id": str(run.get("run_id") or ""),
                     "active_status": str(run.get("status") or ""),
+                    **({"active_failure_reason": failure[:1_200]} if failure else {}),
                     "preferred_run_id": str(run.get("preferred_run_id") or ""),
                     "versions": [
                         {

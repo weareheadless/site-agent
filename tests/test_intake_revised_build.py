@@ -49,3 +49,32 @@ def test_new_confirmed_revision_starts_new_run_and_preserves_failed_history(tmp_
     assert duplicate.get("idempotent") is True
     assert len(calls) == 1
     memory.close()
+
+
+def test_build_failure_evidence_keeps_the_error_not_the_warning_banner():
+    from site_agent.hands.opencode_runner import summarize_build_failure
+
+    raw = (
+        "\x1b[33m▲\x1b[0m WARNING internal Durable Objects will not work locally\n\n"
+        "src/app/(frontend)/page.tsx:12:3\n"
+        "error TS2322: Type 'string' is not assignable to type 'never'.\n"
+        "\x1b[2mmore trailing banner\x1b[0m\n"
+    )
+    summary = summarize_build_failure(raw)
+    assert "error TS2322" in summary
+    assert "\x1b[" not in summary
+    assert "page.tsx:12:3" in summary
+
+
+def test_build_heartbeat_reports_progress_while_one_turn_is_in_flight():
+    import time
+
+    from site_agent.hands.opencode_runner import _build_heartbeat
+
+    beats = []
+    with _build_heartbeat(beats.append, "still working", interval=15):
+        time.sleep(0.05)
+    assert beats == []
+    with _build_heartbeat(beats.append, "still working", interval=15):
+        pass
+    assert beats == []

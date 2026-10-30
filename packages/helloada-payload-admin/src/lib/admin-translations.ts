@@ -126,7 +126,7 @@ const en: AdminCopy = {
   'workspace.buildUpdated': 'Last update {age} ago',
   'workspace.buildElapsedLive': 'Working for {time}',
   'workspace.buildRecent': 'What Ada is doing',
-  'workspace.buildStalled': 'No update from Ada for {age}. The build may be stuck.',
+  'workspace.buildStalled': 'No progress reported for {age}. The build may be stuck.',
   'workspace.buildStalledAction': 'Ask Ada what happened',
   'workspace.buildStalledPrompt': 'The build screen has shown no progress for a while. What is happening with my website build?',
   'workspace.phaseSummaryConnecting': 'Checking Ada…',

@@ -1951,8 +1951,11 @@ class ChatService:
                     build["update_ts"] = last_event_ts or None
                     build["last_event_ts"] = last_event_ts or None
                     build["last_event_age_seconds"] = last_event_age
-                    build["stall_threshold_seconds"] = 180
-                    build["stalled"] = bool(state == "running" and last_event_age is not None and last_event_age > 180)
+                    # The runner emits a heartbeat every minute while a long turn
+                    # is genuinely in flight, so this only fires when the build
+                    # stopped reporting altogether.
+                    build["stall_threshold_seconds"] = 600
+                    build["stalled"] = bool(state == "running" and last_event_age is not None and last_event_age > 600)
                     if failed:
                         build["error"] = str(run.get("error") or "The design build needs attention.")
         onboarding = self._new_site_onboarding(memory, intake_status, tenant) if not website_present else None

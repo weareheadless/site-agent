@@ -98,7 +98,7 @@ def test_status_marks_a_running_build_that_stopped_talking(tmp_path, monkeypatch
     assert build["state"] == "running"
     assert build["last_event_age_seconds"] == 1200
     assert build["stalled"] is True
-    assert build["stall_threshold_seconds"] == 180
+    assert build["stall_threshold_seconds"] == 600
     memory.close()
 
 

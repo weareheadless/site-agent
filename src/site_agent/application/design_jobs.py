@@ -85,7 +85,7 @@ class DesignJobExecutor:
                     run_id,
                     "live_preview_checkpoint_error",
                     "The live preview checkpoint could not be published; the candidate remains isolated.",
-                    {"error": str(exc)[:500]},
+                    {"error": str(exc)[:2_000]},
                 )
             except Exception:
                 pass
@@ -133,7 +133,7 @@ class DesignJobExecutor:
                     run_id,
                     "review_link_error",
                     "The candidate passed quality gates but could not be linked to Review.",
-                    {"error": str(exc)[:500]},
+                    {"error": str(exc)[:2_000]},
                 )
             except Exception:
                 pass
@@ -163,7 +163,7 @@ class DesignJobExecutor:
                         run_id,
                         "onboarding_report_failed",
                         "The first-site plan could not be prepared; the verified page remains available for review.",
-                        {"error": str(exc)[:500], "candidate_sha": run.get("candidate_sha")},
+                        {"error": str(exc)[:2_000], "candidate_sha": run.get("candidate_sha")},
                     )
             except Exception:
                 pass
@@ -691,7 +691,7 @@ class DesignJobExecutor:
                 }:
                     self.memory.transition_design_run(run_id, DesignRunStatus.FAILED.value, error=str(exc))
                     self.memory.add_design_run_event(run_id, "failed", "The queued design job failed.", {
-                        "error": str(exc)[:500],
+                        "error": str(exc)[:2_000],
                         "worker": self.worker,
                     })
             except Exception:
@@ -796,7 +796,7 @@ class DesignJobExecutor:
                         run_id,
                         "specialist_review_incomplete",
                         "A required specialist review did not complete; the candidate is not reviewable.",
-                        {"error": str(exc)[:500], "candidate_sha": current.get("candidate_sha")},
+                        {"error": str(exc)[:2_000], "candidate_sha": current.get("candidate_sha")},
                     )
         self._queue_host_evidence_repair_if_needed(run_id)
         self._link_review_draft_if_ready(run_id)
@@ -1052,7 +1052,7 @@ class DesignJobExecutor:
                 run_id,
                 "host_evidence_repair_error",
                 "Host evidence found a fidelity defect but the bounded repair could not be queued.",
-                {"error": str(exc)[:500], "candidate_sha": run.get("candidate_sha")},
+                {"error": str(exc)[:2_000], "candidate_sha": run.get("candidate_sha")},
             )
             return
         child_run = child.get("run") or {}
@@ -1075,7 +1075,7 @@ class DesignJobExecutor:
                     run_id,
                     "browser_adapter_error",
                     "Browser quality adapter could not be created.",
-                    {"error": str(exc)[:500], "worker": self.worker},
+                    {"error": str(exc)[:2_000], "worker": self.worker},
                 )
                 raise
         return self.context.get("browser_quality")
