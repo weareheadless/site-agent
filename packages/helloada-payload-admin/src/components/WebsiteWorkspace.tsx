@@ -2761,7 +2761,8 @@ function ReviewWorkspace() {
                     {uploadEntries.map((entry) => (
                       <div className="helloada-chat-upload-preview" key={entry.id} role={entry.status === 'failed' ? 'alert' : 'status'}>
                         {entry.previewUrl ? <Image src={entry.previewUrl} alt="" width={92} height={70} unoptimized /> : <span>{entry.filename}</span>}
-                        <small>{entry.status === 'uploading' ? `${entry.filename} · ${entry.progress ?? 0}%` : `${entry.filename} · ${entry.reason || t('workspace.attachmentFailed')}`}</small>
+                        <small>{entry.filename}</small>
+                        <small>{entry.status === 'uploading' ? `${t('workspace.attachmentUploading')} ${entry.progress ?? 0}%` : entry.reason || t('workspace.attachmentFailed')}</small>
                         {entry.status === 'uploading' ? <progress aria-label={`${entry.filename} upload progress`} max={100} value={entry.progress ?? 0} /> : null}
                       </div>
                     ))}

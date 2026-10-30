@@ -1,9 +1,13 @@
-import http.server, json, os, socketserver, sys, threading, time
+import http.server, io, json, os, socketserver, sys, threading, time
 from pathlib import Path
 from playwright.sync_api import sync_playwright
+from PIL import Image
 
 root=Path(sys.argv[1]); os.chdir(root)
 uploads=[]; errors=[]
+png_buffer=io.BytesIO()
+Image.new('RGB',(48,32),(67,126,184)).save(png_buffer,format='PNG')
+VALID_PNG=png_buffer.getvalue()
 class Handler(http.server.SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith('/preview'):
@@ -15,9 +19,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             payload=json.dumps({'media':media,'hasNextPage':False}).encode()
             self.send_response(200); self.send_header('Content-Type','application/json'); self.send_header('Content-Length',str(len(payload))); self.end_headers(); self.wfile.write(payload); return
         if self.path=='/fixture-existing.png':
-            self.send_response(200); self.send_header('Content-Type','image/png'); self.end_headers(); self.wfile.write(b'\x89PNG\r\n\x1a\n'); return
+            self.send_response(200); self.send_header('Content-Type','image/png'); self.send_header('Content-Length',str(len(VALID_PNG))); self.end_headers(); self.wfile.write(VALID_PNG); return
         if self.path=='/fixture-upload.png':
-            self.send_response(200); self.send_header('Content-Type','image/png'); self.end_headers(); self.wfile.write(b'\x89PNG\r\n\x1a\n'); return
+            self.send_response(200); self.send_header('Content-Type','image/png'); self.send_header('Content-Length',str(len(VALID_PNG))); self.end_headers(); self.wfile.write(VALID_PNG); return
         if self.path=='/favicon.ico': self.send_response(204); self.end_headers(); return
         super().do_GET()
     def do_POST(self):
@@ -56,24 +60,29 @@ try:
       gallery.get_by_text('Existing gallery image').wait_for()
       assert gallery.get_by_text('existing-tag').is_visible(), 'existing gallery tags absent'
       file_input=page.locator('.helloada-file-input')
-      file_input.set_input_files({'name':'owner-upload.png','mimeType':'image/png','buffer':b'\x89PNG\r\n\x1a\n'+b'x'*(12*1024*1024)})
+      file_input.set_input_files({'name':'owner-upload.png','mimeType':'image/png','buffer':VALID_PNG+b'x'*(12*1024*1024)})
       thumb=gallery.locator('.helloada-chat-upload-preview img[alt=""]')
       thumb.wait_for(); assert thumb.is_visible(), 'uploading thumbnail not visible inside gallery'
+      page.wait_for_function("() => { const i=document.querySelector('.helloada-chat-gallery button img[alt=\\\"Existing gallery image\\\"]'); return i && i.complete && i.naturalWidth>0 }")
+      page.wait_for_function("() => { const i=document.querySelector('.helloada-chat-upload-preview img'); return i && i.complete && i.naturalWidth>0 }")
       progress=gallery.locator('progress[aria-label="owner-upload.png upload progress"]')
       progress.wait_for(); page.wait_for_function("() => { const p=document.querySelector('.helloada-chat-gallery progress[aria-label=\\\"owner-upload.png upload progress\\\"]'); return p && Number(p.value)>0 }",timeout=15000)
       start=progress.get_attribute('value')
       assert start is not None and float(start) >= 0, ('progress value unavailable',width,start)
+      page.screenshot(path=f'{root}/upload-progress-{width}.png',full_page=True)
       pending=page.locator('.helloada-pending-attachment').filter(has_text='owner-upload.png')
       pending.get_by_text('Ready').wait_for(timeout=15000)
       assert gallery.locator('.helloada-chat-upload-preview').count()==0, 'uploading preview did not clear after success'
       assert gallery.get_by_text('Uploaded fixture').is_visible(), 'uploaded file missing from gallery'
       assert gallery.get_by_text('fixture-tag').is_visible(), 'uploaded file tags missing from gallery'
+      page.wait_for_function("() => { const i=document.querySelector('.helloada-chat-gallery button img[alt=\\\"Uploaded fixture\\\"]'); return i && i.complete && i.naturalWidth>0 }")
+      page.wait_for_function("() => { const i=document.querySelector('.helloada-chat-gallery button img[alt=\\\"Existing gallery image\\\"]'); return i && i.complete && i.naturalWidth>0 }")
       assert page.locator('.helloada-send-button').is_enabled(), 'ready attachment was not retained in chat composer'
       assert len(uploads)==(1 if width==1440 else 2), 'expected actual local HTTP POST per viewport'
       overflow=page.evaluate('({width:document.documentElement.scrollWidth,client:document.documentElement.clientWidth})')
       assert overflow['width']<=overflow['client'], ('horizontal overflow',width,overflow)
-      page.screenshot(path=f'{root}/upload-{width}.png',full_page=True)
-      report.append(f'{width}x{height}: local multipart POST; native progress observed (initial value {start}); gallery thumbnail, success, tags and retained attachment verified; no horizontal overflow')
+      page.screenshot(path=f'{root}/upload-success-{width}.png',full_page=True)
+      report.append(f'{width}x{height}: real localhost multipart POST; progress UI visible (value {start}) then uploading preview cleared on success; both existing/uploaded gallery images decoded (naturalWidth>0); tags and retained attachment verified; no horizontal overflow')
     if errors: raise AssertionError('\n'.join(errors))
     (root/'browser-report.txt').write_text('\n'.join(report)+'\nNo console, page, HTTP, or request failures.\n')
     browser.close()
