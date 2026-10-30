@@ -3600,3 +3600,75 @@ def test_design_handoff_exposes_the_persisted_run():
     handoff = DesignBuildHandoff({"design_service": Service()})
 
     assert handoff.get_run("run-1") == {"run_id": "run-1", "status": "building"}
+
+
+def test_handoff_failure_marks_the_run_failed_instead_of_leaving_it_created():
+    """A run that never reached the queue must not survive as `created`.
+
+    A stranded `created` run hid the handoff failure from the owner and made
+    the next attempt report an idempotent duplicate instead of building.
+    """
+    from site_agent.core.design_contracts import DesignRunStatus
+
+    class Memory:
+        def __init__(self):
+            self.status = None
+            self.error = None
+            self.events = []
+
+        def transition_design_run(self, run_id, status, *, error=None):
+            self.status = status
+            self.error = error
+            return {"run_id": run_id, "status": status}
+
+        def add_design_run_event(self, run_id, stage, message):
+            self.events.append((run_id, stage, message))
+
+    class Service:
+        media_service = None
+        config = {}
+
+        def __init__(self):
+            self.memory = Memory()
+
+        def resolve_base_sha(self):
+            return "a" * 40
+
+        def create_run(self, intake, **kwargs):
+            return {"run_id": kwargs["run_id"]}
+
+        def capture_context_snapshot(self, run_id, **kwargs):
+            raise RuntimeError("media evidence could not be captured")
+
+    service = Service()
+    handoff = DesignBuildHandoff({"design_service": service, "design_executor": object()})
+    intake = SiteIntake.from_dict({
+        "schema_version": 1,
+        "business": {
+            "name": "North Star Studio",
+            "offer_summary": "Brand strategy for independent businesses.",
+            "primary_services": ["Brand strategy"],
+            "location": "North Shore",
+        },
+        "audience": {"primary": "Independent business owners"},
+        "conversion": {"primary_action": "Book a consultation", "not_available": True},
+        "brand": {"voice": "Clear, thoughtful, and warm."},
+        "site": {"required_pages": ["index.html"]},
+    })
+
+    with pytest.raises(RuntimeError, match="media evidence could not be captured"):
+        handoff.submit(
+            "Build the first website.",
+            intake.to_dict(),
+            run_id="run-stranded",
+            conversation_id=1,
+            source_message_id=2,
+            intake_session_id="intake-stranded",
+            intake_revision_id=3,
+        )
+
+    assert service.memory.status == DesignRunStatus.FAILED.value
+    assert "media evidence could not be captured" in service.memory.error
+    assert service.memory.events == [
+        ("run-stranded", "failed", "The design build could not be started."),
+    ]
