@@ -636,10 +636,11 @@ class DesignIntakeService:
         updated = merge_intake_turn(draft, turn, source_message_id=source_message_id)
         if progress:
             progress("intake / validating the proposed intake turn")
-        if session.get("status") == IntakeSessionState.CONFIRMED.value and updated.to_dict() == draft.to_dict():
+        confirmed_states = {IntakeSessionState.CONFIRMED.value, IntakeSessionState.FAILED.value}
+        if session.get("status") in confirmed_states and updated.to_dict() == draft.to_dict():
             saved = dict(session)
         else:
-            if session.get("status") == IntakeSessionState.CONFIRMED.value:
+            if session.get("status") in confirmed_states:
                 self.memory.update_design_intake_session(
                     session_id, status=IntakeSessionState.COLLECTING.value,
                     design_run_id=None, build_started_ts=None, build_error="",
@@ -758,8 +759,11 @@ class DesignIntakeService:
         reply = turn.assistant_message
         if isinstance(turn.ui_action, Mapping) and turn.ui_action.get("action") == "start_build":
             if isinstance(ui_action, Mapping) and ui_action.get("error"):
-                ui_action = {"action": None, "error": str(ui_action["error"])[:500]}
-                reply = "Your brief is ready. Please confirm it before I start building."
+                ui_action = {**ui_action, "action": None, "error": str(ui_action["error"])[:500]}
+                if ui_action.get("error_code") == "confirmation_required":
+                    reply = "Please confirm the current brief before I start building."
+                else:
+                    reply = "The build could not start. Your saved brief is preserved. There is no new preview to review."
         return {
             "reply": reply,
             "changed": True,
@@ -1004,15 +1008,15 @@ class DesignIntakeService:
                         idempotency_key=f"conversational-confirm-{session.get('session_id')}-{revision}",
                     )
                 except DesignIntakeServiceError as exc:
-                    return {"action": "start_build", "fresh": True, "error": str(exc)[:500]}
+                    return {"action": "start_build", "fresh": True, "error_code": "confirmation_failed", "error": str(exc)[:500]}
                 session = self._row(str(session.get("session_id") or ""))
-            if session.get("status") != IntakeSessionState.CONFIRMED.value:
+            if session.get("status") not in {IntakeSessionState.CONFIRMED.value, IntakeSessionState.FAILED.value}:
                 if session_id:
-                    return {"action": None, "error": "intake session is not confirmed"}
+                    return {"action": None, "error_code": "confirmation_required", "error": "intake session is not confirmed"}
                 return None
             revision = int(session.get("confirmed_revision_id") or session.get("confirmed_revision") or 0)
             if revision < 1:
-                return {"action": "start_build", "fresh": True, "error": "confirmed intake revision was not found"}
+                return {"action": "start_build", "fresh": True, "error_code": "confirmation_failed", "error": "confirmed intake revision was not found"}
             try:
                 token = f"conversational-build-{session.get('session_id')}-{revision}"
                 build = self.build(
@@ -1022,7 +1026,7 @@ class DesignIntakeService:
                     idempotency_key=token,
                 )
             except DesignIntakeServiceError as exc:
-                return {"action": "start_build", "fresh": True, "error": str(exc)[:500]}
+                return {"action": "start_build", "fresh": True, "error_code": "build_handoff_failed", "error": str(exc)[:500]}
             return {"action": "start_build", "fresh": True, "build": build}
         candidate = str(action.get("run_id") or "")
         if candidate in allowed:
