@@ -31,6 +31,9 @@ MAX_QUALITY_REPORT_BYTES = 2_000_000
 # legitimately large for a real business, and truncating them is not an option,
 # so the envelope has its own bound instead of inflating every shared contract.
 MAX_PLANNING_BYTES = 1_500_000
+# Identity hashes for design artifacts (build request, brand source map, copy
+# deck, phase payloads) cover one run's frozen contract, not a shared schema.
+MAX_DESIGN_HASH_BYTES = MAX_PLANNING_BYTES
 MAX_TEXT_LENGTH = 20_000
 MAX_LIST_ITEMS = 200
 _SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
