@@ -828,8 +828,13 @@ def test_native_direction_repair_is_bounded_and_fenced(tmp_path, monkeypatch, ou
         assert [item["status"] for item in fence] == ["running"]
         assert phase[0]["payload"]["response"]["structured"]["experience_plan"]["behavior_system"]["utility_behaviors"][0].get("meaning") is None
         assert "utility_behaviors[0].meaning" in prompts[1]
-        assert "A considered threshold." in prompts[1]
-        assert "Do not add generic filler" in prompts[1]
+        # The correction continues the failed session and carries only the
+        # diagnostic; replaying the frozen request and the previous answer
+        # made a one-field repair as expensive as the original turn.
+        assert calls[1]["session_id"] == "direction-invalid"
+        assert "A considered threshold." not in prompts[1]
+        assert "PAGE BUILD REQUEST" not in prompts[1]
+        assert "failed typed validation" in prompts[1]
         assert phase[0]["context_snapshot_hash"] == phase[1]["context_snapshot_hash"] == snapshot.content_hash
         assert phase[0]["input_hashes"] == phase[1]["input_hashes"] == fence[0]["input_hashes"]
         assert memory.get_design_run(run_id)["planning_json"]["integrated_composition"]["state"] == "planned"
@@ -952,6 +957,11 @@ def test_creative_direction_prompt_requires_typed_journey_shape(tmp_path):
     assert "asset_evidence may be an empty array" in prompt
     assert "at most three records" in prompt
     assert "top-level transfer_test field is mandatory" in prompt
+    # The direction turn must not spend the build's time reading the codebase.
+    assert "Do not inspect the repository" in prompt
+    assert "configured framework boundary" not in prompt
+    assert "Read only the relevant package/config files" not in prompt
+    assert "existing source entrypoints" not in prompt
 
 
 def test_creative_direction_rejects_an_incomplete_visible_copy_deck(tmp_path):
@@ -1011,6 +1021,28 @@ def test_native_direction_agent_is_primary_but_read_only(tmp_path):
     assert "edit: deny" in definition
     assert "write: deny" in definition
     assert "bash: deny" in definition
+    # Direction is a judgement about the subject; sending Ada into the
+    # repository cost 19 minutes and produced nothing the Build turn needs.
+    assert "Never inspect the repository" in definition
+
+
+def test_direction_correction_continues_the_session_instead_of_replaying():
+    prompt, extra = runner._direction_correction(
+        {"session_id": "ses_direction", "reply": "A considered threshold."},
+        "asset_composition_plan.asset_id is invalid",
+    )
+
+    assert extra == {"session_id": "ses_direction"}
+    assert "asset_composition_plan.asset_id is invalid" in prompt
+    assert "A considered threshold." not in prompt
+    assert "PAGE BUILD REQUEST" not in prompt
+
+
+def test_direction_correction_without_a_session_still_asks_for_a_fix():
+    prompt, extra = runner._direction_correction({}, "copy_deck.body is required")
+
+    assert extra == {}
+    assert "copy_deck.body is required" in prompt
 
 
 def test_native_direction_discards_subagent_warning_and_uses_final_text_event(tmp_path, monkeypatch):
@@ -1196,7 +1228,7 @@ def test_creative_build_turn_receives_a_compact_hash_bound_experience_plan(
     assert "brand_source_map" in calls[0]["prompt"]
     assert "asset_composition_plan" in calls[0]["prompt"]
     assert "final visitor-facing homepage copy" in calls[0]["prompt"]
-    assert "do not enumerate node_modules" in calls[0]["prompt"]
+    assert "Do not inspect the repository" in calls[0]["prompt"]
     assert "top-level transfer_test field is mandatory" in calls[0]["prompt"]
     assert "never pass useGSAP to gsap.registerPlugin" in calls[1]["prompt"]
     assert "signature marker is a runtime contract, not metadata" in calls[1]["prompt"]
@@ -1964,6 +1996,7 @@ def test_composition_entries_follow_the_supplied_assets_not_only_evidence():
          "structural_contribution": ["hero"], "evidence_refs": ["owner:message:10"]},
     ]
     kept = _bind_compositions(entries, {}, [5, 6, 7])
-    assert [entry["asset_id"] for entry in kept] == ["5", "7"]
+    # Payload ids are numeric; the typed plan and its evidence both use media-<id>.
+    assert [entry["asset_id"] for entry in kept] == ["media-5", "media-7"]
     # Without any supplied media an invented identifier is still refused.
     assert _bind_compositions(entries, {}, []) == []

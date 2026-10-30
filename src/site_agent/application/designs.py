@@ -407,6 +407,16 @@ class DesignService:
             except (TypeError, ValueError):
                 media_id = None
 
+            if media_id is not None and self.media_service is None:
+                # A production candidate that cannot read the owner's selected
+                # images must say so. Silently skipping produced a snapshot with
+                # no visual evidence, which then made every plan that mentioned
+                # those images fail validation for an unrelated-looking reason.
+                errors.append({
+                    "asset_id": str(media_id),
+                    "error": "no media service is available to read this owner-supplied image",
+                })
+                continue
             if media_id is not None and self.media_service is not None:
                 try:
                     asset = self.media_service.get(media_id)

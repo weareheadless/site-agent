@@ -3518,3 +3518,74 @@ def test_payload_tenant_starts_shared_growth_jobs_without_legacy_scheduler_opt_i
     assert {"growth_initial", "growth_daily", "growth_weekly", "growth_monthly", "growth_pending", "growth_article_sync"} <= names
     assert all(memory.kv_get(f"next_run:{name}") is not None for name in names if name.startswith("growth_"))
     memory.close()
+
+
+def test_design_handoff_adopts_the_tenants_media_service():
+    """The build snapshot must be able to read the owner's selected images.
+
+    Startup order can compose the Payload media service after the design
+    service. Without adopting it here the frozen snapshot records no visual
+    evidence and the creative plan cannot bind the owner's images.
+    """
+    media = object()
+
+    class Service:
+        media_service = None
+        config = {}
+
+        def resolve_base_sha(self):
+            return "a" * 40
+
+        def create_run(self, intake, **kwargs):
+            return {"run_id": kwargs["run_id"]}
+
+        def capture_context_snapshot(self, run_id, **kwargs):
+            return {"run_id": run_id}
+
+        def prepare_initial_request(self, run_id):
+            return "request"
+
+        def build_target_for_run(self, run_id):
+            return {"branch": "ada-design"}
+
+        def queue_build(self, run_id, request, target):
+            return None
+
+        def get_run(self, run_id):
+            return {"run_id": run_id}
+
+    class Executor:
+        def enqueue(self, run_id):
+            return None
+
+    service = Service()
+    handoff = DesignBuildHandoff({
+        "design_service": service,
+        "design_executor": Executor(),
+        "media_service": media,
+    })
+    intake = SiteIntake.from_dict({
+        "schema_version": 1,
+        "business": {
+            "name": "North Star Studio",
+            "offer_summary": "Brand strategy for independent businesses.",
+            "primary_services": ["Brand strategy"],
+            "location": "North Shore",
+        },
+        "audience": {"primary": "Independent business owners"},
+        "conversion": {"primary_action": "Book a consultation", "not_available": True},
+        "brand": {"voice": "Clear, thoughtful, and warm."},
+        "site": {"required_pages": ["index.html"]},
+    })
+
+    handoff.submit(
+        "Build the first website.",
+        intake.to_dict(),
+        run_id="run-media-service",
+        conversation_id=1,
+        source_message_id=2,
+        intake_session_id="intake-media",
+        intake_revision_id=3,
+    )
+
+    assert service.media_service is media

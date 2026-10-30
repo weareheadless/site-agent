@@ -240,6 +240,14 @@ class DesignBuildHandoff:
         executor = self.context.get("design_executor")
         if service is None or executor is None:
             raise BridgeError("the full design build service is unavailable")
+        # The tenant's Payload-backed media service is composed later in some
+        # startup orders than the design service. Adopt it here, otherwise the
+        # frozen snapshot records no visual evidence for the owner's selected
+        # images and the creative plan cannot bind them.
+        if getattr(service, "media_service", None) is None:
+            media_service = self.context.get("media_service")
+            if media_service is not None:
+                service.media_service = media_service
         # Runtime composition owns the tenant config.  Keep a recovered
         # DesignService instance from an older process/config snapshot from
         # losing the newly provisioned local clone before resolving its base

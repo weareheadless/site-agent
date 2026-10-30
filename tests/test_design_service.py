@@ -1725,3 +1725,27 @@ def test_derived_page_run_pins_approved_manifest_source(tmp_path):
     assert result["request"]["design_source"]["manifest_hash"] == manifest.content_hash
     assert result["request"]["allowed_variation_points"] == ["hero-composition"]
     memory.close()
+
+
+def test_owner_media_without_a_media_service_is_recorded_not_skipped(tmp_path):
+    """Silent evidence loss is what made a week of plans fail for the wrong reason.
+
+    A production candidate whose selected images cannot be read must record an
+    explicit evidence error, so the build fails closed with a real diagnostic
+    instead of producing a site with no images and a plan that cannot bind them.
+    """
+    memory = Memory(tmp_path / "data" / "design.db")
+    service = DesignService(memory, config={"site": {"media": {"site_asset_dir": "public/images"}}})
+
+    evidence, errors, bindings = service._capture_asset_visual_evidence(
+        [{"id": "5", "usage": "website"}],
+        source_clone=None,
+    )
+
+    assert evidence == []
+    assert bindings == {}
+    assert errors == [{
+        "asset_id": "5",
+        "error": "no media service is available to read this owner-supplied image",
+    }]
+    memory.close()

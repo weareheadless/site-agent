@@ -605,6 +605,26 @@ def _native_direction_payload(
     return direction, plan
 
 
+def _direction_correction(
+    previous_result: Mapping[str, Any], diagnostic: str,
+) -> tuple[str, dict[str, Any]]:
+    """Build a cheap correction turn for an invalid typed plan.
+
+    The previous answer is already in the session's own context, so the
+    correction sends only the diagnostic. Replaying the frozen request and the
+    model's own multi-kilobyte JSON to fix one field made a trivial repair cost
+    as much as the original turn, and re-reading the repository each time.
+    """
+    prompt = (
+        "Your previous response failed typed validation. Correct only the reported fields and return the same "
+        "two-field JSON object again (direction and experience_plan). Preserve every creative decision that was "
+        "not reported as invalid. Do not add commentary, Markdown fences, or new facts.\nDiagnostics:\n"
+        + str(diagnostic or "").strip()
+    )
+    session_id = str((previous_result or {}).get("session_id") or "").strip()
+    return prompt, ({"session_id": session_id} if session_id else {})
+
+
 def _bind_compositions(compositions, snapshot_evidence, supplied_ids=()):
     """Keep only composition entries whose asset was actually supplied.
 
@@ -614,14 +634,27 @@ def _bind_compositions(compositions, snapshot_evidence, supplied_ids=()):
     yet. Only an entry naming an asset the owner never supplied is dropped, so a
     valid creative direction is not failed by an invented identifier.
     """
-    allowed = {str(value).strip() for value in (supplied_ids or ())}
+    def canonical(value):
+        """Return the design asset id used by the typed plan and its evidence.
+
+        Payload media ids are numeric, while the design contract requires a
+        letter-prefixed id; the host evidence path already uses ``media-<id>``,
+        so the plan must use the same form or it cannot bind to that evidence.
+        """
+        candidate = str(value or "").strip()
+        if candidate.isdigit():
+            return f"media-{candidate}"
+        return candidate if _re.match(r"^[A-Za-z][A-Za-z0-9._:-]{0,159}$", candidate) else ""
+
+    allowed = {canonical(value) for value in (supplied_ids or ())} - {""}
     allowed.update(str(key) for key in snapshot_evidence)
 
     def resolve(value):
-        candidate = str(value or "").strip()
+        candidate = canonical(value)
         if candidate in allowed:
             return candidate
-        suffix = candidate.rsplit(".", 1)[-1].rsplit("-", 1)[-1]
+        raw = str(value or "").strip()
+        suffix = raw.rsplit(".", 1)[-1].rsplit("-", 1)[-1]
         matches = [key for key in allowed if key.rsplit("-", 1)[-1] == suffix]
         return matches[0] if len(matches) == 1 else ""
 
@@ -655,7 +688,7 @@ def _bind_compositions(compositions, snapshot_evidence, supplied_ids=()):
             }
             bound_logo = {key: value for key, value in logo_rule.items() if key in logo_fields}
             bound_logo["schema_version"] = 1
-            bound_logo["asset_id"] = str(bound_logo.get("asset_id") or asset_id)
+            bound_logo["asset_id"] = canonical(bound_logo.get("asset_id")) or asset_id
             bound["logo_rule"] = bound_logo if set(logo_fields).issubset(bound_logo) else None
         bound_compositions.append(bound)
     return bound_compositions
@@ -1582,12 +1615,13 @@ def _native_direction_prompt(
         ]
         request_data["context_snapshot"] = compact_snapshot
     return (
-        "This is Ada's read-only design-direction turn for a confirmed design intake. Inspect the typed request, "
-        "the configured framework boundary, and every attached owner-approved visual file. Do not edit, write, "
-        "delete, install, run shell commands, delegate, publish, or change the worktree.\n\n"
-        "Keep inspection bounded: do not use repository-wide recursive globs and do not enumerate node_modules, .git, "
-         "dist, .next, .open-next, out, output, or other generated/dependency directories. Read only the relevant package/config files, "
-        "existing source entrypoints, public assets, and the attached evidence needed to understand the confirmed intake.\n"
+        "This is Ada's design-direction turn for a confirmed design intake. Everything needed is in this request: "
+        "the confirmed intake, the frozen context snapshot, the owner-approved visual evidence, and the build target. "
+        "Do not inspect the repository. Read nothing but the host request file when this prompt is staged there, and "
+        "look at every attached owner-approved visual file. Do not edit, write, delete, install, run shell commands, "
+        "delegate, publish, or change the worktree.\n\n"
+        "Direction is a judgement about the subject, not an inventory of the codebase. Repository archaeology here "
+        "costs minutes and changes nothing the next turn cannot read for itself.\n"
         + output_contract
         + " It must state the "
         "subject-specific visual thesis, content hierarchy, typography approach, color/material language, image and "
@@ -2676,14 +2710,11 @@ def stage_design_build(
                             (item for item in previous_attempts if item.get("attempt") == 1), {}
                         )
                         failed_payload = first_failure.get("payload") or {}
-                        direction_prompt += (
-                            "\n\nThe previous response failed typed validation. Correct only the reported fields; "
-                            "preserve its valid creative decisions and use the same frozen request, context, and assets. "
-                            "Do not add generic filler or invent semantics.\nDiagnostics:\n"
-                            + str(failed_payload.get("diagnostic") or first_failure.get("error_detail") or "")
-                            + "\nOriginal response:\n"
-                            + json.dumps(failed_payload.get("response") or {}, ensure_ascii=True, sort_keys=True)
+                        direction_prompt, correction_session = _direction_correction(
+                            failed_payload.get("response") or {},
+                            str(failed_payload.get("diagnostic") or first_failure.get("error_detail") or ""),
                         )
+                        direction_kwargs.update(correction_session)
                     direction_result = run_opencode_turn(
                         worktree, direction_prompt, execution_config, **direction_kwargs,
                     )
@@ -2721,17 +2752,14 @@ def stage_design_build(
                             (item for item in previous_attempts if item.get("attempt") == 1), {}
                         )
                         failed_payload = first_failure.get("payload") or {}
-                        direction_prompt += (
-                            "\n\nThe previous response failed typed validation. Correct only the reported fields; "
-                            "preserve its valid creative decisions and use the same frozen request, context, and assets. "
-                            "Do not add generic filler or invent semantics.\nDiagnostics:\n"
-                            + str(failed_payload.get("diagnostic") or parse_error)
-                            + "\nOriginal response:\n"
-                            + json.dumps(failed_payload.get("response") or {}, ensure_ascii=True, sort_keys=True)
+                        correction_prompt, correction_session = _direction_correction(
+                            failed_payload.get("response") or direction_result,
+                            str(failed_payload.get("diagnostic") or parse_error),
                         )
                         try:
                             direction_result = run_opencode_turn(
-                                worktree, direction_prompt, execution_config, **direction_kwargs,
+                                worktree, correction_prompt, execution_config,
+                                **{**direction_kwargs, **correction_session},
                             )
                         except RunnerError as correction_error:
                             native_memory.fail_design_phase(
@@ -3805,10 +3833,10 @@ def _write_native_direction_agent(oc: Path, *, structured: bool = False) -> None
         "  write: deny\n"
         "  bash: deny\n"
         "---\n\n"
-        "You are Ada's read-only design director. Inspect the confirmed typed intake, the configured framework, "
-        "and supplied visual evidence. Never edit, write, delete, install, run shell commands, delegate, publish, "
-        "or approve. Keep repository inspection bounded: never enumerate node_modules, .git, dist, .next, .open-next, out, output, "
-        "or other generated/dependency directories; use only relevant source/config paths. "
+        "You are Ada's read-only design director. Work only from the confirmed typed intake, the frozen context "
+        "snapshot, and the supplied visual evidence in this request. Never inspect the repository, and never edit, "
+        "write, delete, install, run shell commands, delegate, publish, or approve. The Build turn reads the codebase "
+        "for itself; repeating that here only delays the design. "
         + output
         + " Do not invent business facts or provide code.\n"
     )
