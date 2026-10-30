@@ -4170,14 +4170,13 @@ def stage_infusion(
             turn_kwargs["env"] = context.get("env")
             turn_kwargs["api_key_env"] = provider_env_name
         run_timeout = int(timeout_seconds or 0) or int(builder.get("timeout_seconds", 0)) or None
-        with _build_heartbeat(progress, "opencode is still working on the repository"):
-            result = run_opencode_turn(
-                worktree,
-                brief,
-                config,
-                timeout_seconds=run_timeout,
-                **turn_kwargs,
-            )
+        result = run_opencode_turn(
+            worktree,
+            brief,
+            config,
+            timeout_seconds=run_timeout,
+            **turn_kwargs,
+        )
         tool_names = {str(call.get("tool") or "") for call in result.get("tool_calls") or []}
         used_pipeworx = bool({"ask_pipeworx", "discover_tools", "pipeworx"} & tool_names or any("pipeworx" in name for name in tool_names))
         raw_reply = "\n".join(str(line) for line in result.get("raw_tail") or [])
@@ -4237,6 +4236,7 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
             cmd.extend(["-f", str(image_path)])
     if progress:
         progress("opencode is at work on the repository")
+    heartbeat = _build_heartbeat(progress, "opencode is still working on the repository")
     builder_env = _isolated_env(
         clone,
         api_key if api_key is not None else resolve_secret(config, "llm_api_key"),
@@ -4245,6 +4245,7 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
         api_key_env=api_key_env,
     )
     _ensure_service_port(builder_env)
+    heartbeat.__enter__()
     try:
         proc = subprocess.Popen(
             cmd, cwd=clone, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -4253,6 +4254,7 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
             start_new_session=True,
         )
     except BaseException:
+        heartbeat.__exit__()
         _restore_cli_prompt(staged_prompt_path, previous_prompt)
         raise
     timing_on = timing_enabled(config, env)
@@ -4416,6 +4418,7 @@ def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
         terminate_process(force=True)
         raise
     finally:
+        heartbeat.__exit__()
         watchdog.cancel()
         record_usage()
         _restore_cli_prompt(staged_prompt_path, previous_prompt)
@@ -5005,7 +5008,7 @@ def _verify_materialized_media(context: dict[str, Any], clone: Path, paths: list
         root = clone.resolve()
         if root != target and root not in target.parents:
             raise RunnerError("materialized media verification escaped the preview worktree")
-        if not target.is_file() or target.read_bytes() != service.store.get(stored.normalized_key):
+        if not target.is_file() or target.read_bytes() != _canonical_media_webp(service, stored):
             raise RunnerError(f"builder changed the owner-provided media asset: {relative}")
 
 
