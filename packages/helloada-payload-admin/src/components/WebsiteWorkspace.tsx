@@ -1621,6 +1621,7 @@ function ReviewWorkspace() {
     }
     if (!accepted.length) return
     setUploadingMedia(true)
+    setChatGallerySearch('')
     setError('')
     const entries = accepted.map((file, index) => ({ id: `${file.name}-${Date.now()}-${index}`, filename: file.name, status: 'uploading' as const, progress: 0, previewUrl: URL.createObjectURL(file) }))
     setUploadEntries((current) => [...current, ...entries])
@@ -1646,7 +1647,7 @@ function ReviewWorkspace() {
           analysisStatus: attachment.analysis_status || 'pending',
         }
         setEditorMedia((current) => [media, ...current.filter((item) => String(item.id) !== String(media.id))])
-        void loadEditorMedia(1, false, chatGallerySearch)
+        void loadEditorMedia(1, false, '')
         return attachment
         },
         addAttachment: (attachment) => setPendingAttachments((current) => current.some((item) => String(item.asset_id) === String(attachment.asset_id)) ? current : [...current, attachment]),
