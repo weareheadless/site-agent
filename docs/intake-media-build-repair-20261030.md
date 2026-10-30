@@ -47,3 +47,19 @@ that confirmed boundary through the existing application service. A successful
 handoff is not proof of generated-site completion: hydration, defining behavior,
 desktop/mobile/reduced-motion checks and actual owner review remain required.
 Do not publish the candidate without explicit owner approval.
+
+## Package publication
+
+Source merged as `1fbf35e31919d4d87c3ba8e73042757949849089` (#521).
+The `payload-admin-v0.10.44` workflow `41057815366` passed. The authenticated
+release download matched both GitHub's digest and the source-bound manifest:
+
+- SHA-256: `d52efc4c4ace9be4ccf82a8a615b75e326eed7edcab4ed531f2626a15f343d56`
+- Integrity: `sha512-r+6ZFb061ivZlnalTCpSAfPyfSHb2WUrcmjS0IiP6x5NlN9RVlTKwFc3uHq+aWrmg6X8Dv5xL6Mzbb5+giwEQg==`
+
+Local source checks passed 2,209 Python tests, 93 admin tests and typecheck.
+Desktop/mobile fixtures exercised actual component code, real localhost XHR,
+decoded existing/uploaded thumbnails, progress, tags and retained attachments.
+Those fixtures mock service boundaries and do not prove production acceptance.
+The runtime follow-up exercises the actual Worker upload/gallery handlers with
+mocked authenticated Payload/transport boundaries, rather than source assertions.
