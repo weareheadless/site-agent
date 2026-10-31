@@ -29,6 +29,10 @@ class SiteBuildProfile:
     check_commands: tuple[tuple[str, ...], ...]
     build_command: tuple[str, ...]
     output_dir: str
+    # A server-rendered Next/Payload app has no static export directory. Its
+    # build is proven by the build command exiting zero, not by an ``out``
+    # tree that this stack never writes.
+    output_required: bool = True
     route_manifest: str = ""
     writable_patterns: tuple[str, ...] = ()
     prohibited_paths: tuple[str, ...] = ()
@@ -220,6 +224,10 @@ NEXT_REACT_PROFILE = SiteBuildProfile(
     ),
     build_command=("npm", "run", "build"),
     output_dir="out",
+    # A server-rendered Next/Payload app never writes a static export tree.
+    # Its build is proven by typecheck, lint and the build command exiting
+    # zero, not by an ``out`` directory this stack does not produce.
+    output_required=False,
     route_manifest="design/ada-route-manifest.json",
     writable_patterns=FRONTEND_OWNED_PATTERNS,
     prohibited_paths=PLATFORM_PROTECTED_PATHS,
@@ -673,7 +681,7 @@ def build_site(
             evidence.append(item)
             if result.returncode != 0:
                 return SiteBuildResult(profile.name, False, profile.output_dir, tuple(evidence), route_inventory(execution_root, profile.output_dir))
-        if not output.is_dir():
+        if not output.is_dir() and profile.output_required:
             evidence.append({"command": [], "status": "failed", "error": f"missing build output: {profile.output_dir}"})
             return SiteBuildResult(profile.name, False, profile.output_dir, tuple(evidence), ())
         if staged_workspace is not None:
