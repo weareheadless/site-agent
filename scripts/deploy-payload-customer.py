@@ -2261,9 +2261,10 @@ def main() -> int:
             checkout, customer, args.ref, custom_worker_bundle,
             receipt["sharedRuntimeFingerprint"],
         )
-        # The bundle exists only to be hashed into the receipt; --verify-only
-        # checks those hashes against Cloudflare, never against local disk.
-        receipt["artifactBundleCleanup"] = discard_artifact_bundle(custom_worker_bundle)
+        # Keep the dry-run bundle until the upload stage has re-hashed it. It
+        # is discarded at the end of the run; deleting it here made every
+        # post-upload artifact comparison fail with "no compiled custom
+        # Worker" even though the bundle had just been built.
         unexpected_changes = tracked_changes_outside_runtime_overlay(
             checkout, runtime_provenance["changedPaths"], base,
             generated_untracked_roots=(".mailflare", "public/helloada-release.json"),

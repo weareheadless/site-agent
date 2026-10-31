@@ -188,3 +188,24 @@ def test_sweep_builder_worktrees_never_raises_when_git_is_unavailable(tmp_path, 
     monkeypatch.setattr(runner, "_git", failing_git)
     runner._sweep_builder_worktrees(tmp_path, {"data_dir": str(data)})
     assert not stale.exists()
+
+
+def test_release_keeps_the_dry_run_bundle_until_the_upload_is_verified():
+    """The upload stage re-hashes the dry-run bundle it just uploaded.
+
+    Discarding the bundle straight after hashing it made every release fail at
+    upload with "Wrangler dry-run produced no compiled custom Worker", even
+    though the bundle had just been built successfully.
+    """
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    source = (root / "scripts" / "deploy-payload-customer.py").read_text()
+
+    hashed = source.index('receipt["artifactHashes"] = inspect_artifact(')
+    upload = source.index('stage("upload")')
+    between = source[hashed:upload]
+
+    assert "discard_artifact_bundle(custom_worker_bundle)" not in between
+    # The cleanup still happens, at the end of the run.
+    assert source.count("discard_artifact_bundle(") == 2  # definition + deferred call

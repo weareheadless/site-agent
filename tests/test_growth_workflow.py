@@ -189,13 +189,21 @@ def test_growth_collection_binds_each_crawlseo_dataset_to_a_separate_source(tmp_
 
     memory = Memory(tmp_path / "memory.db")
     config = {"growth": {"freshness_hours": {"inventory": 168, "dataforseo": 744}}}
+    # Relative to now: a fixed date turns this into a time bomb that expires
+    # once the freshness window closes, failing CI for no product reason.
+    from datetime import datetime, timedelta, timezone
+
+    def ago(hours: int) -> str:
+        return (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    captured, finished = ago(1), ago(2)
     datasets = {
-        "health": {"capturedAt": "2026-10-24T20:02:30Z", "errors": {}, "summary": {
-            "status": "completed", "finished_at": "2026-10-24T19:00:00Z"}, "issues": []},
-        "research": {"capturedAt": "2026-10-24T20:02:31Z", "errors": {}, "keywords": [
-            {"keyword": "query one", "updatedAt": "2026-10-24T19:00:00Z"}]},
-        "competition": {"capturedAt": "2026-10-24T20:02:31Z", "errors": {}, "serps": [
-            {"query": "query one", "updatedAt": "2026-10-24T19:00:00Z"}]},
+        "health": {"capturedAt": captured, "errors": {}, "summary": {
+            "status": "completed", "finished_at": finished}, "issues": []},
+        "research": {"capturedAt": captured, "errors": {}, "keywords": [
+            {"keyword": "query one", "updatedAt": finished}]},
+        "competition": {"capturedAt": captured, "errors": {}, "serps": [
+            {"query": "query one", "updatedAt": finished}]},
     }
     monkeypatch.setattr(workflow, "_inventory", lambda _context: [])
     monkeypatch.setattr(workflow, "_source_state", lambda *_args: [{"id": "dataforseo", "state": "missing",
