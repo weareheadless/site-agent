@@ -4384,7 +4384,81 @@ def stage_infusion(
         shutil.rmtree(worktree, ignore_errors=True)
 
 
+def _retryable_provider_rejection(result: Mapping[str, Any]) -> str:
+    """Only a structured rejection before any model work is safe to replay."""
+    if result.get("tool_calls") or result.get("native_tool_calls"):
+        return ""
+    usage = result.get("usage") or {}
+    if any(usage.get(key) for key in ("prompt_tokens", "completion_tokens")) or result.get("cost"):
+        return ""
+    lines = str(result.get("transcript") or "").splitlines()
+    if not lines:
+        return ""
+    kinds = []
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except (TypeError, ValueError):
+            return ""
+        if not isinstance(event, dict) or event.get("type") != "error":
+            return ""
+        error = event.get("error")
+        if not isinstance(error, dict):
+            return ""
+        kind = error.get("type")
+        if kind not in {"provider.no-route", "provider.rate-limit", "provider.unavailable"}:
+            return ""
+        kinds.append(kind)
+    return kinds[-1] if kinds else ""
+
+
 def run_opencode_turn(clone: Path, brief: str, config: dict[str, Any],
+                      progress=None, session_id: str | None = None,
+                      timeout_seconds: int | None = None,
+                      api_key: str | None = None,
+                      env: Mapping[str, str] | None = None,
+                      api_key_env: str | None = None,
+                      image_files: Sequence[str] | None = None,
+                      memory: Any | None = None,
+                      agent_name: str = "build") -> dict[str, Any]:
+    """Retry explicit pre-generation provider rejections, never partial work.
+
+    The same prompt, model, credentials and session are used. Process timeouts,
+    malformed output, auth failures and any generated output/tool use remain
+    terminal for the existing durable phase reconciliation path.
+    """
+    failures = []
+    for attempt in range(3):
+        try:
+            result = _run_opencode_turn_once(
+                clone, brief, config, progress=progress, session_id=session_id,
+                timeout_seconds=timeout_seconds, api_key=api_key, env=env,
+                api_key_env=api_key_env, image_files=image_files, memory=memory,
+                agent_name=agent_name,
+            )
+            if failures:
+                result["provider_retry_attempts"] = failures
+            return result
+        except RunnerError as exc:
+            kind = (_retryable_provider_rejection(exc.result or {})
+                    if str(exc).startswith("opencode exited ") else "")
+            if not kind:
+                if failures:
+                    exc.result["provider_retry_attempts"] = failures
+                raise
+            failures.append({"attempt": attempt + 1, "kind": kind,
+                             "transcript": str((exc.result or {}).get("transcript") or "")})
+            if attempt == 2:
+                raise RunnerError(
+                    f"opencode provider rejected the turn after 3 attempts ({kind})",
+                    result={**(exc.result or {}), "provider_retry_attempts": failures},
+                ) from exc
+            if progress:
+                progress(f"provider temporarily unavailable; retrying the same model ({attempt + 2}/3)")
+            time.sleep((2, 5)[attempt])
+
+
+def _run_opencode_turn_once(clone: Path, brief: str, config: dict[str, Any],
                       progress=None, session_id: str | None = None,
                       timeout_seconds: int | None = None,
                       api_key: str | None = None,
