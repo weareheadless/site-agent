@@ -18,3 +18,6 @@ coverage.xml
 .agent-home/
 .opencode/
 packages/helloada-payload-admin/.release/
+
+# QA flow evidence and screenshots
+.qa/
