@@ -78,6 +78,11 @@ def _looks_like_source_path(value: str) -> bool:
 @dataclass(frozen=True)
 class QualityPolicy:
     output_dir: str = "out"
+    # A server-rendered Next/Payload build has no static export tree. The
+    # static-output, content and browser gates inspect that tree, so for this
+    # stack they are not applicable rather than failed; the build gate and the
+    # deployed-site check carry the proof.
+    static_output_required: bool = True
     required_pages: tuple[str, ...] = ()
     required_content: tuple[str, ...] = ()
     allowed_patterns: tuple[str, ...] = ()
@@ -184,6 +189,7 @@ class QualityPolicy:
             raise ValueError("design_engine.quality geometry ratios must be positive")
         return cls(
             output_dir=str(quality.get("output_dir") or default_output_dir),
+            static_output_required=bool(NEXT_REACT_PROFILE.output_required),
             required_pages=tuple(str(item) for item in pages if str(item).strip()),
             required_content=tuple(str(item) for item in content if str(item).strip()),
             allowed_patterns=tuple(str(item) for item in (quality.get("allowed_patterns") or default_allowed_patterns or ())),
@@ -2088,15 +2094,21 @@ def _run_quality_in_workspace(
     findings.extend(build_findings)
     runtime_evidence, runtime_findings = _stage_host_runtime_files(workspace, policy)
     findings.extend(runtime_findings)
-    output_evidence, output_findings = _output_findings(workspace, policy)
-    findings.extend(output_findings)
+    static_output = bool(getattr(policy, "static_output_required", True))
+    no_static_output = "server_rendered_build_has_no_static_output"
+    if static_output:
+        output_evidence, output_findings = _output_findings(workspace, policy)
+        findings.extend(output_findings)
+    else:
+        output_evidence = {"status": "skipped", "reason": no_static_output}
+        output_findings = []
     output_artifact_evidence: dict[str, Any] = {"status": "skipped", "reason": "artifact_store_not_configured"}
     output_blockers = {
         "blocker",
         "critical",
         "serious",
     }
-    if callable(output_artifact_publisher) and not any(
+    if callable(output_artifact_publisher) and static_output and not any(
         item.get("severity") in output_blockers for item in output_findings
     ):
         try:
@@ -2111,14 +2123,21 @@ def _run_quality_in_workspace(
                 "The authoritative build output could not be retained as an immutable preview artifact.",
                 evidence=output_artifact_evidence,
             ))
-    content_evidence, content_findings = _content_findings(workspace / policy.output_dir, policy)
-    findings.extend(content_findings)
-    conversion_evidence, conversion_findings = _conversion_findings(workspace / policy.output_dir, policy)
-    findings.extend(conversion_findings)
+    if static_output:
+        content_evidence, content_findings = _content_findings(workspace / policy.output_dir, policy)
+        findings.extend(content_findings)
+        conversion_evidence, conversion_findings = _conversion_findings(workspace / policy.output_dir, policy)
+        findings.extend(conversion_findings)
+    else:
+        content_evidence = {"status": "skipped", "reason": no_static_output}
+        conversion_evidence = {"status": "skipped", "reason": no_static_output}
     manifest_evidence, manifest_findings = _manifest_findings(workspace, policy)
     findings.extend(manifest_findings)
-    browser_evidence, browser_findings, browser_incomplete = _browser_findings(workspace / policy.output_dir, policy, browser)
-    findings.extend(browser_findings)
+    if static_output:
+        browser_evidence, browser_findings, browser_incomplete = _browser_findings(workspace / policy.output_dir, policy, browser)
+        findings.extend(browser_findings)
+    else:
+        browser_evidence, browser_incomplete = {"status": "skipped", "reason": no_static_output}, []
     composition_evidence: dict[str, Any] = {"status": "skipped", "reason": "experience_plan_not_supplied"}
     journey_evidence_report: dict[str, Any] = {"status": "skipped", "reason": "experience_plan_not_supplied"}
     temporal_evidence_report: dict[str, Any] = {"status": "skipped", "reason": "experience_plan_not_supplied"}

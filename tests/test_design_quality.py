@@ -1047,3 +1047,29 @@ def test_browser_evidence_blocks_contrast_and_unreduced_motion(tmp_path):
     codes = {finding["code"] for finding in findings}
     assert report.state == "failed"
     assert {"contrast_failure", "reduced_motion_unsettled", "font_load_failure", "low_resolution_image", "text_wrap_failure", "resting_text_hidden"} <= codes
+
+
+def test_server_rendered_build_skips_static_output_gates_without_failing(tmp_path):
+    """A Next/Payload candidate has no `out/` tree, and that is not a failure.
+
+    The static-output, content, conversion and browser gates inspect a static
+    export. For a server-rendered build they are not applicable; marking them
+    failed discarded a candidate whose build had already passed.
+    """
+    repo, sha = _repo(tmp_path)
+
+    report = run_quality_gates(
+        repo,
+        base_sha=sha,
+        candidate_sha=sha,
+        run_id="run-server-rendered",
+        policy=_policy(static_output_required=False),
+    )
+
+    data = report.to_dict()
+    assert not any(finding["code"] == "missing_output" for finding in data["findings"])
+    evidence = data["evidence"]
+    assert evidence["output"]["status"] == "skipped"
+    assert evidence["output"]["reason"] == "server_rendered_build_has_no_static_output"
+    assert evidence["content"]["status"] == "skipped"
+    assert evidence["browser"]["status"] == "skipped"
