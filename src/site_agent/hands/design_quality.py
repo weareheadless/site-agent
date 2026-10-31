@@ -2603,6 +2603,20 @@ def _run_quality_in_workspace(
             "Native motion source exists but browser behavior was not requested, so the candidate cannot be fully verified.",
             paths=native_source_evidence.get("animation_files", []),
         ))
+    if not static_output:
+        # A server-rendered candidate is verified on the deployed site, not in
+        # a static export tree. Every browser-derived experience gate needs
+        # rendered evidence this host cannot produce, so they are deferred with
+        # an explicit reason rather than failing a candidate that built.
+        deferred = "browser_evidence_requires_the_deployed_site"
+        findings = [
+            item for item in findings
+            if item.get("gate") not in {"experience_journey", "composition", "temporal"}
+            and item.get("code") != "motion_behavior_unverified"
+        ]
+        composition_evidence = {"status": "skipped", "reason": deferred, "experience_plan_hash": experience_plan_hash}
+        journey_evidence_report = {"status": "skipped", "reason": deferred, "experience_plan_hash": experience_plan_hash}
+        temporal_evidence_report = {"status": "skipped", "reason": deferred, "experience_plan_hash": experience_plan_hash}
     build_status = build_evidence.get("status")
     if build_status is None and "ok" in build_evidence:
         build_status = "passed" if build_evidence.get("ok") else "failed"
