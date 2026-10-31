@@ -463,6 +463,7 @@ def test_composed_same_run_recovery_reopens_checkpoint_and_dispatches_build_once
     from site_agent.hands.builder import OperationRoutingBuilder
     from site_agent.hands.site_build import SiteBuildResult
 
+    monkeypatch.setenv("FIXTURE_DESIGN_KEY", "fixture-key")
     import site_agent.hands.site_build as site_build
     monkeypatch.setattr(site_build, "prepare_site_toolchain", lambda *_args, **_kwargs: ())
     monkeypatch.setattr(site_build, "build_site", lambda _root, profile, **_kwargs: SiteBuildResult(
@@ -488,6 +489,7 @@ def test_composed_same_run_recovery_reopens_checkpoint_and_dispatches_build_once
         "site": {"clone_path": str(clone), "writable_patterns": ["*.html", "design/**"]},
         "design_engine": {"orchestration": "creative", "model": "fixture/model"},
         "builder": {"enabled": True},
+        "env": {"llm_api_key": "FIXTURE_DESIGN_KEY"},
     }
     db = tmp_path / "memory.db"
     memory = Memory(db)
@@ -505,7 +507,8 @@ def test_composed_same_run_recovery_reopens_checkpoint_and_dispatches_build_once
         def read(self, *_args, **_kwargs):
             return dict(self.document)
     payload = PayloadBoundary()
-    builder = OperationRoutingBuilder({"config": config, "memory": memory, "payload_gateway": payload})
+    builder = OperationRoutingBuilder({"config": config, "memory": memory, "payload_gateway": payload,
+                                       "env": {"FIXTURE_DESIGN_KEY": "fixture-key"}})
     service = DesignService(memory, config=config, builder=builder)
     executor = DesignJobExecutor({"memory": memory, "config": config}, service)
     handoff = DesignBuildHandoff({"memory": memory, "config": config, "design_service": service,
