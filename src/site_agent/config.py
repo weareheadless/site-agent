@@ -371,7 +371,10 @@ def validate_design_config(config: dict[str, Any]) -> None:
     orchestration = str(engine.get("orchestration", "legacy") or "legacy").strip().lower()
     if orchestration not in {"legacy", "native", "specialist", "creative"}:
         raise ConfigError("design_engine.orchestration must be legacy, native, specialist, or creative")
-    specialist_timeout = engine.get("specialist_timeout_seconds", 600)
+    # A fidelity specialist inspects and repairs a real Next/Payload worktree.
+    # Ten minutes could not outlast the primary build turn it follows, so it
+    # timed out mid-repair and discarded a candidate that had already built.
+    specialist_timeout = engine.get("specialist_timeout_seconds", 1_800)
     if (
         isinstance(specialist_timeout, bool)
         or not isinstance(specialist_timeout, int)

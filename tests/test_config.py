@@ -248,3 +248,12 @@ def test_vision_keeps_an_explicit_provider_and_opt_out(tmp_path):
     disabled.write_text(yaml.safe_dump({"vision": {"enabled": False}}))
     config, _ = load(disabled, env={}, validate_integrations=False)
     assert config["vision"]["enabled"] is False
+
+def test_specialist_turns_are_allowed_longer_than_the_build_they_follow():
+    """A fidelity specialist repairs the worktree the build turn just wrote.
+
+    At 600s it timed out mid-repair and discarded a candidate whose build had
+    already passed the mandatory local check.
+    """
+    config, _sources = load(env={})
+    assert config["design_engine"]["specialist_timeout_seconds"] == 1800
