@@ -837,6 +837,64 @@ def _claim_native_phase(memory, request, target, phase: str, *, max_attempts: in
     )
 
 
+def _prepare_section_toolchain(worktree: Path) -> tuple[str, ...]:
+    """Add only the canonical section compiler before the normal npm install."""
+    template = Path(__file__).resolve().parents[1] / "templates/next-payload"
+    package = worktree / "package.json"
+    postcss = worktree / "postcss.config.mjs"
+    if package.is_symlink() or postcss.is_symlink():
+        raise RunnerError("section toolchain inputs must be regular files")
+    canonical_postcss = (template / "postcss.config.mjs").read_bytes()
+    if postcss.exists() and postcss.read_bytes() != canonical_postcss:
+        raise RunnerError("the existing PostCSS configuration is not the canonical section toolchain")
+    manifest = json.loads(package.read_text())
+    approved = json.loads((template / "package.json").read_text())["devDependencies"]
+    additions = {}
+    for name in ("tailwindcss", "@tailwindcss/postcss"):
+        existing = [manifest.get(group, {}).get(name) for group in ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies")]
+        declared = [version for version in existing if version is not None]
+        if declared and any(version != approved[name] for version in declared):
+            raise RunnerError(f"the section toolchain requires the canonical dependency pin: {name}")
+        if not declared:
+            additions[name] = approved[name]
+    paths = []
+    if additions:
+        manifest.setdefault("devDependencies", {}).update(additions)
+        package.write_text(json.dumps(manifest, indent=2) + "\n")
+        paths.append("package.json")
+    if not postcss.exists():
+        postcss.write_bytes(canonical_postcss)
+        paths.append("postcss.config.mjs")
+    return tuple(paths)
+
+
+def _stage_section_templates(worktree: Path) -> tuple[str, ...]:
+    """Supply section building blocks in the candidate, never a runtime overlay.
+
+    Existing presentation is left to Ada. Git pins these exact files with the
+    candidate; subsequent platform releases cannot replace a live composition.
+    """
+    source = Path(__file__).resolve().parents[1] / "templates/next-payload/src/components/site/sections"
+    destination = worktree / "src/components/site/presentation/section-library-v1"
+    if not destination.resolve().is_relative_to(worktree.resolve()):
+        raise RunnerError("the section template snapshot escapes the candidate workspace")
+    paths = []
+    for name in ("hero.tsx", "adapt.ts", "registry.ts"):
+        original = source / name
+        target = destination / name
+        if target.is_symlink():
+            raise RunnerError(f"the section template snapshot must not contain symlinks: {name}")
+        if not original.is_file():
+            raise RunnerError(f"the packaged section template snapshot is missing {name}")
+        data = original.read_bytes()
+        if target.exists() and target.read_bytes() != data:
+            raise RunnerError(f"the candidate already contains a different section template snapshot: {name}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        paths.append(target.relative_to(worktree).as_posix())
+    return tuple(paths)
+
+
 def _initial_homepage_payload_data(request, plan: Any, *, featured_media_id: int | None = None) -> dict[str, Any]:
     """Map confirmed intake and Ada's final homepage copy into canonical Payload fields."""
     from ..core.design_contracts import ExperiencePlanBundle, SiteIntake
@@ -1517,8 +1575,18 @@ def _design_prompt(
             "contract; keep the site routes, data readers, Payload schema, and migrations untouched. Treat the saved "
             "Payload values as the sole runtime source for business name, headline, paragraph text, calls to action, "
             "metadata, and the selected image. Do not copy these values into JSX/TS/JS constants, static HTML, a second "
-            "JSON file, or a new content store. Create the original visual composition in the allowed presentation "
-            "components and CSS while retaining stable data-helloada-field bindings for every displayed editable value. "
+            "JSON file, or a new content store. Compose the page with the supplied section templates under "
+            "src/components/site/presentation/section-library-v1/. Import its registry and adapter in the existing "
+            "PagePresentation component: render the Payload sections in their stored order using each section's "
+            "layout and direction. Resolve images with the existing canonical media resolver, and translate the "
+            "adapter's stable entry keys into helloAdaBindingId markers for the section's bindings prop. "
+            "Do not recreate the hero markup or replace the section templates with a bespoke whole-page component. "
+            "Keep non-composed documents on their existing renderer. The composed hero owns its heading and image; "
+            "do not print a duplicate document heading or featured image above it. The host already prepared Tailwind "
+            "and its PostCSS configuration; leave package pins and build configuration untouched. Declare its theme "
+            "utilities in site.css and choose palette and typography through --tenant-* "
+            "tokens in site.css. Add any defining behavior through the template's signature slot and a scoped wrapper "
+            "rather than rebuilding its layout. Preserve all stable data-helloada-field bindings. "
             "The locked experience plan's copy_deck is intentionally omitted from your source prompt: implement its "
             "composition and motion intent, but read all wording from Payload.\n\n"
         )
@@ -2586,6 +2654,8 @@ def stage_design_build(
         native_next_target = str(target.build_profile or "").strip().lower() == NEXT_REACT_PROFILE.name
         if native_next_target:
             host_provisioned_paths.update(prepare_native_workspace(worktree, NEXT_REACT_PROFILE))
+            if payload_first_required:
+                host_provisioned_paths.update(_prepare_section_toolchain(worktree))
         prepared = _change_state(worktree)
 
         raw_data_dir = str(execution_config.get("data_dir") or "").strip()
@@ -2923,6 +2993,7 @@ def stage_design_build(
             if staged_plan is None:
                 raise RunnerError("a production first-site build needs Ada's completed Payload-backed experience plan")
             request = _stage_initial_homepage_payload(execution_context, request, staged_plan, progress)
+            _stage_section_templates(worktree)
         if repair_brief is not None:
             # Repair turns still need the host-written role definition. Keep
             # this independent from planning: a bounded repair is deliberately
