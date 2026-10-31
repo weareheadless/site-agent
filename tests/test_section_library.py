@@ -29,6 +29,27 @@ def test_candidate_receives_a_pinned_section_snapshot_without_replacing_presenta
         _stage_section_templates(tmp_path)
 
 
+def test_section_toolchain_is_prepared_before_install_without_replacing_tenant_config(tmp_path):
+    from site_agent.hands.opencode_runner import _prepare_section_toolchain, RunnerError
+    import pytest
+
+    package = tmp_path / "package.json"
+    package.write_text(json.dumps({"dependencies": {"next": "16.3.4"}}))
+    paths = _prepare_section_toolchain(tmp_path)
+    assert set(paths) == {"package.json", "postcss.config.mjs"}
+    declared = json.loads(package.read_text())
+    approved = json.loads((TEMPLATE / "package.json").read_text())["devDependencies"]
+    for name in ("tailwindcss", "@tailwindcss/postcss"):
+        assert declared["devDependencies"][name] == approved[name]
+    assert declared["dependencies"]["next"] == "16.3.4"
+    assert (tmp_path / "postcss.config.mjs").read_bytes() == (TEMPLATE / "postcss.config.mjs").read_bytes()
+    assert _prepare_section_toolchain(tmp_path) == ()
+    (tmp_path / "postcss.config.mjs").write_text("tenant custom config")
+    with pytest.raises(RunnerError, match="PostCSS configuration"):
+        _prepare_section_toolchain(tmp_path)
+    assert (tmp_path / "postcss.config.mjs").read_text() == "tenant custom config"
+
+
 def test_sections_are_scaffold_not_shared_runtime():
     """Sections are the site's own design, so they ship in the scaffold.
 
